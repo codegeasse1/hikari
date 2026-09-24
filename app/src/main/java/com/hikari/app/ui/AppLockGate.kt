@@ -23,7 +23,9 @@ import androidx.compose.material.icons.automirrored.filled.Backspace
 import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -43,7 +45,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -118,6 +122,25 @@ fun AppLockGate(activity: android.app.Activity, content: @Composable () -> Unit)
  * the password may be a word rather than a PIN (the setting's own field is a
  * free text field), so "Enter password instead" swaps the keypad for a real
  * password field. Without it, an alphanumeric password would be unenterable.
+ *
+ * FOUR THINGS THIS SCREEN HAS TO GET RIGHT, and all four were reported as bugs:
+ *
+ *  1. **As many dots as the password has.** The length is recorded when the
+ *     password is set ([com.hikari.app.data.AppStore.appLockLenFlow]), so a
+ *     4-digit PIN draws four dots and is submitted on the fourth digit. Showing
+ *     a fixed six made a 4-digit PIN look like the app wanted six.
+ *  2. **Never silent.** Verifying is deliberately expensive (120k PBKDF2
+ *     rounds), so the check shows a spinner and the input is frozen while it
+ *     runs. A screen that accepted a tap and did nothing for a second — and
+ *     then, on failure, said nothing at all in text mode — is exactly the
+ *     "clicking Unlock does nothing" report.
+ *  3. **A wrong answer says so, in both modes**, shows the error on the field as
+ *     well, and clears what was typed so the next attempt starts clean.
+ *  4. **A way out.** A password that will not verify (a blob from an older build
+ *     of this same app, a forgotten PIN) would otherwise leave the owner locked
+ *     out of their own app forever. After a failed attempt the screen offers to
+ *     turn the lock off, behind a confirmation that says plainly what that
+ *     means: anyone holding the phone can then open Hikari.
  */
 @Composable
 private fun AppLockScreen(
@@ -128,11 +151,19 @@ private fun AppLockScreen(
     val context = LocalContext.current
     val app = LocalContext.current.applicationContext as HikariApp
     val scope = rememberCoroutineScope()
+    val haptics = LocalHapticFeedback.current
     var entered by remember { mutableStateOf("") }
     var typed by remember { mutableStateOf("") }
     var wrong by remember { mutableStateOf(false) }
     var textMode by remember { mutableStateOf(false) }
+    var checking by remember { mutableStateOf(false) }
+    var resetAsk by remember { mutableStateOf(false) }
     val biometrics = remember(context) { Biometrics.available(context) }
+
+    // The password's length, recorded when it was set (0 = an older lock, whose
+    // length was never written down — see the four points above).
+    val lenFlow = remember { app.store.appLockLenFlow() }
+    val secretLen by lenFlow.collectAsState(initial = 0)
 
     // The strings the fingerprint prompt is built from are read HERE, in the
     // composable body: `tr` is itself composable and cannot be called from the
@@ -141,19 +172,41 @@ private fun AppLockScreen(
     val bioSubtitle = tr("Use your fingerprint to open the app")
     val bioNegative = tr("Use password")
 
+    fun buzz() {
+        runCatching { haptics.performHapticFeedback(HapticFeedbackType.LongPress) }
+    }
+
     fun check(value: String) {
-        if (value.isBlank()) return
+        if (value.isBlank() || checking) return
+        checking = true
         scope.launch {
             val stored = runCatching { app.store.appLockSecret() }.getOrDefault("")
             // The derivation is deliberately expensive (120k PBKDF2 rounds), so
             // it runs OFF the main thread: on the main thread it would be a
             // visible stall on every digit, and on a slow phone a possible ANR.
             val ok = withContext(Dispatchers.Default) { AppLock.verify(value, stored) }
+            checking = false
             if (ok) {
                 wrong = false
+                // Self-healing: a lock set before the length was recorded gets
+                // it now, so the dots are right from the next launch on.
+                if (secretLen <= 0) {
+                    runCatching { app.store.setAppLockLen(value.length) }
+                }
                 onUnlocked()
-            } else {
-                wrong = true
+                return@launch
+            }
+            wrong = true
+            buzz()
+            // A wrong complete PIN is cleared once the red has been seen — the
+            // next attempt starts clean. When the length is NOT known (an older
+            // lock) the digits are deliberately LEFT in place: what was just
+            // rejected is only a prefix, and the user may be halfway through a
+            // longer PIN, which the next digit will check again.
+            if (secretLen > 0) {
+                delay(600)
+                entered = ""
+                typed = ""
             }
         }
     }
@@ -172,19 +225,35 @@ private fun AppLockScreen(
         )
     }
 
+    fun turnLockOff() {
+        scope.launch {
+            runCatching {
+                app.store.setAppLock(false)
+                app.store.setAppLockSecret("")
+                app.store.setAppLockLen(0)
+                app.store.setAppLockBio(false)
+            }
+            onUnlocked()
+        }
+    }
+
     // Ask for the fingerprint as soon as the card appears — that is the point of
     // having it: the user should not have to tap anything to get in.
     LaunchedEffect(bioOn, biometrics) {
         if (bioOn && biometrics) askFingerprint()
     }
 
-    // A typed PIN is checked by itself, once the typing stops. It cannot be
-    // checked on a fixed length, because the password's length is not known
-    // here (nothing in the app can read it back — see [AppLock]), and a wrong
-    // answer clears the moment another digit arrives.
-    LaunchedEffect(entered) {
-        if (entered.length >= 4) {
-            delay(320)
+    // A typed PIN submits itself as soon as it is complete — or, when the length
+    // was never recorded, at every prefix of four or more digits, so a longer
+    // PIN still gets its chance as it is typed. A wrong answer clears the entry,
+    // which is what re-arms this effect for the next attempt.
+    LaunchedEffect(entered, secretLen) {
+        val complete = if (secretLen > 0) entered.length == secretLen else entered.length >= 4
+        if (complete) {
+            // A known length is checked the moment it is reached. An unknown one
+            // waits a little longer, so a user typing a six-digit PIN is not
+            // interrupted by a check of its four-digit prefix mid-word.
+            delay(if (secretLen > 0) 140 else 500)
             check(entered)
         }
     }
@@ -210,8 +279,13 @@ private fun AppLockScreen(
                 fontWeight = FontWeight.SemiBold,
             )
             Spacer(Modifier.height(4.dp))
+            // The dots below say how many characters the password has, because
+            // the length is recorded with it — that is the answer to "how many
+            // does it want?". The sentence itself stays one whole literal so it
+            // translates as a sentence.
             Text(
-                tr("Enter your PIN or use a fingerprint"),
+                if (textMode) tr("Enter your password")
+                else tr("Enter your PIN or use a fingerprint"),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -226,6 +300,7 @@ private fun AppLockScreen(
                     },
                     label = { Text(tr("Password")) },
                     singleLine = true,
+                    enabled = !checking,
                     isError = wrong,
                     visualTransformation = PasswordVisualTransformation(),
                     // A PASSWORD keyboard, explicitly: with the plain text
@@ -240,22 +315,64 @@ private fun AppLockScreen(
                     keyboardActions = KeyboardActions(onDone = { check(typed) }),
                     modifier = Modifier.fillMaxWidth(),
                 )
+                if (wrong) {
+                    Spacer(Modifier.height(6.dp))
+                    // The error is shown in BOTH modes: with only a red outline
+                    // (the field's isError) a failed attempt in text mode looked
+                    // like the Unlock button had done nothing at all.
+                    Text(
+                        tr("Wrong PIN or password"),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
                 Spacer(Modifier.height(12.dp))
-                Button(onClick = { check(typed) }, modifier = Modifier.fillMaxWidth()) {
-                    Text(tr("Unlock"))
+                Button(
+                    onClick = { check(typed) },
+                    enabled = !checking && typed.isNotBlank(),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    if (checking) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            color = MaterialTheme.colorScheme.onPrimary,
+                            strokeWidth = 2.dp,
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Text(tr("Checking…"))
+                    } else {
+                        Text(tr("Unlock"))
+                    }
                 }
                 Spacer(Modifier.height(4.dp))
+                if (wrong && !checking) {
+                    TextButton(onClick = { resetAsk = true }) { Text(tr("Forgot password?")) }
+                }
                 TextButton(onClick = {
                     textMode = false
                     wrong = false
                 }) { Text(tr("Use the keypad")) }
             } else {
-                PinDots(entered.length, wrong, 6)
+                PinDots(
+                    typed = entered.length,
+                    wrong = wrong,
+                    shown = if (secretLen > 0) secretLen else maxOf(4, entered.length),
+                )
                 Spacer(Modifier.height(14.dp))
                 Keypad(
                     onDigit = { d ->
-                        wrong = false
-                        if (entered.length < MAX_PIN) entered += d
+                        if (!checking) {
+                            wrong = false
+                            // With the length known there is nothing to gain from
+                            // an extra digit: the answer is already being checked.
+                            // Without it, digits may accumulate (a longer PIN is
+                            // being typed) up to a sane ceiling.
+                            if (entered.length < MAX_PIN &&
+                                (secretLen == 0 || entered.length < secretLen)
+                            ) {
+                                entered += d
+                            }
+                        }
                     },
                     onBackspace = {
                         wrong = false
@@ -270,20 +387,38 @@ private fun AppLockScreen(
                     },
                 )
                 Spacer(Modifier.height(10.dp))
-                if (wrong) {
-                    Text(
+                when {
+                    checking -> Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(14.dp),
+                            strokeWidth = 2.dp,
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            tr("Checking…"),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    wrong -> Text(
                         tr("Wrong PIN or password"),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error,
                     )
-                } else {
-                    Text(
-                        tr("The PIN is checked as you type it."),
+                    else -> Text(
+                        if (secretLen > 0) {
+                            tr("The PIN is checked when the last digit is typed.")
+                        } else {
+                            tr("The PIN is checked as you type it — keep typing if yours is longer.")
+                        },
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
                 Spacer(Modifier.height(6.dp))
+                if (wrong && !checking) {
+                    TextButton(onClick = { resetAsk = true }) { Text(tr("Forgot password?")) }
+                }
                 TextButton(onClick = {
                     textMode = true
                     typed = ""
@@ -292,8 +427,35 @@ private fun AppLockScreen(
             }
         }
     }
+
+    if (resetAsk) {
+        AlertDialog(
+            onDismissRequest = { resetAsk = false },
+            title = { Text(tr("Turn the app lock off?")) },
+            text = {
+                Text(
+                    tr(
+                        "The password cannot be read back or recovered — it is not stored, " +
+                            "only a derivation of it. Turning the lock off turns it off: " +
+                            "anyone holding the phone can then open Hikari, and you can set a " +
+                            "new password in Settings afterwards."
+                    )
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    resetAsk = false
+                    turnLockOff()
+                }) { Text(tr("Turn it off")) }
+            },
+            dismissButton = {
+                TextButton(onClick = { resetAsk = false }) { Text(tr("Cancel")) }
+            },
+        )
+    }
 }
 
+/** The most digits a keypad entry may reach before it is stopped. */
 private const val MAX_PIN = 16
 
 /** The entered digits, as dots: filled for what is typed, hairline for the rest. */
@@ -302,11 +464,14 @@ private fun PinDots(typed: Int, wrong: Boolean, shown: Int) {
     val filled = if (wrong) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
     val empty = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
     val count = maxOf(shown, typed)
-    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+    // A long password (or, when the length is unknown, a long PIN being typed)
+    // shrinks the dots and their gaps rather than running off a phone's width.
+    val tight = count > 8
+    Row(horizontalArrangement = Arrangement.spacedBy(if (tight) 7.dp else 12.dp)) {
         repeat(count) { i ->
             Box(
                 Modifier
-                    .size(if (i < typed) 12.dp else 10.dp)
+                    .size((if (i < typed) 12.dp else 10.dp) * (if (tight) 0.75f else 1f))
                     .clip(CircleShape)
                     .background(if (i < typed) filled else empty)
             )

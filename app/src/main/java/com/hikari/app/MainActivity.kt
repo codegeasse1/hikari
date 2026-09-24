@@ -472,6 +472,28 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Feeds the television focus ring (see [com.hikari.app.tv.TvInput]).
+     *
+     * A remote's key reaches the window here, before any composable sees it, so
+     * this is the one place that knows the user is driving the app with a remote
+     * rather than a finger — including on a box that reports itself as a phone,
+     * where the app would otherwise draw no focus cursor at all. Nothing is
+     * consumed or altered: the event goes on to the rest of the app unchanged.
+     */
+    override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
+        com.hikari.app.tv.TvInput.noteKey(event)
+        return super.dispatchKeyEvent(event)
+    }
+
+    /** A finger means the platform ripple is wanted again (on a non-TV device). */
+    override fun dispatchTouchEvent(event: android.view.MotionEvent): Boolean {
+        if (event.actionMasked == android.view.MotionEvent.ACTION_DOWN) {
+            com.hikari.app.tv.TvInput.noteTouch()
+        }
+        return super.dispatchTouchEvent(event)
+    }
+
     override fun onStart() {
         super.onStart()
         // The CloudStream runtime's Torrent engine needs an activity reference

@@ -403,6 +403,9 @@ private fun TelegramAccountCard(app: HikariApp) {
     val auth by Td.auth.collectAsState()
     val me by Td.me.collectAsState()
     val online by Td.online.collectAsState()
+    val problem by Td.problem.collectAsState()
+    val busy by Td.busy.collectAsState()
+    val sentTo by Td.sentTo.collectAsState()
 
     val storedIdFlow = remember { app.store.telegramApiIdFlow() }
     val storedId by storedIdFlow.collectAsState(initial = 0)
@@ -467,6 +470,19 @@ private fun TelegramAccountCard(app: HikariApp) {
             }
         }
 
+        // Whatever Telegram refused, in a sentence, right where the user is
+        // looking. Every send in the login flow reports its own result now, so
+        // this line is the difference between "it does nothing" and "that code
+        // is not right".
+        problem?.let { message ->
+            Spacer(Modifier.height(8.dp))
+            Text(
+                message,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+
         when (val state = auth) {
             is Td.Auth.Unavailable -> {
                 Spacer(Modifier.height(8.dp))
@@ -480,7 +496,7 @@ private fun TelegramAccountCard(app: HikariApp) {
                 )
             }
 
-            is Td.Auth.Ready, is Td.Auth.Starting, is Td.Auth.WaitOtherDevice -> Unit
+            is Td.Auth.Ready, is Td.Auth.Starting -> Unit
 
             is Td.Auth.Idle, is Td.Auth.Closed -> {
                 Spacer(Modifier.height(10.dp))
@@ -535,6 +551,12 @@ private fun TelegramAccountCard(app: HikariApp) {
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                        Spacer(Modifier.width(8.dp))
+                        // Wipe the session TDLib keeps and start on the stored
+                        // pair from scratch — the honest way out of a login that
+                        // is stuck (a variant this build cannot finish, a session
+                        // Telegram has revoked).
+                        TextButton(onClick = { Td.restart() }) { Text(tr("Start over")) }
                     }
                 }
             }
@@ -546,29 +568,80 @@ private fun TelegramAccountCard(app: HikariApp) {
                     onValueChange = { phone = it },
                     label = { Text(phoneLabel) },
                     singleLine = true,
+                    enabled = !busy,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Spacer(Modifier.height(8.dp))
-                TextButton(
-                    enabled = phone.count { it.isDigit() } >= 7,
-                    onClick = { Td.submitPhone(phone) },
-                ) { Text(sendCode) }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(
+                        enabled = !busy && phone.count { it.isDigit() } >= 7,
+                        onClick = { Td.submitPhone(phone) },
+                    ) {
+                        if (busy) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(14.dp),
+                                strokeWidth = 2.dp,
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(tr("Sending…"))
+                        } else {
+                            Text(sendCode)
+                        }
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    // A login that went nowhere (a flood wait, an api_id that
+                    // was corrected, a number typed wrongly) is restarted from
+                    // here instead of leaving the user to reinstall the app.
+                    TextButton(
+                        enabled = !busy,
+                        onClick = { Td.restart() },
+                    ) { Text(tr("Start over")) }
+                }
             }
 
             is Td.Auth.WaitCode -> {
                 Spacer(Modifier.height(10.dp))
+                Text(
+                    if (sentTo.isBlank()) tr("Enter the code Telegram sent you")
+                    else tr("Telegram sent a code to ") + sentTo,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(6.dp))
                 OutlinedTextField(
                     value = code,
                     onValueChange = { code = it.trim() },
                     label = { Text(codeLabel) },
                     singleLine = true,
+                    enabled = !busy,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Spacer(Modifier.height(8.dp))
-                TextButton(enabled = code.isNotBlank(), onClick = { Td.submitCode(code) }) {
-                    Text(signIn)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(
+                        enabled = !busy && code.isNotBlank(),
+                        onClick = { Td.submitCode(code) },
+                    ) {
+                        if (busy) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(14.dp),
+                                strokeWidth = 2.dp,
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(tr("Checking…"))
+                        } else {
+                            Text(signIn)
+                        }
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    // The usual reason to be here with the wrong number typed:
+                    // this closes the client and asks for the number again.
+                    TextButton(
+                        enabled = !busy,
+                        onClick = { Td.restart() },
+                    ) { Text(tr("Use a different number")) }
                 }
             }
 
@@ -587,12 +660,31 @@ private fun TelegramAccountCard(app: HikariApp) {
                     onValueChange = { password = it },
                     label = { Text(passwordLabel) },
                     singleLine = true,
+                    enabled = !busy,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Spacer(Modifier.height(8.dp))
-                TextButton(enabled = password.isNotBlank(), onClick = { Td.submitPassword(password) }) {
-                    Text(signIn)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(
+                        enabled = !busy && password.isNotBlank(),
+                        onClick = { Td.submitPassword(password) },
+                    ) {
+                        if (busy) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(14.dp),
+                                strokeWidth = 2.dp,
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(tr("Checking…"))
+                        } else {
+                            Text(signIn)
+                        }
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    TextButton(enabled = !busy, onClick = { Td.restart() }) {
+                        Text(tr("Start over"))
+                    }
                 }
             }
 
@@ -603,6 +695,7 @@ private fun TelegramAccountCard(app: HikariApp) {
                     onValueChange = { first = it },
                     label = { Text(tr("First name")) },
                     singleLine = true,
+                    enabled = !busy,
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Spacer(Modifier.height(8.dp))
@@ -611,13 +704,48 @@ private fun TelegramAccountCard(app: HikariApp) {
                     onValueChange = { last = it },
                     label = { Text(tr("Last name")) },
                     singleLine = true,
+                    enabled = !busy,
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Spacer(Modifier.height(8.dp))
-                TextButton(
-                    enabled = first.isNotBlank(),
-                    onClick = { Td.submitRegistration(first, last) },
-                ) { Text(tr("Create account")) }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(
+                        enabled = !busy && first.isNotBlank(),
+                        onClick = { Td.submitRegistration(first, last) },
+                    ) {
+                        if (busy) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(14.dp),
+                                strokeWidth = 2.dp,
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(tr("Creating…"))
+                        } else {
+                            Text(tr("Create account"))
+                        }
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    TextButton(enabled = !busy, onClick = { Td.restart() }) {
+                        Text(tr("Start over"))
+                    }
+                }
+            }
+
+            is Td.Auth.WaitOtherDevice -> {
+                // The QR flow this build does not offer: Telegram is waiting for
+                // a confirmation on another signed-in device, and there is
+                // nothing to type here. Saying so beats an empty card.
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    tr(
+                        "Telegram is waiting for you to confirm this login on another " +
+                            "device that is already signed in."
+                    ),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(6.dp))
+                TextButton(onClick = { Td.restart() }) { Text(tr("Start over")) }
             }
         }
     }

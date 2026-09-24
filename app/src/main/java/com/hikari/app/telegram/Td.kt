@@ -60,7 +60,8 @@ object Td {
         object WaitCode : Auth()
         data class WaitPassword(val hint: String) : Auth()
         data class WaitRegistration(val terms: String) : Auth()
-        object WaitOtherDevice : Auth()
+        /** Waiting for a QR login to be confirmed on another device — see [link]. */
+        data class WaitOtherDevice(val link: String) : Auth()
         object Ready : Auth()
         object Closed : Auth()
     }
@@ -109,8 +110,15 @@ object Td {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val started = AtomicBoolean(false)
 
+    /** Set when the app itself asked for the client to be rebuilt (see [restart]). */
+    private val restartWanted = AtomicBoolean(false)
+
     @Volatile
     private var client: Client? = null
+
+    /** The credentials the RUNNING client was created with (null before one is). */
+    @Volatile
+    private var live: Pair<Int, String>? = null
 
     @Volatile
     private var pending: Pair<Int, String>? = null
@@ -133,6 +141,24 @@ object Td {
     /** Bumped whenever a file's download state changes, so the UI repaints. */
     private val _revision = MutableStateFlow(0)
     val revision: StateFlow<Int> = _revision.asStateFlow()
+
+    /**
+     * The last thing that went wrong, in the user's own words ([TelegramError]
+     * turns TDLib's `PHONE_NUMBER_INVALID` into a sentence). TDLib reports every
+     * refusal as a RESULT, not as an update, so a send whose result is ignored
+     * is a button that does nothing at all — which is what "Send code does
+     * nothing" was.
+     */
+    private val _problem = MutableStateFlow<String?>(null)
+    val problem: StateFlow<String?> = _problem.asStateFlow()
+
+    /** True while a login step is with TDLib and has not been answered yet. */
+    private val _busy = MutableStateFlow(false)
+    val busy: StateFlow<Boolean> = _busy.asStateFlow()
+
+    /** The number the code was asked for ("" until one is submitted). */
+    private val _sentTo = MutableStateFlow("")
+    val sentTo: StateFlow<String> = _sentTo.asStateFlow()
 
     private val chatValues = ConcurrentHashMap<Long, TdApi.Chat>()
     private val mainOrder = ConcurrentHashMap<Long, Long>()
@@ -167,8 +193,78 @@ object Td {
     /** The user's own api_id/api_hash, entered in the tab. */
     fun setCredentials(apiId: Int, apiHash: String) {
         if (apiId <= 0 || apiHash.isBlank()) return
-        pending = apiId to apiHash
-        if (client == null) start(apiId, apiHash)
+        val wanted = apiId to apiHash
+        val changed = pending != wanted
+        pending = wanted
+        _problem.value = null
+        val running = client
+        if (running == null) {
+            start(apiId, apiHash)
+            return
+        }
+        // Credentials that CHANGE have to actually reach TDLib, and they are
+        // handed over exactly once, in setTdlibParameters, at the start of a
+        // session. A client already running on a pair that does not work keeps
+        // failing with it forever — which is the other half of "it never gets
+        // past Send code": correcting the api_id/api_hash in the card has to
+        // rebuild the client on the new pair, not just remember it.
+        if (changed && live != wanted) restart()
+    }
+
+    /**
+     * Start over with the stored credentials: close the client and build a fresh
+     * one. Used by the tab's "Start over" button (a wrong phone number, a stuck
+     * login variant) and by [setCredentials] when the pair changes.
+     */
+    fun restart() {
+        _problem.value = null
+        _busy.value = false
+        val running = client
+        if (running == null) {
+            live = null
+            started.set(false)
+            pending?.let { (id, hash) -> start(id, hash) }
+            return
+        }
+        restartWanted.set(true)
+        _auth.value = Auth.Starting
+        runCatching { running.send(TdApi.Close(), null, null) }
+    }
+
+    /** Forget the last error (a fresh attempt is about to be made). */
+    fun clearProblem() {
+        _problem.value = null
+    }
+
+    private fun fail(error: TdApi.Error) {
+        _busy.value = false
+        _problem.value = TelegramError.explain(error.message)
+    }
+
+    /**
+     * An exception TDLib itself threw at us (the update/query handlers and the
+     * default handler). Kept as a visible message rather than a silent swallow:
+     * a client that is quietly throwing answers every request with nothing.
+     */
+    private fun note(t: Throwable) {
+        _busy.value = false
+        _problem.value = "Telegram library error: " + (t.message ?: t.javaClass.simpleName)
+    }
+
+    /**
+     * Releases the "a step is in flight" flag after half a minute.
+     *
+     * TDLib answers every request, so this should never fire — but if one is
+     * ever lost (a client torn down mid-request, a native call that does not
+     * come back), the alternative is buttons that stay greyed out permanently
+     * and a screen that looks frozen. The timeout is what guarantees the tab
+     * always becomes usable again.
+     */
+    private fun armBusyTimeout() {
+        scope.launch {
+            delay(30_000)
+            if (_busy.value) _busy.value = false
+        }
     }
 
     /** Create the client for [apiId]/[apiHash]. Idempotent, never throws. */
@@ -189,14 +285,16 @@ object Td {
         runCatching {
             Client.create(
                 { update -> onUpdate(update) },
-                { /* an update handler threw — ignore, TDLib keeps running */ },
-                { /* the same, for query results */ },
+                { t -> note(t) },
+                { t -> note(t) },
             )
         }.onSuccess { c ->
             available = true
             loadError = null
             client = c
+            live = apiId to apiHash
             pending = apiId to apiHash
+            started.set(true)
             _auth.value = Auth.Starting
         }.onFailure { e ->
             available = false
@@ -207,17 +305,51 @@ object Td {
     }
 
     fun signOut() {
-        client?.send(TdApi.LogOut(), null, null)
+        _problem.value = null
+        _busy.value = false
+        runCatching { client?.send(TdApi.LogOut(), null, null) }
         chatValues.clear()
         mainOrder.clear()
         fileValues.clear()
         _chats.value = emptyList()
         _me.value = ""
+        _sentTo.value = ""
         myId = 0
     }
 
-    /** Phone number in international format ("+91…"), as Telegram wants it. */
+    /**
+     * The phone number as TDLib wants it: international format, with the `+`.
+     *
+     * TDLib answers `PHONE_NUMBER_INVALID` for a number typed without it — which
+     * is exactly what a phone field whose keyboard lacks a `+` produces, and
+     * what "Send code does nothing" was: the refusal came back as a result
+     * nobody was reading. Spaces, dashes and brackets are the way people write
+     * numbers down, so they are stripped rather than refused, and a leading `00`
+     * (the other way to write a country code) becomes the `+` it means.
+     */
+    fun normalizePhone(phone: String): String {
+        val keep = phone.filter { it.isDigit() || it == '+' }
+        val digits = keep.filter { it.isDigit() }
+        if (digits.isEmpty()) return ""
+        return "+" + digits.trimStart('0').ifEmpty { digits }
+    }
+
+    /** Ask Telegram to send the login code to [phone]. */
     fun submitPhone(phone: String) {
+        val number = normalizePhone(phone)
+        if (number.length < 8) {
+            _problem.value =
+                "Enter the full phone number with its country code, e.g. +91 98512 27864."
+            return
+        }
+        val c = client ?: run {
+            _problem.value = "Telegram is still starting — give it a second and try again."
+            return
+        }
+        _problem.value = null
+        _busy.value = true
+        armBusyTimeout()
+        _sentTo.value = number
         val settings = TdApi.PhoneNumberAuthenticationSettings(
             /* allowFlashCall = */ false,
             /* allowMissedCall = */ false,
@@ -227,19 +359,84 @@ object Td {
             /* firebaseAuthenticationSettings = */ null,
             /* authenticationTokens = */ emptyArray<String>(),
         )
-        client?.send(TdApi.SetAuthenticationPhoneNumber(phone.trim(), settings), null, null)
+        // The result handler is not decoration: TDLib reports a refusal
+        // ("PHONE_NUMBER_INVALID", "PHONE_NUMBER_FLOOD", …) as the RESULT of
+        // this call, and with the result ignored the button simply did nothing.
+        runCatching {
+            c.send(
+                TdApi.SetAuthenticationPhoneNumber(number, settings),
+                Client.ResultHandler { result ->
+                    _busy.value = false
+                    if (result is TdApi.Error) fail(result)
+                },
+                null,
+            )
+        }.onFailure { note(it) }
     }
 
+    /** The code Telegram sent. */
     fun submitCode(code: String) {
-        client?.send(TdApi.CheckAuthenticationCode(code.trim()), null, null)
+        val value = code.filter { !it.isWhitespace() }
+        if (value.isEmpty()) return
+        val c = client ?: run {
+            _problem.value = "Telegram is not connected — try again."
+            return
+        }
+        _problem.value = null
+        _busy.value = true
+        armBusyTimeout()
+        runCatching {
+            c.send(
+                TdApi.CheckAuthenticationCode(value),
+                Client.ResultHandler { result ->
+                    _busy.value = false
+                    if (result is TdApi.Error) fail(result)
+                },
+                null,
+            )
+        }.onFailure { note(it) }
     }
 
+    /** The two-step (cloud) password. */
     fun submitPassword(password: String) {
-        client?.send(TdApi.CheckAuthenticationPassword(password), null, null)
+        if (password.isEmpty()) return
+        val c = client ?: run {
+            _problem.value = "Telegram is not connected — try again."
+            return
+        }
+        _problem.value = null
+        _busy.value = true
+        armBusyTimeout()
+        runCatching {
+            c.send(
+                TdApi.CheckAuthenticationPassword(password),
+                Client.ResultHandler { result ->
+                    _busy.value = false
+                    if (result is TdApi.Error) fail(result)
+                },
+                null,
+            )
+        }.onFailure { note(it) }
     }
 
     fun submitRegistration(first: String, last: String) {
-        client?.send(TdApi.RegisterUser(first, last, true), null, null)
+        val c = client ?: run {
+            _problem.value = "Telegram is not connected — try again."
+            return
+        }
+        _problem.value = null
+        _busy.value = true
+        armBusyTimeout()
+        runCatching {
+            c.send(
+                TdApi.RegisterUser(first, last, true),
+                Client.ResultHandler { result ->
+                    _busy.value = false
+                    if (result is TdApi.Error) fail(result)
+                },
+                null,
+            )
+        }.onFailure { note(it) }
     }
 
     /** Ask TDLib for the main chat list (again). Safe to repeat. */
@@ -292,15 +489,33 @@ object Td {
     private fun onAuthState(state: TdApi.AuthorizationState) {
         when (state) {
             is TdApi.AuthorizationStateWaitTdlibParameters -> sendParameters()
-            is TdApi.AuthorizationStateWaitPhoneNumber -> _auth.value = Auth.WaitPhone
-            is TdApi.AuthorizationStateWaitCode -> _auth.value = Auth.WaitCode
-            is TdApi.AuthorizationStateWaitPassword ->
+            is TdApi.AuthorizationStateWaitPhoneNumber -> {
+                _busy.value = false
+                // Reached again after a restart: nothing has been sent yet.
+                if (_auth.value != Auth.WaitPhone) _sentTo.value = ""
+                _auth.value = Auth.WaitPhone
+            }
+            is TdApi.AuthorizationStateWaitCode -> {
+                _busy.value = false
+                _problem.value = null
+                _auth.value = Auth.WaitCode
+            }
+            is TdApi.AuthorizationStateWaitPassword -> {
+                _busy.value = false
+                _problem.value = null
                 _auth.value = Auth.WaitPassword(state.passwordHint.orEmpty())
-            is TdApi.AuthorizationStateWaitRegistration ->
+            }
+            is TdApi.AuthorizationStateWaitRegistration -> {
+                _busy.value = false
                 _auth.value = Auth.WaitRegistration(state.termsOfService?.text?.text.orEmpty())
-            is TdApi.AuthorizationStateWaitOtherDeviceConfirmation ->
-                _auth.value = Auth.WaitOtherDevice
+            }
+            is TdApi.AuthorizationStateWaitOtherDeviceConfirmation -> {
+                _busy.value = false
+                _auth.value = Auth.WaitOtherDevice(state.link)
+            }
             is TdApi.AuthorizationStateReady -> {
+                _busy.value = false
+                _problem.value = null
                 _auth.value = Auth.Ready
                 loadChats()
             }
@@ -308,17 +523,33 @@ object Td {
             is TdApi.AuthorizationStateClosing -> Unit
             is TdApi.AuthorizationStateClosed -> {
                 client = null
+                live = null
                 started.set(false)
                 chatValues.clear()
                 mainOrder.clear()
+                fileValues.clear()
                 _chats.value = emptyList()
                 _me.value = ""
+                _busy.value = false
                 _auth.value = Auth.Closed
+                // A close the APP asked for (a corrected api_id/api_hash, or
+                // "Start over") is immediately followed by a fresh client,
+                // because the user is standing there waiting for it. A close
+                // TDLib decided on its own — an authorization variant this
+                // build does not implement, say — is left alone: rebuilding on
+                // every one of those would spin forever.
+                if (restartWanted.getAndSet(false)) {
+                    pending?.let { (id, hash) -> start(id, hash) }
+                }
             }
             // Login variants this build does not implement (email/Google/Apple
             // sign-in and the premium-purchase step). The phone-number flow in
-            // the tab is the one every Telegram account has.
-            else -> _auth.value = Auth.Closed
+            // the tab is the one every Telegram account has; the tab says so and
+            // offers to start over rather than sitting on a blank state.
+            else -> {
+                _busy.value = false
+                _auth.value = Auth.Closed
+            }
         }
     }
 
@@ -354,7 +585,13 @@ object Td {
                 /* systemVersion = */ "Android " + Build.VERSION.RELEASE,
                 /* applicationVersion = */ "Hikari " + BuildConfig.VERSION_NAME,
             ),
-            null,
+            // A wrong api_id/api_hash is answered HERE, as the result of this
+            // call — and a client that is never told keeps asking TDLib for
+            // parameters, so the tab sat on "Starting Telegram…" forever with no
+            // reason given. The message is now shown in the card.
+            Client.ResultHandler { result ->
+                if (result is TdApi.Error) fail(result)
+            },
             null,
         )
     }

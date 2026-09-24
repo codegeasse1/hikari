@@ -1,3 +1,62 @@
+## 0.10.28
+
+### Fixed
+
+- **Telegram sign-in: "Send code" now tells you what happened.** TDLib reports every
+  refusal ("PHONE_NUMBER_INVALID", "FLOOD_WAIT_34", "API_ID_INVALID", "PHONE_CODE_INVALID")
+  as the *result* of the request, and those results were being thrown away — so the button
+  did nothing at all and the screen stayed on the phone number forever. Every login step now
+  reads its result, says what Telegram refused in plain English under the field, and shows
+  a spinner while the step is in flight.
+- **The phone number is sent the way Telegram wants it** — in international format, with the
+  `+`. Spaces, dashes and brackets are stripped, and a leading `00` becomes `+`. This was the
+  most likely reason a correct number was refused: a phone-number keyboard without a `+`
+  handed Telegram a number it does not accept.
+- **A corrected api_id/api_hash now actually reaches Telegram.** They are sent once, at the
+  start of a session, so a client already running on a bad pair kept failing with it forever.
+  Saving a different pair now rebuilds the client on the new pair, and a **Start over**
+  button sits in every login step (and next to the saved credentials) to restart the login
+  from scratch — the way out of a wrong number, a stuck variant, or a session Telegram has
+  revoked.
+- **The tab can no longer get stuck.** If a login step is ever left unanswered the button
+  re-enables itself after 30 seconds, the code step says which number the code went to and
+  offers "Use a different number", and a login variant this build cannot finish (e-mail,
+  QR-confirmation) says so instead of showing an empty card.
+- **App lock: the unlock screen shows as many dots as your password has.** A 4-digit PIN was
+  drawn as six empty dots, which read as "it wants six digits". The length is now recorded
+  with the password, the dots match it, and the PIN is submitted on the last digit. A lock
+  set by an older build (whose length was never written down) still works, and is checked at
+  every prefix of four or more digits as it is typed.
+- **App lock: a wrong password is never silent again.** Verifying takes a moment (120k PBKDF2
+  rounds), and the screen used to accept the tap and show nothing — no spinner, and in text
+  mode not even an error, because the message only existed on the keypad. The check now shows
+  "Checking…", the field shows the error too, a wrong answer buzzes and clears itself, and
+  the typed digits are frozen while the check runs.
+- **App lock: a password that will not verify can no longer lock you out of your own app.**
+  Verification now accepts both stored formats (the current `algo:salt:hash` and the older
+  `salt:hash`), and tries the password exactly as typed before the trimmed form, so a lock
+  written by an older build is accepted instead of refused forever. And after a failed
+  attempt the screen offers **"Forgot password?"**, which turns the lock off behind a
+  confirmation that says plainly what that means.
+- **Television: the remote's focus is finally visible.** The focus ring was drawn on the
+  component's outer edge and scaled up 1.06×, but nearly every card in the app clips itself
+  to its rounded shape before the clickable — so the clip painted the whole ring away, and
+  pressing the D-pad moved a cursor nothing showed. The ring is now drawn *inside* the
+  component's bounds (inset past half its stroke, never scaled), so no clip can remove it,
+  and the focused item is unmistakable: the accent tint over the card, a soft wide halo and a
+  crisp ring. Pressing Enter brightens it.
+- **Television: the focus ring appears on a remote that reports itself as a phone.** The ring
+  was installed only when the device was detected as a television; a box that says it is a
+  phone drew no cursor at all. Any D-pad/Enter/media key now turns the ring on app-wide (and
+  a touch turns it back off on a touch device), so the layout a box reports can no longer
+  leave the remote walking invisible buttons.
+
+### Notes
+
+- The app lock is unchanged in what it stores: a PBKDF2 derivation and a random salt, never
+  the password. What the fix adds is the length beside it (for the dots) and a way out of a
+  lock that can no longer be opened.
+
 ## 0.10.27
 
 ### Added

@@ -177,8 +177,20 @@ class AppStore(private val ctx: Context) {
         val TELEGRAM_API_HASH = stringPreferencesKey("telegramApiHash")
         /** App lock — the switch itself (Settings → Privacy & Browsing). */
         val APP_LOCK = booleanPreferencesKey("appLock")
-        /** The lock's secret as `salt:hash` (PBKDF2-SHA256); blank = never set. */
+        /** The lock's secret as `algo:salt:hash` (PBKDF2); blank = never set. */
         val APP_LOCK_SECRET = stringPreferencesKey("appLockSecret")
+        /**
+         * How many characters the lock's password has, so the unlock screen can
+         * draw the right number of dots and stop typing exactly when it is
+         * complete instead of guessing (a 4-digit PIN used to be drawn as six
+         * empty dots, which read as "it wants six digits").
+         *
+         * Not a secret in any useful sense: it says nothing about WHICH
+         * characters, and the unlock screen has to look right. 0 = unknown (a
+         * lock set before this was recorded), and the screen then falls back to
+         * checking every prefix of four or more digits.
+         */
+        val APP_LOCK_LEN = intPreferencesKey("appLockLength")
         /** Unlock with the device's fingerprint/face as well as the password. */
         val APP_LOCK_BIO = booleanPreferencesKey("appLockBiometric")
         /** The per-day/per-title totals behind the Stats page — see
@@ -1591,6 +1603,21 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setAppLockSecret(value: String) {
         write("APP_LOCK_SECRET") { it[K.APP_LOCK_SECRET] = value }
+    }
+
+    /**
+     * How many characters the lock's password has (0 = not known — a lock set
+     * before this was recorded). See [K.APP_LOCK_LEN]: the unlock screen uses it
+     * for the number of dots and for "the password is complete now".
+     */
+    fun appLockLenFlow(): Flow<Int> =
+        store.data.map { (it[K.APP_LOCK_LEN] ?: 0).coerceIn(0, 128) }
+            .distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun appLockLen(): Int = appLockLenFlow().first()
+
+    suspend fun setAppLockLen(value: Int) {
+        write("APP_LOCK_LEN") { it[K.APP_LOCK_LEN] = value.coerceIn(0, 128) }
     }
 
     /**

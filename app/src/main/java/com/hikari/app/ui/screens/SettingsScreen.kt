@@ -4057,6 +4057,11 @@ private fun AppLockCard(app: HikariApp) {
     val on by lockFlow.collectAsState(initial = false)
     val secretFlow = remember { app.store.appLockSecretFlow() }
     val secret by secretFlow.collectAsState(initial = "")
+    // How long the password is, recorded with it (see AppStore.APP_LOCK_LEN) so
+    // the unlock screen draws the right number of dots and submits on the last
+    // one instead of guessing.
+    val lenFlow = remember { app.store.appLockLenFlow() }
+    val secretLen by lenFlow.collectAsState(initial = 0)
     val bioFlow = remember { app.store.appLockBioFlow() }
     val bioOn by bioFlow.collectAsState(initial = true)
     val hasSecret = AppLock.isSet(secret)
@@ -4146,9 +4151,9 @@ private fun AppLockCard(app: HikariApp) {
         Text(
             tr(
                 "The password is always required — the fingerprint is only a " +
-                    "quicker way in. Write it down: a forgotten password cannot be " +
-                    "recovered, and the only way back into the app would be clearing " +
-                    "Hikari's data."
+                    "quicker way in. It cannot be read back, so write it down: the " +
+                    "unlock screen can turn a forgotten lock off, but nothing can " +
+                    "tell you the old password."
             ),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -4189,6 +4194,18 @@ private fun AppLockCard(app: HikariApp) {
                                 tr("That is not the current password"),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                        if (secretLen > 0 && !oldWrong) {
+                            Spacer(Modifier.height(6.dp))
+                            // Says how long the current one is, which is what the
+                            // unlock keypad's dots show too — the field itself
+                            // cannot be read back (see [AppLock]).
+                            Text(
+                                tr("Your current password is ") + secretLen + " " +
+                                    (if (secretLen == 4) tr("digits") else tr("characters")),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                         if (!removing) Spacer(Modifier.height(10.dp))
@@ -4234,9 +4251,10 @@ private fun AppLockCard(app: HikariApp) {
                         Spacer(Modifier.height(8.dp))
                         Text(
                             tr(
-                                "A PIN works here too — the unlock screen has a keypad for it. " +
-                                    "There is no recovery: a forgotten password can only be " +
-                                    "cleared by wiping the app's data."
+                                "A PIN works here too — the unlock screen has a keypad for it, " +
+                                    "and it will show as many dots as there are characters. It " +
+                                    "cannot be read back: if it is ever forgotten, the unlock " +
+                                    "screen's \"Forgot password?\" turns the lock off."
                             ),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -4268,8 +4286,13 @@ private fun AppLockCard(app: HikariApp) {
                                 if (removing) {
                                     app.store.setAppLock(false)
                                     app.store.setAppLockSecret("")
+                                    app.store.setAppLockLen(0)
                                 } else {
                                     app.store.setAppLockSecret(AppLock.encode(wanted))
+                                    // The length travels with the secret: the
+                                    // unlock screen's dots and its "this is the
+                                    // last digit" both come from it.
+                                    app.store.setAppLockLen(wanted.length)
                                     app.store.setAppLock(true)
                                     app.store.setAppLockBio(biometrics)
                                 }
