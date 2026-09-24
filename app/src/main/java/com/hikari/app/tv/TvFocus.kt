@@ -133,8 +133,15 @@ private class TvFocusNode(
         // clip anywhere up the modifier chain cannot swallow it (see the class
         // comment) — and it is drawn after the content, so it is never hidden
         // behind a poster.
-        val stroke = ringWidth.toPx()
-        val inset = minOf(stroke * 1.6f, size.minDimension * 0.14f)
+        val minSide = size.minDimension
+        // Nothing sensible can be ringed in a few pixels (a divider, a spacer):
+        // drawing anyway would paint a smear over the whole element.
+        if (minSide < 6f) return
+        // The ring gives way on a small target (an icon button) instead of
+        // covering it — and the clamp is what guarantees the halo below still
+        // fits inside the bounds.
+        val stroke = minOf(ringWidth.toPx(), minSide * 0.10f)
+        val inset = minOf(stroke * 1.6f, minSide * 0.14f)
         val inner = Size(
             (size.width - inset * 2f).coerceAtLeast(1f),
             (size.height - inset * 2f).coerceAtLeast(1f),

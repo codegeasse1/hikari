@@ -157,6 +157,9 @@ private fun AppLockScreen(
     var wrong by remember { mutableStateOf(false) }
     var textMode by remember { mutableStateOf(false) }
     var checking by remember { mutableStateOf(false) }
+    // The value to verify next, when one arrives while a check is already
+    // running (see [check]).
+    var queued by remember { mutableStateOf<String?>(null) }
     var resetAsk by remember { mutableStateOf(false) }
     val biometrics = remember(context) { Biometrics.available(context) }
 
@@ -177,21 +180,31 @@ private fun AppLockScreen(
     }
 
     fun check(value: String) {
-        if (value.isBlank() || checking) return
+        if (value.isBlank()) return
+        // A check that is already running does not DROP the newer value: while a
+        // short prefix is being verified the user may have kept typing (the
+        // unknown-length case), and that longer entry is the one that deserves
+        // the next check. Dropping it is how a six-digit PIN typed over a
+        // four-digit prefix could go unverified forever.
+        if (checking) {
+            queued = value
+            return
+        }
         checking = true
+        val attempt = value
         scope.launch {
             val stored = runCatching { app.store.appLockSecret() }.getOrDefault("")
             // The derivation is deliberately expensive (120k PBKDF2 rounds), so
             // it runs OFF the main thread: on the main thread it would be a
             // visible stall on every digit, and on a slow phone a possible ANR.
-            val ok = withContext(Dispatchers.Default) { AppLock.verify(value, stored) }
-            checking = false
+            val ok = withContext(Dispatchers.Default) { AppLock.verify(attempt, stored) }
             if (ok) {
+                checking = false
                 wrong = false
                 // Self-healing: a lock set before the length was recorded gets
                 // it now, so the dots are right from the next launch on.
                 if (secretLen <= 0) {
-                    runCatching { app.store.setAppLockLen(value.length) }
+                    runCatching { app.store.setAppLockLen(attempt.length) }
                 }
                 onUnlocked()
                 return@launch
@@ -205,9 +218,15 @@ private fun AppLockScreen(
             // longer PIN, which the next digit will check again.
             if (secretLen > 0) {
                 delay(600)
-                entered = ""
-                typed = ""
+                // Only when nothing was typed in the meantime: clearing a value
+                // the user has already begun to correct eats their keystrokes.
+                if (entered == attempt) entered = ""
+                if (typed == attempt) typed = ""
             }
+            checking = false
+            val next = queued
+            queued = null
+            if (next != null && next != attempt) check(next)
         }
     }
 
