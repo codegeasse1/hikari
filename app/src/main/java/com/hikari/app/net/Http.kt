@@ -101,6 +101,31 @@ object Http {
         return client.newCall(builder.build()).execute()
     }
 
+    /**
+     * Any method, for the handful of APIs that are neither a plain GET nor a
+     * POST: the trackers (Settings → Trackers) update a list entry with PATCH
+     * or PUT, and Kitsu's JSON:API wants PATCH/POST under its own media type.
+     * [body] may be null for a method that carries none; GET/HEAD are still
+     * routed through [get] so a caller cannot accidentally send a body with
+     * them.
+     */
+    fun request(
+        method: String,
+        url: String,
+        body: String? = null,
+        headers: Map<String, String> = emptyMap(),
+        contentType: String = "application/json; charset=utf-8",
+    ): Response {
+        if (method.equals("GET", ignoreCase = true) && body == null) return get(url, headers)
+        val builder = Request.Builder().url(url).header("User-Agent", UA)
+        builder.method(
+            method,
+            (body ?: "").toRequestBody(contentType.toMediaType()),
+        )
+        headers.forEach { (k, v) -> builder.header(k, v) }
+        return client.newCall(builder.build()).execute()
+    }
+
     fun postString(
         url: String,
         body: String,

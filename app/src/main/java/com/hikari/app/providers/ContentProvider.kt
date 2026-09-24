@@ -10,6 +10,25 @@ interface ContentProvider {
     val config: ProviderConfig
 
     /**
+     * Whether this provider's OWN extension is an 18+ one, or null when this kind
+     * of provider cannot say.
+     *
+     * Most extensions declare it in metadata the app already reads — but the
+     * CloudStream/Hikari/SkyStream/Nuvio family declares adult content per
+     * TITLE, so the only thing that knows whether the EXTENSION is an adult one
+     * is the extension itself. This is the hook for that one question, asked
+     * once per extension when the adult-content switch is off and remembered on
+     * the row (see [com.hikari.app.providers.ProviderManager.learnAdultFlags]),
+     * so that switching the switch off hides an installed 18+ extension instead
+     * of only hiding the ones not yet installed.
+     *
+     * Implementations may load the extension to answer (a CloudStream plugin
+     * keeps its `supportedTypes` in its code); callers must therefore treat this
+     * as blocking, ask it OFF the main thread, and ask it as rarely as possible.
+     */
+    fun adultExtension(): Boolean? = null
+
+    /**
      * True when this provider exposes its own settings screen that Hikari can
      * open (CloudStream plugins do this via `Plugin.openSettings`). The
      * Extensions UI only shows a settings button for providers that return

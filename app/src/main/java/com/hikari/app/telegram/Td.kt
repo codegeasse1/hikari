@@ -236,6 +236,75 @@ object Td {
         _problem.value = null
     }
 
+    /**
+     * Throw the session away and show the credentials page again.
+     *
+     * This is the "I typed the wrong api_id/api_hash" path: [restart] rebuilds the
+     * client on the SAME pair (which is what a wrong phone number or a stuck login
+     * variant needs), while this one drops the pair entirely so the card asks for
+     * it again. Without it a user who noticed a typo in the keys had no way back
+     * to the fields — the tab kept them in whatever state the bad pair produced.
+     *
+     * The stored pair is cleared by the caller (see the Telegram tab), so a later
+     * [init] cannot quietly restart on the keys the user is trying to replace.
+     */
+    fun signInAgain() {
+        _problem.value = null
+        _busy.value = false
+        _sentTo.value = ""
+        pending = null
+        live = null
+        restartWanted.set(false)
+        val running = client
+        if (running == null) {
+            started.set(false)
+            _auth.value = Auth.Idle
+            return
+        }
+        // Show the credentials page at once; the client finishes closing on its
+        // own thread and lands on Auth.Closed, which draws the same fields.
+        _auth.value = Auth.Idle
+        runCatching { running.send(TdApi.Close(), null, null) }
+    }
+
+    /** The api_id as it should be SENT: the digits my.telegram.org shows. */
+    fun apiIdOf(raw: String): Int? = raw.trim().filter { it in '0'..'9' }.toIntOrNull()?.takeIf { it > 0 }
+
+    /**
+     * The hex characters of an api_hash, lowercased.
+     *
+     * Telegram compares the api_hash as a STRING in its handshake, so a hash
+     * pasted in UPPERCASE — or one that picked up a space, a dash or a newline
+     * from the page it was copied off — is refused as "that api_id and api_hash
+     * are not a valid pair", which reads as "your credentials are wrong" and
+     * sent one user hunting for a new pair that was never the problem. Keeping
+     * only the hex and lowercasing it is what makes the pair the user actually
+     * has work.
+     */
+    fun apiHashChars(raw: String): String =
+        raw.trim().filter { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }.lowercase()
+
+    /** The api_hash as it should be sent, or null when it is not 32 hex chars. */
+    fun apiHashOf(raw: String): String? = apiHashChars(raw).takeIf { it.length == 32 }
+
+    /**
+     * What is wrong with the pair as typed, or null when both look usable.
+     *
+     * Said BEFORE anything is stored or sent, so the answer arrives while the
+     * user is looking at the field they got wrong.
+     */
+    fun keyProblem(idText: String, hashText: String): String? {
+        if (apiIdOf(idText) == null) {
+            return "The api_id is the NUMBER shown on my.telegram.org (digits only)."
+        }
+        val chars = apiHashChars(hashText)
+        if (chars.length != 32) {
+            return "An api_hash is exactly 32 hex characters — this one has ${chars.length}. " +
+                "Copy both values from the SAME app on my.telegram.org → API development tools."
+        }
+        return null
+    }
+
     private fun fail(error: TdApi.Error) {
         _busy.value = false
         _problem.value = TelegramError.explain(error.message)

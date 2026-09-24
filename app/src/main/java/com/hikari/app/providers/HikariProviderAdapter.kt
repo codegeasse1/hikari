@@ -53,6 +53,32 @@ class HikariProviderAdapter(override val config: ProviderConfig) : ContentProvid
             }
         }
 
+    /**
+     * The `.hiki` bundle's own answer to "is this an 18+ extension", read
+     * straight out of the archive.
+     *
+     * Unlike [provider] above, this loads no plugin class: a `.hiki` is a zip
+     * (the runtime loads its `classes.dex` from it), so its `manifest.json` is
+     * one entry read. Null when the bundle says nothing about adult content —
+     * an older bundle written before those fields existed — which leaves the
+     * answer to the repo that published it (see
+     * [com.hikari.app.data.ExtensionNsfw.repoEntryNsfw]).
+     */
+    override fun adultExtension(): Boolean? = runCatching {
+        val file = java.io.File(config.url)
+        if (!file.isFile) return null
+        java.util.zip.ZipFile(file).use { zip ->
+            val entry = zip.getEntry("manifest.json") ?: return null
+            val text = zip.getInputStream(entry).use { it.readBytes().decodeToString() }
+            val o = org.json.JSONObject(text)
+            if (!o.has("tvTypes") && !o.has("nsfw") && !o.has("contentWarning")) return null
+            val types = o.optJSONArray("tvTypes")?.let { a ->
+                (0 until a.length()).mapNotNull { i -> a.optString(i).ifBlank { null } }
+            } ?: emptyList()
+            com.hikari.app.data.ExtensionNsfw.repoEntryNsfw(o, types)
+        }
+    }.getOrNull()
+
     override suspend fun catalogs(): List<CatalogRef> =
         provider?.catalogs()?.map { CatalogRef(config.id, it.type.toApp(), it.id, it.name, it.rawType) }
             ?: emptyList()

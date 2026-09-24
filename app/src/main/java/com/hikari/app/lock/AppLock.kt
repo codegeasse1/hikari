@@ -64,7 +64,15 @@ object AppLock {
         // a trailing space in a text field that a password field would never
         // produce, and a correct password that fails because of an invisible
         // character is the "it says wrong even when I type it right" report.
-        return "$algo:$salt:${derive(password.trim(), salt, algo)}"
+        //
+        // `hex(...)` is not decoration: a bare ByteArray interpolates as
+        // `[B@1f2e3d` — the array's IDENTITY, which is a different string on
+        // every call and contains no hex at all. That single missing call is why
+        // every password ever set by an earlier build reported "wrong password":
+        // the stored blob could never be reproduced, and [verify] could not even
+        // parse it. [isSet] now rejects a blob that is not `algo:salt:hex`, so
+        // such a lock is recognised as broken instead of silently unusable.
+        return "$algo:$salt:${hex(derive(password.trim(), salt, algo))}"
     }
 
     /**

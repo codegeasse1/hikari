@@ -100,6 +100,7 @@ import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.TextFields
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.VerifiedUser
@@ -155,7 +156,10 @@ import com.hikari.app.HikariApp
 import com.hikari.app.R
 import com.hikari.app.data.BackupManager
 import com.hikari.app.data.TmdbLang
+import com.hikari.app.data.TrackerClient
+import com.hikari.app.data.TrackerKind
 import com.hikari.app.data.Userscript
+import com.hikari.app.tracker.TrackerSync
 import com.hikari.app.download.DownloadService
 import com.hikari.app.download.DownloadStatus
 import com.hikari.app.download.DownloadsRepository
@@ -182,6 +186,7 @@ import com.hikari.app.ui.components.HeroStyles
 import com.hikari.app.ui.components.MultiChoiceDialog
 import com.hikari.app.ui.components.SettingsIconBadge
 import com.hikari.app.ui.components.SettingsPageHeader
+import com.hikari.app.ui.components.TrackerLoginDialog
 import com.hikari.app.ui.LanguageManager
 import com.hikari.app.ui.components.UpdateDialog
 import com.hikari.app.ui.navigation.BottomTab
@@ -315,7 +320,16 @@ private enum class SettingsFolder(
         "Offline copies & parallel saves",
         Icons.Filled.Download,
     ),
-    // The user's own catalogs (Collections) live here rather than under
+    // Your watch progress on somebody else's list — AniList, MyAnimeList,
+    // Kitsu, Simkl, Shikimori, Trakt (see [TrackerKind]). Its own folder rather
+    // than a corner of Playback: the user looking for it is thinking about the
+    // account they keep elsewhere, not about this app's player.
+    TRACKERS(
+        "trackers",
+        "Trackers",
+        "AniList, MyAnimeList, Kitsu, Simkl, Shikimori & Trakt",
+        Icons.Filled.Sync,
+    ),    // The user's own catalogs (Collections) live here rather than under
     // Appearance & Theme: they are something the user CREATES and manages — like the
     // extensions they install — not a way the app looks, and a folder of their
     // own is where they go looking for it.
@@ -680,6 +694,9 @@ fun SettingsScreen(nav: NavHostController) {
                 }
                 SettingsFolder.DOWNLOADS -> {
                     item { SettingsCard(top = 2.dp) { DownloadSettingsCard(app) } }
+                }
+                SettingsFolder.TRACKERS -> {
+                    item { SettingsCard(top = 2.dp) { TrackersCard(app) } }
                 }
                 SettingsFolder.APPEARANCE -> {
                     item { SettingsCard(top = 2.dp) { LanguageCard(app, appLanguage) } }
@@ -1345,7 +1362,8 @@ private fun RoadmapCard() {
                 I18n.t("✓ Watch history + Continue Watching (all extensions)\n") +
                 I18n.t("✓ Downloads — offline copies, export to phone storage, concurrent limit\n") +
                 I18n.t("✓ SkyStream .sky extensions (scriptable JS providers)\n") +
-                I18n.t("• Trakt integration (planned)"),
+                I18n.t("✓ Trackers — AniList, MyAnimeList, Kitsu, Simkl, Shikimori & Trakt\n") +
+                I18n.t("• Manga reading progress on your tracker (planned)"),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -4146,6 +4164,34 @@ private fun AppLockCard(app: HikariApp) {
                     Text(tr("Remove password"))
                 }
             }
+        } else if (on) {
+            // The lock is on but the stored password cannot be read: this is the
+            // state an install that set its password before the encoding fix is
+            // in (see [AppLock.encode]) — the unlock screen cannot accept any
+            // password, so the card says so and offers the way out in one tap
+            // rather than letting the user keep typing into a lock that is
+            // already broken.
+            Spacer(Modifier.height(6.dp))
+            Text(
+                tr(
+                    "The saved password cannot be read — it was written by an older version " +
+                        "of Hikari. Set a new one; the app lock stays on but nothing can " +
+                        "unlock it until you do."
+                ),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+            Spacer(Modifier.height(4.dp))
+            TextButton(onClick = {
+                first = ""
+                second = ""
+                current = ""
+                oldWrong = false
+                removing = false
+                setDialog = true
+            }) {
+                Text(tr("Set a new password"))
+            }
         }
         Spacer(Modifier.height(8.dp))
         Text(
@@ -4307,6 +4353,195 @@ private fun AppLockCard(app: HikariApp) {
             dismissButton = {
                 TextButton(onClick = { setDialog = false }) { Text(tr("Cancel")) }
             },
+        )
+    }
+}
+
+/**
+ * Trackers (Settings → Trackers).
+ *
+ * The services the user already keeps a list on — AniList, MyAnimeList, Kitsu,
+ * Simkl, Shikimori and Trakt — and the switch that reports what they watch to
+ * them. The feature the user asked for by name ("login with their id for
+ * tracking, like CloudStream"): sign in once, and the episode you just finished
+ * lands on your list without opening anything.
+ *
+ * Two things the card is careful to be honest about, because both are the
+ * difference between a tracker that works and one that *looks* like it works:
+ *  * the credentials are the user's own ([TrackerKind.registerUrl] — why is
+ *    explained at length on [TrackerKind]), and the card says so plainly rather
+ *    than pretending a sign-in is one tap away;
+ *  * what happens is always written down under the buttons (the last run's
+ *    result, which failures included), so a title that could not be matched, or
+ *    a service that refused the token, is visible instead of silent.
+ */
+@Composable
+private fun TrackersCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    val accountsFlow = remember { app.store.trackersFlow() }
+    val accounts by accountsFlow.collectAsState(initial = emptyList())
+    val clientsFlow = remember { app.store.trackerClientsFlow() }
+    val clients by clientsFlow.collectAsState(initial = emptyList())
+    val syncFlow = remember { app.store.trackerSyncFlow() }
+    val sync by syncFlow.collectAsState(initial = true)
+    val lastFlow = remember { app.store.trackerLastFlow() }
+    val last by lastFlow.collectAsState(initial = "")
+    var loginFor by remember { mutableStateOf<TrackerKind?>(null) }
+    var message by remember { mutableStateOf<String?>(null) }
+    var working by remember { mutableStateOf(false) }
+    // Read here, in the composable body: the handlers below are plain lambdas and
+    // `tr` is itself composable, so it cannot be called from one.
+    val signedOutSuffix = tr(" signed out")
+    val yourAccount = tr("your account")
+
+    Column(Modifier.padding(16.dp)) {
+        SettingsCardHeading(Icons.Filled.Sync, tr("Trackers"))
+        Spacer(Modifier.height(4.dp))
+        Text(
+            tr(
+                "Sign in to a service you already keep a list on, and what you watch in " +
+                    "Hikari is reported there automatically — episode by episode, the way " +
+                    "CloudStream does it. Nothing is reported until an episode has actually " +
+                    "been watched, and nothing is ever removed from your list."
+            ),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        for (kind in TrackerKind.entries) {
+            val account = accounts.firstOrNull { it.kind == kind }
+            val client = clients.firstOrNull { it.kind == kind } ?: TrackerClient(kind)
+            HorizontalDivider(
+                modifier = Modifier.padding(top = 12.dp, bottom = 8.dp),
+                color = MaterialTheme.colorScheme.outlineVariant,
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        kind.label,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Text(
+                        when {
+                            account != null ->
+                                tr("Signed in as ") + account.user.ifBlank { yourAccount } +
+                                    if (account.expired) " · " + tr("refreshing the token…") else ""
+                            client.ready -> tr("App registered — press Sign in to connect")
+                            else -> kind.blurb
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (account != null) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
+                }
+                Spacer(Modifier.width(8.dp))
+                if (account == null) {
+                    TextButton(
+                        enabled = !working,
+                        onClick = { message = null; loginFor = kind },
+                    ) { Text(tr("Sign in")) }
+                } else {
+                    TextButton(
+                        enabled = !working,
+                        onClick = {
+                            scope.launch {
+                                runCatching { app.store.removeTrackerAccount(kind) }
+                                // `tr` is composable and this is a click handler, so
+                                // the suffix is hoisted like every other string that
+                                // has to be read outside a composable position.
+                                message = kind.label + signedOutSuffix
+                            }
+                        },
+                    ) { Text(tr("Sign out")) }
+                }
+            }
+        }
+
+        HorizontalDivider(
+            modifier = Modifier.padding(top = 12.dp),
+            color = MaterialTheme.colorScheme.outlineVariant,
+        )
+        SettingsToggle(
+            label = tr("Report what I watch"),
+            supporting = tr("Only after an episode is watched through"),
+            checked = sync,
+            onCheckedChange = { on ->
+                scope.launch { runCatching { app.store.setTrackerSync(on) } }
+            },
+        )
+        Spacer(Modifier.height(6.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            TextButton(
+                enabled = !working && accounts.isNotEmpty(),
+                onClick = {
+                    working = true
+                    message = null
+                    scope.launch {
+                        message = runCatching { TrackerSync.syncHistory(app.store) }
+                            .getOrElse { it.message ?: "the sync failed" }
+                        working = false
+                    }
+                },
+            ) {
+                if (working) {
+                    CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(8.dp))
+                    Text(tr("Syncing…"))
+                } else {
+                    Text(tr("Sync watch history"))
+                }
+            }
+            Spacer(Modifier.width(8.dp))
+            TextButton(
+                enabled = !working && accounts.isNotEmpty(),
+                onClick = {
+                    working = true
+                    message = null
+                    scope.launch {
+                        val lines = runCatching { TrackerSync.ping(app.store) }
+                            .getOrElse { listOf(it.message ?: "the check failed") }
+                        message = lines.joinToString("\n")
+                        working = false
+                    }
+                },
+            ) { Text(tr("Test connections")) }
+        }
+        Text(
+            tr(
+                "The last 12 watched titles are checked, newest first — a title nobody has " +
+                    "matched confidently is reported here instead of being guessed at."
+            ),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        (message ?: last.takeIf { it.isNotBlank() })?.let { text ->
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text,
+                style = MaterialTheme.typography.labelSmall,
+                color = if (message == null) {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                } else {
+                    MaterialTheme.colorScheme.primary
+                },
+            )
+        }
+    }
+
+    loginFor?.let { kind ->
+        TrackerLoginDialog(
+            app = app,
+            kind = kind,
+            onSignedIn = { text ->
+                message = text
+                loginFor = null
+            },
+            onDismiss = { loginFor = null },
         )
     }
 }

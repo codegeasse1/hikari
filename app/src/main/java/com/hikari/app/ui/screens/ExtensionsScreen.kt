@@ -2327,6 +2327,38 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
+     * Writes the 18+ flags the loaded repo listings declare onto the rows that
+     * were installed from them, and rebuilds the provider list if anything
+     * changed.
+     *
+     * The listings already know: a CloudStream/SkyStream/Nuvio entry says
+     * `tvTypes: [..., NSFW]`, a Mihon/Aniyomi one carries `nsfw`/
+     * `contentWarning`. That knowledge is what the switch needs for an ALREADY
+     * installed extension — and adopting it here costs nothing, because the
+     * listings were fetched anyway. Without it the only way to classify an
+     * installed adult extension is to load the extension itself (see
+     * [ProviderManager.learnAdultFlags]), which is the slow path.
+     */
+    suspend fun adoptAdultFlags() = withContext(Dispatchers.IO) {
+        val items = pluginsByRepo.value.values.flatten().map { it.url to it.nsfw }
+        if (items.isEmpty()) return@withContext
+        val changed = runCatching { store.markProvidersAdult(items) }.getOrDefault(false)
+        if (changed) requestRefresh()
+    }
+
+    /**
+     * The same, for ONE listing entry, right after it was installed: the rows it
+     * created get its 18+ tag immediately, so an adult extension is never in the
+     * provider list even for the moment before the next listing pass.
+     */
+    suspend fun adoptFlagsOf(plugin: Cs3RepoPlugin) {
+        val changed = runCatching {
+            store.markProvidersAdult(listOf(plugin.url to plugin.nsfw))
+        }.getOrDefault(false)
+        if (changed) requestRefresh()
+    }
+
+    /**
      * Compares the file each installed extension was saved as against the
      * `fileHash` its repo publishes. A mismatch IS the update signal: it needs
      * no version bookkeeping of our own, and it also catches a re-released
@@ -2598,8 +2630,12 @@ fun ExtensionsScreen() {
 
     // Re-hash installed extensions whenever a plugin list or the installed set
     // changes: a completed install/update clears its own Update button, and a
-    // refreshed repo reveals a new one.
+    // refreshed repo reveals a new one. The same moment is used to adopt the 18+
+    // flags the listings declare onto the installed rows (see [adoptAdultFlags])
+    // — so with the adult-content switch off, an installed 18+ extension
+    // disappears from the provider list as soon as its repo's listing is read.
     LaunchedEffect(pluginsByRepo, installed, providers) {
+        vm.adoptAdultFlags()
         vm.checkUpdates()
     }
 
@@ -2646,13 +2682,18 @@ fun ExtensionsScreen() {
             "Installing ${p.name}…",
             success = { n -> "Installed ${p.name} ($n provider${if (n == 1) "" else "s"})" },
         ) {
-            when (effectiveRepoKind(kind, p.url)) {
+            val result = when (effectiveRepoKind(kind, p.url)) {
                 RepoKind.CS3 -> vm.installCs3Plugin(p)
                 RepoKind.HIKARI -> vm.installHikiPlugin(p)
                 RepoKind.NUVIO -> vm.installNuvioPlugin(p)
                 RepoKind.SKYSTREAM -> vm.installSkyStreamPlugin(p)
                 RepoKind.ANIYOMI -> vm.installAniyomiPlugin(p)
             }
+            // The listing's own 18+ tag goes onto the rows that were just
+            // created, so with the adult-content switch off an adult extension
+            // never even appears in the provider list.
+            vm.adoptFlagsOf(p)
+            result
         }
     }
 

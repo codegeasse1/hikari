@@ -140,7 +140,7 @@ import com.hikari.app.data.TmdbSourceType
 import com.hikari.app.data.TmdbSpec
 import com.hikari.app.data.Translator
 import com.hikari.app.data.Trailer
-import com.hikari.app.net.StreamProbe
+import com.hikari.app.tracker.TrackerSyncimport com.hikari.app.net.StreamProbe
 import com.hikari.app.player.PlayerActivity
 import com.hikari.app.player.StreamsLive
 import com.hikari.app.providers.ContentProvider
@@ -2613,20 +2613,29 @@ fun DetailScreen(
             pos = 2_000L
         }
         scope.launch {
-            app.store.addHistory(
-                HistoryEntry(
-                    providerId = livePid,
-                    mediaId = mediaId,
-                    type = m?.type ?: type,
-                    title = m?.title ?: title,
-                    posterUrl = (m?.posterUrl ?: posterUrl).takeIf { !it.isNullOrBlank() },
-                    episodeId = ep?.id.orEmpty(),
-                    episodeName = ep?.name.orEmpty(),
-                    positionMs = pos,
-                    durationMs = dur,
-                    watchedAt = System.currentTimeMillis(),
-                )
+            val entry = HistoryEntry(
+                providerId = livePid,
+                mediaId = mediaId,
+                type = m?.type ?: type,
+                title = m?.title ?: title,
+                posterUrl = (m?.posterUrl ?: posterUrl).takeIf { !it.isNullOrBlank() },
+                episodeId = ep?.id.orEmpty(),
+                episodeName = ep?.name.orEmpty(),
+                episodeNumber = ep?.number ?: 0,
+                seasonNumber = ep?.season ?: 0,
+                positionMs = pos,
+                durationMs = dur,
+                watchedAt = System.currentTimeMillis(),
             )
+            app.store.addHistory(entry)
+            // The trackers (Settings → Trackers) hear about this too: "mark as
+            // watched" is exactly the fact the player reports at the end of an
+            // episode. Reporting only from the player meant marking a season
+            // watched here left the user's own list untouched, which reads as
+            // tracking being broken.
+            runCatching {
+                TrackerSync.pushWatched(app.store, TrackerSync.mediaOf(entry), entry.uniqueKey)
+            }
         }
     }
 

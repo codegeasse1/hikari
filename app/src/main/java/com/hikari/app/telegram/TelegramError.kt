@@ -41,8 +41,10 @@ object TelegramError {
 
         return when {
             upper.contains("API_ID_INVALID") ->
-                "That api_id and api_hash are not a valid pair. Check both values on " +
-                    "my.telegram.org → API development tools, and paste them again."
+                "Telegram rejected this api_id / api_hash pair. Open my.telegram.org → " +
+                    "API development tools and check that the NUMBER is the api_id and the " +
+                    "32 hex characters are the api_hash, and that BOTH come from the same " +
+                    "app — a pair made of two different apps' values is the usual cause."
             upper.contains("API_ID_PUBLISHED_FLOOD") ->
                 "This api_id is a well-known published one and Telegram has blocked it " +
                     "for new logins. Create your own pair at my.telegram.org."

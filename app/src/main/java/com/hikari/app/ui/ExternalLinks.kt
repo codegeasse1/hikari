@@ -90,6 +90,22 @@ private fun telegramHandle(url: String): String? {
     return handle.trim().ifBlank { null }
 }
 
+/**
+ * Opens an ordinary https page in the user's own browser.
+ *
+ * Used for the pages the user has to visit OUTSIDE Hikari — registering a
+ * tracker app (Settings → Trackers) and the like: those are account pages with
+ * logins and passwords, they are built for a real browser, and doing them in
+ * Hikari's WebView would also mean the app's own redirect/cookie rules applying
+ * to somebody else's sign-in flow.
+ */
+fun openUrl(context: Context, url: String): Boolean {
+    if (url.isBlank()) return false
+    if (launch(context, Intent(Intent.ACTION_VIEW, Uri.parse(url)))) return true
+    Toast.makeText(context, I18n.t("Couldn't open the link"), Toast.LENGTH_SHORT).show()
+    return false
+}
+
 /** Starts [intent], tagging it with NEW_TASK when [context] is not an Activity
  *  (e.g. an application context) so Android doesn't reject the launch. Returns
  *  false when nothing can handle it — the caller falls through to the next

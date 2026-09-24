@@ -419,6 +419,10 @@ private fun TelegramAccountCard(app: HikariApp) {
     var password by rememberSaveable { mutableStateOf("") }
     var first by rememberSaveable { mutableStateOf("") }
     var last by rememberSaveable { mutableStateOf("") }
+    // What is wrong with the pair as typed, checked before anything is stored or
+    // sent (see [Td.keyProblem]) — so "not a valid pair" is answered at the
+    // field the user got wrong, not a round trip later.
+    var keyMsg by remember { mutableStateOf<String?>(null) }
 
     // Hoisted strings (tr is composable; the click lambdas are not).
     val idLabel = tr("api_id")
@@ -430,6 +434,30 @@ private fun TelegramAccountCard(app: HikariApp) {
     val sendCode = tr("Send code")
     val signIn = tr("Sign in")
     val signOutLabel = tr("Sign out")
+
+    // A pair that is ALREADY stored is shown back in the fields, so a user whose
+    // keys were rejected can see what the app is actually using and correct it
+    // in place — an empty field over a saved pair is what made "Start over" look
+    // like it did nothing.
+    LaunchedEffect(auth, storedId, storedHash) {
+        if (auth is Td.Auth.Idle || auth is Td.Auth.Closed) {
+            if (apiId.isBlank() && storedId > 0) apiId = storedId.toString()
+            if (apiHash.isBlank() && storedHash.isNotBlank()) apiHash = storedHash
+        }
+    }
+
+    // Back to the credentials page from any login step: clears the stored pair
+    // and the client that is running on it (see [Td.signInAgain]).
+    fun changeKeys() {
+        keyMsg = null
+        scope.launch {
+            runCatching {
+                app.store.setTelegramApiId(0)
+                app.store.setTelegramApiHash("")
+            }
+            Td.signInAgain()
+        }
+    }
 
     Column(
         Modifier
@@ -502,7 +530,10 @@ private fun TelegramAccountCard(app: HikariApp) {
                 Spacer(Modifier.height(10.dp))
                 OutlinedTextField(
                     value = apiId,
-                    onValueChange = { apiId = it.filter { c -> c.isDigit() } },
+                    onValueChange = {
+                        apiId = it.filter { c -> c.isDigit() }
+                        keyMsg = null
+                    },
                     label = { Text(idLabel) },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
@@ -511,11 +542,22 @@ private fun TelegramAccountCard(app: HikariApp) {
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(
                     value = apiHash,
-                    onValueChange = { apiHash = it.trim() },
+                    onValueChange = {
+                        apiHash = it
+                        keyMsg = null
+                    },
                     label = { Text(hashLabel) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
+                keyMsg?.let { message ->
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        message,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
                 Spacer(Modifier.height(8.dp))
                 Text(
                     tr(
@@ -529,34 +571,41 @@ private fun TelegramAccountCard(app: HikariApp) {
                 Spacer(Modifier.height(6.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     TextButton(
-                        enabled = apiId.isNotBlank() && apiHash.length >= 8,
+                        enabled = apiId.isNotBlank() && apiHash.isNotBlank(),
                         onClick = {
-                            val id = apiId.toIntOrNull() ?: 0
-                            if (id <= 0) return@TextButton
-                            // Stored first: Td reads them from the store when the
-                            // tab is next opened, so a restart signs in by itself.
+                            val problem = Td.keyProblem(apiId, apiHash)
+                            if (problem != null) {
+                                keyMsg = problem
+                                return@TextButton
+                            }
+                            val id = Td.apiIdOf(apiId) ?: return@TextButton
+                            // The SANITISED pair is what is stored and sent: the
+                            // hash lowercased to its 32 hex characters is what
+                            // Telegram expects (see [Td.apiHashChars]).
+                            val hash = Td.apiHashOf(apiHash) ?: return@TextButton
+                            apiId = id.toString()
+                            apiHash = hash
+                            keyMsg = null
                             scope.launch {
                                 runCatching {
                                     app.store.setTelegramApiId(id)
-                                    app.store.setTelegramApiHash(apiHash)
+                                    app.store.setTelegramApiHash(hash)
                                 }
-                                Td.setCredentials(id, apiHash)
+                                Td.setCredentials(id, hash)
                             }
                         },
                     ) { Text(saveKey) }
                     if (storedId > 0 && storedHash.isNotBlank()) {
                         Spacer(Modifier.width(8.dp))
+                        // Both values are shown back (the hash shortened), so it
+                        // can be compared with the page they came from without
+                        // printing a secret in full.
                         Text(
-                            tr("Saved: api_id ") + storedId,
+                            tr("Saved: api_id ") + storedId + " · " + storedHash.take(6) + "…" +
+                                storedHash.takeLast(4),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                        Spacer(Modifier.width(8.dp))
-                        // Wipe the session TDLib keeps and start on the stored
-                        // pair from scratch — the honest way out of a login that
-                        // is stuck (a variant this build cannot finish, a session
-                        // Telegram has revoked).
-                        TextButton(onClick = { Td.restart() }) { Text(tr("Start over")) }
                     }
                 }
             }
@@ -590,13 +639,14 @@ private fun TelegramAccountCard(app: HikariApp) {
                         }
                     }
                     Spacer(Modifier.width(8.dp))
-                    // A login that went nowhere (a flood wait, an api_id that
-                    // was corrected, a number typed wrongly) is restarted from
-                    // here instead of leaving the user to reinstall the app.
+                    // A login that went nowhere (a wrong phone number, a flood
+                    // wait) is restarted from here — and a pair of keys that
+                    // Telegram refused goes back to the FIELDS, which is what
+                    // this button exists for (see [changeKeys]).
                     TextButton(
                         enabled = !busy,
-                        onClick = { Td.restart() },
-                    ) { Text(tr("Start over")) }
+                        onClick = { changeKeys() },
+                    ) { Text(tr("Change API keys")) }
                 }
             }
 

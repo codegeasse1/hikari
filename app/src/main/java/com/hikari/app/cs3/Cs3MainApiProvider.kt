@@ -372,6 +372,25 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
         return if (movieOnly) MediaType.MOVIE else MediaType.SERIES
     }
 
+    /**
+     * The plugin's own answer to "is this an 18+ extension": CloudStream gives
+     * adult plugins `TvType.NSFW` in their `supportedTypes`, which is the same
+     * marker a result from one carries ([MediaItem.nsfw]) — but per PLUGIN
+     * rather than per title, which is exactly what the adult-content switch
+     * needs in order to hide an installed one.
+     *
+     * Called only by [com.hikari.app.providers.ProviderManager.learnAdultFlags],
+     * only while the switch is off, and only for plugins nothing else has
+     * classified — reading it means loading the plugin ([api]), so it is asked
+     * once per extension and then written onto its row.
+     */
+    override fun adultExtension(): Boolean? {
+        val a = api ?: return null
+        val types = a.supportedTypes ?: return null
+        if (types.isEmpty()) return null
+        return types.any { it == TvType.NSFW }
+    }
+
     override suspend fun getCatalog(ref: CatalogRef, page: Int): List<MediaItem> =
         withContext(Dispatchers.IO) {
             val a = api

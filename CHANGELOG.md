@@ -1,3 +1,73 @@
+## 0.10.29
+
+### Fixed
+
+- **App lock: this is the real reason every password said "wrong".** The stored secret
+  interpolated a raw `ByteArray` into the string (`"$algo:$salt:${derive(...)}"`), and a bare
+  `ByteArray` in Kotlin prints as its *identity* — `[B@1f2e3d` — which is a different string on
+  every call and contains no hash at all. So the blob could never be reproduced, and every
+  password, from every build that ever set a lock, was refused. The derivation is hex-encoded
+  now. A lock written by one of those builds cannot be verified by anything (the hash is simply
+  not in it), so it is recognised as unreadable and the unlock screen says so and offers the one
+  honest way out — **Forgot password?** turns the lock off behind a confirmation that says
+  plainly what that means. Nothing about the check itself changed otherwise: the same PBKDF2,
+  the same constant-time comparison, and a wrong password still costs one derivation.
+- **App lock: the screen now tells you what it is doing.** The dots match the password's
+  recorded length (a 4-digit PIN was drawn as six empty dots, which read as "it wants six
+  digits"), the check shows **Checking…** and freezes the input while 120k PBKDF2 rounds run off
+  the main thread, a wrong answer buzzes and clears itself once the red has been seen, the error
+  is shown in text mode too, and a value typed while a check was already running is verified next
+  instead of being dropped on the floor.
+- **Telegram: an api_id/api_hash that look fine but are refused as "not a valid pair" are now
+  caught before they are sent.** Telegram compares the hash as a *string*, so one pasted in
+  uppercase, or with a space, a dash or a leftover newline from the page it was copied off, is
+  refused as a mismatched pair — which reads as "your credentials are wrong" and sent users
+  hunting for a new pair that was never the problem. Both fields are validated as you leave
+  them, the hash is reduced to its 32 hex characters (lowercased) and the id to its digits, and
+  the sanitised pair is what is stored and sent.
+- **Telegram: the button next to "Send code" now actually goes back to the keys.** It said
+  "Start over" and appeared to do nothing: the saved pair was still in place, so the tab
+  re-entered the same state with the same credentials. It is now **Change API keys**, which
+  clears the stored pair, closes the client running on it, and opens the api_id/api_hash fields
+  again (with the previously saved values shown back, so the mistake is visible).
+- **18+ extensions that are already INSTALLED are hidden now too, and come back when the
+  switch goes on.** With the adult-content switch off, Hikari filtered the store listings but
+  not the installed rows — the 18+ tag lives in the repo listing, and a row that was already
+  installed never carried it. Two things fix that: the listing's own tag is adopted onto the
+  rows installed from it (persisted, so it survives the repo being removed), and for the
+  extensions that declare adult content per *title* rather than per *extension*
+  (CloudStream/Hikari/SkyStream/Nuvio plugins) the extension is asked once which it is, with the
+  answer written onto the row. The provider list is built through that flag, so while the
+  switch is off an installed 18+ extension is not listed, not instantiable, not searched, and
+  cannot reach Home — and switching the switch back on restores it, with nothing deleted in
+  between.
+
+### Added
+
+- **Trackers (Settings → Trackers): AniList, MyAnimeList, Kitsu, Simkl, Shikimori and Trakt.**
+  Sign in to the services you already keep a list on, and what you watch in Hikari is reported
+  there automatically — episode by episode, when the episode has been watched through, the same
+  way CloudStream does it. Progress is reported once per episode and never removed from your
+  list, and marking something watched from a detail page reports it too.
+  - **Matching is careful on purpose.** A tracker list is something you have kept for years, so
+    a title is only reported when its match is confident: titles are normalised (punctuation,
+    articles, release tags, season numbers and years all dropped) before comparison, a film is
+    only ever reported to a film entry, an episode to a series entry, and a search whose top two
+    candidates cannot be told apart is reported as *unmatched* rather than guessed at. Every
+    result is written down on the card — including "no confident match for …".
+  - **Each service's app id is your own.** These APIs only accept a login from an app registered
+    with them, and Hikari does not ship somebody else's registration. The card walks you through
+    creating one (the exact page, and the exact redirect URI to paste — `hikari://oauth`), and
+    keeps it on the device. Signing in is then that service's own flow: AniList's token page in
+    an in-app WebView, MyAnimeList and Shikimori by authorization code, Kitsu with the account's
+    own credentials, Simkl and Trakt by a short code you confirm on their site.
+  - **Sync watch history** brings the last dozen watched titles over on demand, **Test
+    connections** shows whether each sign-in still works, and a **Report what I watch** switch
+    turns the whole thing off without signing anything out.
+  - Watch history now remembers the episode and season *numbers* (not just the name), which is
+    what lets progress be reported exactly — a "1" parsed out of "Season 1 E12" would have
+    marked the wrong episode watched.
+
 ## 0.10.28
 
 ### Fixed

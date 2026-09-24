@@ -108,6 +108,7 @@ import com.hikari.app.net.NetTuning
 import com.hikari.app.net.PlayerHttp
 import com.hikari.app.net.SlowNetTip
 import com.hikari.app.net.StreamProbe
+import com.hikari.app.tracker.TrackerSync
 import com.hikari.app.ui.AccentStore
 import com.hikari.app.ui.PosterLoader
 import com.hikari.app.ui.UiScale
@@ -1511,6 +1512,8 @@ class PlayerActivity : ComponentActivity() {
                 posterUrl = intent.getStringExtra("histPoster").takeIf { !it.isNullOrBlank() },
                 episodeId = intent.getStringExtra("histEpisodeId").orEmpty(),
                 episodeName = intent.getStringExtra("histEpisodeName").orEmpty(),
+                episodeNumber = intent.getIntExtra("histEpisodeNumber", 0),
+                seasonNumber = intent.getIntExtra("histEpisodeSeason", 0),
             )
             historyKey = historyEntry!!.uniqueKey
             startPositionMs = intent.getLongExtra("startPosition", 0L).coerceAtLeast(0L)
@@ -9723,7 +9726,12 @@ class PlayerActivity : ComponentActivity() {
             visibility = if (label.isBlank()) View.GONE else View.VISIBLE
         }
         if (historyEntry != null) {
-            historyEntry = historyEntry?.copy(episodeId = ep.id, episodeName = ep.name.orEmpty())
+            historyEntry = historyEntry?.copy(
+                episodeId = ep.id,
+                episodeName = ep.name.orEmpty(),
+                episodeNumber = ep.number,
+                seasonNumber = ep.season,
+            )
             historyEntry?.let { historyKey = it.uniqueKey }
         }
     }
@@ -10179,6 +10187,20 @@ class PlayerActivity : ComponentActivity() {
                 if (!app.store.historyPaused()) app.store.addHistory(h)
             } catch (_: Throwable) {
                 // history is best-effort — never let it break playback
+            }
+            // Trackers (Settings → Trackers): an episode watched through to the
+            // end is the moment it is reported to the services the user signed
+            // in to. Deliberately here, next to the history write, because it is
+            // the same fact ("this was watched"), and deliberately never in the
+            // playback path: a tracker that is slow or down must not touch the
+            // video. Nothing is sent when the duration is unknown (0), and each
+            // video is only ever reported once (see TrackerSync.pushWatched).
+            try {
+                if (dur > 0 && pos >= (dur * 9) / 10) {
+                    TrackerSync.pushWatched(app.store, TrackerSync.mediaOf(h), h.uniqueKey)
+                }
+            } catch (_: Throwable) {
+                // tracking is best-effort too
             }
         }
     }

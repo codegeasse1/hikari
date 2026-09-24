@@ -41,6 +41,21 @@ data class ProviderConfig(
     val iconUrl: String? = null,
     val enabled: Boolean = true,
     val extra: String? = null,
+    /**
+     * Whether the extension this row was installed from is tagged 18+, as its
+     * repo listing declared it. Null = nobody has said yet.
+     *
+     * It is recorded here, on the row, because it is the only answer that is
+     * available WITHOUT loading the extension: everything else needs the plugin
+     * itself (its own `supportedTypes`, its metadata) or the repo it came from —
+     * and with the adult-content switch off, an installed 18+ extension whose
+     * repo is no longer added would otherwise be looked up by loading it, which
+     * is exactly the wrong way round. See
+     * [com.hikari.app.data.ExtensionNsfw] for the whole rule and
+     * [com.hikari.app.providers.ProviderManager.learnAdultFlags] for how an
+     * older install fills it in.
+     */
+    val nsfw: Boolean? = null,
 )
 
 /** A CloudStream-style plugin repository (repo.json → pluginLists → plugin list). */
@@ -352,6 +367,17 @@ data class HistoryEntry(
     val posterUrl: String? = null,
     val episodeId: String = "",
     val episodeName: String = "",
+    /**
+     * The episode and season number this entry is for (0 = not known).
+     *
+     * Kept as numbers rather than read back out of [episodeName], because two
+     * things need them and both need them exact: "Continue watching" says which
+     * episode is next, and the trackers (Settings → Trackers) report progress as
+     * a NUMBER ("episode 12"), where a mis-parsed 1 in "Season 1 E12" would mark
+     * the wrong episode watched on the user's own list.
+     */
+    val episodeNumber: Int = 0,
+    val seasonNumber: Int = 0,
     val positionMs: Long = 0L,
     val durationMs: Long = 0L,
     val watchedAt: Long = 0L,

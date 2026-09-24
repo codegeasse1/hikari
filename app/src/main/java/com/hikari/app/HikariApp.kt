@@ -470,6 +470,17 @@ class HikariApp : Application() {
                 val changed = on != com.hikari.app.data.NsfwGate.enabled
                 com.hikari.app.data.NsfwGate.setEnabled(on)
                 if (changed) runCatching { providers.refresh() }
+                if (!on) {
+                    // An 18+ extension whose stored row carries no flag — installed
+                    // by an older build, before the repo listing was recorded — can
+                    // only be identified by the extension itself (see
+                    // [ProviderManager.learnAdultFlags]). Each one is asked once
+                    // ever: the answer is written onto its row. If that turned up
+                    // an adult extension, the list is rebuilt so it actually
+                    // disappears from the provider list.
+                    val learned = runCatching { providers.learnAdultFlags() }.getOrDefault(false)
+                    if (learned) runCatching { providers.refresh() }
+                }
             }
         }
         // "Allowed redirect links" (Settings → Privacy & Browsing → WebView

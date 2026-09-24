@@ -10,24 +10,29 @@ import java.util.concurrent.ConcurrentHashMap
 /**
  * Which INSTALLED extensions are tagged 18+, for the adult-content switch.
  *
- * **Why this is not a field on [ProviderConfig].** The tag belongs to the
- * extension's own metadata (`tachiyomi.extension.nsfw` on a Mihon/manga build,
- * `tachiyomi.animeextension.nsfw` and Aniyomi's `contentWarning` on an anime
- * one) and Hikari never copies it into its stored provider rows — a row carries
- * only the id, the name, the `.ext` file it was installed from and the repo it
- * came from. Reading it therefore means asking the manager that loads the
- * extension, which is what this object does. The alternative — persisting the
- * flag at install time — would have to be backfilled for every extension the
- * user already has, and an extension that was installed before the flag existed
- * would silently stay visible with the switch off, which is the one failure this
- * feature must not have.
+ * **The three sources of the answer, cheapest first.** The tag ultimately
+ * belongs to the extension's own metadata (`tachiyomi.extension.nsfw` on a
+ * Mihon/manga build, `tachiyomi.animeextension.nsfw` and Aniyomi's
+ * `contentWarning` on an anime one) or to the repo listing it was installed
+ * from (`tvTypes` containing `NSFW` on a CloudStream entry) — and Hikari copies
+ * that answer onto the stored row ([ProviderConfig.nsfw]) as soon as it is
+ * known. That is what makes the switch instant and what makes an installed 18+
+ * extension disappear even when its repo is no longer added: a row that carries
+ * the flag needs no file read and no plugin load to be classified.
  *
- * **Cost.** Loading an extension instantiates its classes, so a call here is
- * BLOCKING and must never happen on the UI thread (the Aniyomi loader returns
- * null outright if it is). It is only ever asked when the switch is OFF — with
- * the default (ON) nothing is looked up at all — and the answer is cached per
- * `.ext` file, so the cost is one metadata load per extension per session, on
- * the same loader cache the provider list already pays for at startup.
+ * Older installs have no flag on the row, so the answer is looked up instead:
+ * the manga/anime engines' own metadata (their managers load `isNsfw` from the
+ * manifest), and — for the ecosystems that declare adult content per TITLE
+ * rather than per extension (CloudStream / Hikari / SkyStream / Nuvio) — the
+ * extension itself, which
+ * [com.hikari.app.providers.ProviderManager.learnAdultFlags] asks once and then
+ * writes onto the row, so it is asked exactly once per extension, ever.
+ *
+ * **Cost.** Loading an extension instantiates its classes, so a metadata lookup
+ * here is BLOCKING and must never happen on the UI thread (the Aniyomi loader
+ * returns null outright if it is). It is only ever asked when the switch is OFF
+ * — with the default (ON) nothing is looked up at all — and the answer is cached
+ * per path, so the cost is one metadata load per extension per session.
  *
  * **A load that fails is not a verdict.** An extension that will not load
  * cannot serve a catalogue either (the provider that would query it needs the
@@ -48,9 +53,15 @@ object ExtensionNsfw {
      * extension — see [NsfwGate.isAdult], which is what catches those).
      */
     fun isNsfw(context: Context, config: ProviderConfig): Boolean {
+        // 1. What the repo listing declared when this was installed, carried on
+        //    the row itself: no file read, no plugin load, and it still answers
+        //    after the repo it came from has been removed.
+        config.nsfw?.let { return it }
+        // 2. What a loaded extension has already told us (see [remember]).
         val path = config.url
         if (path.isBlank()) return false
         cache[path]?.let { return it }
+        // 3. The extension's own metadata, for the ecosystems that publish it.
         val tagged = when (config.type) {
             ProviderType.MANGA ->
                 MangaExtensionManager.extensionOf(context, File(path))?.isNsfw
@@ -60,6 +71,23 @@ object ExtensionNsfw {
         } ?: return false
         cache[path] = tagged
         return tagged
+    }
+
+    /**
+     * Whether the extension's own metadata can decide this at all.
+     *
+     * True for the manga/anime engines (their manifests carry the tag), false
+     * for the ones that declare adult content per TITLE rather than per
+     * extension — a CloudStream/Hikari/SkyStream/Nuvio plugin has to be asked
+     * itself, which is what
+     * [com.hikari.app.providers.ProviderManager.learnAdultFlags] does.
+     */
+    fun decidableFromMetadata(config: ProviderConfig): Boolean =
+        config.type == ProviderType.MANGA || config.type == ProviderType.ANIYOMI
+
+    /** Records an answer a loaded extension gave about itself (its `.ext` file). */
+    fun remember(path: String, adult: Boolean) {
+        if (path.isNotBlank()) cache[path] = adult
     }
 
     /**

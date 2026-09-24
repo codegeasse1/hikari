@@ -64,6 +64,48 @@ class ProviderManager(private val store: AppStore, private val context: Context)
         }
     }
 
+    /**
+     * Asks the installed extensions that nothing else could classify whether they
+     * are 18+ ones, and writes the answer onto their rows.
+     *
+     * [refresh] can only apply what is already KNOWN: the flag the repo listing
+     * declared ([ProviderConfig.nsfw]) or the extension metadata the manga/anime
+     * engines publish. A CloudStream/Hikari/SkyStream/Nuvio extension declares
+     * adult content per TITLE, so for one of those installed before the flag was
+     * recorded, the only source is the extension itself
+     * ([ContentProvider.adultExtension]) — which means loading it. That is why
+     * this is a separate, on-demand pass: it runs only with the switch OFF, it
+     * asks each extension at most once EVER (the answer is persisted on the row,
+     * so the next launch needs no load at all), and [limit] bounds how much of it
+     * one launch pays so a library of a hundred extensions cannot turn switching
+     * the filter off into a minute of background plugin loads.
+     *
+     * Returns true when an extension turned out to be an adult one, i.e. when the
+     * caller should [refresh] again so it actually disappears.
+     */
+    suspend fun learnAdultFlags(limit: Int = 40): Boolean = withContext(Dispatchers.IO) {
+        if (com.hikari.app.data.NsfwGate.enabled) return@withContext false
+        var learnedAdult = false
+        var asked = 0
+        for (c in store.providers()) {
+            if (asked >= limit) break
+            if (c.nsfw != null) continue
+            if (ExtensionNsfw.decidableFromMetadata(c)) continue
+            if (c.url.isBlank() || !java.io.File(c.url).isFile) continue
+            val p = instantiate(c) ?: continue
+            asked++
+            val adult = runCatching { p.adultExtension() }.getOrNull() ?: continue
+            ExtensionNsfw.remember(c.url, adult)
+            runCatching {
+                store.updateProviders { list ->
+                    list.map { if (it.id == c.id) it.copy(nsfw = adult) else it }
+                }
+            }
+            if (adult) learnedAdult = true
+        }
+        learnedAdult
+    }
+
     fun instantiate(c: ProviderConfig): ContentProvider? = when (c.type) {
         ProviderType.STREMIO -> StremioAddon(c)
         ProviderType.UNIVERSAL -> UniversalScraper(c)

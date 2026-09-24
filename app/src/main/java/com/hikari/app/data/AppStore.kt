@@ -193,6 +193,23 @@ class AppStore(private val ctx: Context) {
         val APP_LOCK_LEN = intPreferencesKey("appLockLength")
         /** Unlock with the device's fingerprint/face as well as the password. */
         val APP_LOCK_BIO = booleanPreferencesKey("appLockBiometric")
+        /**
+         * The trackers the user signed in to (Settings → Trackers), as JSON —
+         * one row per service, with that service's token. See
+         * [com.hikari.app.data.TrackerStore].
+         */
+        val TRACKERS = stringPreferencesKey("trackers")
+        /** The app id/secret the user registered with each service (JSON). */
+        val TRACKER_CLIENTS = stringPreferencesKey("trackerClients")
+        /** Whether a finished episode is reported to the trackers at all. */
+        val TRACKER_SYNC = booleanPreferencesKey("trackerSync")
+        /** Title → service id, once a search has resolved it (JSON). */
+        val TRACKER_MATCH = stringPreferencesKey("trackerMatches")
+        /** What has already been pushed, so nothing is uploaded twice (JSON). */
+        val TRACKER_DONE = stringPreferencesKey("trackerDone")
+        /** The last thing the trackers said, as a sentence, plus when. */
+        val TRACKER_LAST = stringPreferencesKey("trackerLast")
+        val TRACKER_LAST_AT = stringPreferencesKey("trackerLastAt")
         /** The per-day/per-title totals behind the Stats page — see
          *  [com.hikari.app.data.WatchStats]. */
         val WATCH_STATS = stringPreferencesKey("watchStats")
@@ -1634,6 +1651,116 @@ class AppStore(private val ctx: Context) {
         write("APP_LOCK_BIO") { it[K.APP_LOCK_BIO] = on }
     }
 
+    // ---- Trackers (Settings → Trackers) ----------------------------------
+    //
+    // The services the user signed in to, so what they watch lands on their own
+    // list (see [com.hikari.app.data.TrackerKind]). Two stored documents, and
+    // the split matters: the ACCOUNTS hold live tokens, while the CLIENTS hold
+    // the app registration the user pasted in per service. Signing out drops the
+    // account only, so signing back in does not mean registering again.
+
+    fun trackersFlow(): Flow<List<TrackerAccount>> =
+        store.data.map { TrackerStore.parseAccounts(it[K.TRACKERS]) }
+            .distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun trackers(): List<TrackerAccount> = trackersFlow().first()
+
+    /** Adds or replaces one service's account (one row per [TrackerAccount.kind]). */
+    suspend fun setTrackerAccount(account: TrackerAccount) {
+        write("TRACKERS") { prefs ->
+            val next = TrackerStore.parseAccounts(prefs[K.TRACKERS])
+                .filterNot { it.kind == account.kind } + account
+            prefs[K.TRACKERS] = TrackerStore.encodeAccounts(next)
+        }
+    }
+
+    suspend fun removeTrackerAccount(kind: TrackerKind) {
+        write("TRACKERS") { prefs ->
+            val next = TrackerStore.parseAccounts(prefs[K.TRACKERS]).filterNot { it.kind == kind }
+            prefs[K.TRACKERS] = TrackerStore.encodeAccounts(next)
+        }
+    }
+
+    fun trackerClientsFlow(): Flow<List<TrackerClient>> =
+        store.data.map { TrackerStore.parseClients(it[K.TRACKER_CLIENTS]) }
+            .distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun trackerClients(): List<TrackerClient> = trackerClientsFlow().first()
+
+    suspend fun trackerClient(kind: TrackerKind): TrackerClient =
+        trackerClients().firstOrNull { it.kind == kind } ?: TrackerClient(kind)
+
+    suspend fun setTrackerClient(client: TrackerClient) {
+        write("TRACKER_CLIENTS") { prefs ->
+            val next = TrackerStore.parseClients(prefs[K.TRACKER_CLIENTS])
+                .filterNot { it.kind == client.kind } + client
+            prefs[K.TRACKER_CLIENTS] = TrackerStore.encodeClients(next)
+        }
+    }
+
+    /**
+     * Whether a finished episode is reported at all. On by default: the user
+     * signed in to a tracker for exactly this, and a switch that starts off
+     * would make the sign-in look broken.
+     */
+    fun trackerSyncFlow(): Flow<Boolean> =
+        store.data.map { it[K.TRACKER_SYNC] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun trackerSync(): Boolean = trackerSyncFlow().first()
+
+    suspend fun setTrackerSync(on: Boolean) {
+        write("TRACKER_SYNC") { prefs -> prefs[K.TRACKER_SYNC] = on }
+    }
+
+    /** The titles each service matched, keyed by [TrackerStore.matchKey]. */
+    suspend fun trackerMatches(): Map<String, TrackerMatch> =
+        TrackerStore.parseMatches(store.data.first()[K.TRACKER_MATCH])
+
+    suspend fun putTrackerMatch(key: String, match: TrackerMatch) {
+        write("TRACKER_MATCH") { prefs ->
+            val next = LinkedHashMap(TrackerStore.parseMatches(prefs[K.TRACKER_MATCH]))
+            next.remove(key)
+            next[key] = match
+            prefs[K.TRACKER_MATCH] = TrackerStore.encodeMatches(next)
+        }
+    }
+
+    /** Forgets one cached match — used when a push is refused for that title. */
+    suspend fun dropTrackerMatch(key: String) {
+        write("TRACKER_MATCH") { prefs ->
+            val next = LinkedHashMap(TrackerStore.parseMatches(prefs[K.TRACKER_MATCH]))
+            if (next.remove(key) != null) prefs[K.TRACKER_MATCH] = TrackerStore.encodeMatches(next)
+        }
+    }
+
+    /** What has already been reported, so nothing is uploaded twice. */
+    suspend fun trackerDone(): Map<String, Long> =
+        TrackerStore.parseDone(store.data.first()[K.TRACKER_DONE])
+
+    suspend fun markTrackerDone(key: String) {
+        write("TRACKER_DONE") { prefs ->
+            val next = LinkedHashMap(TrackerStore.parseDone(prefs[K.TRACKER_DONE]))
+            next[key] = System.currentTimeMillis()
+            prefs[K.TRACKER_DONE] = TrackerStore.encodeDone(next)
+        }
+    }
+
+    /** The last thing the trackers said, as a sentence, and when (0 = never). */
+    fun trackerLastFlow(): Flow<String> =
+        store.data.map { it[K.TRACKER_LAST] ?: "" }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun trackerLast(): String = trackerLastFlow().first()
+
+    suspend fun trackerLastAt(): Long =
+        store.data.first()[K.TRACKER_LAST_AT]?.toLongOrNull() ?: 0L
+
+    suspend fun setTrackerLast(text: String) {
+        write("TRACKER_LAST") { prefs ->
+            prefs[K.TRACKER_LAST] = text
+            prefs[K.TRACKER_LAST_AT] = System.currentTimeMillis().toString()
+        }
+    }
+
     // ---- Telegram (the TDLib client, see com.hikari.app.telegram.Td) ------
 
     /**
@@ -2498,6 +2625,57 @@ class AppStore(private val ctx: Context) {
         }
     }
 
+    /**
+     * Records what the repo listings say about the installed extensions.
+     *
+     * [items] is `source URL → tagged 18+`, exactly what a repo's plugin list
+     * carries (see [com.hikari.app.data.ExtensionNsfw.repoEntryNsfw]). Each entry
+     * is matched against the rows that were INSTALLED from it — the source URL is
+     * kept in [ProviderConfig.extra], under every spelling of itself
+     * ([com.hikari.app.data.SourceUrls.matchKeys]) — because a row stores the
+     * local FILE it runs from, not where it was downloaded from.
+     *
+     * This is what hides an already-installed 18+ extension when the switch is
+     * off: the flag is persisted on the row, so the answer needs no plugin load
+     * and survives the repo being removed. Returns true when a row changed, so
+     * the caller knows to rebuild the provider list.
+     */
+    suspend fun markProvidersAdult(items: List<Pair<String, Boolean>>): Boolean {
+        val byKey = HashMap<String, Boolean>()
+        for ((url, adult) in items) {
+            if (url.isBlank()) continue
+            for (key in SourceUrls.matchKeys(url)) byKey.putIfAbsent(key, adult)
+        }
+        if (byKey.isEmpty()) return false
+        var changed = false
+        updateProviders { list ->
+            list.map { c ->
+                val source = sourceUrlOf(c)
+                val known = if (source.isEmpty()) null else byKey[source]
+                    ?: SourceUrls.matchKeys(source).firstNotNullOfOrNull { byKey[it] }
+                if (known != null && known != c.nsfw) {
+                    changed = true
+                    c.copy(nsfw = known)
+                } else {
+                    c
+                }
+            }
+        }
+        return changed
+    }
+
+    /**
+     * The source URL a row was installed from, or "" — [ProviderConfig.extra]
+     * holds it for the file-based kinds (a `.hiki` bundle appends its index:
+     * `source|0`). Rows added by hand (an IPTV playlist, a Stremio addon the user
+     * pasted) have no source and answer "".
+     */
+    fun sourceUrlOf(c: ProviderConfig): String {
+        val extra = c.extra ?: return ""
+        if (!extra.startsWith("http")) return ""
+        return if (c.type == ProviderType.HIKARI) extra.substringBeforeLast('|') else extra
+    }
+
     suspend fun removeProvider(id: String) {
         providerWrites.withLock {
             write("PROVIDERS") { prefs ->
@@ -2920,6 +3098,8 @@ class AppStore(private val ctx: Context) {
                     .put("poster", h.posterUrl ?: "")
                     .put("eid", h.episodeId)
                     .put("ename", h.episodeName)
+                    .put("ep", h.episodeNumber)
+                    .put("sea", h.seasonNumber)
                     .put("pos", h.positionMs)
                     .put("dur", h.durationMs)
                     .put("at", h.watchedAt)
@@ -2945,6 +3125,8 @@ class AppStore(private val ctx: Context) {
                     posterUrl = o.optString("poster").ifBlank { null },
                     episodeId = o.optString("eid"),
                     episodeName = o.optString("ename"),
+                    episodeNumber = o.optInt("ep", 0),
+                    seasonNumber = o.optInt("sea", 0),
                     positionMs = o.optLong("pos", 0L),
                     durationMs = o.optLong("dur", 0L),
                     watchedAt = o.optLong("at", 0L),
@@ -2958,16 +3140,18 @@ class AppStore(private val ctx: Context) {
     private fun encodeProviders(list: List<ProviderConfig>): String {
         val arr = JSONArray()
         for (c in list) {
-            arr.put(
-                JSONObject()
-                    .put("id", c.id)
-                    .put("name", c.name)
-                    .put("type", c.type.name)
-                    .put("url", c.url)
-                    .put("iconUrl", c.iconUrl ?: "")
-                    .put("enabled", c.enabled)
-                    .put("extra", c.extra ?: "")
-            )
+            val o = JSONObject()
+                .put("id", c.id)
+                .put("name", c.name)
+                .put("type", c.type.name)
+                .put("url", c.url)
+                .put("iconUrl", c.iconUrl ?: "")
+                .put("enabled", c.enabled)
+                .put("extra", c.extra ?: "")
+            // Written only when known, so existing rows (and older app versions
+            // reading the same file) are untouched until something learns it.
+            if (c.nsfw != null) o.put("nsfw", c.nsfw)
+            arr.put(o)
         }
         return arr.toString()
     }
@@ -2987,6 +3171,7 @@ class AppStore(private val ctx: Context) {
                     iconUrl = o.optString("iconUrl").ifBlank { null },
                     enabled = o.optBoolean("enabled", true),
                     extra = o.optString("extra").ifBlank { null },
+                    nsfw = if (o.has("nsfw")) o.optBoolean("nsfw") else null,
                 )
             }.filter { it.id.isNotBlank() }
         } catch (e: Exception) {

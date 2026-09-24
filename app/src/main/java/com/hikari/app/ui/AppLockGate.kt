@@ -163,6 +163,18 @@ private fun AppLockScreen(
     var resetAsk by remember { mutableStateOf(false) }
     val biometrics = remember(context) { Biometrics.available(context) }
 
+    // Can the stored secret be verified AT ALL? A lock whose blob was written by
+    // a build with the old `[B@…` encoding bug (see [AppLock.encode]) can never
+    // accept any password, no matter what the user types. Checking here is what
+    // turns "wrong password, forever" into a screen that says what is wrong and
+    // offers the one honest way out. Null until the store answers, so the normal
+    // keypad is what is drawn first (no flash of a scary card).
+    var secretOk by remember { mutableStateOf<Boolean?>(null) }
+    LaunchedEffect(Unit) {
+        val stored = runCatching { app.store.appLockSecret() }.getOrDefault("")
+        secretOk = AppLock.isSet(stored)
+    }
+
     // The password's length, recorded when it was set (0 = an older lock, whose
     // length was never written down — see the four points above).
     val lenFlow = remember { app.store.appLockLenFlow() }
@@ -260,6 +272,11 @@ private fun AppLockScreen(
     // having it: the user should not have to tap anything to get in.
     LaunchedEffect(bioOn, biometrics) {
         if (bioOn && biometrics) askFingerprint()
+    }
+
+    if (secretOk == false) {
+        BrokenLockScreen(onTurnOff = { turnLockOff() })
+        return
     }
 
     // A typed PIN submits itself as soon as it is complete — or, when the length
@@ -476,6 +493,94 @@ private fun AppLockScreen(
 
 /** The most digits a keypad entry may reach before it is stopped. */
 private const val MAX_PIN = 16
+
+/**
+ * What is drawn when the stored lock cannot be verified by any password at all.
+ *
+ * This is the state every install that set its password before the encoding fix
+ * is in: the blob on disk is not a derivation of anything (see
+ * [AppLock.encode]), so no amount of correct typing can open the app. The
+ * alternative to this screen is an unlock screen that says "wrong password" to
+ * the right one forever, which is the report this exists to answer.
+ *
+ * There is exactly one honest way forward, and it is the same one the unlock
+ * screen offers for a forgotten password: turn the lock off (with the
+ * confirmation saying what that means), after which the app opens and a new
+ * password can be set in Settings → Privacy & Browsing → App lock.
+ */
+@Composable
+private fun BrokenLockScreen(onTurnOff: () -> Unit) {
+    var ask by remember { mutableStateOf(false) }
+    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .padding(horizontal = 24.dp, vertical = 18.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Icon(
+                Icons.Filled.Lock,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.error,
+                modifier = Modifier.size(34.dp),
+            )
+            Spacer(Modifier.height(12.dp))
+            Text(
+                tr("The app lock needs to be reset"),
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                tr(
+                    "The password saved on this device cannot be checked — it was written by " +
+                        "an older version of Hikari, in a form this one cannot read. No " +
+                        "password will open the app until the lock is reset."
+                ),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(18.dp))
+            Button(onClick = { ask = true }, modifier = Modifier.fillMaxWidth()) {
+                Text(tr("Reset the app lock"))
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                tr(
+                    "Resetting turns the lock off. You can set a new password afterwards in " +
+                        "Settings → Privacy & Browsing → App lock."
+                ),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+    if (ask) {
+        AlertDialog(
+            onDismissRequest = { ask = false },
+            title = { Text(tr("Turn the app lock off?")) },
+            text = {
+                Text(
+                    tr(
+                        "The lock is turned off and the unreadable password is deleted. Anyone " +
+                            "holding the phone can then open Hikari. Set a new password in " +
+                            "Settings afterwards."
+                    )
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    ask = false
+                    onTurnOff()
+                }) { Text(tr("Turn it off")) }
+            },
+            dismissButton = {
+                TextButton(onClick = { ask = false }) { Text(tr("Cancel")) }
+            },
+        )
+    }
+}
 
 /** The entered digits, as dots: filled for what is typed, hairline for the rest. */
 @Composable
