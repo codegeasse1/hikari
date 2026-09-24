@@ -7,6 +7,7 @@ import com.hikari.app.data.Episode
 import com.hikari.app.data.MediaItem
 import com.hikari.app.data.MediaType
 import com.hikari.app.data.ProviderConfig
+import com.hikari.app.data.TitleQuality
 import com.hikari.app.data.StreamSource
 import com.hikari.app.data.SubtitleSource
 import com.hikari.app.net.Http
@@ -1098,6 +1099,10 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
             // extensions their own TvType, so a result from one is adult material
             // regardless of what its name looks like (see MediaItem.nsfw).
             nsfw = type == TvType.NSFW,
+            // …and its own quality, when it states one: a site-scraping
+            // extension knows what it serves, so the poster can badge it before
+            // anything is opened or played (see MediaItem.quality).
+            quality = TitleQuality.fromExtensionQuality(quality?.name),
         ).also { recordPosterHeaders(posterUrl, posterHeaders) }
     }
 

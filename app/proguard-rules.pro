@@ -116,6 +116,22 @@
 -dontwarn androidx.biometric.**
 
 # ---------------------------------------------------------------------------
+# 3c. TDLib (the Telegram client's bindings)
+#
+# The native library finds the Java side by NAME, not by reference: libtdjni.so
+# registers its natives against `org.drinkless.tdlib.Client` in JNI_OnLoad, and
+# every object TDLib hands back (`TdApi.UpdateNewMessage`, …) is constructed by
+# looking the class up from its own type name and matching a constructor by
+# parameter types. R8 sees almost none of that — Client's native methods have no
+# callers it can follow, and TdApi's ~2000 classes are only ever named as
+# strings — so without these two lines the release build would sign in, receive
+# nothing, and report an internal error for every update. The package is ~5 MB
+# of generated Java, and keeping it whole is the price of the client working.
+# ---------------------------------------------------------------------------
+-keep class org.drinkless.tdlib.** { *; }
+-dontwarn org.drinkless.tdlib.**
+
+# ---------------------------------------------------------------------------
 # 4. Libraries third-party code links against by name
 #
 # Not one of these is referenced by Hikari's own source — they are here so

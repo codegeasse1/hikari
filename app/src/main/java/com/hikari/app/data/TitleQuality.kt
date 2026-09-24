@@ -82,6 +82,7 @@ object TitleQuality {
         "1080p" to Regex("""(^|[^0-9])1080p""", RegexOption.IGNORE_CASE),
         "720p" to Regex("""(^|[^0-9])720p""", RegexOption.IGNORE_CASE),
         "480p" to Regex("""(^|[^0-9])480p""", RegexOption.IGNORE_CASE),
+        "DVD" to Regex("""dvd-?(rip|scr)""", RegexOption.IGNORE_CASE),
         "360p" to Regex("""(^|[^0-9])360p""", RegexOption.IGNORE_CASE),
         "HDR" to Regex("""(^|[^a-z0-9])hdr(10\+?)?([^a-z0-9]|$)""", RegexOption.IGNORE_CASE),
         "Blu-ray" to Regex("""blu-?ray""", RegexOption.IGNORE_CASE),
@@ -102,6 +103,29 @@ object TitleQuality {
             if (pattern.containsMatchIn(text)) return label
         }
         return null
+    }
+
+    /**
+     * CloudStream's own `SearchQuality`, as one of the labels the badge prints.
+     *
+     * A site-scraping extension states this on every search result — its catalog
+     * is the site's own, so "1080p" there is a fact rather than a guess — which
+     * is what lets those posters carry the badge immediately, without opening
+     * the title and without playing it. [name] is `SearchQuality.name()`, taken
+     * as a String so this file stays free of the plugin runtime.
+     *
+     * Null for the ones that say nothing about resolution (SDR is a colour
+     * space) rather than a made-up label: a badge that guesses is worse than no
+     * badge.
+     */
+    fun fromExtensionQuality(name: String?): String? = when (name) {
+        "FourK", "UHD", "UltraHD" -> "4K"
+        "HDR" -> "HDR"
+        "BlueRay", "BluRay" -> "Blu-ray"
+        "WebRip", "Web" -> "Web"
+        "DVD" -> "DVD"
+        "Cam", "CamRip", "HdCam", "Telesync", "WorkPrint", "Telecine" -> "CAM"
+        else -> null
     }
 
     /** The best label among a set of server names, or null when none of them
@@ -144,6 +168,10 @@ object TitleQuality {
      *  own text is the answer until then. */
     fun forItem(item: MediaItem): String? {
         warm()
+        // The source's OWN word first: a scraping extension states the quality
+        // of the thing it is listing, so it beats anything inferred from a name
+        // or remembered from an earlier session (see MediaItem.quality).
+        item.quality?.takeIf { it.isNotBlank() }?.let { return it }
         memory[keyOf(item)]?.let { return it }
         titleKeysOf(item).firstNotNullOfOrNull { byTitle[it] }?.let { return it }
         return fromText(

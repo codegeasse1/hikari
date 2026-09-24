@@ -171,6 +171,10 @@ class AppStore(private val ctx: Context) {
         val TELEGRAM_TAB = booleanPreferencesKey("showTelegramTab")
         /** The Telegram channels the Telegram tab browses, as JSON. */
         val TELEGRAM_CHANNELS = stringPreferencesKey("telegramChannels")
+
+        /** The user's own Telegram API credentials (see telegramApiIdFlow). */
+        val TELEGRAM_API_ID = stringPreferencesKey("telegramApiId")
+        val TELEGRAM_API_HASH = stringPreferencesKey("telegramApiHash")
         /** App lock — the switch itself (Settings → Privacy & Browsing). */
         val APP_LOCK = booleanPreferencesKey("appLock")
         /** The lock's secret as `salt:hash` (PBKDF2-SHA256); blank = never set. */
@@ -1601,6 +1605,39 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setAppLockBio(on: Boolean) {
         write("APP_LOCK_BIO") { it[K.APP_LOCK_BIO] = on }
+    }
+
+    // ---- Telegram (the TDLib client, see com.hikari.app.telegram.Td) ------
+
+    /**
+     * The user's OWN api_id, from my.telegram.org. Stored as a plain integer:
+     * it is not a secret (it identifies the application, not the account), and
+     * the tab shows it back to the user so they can check what they typed.
+     */
+    fun telegramApiIdFlow(): Flow<Int> =
+        store.data.map { (it[K.TELEGRAM_API_ID] ?: "").toIntOrNull() ?: 0 }
+            .distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun telegramApiId(): Int = telegramApiIdFlow().first()
+
+    suspend fun setTelegramApiId(value: Int) {
+        write("TELEGRAM_API_ID") { it[K.TELEGRAM_API_ID] = value.toString() }
+    }
+
+    /**
+     * The user's api_hash. It is a secret — anyone holding it (with the api_id)
+     * can act as this application — but it has to be usable by the client at
+     * runtime, so it is kept here rather than hashed. It never leaves the
+     * device: the only thing that reads it is TDLib's own login.
+     */
+    fun telegramApiHashFlow(): Flow<String> =
+        store.data.map { it[K.TELEGRAM_API_HASH] ?: "" }.distinctUntilChanged()
+            .flowOn(Dispatchers.Default)
+
+    suspend fun telegramApiHash(): String = telegramApiHashFlow().first()
+
+    suspend fun setTelegramApiHash(value: String) {
+        write("TELEGRAM_API_HASH") { it[K.TELEGRAM_API_HASH] = value.trim() }
     }
 
     // ---- Watch/read statistics (the Stats page) --------------------------

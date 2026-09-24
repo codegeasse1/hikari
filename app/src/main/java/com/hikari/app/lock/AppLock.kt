@@ -48,7 +48,11 @@ object AppLock {
     /** `algo:salt:hash` for [password] — what the store keeps. */
     fun encode(password: String, salt: String = newSalt()): String {
         val algo = algorithm()
-        return "$algo:$salt:${derive(password, salt, algo)}"
+        // Trimmed on BOTH sides of the trip: a keyboard's autocorrect can leave
+        // a trailing space in a text field that a password field would never
+        // produce, and a correct password that fails because of an invisible
+        // character is the "it says wrong even when I type it right" report.
+        return "$algo:$salt:${derive(password.trim(), salt, algo)}"
     }
 
     /** True when [stored] looks like a secret this app wrote. */
@@ -66,7 +70,7 @@ object AppLock {
         val salt = parts[1]
         val expected = runCatching { parts[2].chunked(2).map { it.toInt(16).toByte() }.toByteArray() }
             .getOrNull() ?: return false
-        val actual = runCatching { derive(password, salt, algo) }.getOrNull() ?: return false
+        val actual = runCatching { derive(password.trim(), salt, algo) }.getOrNull() ?: return false
         return MessageDigest.isEqual(expected, actual)
     }
 

@@ -1,22 +1,31 @@
 package com.hikari.app.ui
 
 import android.content.Context
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Backspace
 import androidx.compose.material.icons.filled.Fingerprint
+import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -33,10 +42,14 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -45,20 +58,23 @@ import androidx.lifecycle.ProcessLifecycleOwner
 import com.hikari.app.HikariApp
 import com.hikari.app.i18n.tr
 import com.hikari.app.lock.AppLock
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * The in-app lock (Settings → Privacy & Browsing → App lock).
  *
- * Wraps the whole app: while the lock is on and the session has not been
+ * Wraps the whole app: while the lock is on and this session has not been
  * unlocked, nothing else is drawn — no screen and no dialog — and the unlock
  * card is all there is.
  *
  * When it locks again: the moment the APP leaves the foreground, which is
  * [ProcessLifecycleOwner]. Locking on the *activity* stopping would re-lock
  * every time the player opens, because the player is its own activity and this
- * one stops behind it — the user would come back from a film to a password
- * prompt, which is not what an app lock is for.
+ * one stops behind it — the user would come back from a film to a PIN prompt,
+ * which is not what an app lock is for.
  *
  * The password is the required half: the fingerprint/face is only ever an
  * additional way in (see [AppLock]), so a device with no enrolled biometric
@@ -93,7 +109,16 @@ fun AppLockGate(activity: android.app.Activity, content: @Composable () -> Unit)
     AppLockScreen(activity = activity, bioOn = bioOn, onUnlocked = { unlocked = true })
 }
 
-/** The unlock card itself. */
+/**
+ * The unlock screen: the padlock, the dots, and a numeric keypad with the
+ * fingerprint on its bottom-right — the shape every messenger's app lock has,
+ * and the one the user asked for by sending a screenshot of it.
+ *
+ * The keypad is the front door, but it is not the only one: whatever was set as
+ * the password may be a word rather than a PIN (the setting's own field is a
+ * free text field), so "Enter password instead" swaps the keypad for a real
+ * password field. Without it, an alphanumeric password would be unenterable.
+ */
 @Composable
 private fun AppLockScreen(
     activity: android.app.Activity,
@@ -103,8 +128,10 @@ private fun AppLockScreen(
     val context = LocalContext.current
     val app = LocalContext.current.applicationContext as HikariApp
     val scope = rememberCoroutineScope()
-    var password by remember { mutableStateOf("") }
+    var entered by remember { mutableStateOf("") }
+    var typed by remember { mutableStateOf("") }
     var wrong by remember { mutableStateOf(false) }
+    var textMode by remember { mutableStateOf(false) }
     val biometrics = remember(context) { Biometrics.available(context) }
 
     // The strings the fingerprint prompt is built from are read HERE, in the
@@ -114,10 +141,15 @@ private fun AppLockScreen(
     val bioSubtitle = tr("Use your fingerprint to open the app")
     val bioNegative = tr("Use password")
 
-    fun check(entered: String) {
+    fun check(value: String) {
+        if (value.isBlank()) return
         scope.launch {
             val stored = runCatching { app.store.appLockSecret() }.getOrDefault("")
-            if (AppLock.verify(entered, stored)) {
+            // The derivation is deliberately expensive (120k PBKDF2 rounds), so
+            // it runs OFF the main thread: on the main thread it would be a
+            // visible stall on every digit, and on a slow phone a possible ANR.
+            val ok = withContext(Dispatchers.Default) { AppLock.verify(value, stored) }
+            if (ok) {
                 wrong = false
                 onUnlocked()
             } else {
@@ -146,11 +178,22 @@ private fun AppLockScreen(
         if (bioOn && biometrics) askFingerprint()
     }
 
+    // A typed PIN is checked by itself, once the typing stops. It cannot be
+    // checked on a fixed length, because the password's length is not known
+    // here (nothing in the app can read it back — see [AppLock]), and a wrong
+    // answer clears the moment another digit arrives.
+    LaunchedEffect(entered) {
+        if (entered.length >= 4) {
+            delay(320)
+            check(entered)
+        }
+    }
+
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(
             Modifier
                 .fillMaxSize()
-                .padding(28.dp),
+                .padding(horizontal = 24.dp, vertical = 18.dp),
             verticalArrangement = Arrangement.Center,
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
@@ -158,60 +201,239 @@ private fun AppLockScreen(
                 Icons.Filled.Lock,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(44.dp),
+                modifier = Modifier.size(34.dp),
             )
-            Spacer(Modifier.height(14.dp))
+            Spacer(Modifier.height(12.dp))
             Text(
-                tr("Hikari is locked"),
+                tr("Unlock to use Hikari"),
                 style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold,
             )
-            Spacer(Modifier.height(6.dp))
+            Spacer(Modifier.height(4.dp))
             Text(
-                tr("Enter your password to open the app."),
+                tr("Enter your PIN or use a fingerprint"),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Spacer(Modifier.height(20.dp))
-            OutlinedTextField(
-                value = password,
-                onValueChange = {
-                    password = it
-                    wrong = false
-                },
-                label = { Text(tr("Password")) },
-                singleLine = true,
-                isError = wrong,
-                visualTransformation = PasswordVisualTransformation(),
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                keyboardActions = KeyboardActions(onDone = { check(password) }),
-                modifier = Modifier.fillMaxWidth(),
-            )
-            if (wrong) {
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    tr("Wrong password"),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
+            Spacer(Modifier.height(18.dp))
+
+            if (textMode) {
+                OutlinedTextField(
+                    value = typed,
+                    onValueChange = {
+                        typed = it
+                        wrong = false
+                    },
+                    label = { Text(tr("Password")) },
+                    singleLine = true,
+                    isError = wrong,
+                    visualTransformation = PasswordVisualTransformation(),
+                    // A PASSWORD keyboard, explicitly: with the plain text
+                    // keyboard the IME capitalises the first letter and offers
+                    // autocorrect, so a right password could be sent wrong —
+                    // which is exactly the "it says wrong even when I type it
+                    // right" report this screen exists to fix.
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Password,
+                        imeAction = ImeAction.Done,
+                    ),
+                    keyboardActions = KeyboardActions(onDone = { check(typed) }),
+                    modifier = Modifier.fillMaxWidth(),
                 )
-            }
-            Spacer(Modifier.height(16.dp))
-            Button(
-                onClick = { check(password) },
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text(tr("Unlock"))
-            }
-            if (bioOn && biometrics) {
-                Spacer(Modifier.height(6.dp))
-                TextButton(onClick = { askFingerprint() }) {
-                    Icon(
-                        Icons.Filled.Fingerprint,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text(tr("Unlock with fingerprint"))
+                Spacer(Modifier.height(12.dp))
+                Button(onClick = { check(typed) }, modifier = Modifier.fillMaxWidth()) {
+                    Text(tr("Unlock"))
                 }
+                Spacer(Modifier.height(4.dp))
+                TextButton(onClick = {
+                    textMode = false
+                    wrong = false
+                }) { Text(tr("Use the keypad")) }
+            } else {
+                PinDots(entered.length, wrong, 6)
+                Spacer(Modifier.height(14.dp))
+                Keypad(
+                    onDigit = { d ->
+                        wrong = false
+                        if (entered.length < MAX_PIN) entered += d
+                    },
+                    onBackspace = {
+                        wrong = false
+                        if (entered.isNotEmpty()) entered = entered.dropLast(1)
+                    },
+                    fingerprint = bioOn && biometrics,
+                    onFingerprint = { askFingerprint() },
+                    onSwitchToText = {
+                        textMode = true
+                        typed = entered
+                        wrong = false
+                    },
+                )
+                Spacer(Modifier.height(10.dp))
+                if (wrong) {
+                    Text(
+                        tr("Wrong PIN or password"),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                } else {
+                    Text(
+                        tr("The PIN is checked as you type it."),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(Modifier.height(6.dp))
+                TextButton(onClick = {
+                    textMode = true
+                    typed = ""
+                    wrong = false
+                }) { Text(tr("Enter password instead")) }
+            }
+        }
+    }
+}
+
+private const val MAX_PIN = 16
+
+/** The entered digits, as dots: filled for what is typed, hairline for the rest. */
+@Composable
+private fun PinDots(typed: Int, wrong: Boolean, shown: Int) {
+    val filled = if (wrong) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+    val empty = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
+    val count = maxOf(shown, typed)
+    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        repeat(count) { i ->
+            Box(
+                Modifier
+                    .size(if (i < typed) 12.dp else 10.dp)
+                    .clip(CircleShape)
+                    .background(if (i < typed) filled else empty)
+            )
+        }
+    }
+}
+
+/**
+ * The keypad itself: 1–9 with their letters, then backspace / 0 / fingerprint —
+ * Telegram's own layout, including the fingerprint in the corner rather than a
+ * button of its own.
+ */
+@Composable
+private fun Keypad(
+    onDigit: (Char) -> Unit,
+    onBackspace: () -> Unit,
+    fingerprint: Boolean,
+    onFingerprint: () -> Unit,
+    onSwitchToText: () -> Unit,
+) {
+    val letters = mapOf(
+        '2' to "ABC", '3' to "DEF", '4' to "GHI", '5' to "JKL", '6' to "MNO",
+        '7' to "PQRS", '8' to "TUV", '9' to "WXYZ",
+    )
+    val rows = listOf("123", "456", "789")
+    Column(
+        Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        for (row in rows) {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                for (key in row) {
+                    KeypadKey(
+                        label = key.toString(),
+                        sub = letters[key].orEmpty(),
+                        modifier = Modifier.weight(1f),
+                        onClick = { onDigit(key) },
+                    )
+                }
+            }
+        }
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                Modifier
+                    .weight(1f)
+                    .aspectRatio(1f),
+                contentAlignment = Alignment.Center,
+            ) {
+                IconButton(onClick = onBackspace) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.Backspace,
+                        contentDescription = tr("Delete"),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            KeypadKey(
+                label = "0",
+                sub = "",
+                modifier = Modifier.weight(1f),
+                onClick = { onDigit('0') },
+            )
+            Box(
+                Modifier
+                    .weight(1f)
+                    .aspectRatio(1f),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (fingerprint) {
+                    IconButton(onClick = onFingerprint) {
+                        Icon(
+                            Icons.Filled.Fingerprint,
+                            contentDescription = tr("Unlock with fingerprint"),
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                } else {
+                    IconButton(onClick = onSwitchToText) {
+                        Icon(
+                            Icons.Filled.Keyboard,
+                            contentDescription = tr("Enter password instead"),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun KeypadKey(
+    label: String,
+    sub: String,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier
+            .aspectRatio(1f)
+            .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                label,
+                style = MaterialTheme.typography.headlineSmall,
+                fontSize = 24.sp,
+                fontWeight = FontWeight.Medium,
+            )
+            if (sub.isNotEmpty()) {
+                Text(
+                    sub,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontSize = 9.sp,
+                    letterSpacing = 1.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }

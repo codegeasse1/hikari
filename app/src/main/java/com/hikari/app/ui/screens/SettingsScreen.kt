@@ -200,7 +200,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withContext
 
 @Composable
 private fun SettingsDivider() {
@@ -4069,9 +4068,21 @@ private fun AppLockCard(app: HikariApp) {
     var setDialog by remember { mutableStateOf(false) }
     var first by remember { mutableStateOf("") }
     var second by remember { mutableStateOf("") }
+    // What the user says the CURRENT password is. Only asked for when one
+    // exists, and checked (never stored) before anything is changed: a phone
+    // that is already unlocked should still not let a passer-by replace the
+    // lock with one of their own — "if the real user who set old password is
+    // changing it" has to be the one doing the changing.
+    var current by remember { mutableStateOf("") }
+    var oldWrong by remember { mutableStateOf(false) }
+    // True while the dialog was opened by "Remove password" rather than by
+    // "Set/Change": the same dialog serves both, because both need exactly the
+    // same proof (the current password) and only differ in what happens next.
+    var removing by remember { mutableStateOf(false) }
     val tooShort = first.isNotEmpty() && first.length < 4
     val mismatch = second.isNotEmpty() && first != second
-    val canSave = first.length >= 4 && first == second
+    val canSave = first.length >= 4 && first == second &&
+        (!hasSecret || current.isNotBlank())
 
     Column(Modifier.padding(16.dp)) {
         SettingsCardHeading(Icons.Filled.Lock, tr("App lock"))
@@ -4086,6 +4097,9 @@ private fun AppLockCard(app: HikariApp) {
                 if (want && !hasSecret) {
                     first = ""
                     second = ""
+                    current = ""
+                    oldWrong = false
+                    removing = false
                     setDialog = true
                 } else {
                     scope.launch { runCatching { app.store.setAppLock(want) } }
@@ -4108,18 +4122,21 @@ private fun AppLockCard(app: HikariApp) {
                 TextButton(onClick = {
                     first = ""
                     second = ""
+                    current = ""
+                    oldWrong = false
+                    removing = false
                     setDialog = true
                 }) {
                     Text(tr("Change password"))
                 }
                 Spacer(Modifier.width(8.dp))
                 TextButton(onClick = {
-                    scope.launch {
-                        runCatching {
-                            app.store.setAppLock(false)
-                            app.store.setAppLockSecret("")
-                        }
-                    }
+                    // Removing the lock asks for the current password too — the
+                    // same proof changing it needs, for the same reason.
+                    current = ""
+                    oldWrong = false
+                    removing = true
+                    setDialog = true
                 }) {
                     Text(tr("Remove password"))
                 }
@@ -4141,63 +4158,127 @@ private fun AppLockCard(app: HikariApp) {
     if (setDialog) {
         AlertDialog(
             onDismissRequest = { setDialog = false },
-            title = { Text(tr("Set a password")) },
+            title = {
+                Text(
+                    when {
+                        removing -> tr("Remove the app lock")
+                        hasSecret -> tr("Change password")
+                        else -> tr("Set a password")
+                    }
+                )
+            },
             text = {
                 Column {
-                    OutlinedTextField(
-                        value = first,
-                        onValueChange = { first = it },
-                        label = { Text(tr("Password")) },
-                        singleLine = true,
-                        isError = tooShort,
-                        visualTransformation = PasswordVisualTransformation(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Spacer(Modifier.height(10.dp))
-                    OutlinedTextField(
-                        value = second,
-                        onValueChange = { second = it },
-                        label = { Text(tr("Repeat password")) },
-                        singleLine = true,
-                        isError = mismatch,
-                        visualTransformation = PasswordVisualTransformation(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    if (tooShort) {
-                        Spacer(Modifier.height(6.dp))
-                        Text(
-                            tr("Use at least 4 characters"),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error,
+                    if (hasSecret) {
+                        OutlinedTextField(
+                            value = current,
+                            onValueChange = {
+                                current = it
+                                oldWrong = false
+                            },
+                            label = { Text(tr("Current password")) },
+                            singleLine = true,
+                            isError = oldWrong,
+                            visualTransformation = PasswordVisualTransformation(),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                            modifier = Modifier.fillMaxWidth(),
                         )
+                        if (oldWrong) {
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                tr("That is not the current password"),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                        if (!removing) Spacer(Modifier.height(10.dp))
                     }
-                    if (mismatch) {
-                        Spacer(Modifier.height(6.dp))
+                    if (!removing) {
+                        OutlinedTextField(
+                            value = first,
+                            onValueChange = { first = it },
+                            label = { Text(tr("New password")) },
+                            singleLine = true,
+                            isError = tooShort,
+                            visualTransformation = PasswordVisualTransformation(),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Spacer(Modifier.height(10.dp))
+                        OutlinedTextField(
+                            value = second,
+                            onValueChange = { second = it },
+                            label = { Text(tr("Repeat password")) },
+                            singleLine = true,
+                            isError = mismatch,
+                            visualTransformation = PasswordVisualTransformation(),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        if (tooShort) {
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                tr("Use at least 4 characters"),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                        if (mismatch) {
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                tr("The two passwords are not the same"),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                        Spacer(Modifier.height(8.dp))
                         Text(
-                            tr("The two passwords are not the same"),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error,
+                            tr(
+                                "A PIN works here too — the unlock screen has a keypad for it. " +
+                                    "There is no recovery: a forgotten password can only be " +
+                                    "cleared by wiping the app's data."
+                            ),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            tr("The password is removed and the app stops asking for it."),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 }
             },
             confirmButton = {
                 TextButton(
-                    enabled = canSave,
+                    enabled = if (removing) current.isNotBlank() else canSave,
                     onClick = {
+                        val wanted = first
                         scope.launch {
-                            runCatching {
-                                app.store.setAppLockSecret(AppLock.encode(first))
-                                app.store.setAppLock(true)
-                                app.store.setAppLockBio(biometrics)
+                            withContext(Dispatchers.Default) {
+                                // The old password is verified BEFORE anything is
+                                // written, and only ever a verification — it is
+                                // never stored, and a failure changes nothing.
+                                if (hasSecret && !AppLock.verify(current, secret)) {
+                                    oldWrong = true
+                                    return@withContext
+                                }
+                                if (removing) {
+                                    app.store.setAppLock(false)
+                                    app.store.setAppLockSecret("")
+                                } else {
+                                    app.store.setAppLockSecret(AppLock.encode(wanted))
+                                    app.store.setAppLock(true)
+                                    app.store.setAppLockBio(biometrics)
+                                }
+                                setDialog = false
                             }
                         }
-                        setDialog = false
                     },
                 ) {
-                    Text(tr("Save"))
+                    Text(if (removing) tr("Remove") else tr("Save"))
                 }
             },
             dismissButton = {

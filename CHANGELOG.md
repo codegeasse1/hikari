@@ -1,3 +1,37 @@
+## 0.10.27
+
+### Added
+
+- **A real Telegram client** (Telegram tab → "Your Telegram"). Sign in with your own
+  account (an api_id and api_hash from my.telegram.org) and the tab lists your chats:
+  Saved Messages, private channels and groups, chats with people, with the unread
+  counts. Open any of them and its videos are listed a page at a time, all the way
+  back through the history, and play in Hikari's own player — streamed out of TDLib,
+  so seeking into the middle of a film starts downloading at the middle. Public
+  channels still work with no account at all, as before.
+- **The unlock screen has a keypad** (Settings → Privacy & Browsing → App lock): the
+  padlock, the dots and 1–9 with the fingerprint in the corner, as in every messenger's
+  app lock — plus "Enter password instead" for a password that is a word rather than
+  a PIN.
+- **Changing or removing the app lock now asks for the current password** before it
+  changes anything.
+
+### Changed
+
+- **The quality tag on posters fills in from the extension's own data.** A site-scraping
+  extension (CloudStream) states the quality of every catalog row, so those posters now
+  carry the badge (4K / 1080p / HDR / Web / DVD / CAM) the moment they are drawn, without
+  opening the title and without playing it. Addons that resolve streams instead of
+  scraping a catalog (Nuvio, Stremio) still show nothing until a stream is picked,
+  because nothing is known about them before then.
+- **A catalog folder opens with its own artwork as the header** — with no hero image
+  set, the folder's cover is what fills the space above the title (it is the artwork
+  the user tapped to get here). An image that fails to load no longer leaves a blank
+  band: the header falls back to the title text.
+- **The unlock password is trimmed and entered through a real password keyboard.** The
+  unlock field used the plain text keyboard, whose autocorrect/capitalisation could
+  change what was typed — which is what made a correct password report "wrong password".
+
 ## 0.10.26
 
 ### Added

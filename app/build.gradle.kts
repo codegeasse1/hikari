@@ -14,8 +14,8 @@ android {
         applicationId = "com.hikari.app"
         minSdk = 24
         targetSdk = 34
-    versionCode = 197
-    versionName = "0.10.26"
+    versionCode = 198
+    versionName = "0.10.27"
         // CI injects the exact commit SHA the APK was built from, so the
         // in-app update checker can compare it against main's HEAD.
         val gitSha = System.getenv("GIT_SHA") ?: "unknown"
@@ -119,6 +119,37 @@ android {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// TDLib's C++ runtime has to reach the APK under its SONAME
+//
+// TDLib's native library (libtdjni.so — the Telegram client, see
+// com.hikari.app.telegram.Td) links against libc++_shared.so, and Android's
+// linker resolves that by FILENAME: the file has to be `lib/<abi>/libc++_shared.so`
+// inside the APK or nothing loads.
+//
+// Its real name cannot be written into this repository: `libc++_shared.so`
+// contains a `+`, and `+` is not a writable path here — the file that carries it
+// through the workspace and up to GitHub is called `libcxx_shared.so`
+// (app/src/main/jniLibs/<abi>/libcxx_shared.so), and this task puts the soname
+// back on the way into the build. Everything else in jniLibs is untouched: the
+// task copies ONLY the renamed runtime into an extra source directory, so no file
+// is ever seen twice by AGP ("More than one file was found with OS independent
+// path" is what a plain rename-in-place would produce).
+// ---------------------------------------------------------------------------
+val tdJniStageDir = layout.buildDirectory.dir("td-jni").get().asFile.apply { mkdirs() }
+val stageTdJniLibs = tasks.register<Sync>("stageTdJniLibs") {
+    from(layout.projectDirectory.dir("src/main/jniLibs")) {
+        include("**/libcxx_shared.so")
+    }
+    into(tdJniStageDir)
+    rename { name -> if (name == "libcxx_shared.so") "libc++_shared.so" else name }
+}
+android.sourceSets.getByName("main").jniLibs.srcDir(tdJniStageDir)
+// The merge tasks are created by AGP after this file is evaluated, so the
+// dependency is matched by name rather than by type.
+tasks.matching { it.name.startsWith("merge") && it.name.endsWith("NativeLibs") }
+    .configureEach { dependsOn(stageTdJniLibs) }
 
 // cloudstream3.jar is a precompiled library that ships compiled R classes for
 // every namespace it touches (androidx/activity/compose/R.class,

@@ -4265,7 +4265,14 @@ private fun CollectionFolderContent(
             // a wide backdrop above the header and, above all, a wordmark in
             // place of the title text — the way the reference app opens a
             // catalog folder.
-            heroBackdrop = folder.heroBackdropUrl,
+            //
+            // With no hero set, the folder's own COVER opens the page: that is
+            // the artwork the user picked for this folder and the one they tapped
+            // to get here, so leaving the space above the title empty made the
+            // page look like it had lost its header ("the image header in the
+            // catalog — make it show"). Only a URL/GIF cover can be a backdrop;
+            // an emoji or a plain colour stays on the tile.
+            heroBackdrop = folder.heroBackdropUrl.ifBlank { folderCoverUrl(folder) },
             titleLogo = folder.titleLogoUrl,
             // Search INSIDE this catalog: the magnifier opens the Search tab
             // scoped to the collection this folder belongs to, so a title can be
@@ -4411,6 +4418,13 @@ private fun MediaItem.tokenized(): MediaItem {
     else copy(posterUrl = p, backdropUrl = b)
 }
 
+/** The folder's cover as a URL, when it has one that can be drawn as a header. */
+private fun folderCoverUrl(folder: CollectionFolder): String {
+    val kind = CoverKinds.normalize(folder.coverKind)
+    if (kind != CoverKinds.URL && kind != CoverKinds.GIF) return ""
+    return folder.coverValue.trim()
+}
+
 /** A plain page header with a back button — the folder pages' own title bar. */
 @Composable
 private fun PageHeader(
@@ -4430,14 +4444,21 @@ private fun PageHeader(
     titleLogo: String? = null,
 ) {
     Column(Modifier.fillMaxWidth()) {
-        if (!heroBackdrop.isNullOrBlank()) {
+        // An image that will not load must not leave a blank band where the
+        // header was: the hero falls back to the title row, and the logo falls
+        // back to the title text. A failed hero is also remembered per URL, so
+        // the page does not flicker on every recomposition.
+        var heroFailed by remember(heroBackdrop) { mutableStateOf(false) }
+        var logoFailed by remember(titleLogo) { mutableStateOf(false) }
+        if (!heroBackdrop.isNullOrBlank() && !heroFailed) {
             AsyncImage(
-                model = heroBackdrop,
+                model = PosterLoader.model(heroBackdrop),
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
+                onError = { heroFailed = true },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(118.dp)
+                    .height(132.dp)
                     .padding(horizontal = 8.dp, vertical = 6.dp)
                     .clip(GlassShape),
             )
@@ -4455,11 +4476,12 @@ private fun PageHeader(
                 )
             }
             Column(Modifier.weight(1f)) {
-                if (!titleLogo.isNullOrBlank()) {
+                if (!titleLogo.isNullOrBlank() && !logoFailed) {
                     AsyncImage(
-                        model = titleLogo,
+                        model = PosterLoader.model(titleLogo),
                         contentDescription = tr(title),
                         contentScale = ContentScale.Fit,
+                        onError = { logoFailed = true },
                         modifier = Modifier
                             .height(38.dp)
                             .fillMaxWidth(0.62f),

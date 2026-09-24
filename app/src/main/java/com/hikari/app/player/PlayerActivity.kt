@@ -4807,10 +4807,12 @@ class PlayerActivity : ComponentActivity() {
     private fun serverOption(source: PlayerSource, index: Int): GlassOption = GlassOption(
         label = serverLabel(source),
         sub = when {
+            source.url.startsWith("hikari-td:") -> "Telegram"
             source.local -> "Saved on this device"
             else -> hostOf(source.url)
         },
         badge = when {
+            source.url.startsWith("hikari-td:") -> "Telegram"
             source.local -> "Offline"
             source.torrentStream || source.isTorrent -> "Torrent"
             source.isM3u8 -> "HLS"
@@ -7647,7 +7649,13 @@ class PlayerActivity : ComponentActivity() {
         // routes file:/data:/content: locally and hands everything else to
         // OkHttp, so the network behaviour (UA, headers, retry policy) is
         // unchanged.
-        val dataSourceFactory: DataSource.Factory = DefaultDataSource.Factory(this, networkFactory)
+        val dataSourceFactory: DataSource.Factory = com.hikari.app.telegram.TdDataSourceFactory(
+            // …and a hikari-td: URI is answered by TDLib instead of HTTP, which
+            // is what plays a video that lives in the user's Telegram account
+            // (see com.hikari.app.telegram.TdFileDataSource). Everything else
+            // goes through the chain below, exactly as before.
+            DefaultDataSource.Factory(this, networkFactory)
+        )
 
         // DRM-protected sources (ClearKey/Widevine) get a matching media3 DRM
         // session manager; without it ExoPlayer opens the encrypted manifest

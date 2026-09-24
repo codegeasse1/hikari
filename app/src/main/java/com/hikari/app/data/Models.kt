@@ -192,6 +192,21 @@ data class MediaItem(
      * search result and a cached shelf all carry their own answer.
      */
     val nsfw: Boolean = false,
+    /**
+     * The best quality the SOURCE ITSELF states for this item, already in the
+     * poster badge's own vocabulary ("4K", "1080p", "HDR", …).
+     *
+     * Only an extension that scrapes a site can fill this in: CloudStream
+     * providers carry a `SearchQuality` on every search result, because the site
+     * they read knows what it serves (an "1080p WEB-DL" row is not a guess). So
+     * for those catalogs the poster's quality badge shows the real answer
+     * immediately, without opening the title and without playing it. Addons that
+     * resolve streams instead of scraping a catalog (Nuvio, Stremio) leave it
+     * null — nothing is known about their quality until a stream is picked, and
+     * a badge invented from nothing would be a lie on the poster. See
+     * [com.hikari.app.data.TitleQuality].
+     */
+    val quality: String? = null,
 ) {
     val uniqueId: String get() = "$providerId|$type|$id"
 
