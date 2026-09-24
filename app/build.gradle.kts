@@ -147,9 +147,14 @@ val stageTdJniLibs = tasks.register<Sync>("stageTdJniLibs") {
 }
 android.sourceSets.getByName("main").jniLibs.srcDir(tdJniStageDir)
 // The merge tasks are created by AGP after this file is evaluated, so the
-// dependency is matched by name rather than by type.
-tasks.matching { it.name.startsWith("merge") && it.name.endsWith("NativeLibs") }
-    .configureEach { dependsOn(stageTdJniLibs) }
+// dependency is matched by NAME rather than by type. (AGP 8's own validation
+// refuses to run otherwise: it sees the merge task read a directory another task
+// writes and insists the dependency be declared — "Gradle detected a problem with
+// the following location: app/build/td-jni".)
+tasks.matching {
+    it.name.contains("JniLibFolders") || it.name.contains("NativeLibs") ||
+        it.name.contains("NativeDebugMetadata")
+}.configureEach { dependsOn(stageTdJniLibs) }
 
 // cloudstream3.jar is a precompiled library that ships compiled R classes for
 // every namespace it touches (androidx/activity/compose/R.class,
