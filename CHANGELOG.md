@@ -1,3 +1,36 @@
+## 0.10.32
+
+### Fixed
+
+- **Telegram videos play on the first tap instead of "Server is not responding (still buffering
+  after 20s)".** The data source that streams a video out of TDLib made ExoPlayer's first read wait
+  until a FULL 2 MiB chunk was on disk — half a minute on a 76 KB/s phone connection, and on a
+  slower one it never arrived — while the player's watchdog wrote the server off after 20s. It now
+  waits only for the bytes the read in front of it actually needs (a faststart video's header is a
+  few dozen kilobytes), asks TDLib for a 2 MiB window aligned to that read and KEEPS the window so
+  the download still runs ahead of playback, and a Telegram source gets a 60s budget instead of the
+  20s an HTTP server is held to (a TDLib fetch has no CDN in front of it, and resolving the file
+  reference is itself a round trip). Seeking is honest too: TDLib counts only bytes actually
+  written and a range download does not advance the file's prefix, so a jump into the middle now
+  measures that window's own coverage instead of waiting for the prefix to reach it.
+- **Stremio addons: series play, not just movies.** A series is always asked for as a video id
+  (`tt…:season:episode`), and the id it is asked WITH is now one the addon declared — both spellings
+  when it declares both, `tmdb:` first because that is the id the item already carries. TMDB's
+  `/tv/{id}/external_ids` has no `imdb_id` at all for a large share of shows (most anime, most
+  non-English series) while a movie's nearly always has one, so an IMDb-only translation left those
+  series being asked with a bare numeric id that an addon like PenguPlay — which declares `tt` and
+  `tmdb:` — answers with nothing. A series whose episode list could not be loaded is also played as
+  season 1 episode 1 rather than with no episode at all, and the `/stream/{type}/` segments the
+  manifest declares are tried before the guessed ones. Reported as "movies play, series say no
+  playable source found".
+- **Manga: a failed chapter list now says WHY.** The extension's own RxJava-1 HTTP path hangs an
+  `OnNextValue` marker off the END of the cause chain, so walking to the deepest cause printed the
+  wrapper — "x chapters failed: OnNextValue: OnError while emitting onNext value: okhttp" — and the
+  line was then cut at 72 characters, before the actual reason. The wrappers are skipped now and the
+  real error is reported; a linkage error (an extension built against a different version of the
+  app's HTTP library) is called out in plain words, because that is a compatibility problem and not
+  the site being down. The row has room for the whole sentence.
+
 ## 0.10.31
 
 ### Fixed

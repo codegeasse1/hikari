@@ -43,6 +43,12 @@ class TdFileDataSource : BaseDataSource(false) {
     private var complete: Boolean = false
     private var transferring: Boolean = false
 
+    /** The download window TDLib was last asked for, and how many bytes were on
+     *  disk when it was asked — see [prime]. Kept across reads rather than per
+     *  call, because that is what makes a window's own coverage knowable. */
+    private var windowRequested: Long = Long.MIN_VALUE
+    private var windowBaseline: Long = 0
+
     override fun open(dataSpec: DataSpec): Long {
         close()
         transferInitializing(dataSpec)
@@ -69,7 +75,7 @@ class TdFileDataSource : BaseDataSource(false) {
             transferStarted(dataSpec)
             return 0
         }
-        prime(position)
+        prime(position, FIRST_BYTES, START_WAIT_MS)
         // The path can only be known once TDLib has started writing the file,
         // which is exactly what prime() waits for.
         val path = Td.fileState(fileId)?.path.orEmpty()
@@ -81,30 +87,82 @@ class TdFileDataSource : BaseDataSource(false) {
     }
 
     /**
-     * Make sure [offset] is on disk, asking TDLib for it when it is not. A read
-     * that arrives before the bytes do waits here — up to two minutes — so a
-     * slow connection shows ExoPlayer's own buffering indicator rather than an
-     * error.
+     * Make sure [need] bytes starting at [offset] are on disk, asking TDLib for
+     * them when they are not. A read that arrives before the bytes do waits here
+     * — up to [waitMs] — so a slow connection shows ExoPlayer's own buffering
+     * indicator rather than an error.
+     *
+     * [need] is what THIS read is about to consume, not the whole chunk the
+     * download is fetched in. Waiting for all 2 MiB before handing ExoPlayer its
+     * first byte is what made every Telegram video report "Server is not
+     * responding (still buffering after 20s)": 2 MiB is half a minute at
+     * 76 KB/s, and on a slower connection it never arrives at all. The request
+     * TDLib is given stays chunked and aligned to the read (see
+     * [Td.CHUNK_BYTES]), so the download still runs ahead of playback while the
+     * player gets its first frames as soon as they exist.
      */
-    private fun prime(offset: Long) {
-        if (complete && ready > offset) return
-        var state = runBlocking { Td.await(fileId, offset, CHUNK, 120_000) }
-        // TDLib answers the first request with whatever it already had while the
-        // download it just started is still running, so one more round is the
-        // difference between "the first frame appears" and a stall.
-        if (state != null && state.downloaded < offset + CHUNK && !state.complete) {
-            state = runBlocking { Td.await(fileId, offset, CHUNK, 120_000) }
+    private fun prime(offset: Long, need: Long, waitMs: Long) {
+        if (complete && ready >= offset + need) return
+        // Never wait for bytes the file does not have — the last chunk of a
+        // video is short, and asking for a full window past the end would sit
+        // here until the timeout on every seek into the tail.
+        val want = if (length != C.LENGTH_UNSET.toLong()) {
+            minOf(need, (length - offset).coerceAtLeast(1L))
+        } else need
+        val window = offset / Td.CHUNK_BYTES * Td.CHUNK_BYTES
+        val deadline = System.currentTimeMillis() + waitMs
+        while (true) {
+            val state = Td.fileState(fileId)
+            if (state != null) {
+                if (state.complete) {
+                    ready = maxOf(state.size, offset + want)
+                    complete = true
+                    return
+                }
+                if (state.downloaded >= offset + want) {
+                    // The ordinary case: the file's own prefix has reached the
+                    // bytes this read wants, so they are on disk.
+                    ready = maxOf(ready, state.downloaded)
+                    return
+                }
+                if (window == windowRequested) {
+                    // The window's own coverage. Everything TDLib has written
+                    // since it was asked for this window is the window's — a new
+                    // range request cancels whatever else it was doing for this
+                    // file — so this is what tells a SEEK its bytes have landed:
+                    // a range download does not advance the file's prefix, so
+                    // `downloaded` on its own never reaches into the middle of a
+                    // film.
+                    ready = maxOf(ready, window + (state.downloaded - windowBaseline))
+                    if (ready >= offset + want) return
+                }
+            }
+            if (System.currentTimeMillis() >= deadline) return
+            if (window != windowRequested) {
+                Td.request(fileId, window, Td.CHUNK_BYTES)
+                windowRequested = window
+                windowBaseline = Td.fileState(fileId)?.downloaded ?: 0L
+            }
+            // Sleeping on ExoPlayer's own loading thread, which is allowed to
+            // block: this is what shows the player's buffering indicator instead
+            // of an error while Telegram delivers the bytes.
+            try {
+                Thread.sleep(120)
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return
+            }
         }
-        if (state == null) throw IOException("Telegram did not answer")
-        ready = maxOf(state.downloaded, if (state.complete) state.size else 0L)
-        complete = state.complete
     }
 
     override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
         if (length == 0) return 0
         if (bytesRemaining == 0L) return C.RESULT_END_OF_INPUT
         val raf = reader ?: throw IOException("Not open")
-        if (!complete && position + length > ready) prime(position)
+        if (!complete && position + length > ready) {
+            // Only the bytes this read is about to consume — see [prime].
+            prime(position, (position + length) - minOf(ready, position), READ_WAIT_MS)
+        }
         val want = if (bytesRemaining == C.LENGTH_UNSET.toLong()) length
         else minOf(length.toLong(), bytesRemaining).toInt()
         val n = try {
@@ -119,7 +177,7 @@ class TdFileDataSource : BaseDataSource(false) {
             if (complete) return C.RESULT_END_OF_INPUT
             // Ask for more and let ExoPlayer retry this same read rather than
             // declaring the stream over.
-            prime(position)
+            prime(position, length.toLong(), READ_WAIT_MS)
             return 0
         }
         position += n
@@ -136,6 +194,8 @@ class TdFileDataSource : BaseDataSource(false) {
         uri = null
         ready = 0
         complete = false
+        windowRequested = Long.MIN_VALUE
+        windowBaseline = 0
         if (transferring) {
             transferring = false
             // BaseDataSource.transferEnded() requires a started transfer.
@@ -147,10 +207,41 @@ class TdFileDataSource : BaseDataSource(false) {
         /** The scheme the player sees; the file id rides in a query parameter. */
         const val SCHEME = "hikari-td"
 
-        /** How much to ask TDLib for at a time: big enough that 1080p plays
-         *  through it smoothly, small enough that a seek starts playing without
-         *  waiting for a whole film. */
-        private const val CHUNK = 2L * 1024 * 1024
+        /**
+         * How many bytes must be on disk before [open] returns, i.e. before the
+         * player is handed the video at all.
+         *
+         * Enough for an MP4's `moov` atom and its first frames — Telegram videos
+         * are faststart, so their header sits at the front — and small enough to
+         * arrive in a second or two on a mobile connection. This is the whole
+         * point of not waiting for the full 2 MiB download window: the player
+         * starts, and keeps filling in from disk as it reads.
+         */
+        private const val FIRST_BYTES = 128L * 1024
+
+        /**
+         * How long [open] waits for those first bytes before handing the player a
+         * source that will keep filling in as it reads. Public because the
+         * player's "server is not responding" watchdog has to wait longer than
+         * this — see [PLAYER_START_BUDGET_MS].
+         */
+        const val START_WAIT_MS = 20_000L
+
+        /** How long one read may wait for the bytes it is about to consume. */
+        private const val READ_WAIT_MS = 25_000L
+
+        /**
+         * How long the player waits for a Telegram video to start before showing
+         * its "server is not responding" prompt.
+         *
+         * A TDLib fetch has a cold-start cost an HTTP request does not (the file
+         * reference is resolved over MTProto and the first chunk is pulled from
+         * Telegram's servers, with no CDN in front of it), so the ordinary 20s
+         * budget declared every Telegram video a dead server before
+         * [START_WAIT_MS] had even elapsed. Used by PlayerActivity's
+         * scheduleBufferingWatchdog.
+         */
+        const val PLAYER_START_BUDGET_MS = 60_000L
 
         fun uriFor(fileId: Int): String = "$SCHEME://file?id=$fileId"
 

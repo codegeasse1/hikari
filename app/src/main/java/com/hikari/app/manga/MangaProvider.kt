@@ -192,7 +192,11 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
     }
 
     private fun failEpisodes(msg: String): List<Episode>? {
-        lastOutcome[config.id] = "✗ " + msg.take(72)
+        // 72 characters cut the REASON off the line — "chapters failed: …okhttp"
+        // and nothing more, exactly as reported. The detail screen prints this row
+        // and has room for the whole sentence, and the log line below is never
+        // truncated, so the cap only ever hid the one thing worth reading.
+        lastOutcome[config.id] = "✗ " + msg.take(200)
         Logs.log("Manga", "${config.name}: $msg")
         // The cached list (when there is one) beats an empty screen: a source
         // that is temporarily down still lets the user open the chapters already
@@ -341,11 +345,55 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
         return list.reversed()
     }
 
+    /**
+     * The most useful one-line description of [t].
+     *
+     * The DEEPEST cause is NOT the answer, and treating it as one is why the only
+     * thing this app could say about a failed chapter list was
+     * "OnNextValue: OnError while emitting onNext value: okhttp…".
+     *
+     * A manga source's request runs through the extension's own RxJava-1 HTTP
+     * path (`HttpSource.fetchChapterList` → `Call.asObservableSuccess().map {
+     * chapterListParse(it) }`), and Rx appends its own marker to the END of the
+     * cause chain: `OnErrorThrowable.addValueAsLastCause` hangs an `OnNextValue`
+     * — whose message names the VALUE that was being delivered (an okhttp
+     * `Response`) — off the real throwable. So walking to the innermost cause
+     * landed on Rx's wrapper and printed it as though it were the failure,
+     * hiding the actual error underneath: a linkage error, an `HttpException`, an
+     * exception out of the extension's own parser.
+     *
+     * So the wrappers are skipped and the innermost NON-wrapper is reported.
+     * When that error carries no message of its own, the wrapper's is kept — it
+     * at least names what was in flight when the parse blew up.
+     */
     private fun reason(t: Throwable): String {
-        var c: Throwable = t
-        while (c.cause != null && c.cause !== c) c = c.cause!!
-        return c::class.java.simpleName + (c.message?.let { ": $it" } ?: "")
+        // The cause chain, outermost first. `seen` is an identity set because a
+        // throwable whose cause is itself — or a loop of two — would otherwise
+        // spin here forever.
+        val chain = ArrayList<Throwable>(4)
+        val seen = java.util.IdentityHashMap<Throwable, Boolean>()
+        var cursor: Throwable? = t
+        while (cursor != null && seen.put(cursor, true) == null) {
+            chain += cursor
+            cursor = cursor.cause
+        }
+        val wrapper = chain.lastOrNull { isRxWrapper(it) }
+        val real = chain.lastOrNull { !isRxWrapper(it) } ?: wrapper ?: t
+        val label = real.javaClass.simpleName.ifBlank { real.javaClass.name }
+        // A failing LINKAGE is worth a plain word, because it is not the site: a
+        // manga extension is a separate APK compiled against its own copy of the
+        // HTTP library, so a NoSuchMethodError/NoClassDefFoundError here means the
+        // extension and this app disagree about that library's version.
+        val compat = if (real is LinkageError) {
+            " — this extension was built against a different version of the app's HTTP library"
+        } else ""
+        val detail = real.message?.takeIf { it.isNotBlank() }
+            ?: wrapper?.message?.takeIf { it.isNotBlank() }
+        return label + (detail?.let { ": $it" } ?: "") + compat
     }
+
+    /** True for RxJava's own plumbing types — see [reason]. */
+    private fun isRxWrapper(t: Throwable): Boolean = t.javaClass.name.startsWith("rx.")
 }
 
 /** The `SManga` per item, so `getMangaDetails`/`getChapterList` get the url and

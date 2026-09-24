@@ -1048,25 +1048,15 @@ object Td {
     }
 
     /**
-     * Wait until [offset] + [bytes] of the file are on disk (or the whole file
-     * is), asking for them first. Returns the last state seen on timeout, so the
-     * caller can show progress instead of hanging.
+     * How much of a file one TDLib request covers.
+     *
+     * Playback asks for the window a read lands in (the `prime` step of
+     * `TdFileDataSource`), and keeps it: a request that covered less would
+     * have to be renewed every few reads, and every renewal CANCELS the range
+     * TDLib is already downloading, so the download would restart a few
+     * kilobytes further on and never run ahead of the player. Small enough that
+     * a seek into the middle of a film starts there instead of pulling the whole
+     * file, large enough that 1080p plays through it smoothly.
      */
-    suspend fun await(fileId: Int, offset: Long, bytes: Long, timeoutMs: Long = 60_000): FileState? {
-        val deadline = System.currentTimeMillis() + timeoutMs
-        var state = fileState(fileId)
-        var askedAt = -1L
-        while (System.currentTimeMillis() < deadline) {
-            state = fileState(fileId) ?: state
-            if (state?.complete == true || (state?.downloaded ?: 0L) >= offset + bytes) return state
-            // TDLib cancels a previous request for the same file when a new one
-            // arrives, so a request must be re-issued for every new offset.
-            if (askedAt != offset) {
-                request(fileId, offset, bytes)
-                askedAt = offset
-            }
-            delay(150)
-        }
-        return state
-    }
+    const val CHUNK_BYTES: Long = 2L * 1024 * 1024
 }

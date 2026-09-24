@@ -532,37 +532,146 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
         return false
     }
 
+    /**
+     * Whether this addon declares it answers ids in [prefix]'s namespace.
+     *
+     * The protocol lets a manifest name the namespaces it knows twice over — at
+     * the top level (`idPrefixes`) and per resource (`resources[].idPrefixes`) —
+     * and both are checked. PenguPlay, for instance, declares `tt` AND `tmdb:`,
+     * which is what lets an id the app already holds be handed straight over
+     * instead of being resolved to an IMDb id that may not exist.
+     */
+    private fun acceptsPrefix(prefix: String): Boolean {
+        val m = manifest ?: return false
+        m.optJSONArray("idPrefixes")?.let { arr ->
+            for (i in 0 until arr.length()) {
+                if (arr.optString(i).equals(prefix, ignoreCase = true)) return true
+            }
+        }
+        val resources = m.optJSONArray("resources") ?: return false
+        for (i in 0 until resources.length()) {
+            val r = resources.optJSONObject(i) ?: continue
+            if (!r.optString("name").equals("stream", ignoreCase = true)) continue
+            val arr = r.optJSONArray("idPrefixes") ?: continue
+            for (j in 0 until arr.length()) {
+                if (arr.optString(j).equals(prefix, ignoreCase = true)) return true
+            }
+        }
+        return false
+    }
+
+    /** The `type` strings the manifest declares for its STREAM resource, lower-
+     *  cased. Empty when it declares none (or declares streams without types). */
+    private fun declaredStreamTypes(m: JSONObject?): Set<String> {
+        val resources = m?.optJSONArray("resources") ?: return emptySet()
+        val out = LinkedHashSet<String>()
+        for (i in 0 until resources.length()) {
+            val r = resources.optJSONObject(i) ?: continue
+            if (!r.optString("name").equals("stream", ignoreCase = true)) continue
+            val types = r.optJSONArray("types") ?: continue
+            for (j in 0 until types.length()) {
+                types.optString(j).takeIf { it.isNotBlank() }?.let { out += it.lowercase() }
+            }
+        }
+        return out
+    }
+
+    /**
+     * The `/stream/{type}/` segments to try for [rawType], best first.
+     *
+     * An addon names the `type` strings it answers per resource, and those are
+     * tried first: a TMDB-browsed series carries TMDB's own `tv` spelling, while
+     * an addon like PenguPlay declares `movie`/`series` for its stream resource
+     * (its `tv` is only for live channels) — so asking it `tv` first was a
+     * request it could only answer empty. The declared types are ordered by the
+     * item's kind, so a series asks `series` before `movie` and vice versa.
+     */
+    private fun streamTypeOrder(m: JSONObject?, rawType: String, type: MediaType): List<String> {
+        val wanted = if (type == MediaType.SERIES) "series" else "movie"
+        val declared = declaredStreamTypes(m).sortedBy { if (it == wanted) 0 else 1 }
+        val out = ArrayList<String>(8)
+        if (declared.isNotEmpty() && rawType !in declared) {
+            out += declared
+            out += rawType
+        } else {
+            out += rawType
+            out += declared.filter { it != rawType }
+        }
+        out += listOf("movie", "series", "tv", "anime", "channel").filter { it !in out }
+        return out.distinct()
+    }
+
     override suspend fun getStreams(item: MediaItem, episode: Episode?): List<StreamSource> {
         val m = loadManifest()
         val typeRaw = typeSegment(item.rawType, item.type)
-        var idPart = episode?.id ?: item.id
+        // A SERIES is always asked for as a VIDEO id, never as the bare show id:
+        // `/stream/{type}/{id}` for a series means `tt…:season:episode`, and an
+        // addon handed the show id alone answers an empty stream list. When the
+        // page has no episode in hand — the episode list could not be loaded,
+        // which is the normal case for a stream-only addon (it has no /meta at
+        // all) when no other extension is installed to borrow a list from — season
+        // 1 episode 1 stands in for "play this series". Without that, movies
+        // played and every series in the same addon reported "no playable source
+        // found".
+        val noEpisode = episode == null && item.type == MediaType.SERIES
+        val epSuffix = when {
+            episode != null -> ":${episode.season}:${episode.number}"
+            noEpisode -> ":1:1"
+            else -> ""
+        }
+        val idPart = episode?.id ?: (item.id + epSuffix)
 
-        // Resolve the id this addon can actually answer. A stream addon declares
-        // `idPrefixes: ["tt"]` and the real client only ever asks it about `tt…`
-        // ids, so two ordinary cases have to be translated first:
+        // Resolve the id this addon can actually answer. The real client only
+        // ever asks an addon about an id namespace the addon DECLARED (its
+        // `idPrefixes`), so two ordinary cases have to be translated first:
         //   (a) an item from our own TMDB browse carries a TMDB id (see
-        //       TmdbBrowse) — TMDB knows the IMDb id behind it;
+        //       TmdbBrowse) — and the addon may declare either `tmdb:` (hand it
+        //       over as it is) or `tt` (resolve the IMDb id behind it);
         //   (b) a title opened from a CloudStream/Aniyomi/etc. extension carries
         //       THAT extension's id, which this addon has never heard of — the
-        //       title resolves to a TMDB id, and then to an IMDb one.
+        //       title resolves to a TMDB id, and then to one of the two above.
         // Without this the addon was asked about ids it does not recognise and
         // returned nothing, which is why a stream addon installed next to other
         // extensions never added a single server to the list.
-        if (m != null) {
-            val epSuffix = if (episode != null) ":${episode.season}:${episode.number}" else ""
-            val idDigits = idPart.takeWhile { it.isDigit() }
+        //
+        // BOTH spellings are handed over when the addon declares both, and the
+        // `tmdb:` one comes first because it is the id the item ALREADY carries
+        // and therefore cannot fail to resolve. That ordering is the fix for
+        // "movies play, but series say no playable source found": TMDB's
+        // `/tv/{id}/external_ids` has no imdb_id at all for a large share of
+        // shows (most anime, most non-English series), while a movie's nearly
+        // always has one — so a series fell back to being asked with the bare
+        // numeric TMDB id, which an addon like PenguPlay (declaring `tt` and
+        // `tmdb:`, and no bare-number namespace) answers with nothing.
+        val videoIds = LinkedHashSet<String>()
+        if (m == null) {
+            // The manifest has not landed yet, so nothing is known about the
+            // namespaces this addon accepts: the item's own id is all there is.
+            videoIds += idPart
+        } else {
+            val digits = idPart.takeWhile { it.isDigit() }
             val kind = if (item.type == MediaType.SERIES) "tv" else "movie"
+            if (digits.isNotEmpty() && acceptsPrefix("tmdb:")) {
+                videoIds += "tmdb:$digits" + epSuffix
+            }
             val imdb = when {
-                idDigits.isNotEmpty() && (usesTmdbBrowse() || !acceptsId(idPart)) ->
-                    TmdbBrowse.imdbId(idDigits, kind)
-                !acceptsId(idPart) &&
+                digits.isNotEmpty() && (usesTmdbBrowse() || !acceptsId(idPart)) ->
+                    TmdbBrowse.imdbId(digits, kind)
+                digits.isEmpty() && !acceptsId(idPart) &&
                     com.hikari.app.nuvio.TmdbResolver.isLikelyResolvable(item) ->
                     com.hikari.app.nuvio.TmdbResolver.resolve(item)?.let { resolved ->
+                        // The resolved TMDB id is offered in the addon's own
+                        // `tmdb:` namespace too, so a title that came from a site
+                        // scraper gets the same two routes a TMDB item does.
+                        if (acceptsPrefix("tmdb:")) videoIds += "tmdb:${resolved.tmdbId}" + epSuffix
                         TmdbBrowse.imdbId(resolved.tmdbId, resolved.mediaType)
                     }
                 else -> null
             }
-            if (imdb != null) idPart = imdb + epSuffix
+            if (!imdb.isNullOrBlank()) videoIds += imdb + epSuffix
+            // Nothing the addon named could be built: send the id as it stands,
+            // exactly what every version before this one did.
+            if (videoIds.isEmpty()) videoIds += idPart
         }
 
         // Metadata-only addons (Cinemeta/Streaming-Catalogs style: catalogs +
@@ -577,16 +686,25 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
             return emptyList()
         }
 
-        // Try the exact URL first, then progressively looser variants so
-        // addons with stricter matching still resolve: base id without the
-        // :season:episode suffix, then common type segments.
-        val attempts = linkedSetOf<String>()
-        attempts += resUrl("stream", typeRaw, idPart)
-        val baseId = stripVideoSuffix(idPart)
-        if (baseId != idPart) attempts += resUrl("stream", typeRaw, baseId)
-        for (alt in listOf("movie", "series", "tv", "anime", "channel")) {
-            if (alt != typeRaw) attempts += resUrl("stream", alt, idPart)
+        // Try the exact URL first, then progressively looser variants so addons
+        // with stricter matching still resolve: the same id under every type
+        // segment the addon might answer for (its own declared ones first), and
+        // each id again without the :season:episode suffix. Every spelling is
+        // cheap — an addon that does not recognise one answers an empty stream
+        // list in one round trip — and the first URL that answers wins.
+        val allAttempts = linkedSetOf<String>()
+        for (id in videoIds) {
+            val baseId = stripVideoSuffix(id)
+            for (t in streamTypeOrder(m, typeRaw, item.type)) {
+                allAttempts += resUrl("stream", t, id)
+                if (baseId != id) allAttempts += resUrl("stream", t, baseId)
+            }
         }
+        // A hard bound on that fan-out (two id spellings × six segments × with
+        // and without the episode suffix): the first requests are the ones that
+        // matter, and a host that answers nothing must not be probed twenty times
+        // over on every pass.
+        val attempts = allAttempts.take(16)
 
         val reasons = mutableListOf<String>()
         for (u in attempts) {

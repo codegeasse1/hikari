@@ -8193,13 +8193,26 @@ class PlayerActivity : ComponentActivity() {
         watchdogTask?.let { bufferingWatchdog.removeCallbacks(it) }
         watchdogTask = null
         val torrent = currentIndex in sources.indices && sources[currentIndex].torrentStream
-        val budget = waitBudget ?: if (torrent) 50_000L else 20_000L
+        // A Telegram video is streamed out of TDLib over MTProto: there is no CDN
+        // in front of it, the file reference has to be resolved and the first
+        // chunk pulled from Telegram's own servers, and the data source holds the
+        // read until those bytes are on disk (see TdFileDataSource). Holding it to
+        // 20s declared every Telegram video a dead server while the download was
+        // still legitimately starting, which is the reported "Playback failed /
+        // Server is not responding (still buffering after 20s)".
+        val telegram = currentIndex in sources.indices &&
+            sources[currentIndex].url.startsWith(com.hikari.app.telegram.TdFileDataSource.SCHEME + "://")
+        val budget = waitBudget ?: when {
+            torrent -> 50_000L
+            telegram -> com.hikari.app.telegram.TdFileDataSource.PLAYER_START_BUDGET_MS
+            else -> 20_000L
+        }
         val task = Runnable {
             watchdogTask = null
             val p = player ?: return@Runnable
             if (p.playbackState == Player.STATE_BUFFERING || p.playbackState == Player.STATE_IDLE) {
                 if (p.currentPosition > 0) return@Runnable
-                promptSlowServer(torrent)
+                promptSlowServer(torrent, budget / 1000)
             }
         }
         watchdogTask = task
@@ -8209,7 +8222,7 @@ class PlayerActivity : ComponentActivity() {
     /** "Server too slow" prompt: Wait 30s or switch to the next server, with a
      *  3-second countdown after which it switches automatically if the user
      *  doesn't answer. Switching instantly moves to the next source. */
-    private fun promptSlowServer(torrent: Boolean) {
+    private fun promptSlowServer(torrent: Boolean, waitedSeconds: Long = 20L) {
         // This server is a dud: nothing has played after its whole budget. Mark
         // it — the URL as tried (so no failover hands it back) and its HOST as
         // failed for the session (the same mirror serves every quality of the
@@ -8239,7 +8252,12 @@ class PlayerActivity : ComponentActivity() {
             }
             showError(
                 if (torrent) I18n.t("Torrent did not start streaming (no peers?)")
-                else I18n.t("Server is not responding (still buffering after 20s)."),
+                // The number is the budget this server actually got, not a
+                // hard-coded 20: a Telegram video (60s) and a "Wait 30s" answer
+                // both reach here, and telling the user "20s" when we waited
+                // three times that is just wrong.
+                else I18n.t("Server is not responding (still buffering after %ss).")
+                    .replace("%s", waitedSeconds.toString()),
                 false
             )
             return
@@ -8381,7 +8399,11 @@ class PlayerActivity : ComponentActivity() {
             if (!awaitingReplacement) return@launch
             awaitingReplacement = false
             hideLoadingBanner(immediate = true)
-            showError(I18n.t("Server is not responding (still buffering after 20s)."), false)
+            showError(
+                I18n.t("Server is not responding (still buffering after %ss).")
+                    .replace("%s", (stalledReplacementWaitMs / 1000).toString()),
+                false,
+            )
         }
     }
 
