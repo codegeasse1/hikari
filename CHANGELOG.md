@@ -85,6 +85,13 @@
   extension client now presents to sources that inspect it.
 - **App window is `singleTask`** so an external-browser sign-in returns into the running window
   (see the tracker fix above).
+- **compileSdk 36, Android Gradle Plugin 8.10.1.** OkHttp 5's Android artifact (`okhttp-android`,
+  pulled in by `com.squareup.okhttp3:okhttp`) declares `minCompileSdk = 36` in its AAR metadata, so
+  a project compiling against 35 cannot depend on it at all — AGP fails the build with "Dependency …
+  requires … version 36 or later". 8.10 is the oldest AGP that supports API 36 and the newest that
+  still runs on this project's Gradle 8.11.1, so the wrapper did not have to move. It is a
+  COMPILE-time level only (`targetSdk` is untouched, so no runtime behaviour changed), and CI's SDK
+  step now installs `platforms;android-36`.
 
 ## 0.10.30
 

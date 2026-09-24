@@ -1,5 +1,14 @@
 [versions]
-agp = "8.7.3"
+# Android Gradle Plugin. 8.10 is the OLDEST AGP that supports compileSdk 36,
+# and something in the extension ecosystem now requires that: OkHttp 5.4.0's
+# Android artifact (`okhttp-android`, pulled in automatically by
+# `com.squareup.okhttp3:okhttp`) declares `minCompileSdk = 36` in its AAR
+# metadata, and AGP refuses to build a project that compiles against less —
+# "Dependency ... requires libraries and applications that depend on it to
+# compile against version 36 or later". 8.10.1 is the newest 8.10 patch, and
+# 8.10 is the newest AGP that still runs on this project's Gradle 8.11.1 (AGP
+# 8.11 needs Gradle 8.13), so the wrapper does not have to move too.
+agp = "8.10.1"
 kotlin = "2.4.0"
 coreKtx = "1.13.1"
 lifecycle = "2.8.4"

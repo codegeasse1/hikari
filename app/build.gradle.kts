@@ -8,7 +8,13 @@ plugins {
 
 android {
     namespace = "com.hikari.app"
-    compileSdk = 35
+    // 36, not 35: OkHttp 5.4.0's Android artifact declares `minCompileSdk = 36`
+    // in its AAR metadata (and every extension built on the current keiyoushi /
+    // Aniyomi ecosystem links against OkHttp 5), so a project compiling against
+    // 35 cannot depend on it at all — AGP fails the build outright. This is a
+    // COMPILE-time level only: `targetSdk` below is untouched, so no runtime
+    // behaviour changed. See the `agp` note in gradle/libs.versions.toml.
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.hikari.app"
