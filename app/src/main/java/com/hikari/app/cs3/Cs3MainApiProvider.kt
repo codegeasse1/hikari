@@ -794,11 +794,39 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                     }
                 }
 
-                fun pluginSources(): List<StreamSource> =
-                    if (pluginJob.isCompleted) {
-                        runCatching { toStreamSources(links.toList(), subs.toList()) }
-                            .getOrDefault(emptyList())
-                    } else emptyList()
+                // Handed over the MOMENT the plugin's first links land — not
+                // when its whole loadLinks run returns.
+                //
+                // `links` is filled by the plugin's OWN callbacks as each
+                // extractor resolves (that is why it is a CopyOnWriteArrayList:
+                // a provider fans out over several extractors and calls back
+                // from several threads), and a provider with mirrors keeps
+                // calling back for seconds after its FIRST link is already
+                // playable. CloudStream plays on the first link. This used to
+                // require `pluginJob.isCompleted`, which made the merge loop's
+                // "the plugin is still working but has already handed us
+                // servers" branch UNREACHABLE (the flag it sets can only be set
+                // once the job is done) — so Hikari waited for the entire run,
+                // to the provider's own loadLinks budget, before a single server
+                // could be shown. That is the "it sits on 'Searching your
+                // extension for servers…' and then every server appears at once"
+                // report: the servers were in hand the whole time.
+                //
+                // Rebuilt only when the plugin has actually added something, so
+                // the 80 ms poll below never re-maps the list for nothing.
+                var pluginLinksSeen = -1
+                var pluginSubsSeen = -1
+                var pluginSourcesCache: List<StreamSource> = emptyList()
+                fun pluginSources(): List<StreamSource> {
+                    if (links.size != pluginLinksSeen || subs.size != pluginSubsSeen) {
+                        pluginLinksSeen = links.size
+                        pluginSubsSeen = subs.size
+                        pluginSourcesCache = runCatching {
+                            toStreamSources(links.toList(), subs.toList())
+                        }.getOrDefault(emptyList())
+                    }
+                    return pluginSourcesCache
+                }
 
                 fun fallbackSources(): List<StreamSource> =
                     if (fallbackJob.isCompleted) {
@@ -856,6 +884,19 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                     }
                     if (now > deadline) break
                     kotlinx.coroutines.delay(80)
+                }
+                // Say so when servers were handed over while the plugin was
+                // still extracting (its later links are dropped — playback speed
+                // is the point, see the merge loop). The line is what tells a
+                // "the list got shorter" report apart from a provider that
+                // simply found fewer servers.
+                if (merged.isNotEmpty() && !pluginJob.isCompleted) {
+                    com.hikari.app.data.Logs.log(
+                        "Provider",
+                        a.name + ": ${merged.size} server(s) handed over after " +
+                            "${(System.currentTimeMillis() - started) / 1000}s while the " +
+                            "plugin was still extracting (its later links are dropped)",
+                    )
                 }
                 if (!pluginJob.isCompleted) pluginJob.cancel()
                 if (!fallbackJob.isCompleted) fallbackJob.cancel()

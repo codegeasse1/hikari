@@ -1258,12 +1258,17 @@ class ContentRepository(private val manager: ProviderManager) {
      *  cap — releases the rest. */
     private val ORIGIN_SETTLE_MAX_MS = 8_000L
 
-    /** How long the FIRST stream call to an .hiki/.cs3 origin is given before it
-     *  is retried with the full budget. Short on purpose: the first call is the
-     *  one that pays the plugin's cold start (its runtime, its session), and a
-     *  probe that comes back empty-handed costs almost nothing — the retry then
-     *  runs against a plugin that is already loaded. See [fetchStreams]. */
-    private val ORIGIN_PROBE_MS = 12_000L
+    /** A provider call that took at least this long gets its own log line even
+     *  when it succeeded — see [fetchStreams]. A call that answers in a second
+     *  is not worth a line; the one the user watched for forty is the whole
+     *  question.
+     *
+     *  (This slot used to hold the origin's 12-second PROBE. That probe is gone:
+     *  a provider call cannot be interrupted, so "give up at 12s and retry with
+     *  the full budget" gave nothing up — it left the first call running, and
+     *  holding the extension's [com.hikari.app.providers.ProviderGate] lock,
+     *  while the retry queued behind it. See [fetchStreams].) */
+    private val SLOW_CALL_LOG_MS = 3_000L
 
     /** How long a background re-ask of a pass's PRIMARY targets waits before it
      *  runs: just enough for the pass's own cancelled calls to let go of the
@@ -1702,55 +1707,73 @@ class ContentRepository(private val manager: ProviderManager) {
      *  [NetTuning] slow mode is on, a provider that times out or throws is
      *  asked again (up to [NetTuning.attempts]) instead of being written off
      *  for the rest of the search — the usual cause of "No playable sources
-     *  found" on mobile data, where a single late response used to end it. */
+     *  found" on mobile data, where a single late response used to end it.
+     *
+     *  EVERY attempt gets the provider's FULL budget, the origin's first one
+     *  included. There used to be a short (12s) probe first, on the theory that
+     *  a cold plugin answers or fails fast and the long attempt then runs
+     *  against a warm one. It is gone because a provider call cannot be
+     *  interrupted: `withTimeoutOrNull` only abandons the WAIT, while the call
+     *  itself runs on — and every one of these calls goes into the extension
+     *  through a [com.hikari.app.providers.ProviderGate] mutex, so the "retry"
+     *  could not even START until the abandoned first call had finished on its
+     *  own. An extension whose answer takes longer than the probe therefore paid
+     *  probe + the-abandoned-call + the-whole-second-call: twice the work for
+     *  the same episode, which is the reported "tap Play, watch 'Searching your
+     *  extension for servers…' for about a minute, and then it plays". Nothing
+     *  held the player back in the meantime either — its auto-start waits for
+     *  the first server, not for the origin (see StreamsLive.settleOrigin), and
+     *  the pass's own deadline bounds the whole lookup. So the provider gets its
+     *  real budget now, exactly like it does inside CloudStream. */
     private suspend fun fetchStreams(
         p: ContentProvider,
         item: MediaItem,
         episode: Episode?,
     ): List<StreamSource> {
         // Is this the provider the user OPENED the title from? Its answer is the
-        // one the player waits for before it starts on anybody else's server
-        // (see StreamsLive.settleOrigin and the pass's onOriginSettled), so its
-        // fetch is treated differently from the other providers': a deliberately
-        // SHORT first probe, then a real retry.
+        // one the player sorts to the front of its list (see
+        // StreamsLive.settleOrigin and the pass's onOriginSettled), and the one
+        // worth a log line of its own whatever it costs.
         val isOrigin = p.config.id == item.providerId
         // Aniyomi extensions pay a cold APK class load before their first
         // answer (see the Aniyomi budgets above) — 45s cut them off.
         val fullTimeoutMs =
             if (isAniyomi(p)) minOf(NetTuning.timeout(90_000L), 120_000L)
             else NetTuning.timeout(45_000L)
-        // A .hiki/.cs3 plugin's FIRST call has to spin up its runtime and open
-        // the site's session before it can answer anything. Inside one 45s
-        // budget that cold start is not always over, the call times out having
-        // proved NOTHING — and the user's own extension then looked like it had
-        // nothing for the title it plainly has, while another extension's
-        // server got played instead ("it selected XFree and played the wrong
-        // video … on the second attempt it showed the MRDS server"). So the
-        // origin gets a short PROBE first — a cold path answers or fails fast —
-        // and then the full budget, which by then runs against a warm plugin.
-        // Nothing is given up on either way: the long attempt always follows.
-        val probeMs = minOf(fullTimeoutMs, ORIGIN_PROBE_MS)
         val maxAttempts = if (isOrigin) maxOf(NetTuning.attempts(), 2) else NetTuning.attempts()
         var attempt = 0
         var lastWhy: String? = null
         while (true) {
-            val budget = if (isOrigin && attempt == 0) probeMs else fullTimeoutMs
+            attempt++
             var timedOut = false
             val at = System.currentTimeMillis()
             val got = cancellableCatching {
-                val r = withTimeoutOrNull(budget) { p.getStreams(item, episode) }
+                val r = withTimeoutOrNull(fullTimeoutMs) { p.getStreams(item, episode) }
                 if (r == null) timedOut = true
                 r.orEmpty()
             }.getOrElse { t ->
                 lastWhy = t.javaClass.simpleName + (t.message?.let { ": ${it.take(80)}" } ?: "")
                 emptyList()
             }
+            val took = (System.currentTimeMillis() - at) / 1000
             if (got.isNotEmpty()) {
                 providerOutcome.remove(p.config.id)
+                // Where a wait went, for the calls that took one: the extension,
+                // and the number of seconds its own answer cost. This is the one
+                // measurement that says whether a slow Play tap is the extension
+                // being slow or Hikari holding it — the ProviderGate lines in the
+                // same log say which.
+                if (isOrigin || took >= SLOW_CALL_LOG_MS / 1000) {
+                    com.hikari.app.data.Logs.log(
+                        "Provider",
+                        p.config.name.ifBlank { p.config.id } +
+                            " [${p.config.type.groupLabel}]" +
+                            (if (isOrigin) " (this title's own extension)" else "") +
+                            ": ${got.size} server(s) in ${took}s (attempt $attempt/$maxAttempts)",
+                    )
+                }
                 return got
             }
-            attempt++
-            val took = (System.currentTimeMillis() - at) / 1000
             if (timedOut) lastWhy = "no answer in ${took}s"
             if (attempt >= maxAttempts) {
                 // Say WHY, on the provider's own log line. "This repo has no
@@ -1797,6 +1820,20 @@ class ContentRepository(private val manager: ProviderManager) {
                 )
                 return got
             }
+            // A genuinely EMPTY answer — not an abandoned call, which never
+            // reaches this line — is worth one more ask with the same full
+            // budget: a provider that answers "nothing" in a second is often
+            // the one that answers properly a moment later. This is the only
+            // retry left, and it can only run after the first call really
+            // returned, so it can never queue a second call behind a running
+            // one (which is what the removed probe did).
+            com.hikari.app.data.Logs.log(
+                "Provider",
+                p.config.name.ifBlank { p.config.id } + " [" + p.config.type.groupLabel + "]" +
+                    ": attempt $attempt/$maxAttempts answered nothing" +
+                    (lastWhy?.let { " ($it)" } ?: "") +
+                    " — asking again with the full ${fullTimeoutMs / 1000}s budget",
+            )
         }
     }
 

@@ -214,6 +214,26 @@ object ProviderGate {
      *  searching, and this is the backstop that says so. */
     private const val BACKGROUND_MAX_HOLD_MS = 20_000L
 
+    /**
+     * How long a BACKGROUND caller gives a page that is loading SOMEBODY ELSE a
+     * head start.
+     *
+     * The app-wide "is a page loading" check used to be the same 20-second hold
+     * the same-provider one gets, and that is a delay with nothing on the other
+     * side of it: a stream lookup could spend its first twenty seconds parked
+     * because an unrelated screen was loading an unrelated extension — no lock
+     * of its own was contended at all. A couple of seconds still lets a page get
+     * its own requests in first, which is the etiquette the check was for; the
+     * case that was ever REPORTED as a page being held up is the same-provider
+     * one, and that keeps its full hold.
+     */
+    private const val BACKGROUND_COURTESY_MS = 2_000L
+
+    /** How long a background call may have waited before its wait is written to
+     *  the log, with the reason. This is the line that answers "where did the
+     *  minute before playback go" (see [withProvider]). */
+    private const val WAIT_LOG_MS = 750L
+
     private fun lockFor(id: String) = locks.computeIfAbsent(id) { kotlinx.coroutines.sync.Mutex() }
 
     private fun waitersFor(id: String) =
@@ -233,8 +253,11 @@ object ProviderGate {
                 waiters.decrementAndGet()
             }
         }
-        // BACKGROUND: never queue in front of interactive work — not for this
-        // provider (a waiting page), and not while any page is loading at all.
+        // BACKGROUND: never queue in front of interactive work ON THIS PROVIDER
+        // — a page waiting for this very extension goes first, up to the cap
+        // below. Work that belongs to some other page buys only a courtesy
+        // window (see [BACKGROUND_COURTESY_MS]).
+        //
         // Polling rather than a fairness queue because the condition is "is the
         // user waiting", which changes while we wait; the poll is 25 ms, which
         // is nothing next to the calls this is protecting.
@@ -242,9 +265,26 @@ object ProviderGate {
         val waiters = waitersFor(id)
         val startedAt = System.currentTimeMillis()
         while (true) {
-            val held = System.currentTimeMillis() - startedAt < BACKGROUND_MAX_HOLD_MS
-            val yieldToInteractive = held && (waiters.get() > 0 || interactiveWindows.get() > 0)
-            if (!yieldToInteractive && mutex.tryLock()) {
+            val elapsed = System.currentTimeMillis() - startedAt
+            val pageWantsThis = waiters.get() > 0 && elapsed < BACKGROUND_MAX_HOLD_MS
+            val somePageLoading = waiters.get() == 0 && interactiveWindows.get() > 0 &&
+                elapsed < BACKGROUND_COURTESY_MS
+            if (!pageWantsThis && !somePageLoading && mutex.tryLock()) {
+                // WHY the call started late, when it did. Without this line a
+                // slow search is one anonymous wait in a log full of them; with
+                // it, a wait is attributed to the page that caused it, to an
+                // earlier call on the same extension that never let go, or to
+                // nothing at all.
+                if (elapsed >= WAIT_LOG_MS) {
+                    com.hikari.app.data.Logs.log(
+                        "Provider",
+                        "$id: $lane call started after waiting ${elapsed / 1000.0}s — " + when {
+                            waiters.get() > 0 -> "a page is waiting for this extension"
+                            interactiveWindows.get() > 0 -> "a page was loading"
+                            else -> "this extension was still finishing an earlier call"
+                        },
+                    )
+                }
                 try {
                     return block()
                 } finally {

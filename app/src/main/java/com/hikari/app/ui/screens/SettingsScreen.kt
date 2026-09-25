@@ -4997,7 +4997,7 @@ private fun WebViewSafetyCard(app: HikariApp) {
         )
         Spacer(Modifier.height(4.dp))
         Text(
-            tr("Never blocked, even on other sites"),
+            tr("A host (player.example.com), or one word — a word allows any link that contains it, whatever comes after it: add 'filester' and filester.com, filester.gg and filester.sh all work."),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )

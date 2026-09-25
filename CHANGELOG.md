@@ -1,3 +1,17 @@
+## 0.10.43
+
+### Fixed
+
+- **"Searching your extension for servers…" for about a minute, and then it plays.** The extension a search starts with was being asked TWICE, and the second ask could not even begin until the first had finished on its own: Hikari lets only one call into an extension at a time, so the abandoned first attempt held it while the retry queued behind it. An extension whose answer takes longer than the 12-second probe therefore paid probe + abandoned call + the whole second call — the same episode extracted twice, which is exactly the wait that was reported, and it is also why the same episode played immediately after a restart (no abandoned call was still running inside the extension). The probe is gone: every attempt now gets the provider's real budget — the same one CloudStream gives it — and the retry only happens after a call really came back with nothing.
+- **Servers from a CloudStream extension now appear the moment it hands the first one over**, instead of when its whole extraction returns. The merge loop was written to start on the first link ("the plugin is still working, but it has already handed us servers") but the check that fed it could only be true once the extraction had FINISHED, so that branch was dead code — a provider that keeps resolving mirrors for another half a minute held the entire server list back with it.
+- **A stream lookup no longer waits out a page that is loading a *different* extension.** Holding background extension work off while the user is waiting on a page is right, but the check was app-wide and parked a lookup for up to 20 seconds even when nothing was competing for its own extension — which the player's "finding servers" wait sat behind. It is two seconds of courtesy now, and a page waiting on the SAME extension still goes first.
+
+### Added
+
+- **Allowed redirect links now take a single word as well as a host.** Add `filester` and every link that contains it is allowed, whatever stands behind it — filester.com, filester.me, filester.gg, filester.sh. A host (`net77.cc`) still matches itself and its subdomains.
+- **The WebView's ⋯ menu can allow the redirect it just blocked.** When a navigation is refused, the menu — beside "Open in player" and "Open in browser" — offers "Allow redirect to <host>": one tap puts that host on the allowed list (the same list Settings edits) and opens the page that was refused. The blocked-redirect toast says where the way out is.
+- Extension log lines now record how long each extension's own answer took, and why a background call started late — so a slow search can be told apart from a slow extension.
+
 ## 0.10.42
 
 Everything added and fixed since 0.10.25.

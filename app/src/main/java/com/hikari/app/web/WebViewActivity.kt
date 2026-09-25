@@ -166,9 +166,52 @@ class WebViewActivity : ComponentActivity() {
     @Volatile
     private var allowedRedirectHosts: Set<String> = com.hikari.app.data.RedirectAllow.now()
 
+    /**
+     * The main-frame navigation the redirect protection refused LAST, so the ⋯
+     * menu can offer to allow it and open it in one tap (see
+     * [allowBlockedRedirect]). Cleared on every new page ([onPageStarted]), so
+     * the offer can never point at a link from a page the user has left.
+     */
+    @Volatile
+    private var lastBlockedRedirectUrl: String? = null
+    @Volatile
+    private var lastBlockedRedirectHost: String? = null
+
     /** The user's allowed redirect hosts, mirror included. */
     private fun allowedNow(): Set<String> =
         allowedRedirectHosts + com.hikari.app.data.RedirectAllow.now()
+
+    /**
+     * True when a navigation to [url] is one the USER allowed (Settings →
+     * Privacy & Browsing → WebView safety → "Allowed redirect links", or the
+     * WebView's own ⋯ menu). Both forms the list accepts are honoured: a host
+     * ("net77.cc", subdomains included) and a bare word ("filester", any link
+     * that contains it — see [com.hikari.app.data.RedirectAllow]).
+     *
+     * The activity's own copy of the list is consulted as well as the in-memory
+     * mirror, because the activity reads the store itself on launch (see
+     * [allowedNow]): whichever of the two holds the entry, the redirect is the
+     * user's own decision and must not be cancelled.
+     */
+    private fun isRedirectAllowed(url: String?): Boolean =
+        com.hikari.app.data.RedirectAllow.allowsIn(url, allowedNow())
+
+    /** Records a refused main-frame navigation so the ⋯ menu can allow it (see
+     *  [allowBlockedRedirect]). */
+    private fun rememberBlockedRedirect(url: String) {
+        lastBlockedRedirectUrl = url
+        lastBlockedRedirectHost =
+            runCatching { java.net.URI(url).host?.lowercase() }.getOrNull()
+    }
+
+    /**
+     * The one-line toast for a refused redirect: which host was cancelled, and
+     * where the way out is. The ⋯ menu carries "Allow redirect to <host>" for
+     * exactly this link (see [allowBlockedRedirect]), which is what makes an
+     * extension's file host a one-tap decision instead of a trip to Settings.
+     */
+    private fun blockedRedirectToast(url: Uri): String =
+        "Blocked redirect to " + (url.host ?: "unknown") + " — open the menu to allow it"
 
     // Guards the auto hand-off to the external player: a page that genuinely
     // can't start its own <video> gets handed to Hikari's ExoPlayer ONCE (reset
@@ -512,7 +555,8 @@ class WebViewActivity : ComponentActivity() {
                     if (autoCloseWhenCloudflarePassed && request.isForMainFrame &&
                         !isVerifyAllowed(request.url.toString())
                     ) {
-                        showBlockedToast("Blocked redirect to ${request.url.host ?: "unknown"}")
+                        showBlockedToast(blockedRedirectToast(request.url))
+                        rememberBlockedRedirect(request.url.toString())
                         return true
                     }
                     // Redirect protection: cancel main-frame navigations away from
@@ -524,10 +568,11 @@ class WebViewActivity : ComponentActivity() {
                         val cur = currentPageHost()
                         if (host != null && cur != null && host != cur &&
                             !AdBlocker.matches(host, whitelistDomains) &&
-                            !AdBlocker.matches(host, allowedNow()) &&
+                            !isRedirectAllowed(request.url.toString()) &&
                             !isSameSite(host, cur)
                         ) {
-                            showBlockedToast("Blocked redirect to $host")
+                            showBlockedToast(blockedRedirectToast(request.url))
+                            rememberBlockedRedirect(request.url.toString())
                             return true
                         }
                     }
@@ -588,7 +633,8 @@ class WebViewActivity : ComponentActivity() {
                     if (autoCloseWhenCloudflarePassed && request.isForMainFrame &&
                         !isVerifyAllowed(u)
                     ) {
-                        showBlockedToast("Blocked redirect to $host")
+                        showBlockedToast(blockedRedirectToast(request.url))
+                        rememberBlockedRedirect(u)
                         return WebResourceResponse(
                             "text/plain", "utf-8", ByteArrayInputStream(ByteArray(0))
                         )
@@ -603,10 +649,11 @@ class WebViewActivity : ComponentActivity() {
                         val cur = currentPageHost()
                         if (host != null && cur != null && host != cur &&
                             !AdBlocker.matches(host, whitelistDomains) &&
-                            !AdBlocker.matches(host, allowedNow()) &&
+                            !isRedirectAllowed(u) &&
                             !isSameSite(host, cur)
                         ) {
-                            showBlockedToast("Blocked redirect to $host")
+                            showBlockedToast(blockedRedirectToast(request.url))
+                            rememberBlockedRedirect(u)
                             return WebResourceResponse(
                                 "text/plain", "utf-8", ByteArrayInputStream(ByteArray(0))
                             )
@@ -623,6 +670,10 @@ class WebViewActivity : ComponentActivity() {
                 scanHandler.removeCallbacksAndMessages(null)
                 progressBar.visibility = View.VISIBLE
                 blockedToastShown = false
+                // The "allow the redirect that was just blocked" offer belongs
+                // to the page it was made on (see [lastBlockedRedirectUrl]).
+                lastBlockedRedirectUrl = null
+                lastBlockedRedirectHost = null
                 // Userscripts declaring @run-at document-start run before the
                 // page's own scripts.
                 if (UserscriptManager.isLoaded() && url != null) {
@@ -903,10 +954,20 @@ class WebViewActivity : ComponentActivity() {
         menu.menu.add(0, 4, 0, "\u2302 Go to app home")
         menu.menu.add(0, 5, 0, "\u25B6 Open in player")
         menu.menu.add(0, 6, 0, "Open in browser")
-        menu.menu.add(0, 7, 0, "\u2298 Element blocker")
-        menu.menu.add(0, 8, 0, "\u21A9 Undo last block")
-        menu.menu.add(0, 9, 0, "\u2715 Clear all blocks")
-        if (translateEnabled) menu.menu.add(0, 10, 0, "\u2716 Translation off")
+        // The way out of a blocked redirect, without a trip to Settings. The
+        // host of the main-frame navigation that was just refused (see
+        // [rememberBlockedRedirect]) is added to Settings' own "Allowed redirect
+        // links" and the page is opened — so a link the redirect protection took
+        // for an ad hijack, or an extension's rotating file host, is one tap.
+        // Offered only while there is a refused link to offer.
+        val blockedHost = lastBlockedRedirectHost
+        if (blockedHost != null && blockedHost.isNotBlank()) {
+            menu.menu.add(0, 11, 6, "✔ Allow redirect to $blockedHost")
+        }
+        menu.menu.add(0, 7, 7, "\u2298 Element blocker")
+        menu.menu.add(0, 8, 8, "\u21A9 Undo last block")
+        menu.menu.add(0, 9, 9, "\u2715 Clear all blocks")
+        if (translateEnabled) menu.menu.add(0, 10, 10, "\u2716 Translation off")
         menu.setOnMenuItemClickListener { item ->
             when (item.itemId) {
                 1 -> if (webView.canGoBack()) webView.goBack()
@@ -937,10 +998,50 @@ class WebViewActivity : ComponentActivity() {
                     }
                     Toast.makeText(this, I18n.t("Translation off"), Toast.LENGTH_SHORT).show()
                 }
+                11 -> allowBlockedRedirect()
             }
             true
         }
         menu.show()
+    }
+
+    /**
+     * "Allow redirect to <host>" — the ⋯ menu's own way out of a blocked
+     * redirect.
+     *
+     * The host of the link that was just refused is added to the user's
+     * "Allowed redirect links" list — the SAME list Settings edits, so the entry
+     * is visible and removable there and covers every later navigation to it
+     * (and to its subdomains). The refused page is then loaded straight away, so
+     * the link the user clicked finally lands.
+     *
+     * Saved through [com.hikari.app.data.AppStore.setWebviewRedirectAllow],
+     * which writes the in-memory mirror BEFORE the DataStore write, so this very
+     * navigation — and any a page makes while it loads — already sees the entry
+     * (see RedirectAllow for why that ordering matters).
+     */
+    private fun allowBlockedRedirect() {
+        val url = lastBlockedRedirectUrl ?: return
+        // The list names HOSTS or words; a link with no host (a data:/blob:
+        // navigation, a bare path) has nothing that can be expressed on it.
+        val entry = lastBlockedRedirectHost?.takeIf { it.isNotBlank() } ?: return
+        lastBlockedRedirectUrl = null
+        lastBlockedRedirectHost = null
+        lifecycleScope.launch(Dispatchers.IO) {
+            val app = applicationContext as HikariApp
+            val current = runCatching { app.store.webviewRedirectAllow() }.getOrDefault(emptyList())
+            val next = (current + entry).distinct()
+            runCatching { app.store.setWebviewRedirectAllow(next) }
+            runOnUiThread {
+                allowedRedirectHosts = allowedRedirectHosts + entry
+                Toast.makeText(
+                    this@WebViewActivity,
+                    "Allowed redirect to $entry",
+                    Toast.LENGTH_SHORT,
+                ).show()
+                runCatching { webView.loadUrl(url) }
+            }
+        }
     }
 
     // ---- Element blocker ----
@@ -1076,10 +1177,10 @@ class WebViewActivity : ComponentActivity() {
         // (net77.cc and friends), and "Verify for Cloudflare" was refusing
         // exactly the redirect the user had already permitted — the reported
         // "I allowed net77.cc and the verification WebView still says Blocked
-        // redirect to net77.cc". The allow list only ever NAMES hosts the user
-        // chose, so honouring it cannot open the challenge view to ad-hijack
-        // redirects.
-        if (AdBlocker.matches(host, allowedNow())) return true
+        // redirect to net77.cc". The allow list only ever carries what the user
+        // chose (a host, or a word they typed), so honouring it cannot open the
+        // challenge view to ad-hijack redirects.
+        if (isRedirectAllowed(url)) return true
         val orig = runCatching { java.net.URI(startUrl).host?.lowercase() }.getOrNull() ?: return true
         if (host == orig) return true
         return host == "challenges.cloudflare.com" || host.endsWith(".challenges.cloudflare.com") ||
