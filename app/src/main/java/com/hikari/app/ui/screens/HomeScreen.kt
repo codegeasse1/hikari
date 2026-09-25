@@ -112,6 +112,7 @@ import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import com.hikari.app.tv.tvTextFieldKeys
 
 /**
  * A Home pick is stored as one string in the `homeProvider` preference: either
@@ -1431,7 +1432,7 @@ internal fun ProviderPickerSheet(
                     )
                 },
                 shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().tvTextFieldKeys(query),
             )
             // Categories: All first, then one chip per engine that is actually
             // installed. Picking one only NARROWS the list below.

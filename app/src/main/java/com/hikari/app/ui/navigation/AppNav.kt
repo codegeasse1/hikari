@@ -1116,12 +1116,22 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
                                 Modifier
                             }
                         )
-                        // On a television every page starts to the right of the
+                        // On a television the tabs start to the right of the
                         // navigation rail, which is what the rail is: the room
                         // the tab strip takes from the page (the same job the
                         // taskbar inset does at the bottom on a phone).
+                        //
+                        // ONLY while that rail is actually on screen, though.
+                        // `showBar` is false on every route that is not one of
+                        // the tabs — a detail page, a grid, the player's own
+                        // screen — and the rail is drawn only for the tabs, so
+                        // insetting those routes anyway pushed the page away from
+                        // an edge with nothing on it and left a rail's width of
+                        // bare backdrop down the side of them. That is the
+                        // reported band of empty screen beside the detail page on
+                        // a television.
                         .then(
-                            if (isTv) Modifier.padding(start = TvUi.RAIL_WIDTH) else Modifier
+                            if (isTv && showBar) Modifier.padding(start = TvUi.RAIL_WIDTH) else Modifier
                         )
                 ) {
             composable(Routes.HOME) { HomeScreen(nav) }

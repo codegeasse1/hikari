@@ -196,6 +196,8 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.ByteArrayInputStream
 import kotlin.math.roundToInt
+import com.hikari.app.tv.tvToggle
+import com.hikari.app.tv.tvAdjust
 
 /**
  * The Collections manager: the "New Collection" / "New Folder" screens of the
@@ -756,7 +758,7 @@ private fun CollectionEditorPage(
                     singleLine = true,
                     label = { Text(tr("Collection name")) },
                     modifier = Modifier
-                        .fillMaxWidth()
+                        .fillMaxWidth().tvTextFieldKeys(collection.name)
                         .padding(top = 4.dp),
                 )
             }
@@ -801,6 +803,12 @@ private fun CollectionEditorPage(
                             Switch(
                                 checked = collection.pinToTop,
                                 onCheckedChange = { onChange(collection.copy(pinToTop = it)) },
+                                // A remote cannot land on a bare Switch at the end of a
+                                // row — see [Modifier.tvToggle].
+                                modifier = Modifier.tvToggle(
+                                    collection.pinToTop,
+                                    onValueChange = { onChange(collection.copy(pinToTop = it)) },
+                                ),
                             )
                         }
                         HorizontalDivider(
@@ -863,6 +871,13 @@ private fun CollectionEditorPage(
                                     onCheckedChange = {
                                         onChange(collection.copy(showAllTab = it))
                                     },
+                                    // See [Modifier.tvToggle].
+                                    modifier = Modifier.tvToggle(
+                                        collection.showAllTab,
+                                        onValueChange = {
+                                            onChange(collection.copy(showAllTab = it))
+                                        },
+                                    ),
                                 )
                             }
                         }
@@ -881,7 +896,7 @@ private fun CollectionEditorPage(
                                 )
                             },
                             modifier = Modifier
-                                .fillMaxWidth()
+                                .fillMaxWidth().tvTextFieldKeys(collection.backdropUrl)
                                 .padding(top = 10.dp),
                         )
                     }
@@ -1123,7 +1138,7 @@ private fun FolderEditorPage(
                     singleLine = true,
                     label = { Text(tr("Folder name")) },
                     modifier = Modifier
-                        .fillMaxWidth()
+                        .fillMaxWidth().tvTextFieldKeys(name)
                         .padding(top = 4.dp),
                 )
             }
@@ -1162,7 +1177,12 @@ private fun FolderEditorPage(
                                 )
                             }
                             Spacer(Modifier.width(12.dp))
-                            Switch(checked = hideTitle, onCheckedChange = { hideTitle = it })
+                            Switch(
+                                checked = hideTitle,
+                                onCheckedChange = { hideTitle = it },
+                                // See [Modifier.tvToggle].
+                                modifier = Modifier.tvToggle(hideTitle, onValueChange = { hideTitle = it }),
+                            )
                         }
                         if (CoverKinds.normalize(coverKind) == CoverKinds.GIF) {
                             HorizontalDivider(
@@ -1187,7 +1207,12 @@ private fun FolderEditorPage(
                                     )
                                 }
                                 Spacer(Modifier.width(12.dp))
-                                Switch(checked = gifAlways, onCheckedChange = { gifAlways = it })
+                                Switch(
+                                    checked = gifAlways,
+                                    onCheckedChange = { gifAlways = it },
+                                    // See [Modifier.tvToggle].
+                                    modifier = Modifier.tvToggle(gifAlways, onValueChange = { gifAlways = it }),
+                                )
                             }
                         }
                         OutlinedTextField(
@@ -1205,7 +1230,7 @@ private fun FolderEditorPage(
                                 )
                             },
                             modifier = Modifier
-                                .fillMaxWidth()
+                                .fillMaxWidth().tvTextFieldKeys(heroBackdrop)
                                 .padding(top = 10.dp),
                         )
                         OutlinedTextField(
@@ -1223,7 +1248,7 @@ private fun FolderEditorPage(
                                 )
                             },
                             modifier = Modifier
-                                .fillMaxWidth()
+                                .fillMaxWidth().tvTextFieldKeys(titleLogo)
                                 .padding(top = 10.dp),
                         )
                     }
@@ -2014,7 +2039,7 @@ private fun TmdbSourceSheet(
                             }
                         } else null,
                         modifier = Modifier
-                            .fillMaxWidth()
+                            .fillMaxWidth().tvTextFieldKeys(text)
                             .padding(top = 10.dp),
                     )
                 }
@@ -2085,7 +2110,7 @@ private fun TmdbSourceSheet(
                             label = { Text(tr("Year")) },
                             placeholder = { Text(tr("Any year")) },
                             modifier = Modifier
-                                .fillMaxWidth()
+                                .fillMaxWidth().tvTextFieldKeys(year)
                                 .padding(top = 12.dp),
                         )
                     }
@@ -2131,7 +2156,7 @@ private fun TmdbSourceSheet(
                                 label = { Text(tr(label)) },
                                 supportingText = { Text(tr(hint)) },
                                 modifier = Modifier
-                                    .fillMaxWidth()
+                                    .fillMaxWidth().tvTextFieldKeys(adv[key].orEmpty())
                                     .padding(top = 10.dp),
                             )
                         }
@@ -2149,7 +2174,7 @@ private fun TmdbSourceSheet(
                             Text(tr("Shown as the row name. Leave blank and Hikari names it from TMDB."))
                         },
                         modifier = Modifier
-                            .fillMaxWidth()
+                            .fillMaxWidth().tvTextFieldKeys(displayTitle)
                             .padding(top = 12.dp),
                     )
                 }
@@ -2285,7 +2310,7 @@ private fun TitleSearchSheet(
                     }
                 },
                 modifier = Modifier
-                    .fillMaxWidth()
+                    .fillMaxWidth().tvTextFieldKeys(query)
                     .padding(top = 12.dp),
             )
             LazyColumn(
@@ -2546,7 +2571,7 @@ private fun ImportCollectionsSheet(
                 minLines = 3,
                 maxLines = 7,
                 modifier = Modifier
-                    .fillMaxWidth()
+                    .fillMaxWidth().tvTextFieldKeys(fieldLabel.ifBlank { body })
                     .heightIn(min = 96.dp, max = 220.dp),
             )
             Row(
@@ -3070,7 +3095,7 @@ private fun ExtensionPickerSheet(
                 singleLine = true,
                 placeholder = { Text(tr("Search extensions…")) },
                 leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().tvTextFieldKeys(query),
             )
             if (active.isEmpty()) {
                 Text(
@@ -3586,7 +3611,19 @@ private fun CoverCropDialog(
                         valueRange = 1f..6f,
                         modifier = Modifier
                             .weight(1f)
-                            .padding(start = 10.dp),
+                            .padding(start = 10.dp)
+                            // The remote steps the zoom, with the same clamping the
+                            // drag's own handler does. See [Modifier.tvAdjust].
+                            .tvAdjust { delta ->
+                                val bmp = bitmap
+                                if (bmp != null) {
+                                    val next = (zoom + delta * 0.25f).coerceIn(1f, 6f)
+                                    val (mx, my) = limits(viewport, bmp, next)
+                                    offX = offX.coerceIn(-mx, mx)
+                                    offY = offY.coerceIn(-my, my)
+                                    zoom = next
+                                }
+                            },
                     )
                     TextButton(
                         onClick = {
@@ -3740,7 +3777,7 @@ private fun CoverSection(
                     onValueChange = onValue,
                     singleLine = true,
                     label = { Text(tr("Or type/paste an emoji")) },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().tvTextFieldKeys(value),
                 )
             }
             CoverKinds.URL, CoverKinds.GIF -> {
@@ -3756,7 +3793,7 @@ private fun CoverSection(
                             else tr("Image link (https://…)")
                         )
                     },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().tvTextFieldKeys(value),
                 )
                 Spacer(Modifier.height(10.dp))
                 Surface(
@@ -3911,7 +3948,7 @@ private fun NameCoverDialog(
                     onValueChange = { text = it },
                     singleLine = true,
                     label = { Text(nameLabel) },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().tvTextFieldKeys(text),
                 )
                 CoverSection(
                     kind = kind,

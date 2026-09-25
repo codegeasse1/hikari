@@ -84,6 +84,7 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import com.hikari.app.tv.tvTextFieldKeys
 
 /**
  * The Telegram tab.
@@ -208,7 +209,7 @@ fun TelegramScreen(nav: NavHostController) {
                         label = { Text(tr("@channel or t.me link")) },
                         singleLine = true,
                         isError = addError.isNotBlank(),
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth().tvTextFieldKeys(typed),
                     )
                     if (addError.isNotBlank()) {
                         Spacer(Modifier.height(6.dp))
@@ -318,7 +319,7 @@ private fun TelegramHome(
                             onValueChange = { query = it },
                             label = { Text(tr("Search your chats")) },
                             singleLine = true,
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier.fillMaxWidth().tvTextFieldKeys(query),
                         )
                     }
                     if (visibleChats.isEmpty()) {
@@ -548,7 +549,7 @@ private fun TelegramAccountCard(app: HikariApp) {
                     label = { Text(idLabel) },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().tvTextFieldKeys(apiId),
                 )
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(
@@ -559,7 +560,7 @@ private fun TelegramAccountCard(app: HikariApp) {
                     },
                     label = { Text(hashLabel) },
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().tvTextFieldKeys(apiHash),
                 )
                 keyMsg?.let { message ->
                     Spacer(Modifier.height(6.dp))
@@ -630,7 +631,7 @@ private fun TelegramAccountCard(app: HikariApp) {
                     singleLine = true,
                     enabled = !busy,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().tvTextFieldKeys(phone),
                 )
                 Spacer(Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -677,7 +678,7 @@ private fun TelegramAccountCard(app: HikariApp) {
                     singleLine = true,
                     enabled = !busy,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().tvTextFieldKeys(code),
                 )
                 Spacer(Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -723,7 +724,7 @@ private fun TelegramAccountCard(app: HikariApp) {
                     singleLine = true,
                     enabled = !busy,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().tvTextFieldKeys(password),
                 )
                 Spacer(Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -757,7 +758,7 @@ private fun TelegramAccountCard(app: HikariApp) {
                     label = { Text(tr("First name")) },
                     singleLine = true,
                     enabled = !busy,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().tvTextFieldKeys(first),
                 )
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(
@@ -766,7 +767,7 @@ private fun TelegramAccountCard(app: HikariApp) {
                     label = { Text(tr("Last name")) },
                     singleLine = true,
                     enabled = !busy,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().tvTextFieldKeys(last),
                 )
                 Spacer(Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -995,7 +996,7 @@ private fun TelegramChatVideos(
                     }
                 },
                 modifier = Modifier
-                    .fillMaxWidth()
+                    .fillMaxWidth().tvTextFieldKeys(typed)
                     .padding(horizontal = 16.dp),
             )
             Row(
@@ -1761,10 +1762,21 @@ private fun TelegramVideoRow(video: TelegramVideo, onPlay: () -> Unit) {
  * tracks) is untouched.
  */
 private fun playTdVideo(context: android.content.Context, video: Td.ChatVideo) {
+    // Start pulling the video NOW, before the player activity exists: resolving
+    // the file reference and fetching the first part out of Telegram is the whole
+    // cold-start cost of a Telegram video, so getting it going while the player
+    // is still being built is what makes playback start on the first frame
+    // instead of on the first download.
+    Td.prewarm(video.fileId)
     val sources = JSONArray().put(
         JSONObject()
             .put("name", "Telegram")
-            .put("url", TdFileDataSource.uriFor(video.fileId))
+            // The post it came from rides along so the data source can refresh an
+            // expired file reference — TDLib takes the fresh one out of the
+            // message it is handed (see TdFileDataSource.repair). Telegram's
+            // references are short-lived, and this list can be minutes or days
+            // old, which is exactly when a download would silently never start.
+            .put("url", TdFileDataSource.uriFor(video.fileId, video.chatId, video.messageId))
             // Marks the source as "already local" so the player goes straight to
             // ExoPlayer: there is no URL to probe and no CDN to fail over from.
             .put("local", true)

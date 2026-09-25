@@ -57,6 +57,7 @@ import com.hikari.app.tracker.TrackerRedirect
 import com.hikari.app.ui.openUrl
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import com.hikari.app.tv.tvTextFieldKeys
 
 /**
  * Signing in to a tracker (Settings → Trackers).
@@ -382,7 +383,7 @@ fun TrackerLoginDialog(
                         onValueChange = { idField = it; error = null },
                         label = { Text(tr("Client ID")) },
                         singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth().tvTextFieldKeys(idField),
                     )
                     if (kind.needsSecret) {
                         Spacer(Modifier.height(8.dp))
@@ -392,7 +393,7 @@ fun TrackerLoginDialog(
                             label = { Text(tr("Client secret")) },
                             singleLine = true,
                             visualTransformation = PasswordVisualTransformation(),
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier.fillMaxWidth().tvTextFieldKeys(secretField),
                         )
                     }
                     Spacer(Modifier.height(4.dp))
@@ -424,7 +425,7 @@ fun TrackerLoginDialog(
                             label = { Text(tr("Kitsu e-mail or username")) },
                             singleLine = true,
                             enabled = !busy,
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier.fillMaxWidth().tvTextFieldKeys(emailField),
                         )
                         Spacer(Modifier.height(8.dp))
                         OutlinedTextField(
@@ -434,7 +435,7 @@ fun TrackerLoginDialog(
                             singleLine = true,
                             enabled = !busy,
                             visualTransformation = PasswordVisualTransformation(),
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier.fillMaxWidth().tvTextFieldKeys(passwordField),
                         )
                         Spacer(Modifier.height(4.dp))
                         Text(
@@ -663,7 +664,7 @@ fun TrackerLoginDialog(
                                 },
                                 singleLine = true,
                                 enabled = !busy,
-                                modifier = Modifier.fillMaxWidth(),
+                                modifier = Modifier.fillMaxWidth().tvTextFieldKeys(codeField),
                             )
                             TextButton(
                                 enabled = !busy && codeField.isNotBlank(),

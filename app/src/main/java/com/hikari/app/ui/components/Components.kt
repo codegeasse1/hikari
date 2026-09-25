@@ -91,6 +91,7 @@ import com.hikari.app.ui.theme.rememberGlassTokens
 import com.hikari.app.ui.shape
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import com.hikari.app.tv.tvTextFieldKeys
 
 /** How many automatic re-requests a poster gets before its cell settles on the
  *  placeholder icon. Two is enough to ride out a dropped connection or a CDN
@@ -498,7 +499,11 @@ fun GlassSearchField(
                         color = MaterialTheme.colorScheme.onSurface
                     ),
                     cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                    modifier = Modifier.fillMaxWidth()
+                    // A remote must be able to leave the box — see
+                    // [com.hikari.app.tv.tvTextFieldKeys]: on a television the
+                    // arrows belong to the caret, and a caret at the end of the
+                    // line leaves the focus stuck in the search bar.
+                    modifier = Modifier.fillMaxWidth().tvTextFieldKeys(value)
                 )
             }
             if (value.isNotEmpty()) {

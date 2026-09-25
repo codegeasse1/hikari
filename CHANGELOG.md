@@ -1,3 +1,63 @@
+## 0.10.33
+
+### Fixed
+
+- **Telegram: the video that never started downloading now plays — and starts instantly.** The
+  previous release made the data source wait only for the bytes a read needs, which was the right
+  shape, but the readiness question itself was being asked of the wrong number. TDLib's local file
+  reports two sizes, and this code took the LARGER of them as "on disk": `downloadedPrefixSize`,
+  which is measured from `downloadOffset` (so it answers 0 for a seek into the middle of a film
+  however much of the file is really there), and `downloadedSize`, which TDLib's own documentation
+  says is "only for calculating download progress — the actual file size may be bigger, and some
+  parts of it may contain garbage". A read that was told its bytes were ready then read a file that
+  did not have them yet, returned zero, and ExoPlayer treated a zero as "no data at all" and sat in
+  buffering until its watchdog blamed the server — the reported "still buffering after 60s". Three
+  things change. Readiness is now `GetFileDownloadedPrefixSize`, TDLib's own
+  `FileNode::downloaded_prefix`, which walks the file's downloaded-parts bitmask and answers for an
+  ARBITRARY offset, seeks included. The download is asked for once per read position and left alone
+  for 24 MiB at a time, because a `downloadFile` with a different offset CANCELS the range TDLib is
+  already fetching (`FileNode::set_download_offset` → `update_downloaded_part`) — renewing every
+  2 MiB was restarting the download just ahead of the playhead, so it could never run ahead of it.
+  And `read` may no longer return 0: it re-asks, and only a real failure throws.
+- **Telegram: a refusal is reported instead of waited out, and an expired file link is repaired.**
+  `downloadFile`'s RESULT is where TDLib reports that it will not do the download at all — an expired
+  file reference (`Can't download file: have no valid file reference`), a file from a torn-down
+  session — and the result handler was `null`, so the failure was invisible and the download simply
+  never started. It is recorded per file now, and the player is told the reason in about a second
+  instead of buffering for a minute. The URI also carries the post the video came from
+  (`hikari-td://file?id=…&chat=…&msg=…`), so a download that fails is retried once after re-reading
+  that post — which is exactly how TDLib is handed a fresh file reference. Finally, tapping a video
+  starts the download immediately (before the player activity exists), so the cold start — resolving
+  the reference and pulling the first part out of Telegram — happens while the player is still being
+  built.
+- **Stremio addons: a fake server can no longer end the search, and a series is walked in every id
+  spelling it was asked for.** An addon that cannot serve a request answers with a ROW rather than an
+  empty list — `{"name":"PenguPlay","title":"You must sign in","url":"…/signin.mp4"}` — which parses
+  as a perfectly ordinary direct stream. The search stopped at the first non-empty answer, so a
+  series it could not resolve ended on that fake row (reported as "no playable server found" when the
+  row was then rejected downstream). Rows that are a message rather than a video are filtered out and
+  remembered as the reason, and the walk continues. The id walk is also round-robin across spellings
+  now (`tmdb:…:s:e` and `tt…:s:e`, each with its most likely type segment before either gets its
+  second), because walking one spelling to exhaustion first is what left the other — the one some
+  addons can actually resolve — never tried at all when the fan-out was capped.
+- **Television: the page is no longer inset by a navigation rail that is not on screen.** The rail's
+  width was subtracted from EVERY television page, but the rail itself is drawn only on the tab
+  routes — a detail page (`showBar == false`) was pushed away from an edge with nothing on it,
+  leaving a rail's width of bare backdrop down the side of the page. That is the band of empty screen
+  beside the detail page on a television.
+- **Television: every control a remote is expected to reach now works.** Three separate symptoms, one
+  cause: a toggle is not a D-pad target (Compose's focus search walks past the small switch at the
+  end of a full-width row, so the focus "skipped straight to the next option"), a slider has no drag
+  on a remote, and a text field eats the arrow keys — the caret is already at the end, so the focus
+  cannot leave the box and the remote appears to stop working. Switches now answer the D-pad
+  themselves (select presses, left/right flips), sliders step with left/right through the same commit
+  a drag's release runs (so the setting is really saved), and text fields hand the arrows to the
+  focus system — always up/down, and left/right once the field is empty. This is applied across the
+  app: settings, extension and repo URL fields, IPTV fields, dialogs, search bars, and the manga
+  reader's zoom slider.
+- **Television: the screen-edge gap defaults to 0.** Modern Android TV, Google TV and Fire OS boxes
+  draw the whole frame; the ones that crop it can raise it in Settings → TV & Remote.
+
 ## 0.10.32
 
 ### Fixed

@@ -139,6 +139,8 @@ import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import com.hikari.app.tv.tvToggle
+import com.hikari.app.tv.tvTextFieldKeys
 
 class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     private val store = (app as HikariApp).store
@@ -3038,7 +3040,7 @@ fun ExtensionsScreen() {
                             )
                         },
                         singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth().tvTextFieldKeys(repoUrl)
                     )
                     errorMsg?.let {
                         Text(
@@ -3102,7 +3104,7 @@ fun ExtensionsScreen() {
                         onValueChange = { stremioUrl = it },
                         placeholder = { Text(tr("https://addon.example.com")) },
                         singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth().tvTextFieldKeys(stremioUrl)
                     )
                     errorMsg?.let {
                         Text(
@@ -3163,7 +3165,7 @@ fun ExtensionsScreen() {
                         placeholder = { Text(tr("https://…/playlist.m3u")) },
                         singleLine = false,
                         maxLines = 3,
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth().tvTextFieldKeys(iptvUrl),
                     )
                     Spacer(Modifier.height(8.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -3194,7 +3196,7 @@ fun ExtensionsScreen() {
                         onValueChange = { iptvName = it },
                         placeholder = { Text(tr("Name (optional)")) },
                         singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth().tvTextFieldKeys(iptvName),
                     )
                     errorMsg?.let {
                         Text(
@@ -3271,7 +3273,7 @@ fun ExtensionsScreen() {
                         placeholder = { Text(tr("{\n  \"name\": \"MySite\",\n  \"baseUrl\": \"https://…\",\n  …\n}")) },
                         minLines = 6,
                         maxLines = 12,
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth().tvTextFieldKeys(scraperJson)
                     )
                     errorMsg?.let {
                         Text(
@@ -3323,7 +3325,7 @@ fun ExtensionsScreen() {
                         onValueChange = { cs3Url = it },
                         placeholder = { Text(tr("https://…/JustAnimeProvider.cs3")) },
                         singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth().tvTextFieldKeys(cs3Url)
                     )
                     errorMsg?.let {
                         Text(
@@ -3380,7 +3382,7 @@ fun ExtensionsScreen() {
                         onValueChange = { hikiUrl = it },
                         placeholder = { Text(tr("https://…/MyExtension.hiki")) },
                         singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth().tvTextFieldKeys(hikiUrl)
                     )
                     errorMsg?.let {
                         Text(
@@ -3437,7 +3439,7 @@ fun ExtensionsScreen() {
                         onValueChange = { skyUrl = it },
                         placeholder = { Text(tr("https://…/dev.akash.stars.yts.sky")) },
                         singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth().tvTextFieldKeys(skyUrl)
                     )
                     errorMsg?.let {
                         Text(
@@ -3500,7 +3502,7 @@ fun ExtensionsScreen() {
                             )
                         },
                         singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth().tvTextFieldKeys(aniyomiUrl)
                     )
                     errorMsg?.let {
                         Text(
@@ -3552,7 +3554,7 @@ fun ExtensionsScreen() {
                         onValueChange = { siteName = it },
                         placeholder = { Text(tr("Name (optional)")) },
                         singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth().tvTextFieldKeys(siteName)
                     )
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
@@ -3560,7 +3562,7 @@ fun ExtensionsScreen() {
                         onValueChange = { siteUrl = it },
                         placeholder = { Text(tr("https://example.com")) },
                         singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth().tvTextFieldKeys(siteUrl)
                     )
                     errorMsg?.let {
                         Text(
@@ -5022,7 +5024,13 @@ private fun ProviderCard(
                     )
                 }
             }
-            Switch(checked = p.config.enabled, onCheckedChange = onToggle)
+            Switch(
+                checked = p.config.enabled,
+                onCheckedChange = onToggle,
+                // A remote cannot land on a bare Switch at the end of a row — see
+                // [Modifier.tvToggle].
+                modifier = Modifier.tvToggle(p.config.enabled, onValueChange = onToggle),
+            )
             if (expandable && onToggleExpand != null) {
                 IconButton(onClick = onToggleExpand) {
                     Icon(
@@ -5449,7 +5457,12 @@ private fun SettingsElementRow(
                             )
                         }
                     }
-                    Switch(checked = checked, onCheckedChange = { onToggle(key, it) })
+                    Switch(
+                        checked = checked,
+                        onCheckedChange = { onToggle(key, it) },
+                        // See [Modifier.tvToggle]: the switch answers the D-pad itself.
+                        modifier = Modifier.tvToggle(checked, onValueChange = { onToggle(key, it) }),
+                    )
                 }
             }
         }
@@ -5510,7 +5523,7 @@ private fun SettingsElementRow(
                     keyboardOptions = if (isPassword)
                         KeyboardOptions(keyboardType = KeyboardType.Password)
                     else KeyboardOptions.Default,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth().tvTextFieldKeys(value)
                 )
             }
         }

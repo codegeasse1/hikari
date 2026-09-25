@@ -178,20 +178,22 @@ object TvUi {
      * Screen-edge padding ("overscan").
      *
      * Televisions have cut roughly 5% of the picture off since the CRT era, and
-     * plenty of modern sets and HDMI switches still do — content drawn hard
-     * against the edge simply is not there on those screens (the classic "the
-     * back button is half off the left side" on a Fire TV, and the reported
-     * "the navigation rail is cut off at the left edge of my TV"). The default
-     * keeps every control well inside the safe area; the slider exists because
-     * the right number depends on the television, and 0 is offered for the sets
-     * that show the whole frame.
+     * some modern sets and HDMI switches still do — content drawn hard against
+     * the edge is simply not there on those screens (the classic "the back
+     * button is half off the left side" on a Fire TV). So the setting exists,
+     * and the slider below it goes up to [MAX_OVERSCAN_DP] for the sets that
+     * need it.
      *
-     * 48dp is not a guess: a 1080p television reports a 960x540dp viewport, so
-     * 5% of the width is exactly 48dp. Anything smaller left the leftmost
-     * column of the navigation rail clipped on the sets that crop — which is
-     * what the screenshots showed.
+     * The DEFAULT is 0, deliberately: the overwhelming majority of panels and
+     * boxes in use show the full frame, and a gap nobody asked for reads as a
+     * layout bug — the reported "the TV layout wastes a big black band down
+     * every edge of the screen". Modern Android TV and Google TV boxes, and
+     * every Fire OS device since 2015, draw the whole frame; the ones that
+     * crop are the minority, and they can raise this. The value also scales
+     * with nothing else in the app, so 0 means the content genuinely starts at
+     * the screen edge.
      */
-    const val DEFAULT_OVERSCAN_DP = 48
+    const val DEFAULT_OVERSCAN_DP = 0
     const val MAX_OVERSCAN_DP = 96
 
     /** The navigation rail's width, which is also the left inset every page

@@ -205,6 +205,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.hikari.app.tv.tvAdjust
+import com.hikari.app.tv.tvToggle
+import com.hikari.app.tv.tvTextFieldKeys
 
 @Composable
 private fun SettingsDivider() {
@@ -1435,10 +1438,7 @@ private fun DownloadSettingsCard(app: HikariApp) {
             )
         }
         Spacer(Modifier.height(4.dp))
-        Slider(
-            value = value,
-            onValueChange = { value = it },
-            onValueChangeFinished = {
+        val commitConcurrency: () -> Unit = {
                 val n = value.roundToInt().coerceIn(1, 10)
                 value = n.toFloat()
                 scope.launch {
@@ -1451,7 +1451,11 @@ private fun DownloadSettingsCard(app: HikariApp) {
                         DownloadService.start(context)
                     }
                 }
-            },
+        }
+        Slider(
+            value = value,
+            onValueChange = { value = it },
+            onValueChangeFinished = commitConcurrency,
             valueRange = 1f..10f,
             steps = 8,
             colors = SliderDefaults.colors(
@@ -1461,7 +1465,13 @@ private fun DownloadSettingsCard(app: HikariApp) {
                 activeTickColor = Color.Transparent,
                 inactiveTickColor = Color.Transparent,
             ),
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier.fillMaxWidth().tvAdjust { delta ->
+                // One step per press of the D-pad, run through the SAME commit
+                // the drag's release runs (see onValueChangeFinished above), so a
+                // remote really changes the setting. See [Modifier.tvAdjust].
+                value = (value.roundToInt() + delta).coerceIn(1, 10).toFloat()
+                commitConcurrency()
+            }
         )
         Text(
             tr("Extra videos wait in the queue."),
@@ -1555,6 +1565,11 @@ private fun UiScaleCard(app: HikariApp) {
                     color = MaterialTheme.colorScheme.primary
                 )
             }
+            val commitScale: () -> Unit = {
+                    val pct = (slider * 100).roundToInt().coerceIn(70, 130)
+                    slider = pct / 100f
+                    scope.launch { runCatching { app.store.setUiScale(pct) } }
+            }
             Slider(
                 value = slider,
                 onValueChange = { v ->
@@ -1563,11 +1578,7 @@ private fun UiScaleCard(app: HikariApp) {
                     // could not land there at all.
                     slider = (v * 100f).roundToInt().coerceIn(70, 130) / 100f
                 },
-                onValueChangeFinished = {
-                    val pct = (slider * 100).roundToInt().coerceIn(70, 130)
-                    slider = pct / 100f
-                    scope.launch { runCatching { app.store.setUiScale(pct) } }
-                },
+                onValueChangeFinished = commitScale,
                 valueRange = 0.7f..1.3f,
                 // 59 gaps between 70% and 130% = a step of exactly 1%.
                 steps = 59,
@@ -1578,7 +1589,13 @@ private fun UiScaleCard(app: HikariApp) {
                     activeTickColor = Color.Transparent,
                     inactiveTickColor = Color.Transparent,
                 ),
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier.fillMaxWidth().tvAdjust { delta ->
+                // One step per press of the D-pad, run through the SAME commit
+                // the drag's release runs (see onValueChangeFinished above), so a
+                // remote really changes the setting. See [Modifier.tvAdjust].
+                slider = ((slider * 100f).roundToInt() + delta).coerceIn(70, 130) / 100f
+                commitScale()
+            }
             )
             Row(
                 Modifier.fillMaxWidth(),
@@ -1857,7 +1874,14 @@ private fun MyStuffSectionRow(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        Switch(checked = checked, onCheckedChange = onChange, enabled = enabled)
+        Switch(
+            checked = checked,
+            onCheckedChange = onChange,
+            enabled = enabled,
+            // See [Modifier.tvToggle]: a remote must be able to land on and
+            // flip this, and the focus search skips it otherwise.
+            modifier = Modifier.tvToggle(checked, enabled, onChange),
+        )
     }
 }
 
@@ -2570,7 +2594,19 @@ private fun SettingsSlider(
             activeTickColor = Color.Transparent,
             inactiveTickColor = Color.Transparent,
         ),
-        modifier = Modifier.fillMaxWidth(),
+        // A remote has no drag, so the slider takes the D-pad: left/right step
+        // it by one of its OWN steps (the same number the thumb snaps to), and
+        // the change is finished on every press so the setting is really
+        // saved rather than merely redrawn. Without this the whole row was
+        // unreachable: it is a wide pointer control, and nothing moved it.
+        modifier = Modifier
+            .fillMaxWidth()
+            .tvAdjust { delta ->
+                val span = valueRange.endInclusive - valueRange.start
+                val step = if (steps > 0) span / (steps + 1) else span / 20f
+                onValueChange((value + step * delta).coerceIn(valueRange.start, valueRange.endInclusive))
+                onValueChangeFinished()
+            },
     )
 }
 
@@ -2607,7 +2643,15 @@ private fun SettingsToggle(
             }
         }
         Spacer(Modifier.width(12.dp))
-        Switch(checked = checked, onCheckedChange = onCheckedChange)
+        // The switch answers the D-pad itself — see [Modifier.tvToggle]: on a
+        // television this small right-hand target is otherwise skipped over by
+        // the focus search, and a setting that cannot be turned on or off is
+        // the whole complaint about toggles and remotes.
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            modifier = Modifier.tvToggle(checked, onValueChange = onCheckedChange),
+        )
     }
 }
 
@@ -3201,7 +3245,7 @@ private fun DnsModeCard(app: HikariApp) {
                 singleLine = true,
                 shape = GlassShape,
                 isError = typed.isNotBlank() && endpoint == null,
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier.fillMaxWidth().tvTextFieldKeys(typed)
             )
             Spacer(Modifier.height(4.dp))
             Text(
@@ -3385,14 +3429,15 @@ private fun PlaybackStartCard(app: HikariApp) {
                     color = MaterialTheme.colorScheme.primary
                 )
             }
-            Slider(
-                value = minServers,
-                onValueChange = { minServers = it },
-                onValueChangeFinished = {
+            val commitMinServers: () -> Unit = {
                     val n = minServers.roundToInt().coerceIn(1, 5)
                     minServers = n.toFloat()
                     scope.launch { runCatching { app.store.setPlayMinServers(n) } }
-                },
+            }
+            Slider(
+                value = minServers,
+                onValueChange = { minServers = it },
+                onValueChangeFinished = commitMinServers,
                 valueRange = 1f..5f,
                 steps = 3,
                 colors = SliderDefaults.colors(
@@ -3402,7 +3447,13 @@ private fun PlaybackStartCard(app: HikariApp) {
                     activeTickColor = Color.Transparent,
                     inactiveTickColor = Color.Transparent,
                 ),
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier.fillMaxWidth().tvAdjust { delta ->
+                // One step per press of the D-pad, run through the SAME commit
+                // the drag's release runs (see onValueChangeFinished above), so a
+                // remote really changes the setting. See [Modifier.tvAdjust].
+                minServers = (minServers.roundToInt() + delta).coerceIn(1, 5).toFloat()
+                commitMinServers()
+            }
             )
             Text(
                 tr("Fewer found? Playback starts anyway"),
@@ -4232,7 +4283,7 @@ private fun AppLockCard(app: HikariApp) {
                             isError = oldWrong,
                             visualTransformation = PasswordVisualTransformation(),
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier.fillMaxWidth().tvTextFieldKeys(current),
                         )
                         if (oldWrong) {
                             Spacer(Modifier.height(6.dp))
@@ -4265,7 +4316,7 @@ private fun AppLockCard(app: HikariApp) {
                             isError = tooShort,
                             visualTransformation = PasswordVisualTransformation(),
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier.fillMaxWidth().tvTextFieldKeys(first),
                         )
                         Spacer(Modifier.height(10.dp))
                         OutlinedTextField(
@@ -4276,7 +4327,7 @@ private fun AppLockCard(app: HikariApp) {
                             isError = mismatch,
                             visualTransformation = PasswordVisualTransformation(),
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier.fillMaxWidth().tvTextFieldKeys(second),
                         )
                         if (tooShort) {
                             Spacer(Modifier.height(6.dp))
@@ -5085,7 +5136,7 @@ private fun UserscriptsCard(app: HikariApp) {
                         value = draft,
                         onValueChange = { draft = it },
                         modifier = Modifier
-                            .fillMaxWidth()
+                            .fillMaxWidth().tvTextFieldKeys(draft)
                             .heightIn(min = 200.dp),
                         textStyle = MaterialTheme.typography.bodySmall,
                         shape = GlassShape,

@@ -75,6 +75,27 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
          *  the playback sheet so "no playable sources found" is explainable. */
         val streamErrors = ConcurrentHashMap<String, String>()
 
+        /**
+         * The words a `streams[]` row uses when it is a message rather than a
+         * video — see [isPlaceholderRow]. Deliberately about *refusals* ("you
+         * must sign in", "subscription required", "no sources") and not about
+         * quality words, which real rows are full of.
+         */
+        private val PLACEHOLDER_WORDS = listOf(
+            "must sign", "sign in", "sign-in", "signin", "sign up", "signup",
+            "log in", "login", "logged out",
+            "subscribe", "subscription", "premium", "upgrade", "membership",
+            "no sources", "no source", "no streams", "no server", "no playable",
+            "not available", "unavailable", "not found", "not supported",
+            "unauthorized", "not authorized", "expired", "invalid api", "invalid key",
+            "debrid key", "daily limit", "rate limit", "quota",
+        )
+
+        /** URL fragments that only ever appear on a "you cannot have this" link. */
+        private val PLACEHOLDER_URL_PARTS = listOf(
+            "signin", "sign-in", "sign_in", "/login", "login.mp4", "subscribe", "upgrade.mp4",
+        )
+
         /** How long a caller waits for a manifest before giving up on it (the
          *  fetch itself keeps running and still fills the cache if it lands). */
         private const val MANIFEST_TIMEOUT_MS = 15_000L
@@ -691,22 +712,33 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
         // segment the addon might answer for (its own declared ones first), and
         // each id again without the :season:episode suffix. Every spelling is
         // cheap — an addon that does not recognise one answers an empty stream
-        // list in one round trip — and the first URL that answers wins.
+        // list in one round trip.
+        //
+        // The walk is ROUND-ROBIN across the id spellings, not per-spelling: a
+        // series usually has two (`tmdb:…:s:e` and `tt…:s:e`) and the app cannot
+        // know which one an addon can resolve, so each spelling gets its most
+        // likely type segment before any spelling gets its second one. Walking
+        // one spelling to exhaustion first is how a series that the addon could
+        // only answer in its `tt` namespace never had that spelling tried at all
+        // — the whole fan-out was spent on `tmdb:`, and the addon answered
+        // nothing for every one of them. (Movies hid this, because a movie has no
+        // episode suffix and its `tmdb:` spelling usually IS the one that works.)
+        val types = streamTypeOrder(m, typeRaw, item.type)
+        val spellings = videoIds.map { id -> id to stripVideoSuffix(id) }
         val allAttempts = linkedSetOf<String>()
-        for (id in videoIds) {
-            val baseId = stripVideoSuffix(id)
-            for (t in streamTypeOrder(m, typeRaw, item.type)) {
+        for (t in types) {
+            for ((id, baseId) in spellings) {
                 allAttempts += resUrl("stream", t, id)
                 if (baseId != id) allAttempts += resUrl("stream", t, baseId)
             }
         }
-        // A hard bound on that fan-out (two id spellings × six segments × with
-        // and without the episode suffix): the first requests are the ones that
+        // A hard bound on that fan-out: the first requests are the ones that
         // matter, and a host that answers nothing must not be probed twenty times
         // over on every pass.
         val attempts = allAttempts.take(16)
 
         val reasons = mutableListOf<String>()
+        var placeholder: String? = null
         for (u in attempts) {
             val json = getJson(u) ?: run {
                 reasons += "no response from ${u.take(120)}"
@@ -718,12 +750,36 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
                 return streams
             }
             val n = json.optJSONArray("streams")?.length() ?: -1
-            reasons += if (n >= 0) "addon returned $n empty stream rows from ${u.take(120)}"
-            else "no 'streams' field in ${u.take(120)}"
+            // A NON-EMPTY stream list is not automatically an answer. Addons that
+            // gate on an account (PenguPlay answers `{"name":"PenguPlay",
+            // "title":"You must sign in","url":"…/signin.mp4"}` to a request it
+            // will not serve — signed in or not, for an id it cannot resolve)
+            // return a single row that looks exactly like a server, and this
+            // loop used to stop there: its `parseStreams` came back non-empty, so
+            // the search ended on a fake server and reported it as the only
+            // result. A row like that is filtered out now ([isPlaceholderRow]),
+            // remembered as the reason, and the walk goes on — the next spelling
+            // or type segment is often the one that answers for real.
+            val note = placeholderText(json)
+            if (note != null) {
+                placeholder = note
+                reasons += "addon answered \"$note\" instead of a video, from ${u.take(120)}"
+            } else {
+                reasons += if (n >= 0) "addon returned $n empty stream rows from ${u.take(120)}"
+                else "no 'streams' field in ${u.take(120)}"
+            }
         }
 
-        streamErrors[config.id] = reasons.take(2).joinToString(" • ")
-            .ifBlank { "Addon returned no playable streams." }
+        // A placeholder explains the emptiness far better than "no streams", so
+        // it goes first when one was seen.
+        val note = placeholder
+        streamErrors[config.id] = if (note != null) {
+            "This addon answered \"$note\" rather than returning servers — it does not " +
+                "serve this title for this account (a sign-in, subscription or " +
+                "coverage problem on the addon's side)."
+        } else {
+            reasons.take(2).joinToString(" • ").ifBlank { "Addon returned no playable streams." }
+        }
         return emptyList()
     }
 
@@ -743,6 +799,7 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
         val out = mutableListOf<StreamSource>()
         for (i in 0 until arr.length()) {
             val st = arr.optJSONObject(i) ?: continue
+            if (isPlaceholderRow(st)) continue
             val name = st.optString("name").ifBlank {
                 st.optString("title").ifBlank { st.optString("description") }
             }
@@ -799,6 +856,45 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
             }
         }
         return out
+    }
+
+    /**
+     * True when a `streams[]` row is a MESSAGE rather than a video.
+     *
+     * Stremio's protocol has no way to say "I will not serve this": an addon
+     * answers with a row, and a gated addon answers with a row that describes the
+     * problem — `{"name":"PenguPlay","title":"You must sign in","url":"…/signin.mp4"}`.
+     * That row parses as a perfectly ordinary direct stream, so it reached the
+     * server list as if it were one (and, worse, ended the search: see
+     * [getStreams]). Nothing here is guesswork about a specific addon — the test
+     * is the row's own words and the URL it points at, and it is narrow on
+     * purpose: a row with an `infoHash` or a `ytId` is always a real stream, and a
+     * row with no URL and no hash is already unusable.
+     */
+    private fun isPlaceholderRow(st: JSONObject): Boolean {
+        if (st.optString("infoHash").isNotBlank() || st.optString("ytId").isNotBlank()) return false
+        val url = st.optString("url")
+        if (url.isBlank()) return false
+        val hay = (st.optString("name") + " " + st.optString("title") + " " +
+            st.optString("description")).lowercase()
+        if (PLACEHOLDER_WORDS.any { hay.contains(it) }) return true
+        val lowerUrl = url.lowercase()
+        return PLACEHOLDER_URL_PARTS.any { lowerUrl.contains(it) }
+    }
+
+    /** The first placeholder row's own words, for the "why is this empty" note. */
+    private fun placeholderText(json: JSONObject): String? {
+        val arr = json.optJSONArray("streams") ?: return null
+        for (i in 0 until arr.length()) {
+            val st = arr.optJSONObject(i) ?: continue
+            if (!isPlaceholderRow(st)) continue
+            return st.optString("title").ifBlank { st.optString("name") }
+                .ifBlank { st.optString("description") }
+                .trim()
+                .take(80)
+                .ifBlank { "no video" }
+        }
+        return null
     }
 
     private fun parseSubs(arr: JSONArray?): List<SubtitleSource> {

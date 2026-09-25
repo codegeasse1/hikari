@@ -90,6 +90,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import com.hikari.app.tv.tvTextFieldKeys
 
 /**
  * Settings → Backup & Restore → Pair & sync: moving a Hikari setup from one
@@ -545,7 +546,7 @@ fun PairScreen(app: HikariApp, onBack: () -> Unit) {
                                 fontFamily = FontFamily.Monospace,
                             ),
                             shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier.fillMaxWidth().tvTextFieldKeys(addressInput),
                         )
                     }
                     if (busy || guestStatus.isNotBlank()) {

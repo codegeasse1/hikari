@@ -132,13 +132,35 @@ object Td {
         val exhausted: Boolean,
     )
 
-    /** What a file's download looks like right now. */
+    /**
+     * What a file's download looks like right now, straight out of TDLib.
+     *
+     * [readyFromOffset] is [TdApi.LocalFile.downloadedPrefixSize] and is measured
+     * from [downloadOffset] — TDLib documents it as "if isDownloadingCompleted is
+     * false, then only some prefix of the file starting from downloadOffset is
+     * ready to be read", and that is exactly how the calculator inside TDLib
+     * works (`FileNode::local_prefix_size` recomputes the run from the downloaded
+     * parts bitmask whenever the offset changes). So the pair is a real "these
+     * bytes are on disk" statement, and it is the pair the data source uses.
+     *
+     * [TdApi.LocalFile.downloadedSize] is deliberately NOT part of this: TDLib's
+     * own documentation says it "can be used only for calculating download
+     * progress — the actual file size may be bigger, and some parts of it may
+     * contain garbage". Treating it as readiness (which this app used to do, via
+     * `maxOf(prefix, total)`) hands the player an offset whose bytes are not
+     * there and makes the read return nothing — a permanent "buffering".
+     */
     data class FileState(
         val path: String,
         val size: Long,
-        val downloaded: Long,
+        /** Where TDLib's current download run starts. */
+        val downloadOffset: Long,
+        /** Contiguous bytes on disk STARTING AT [downloadOffset]. */
+        val readyFromOffset: Long,
         val complete: Boolean,
         val active: Boolean,
+        /** False when TDLib has no usable remote location — see [canBeDownloaded]. */
+        val canBeDownloaded: Boolean,
     )
 
     @Volatile
@@ -998,12 +1020,20 @@ object Td {
         // and there is one of those for every video the user has not played yet,
         // which is precisely the case that failed (see [loadFile]).
         val f = fileValues[fileId] ?: fetchedFiles[fileId] ?: return null
+        val local = f.local
         return FileState(
-            path = f.local?.path.orEmpty(),
+            path = local?.path.orEmpty(),
             size = maxOf(f.size, f.expectedSize),
-            downloaded = maxOf(f.local?.downloadedPrefixSize ?: 0L, f.local?.downloadedSize ?: 0L),
-            complete = f.local?.isDownloadingCompleted == true,
-            active = f.local?.isDownloadingActive == true,
+            downloadOffset = local?.downloadOffset ?: 0L,
+            readyFromOffset = local?.downloadedPrefixSize ?: 0L,
+            complete = local?.isDownloadingCompleted == true,
+            active = local?.isDownloadingActive == true,
+            // A file that TDLib is writing (or has written) obviously can be
+            // downloaded even before `canBeDownloaded` flips true, so the flags
+            // are ORed rather than trusted alone.
+            canBeDownloaded = local?.canBeDownloaded == true ||
+                local?.isDownloadingActive == true ||
+                local?.isDownloadingCompleted == true,
         )
     }
 
@@ -1042,21 +1072,133 @@ object Td {
         return fileState(fileId)
     }
 
-    /** Ask TDLib to fetch [limit] bytes of [fileId] starting at [offset]. */
-    fun request(fileId: Int, offset: Long, limit: Long) {
-        client?.send(TdApi.DownloadFile(fileId, 32, offset, limit, false), null, null)
+    /**
+     * TDLib's refusal to download a file, keyed by file id — see [request].
+     *
+     * A download TDLib will not do (an expired file reference is the ordinary
+     * one) is answered as the RESULT of the `downloadFile` call. With that
+     * result dropped, nothing was reported anywhere and the download simply
+     * never started: the player then buffered until its watchdog gave up and
+     * blamed the server, which is the reported "Telegram video still not
+     * playing, still buffering after 60s". Kept per file so the data source can
+     * report the real reason the moment it happens.
+     */
+    private val downloadErrors = ConcurrentHashMap<Int, String>()
+
+    /** Why TDLib refused to download [fileId], or null. See [request]. */
+    fun downloadError(fileId: Int): String? = downloadErrors[fileId]
+
+    /** Forget a recorded refusal — a fresh attempt (after a repair) is about to be made. */
+    fun clearDownloadError(fileId: Int) {
+        downloadErrors.remove(fileId)
     }
 
     /**
-     * How much of a file one TDLib request covers.
+     * Ask TDLib to fetch [fileId] starting at [offset], for at most [limit]
+     * bytes (0 = to the end of the file).
      *
-     * Playback asks for the window a read lands in (the `prime` step of
-     * `TdFileDataSource`), and keeps it: a request that covered less would
-     * have to be renewed every few reads, and every renewal CANCELS the range
-     * TDLib is already downloading, so the download would restart a few
-     * kilobytes further on and never run ahead of the player. Small enough that
-     * a seek into the middle of a film starts there instead of pulling the whole
-     * file, large enough that 1080p plays through it smoothly.
+     * Priority 32 is the highest TDLib takes, i.e. "this is what someone is
+     * watching right now".
+     *
+     * The result handler is what turns a refusal into something the app can act
+     * on: TDLib answers an unusable file with an error HERE (`Can't download or
+     * generate the file`, `Can't download file: have no valid file reference`,
+     * `File not found`), and an ignored result is indistinguishable from a
+     * download that is merely slow.
      */
-    const val CHUNK_BYTES: Long = 2L * 1024 * 1024
+    fun request(fileId: Int, offset: Long, limit: Long) {
+        val c = client ?: return
+        runCatching {
+            c.send(
+                TdApi.DownloadFile(fileId, 32, offset, limit, false),
+                Client.ResultHandler { result ->
+                    if (result is TdApi.Error) {
+                        downloadErrors[fileId] = result.message
+                        com.hikari.app.data.Logs.log(
+                            "Telegram",
+                            "TDLib refused to download file $fileId from $offset: ${result.message}",
+                        )
+                    } else {
+                        downloadErrors.remove(fileId)
+                    }
+                    _revision.value = _revision.value + 1
+                },
+                null,
+            )
+        }
+    }
+
+    /**
+     * Start pulling [fileId] from its beginning right now.
+     *
+     * Called when the user taps a video, BEFORE the player exists: resolving the
+     * file reference and fetching the first part out of Telegram is the whole
+     * cold-start cost of a Telegram video, and doing it while the player
+     * activity is still being built means the bytes the player asks for are
+     * already on disk — playback starts on the first read instead of on the
+     * first download. Cheap and idempotent; the player's own request simply
+     * replaces this one at the same offset.
+     */
+    fun prewarm(fileId: Int) {
+        downloadErrors.remove(fileId)
+        request(fileId, 0L, AHEAD_BYTES)
+    }
+
+    /**
+     * How many contiguous bytes of [fileId] are on disk starting at [offset] —
+     * for ANY offset, which is the question a media player actually asks.
+     *
+     * This is [TdApi.GetFileDownloadedPrefixSize], i.e. `FileNode::downloaded_prefix`
+     * inside TDLib: it walks the file's downloaded-parts bitmask and returns the
+     * length of the ready run beginning exactly at [offset] (and `size - offset`
+     * for a fully downloaded file). The [FileState.local] pair cannot answer it:
+     * `downloadedPrefixSize` is measured from `downloadOffset`, so it describes
+     * only the run TDLib is downloading right now — a seek into the middle of a
+     * film is answered 0 by it however much of the file is really on disk.
+     *
+     * Returns -1 when TDLib could not be asked (no client, or the query failed);
+     * callers must read that as "unknown", never as "nothing is available".
+     */
+    suspend fun availableFrom(fileId: Int, offset: Long): Long =
+        (query(TdApi.GetFileDownloadedPrefixSize(fileId, offset)) as? TdApi.FileDownloadedPrefixSize)
+            ?.size ?: -1L
+
+    /**
+     * Re-reads one post from TDLib, which is also what REPAIRS an expired file
+     * reference: Telegram's file references are short-lived, and TDLib refreshes
+     * the copy it holds for a file whenever it is handed a message carrying that
+     * file. A video the user opened from a list fetched a while ago (or before a
+     * restart) can therefore be holding a reference that no longer works, and
+     * `downloadFile` for it fails for good — the one failure that looks exactly
+     * like "nothing is happening".
+     *
+     * Returns the post's video/document file id (0 when the post has none, or
+     * when the lookup failed), so a caller can follow a file that came back
+     * under a different id.
+     */
+    suspend fun touchMessage(chatId: Long, messageId: Long): Int {
+        if (chatId == 0L || messageId == 0L) return 0
+        val msg = query(TdApi.GetMessage(chatId, messageId)) as? TdApi.Message ?: return 0
+        return when (val c = msg.content) {
+            is TdApi.MessageVideo -> c.video.video.id
+            is TdApi.MessageAnimation -> c.animation.animation.id
+            is TdApi.MessageDocument ->
+                if (c.document.mimeType.startsWith("video/")) c.document.document.id else 0
+            else -> 0
+        }
+    }
+
+    /**
+     * How far ahead of the read position a download request runs.
+     *
+     * One request covers a whole window and is left alone while the read stays
+     * inside it, because a NEW `downloadFile` with a different offset cancels the
+     * range TDLib is already fetching (`FileNode::set_download_offset` →
+     * `update_downloaded_part`). Renewing every couple of MiB therefore restarted
+     * the download just ahead of the playhead forever, which is what made the
+     * old 2 MiB window unable to run ahead. 24 MiB is several minutes of 1080p
+     * and still small enough that a seek starts at the seek, not at the start of
+     * the film.
+     */
+    const val AHEAD_BYTES: Long = 24L * 1024 * 1024
 }

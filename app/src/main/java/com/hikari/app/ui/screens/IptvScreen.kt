@@ -84,6 +84,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
+import com.hikari.app.tv.tvTextFieldKeys
 
 /**
  * The IPTV tab: the user's playlists as tiles, and the channels inside them.
@@ -312,7 +313,7 @@ fun IptvScreen(nav: NavHostController) {
                         placeholder = { Text(tr("https://…/playlist.m3u")) },
                         singleLine = false,
                         maxLines = 3,
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth().tvTextFieldKeys(addLink),
                     )
                     Spacer(Modifier.height(8.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -342,7 +343,7 @@ fun IptvScreen(nav: NavHostController) {
                         onValueChange = { addName = it },
                         label = { Text(tr("Name (optional)")) },
                         singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth().tvTextFieldKeys(addName),
                     )
                     if (adding) {
                         Spacer(Modifier.height(10.dp))

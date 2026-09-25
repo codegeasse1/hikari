@@ -41,6 +41,7 @@ import androidx.compose.ui.unit.dp
 import com.hikari.app.i18n.tr
 import com.hikari.app.ui.navigation.LocalTaskbarInset
 import com.hikari.app.ui.theme.rememberGlassTokens
+import com.hikari.app.tv.tvTextFieldKeys
 
 /**
  * One option in a [ChoiceDialog].
@@ -230,7 +231,7 @@ fun MultiChoiceDialog(
                 },
                 singleLine = true,
                 shape = GlassShape,
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().tvTextFieldKeys(query),
             )
             Spacer(Modifier.height(8.dp))
         }

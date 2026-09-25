@@ -384,11 +384,31 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
         // manga extension is a separate APK compiled against its own copy of the
         // HTTP library, so a NoSuchMethodError/NoClassDefFoundError here means the
         // extension and this app disagree about that library's version.
-        val compat = if (real is LinkageError) {
-            " — this extension was built against a different version of the app's HTTP library"
-        } else ""
+        //
+        // A bare `UnsupportedOperationException` is the same kind of statement from
+        // the other side: the vendored base classes throw one from every hook an
+        // extension MAY override (`HttpSource.chapterListParse` is the one on the
+        // chapter-list path), so hitting it means this extension never provided
+        // that hook — which is what an extension built against a different
+        // version of the extensions library looks like. It is the "0 chapters
+        // failed: UnsupportedOperationException" row, and it is an extension
+        // problem, not a connection one, so it is said in words.
+        val compat = when {
+            real is LinkageError ->
+                " — this extension was built against a different version of the app's HTTP library"
+            real is UnsupportedOperationException ->
+                " — this extension does not implement the part of the extensions API Hikari " +
+                    "asked it for, which means it was built for a different version of the " +
+                    "extensions library. Try another extension for this title."
+            else -> ""
+        }
+        // The Rx wrapper's text only names what was in flight ("OnError while
+        // emitting onNext value: okhttp3.Response.class"), which says nothing
+        // about the failure — with a bare UnsupportedOperationException above it,
+        // printing it made the whole row unreadable.
         val detail = real.message?.takeIf { it.isNotBlank() }
-            ?: wrapper?.message?.takeIf { it.isNotBlank() }
+            ?: if (real is UnsupportedOperationException) null
+            else wrapper?.message?.takeIf { it.isNotBlank() }
         return label + (detail?.let { ": $it" } ?: "") + compat
     }
 
