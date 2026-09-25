@@ -887,14 +887,85 @@ object Td {
      *  call without the UI ever seeing a page). */
     private const val SCAN_MESSAGES_PER_CALL = 400
 
+    /** How many videos one search hit may pull in with it (see [videosOfPost]). */
+    private const val POST_VIDEOS_MAX = 40
+
+    /** How many newer messages one hit is walked through, at most. */
+    private const val POST_WALK_MESSAGES = 20
+
+    /** The words a message carries itself — its text, or its media's caption. */
+    private fun textOf(message: TdApi.Message): String = when (val c = message.content) {
+        is TdApi.MessageText -> c.text.text
+        is TdApi.MessageVideo -> c.caption.text
+        is TdApi.MessageAnimation -> c.caption.text
+        is TdApi.MessageDocument -> c.caption.text
+        is TdApi.MessagePhoto -> c.caption.text
+        is TdApi.MessageAudio -> c.caption.text
+        else -> ""
+    }
+
+    /**
+     * The videos that belong to ONE search hit.
+     *
+     * A tag in a chat is usually NOT the video itself: the user types "abc",
+     * sends it, and then posts the videos under it (or attaches them as an album
+     * whose first message carries the text). Telegram's own search therefore
+     * finds the TEXT post, while a video-filtered search finds nothing — the
+     * videos have no caption to match. That is the reported "in Telegram I
+     * search the tag and land on the video, in Hikari the same search finds
+     * nothing".
+     *
+     * So a hit is read as the POST: the message itself when it is a video, plus
+     * the videos that follow it, stopping at the next post — the first message
+     * that is not a video and carries words of its own, or a video whose own
+     * caption is different text (that is a new post, and its videos belong to
+     * it, findable by its own tag). [TdApi.GetChatHistory] with a negative
+     * offset is what asks for NEWER messages; the window is filtered by id so
+     * the result does not depend on how TDLib places the offset.
+     *
+     * Every video resolved this way is given the hit's text as its [ChatVideo.caption],
+     * so a batch that was found by its tag still says so in the list.
+     */
+    private suspend fun videosOfPost(chatId: Long, anchor: TdApi.Message, q: String): List<ChatVideo> {
+        val out = mutableListOf<ChatVideo>()
+        val anchorText = textOf(anchor)
+        videoOf(chatId, anchor)?.let { out += it }
+        val newer = query(
+            TdApi.GetChatHistory(chatId, anchor.id, -POST_WALK_MESSAGES, POST_WALK_MESSAGES, false),
+        ) as? TdApi.Messages ?: return out
+        // TDLib answers newest-first; a post reads oldest-first.
+        for (m in newer.messages.asReversed()) {
+            if (m.id <= anchor.id) continue
+            val video = videoOf(chatId, m)
+            if (video != null) {
+                val own = video.caption
+                if (own.isNotBlank() && !own.contains(q, ignoreCase = true)) break
+                if (out.size >= POST_VIDEOS_MAX) break
+                out += if (anchorText.isBlank()) video else video.copy(caption = anchorText)
+                continue
+            }
+            // Anything else — a photo, a document, a poll, a service message —
+            // is not this post's video tail, and its own text would start the
+            // next one: stop here. (Contiguous videos only, on purpose: a tag
+            // post is followed by its own uploads, and the first thing that is
+            // not one of them ends the batch.)
+            break
+        }
+        return out
+    }
+
     /**
      * Search ONE chat's videos. See [ChatVideo.caption] for why this is split.
      *
-     * [SearchIn.CHAT] is answered by Telegram itself
-     * ([TdApi.SearchChatMessages], filtered to video messages): the caption is
-     * message text, so TDLib can search the chat's WHOLE history for it and come
-     * back with the next cursor — this is the "I captioned that batch abc, show
-     * me the batch" case, and it is complete.
+     * [SearchIn.CHAT] is answered by Telegram itself, but the search is for the
+     * POST, not for the video: TDLib's text index finds the message the tag was
+     * typed into — which for a batch post is the text the user sent, or the
+     * album's caption — and NOT the video messages under it, which usually carry
+     * no text at all. So the hits come back unfiltered
+     * ([TdApi.SearchMessagesFilterEmpty]) and each one is resolved to the videos
+     * that belong to it ([videosOfPost]). This is the "I wrote the tag, posted
+     * the video below it, and in Telegram I can search the tag and land on the
+     * video" case, and it is complete because Telegram searches the whole chat.
      *
      * [SearchIn.VIDEO] and [SearchIn.BOTH] cannot be: a file name is not message
      * text, so there is nothing for Telegram to index and the chat's history has
@@ -917,6 +988,12 @@ object Td {
         if (q.isEmpty()) return ChatVideoPage(emptyList(), 0, 0, true)
 
         if (inText == SearchIn.CHAT) {
+            // NOT filtered to videos. The hits are POSTS: Telegram's text index
+            // finds the message the tag was typed into, which for a batch post
+            // is the text (or the album's caption) and not the video messages
+            // below it — those usually carry no text at all, so a
+            // video-filtered search returns nothing for a tag that plainly
+            // works in Telegram itself. See [videosOfPost].
             val found = query(
                 TdApi.SearchChatMessages(
                     chatId,
@@ -925,14 +1002,21 @@ object Td {
                     /* senderId = */ null,
                     cursor,
                     /* offset = */ 0,
-                    limit.coerceIn(1, 100),
-                    TdApi.SearchMessagesFilterVideo(),
+                    limit.coerceIn(1, 50),
+                    TdApi.SearchMessagesFilterEmpty(),
                 ),
             ) as? TdApi.FoundChatMessages
                 ?: return ChatVideoPage(emptyList(), 0, 0, true)
-            val videos = found.messages.mapNotNull { videoOf(chatId, it) }
-            val next = if (videos.isEmpty()) 0L else found.nextFromMessageId
-            return ChatVideoPage(videos, next, found.messages.size, next == 0L)
+            val out = mutableListOf<ChatVideo>()
+            val seen = HashSet<Long>()
+            for (hit in found.messages) {
+                for (v in videosOfPost(chatId, hit, q)) {
+                    if (seen.add(v.messageId)) out += v
+                }
+                if (out.size >= limit) break
+            }
+            val next = found.nextFromMessageId
+            return ChatVideoPage(out.take(limit), next, found.messages.size, next == 0L)
         }
 
         val out = mutableListOf<ChatVideo>()

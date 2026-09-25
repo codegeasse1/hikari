@@ -641,35 +641,82 @@ class MainActivity : AppCompatActivity() {
             return
         }
         val token = com.hikari.app.tracker.TrackerApi.tokenFromRedirect(url)
-        if (token == null) {
-            // A code flow (MyAnimeList, Shikimori) with no dialog to hand it to.
-            // The code alone is not enough to exchange — it needs the `state`
-            // that was generated when the sign-in started — so the honest answer
-            // is where to put it. The link itself carries the code, and the
-            // dialog's paste box reads a code out of a whole URL.
-            toast(com.hikari.app.i18n.I18n.t("This sign-in link has to be finished in the app: Settings → Trackers → paste it into the code field."))
+        val app = application as HikariApp
+        if (token != null) {
+            lifecycleScope.launch {
+                val client = runCatching { app.store.trackerClient(com.hikari.app.data.TrackerKind.ANILIST) }
+                    .getOrDefault(com.hikari.app.data.TrackerClient(com.hikari.app.data.TrackerKind.ANILIST))
+                if (client.id.isBlank()) {
+                    toast(
+                        com.hikari.app.i18n.I18n.t("AniList signed you in, but this app does not know your client id yet — Settings → Trackers, paste it, then resend the link.")
+                    )
+                    return@launch
+                }
+                val done = runCatching { com.hikari.app.tracker.TrackerApi.signInWithToken(client, token) }.getOrNull()
+                if (done == null) {
+                    toast(com.hikari.app.i18n.I18n.t("AniList: could not finish the sign-in from that link."))
+                    return@launch
+                }
+                done.onSuccess { account ->
+                    runCatching { app.store.setTrackerAccount(account) }
+                    runCatching { app.store.setTrackerPending(null) }
+                    toast(account.describe + " — connected")
+                }.onFailure { toast("AniList: " + it.message) }
+            }
             return
         }
-        val app = application as HikariApp
-        lifecycleScope.launch {
-            val client = runCatching { app.store.trackerClient(com.hikari.app.data.TrackerKind.ANILIST) }
-                .getOrDefault(com.hikari.app.data.TrackerClient(com.hikari.app.data.TrackerKind.ANILIST))
-            if (client.id.isBlank()) {
-                toast(
-                    com.hikari.app.i18n.I18n.t("AniList signed you in, but this app does not know your client id yet — Settings → Trackers, paste it, then resend the link.")
-                )
-                return@launch
+        // A code flow (MyAnimeList, Shikimori, Simkl) with no dialog on screen.
+        // The code alone is not enough to exchange: the token endpoint also wants
+        // the `state` the redirect echoes back, because for MyAnimeList that same
+        // value IS the PKCE `code_verifier`. The dialog persists it when the login
+        // page opens (see TrackerApi.Pending), so the link can be finished here —
+        // which is what makes a browser sign-in work even when Android reclaimed
+        // the app in between, the case that used to end in "paste it yourself".
+        val code = com.hikari.app.tracker.TrackerApi.codeFromRedirect(url)
+        val echoed = com.hikari.app.tracker.TrackerApi.stateFromRedirect(url)
+        if (code != null && echoed != null) {
+            lifecycleScope.launch {
+                val pending = runCatching { app.store.trackerPending() }.getOrNull()
+                if (pending == null || pending.state != echoed) {
+                    toast(
+                        com.hikari.app.i18n.I18n.t(
+                            "That sign-in link no longer matches a sign-in started in this app — " +
+                                "start it again from Settings → Trackers."
+                        )
+                    )
+                    return@launch
+                }
+                val stored = runCatching { app.store.trackerClient(pending.kind) }
+                    .getOrDefault(com.hikari.app.data.TrackerClient(pending.kind))
+                // One link is one sign-in, whatever the outcome: dropping the
+                // record here is what stops a stale `state` being reused.
+                runCatching { app.store.setTrackerPending(null) }
+                val done = runCatching {
+                    com.hikari.app.tracker.TrackerApi.exchangeCode(
+                        if (stored.id.isBlank()) stored.copy(id = pending.clientId) else stored,
+                        code,
+                        pending.state,
+                    )
+                }.getOrNull()
+                if (done == null) {
+                    toast(
+                        com.hikari.app.i18n.I18n.t(
+                            "${pending.kind.label}: could not finish the sign-in from that link."
+                        )
+                    )
+                    return@launch
+                }
+                done.onSuccess { account ->
+                    runCatching { app.store.setTrackerAccount(account) }
+                    toast(account.describe + " — connected")
+                }.onFailure { toast(it.message ?: "${pending.kind.label}: the sign-in failed.") }
             }
-            val done = runCatching { com.hikari.app.tracker.TrackerApi.signInWithToken(client, token) }.getOrNull()
-            if (done == null) {
-                toast(com.hikari.app.i18n.I18n.t("AniList: could not finish the sign-in from that link."))
-                return@launch
-            }
-            done.onSuccess { account ->
-                runCatching { app.store.setTrackerAccount(account) }
-                toast(account.describe + " — connected")
-            }.onFailure { toast("AniList: " + it.message) }
+            return
         }
+        // Nothing to exchange (no code, or no echoed state): the honest answer is
+        // where to put the link. The dialog's paste box reads a code out of a
+        // whole URL.
+        toast(com.hikari.app.i18n.I18n.t("This sign-in link has to be finished in the app: Settings → Trackers → paste it into the code field."))
     }
 
     /** A short message from a non-Compose place. */

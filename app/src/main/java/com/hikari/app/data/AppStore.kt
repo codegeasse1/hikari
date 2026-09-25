@@ -204,6 +204,8 @@ class AppStore(private val ctx: Context) {
         val TRACKERS = stringPreferencesKey("trackers")
         /** The app id/secret the user registered with each service (JSON). */
         val TRACKER_CLIENTS = stringPreferencesKey("trackerClients")
+        /** The sign-in waiting for its redirect — see [trackerPending]. */
+        val TRACKER_PENDING = stringPreferencesKey("trackerPending")
         /** Whether a finished episode is reported to the trackers at all. */
         val TRACKER_SYNC = booleanPreferencesKey("trackerSync")
         /** Title → service id, once a search has resolved it (JSON). */
@@ -1717,6 +1719,25 @@ class AppStore(private val ctx: Context) {
     }
 
     /**
+     * The sign-in that is waiting for a redirect to come back (see
+     * [com.hikari.app.tracker.TrackerApi.Pending]).
+     *
+     * It is written when the login page is opened and cleared when the sign-in
+     * finishes, so a `hikari://oauth` link that arrives after the app was closed
+     * still has the `state` — MyAnimeList's PKCE `code_verifier` — needed to
+     * exchange the code it carries.
+     */
+    suspend fun trackerPending(): com.hikari.app.tracker.TrackerApi.Pending? =
+        com.hikari.app.tracker.TrackerApi.Pending.decode(store.data.first()[K.TRACKER_PENDING])
+
+    suspend fun setTrackerPending(pending: com.hikari.app.tracker.TrackerApi.Pending?) {
+        write("TRACKER_PENDING") { prefs ->
+            if (pending == null) prefs.remove(K.TRACKER_PENDING)
+            else prefs[K.TRACKER_PENDING] = pending.encode()
+        }
+    }
+
+    /**
      * Whether a finished episode is reported at all. On by default: the user
      * signed in to a tracker for exactly this, and a switch that starts off
      * would make the sign-in look broken.
@@ -2628,8 +2649,15 @@ class AppStore(private val ctx: Context) {
     ): List<ProviderConfig> = providerWrites.withLock {
         var result: List<ProviderConfig> = emptyList()
         write("PROVIDERS") { prefs ->
-            result = transform(parseProviders(prefs[K.PROVIDERS]))
-            prefs[K.PROVIDERS] = encodeProviders(result)
+            val before = parseProviders(prefs[K.PROVIDERS])
+            result = transform(before)
+            // A transform that produced the same list is not a change, and
+            // writing it anyway is not free: every write re-encodes the whole
+            // list, serialises it, and emits on the preferences flow — which the
+            // screens observe. Callers like [markProvidersAdult] run on every
+            // provider-list change and are usually a no-op, so skipping the
+            // write here is what keeps that pass from being a write pass.
+            if (result != before) prefs[K.PROVIDERS] = encodeProviders(result)
         }
         result
     }

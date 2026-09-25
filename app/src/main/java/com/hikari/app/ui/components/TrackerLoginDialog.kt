@@ -126,6 +126,9 @@ fun TrackerLoginDialog(
     fun finish(account: TrackerAccount) {
         scope.launch {
             runCatching { app.store.setTrackerAccount(account) }
+            // The sign-in is over, so nothing is waiting for a redirect any
+            // more (see TrackerApi.Pending).
+            runCatching { app.store.setTrackerPending(null) }
             onSignedIn(account.describe + " — connected")
         }
     }
@@ -167,7 +170,31 @@ fun TrackerLoginDialog(
             }
             TrackerFlow.CODE, TrackerFlow.TOKEN -> {
                 loginState = TrackerApi.newState()
-                webUrl = TrackerApi.authorizeUrl(kind, client.id, loginState)
+                val url = TrackerApi.authorizeUrl(kind, client.id, loginState)
+                busy = true
+                scope.launch {
+                    // Ask the service FIRST whether it will show a login page for
+                    // this app id, instead of sending the user to whatever it
+                    // answers with (see TrackerApi.checkAuthorize — an unknown id
+                    // comes back as a `401` with a Basic-auth challenge, which a
+                    // browser draws as a username/password box captioned "OAuth",
+                    // not as an error the user could act on).
+                    val check = TrackerApi.checkAuthorize(kind, client.id, loginState)
+                    busy = false
+                    if (check.isFailure) {
+                        error = check.exceptionOrNull()?.message
+                        return@launch
+                    }
+                    // Persisted BEFORE the page opens: a redirect that arrives
+                    // after this dialog is gone still carries a code state that
+                    // only this record knows (see TrackerApi.Pending).
+                    runCatching {
+                        app.store.setTrackerPending(
+                            TrackerApi.Pending(kind, client.id, loginState)
+                        )
+                    }
+                    webUrl = url
+                }
             }
         }
     }
@@ -598,6 +625,40 @@ fun TrackerLoginDialog(
                                                     handleRedirect(target)
                                                     view?.stopLoading()
                                                 }
+                                            }
+
+                                            /**
+                                             * A `401` carrying `WWW-Authenticate: Basic`
+                                             * is how MyAnimeList refuses an authorize
+                                             * request whose client id it does not know
+                                             * (realm "OAuth"), and the default handling
+                                             * is the DEVICE's own username/password
+                                             * dialog — a box that belongs to no service,
+                                             * cannot succeed, and is the "cheap login
+                                             * page" that does not look like the real
+                                             * one. Cancel it and say what happened
+                                             * instead; [start] preflights the same thing
+                                             * (see TrackerApi.checkAuthorize), so this
+                                             * is the backstop for an id that was valid
+                                             * when the page opened and is not any more.
+                                             */
+                                            override fun onReceivedHttpAuthRequest(
+                                                view: WebView?,
+                                                handler: android.webkit.HttpAuthHandler?,
+                                                host: String?,
+                                                realm: String?,
+                                            ) {
+                                                handler?.cancel()
+                                                view?.stopLoading()
+                                                error = I18n.t(
+                                                    "That page asked for a username and password " +
+                                                        "instead of showing the service's login " +
+                                                        "page — which means the app id above was " +
+                                                        "refused. Check it against the developer " +
+                                                        "page (it is the Client ID, not the " +
+                                                        "Client Secret), then press Sign in again."
+                                                )
+                                                webUrl = null
                                             }
                                         }
                                         loadUrl(url)

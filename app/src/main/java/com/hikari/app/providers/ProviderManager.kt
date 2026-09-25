@@ -25,6 +25,10 @@ class ProviderManager(private val store: AppStore, private val context: Context)
     @Volatile
     private var refreshQueued = false
 
+    /** The configs the current list was built from, so an identical rebuild is
+     *  not a rebuild at all (see [refresh]). */
+    private var lastConfigs: List<ProviderConfig> = emptyList()
+
     /**
      * Builds the provider list from the stored configs.
      *
@@ -57,6 +61,16 @@ class ProviderManager(private val store: AppStore, private val context: Context)
             do {
                 refreshQueued = false
                 val configs = ExtensionNsfw.filter(context, store.providers())
+                // Same configs in, same providers out — and assigning the same
+                // list again is NOT harmless: it emits on [providers], which
+                // re-runs every screen effect that watches it (the extensions
+                // screen re-hashes its installed files and re-adopts the 18+
+                // flags on every emission), and it throws away the extension
+                // instances that are already instantiated. An install-all run
+                // ends with a rebuild, the store's own flow usually asks for one
+                // right after, and the second one used to be pure work.
+                if (configs == lastConfigs && _providers.value.isNotEmpty()) continue
+                lastConfigs = configs
                 _providers.value = configs.mapNotNull { instantiate(it) }
             } while (refreshQueued)
         } finally {

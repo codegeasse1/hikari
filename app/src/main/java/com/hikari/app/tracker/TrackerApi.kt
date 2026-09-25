@@ -257,6 +257,134 @@ object TrackerApi {
     /** The redirect URI to paste when registering (shown on the card). */
     fun redirectHint(): String = REDIRECT_URI
 
+    /** The `state` a redirect echoes back, if any — checked against the one we
+     *  sent before a code is exchanged (see [Pending]). */
+    fun stateFromRedirect(redirect: String): String? =
+        paramOf(redirect, "state")?.takeIf { it.isNotBlank() }
+
+    // ---------------------------------------------------- sign-in: preflight
+
+    /**
+     * A sign-in that has been STARTED and is waiting for its redirect.
+     *
+     * The `state` a service echoes back is the only proof a redirect is ours,
+     * and for MyAnimeList it is ALSO the PKCE `code_verifier` the token exchange
+     * needs — a value that used to exist only while the dialog that generated it
+     * was alive. A browser sign-in routinely outlives the dialog (the user
+     * leaves the app, Android reclaims the process, the link comes back later),
+     * and a code that arrived then could not be exchanged by anybody, which is
+     * the whole of the reported "I sign in in the browser and the app still does
+     * not connect". Persisting this one small record is what lets
+     * [com.hikari.app.MainActivity] finish that link anyway.
+     */
+    data class Pending(
+        val kind: TrackerKind,
+        val clientId: String,
+        val state: String,
+        val at: Long = System.currentTimeMillis(),
+    ) {
+        fun encode(): String = JSONObject().apply {
+            put("kind", kind.key)
+            put("clientId", clientId)
+            put("state", state)
+            put("at", at)
+        }.toString()
+
+        companion object {
+            fun decode(raw: String?): Pending? {
+                if (raw.isNullOrBlank()) return null
+                return try {
+                    val o = JSONObject(raw)
+                    val kind = TrackerKind.of(o.optString("kind")) ?: return null
+                    val state = o.optString("state")
+                    if (state.isBlank()) return null
+                    Pending(kind, o.optString("clientId"), state, o.optLong("at", 0L))
+                } catch (e: Exception) {
+                    null
+                }
+            }
+        }
+    }
+
+    /**
+     * Asks the service whether it will show its login page AT ALL for these app
+     * credentials, before the user is sent to it.
+     *
+     * This exists because of what a refused app id looks like in a browser. Open
+     * `myanimelist.net/v1/oauth2/authorize?…&client_id=<unknown>` and MAL answers
+     * `401` with the OAuth error body *and* an `HTTP Basic realm="OAuth"`
+     * challenge — so Chrome (and a WebView) do not render an error message at
+     * all: they render the device's native "Sign in" username/password box,
+     * captioned "The site says: OAuth". That is the reported "a cheap login page
+     * which does not even feel like the real one" — it is not MAL's login page,
+     * it is a credential prompt for a rejected API request, and nothing the user
+     * types there can work.
+     *
+     * The same request, made here as a plain HTTP GET, comes back as a status
+     * code and a readable body, so the dialog can say exactly what the service
+     * refused (and which value on its developer page is the one to paste)
+     * instead of opening a page that cannot succeed. A service that is happy
+     * answers with its login page (HTTP 200 HTML) and this passes silently.
+     */
+    suspend fun checkAuthorize(
+        kind: TrackerKind,
+        clientId: String,
+        state: String,
+    ): Result<Unit> {
+        val url = authorizeUrl(kind, clientId, state)
+        if (url.isEmpty()) return Result.success(Unit)
+        val reply = get(url)
+        if (reply.code == -1) {
+            return Result.failure(
+                Exception("${kind.label}: could not be reached — check your connection.")
+            )
+        }
+        val o = reply.json()
+        val errorCode = o?.optString("error").orEmpty()
+        val said = o?.optString("message").orEmpty()
+            .ifBlank { o?.optString("error_description").orEmpty() }
+        val refused = errorCode.isNotBlank() || reply.code == 401
+        if (!refused && reply.code in 200..399) return Result.success(Unit)
+        return Result.failure(Exception(appCredentialProblem(kind, errorCode, said, reply.code)))
+    }
+
+    /** The sentence [checkAuthorize] fails with — see it for why this exists. */
+    private fun appCredentialProblem(
+        kind: TrackerKind,
+        errorCode: String,
+        said: String,
+        code: Int,
+    ): String {
+        val what = when {
+            errorCode.equals("invalid_client", true) || errorCode.equals("client_failed", true) ->
+                "it does not recognise that app id"
+            errorCode.isNotBlank() -> "it refused the request ($errorCode)"
+            code == 401 -> "it refused the app id (HTTP 401)"
+            else -> "it answered HTTP $code instead of opening its login page"
+        }
+        val hint = when (kind) {
+            TrackerKind.MAL ->
+                " The Client ID is the 32-character value in the app's row on MyAnimeList's " +
+                    "developer page — it is NOT the Client Secret, which is much longer. If there " +
+                    "is no app there yet, create one: its App Redirect URL must be exactly " +
+                    "$REDIRECT_URI (MAL is strict about that string, and about the app being " +
+                    "saved)."
+            TrackerKind.ANILIST ->
+                " AniList's developer page shows the Client ID (a number) beside the app name; " +
+                    "the Client Secret is a different, longer value and is not what goes in this " +
+                    "field."
+            TrackerKind.SIMKL ->
+                " Simkl's developer page shows the app's Client ID — a long number, not the app " +
+                    "name."
+            TrackerKind.SHIKIMORI ->
+                " Shikimori's application page shows the app's Client ID (a short string) — not " +
+                    "the Client Secret."
+            else -> ""
+        }
+        val tail = if (said.isBlank()) "" else " It said: \"" + said.take(160) + "\"."
+        return "${kind.label}: $what.$tail$hint"
+    }
+
     // --------------------------------------------------------- sign-in: token in
 
     /** Confirms an implicit-grant token and asks the service who the user is. */

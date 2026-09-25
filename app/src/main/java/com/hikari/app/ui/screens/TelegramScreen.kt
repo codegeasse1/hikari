@@ -118,7 +118,13 @@ fun TelegramScreen(nav: NavHostController) {
     // Which channel / which chat is open, if any. Kept in saved state so a
     // rotation does not dump the user back to the list.
     var openName by rememberSaveable { mutableStateOf<String?>(null) }
-    var openChat by rememberSaveable { mutableStateOf(-1L) }
+    // 0 is the "no chat open" sentinel, NOT -1: a channel or group id is
+    // NEGATIVE (Saved Messages is the only chat here with a positive id), so a
+    // negative sentinel and a real channel id are indistinguishable — tapping a
+    // channel set `openChat` to its own negative id, `openChat > 0` was false,
+    // and the page simply stayed on the list. That is the reported "clicking a
+    // channel does nothing; only Saved Messages opens".
+    var openChat by rememberSaveable { mutableStateOf(0L) }
     var openChatTitle by rememberSaveable { mutableStateOf("") }
     var addOpen by remember { mutableStateOf(false) }
     var typed by remember { mutableStateOf("") }
@@ -166,11 +172,11 @@ fun TelegramScreen(nav: NavHostController) {
 
     val openChannel = channels.firstOrNull { it.first == openName }
 
-    if (openChat > 0) {
+    if (openChat != 0L) {
         TelegramChatVideos(
             chatId = openChat,
             title = openChatTitle.ifBlank { "Chat" },
-            onBack = { openChat = -1L },
+            onBack = { openChat = 0L },
         )
     } else if (openChannel != null) {
         TelegramChannelVideos(
@@ -1113,7 +1119,9 @@ private enum class TgView(val key: String, val label: String) {
 
 /** The label for one of the search scopes — see [Td.SearchIn]. */
 private fun searchInLabel(m: Td.SearchIn): String = when (m) {
-    Td.SearchIn.CHAT -> "Chat text"
+    // Not "Chat text": the search finds the POST whose text (or caption) holds
+    // the word, and shows the videos posted with it — see Td.videosOfPost.
+    Td.SearchIn.CHAT -> "Post text"
     Td.SearchIn.VIDEO -> "Video names"
     Td.SearchIn.BOTH -> "Both"
 }
@@ -1433,7 +1441,10 @@ private fun ChatVideoSearchResults(
         EmptyState(
             title = tr("Nothing found"),
             subtitle = when (searchIn) {
-                Td.SearchIn.CHAT -> tr("No video in this chat has that in the text it was posted with.")
+                Td.SearchIn.CHAT -> tr(
+                    "No post in this chat has that in its text — and a post is what a video " +
+                        "tag is written on, not the video file itself."
+                )
                 Td.SearchIn.VIDEO -> tr("No video in this chat has that in its file name.")
                 Td.SearchIn.BOTH -> tr("No video in this chat matches that, in its text or its file name.")
             },

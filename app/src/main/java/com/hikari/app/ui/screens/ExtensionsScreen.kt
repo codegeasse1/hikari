@@ -246,6 +246,14 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
      *  suspends and never blocks: it is called from inside install paths that
      *  are already holding a download open. */
     fun requestRefresh() {
+        // A bulk run owns its own refresh (see [installAllPlugins] /
+        // [updatePlugins]): it rebuilds once when the burst is over. Honouring
+        // these requests during the burst would rebuild the WHOLE provider list
+        // — one extension instantiation per installed extension — after every
+        // single install, so a run over twenty or thirty extensions did
+        // quadratic work on a machine already busy downloading and dex-loading
+        // each one. That is the reported "install all lags and then crashes".
+        if (_installRunning.value) return
         refreshTicks.tryEmit(Unit)
     }
 
@@ -946,7 +954,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     suspend fun reloadInstalled() {
-        installedUrls.value = buildSet {
+        val next = buildSet {
             store.providers().forEach { p ->
                 val extra = p.extra ?: return@forEach
                 val source = when (p.type) {
@@ -964,6 +972,10 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 addAll(SourceUrls.matchKeys(source))
             }
         }
+        // Only a real change is published: this runs after every rebuild, and a
+        // StateFlow assignment emits even when the set is the same, which
+        // re-runs the effects that watch it (the update check and the 18+ pass).
+        if (next != installedUrls.value) installedUrls.value = next
     }
 
     suspend fun addNuvioRepo(rawUrl: String): Result<Cs3Repo> = addRepo(rawUrl, RepoKind.NUVIO)
@@ -2152,6 +2164,51 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         return md.digest(bytes).joinToString("") { "%02x".format(it) }
     }
 
+    /**
+     * On-disk digest of a file: `path -> (size, lastModified, sha256)`.
+     *
+     * [checkUpdates] runs on EVERY provider-list change (an install, an update,
+     * a repo refresh, the 18+ pass), and it used to read each installed
+     * extension's whole file into memory and hash it — twenty or thirty
+     * multi-megabyte files, again and again, on the IO threads the installs are
+     * themselves using. The file's size and modification time are enough to
+     * know whether it is still the one that was hashed before, and the digest
+     * is only recomputed when the file really moved on. Concurrent (checkUpdates
+     * can overlap a previous pass) and bounded: it holds one short string per
+     * installed extension.
+     */
+    private val fileHashes = java.util.concurrent.ConcurrentHashMap<String, Triple<Long, Long, String>>()
+
+    /**
+     * The SHA-256 of a file's CONTENT, streamed — never the whole file in
+     * memory (`File.readBytes()` on a 4 MB `.cs3`, on a phone that is installing
+     * three more at once, is a GC pause the user feels as a stutter). Null when
+     * the file cannot be read.
+     */
+    private fun fileSha256(path: String): String? {
+        val f = File(path)
+        if (!f.isFile) return null
+        val size = f.length()
+        val modified = f.lastModified()
+        fileHashes[path]?.let { (s, m, h) -> if (s == size && m == modified) return h }
+        val md = java.security.MessageDigest.getInstance("SHA-256")
+        try {
+            java.io.FileInputStream(f).use { input ->
+                val buf = ByteArray(1 shl 16)
+                while (true) {
+                    val n = input.read(buf)
+                    if (n <= 0) break
+                    md.update(buf, 0, n)
+                }
+            }
+        } catch (e: Exception) {
+            return null
+        }
+        val hex = md.digest().joinToString("") { "%02x".format(it) }
+        fileHashes[path] = Triple(size, modified, hex)
+        return hex
+    }
+
     /** A short, stable, filename-safe digest of [s] — the stamp that gives an
      *  installed file (and the provider ids derived from its name) a per-SOURCE
      *  identity. */
@@ -2399,8 +2456,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                         ?: keys.firstOrNull { onDisk.containsKey(it) }?.let { onDisk[it] }
                         ?: continue
                     val expected = hash.removePrefix("sha256-").lowercase()
-                    val actual = runCatching { sha256Hex(File(path).readBytes()) }.getOrNull()
-                        ?: continue
+                    val actual = runCatching { fileSha256(path) }.getOrNull() ?: continue
                     if (actual == expected) continue
                     outdated += plugin.url
                     // Light the Update button up on the installed-provider row

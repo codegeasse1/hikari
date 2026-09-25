@@ -3231,6 +3231,23 @@ class ContentRepository(private val manager: ProviderManager) {
                     streamsRemembered.entries.removeAll { it.value.at < cutoff }
                 }
             }
+            // A `ytId` or `externalUrl` row is a LINK to the video, not a video
+            // — Stremio's protocol allows both, plenty of addons use them for
+            // real content (and every trailer row is a YouTube one), and
+            // `DetailScreen.playableEvery` filters both out, so an addon whose
+            // streams are all of those played nothing at all: "no playable
+            // server found" from an addon that plays fine in Stremio. Resolved
+            // here — once, bounded, after the union above so a remembered row is
+            // resolved too — and the resolved list replaces the remembered one,
+            // so a repeat lookup does not pay for it again.
+            val resolvedResult = com.hikari.app.cs3.PlayableResolver.resolve(finalResult)
+            if (resolvedResult !== finalResult) {
+                finalResult = resolvedResult
+                if (finalResult.isNotEmpty()) {
+                    streamsRemembered[rememberKey] =
+                        RememberedStreams(finalResult, System.currentTimeMillis())
+                }
+            }
             // The repos this pass answered OUT OF MEMORY ([crossEmpty], the
             // session's own "no such title" record) are re-asked for real
             // whenever the pass came back thin, and the repos it never finished

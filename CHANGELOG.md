@@ -1,3 +1,78 @@
+## 0.10.34
+
+### Fixed
+
+- **Telegram: tapping a channel or a group now opens it.** The "which chat is open" state used `-1`
+  as its "nothing open" value and tested it with `openChat > 0`, but a channel or a supergroup id is
+  NEGATIVE — Saved Messages is the only chat on that screen with a positive id — so tapping a channel
+  stored its own negative id and the test then read as "nothing open": the page stayed on the list and
+  only Saved Messages ever worked. The sentinel is `0` now (no chat has that id) and the test is
+  `!= 0`, so every row in the list opens what it names.
+- **Telegram: searching a tag inside a chat finds the videos that were posted under it.** A tag is
+  usually not the video: the user sends the text ("iviroses"), then posts the videos beneath it (or
+  attaches them as an album whose first message carries the caption). The search asked TDLib for
+  VIDEO messages whose text matched, and those videos carry no text at all — so a tag that finds its
+  video in Telegram found nothing here. The search now asks for the POST (`SearchMessagesFilterEmpty`)
+  and resolves each hit to the videos that belong to it: the message itself when it is a video, plus
+  the run of videos that follows it, stopping at the first message that is not one of them. Each
+  video found this way is labelled with the tag post's own text, the "Look in" scope reads "Post text"
+  instead of "Chat text" (that is what it was always doing), and the empty-state sentence says so too.
+- **Installing one extension, or twenty at once, no longer stutters and no longer ends in a crash.**
+  Four things, all in the same chain. Every install asked for the provider list to be rebuilt, and a
+  bulk run rebuilt it after every single extension — one instantiation per installed extension, over
+  and over, on a machine already downloading and dex-loading (quadratic work: twenty or thirty
+  extensions was the crash). A bulk run now owns its own single rebuild, and an install's request is
+  ignored while one is running. The update check re-read EACH installed extension's whole file into
+  memory and hashed it on every provider-list change; it streams the file and remembers
+  `(size, modified, sha256)` per path, so an unchanged file is never hashed twice. A provider-list
+  rebuild whose configs are identical to the last one is now skipped instead of re-emitting a new
+  list (which re-ran the screens' effects and threw away live extension instances), and an install
+  set that has not changed is no longer published as a change.
+- **Stremio addons: YouTube and "external" streams play instead of reporting no playable source.**
+  Stremio names a stream in three ways — a direct URL, a torrent, or a `ytId` / `externalUrl` — and
+  the last two were filtered out one screen later, so an addon whose streams are all of those kinds
+  answered the search and then played nothing ("no playable source found" from an addon that plays in
+  Stremio itself; every trailer row is a `ytId`). Both are resolved at the end of a lookup now:
+  `ytId` through NewPipeExtractor (which had never been initialised in this app — `NewPipe.init`
+  needs a downloader and nothing had ever called it, so the jar's YouTube extractor could not have
+  worked in any path), and `externalUrl` through the same fallback engine every other embed uses.
+  Only MUXED YouTube formats are offered (progressive, then HLS for a live stream, then YouTube's own
+  DASH manifest, which carries its audio inside the one document) — NewPipe's video-only renditions
+  need a separate audio track this player cannot attach yet, and a silent video is a worse answer
+  than an honest one. The pass is bounded: at most six rows, twelve seconds each, twenty seconds
+  overall, and a row that resolves to nothing is left exactly as it was.
+- **Trackers: a refused app id is explained instead of opening a username/password box.** MyAnimeList
+  answers an authorize request whose client id it does not know with HTTP 401 plus an
+  `WWW-Authenticate: Basic realm="OAuth"` challenge, so the browser (and the WebView) render the
+  device's own "Sign in" dialog — the credential prompt that "does not even feel like the real login
+  page", and that cannot work whatever is typed into it. The dialog now asks the service FIRST (the
+  same request as a plain GET, which comes back as a status code and a readable error body) and says
+  what was actually refused — for MyAnimeList, that the Client ID is the 32-character value and not
+  the Client Secret, and that the app's redirect URL must be exactly `hikari://oauth`. The WebView
+  also cancels an HTTP-auth challenge outright and reports it, as a backstop.
+- **Trackers: a sign-in finished in the browser now completes in the app.** A `hikari://oauth` link
+  was only ever finishable by the dialog that started it, because the `state` the service echoes back
+  is generated there — and for MyAnimeList that same value IS the PKCE `code_verifier` the token
+  exchange needs. So a link that arrived after the app was closed (or after Android reclaimed it)
+  ended in "paste it into the code field". The pending sign-in (service, client id, state) is
+  persisted when the login page opens and cleared when the sign-in finishes, and MainActivity
+  completes the code exchange itself, checking the echoed state against the stored one first.
+
+### Notes
+
+- **AnimeOnline.Ninja (Aniyomi) — no defect found on Hikari's side.** The poster and the episode list
+  were checked point by point against the extension's own code and against the live site: the site's
+  inner pages still serve the DooPlay markup the extension selects (`div.sheader div.poster img` with
+  the real URL in `data-src`, `div#seasons > div.se-c`, `ul.episodios > li`), `abs:` attributes
+  resolve because the document is parsed with its base URI, Hikari ships a working
+  `app.cash.quickjs` bridge (the class the extension's VRF interceptor links against), the
+  `wsidchk` interstitial family is solved, and the `Injekt` singletons an extension reaches for
+  (`Application`, `NetworkHelper`, `JavaScriptEngine`) are all registered. The extension's own repo
+  rewrote this source on 2026-08-31 ("migrate to `ParsedAnimeHttpLegacySource`", plus "fix 6
+  top-voted broken sources"), so an installed build older than that — or one whose requests hit the
+  site's challenge — is what to check first: update the extension from its repo (or reinstall it) and
+  try again, and the app's own reason line for the source will say what the extension reported.
+
 ## 0.10.33
 
 ### Fixed
