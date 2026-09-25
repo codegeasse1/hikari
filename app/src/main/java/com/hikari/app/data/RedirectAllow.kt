@@ -83,8 +83,14 @@ object RedirectAllow {
      * redirect decisions and by the Cloudflare-verification view, which cannot
      * afford a DataStore read (the mirror is only a fast path: the caller's own
      * freshly-read list is honoured the same way).
+     *
+     * The parameter is an [Iterable], NOT a `Collection`: this package's own
+     * media class is called `Collection` (see Models.kt) and shadows
+     * `kotlin.collections.Collection` inside every file of
+     * `com.hikari.app.data` — a `Collection<String>` parameter here is a compile
+     * error ("No type arguments expected for 'data class Collection'").
      */
-    fun allowsIn(url: String?, list: Collection<String>): Boolean {
+    fun allowsIn(url: String?, list: Iterable<String>): Boolean {
         if (url.isNullOrBlank() || list.isEmpty()) return false
         val u = url.trim().lowercase()
         val host = runCatching { java.net.URI(u).host?.lowercase() }.getOrNull().orEmpty()
