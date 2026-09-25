@@ -1399,12 +1399,17 @@ private fun TgPill(label: String, selected: Boolean, onClick: () -> Unit) {
  * The results of a search inside one chat (see the search button in
  * [TelegramChatVideos]).
  *
- * They come from the chat's own history, not from the loaded list, and the
- * footer is honest about how far it has looked: a file name is not message
- * text, so a file-name search cannot be indexed by Telegram — it walks the
- * history a page at a time, and "Search further back" continues where it
- * stopped. A chat-text search IS done by Telegram across the whole chat, so it
- * is complete on the first call.
+ * They come from the chat's own history, not from the loaded list. A chat-text
+ * search is answered by Telegram's own index (each hit resolved to the videos
+ * that belong to that post — see [Td.videosOfPost]), and a file-name search
+ * cannot be indexed at all, so the history is walked a page at a time.
+ *
+ * Either way the whole chat is walked HERE, without the user having to ask: the
+ * search used to stop after one page and hide the rest behind a "Search further
+ * back" button, which is the reported "my tag has 200+ videos and it only shows
+ * some — in Telegram I see them all". The footer still says honestly how far it
+ * got and how many videos it found, and the button is kept only for the case
+ * where the walk hit its page ceiling.
  */
 @Composable
 private fun ChatVideoSearchResults(
@@ -1421,19 +1426,71 @@ private fun ChatVideoSearchResults(
     var busy by remember(chatId, query, searchIn) { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
+    // The search pages the WHOLE chat by itself. It used to stop after one page
+    // and put the rest behind a "Search further back" button — so a tag with
+    // 200+ videos stopped at the first page's worth and only grew if the user
+    // found and tapped a button under the list. Reported as "it only shows some
+    // — in Telegram I see them all". Each page is a local TDLib read, so the
+    // loop is cheap; SEARCH_MAX_PAGES is only there so a chat that never ends
+    // cannot spin forever (and if it IS hit, the footer still offers the button).
     LaunchedEffect(chatId, query, searchIn) {
         results = null
-        val page = withContext(Dispatchers.IO) { Td.searchChatVideos(chatId, query, searchIn, 0, 60) }
-        results = page.videos
-        cursor = page.nextCursor
-        scanned = page.scanned
-        done = page.exhausted
+        scanned = 0
+        done = false
+        cursor = 0L
+        val acc = ArrayList<Td.ChatVideo>()
+        val seen = HashSet<Long>()
+        var cur = 0L
+        var pages = 0
+        while (pages < SEARCH_MAX_PAGES) {
+            pages++
+            val page = withContext(Dispatchers.IO) {
+                Td.searchChatVideos(chatId, query, searchIn, cur, SEARCH_PAGE)
+            }
+            val add = page.videos.filter { seen.add(it.messageId) }
+            if (add.isNotEmpty()) acc.addAll(add)
+            scanned += page.scanned
+            cursor = page.nextCursor
+            // Publish as it grows, so a big tag fills the list page by page
+            // instead of appearing all at once at the end.
+            if (acc.isNotEmpty()) results = acc.toList()
+            if (page.exhausted || page.nextCursor == 0L) {
+                done = true
+                break
+            }
+            // A page with nothing in it means there is nothing left to walk.
+            if (page.videos.isEmpty() && page.scanned == 0) {
+                done = true
+                break
+            }
+            cur = page.nextCursor
+        }
+        results = acc.toList()
+        // If the ceiling was reached with nothing found at all, settle on the
+        // empty state rather than leaving the spinner up forever; a search with
+        // results keeps `done` false so the footer can offer to go further.
+        if (acc.isEmpty()) done = true
     }
 
     val found = results
-    if (found == null) {
+    // Still loading the first page, or paging a chat that has not produced a
+    // first video yet: showing "Nothing found" over a search that is still
+    // walking is the same lie the footer used to tell.
+    if (found == null || (found.isEmpty() && !done)) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            CircularProgressIndicator()
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                CircularProgressIndicator()
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    if (scanned > 0) {
+                        tr("Looking through this chat… %s post(s) so far").replace("%s", scanned.toString())
+                    } else {
+                        tr("Searching…")
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
         return
     }
@@ -1455,28 +1512,38 @@ private fun ChatVideoSearchResults(
         item(key = "telegram-td-search-footer") {
             Column(Modifier.fillMaxWidth().padding(10.dp)) {
                 Text(
-                    tr("Looked at %s post(s) here.").replace("%s", scanned.toString()),
+                    tr("Looked at %s post(s) here.").replace("%s", scanned.toString()) +
+                        "  ·  " + tr("%s video(s) found.").replace("%s", found.size.toString()),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                if (!done && cursor != 0L) {
-                    TextButton(
-                        enabled = !busy,
-                        onClick = {
-                            busy = true
-                            scope.launch {
-                                val page = withContext(Dispatchers.IO) {
-                                    Td.searchChatVideos(chatId, query, searchIn, cursor, 60)
-                                }
-                                busy = false
-                                val have = results.orEmpty()
-                                results = have + page.videos.filterNot { v -> have.any { it.messageId == v.messageId } }
-                                cursor = page.nextCursor
-                                scanned += page.scanned
-                                done = page.exhausted
-                            }
-                        },
-                    ) { Text(if (busy) tr("Searching…") else tr("Search further back")) }
+                if (!done) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            tr("Still looking…"),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        if (cursor != 0L) {
+                            TextButton(
+                                enabled = !busy,
+                                onClick = {
+                                    busy = true
+                                    scope.launch {
+                                        val page = withContext(Dispatchers.IO) {
+                                            Td.searchChatVideos(chatId, query, searchIn, cursor, SEARCH_PAGE)
+                                        }
+                                        busy = false
+                                        val have = results.orEmpty()
+                                        results = have + page.videos.filterNot { v -> have.any { it.messageId == v.messageId } }
+                                        cursor = page.nextCursor
+                                        scanned += page.scanned
+                                        done = page.exhausted
+                                    }
+                                },
+                            ) { Text(if (busy) tr("Searching…") else tr("Search further back")) }
+                        }
+                    }
                 } else {
                     Text(
                         tr("That is the whole chat."),
@@ -1488,6 +1555,18 @@ private fun ChatVideoSearchResults(
         }
     }
 }
+
+/** How many videos one page of a chat search asks for. A floor on the number of
+ *  matching POSTS consumed, not a cap on what one of them carries: a tag post
+ *  with 200 videos under it yields all 200 in its own page (see
+ *  [Td.searchChatVideos]). */
+private const val SEARCH_PAGE = 60
+
+/** The most pages the search will page through on its own before leaving the
+ *  rest behind the "Search further back" button. Each page is a local TDLib
+ *  read, so this is generous; it exists only so a chat that never ends cannot
+ *  spin forever. */
+private const val SEARCH_MAX_PAGES = 60
 
 private fun stamp(seconds: Int): String? {
     if (seconds <= 0) return null

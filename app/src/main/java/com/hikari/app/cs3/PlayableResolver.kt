@@ -4,8 +4,14 @@ import com.hikari.app.data.Logs
 import com.hikari.app.data.StreamSource
 import com.hikari.app.data.SubtitleSource
 import com.hikari.app.net.Http
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * YouTube playback, for the addons that offer a video AS a YouTube video.
@@ -231,6 +237,99 @@ object PlayableResolver {
 
     private const val BUDGET_MS = 20_000L
 
+    /** How many link rows may be resolved at once in the background. An addon
+     *  answers with a handful, so this is generous; the cap is only there so a
+     *  pathological list cannot fire hundreds of network walks at the phone. */
+    private const val BG_PARALLEL = 6
+
+    /**
+     * Rows whose link has already been resolved into real servers, keyed by the
+     * row's own identity (see [linkKey]).
+     *
+     * A pass, a sweep round and every repeat lookup all re-emit the SAME rows,
+     * so without this every one of them would re-resolve — and re-append — the
+     * same servers.
+     */
+    private val resolvedOk = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    /** Rows a background resolution is working on right now, so two emissions
+     *  of the same row do not resolve it twice at the same time. A row is
+     *  released again when its resolution found NOTHING, so a transient failure
+     *  is retried by the next emission (which is the point: an addon's link
+     *  often only resolves on the second attempt, and refusing to retry is how
+     *  the original six-row, twenty-second budget left the rest of an addon's
+     *  rows unplayable forever). */
+    private val claimed = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    /** Application-scoped, so a resolution outlives the screen that started it
+     *  (the player is usually already open when it finishes). */
+    private val bgScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    private val bgGate = Semaphore(BG_PARALLEL)
+
+    /** The identity of a link row, for [resolvedOk]/[claimed]. */
+    private fun linkKey(s: StreamSource): String =
+        s.ytId?.let { "yt:$it" } ?: ("ext:" + s.url.trim().lowercase())
+
+    private fun isLinkRow(s: StreamSource): Boolean =
+        s.ytId != null || (s.externalUrl && s.url.startsWith("http"))
+
+    /**
+     * Resolves EVERY link row of [sources] that has not been resolved yet, in
+     * the background, and reports each newly-found batch through [onResolved].
+     *
+     * Why this exists next to [resolve]: [resolve] runs at the END of a pass, on
+     * its final merged list, and only for the first [MAX_ROWS] rows inside
+     * [BUDGET_MS]. An addon that answers with more link rows than that — or
+     * answers them late — kept those rows forever, and the result was the worst
+     * pair of symptoms this app can show at once: the source sheet LISTED them
+     * (it is fed the raw list) while `DetailScreen.playableEvery` filtered them
+     * out of playback, so the user read "no playable server found" underneath a
+     * list of servers. Resolving them AS THEY ARRIVE is also what makes a
+     * link-only addon feel the way it does in Stremio: the addon answers and the
+     * server appears, instead of waiting for a whole 500-extension pass to end.
+     *
+     * Idempotent per row, fire-and-forget, and never throws.
+     */
+    fun warmLinks(sources: List<StreamSource>, onResolved: suspend (List<StreamSource>) -> Unit) {
+        val links = sources.filter { isLinkRow(it) }
+        if (links.isEmpty()) return
+        for (s in links) {
+            val key = linkKey(s)
+            if (key in resolvedOk || !claimed.add(key)) continue
+            bgScope.launch {
+                val found = runCatching {
+                    bgGate.withPermit { withTimeoutOrNull(PER_ROW_MS) { resolveOne(s) } }
+                }.getOrNull().orEmpty()
+                if (found.isEmpty()) {
+                    claimed.remove(key)
+                    return@launch
+                }
+                resolvedOk.add(key)
+                val out = relabel(s, found)
+                Logs.log(
+                    "Search",
+                    "\"${s.name}\" → ${found.size} playable source(s) as it arrived " +
+                        "(resolved from a ${if (s.ytId != null) "YouTube" else "external"} link)",
+                )
+                runCatching { onResolved(out) }
+            }
+        }
+    }
+
+    /** The addon's own identity, kept on the servers a link row was resolved
+     *  into, so the chooser still groups and orders them by provider. */
+    private fun relabel(s: StreamSource, found: List<StreamSource>): List<StreamSource> =
+        found.map { f ->
+            f.copy(
+                name = if (s.name.isBlank() || f.name.contains(s.name, ignoreCase = true)) f.name
+                else "${f.name} · ${s.name}",
+                provider = s.provider,
+                providerId = s.providerId,
+                providerName = s.providerName,
+            )
+        }
+
     /**
      * Returns [sources] with every resolvable link row replaced by the servers
      * it points at. The SAME list is returned (identical instance) when there is
@@ -251,30 +350,21 @@ object PlayableResolver {
                 continue
             }
             tried++
-            val found = runCatching {
-                kotlinx.coroutines.withTimeoutOrNull(PER_ROW_MS) { resolveOne(s) }
-            }.getOrNull().orEmpty()
-            if (found.isEmpty()) {
+            val resolved = withTimeoutOrNull(PER_ROW_MS) { resolveOne(s) }.orEmpty()
+            if (resolved.isEmpty()) {
                 out += s
                 continue
             }
+            resolvedOk.add(linkKey(s))
             Logs.log(
                 "Search",
-                "\"${s.name}\" → ${found.size} playable source(s) " +
+                "\"${s.name}\" → ${resolved.size} playable source(s) " +
                     "(resolved from a ${if (s.ytId != null) "YouTube" else "external"} link)",
             )
             // The resolved links keep the addon's identity (the chooser groups
             // and orders by provider), and the addon's own label is kept in the
             // name when it adds something the format name does not say.
-            for (f in found) {
-                out += f.copy(
-                    name = if (s.name.isBlank() || f.name.contains(s.name, ignoreCase = true)) f.name
-                    else "${f.name} · ${s.name}",
-                    provider = s.provider,
-                    providerId = s.providerId,
-                    providerName = s.providerName,
-                )
-            }
+            out += relabel(s, resolved)
         }
         return out
     }

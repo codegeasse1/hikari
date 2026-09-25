@@ -887,11 +887,32 @@ object Td {
      *  call without the UI ever seeing a page). */
     private const val SCAN_MESSAGES_PER_CALL = 400
 
-    /** How many videos one search hit may pull in with it (see [videosOfPost]). */
-    private const val POST_VIDEOS_MAX = 40
+    /** How many messages one `GetChatHistory` call asks for when walking a
+     *  chat's history. TDLib's own maximum. */
+    private const val HISTORY_PAGE = 100
 
-    /** How many newer messages one hit is walked through, at most. */
-    private const val POST_WALK_MESSAGES = 20
+    /** How many tag hits one `SearchChatMessages` call asks for. TDLib's own
+     *  maximum; this was 50, which made a tag with more than 50 matching posts
+     *  take two round trips for no reason. */
+    private const val SEARCH_HITS_PER_CALL = 100
+
+    /** The ceiling on one tag post's video tail.
+     *
+     *  A tag post is followed by its own uploads — the report that produced this
+     *  walk is a single word written once and then 200+ videos posted under it,
+     *  which is exactly how people tag in Saved Messages — so the ceiling is
+     *  sized for a whole batch, not for the old 40. [TAIL_MAX_PAGES] is what
+     *  really bounds the walk. */
+    private const val POST_VIDEOS_MAX = 2_000
+
+    /** How many messages one tail page asks for. TDLib requires the limit to be
+     *  at least as large as the (negative) offset, so a page is
+     *  `TAIL_PAGE - 1` newer messages plus the message it started from. */
+    private const val TAIL_PAGE = 100
+
+    /** The furthest a single tail walk may read, in pages — a hard stop so a
+     *  chat that never ends cannot sit in one call. 60 × 99 ≈ 5 900 messages. */
+    private const val TAIL_MAX_PAGES = 60
 
     /** The words a message carries itself — its text, or its media's caption. */
     private fun textOf(message: TdApi.Message): String = when (val c = message.content) {
@@ -928,35 +949,77 @@ object Td {
      */
     private suspend fun videosOfPost(chatId: Long, anchor: TdApi.Message, q: String): List<ChatVideo> {
         val out = mutableListOf<ChatVideo>()
+        val seen = HashSet<Long>()
         val anchorText = textOf(anchor)
-        videoOf(chatId, anchor)?.let { out += it }
-        val newer = query(
-            TdApi.GetChatHistory(chatId, anchor.id, -POST_WALK_MESSAGES, POST_WALK_MESSAGES, false),
-        ) as? TdApi.Messages ?: return out
-        // TDLib answers newest-first; a post reads oldest-first. Walked by
-        // index on purpose: `messages` is a Java array, and this avoids
-        // depending on which `reversed`/`asReversed` overload the stdlib
-        // exposes for one.
-        val messages = newer.messages
-        var i = messages.size - 1
-        while (i >= 0) {
-            val m = messages[i]
-            i--
-            if (m.id <= anchor.id) continue
-            val video = videoOf(chatId, m)
-            if (video != null) {
-                val own = video.caption
-                if (own.isNotBlank() && !own.contains(q, ignoreCase = true)) break
-                if (out.size >= POST_VIDEOS_MAX) break
-                out += if (anchorText.isBlank()) video else video.copy(caption = anchorText)
-                continue
+        videoOf(chatId, anchor)?.let { if (seen.add(it.messageId)) out += it }
+        // Walk FORWARD from the hit, paging, until the post's own tail ends.
+        //
+        // THIS is what the old twenty-message window got wrong. A tag in Saved
+        // Messages is a word written once, followed by the whole batch of
+        // uploads under it — the report that produced this walk is exactly that,
+        // 200+ videos under one word — so a window of 20 newer messages (and the
+        // 40-video cap under it) listed a fifth of the batch and then said there
+        // was nothing more. [TdApi.GetChatHistory] asks for the newer messages
+        // with a NEGATIVE offset ("a negative number from -99 to -1 to get
+        // additionally -offset newer messages"), and the limit must be at least
+        // as large as -offset, so each page is [TAIL_PAGE] - 1 newer messages
+        // plus the message it started from.
+        var from = anchor.id
+        var pages = 0
+        var done = false
+        while (!done && out.size < POST_VIDEOS_MAX && pages < TAIL_MAX_PAGES) {
+            pages++
+            val newer = query(
+                TdApi.GetChatHistory(chatId, from, -(TAIL_PAGE - 1), TAIL_PAGE, false),
+            ) as? TdApi.Messages ?: break
+            val messages = newer.messages
+            if (messages.isEmpty()) break
+            var newest = from
+            // TDLib answers newest-first; a post reads oldest-first. Walked by
+            // index on purpose: `messages` is a Java array, and this avoids
+            // depending on which `reversed`/`asReversed` overload the stdlib
+            // exposes for one.
+            var i = messages.size - 1
+            while (i >= 0) {
+                val m = messages[i]
+                i--
+                if (m.id > newest) newest = m.id
+                // The message a page started from comes back with the newer ones
+                // (TDLib includes `fromMessageId` itself), and a page's newest
+                // message is the next page's start — so one message overlaps by
+                // design. Deduped rather than trusted.
+                if (m.id <= anchor.id || !seen.add(m.id)) continue
+                val video = videoOf(chatId, m)
+                if (video != null) {
+                    val own = video.caption
+                    // A video carrying its OWN caption, which is not this tag, is
+                    // a new post: its videos belong to it and are found by its own
+                    // tag, so this tail ends here.
+                    if (own.isNotBlank() && !own.contains(q, ignoreCase = true)) {
+                        done = true
+                        break
+                    }
+                    out += if (anchorText.isBlank()) video else video.copy(caption = anchorText)
+                    if (out.size >= POST_VIDEOS_MAX) {
+                        done = true
+                        break
+                    }
+                    continue
+                }
+                // Not a video, and it carries its OWN text: the next post has
+                // started, so this post's tail is over. A message with no text at
+                // all — a sticker, an uncaptioned photo, a service message — is
+                // noise inside the batch, and stopping at one is how a stray
+                // sticker used to truncate a long tail.
+                if (textOf(m).isNotBlank()) {
+                    done = true
+                    break
+                }
             }
-            // Anything else — a photo, a document, a poll, a service message —
-            // is not this post's video tail, and its own text would start the
-            // next one: stop here. (Contiguous videos only, on purpose: a tag
-            // post is followed by its own uploads, and the first thing that is
-            // not one of them ends the batch.)
-            break
+            if (done) break
+            // Nothing newer than what we already have: the end of the chat.
+            if (newest <= from) break
+            from = newest
         }
         return out
     }
@@ -1009,13 +1072,21 @@ object Td {
                     /* senderId = */ null,
                     cursor,
                     /* offset = */ 0,
-                    limit.coerceIn(1, 50),
+                    limit.coerceIn(1, SEARCH_HITS_PER_CALL),
                     TdApi.SearchMessagesFilterEmpty(),
                 ),
             ) as? TdApi.FoundChatMessages
                 ?: return ChatVideoPage(emptyList(), 0, 0, true)
             val out = mutableListOf<ChatVideo>()
             val seen = HashSet<Long>()
+            // `limit` is a floor on how many HITS were consumed, NOT a cap on
+            // videos. One tag post usually carries a whole batch of videos under
+            // it, so the old `out.take(limit)` cut the batch at 60 rows and then
+            // handed back a cursor pointing at the NEXT hit — the rest of that
+            // batch was unreachable from then on, on any page. That is the
+            // reported "my tag has 200+ videos and Hikari stops at 40-50", and
+            // it is why tapping "search further back" never found them: every
+            // page re-resolved the same hit and returned the same first rows.
             for (hit in found.messages) {
                 for (v in videosOfPost(chatId, hit, q)) {
                     if (seen.add(v.messageId)) out += v
@@ -1023,7 +1094,7 @@ object Td {
                 if (out.size >= limit) break
             }
             val next = found.nextFromMessageId
-            return ChatVideoPage(out.take(limit), next, found.messages.size, next == 0L)
+            return ChatVideoPage(out, next, found.messages.size, next == 0L)
         }
 
         val out = mutableListOf<ChatVideo>()
@@ -1032,29 +1103,42 @@ object Td {
         var scanned = 0
         var more = true
         while (more && scanned < SCAN_MESSAGES_PER_CALL && out.size < limit) {
-            val page = query(TdApi.GetChatHistory(chatId, from, 0, 100, false)) as? TdApi.Messages
-                ?: return ChatVideoPage(out, 0, scanned, true)
+            val page = query(TdApi.GetChatHistory(chatId, from, 0, HISTORY_PAGE, false))
+                as? TdApi.Messages
+                ?: return ChatVideoPage(out, 0, scanned, false)
             if (page.messages.isEmpty()) {
                 more = false
                 break
             }
+            var advanced = false
             for (m in page.messages) {
                 scanned++
                 // TDLib answers `GetChatHistory` from `fromMessageId` INCLUSIVE,
                 // so the post the last page ended on arrives again — deduped here
                 // rather than by the caller.
                 if (!seen.add(m.id)) continue
+                advanced = true
                 val v = videoOf(chatId, m) ?: continue
                 val hit = v.fileName.contains(q, ignoreCase = true) ||
                     (inText == SearchIn.BOTH && v.caption.contains(q, ignoreCase = true))
                 if (hit) out += v
             }
             from = page.messages.last().id
-            more = page.messages.size >= 100
+            // A page SHORTER than asked for is NOT the end of the chat. TDLib's
+            // own documentation for `GetChatHistory` says the number of returned
+            // messages "is chosen by TDLib and can be smaller than the specified
+            // limit", and the old `size >= 100` test trusted it anyway: the
+            // walk stopped at the first short page and declared "That is the
+            // whole chat" over a chat it had barely entered — the user's 200+
+            // video chat reported as completely walked after 181 posts, with
+            // every video past that point unfindable. The walk now ends on a
+            // page with nothing new in it (or an empty one), which is what the
+            // end of a chat actually looks like.
+            more = advanced
         }
         val exhausted = !more
         return ChatVideoPage(
-            videos = out.take(limit),
+            videos = out,
             nextCursor = if (exhausted) 0L else from,
             scanned = scanned,
             exhausted = exhausted,

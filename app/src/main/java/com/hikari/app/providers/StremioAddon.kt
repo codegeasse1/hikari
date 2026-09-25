@@ -805,6 +805,15 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
             }
             val infoHash = st.optString("infoHash").ifBlank { null }
             val streamUrl = st.optString("url").ifBlank { null }
+            // Stremio's protocol names a torrent EITHER by `infoHash` or by a
+            // `magnet:` (or `torrent:`) URL in `url`, and addons use both. The
+            // magnet form read as a plain direct link, so ExoPlayer was handed
+            // "magnet:…" and every row of such an addon failed — a whole
+            // addon's worth of servers that play in Stremio and not here.
+            val magnet = streamUrl?.takeIf {
+                it.startsWith("magnet:", ignoreCase = true) ||
+                    it.startsWith("torrent:", ignoreCase = true)
+            }
             val ytId = st.optString("ytId").ifBlank { null }
             val externalUrl = st.optString("externalUrl").ifBlank { null }
             val subs = parseSubs(st.optJSONArray("subtitles"))
@@ -845,6 +854,15 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
                     subtitles = subs,
                     externalUrl = true,
                 )
+                magnet != null -> out += StreamSource(
+                    name = name.ifBlank { "Torrent" },
+                    url = magnet,
+                    subtitles = subs,
+                    isTorrent = true,
+                    infoHash = magnetHash(magnet),
+                    fileIdx = magnetIndex(magnet),
+                    trackers = magnetTrackers(magnet),
+                )
                 streamUrl != null -> out += StreamSource(
                     name = name.ifBlank { if (streamUrl.contains(".m3u8", true)) "HLS" else "Direct" },
                     url = streamUrl,
@@ -857,6 +875,22 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
         }
         return out
     }
+
+    /** The BTIH of a magnet/torrent URL (hex, as written), or null. */
+    private fun magnetHash(magnet: String): String? =
+        Regex("[&?]xt=urn:btih:([A-Za-z0-9]+)", RegexOption.IGNORE_CASE)
+            .find(magnet)?.groupValues?.get(1)?.takeIf { it.isNotBlank() }
+
+    /** The `index=` a magnet carries — which file inside the torrent — or null. */
+    private fun magnetIndex(magnet: String): Int? =
+        Regex("[&?]index=(\\d+)").find(magnet)?.groupValues?.get(1)?.toIntOrNull()
+
+    /** The `tr=` trackers a magnet carries, URL-decoded. */
+    private fun magnetTrackers(magnet: String): List<String> =
+        Regex("[&?]tr=([^&\\s]+)").findAll(magnet).mapNotNull { m ->
+            val raw = m.groupValues.getOrNull(1)?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            runCatching { java.net.URLDecoder.decode(raw, "UTF-8") }.getOrDefault(raw)
+        }.distinct().toList()
 
     /**
      * True when a `streams[]` row is a MESSAGE rather than a video.

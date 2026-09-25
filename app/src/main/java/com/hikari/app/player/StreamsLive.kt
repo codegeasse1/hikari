@@ -5,6 +5,7 @@ import com.hikari.app.data.Episode
 import com.hikari.app.data.MediaItem
 import com.hikari.app.data.StreamSource
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.update
 import java.util.concurrent.ConcurrentHashMap
 
 /** Live bridge between the Detail screen's ongoing multi-provider search and
@@ -71,7 +72,11 @@ object StreamsLive {
         // collector attaches. A MutableStateFlow replays its current value, so
         // nothing is lost.
         val flow = sessions.computeIfAbsent(id) { MutableStateFlow(emptyList()) }
-        flow.value = (flow.value + sources).distinctBy { it.infoHash ?: it.url }
+        // `update` (a compare-and-set loop), not `flow.value = flow.value + …`:
+        // appends now arrive from the background resolution of an addon's link
+        // rows as well as from the search pass itself, and a read-modify-write
+        // from two threads loses one of the two batches.
+        flow.update { (it + sources).distinctBy { s -> s.infoHash ?: s.url } }
     }
 
     /** The episode the detail screen settled on for this session. Sent when a

@@ -19,6 +19,7 @@ Everything lives in `ContentRepository.kt` unless stated otherwise.
    `streamsForInner` into a local, so one lookup can never be half-scoped.
    **Exception extensions** (`SearchScope.exceptions`) are the one thing that
    widens that, and they carry a rule of their own — see invariant 6.
+   **An item with no origin is the exception to both** — see invariant 10.
 2. **Same-engine family** — the other repos of the origin's own engine, queued
    first in the cross pass.
 3. **Cross pass** — every other installed extension asked *by title*:
@@ -347,3 +348,58 @@ and found nothing. `NuvioScraper` now says what happened:
 
 The per-provider log line prints the provider's own message instead of a blanket
 `no servers`, so a search that comes back thin says which of the two it was.
+
+### 10. An item with no origin is searched by its ID-RESOLVING engines
+
+The report that produced this: *"the same PenguPlay addon shows dozens of servers
+in Stremio and in Hikari it says no playable source found"*.
+
+A title browsed from Home / Search / Collections / a nuvio catalogue import
+carries `providerId = "tmdb"` (`TmdbMeta`), and `manager.byId("tmdb")` names no
+provider. `origin` was therefore null, and every target list was built from "the
+origin" — i.e. from nothing. With "Server search: only this extension" on there
+was not even a cross pass to fall back on, so the lookup asked **nobody** and
+reported "no playable server found" over a title Stremio plays. An origin that has
+since been uninstalled or switched off is the same case.
+
+- **`originless` is `origin == null || !origin.config.enabled`**, and for such an
+  item the **id-resolving engines are the pass**: every Stremio addon (asked by
+  the item's own `tmdb:`/`tt` id) plus the nuvio engines (asked by TMDB id). They
+  need no title search, which is why they are the only engines that can answer
+  for a catalogue item at all — and it is what the real client does with a
+  catalogue id. This holds whatever the "only this extension" switch says, since
+  that switch has nothing to restrict to. IPTV items are excluded (a channel
+  belongs to one playlist — invariant 6's rule).
+- **They are not also searched by title** (`crossExtensionTargets`'s `alsoSkip`):
+  the same provider asked twice would put its servers on the list twice, and the
+  title route cannot answer for a catalogue-less addon anyway.
+- **The verdict says so.** The detail screen's note may not claim "the extension
+  this title came from" when there is none, and the advice for this case is "mark
+  the addon under Exception extensions" (see the 0.10.35 CHANGELOG note).
+
+### 11. A row on the screen must be a row the player can play
+
+The report: *"it shows so many servers and then says no playable source found"*.
+`DetailScreen.playableEvery` (the only thing the player is handed) filters out
+`ytId`/`externalUrl` rows and blank-URL non-torrents, while the source sheet is
+rendered from the RAW list — so any row class the filter rejects showed as a
+server and could never play.
+
+- **Link rows are resolved the moment they are seen**, not six of them at the end
+  of a pass: `PlayableResolver.warmLinks` (from the view model's live feed) walks
+  every `ytId`/`externalUrl` row in the background, capped in parallel but not in
+  count, and pushes the servers it finds back through the same feed so they join
+  the list and reach an already-open player. A row whose resolution found nothing
+  is released to be retried on the next emission.
+- **A Stremio `url` that is a `magnet:`/`torrent:` URL is a torrent** (the
+  protocol allows it, and addons use it), parsed into `infoHash`/`fileIdx`/
+  `trackers` and played by the torrent engine. It used to be handed to ExoPlayer as
+  a direct link.
+- **The verdict may not deny rows that are on screen.** When every found row is an
+  unresolvable link, the note says exactly that ("Found N links … none could be
+  turned into a video"), and the player fails fast on that wording too
+  (`PlayerActivity.isNoResultVerdict`) instead of reporting a cut-short search.
+- **The cross summary is scoped to the title it describes** (`CrossTally.title`):
+  a pass with nothing to search does not publish, so the newest tally can belong
+  to a different title — which is how "asked 3 · 2 don't carry it" came to be
+  printed under a search that had asked nobody.

@@ -145,6 +145,17 @@ class ContentRepository(private val manager: ProviderManager) {
              *  [crossStatusQuietForMs]. */
             @Volatile
             var changedAt: Long = System.currentTimeMillis()
+            /** The title THIS pass searched.
+             *
+             *  [crossSummary] reads the newest published tally, and a pass that
+             *  returns early (nothing to search) deliberately does not publish —
+             *  so a summary could describe a DIFFERENT title's search, which is
+             *  how a "no playable server found" note ended up printing "asked 3 ·
+             *  2 don't carry it" under a search that had asked nobody at all.
+             *  The title lets the summary refuse to describe someone else's
+             *  search. */
+            @Volatile
+            var title: String = ""
         }
 
         /** The tally of the newest pass — the one a summary should describe. */
@@ -985,13 +996,20 @@ class ContentRepository(private val manager: ProviderManager) {
          * empty ("asked 253 · 2 with servers · 180 no such title · 40 could not
          * load"). Null when no pass has run yet, so callers can just append it.
          */
-        fun crossSummary(limit: Int = 3): String? {
+        fun crossSummary(limit: Int = 3, title: String? = null): String? {
             // The NEWEST pass's tally: a summary has to describe ONE search, not
             // a merge of every search that happens to be running (see
             // [CrossTally] — a retry, or a Play tap during the prefetch's sweep,
             // used to make these numbers impossible: "asked 93 · 164 no such
             // title", i.e. more verdicts than asks).
             val tally = crossTally
+            // …and only when it really is THIS title's search: a pass that had
+            // nothing to search returns without publishing, so the newest tally
+            // can belong to a different title entirely. Printing its numbers
+            // under this title's verdict is worse than printing none — it is
+            // exactly how "asked 3 · 2 don't carry it" came to sit under a
+            // search that had asked nobody.
+            if (title != null && tally.title.isNotBlank() && !tally.title.equals(title, true)) return null
             if (tally.verdict.isEmpty() && tally.found.isEmpty()) return null
             val counts = tally.verdict.values
                 .groupingBy { crossReasonBucket(it) }
@@ -2217,12 +2235,43 @@ class ContentRepository(private val manager: ProviderManager) {
             } else {
                 SearchScope.exceptions
             }
+            // THE APP'S OWN CATALOGUE IS NOT AN EXTENSION.
+            //
+            // A title browsed from Home / Search / Collections / a nuvio
+            // catalogue import carries `providerId = "tmdb"` (see [TmdbMeta]),
+            // and `manager.byId("tmdb")` names no provider at all. That left
+            // `origin` null, and every branch below built its target list from
+            // "the origin" — i.e. from nothing. With "Server search: only this
+            // extension" on, the pass then had nothing to restrict TO and
+            // returned before asking anybody, so a title opened from Home
+            // reported "no playable server found" however many playback addons
+            // were installed. That is the reported "the same PenguPlay addon
+            // shows dozens of servers in Stremio and none here" — Stremio asks
+            // every installed addon for a catalogue id; this pass asked none.
+            // An origin the user has since uninstalled or switched off is the
+            // same case.
+            //
+            // The id-resolving engines — Stremio addons and nuvio engines — are
+            // the ones that CAN answer for such an item: they are handed the
+            // item's own tmdb/imdb id and need no title search at all. So they
+            // become the pass's targets, exactly the addons the real client asks
+            // for a catalogue id.
+            val originUsable = origin != null && origin.config.enabled
+            val originless = !originIsIptv && !originUsable
+            val stremioAddons = if (originless) {
+                all.filter { it.config.type == ProviderType.STREMIO }
+            } else {
+                emptyList()
+            }
             val primaryTargets = if (!scopeAll) {
-                // The title's own extension, and nothing else. It is still asked
-                // FIRST (and re-asked in the background if it does not answer),
-                // because it is now the only source this lookup has.
-                listOfNotNull(origin)
-            } else if (origin?.config?.type == ProviderType.STREMIO) {
+                // "Only this extension": the title's own extension, and nothing
+                // else — or, when there is no such extension at all (see
+                // [originless]), the Stremio addons, which are the only things
+                // that can play the item. It is still asked FIRST (and re-asked
+                // in the background if it does not answer), because it is now
+                // the only source this lookup has.
+                if (originless) stremioAddons else listOfNotNull(origin)
+            } else if (origin?.config?.type == ProviderType.STREMIO || originless) {
                 // Like the real client: ask every Stremio addon plus the origin.
                 all.filter { p ->
                     p.config.id == item.providerId || p.config.type == ProviderType.STREMIO
@@ -2241,10 +2290,22 @@ class ContentRepository(private val manager: ProviderManager) {
                 // "Only this extension": a nuvio engine is another source, so
                 // none of them are asked (the origin, if it IS one, is already
                 // in [primaryTargets]) — except the ones marked as exceptions,
-                // which the user asked to always include.
-                if (exceptions.isEmpty()) emptyList()
-                else all.filter {
-                    it.config.type == ProviderType.NUVIO && it.config.id in exceptions
+                // which the user asked to always include, and except when there
+                // was no extension to restrict to at all ([originless]), where
+                // they are the item's only possible source and asking them is
+                // the whole point.
+                if (originless) {
+                    if (com.hikari.app.nuvio.TmdbResolver.isLikelyResolvable(item)) {
+                        all.filter { it.config.type == ProviderType.NUVIO }
+                    } else {
+                        emptyList()
+                    }
+                } else if (exceptions.isEmpty()) {
+                    emptyList()
+                } else {
+                    all.filter {
+                        it.config.type == ProviderType.NUVIO && it.config.id in exceptions
+                    }
                 }
             } else if (com.hikari.app.nuvio.TmdbResolver.isLikelyResolvable(item)) {
                 all.filter { it.config.type == ProviderType.NUVIO }
@@ -2271,6 +2332,18 @@ class ContentRepository(private val manager: ProviderManager) {
             // providers, which measurably delayed the first server. Query each
             // provider exactly once.
             val targets = (primaryTargets + nuvioTargets).distinctBy { it.config.id }
+            // The Stremio addons this pass asks BY ID ([originless] above) must
+            // not also be searched BY TITLE in the cross pass: that is the same
+            // provider asked twice for the same video, and the title route is the
+            // one that cannot answer for an addon without a catalogue anyway
+            // (which is why the id route exists). Two asks would also put the
+            // same servers on the list twice.
+            val stremioPrimaryIds = if (originless) {
+                primaryTargets.filter { it.config.type == ProviderType.STREMIO }
+                    .mapTo(HashSet()) { it.config.id }
+            } else {
+                emptySet()
+            }
             // This pass's OWN diagnostic state — created BEFORE the target list
             // is built, because the target list records into it (see
             // [CrossTally.filterReasons]), but published only once the pass is
@@ -2300,7 +2373,7 @@ class ContentRepository(private val manager: ProviderManager) {
             // was installed when the lookup started, so a provider can no longer
             // be left out of a pass by a list that moved under it.
             val crossTargets = if (scopeAll) {
-                crossExtensionTargets(item, origin, all, tally)
+                crossExtensionTargets(item, origin, all, tally, alsoSkip = stremioPrimaryIds)
             } else if (exceptions.isEmpty()) {
                 // "Server search: only this extension" — there is nothing else
                 // to search, so the cross pass and every sweep below are skipped
@@ -2327,6 +2400,10 @@ class ContentRepository(private val manager: ProviderManager) {
             }
             val lateTargets = crossTargets.filter { it !in sameEngine }
             if (targets.isEmpty() && crossTargets.isEmpty()) return@withContext emptyList()
+            // Stamp the tally with the title it describes BEFORE publishing it,
+            // so a summary can refuse to describe another title's search (see
+            // [CrossTally.title]).
+            tally.title = item.title
             publishCrossTally(tally)
 
             com.hikari.app.data.Logs.log(
@@ -2335,7 +2412,8 @@ class ContentRepository(private val manager: ProviderManager) {
             // build it came from without having to guess (the session-start
             // banner can be trimmed off a shared file).
             "start \"${item.title}\" (${item.type}) v=${com.hikari.app.BuildConfig.VERSION_NAME} " +
-                "origin=${origin?.config?.name ?: "?"} " +
+                "origin=" +
+                (origin?.config?.name ?: if (originless) "app-catalogue(no extension)" else "?") + " " +
                 "primary=${targets.size} nuvio=${nuvioTargets.size} " +
                 "cross=${crossTargets.size} same=${sameEngine.size} late=${lateTargets.size} " +
                 // Which ENGINES the cross pass is about to ask, and how many
@@ -3890,6 +3968,12 @@ class ContentRepository(private val manager: ProviderManager) {
          *  still applies, so an exception that is blocked, hung or of a family
          *  that cannot be searched by title is still left out. */
         onlyIds: Set<String>? = null,
+        /** Ids that are ALREADY this pass's primary targets — asked directly, by
+         *  the item's own id (see [streamsForInner]'s `originless` case, where
+         *  the Stremio addons are asked that way). Searching one of them by
+         *  title as well would ask the same provider twice for the same video,
+         *  and list its servers twice. */
+        alsoSkip: Set<String> = emptySet(),
     ): List<ContentProvider> {
         val originType = origin?.config?.type
         val originIsStremio = originType == ProviderType.STREMIO
@@ -3928,6 +4012,13 @@ class ContentRepository(private val manager: ProviderManager) {
                 }
                 if (p.config.id == item.providerId) {
                     noteSkipped("origin")
+                    return@filter false
+                }
+                // Already a primary target of this pass: asked directly by the
+                // item's own id, so a title search on top of that would be the
+                // same provider asked twice (see [alsoSkip]).
+                if (p.config.id in alsoSkip) {
+                    noteSkipped("primary")
                     return@filter false
                 }
                 if (onlyIds != null && p.config.id !in onlyIds) {

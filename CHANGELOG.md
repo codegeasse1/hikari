@@ -1,3 +1,79 @@
+## 0.10.35
+
+### Fixed
+
+- **A title opened from Hikari's own Home/Search is now searched by the playback addons — PenguPlay,
+  Torrentio, the nuvio engines — instead of by nobody.** Titles browsed from Home, Search,
+  Collections and the nuvio catalogue imports carry `providerId = "tmdb"` (`TmdbMeta`), and
+  `manager.byId("tmdb")` names no provider at all. Every target list in `streamsForInner` was built
+  from "the origin", so for such a title `origin` was null and the pass asked **nobody**: with
+  "Server search: only this extension" on there was not even a cross pass to fall back on, and the
+  app reported "no playable server found" over a Stremio addon that lists dozens of servers for the
+  same title in Stremio itself. (An origin the user has since uninstalled or switched off is the
+  same case.) The id-resolving engines — Stremio addons and nuvio engines, the ones that take the
+  item's own `tmdb:`/`tt` id and need no title search — are now asked for such a title, whatever the
+  scope switch says: exactly what the real client asks for a catalogue id. A title opened from an
+  extension is unaffected (its own repo is still the only thing "only this extension" asks).
+- **An addon's "link" rows are turned into servers as they arrive, not six of them at the end of a
+  pass.** Stremio's protocol lets a stream be a `ytId` (a YouTube video) or an `externalUrl` (the
+  addon's "watch it here" page), and `DetailScreen.playableEvery` filters both out of playback while
+  the source sheet lists them — so an addon answering in those shapes showed a full server list and
+  then reported "no playable server found". The resolution pass ran once, at the end of a lookup, on
+  the first six rows and inside a twenty-second budget; anything past that stayed unplayable forever,
+  and nothing arriving through the live feed was resolved at all. Link rows are now resolved in the
+  background the moment they are seen (any number of them, six at a time, per-row timeout), and the
+  servers they resolve to are pushed back through the same live feed, so they join the list and
+  reach an already-open player like any provider's own links. A row whose resolution genuinely finds
+  nothing is retried on the next lookup instead of being written off.
+- **A Stremio addon's `magnet:` stream URL is played as a torrent.** The protocol names a torrent
+  either by `infoHash` or by a `magnet:`/`torrent:` URL in `url`, and addons use both — the magnet
+  form was read as a plain direct link, so ExoPlayer was handed `magnet:…` and every row of such an
+  addon failed. The `xt=urn:btih:` hash, the `index=` file and the `tr=` trackers are parsed out and
+  it goes to the same torrent engine `infoHash` rows use.
+- **"No playable server found" is no longer printed over a list of servers.** The verdict text was
+  built purely from `playableEvery(found).isEmpty()`, so a search whose rows were all links it could
+  not resolve said "no playable server found after searching 517 extensions" while the sheet showed
+  those very rows. The note now says what actually happened ("Found N links in your playback addons,
+  but none could be turned into a video"), a title from Hikari's own catalogue says which playback
+  addons were asked instead of blaming "the extension this title came from" (there is none), and the
+  player fails fast on that wording too instead of calling it a cut-short search.
+- **The "asked 3 · 2 don't carry it" tail of that note can no longer describe a different search.**
+  `crossSummary()` reads the newest published pass tally, and a pass with nothing to search returns
+  without publishing — so the numbers under THIS title's verdict could belong to another title's
+  search entirely. The tally now records the title it describes and the summary refuses to print for
+  a different one.
+- **Telegram: a tag post's whole batch of videos is found, not the first 20 messages / 40 videos.**
+  A tag in Saved Messages is a word written once and then a batch of uploads under it — the reported
+  case is 200+ videos under one word — but the walk forward from the hit asked TDLib for 20 newer
+  messages at most and stopped at 40 videos, so a fifth of the batch was listed and the rest could
+  not be reached from any page. The walk now pages forward properly (100 messages a page, ~5 900
+  messages at most per post) until the post's own tail ends, and it does not stop dead at a sticker
+  or an uncaptioned photo in the middle of a batch. Each chat-text hit is also no longer cut at the
+  page size with the cursor moved on to the NEXT hit, which was what made "search further back"
+  return the same first rows forever.
+- **Telegram: "That is the whole chat." is only said when the chat really was walked to the end.**
+  The history walk treated a page shorter than the requested 100 as the end. TDLib's own
+  documentation for `GetChatHistory` (and `SearchChatMessages`) says the number of returned messages
+  "is chosen by TDLib and can be smaller than the specified limit", so a short page is normal — and
+  the walk declared the chat finished at 181 posts with the user's 200+ videos unfindable from there
+  on. The walk now ends on a page with nothing new in it, which is what the end of a chat looks like.
+- **Telegram: a chat search walks the whole chat by itself.** It loaded one page and put the rest
+  behind a "Search further back" button under the list, so a tag with hundreds of matches showed a
+  fraction of them until the user found and tapped that button. It now pages until the chat is really
+  exhausted, showing the results as they fill in and a live "Looking through this chat… N post(s) so
+  far" line, and the footer reports the real number of posts looked at and videos found. The button
+  remains for the page ceiling only.
+
+### Notes
+
+- **"Only this extension" cannot mean "only PenguPlay" for a title from Home.** The setting scopes a
+  lookup to the repo the title was OPENED FROM; a Stremio addon like PenguPlay has no catalogue of
+  its own (`"catalogs": []`), so no title can ever be opened *from* it. What the switch does for a
+  Home-browsed title now is ask the playback addons that can resolve it by id (see above) — if the
+  intent is "play from this addon and nothing else", that is the thing to use instead: mark the
+  addon under Settings → Playback & Servers → Exception extensions, which is asked for every title
+  opened anywhere else.
+
 ## 0.10.34
 
 ### Fixed

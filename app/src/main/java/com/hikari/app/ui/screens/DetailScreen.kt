@@ -882,6 +882,26 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             // finds have to a player that is already playing, because the
             // screen's own collector is stopped as soon as its pass ends.
             liveSink?.invoke(partial)
+            // Turn an addon's LINK rows (a YouTube id, a "watch it here" page)
+            // into the servers they point at, as they arrive — see
+            // [com.hikari.app.cs3.PlayableResolver.warmLinks]. Without this, a
+            // link-only addon showed its rows in the source sheet while
+            // `DetailScreen.playableEvery` dropped every one of them, which is
+            // exactly "the same addon plays in Stremio and says no playable
+            // server here". The resolved servers are pushed back through this
+            // same feed, so they join the list and reach an already-open player
+            // exactly like a provider's own links.
+            com.hikari.app.cs3.PlayableResolver.warmLinks(partial) { resolved ->
+                if (resolved.isEmpty()) return@warmLinks
+                val have = _liveStreams.value
+                val known = have.mapTo(HashSet()) { it.infoHash ?: it.url }
+                val add = resolved.filterNot { (it.infoHash ?: it.url) in known }
+                if (add.isEmpty()) return@warmLinks
+                val grown = have + add
+                _liveStreams.value = grown
+                onProgress?.invoke(grown)
+                liveSink?.invoke(grown)
+            }
         }
         // Someone (another instance of this screen for the same title, or a
         // prefetch that is still running) already owns this extraction: join it
@@ -2257,32 +2277,83 @@ fun DetailScreen(
                     // exception repos are being searched (see [SearchScope]).
                     val scoped = !com.hikari.app.data.SearchScope.allExtensions &&
                         com.hikari.app.data.SearchScope.exceptions.isEmpty()
+                    // …and "only this extension" only MEANS anything when the
+                    // title really came from an extension. A title opened from
+                    // Home / Search / Collections carries `providerId = "tmdb"`,
+                    // which names no installed provider — so there is no "the
+                    // extension this title came from" to search or to blame, and
+                    // the lookup asks the id-resolving addons instead (see
+                    // ContentRepository.streamsForInner).
+                    val originId = m?.providerId ?: providerId
+                    val originless = providers.none { it.config.id == originId }
                     val enabledN = providers.count { it.config.enabled }
                     val installedN = providers.size
                     val reason = vm.streamError.value?.takeIf { it.isNotBlank() }
+                    // Rows WERE found, but not one of them is a video this app can
+                    // hand to the player: an addon's LINK rows (a YouTube id, an
+                    // external "watch it here" page) whose resolution came back
+                    // empty. Reporting that as "no playable server found after
+                    // searching N extensions" is false, and it is the report this
+                    // note keeps producing — the source sheet is showing the user
+                    // those very rows while this text denies they exist.
+                    val links = found.filter { it.ytId != null || it.externalUrl }
+                    val linksOnly = links.isNotEmpty() && playableEvery(found).isEmpty()
                     val note = buildString {
-                        if (scoped) {
-                            // "Only this extension" is on, so the lookup's verdict
-                            // is about ONE repo — say that, and say why it might
-                            // be empty when the user knows other extensions have
-                            // the title.
-                            append("No playable server found in the extension this title came from")
-                        } else {
-                            append("No playable server found after searching $enabledN ")
-                            append(if (enabledN == 1) "extension" else "extensions")
+                        when {
+                            linksOnly -> {
+                                append("Found ${links.size} link")
+                                append(if (links.size == 1) "" else "s")
+                                append(" in ")
+                                append(if (originless) "your playback addons" else "your extensions")
+                                append(
+                                    ", but none could be turned into a video — they point at " +
+                                        "a page rather than a file (open that page to watch it)."
+                                )
+                            }
+                            originless && enabledN == 0 -> {
+                                append("No playback extension is switched on, so there was ")
+                                append("nothing to play this title from.")
+                            }
+                            scoped -> {
+                                // "Only this extension" is on, so the lookup's verdict
+                                // is about ONE repo — say that, and say why it might
+                                // be empty when the user knows other extensions have
+                                // the title.
+                                append("No playable server found in the extension this title came from")
+                            }
+                            else -> {
+                                append("No playable server found after searching $enabledN ")
+                                append(if (enabledN == 1) "extension" else "extensions")
+                            }
                         }
                         // Only worth saying when a real number of extensions is
                         // switched off — "only 256 of your 257" is noise, and it
                         // made a normal empty result read like a configuration
                         // problem.
-                        if (!scoped && installedN - enabledN >= 5) {
+                        if (!scoped && !linksOnly && installedN - enabledN >= 5) {
                             append(" — ${installedN - enabledN} of your installed extensions are turned off")
                         }
-                        if (scoped) {
+                        if (scoped && !originless) {
                             append(
                                 "\nOnly the extension this title came from is searched " +
                                     "(Settings → Playback & Servers → Server search)."
                             )
+                        }
+                        if (originless && !linksOnly) {
+                            // Say what WAS asked, because this title has no
+                            // extension of its own: the addons that resolve an item
+                            // by its id — which is exactly what Stremio asks for a
+                            // catalogue id (see ContentRepository.streamsForInner).
+                            val addons = providers.count {
+                                it.config.enabled && (
+                                    it.config.type == ProviderType.STREMIO ||
+                                        it.config.type == ProviderType.NUVIO
+                                    )
+                            }
+                            if (addons > 0) {
+                                append("\nThis title came from Hikari's own catalogue, so the ")
+                                append("$addons playback addon(s) that resolve it by id were asked.")
+                            }
                         }
                         // Across the whole pass: how many extensions were asked,
                         // how many answered with servers, and why the rest came
@@ -2291,10 +2362,11 @@ fun DetailScreen(
                         // Extensions behind a verification wall are left out of
                         // the pass (and of this count) entirely, so no host name
                         // and no Cloudflare wording ever appears here.
-                        if (!scoped) {
-                            com.hikari.app.data.ContentRepository.crossSummary()?.let {
-                                append("\n").append(it)
-                            }
+                        if (!scoped && !linksOnly) {
+                            com.hikari.app.data.ContentRepository
+                                .crossSummary(title = m?.title)?.let {
+                                    append("\n").append(it)
+                                }
                         }
                         if (!reason.isNullOrBlank()) append("\n" + reason)
                     }

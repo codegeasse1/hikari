@@ -1886,7 +1886,7 @@ class PlayerActivity : ComponentActivity() {
                             // player does). Close it before showing the error,
                             // so the message isn't buried behind an empty sheet.
                             runCatching { serverChooserDialog?.dismiss() }
-                            if (last != null && last.startsWith(NO_RESULT_PREFIX)) {
+                            if (last != null && isNoResultVerdict(last)) {
                                 showError(I18n.t("No playable sources received."), false)
                             } else {
                                 // Honest: the search did not get to answer. The
@@ -1952,7 +1952,7 @@ class PlayerActivity : ComponentActivity() {
                     // spinning for the full safety timeout), the text alone is
                     // enough to fail here in the same second, WITH the reason.
                     if (awaitLive && !liveSearchDone && sources.isEmpty() &&
-                        s != null && s.startsWith(NO_RESULT_PREFIX)
+                        s != null && isNoResultVerdict(s)
                     ) {
                         liveSearchDone = true
                         runCatching { serverChooserDialog?.dismiss() }
@@ -10655,6 +10655,20 @@ class PlayerActivity : ComponentActivity() {
          *  play (see DetailScreen's "no playable server" note). Kept in sync
          *  with that string so the player can fail fast on the text alone. */
         private const val NO_RESULT_PREFIX = "No playable server found"
+
+        /** Prefixes the detail screen gives a search that ended with a VERDICT
+         *  rather than with a question — "there is nothing here to play".
+         *
+         *  Kept in sync with that screen's wording (DetailScreen's "no playable
+         *  server" note) so the player can fail fast on the text alone. Two
+         *  shapes: the ordinary "No playable server found…", and the one for a
+         *  title whose rows are ALL links the app could not resolve ("Found N
+         *  links…") — which is a verdict too, and must never be reported as
+         *  "the search was cut short". */
+        private fun isNoResultVerdict(s: String): Boolean =
+            s.startsWith(NO_RESULT_PREFIX) ||
+                s.startsWith("No playback extension is switched on") ||
+                (s.startsWith("Found ") && s.contains("could be turned into a video"))
 
         /** How many times a player whose every server died may ask the detail
          *  screen for a fresh extraction before finally reporting failure.
