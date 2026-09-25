@@ -234,3 +234,46 @@ nuvio provider that comes back empty logs the exact TMDB id/media type/season it
 was asked with plus the HTTP trail from its own call (`no HTTP request at all`
 means the arguments were wrong for it, not that its site was empty). One search
 with the log is enough to see both halves of the problem.
+
+## Catalogues, episode lists and details are cached to disk and painted first
+
+The report: *"clicking any anime/series in an aniyomi or skystream extension
+takes too much time to show its catalogue, and their episodes take much more time
+to show — make it fast in every engine"*.
+
+The three reads every detail page needs all go through a PROVIDER, and a
+provider's first answer has a fixed cost that is not the network: an Aniyomi
+extension pays an APK class load (ART verifying its dex) before it can make a
+request, a CloudStream/.hiki plugin boots its runtime and its site session, a
+nuvio engine starts a QuickJS VM. That cost is paid once per process per engine —
+but the ANSWER was being thrown away at the end of the process, so the next visit
+paid it all over again.
+
+`com.hikari.app.data.MetaCache` (one small JSON file per key under
+`filesDir/metacache/`, plus a bounded in-process mirror) closes that:
+
+* **`ContentRepository.loadCatalogPage`** takes an `onCached` callback. A
+  catalogue page the user has opened before is handed to the screen instantly
+  (`CatalogScreen` paints it) while the engine is asked in the same breath — its
+  fresh page replaces the cached one. The cached page is ALSO the last-resort
+  fallback when the fresh read comes back empty, so "it worked yesterday" no
+  longer depends on the process still being alive (the old in-memory map could
+  not cover that; the disk can).
+* **`ContentRepository.episodesFor`** paints a cached episode list through the
+  `onPartial` hook it already had, then refreshes; and when every engine comes
+  back empty it returns the cached list instead of a bare `null`, so a series
+  whose engine is unreachable right now does not read "no episodes".
+* **`ContentRepository.metaFor`** serves a cached enriched meta outright when it
+  carries an overview (the detail page's header is what waits on it), and stores
+  every result — including the partial ones, which used to be discarded unless
+  they had BOTH a backdrop and an overview and so were re-fetched on every open.
+
+Freshness is a window, not a verdict: catalogues 6 h, episodes 12 h, meta 3 days
+(the `*_TTL_MS` constants on `MetaCache`). Everything still refreshes; the cache
+only decides what is on screen while it does. Nothing here is a source of truth
+for user data, so the directory is safely trimmable (`MetaCache.trim`, 1500
+files).
+
+Rule for future work: **if a screen waits on a provider, check whether the last
+answer can be painted from `MetaCache` first** — that is the difference between a
+cold engine costing the user seconds and costing them nothing.

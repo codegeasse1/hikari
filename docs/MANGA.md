@@ -132,6 +132,44 @@ The general rule this leaves behind: **never present a WebView-marked UA to a
 site**, because a site that refuses embedded readers cannot even be verified from
 inside one.
 
+### The extension client must recognise a Cloudflare wall on an XHR
+
+The next report about the same source was `chapters failed: HttpException: HTTP
+error 403` — a DIFFERENT failure from the one above. The root GET now succeeded
+(that one is `.asJsoup()`'s `Exception("HTTP Error …")`, capital E); this one is
+the app's own `eu.kanade.tachiyomi.network.HttpException` ("HTTP error …",
+lowercase), which `HttpSource.fetchChapterList`'s `asObservableSuccess()` throws
+when the extension's chapter-list response is not `isSuccessful`. The chapter
+list is fetched as an Inertia XHR (`Accept: application/json`, `X-Inertia: true`)
+to `/serie/<slug>`, a URL theblank.net guards with Cloudflare — a live probe of
+it answers `403 Attention Required! | Cloudflare`.
+
+`ExtensionCloudflareInterceptor` — the interceptor on the client EVERY extension
+uses — did not treat that as a wall: it required the response BODY to contain an
+HTML interstitial string, and an XHR is answered under a JSON content type, which
+the content-type gate rejected before the body was ever looked at. So the
+offscreen solve never ran, no `cf_clearance` was ever earned for the host, and
+the extension was handed the raw 403. It now takes the same view as the app's
+other client (`CloudflareVerifier.isCloudflareChallenge`) and CloudStream's own
+`CloudflareKiller`: **a 403/503 served BY Cloudflare is a bot wall whatever its
+body looks like**, so the solve runs and one clearance is earned for the host.
+
+Two things follow from the same report, and both are worth knowing before
+blaming the app:
+
+* **The site's own extension had a chapters bug.** `keiyoushi/extensions-source`
+  fixed The Blank's chapter parsing on 2026-09-16 ("support reader v2 attestation
+  and ece pages", `fix(multisrc/pam): … (#19077)` — "Fixes chapters on Epsilon
+  Scan, Soft Epsilon Scan and The Blank"), shipped as The Blank `versionCode 54`.
+  An older extension fails on chapters in ANY reader, so the first thing to check
+  for a chapter error is the installed extension's version (Extensions → the
+  engine's row). Nekoread shows chapters because its copy is newer.
+* **A hard WAF block cannot be solved by anyone.** If Cloudflare answers every
+  request to a host with `403` for the app's traffic — a datacenter-style block,
+  not a challenge — no WebView can earn a clearance either. The honest outcome
+  then is the per-host verification nudge (below), never a silent "this repo has
+  no chapters".
+
 ## Images that only an extension's client can fetch
 
 Two images in this app are not ordinary URLs, and both belong to the manga

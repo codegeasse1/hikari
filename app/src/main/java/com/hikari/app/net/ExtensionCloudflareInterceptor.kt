@@ -115,13 +115,31 @@ open class ExtensionCloudflareInterceptor(
         val server = response.header("Server")?.lowercase().orEmpty()
         if (!response.header("cf-mitigated").isNullOrBlank()) return true
         if (code == 403 || code == 503) {
+            // A 403/503 SERVED BY CLOUDFLARE is a bot wall whatever its body
+            // looks like. This is Cloudflare's own heuristic, and the one the
+            // app's other client ([CloudflareVerifier.isCloudflareChallenge])
+            // and CloudStream's CloudflareKiller already use — this client was
+            // the odd one out, insisting on an HTML interstitial in the body.
+            //
+            // An extension's XHR cannot be judged by its body: the request Pam
+            // (and most JSON APIs) send carries `Accept: application/json`, and
+            // Cloudflare answers it with the same wall under a JSON content type,
+            // which contains none of the HTML interstitial's strings. That is
+            // exactly the reported THE BLANK failure: the chapter list request
+            // (an X-Inertia XHR to `/serie/<slug>`) was answered 403 by
+            // Cloudflare, this check refused to call it a wall, the solve never
+            // ran — so no clearance was ever earned — and the extension's own
+            // `HttpException("HTTP error 403")` was all the user could see, while
+            // the same source worked in Nekoread (which solves Cloudflare for
+            // every extension request).
             if (server.contains("cloudflare")) return true
         } else if (code != 429) {
             return false
         }
-        // A wall answers with a small HTML/JS page. Anything else at this status
-        // is the site's own refusal (or its rate limit) and is handed straight
-        // back to the extension.
+        // Not a Cloudflare-served 403/503 (or a 429): the site's own refusal is
+        // only a wall when the body really is an interstitial. A wall answers
+        // with a small HTML/JS page; anything else at this status is the site's
+        // own refusal and is handed straight back to the extension.
         val type = response.header("Content-Type")?.lowercase().orEmpty()
         if (type.isNotBlank() &&
             !type.contains("html") && !type.contains("text") && !type.contains("javascript")

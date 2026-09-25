@@ -87,13 +87,19 @@ import kotlinx.coroutines.withContext
  *    apps does, so the lock could never tell them apart — with the switch OFF,
  *    only actually leaving the app locks it, and putting the phone down and
  *    picking it up again does not ask for the password.
+ *  * **Leaving the app is its own trigger too** (`appLockLeaveFlow`, on by
+ *    default). The twin of the switch above: OFF, switching to another app
+ *    never draws the unlock card, so the lock answers only to a screen-off (if
+ *    that is on) or to a fresh start of the process. Both switches OFF is a
+ *    lock that only asks once per app launch.
  *  * **A grace period** (`appLockDelayFlow`, Instant by default). Past zero
  *    minutes the app stays unlocked for that long after it is left, so a glance
  *    at a notification does not cost a PIN. The deadline is a wall-clock
  *    timestamp compared when the app comes back, NOT a running timer: an app
  *    left for an hour has very likely had its process killed (a fresh process
  *    starts locked anyway), and a wall-clock comparison also survives the device
- *    sleeping, which a coroutine timer would not.
+ *    sleeping, which a coroutine timer would not. It applies to whichever
+ *    triggers are on.
  *
  * The password is the required half: the fingerprint/face is only ever an
  * additional way in (see [AppLock]), so a device with no enrolled biometric
@@ -108,11 +114,13 @@ fun AppLockGate(activity: android.app.Activity, content: @Composable () -> Unit)
     val enabled by enabledFlow.collectAsState(initial = false)
     val bioFlow = remember { app.store.appLockBioFlow() }
     val bioOn by bioFlow.collectAsState(initial = true)
-    // The two rules beyond "the lock is on" — see the doc comment. Both are read
+    // The rules beyond "the lock is on" — see the doc comment. All are read
     // live by the lifecycle observer below (they are State-backed, so the
     // observer always compares against the current settings).
     val screenOffFlow = remember { app.store.appLockScreenOffFlow() }
     val screenOffLocks by screenOffFlow.collectAsState(initial = true)
+    val leaveFlow = remember { app.store.appLockLeaveFlow() }
+    val leaveLocks by leaveFlow.collectAsState(initial = true)
     val delayFlow = remember { app.store.appLockDelayFlow() }
     val delayMin by delayFlow.collectAsState(initial = 0)
     // The unlocked flag lives in the composition, not in saved state: a fresh
@@ -134,10 +142,14 @@ fun AppLockGate(activity: android.app.Activity, content: @Composable () -> Unit)
                 // reliable than waiting for ACTION_SCREEN_OFF's broadcast, whose
                 // ordering against onStop is not promised.
                 val screenOff = power?.isInteractive == false
-                if (screenOff && !screenOffLocks) {
-                    // The user asked for a screen-off not to lock: nothing to do
-                    // at all, not even a grace period. Actually leaving the app
-                    // (screen on) still locks below.
+                // Each trigger has its own switch: a screen-off honours
+                // "Lock when the screen turns off", anything else honours
+                // "Lock when I leave the app".
+                val locks = if (screenOff) screenOffLocks else leaveLocks
+                if (!locks) {
+                    // The user asked for this trigger not to lock: nothing to do
+                    // at all, not even a grace period. The other trigger (and a
+                    // fresh process start) still locks.
                 } else if (delayMin <= 0) {
                     unlocked = false
                 } else {

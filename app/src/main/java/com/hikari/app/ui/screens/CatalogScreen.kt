@@ -248,6 +248,17 @@ class CatalogViewModel(
                         ref,
                         page,
                         retryEmpty = page == 1,
+                        onCached = { cached ->
+                            // Paint what this catalogue showed last time, the
+                            // instant the screen opens: the engine below is still
+                            // asked, and its fresh page replaces this one. First
+                            // page only — a cached page 2+ has no place above a
+                            // list that has not been filled yet.
+                            if (page == 1 && cached.isNotEmpty() && _items.value.isEmpty()) {
+                                _items.value = cached.map { it.tokenizePoster() }
+                                _loading.value = false
+                            }
+                        },
                     )
                 }
                 withContext(Dispatchers.IO) { raw.map { it.tokenizePoster() } }

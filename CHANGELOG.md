@@ -1,3 +1,106 @@
+## 0.10.38
+
+### Fixed
+
+- **A video starts playing the moment ONE server is found, instead of waiting for
+  the extension the title came from.** The report was exact: *"i told you to make
+  play instantly as soon as 1 server find — see it showing 12 servers found and
+  still the video didnt start playing, it was still finding more servers"*, with
+  "search all installed extensions" off and the Nuvio switch on. Servers were
+  already streaming to the player as they arrived, but the player's own auto-start
+  still held the first one behind the origin's (the extension the title was opened
+  from) answer: in the default "play as soon as the first server is found" mode
+  that hold was a three-second head start (`ORIGIN_HEAD_START_MS`), and it was the
+  last thing between a full server list and a picture. It is gone — the head start
+  and the instant-mode backstop are both 0 now, so `originReady` is true the moment
+  anything playable is in hand and playback starts on it. "Wait for more servers
+  first" is untouched (that is the full 45-second window, still ended early the
+  moment the origin answers — `StreamsLive.settleOrigin`). The origin is not
+  punished for it: it is still asked first, still gets the first engine slot, and
+  its servers still sort to the top of the list and to the front of the player's
+  own server list. See docs/SEARCH.md invariant 2.
+- **THE BLANK's chapter list — and any extension whose first XHR is answered by a
+  Cloudflare wall — now actually gets solved.** The report: *"in nekoread it shows
+  chapters but in hikari it shows http error"*. Two separate things were true, and
+  both are dealt with:
+  - The URL that 403s is `/serie/<slug>`: the extension fetches its chapter list
+    as an Inertia XHR (`Accept: application/json`, `X-Inertia: true`), and
+    theblank.net guards that path with Cloudflare (a live probe answers `403
+    Attention Required! | Cloudflare`). `ExtensionCloudflareInterceptor` — the
+    interceptor on the client every extension uses — required the response BODY
+    to contain an HTML interstitial before it would call a 403 a wall, and an XHR
+    is answered under a JSON content type, which it rejected before reading the
+    body. So the offscreen solve never ran, no `cf_clearance` was ever earned for
+    the host, and the extension was handed the raw 403 — which is the
+    `HttpException: HTTP error 403` on screen, the app's own exception from
+    `HttpSource.fetchChapterList`, NOT the `Exception: HTTP Error 403` that the
+    site-root GET used to throw before 0.10.37. It now takes the same view as the
+    app's other client and CloudStream's own `CloudflareKiller`: a 403/503 served
+    BY Cloudflare is a bot wall whatever its body looks like, so the solve runs
+    and one clearance is earned for the host.
+  - The site's own extension had a chapters bug. `keiyoushi/extensions-source`
+    fixed The Blank's chapter parsing on 2026-09-16 ("support reader v2 attestation
+    and ece pages" — *"Fixes chapters on Epsilon Scan, Soft Epsilon Scan and The
+    Blank"*), shipped as The Blank `versionCode 54`. An installed copy older than
+    that fails on chapters in ANY reader, which is why Nekoread shows them and
+    Hikari did not. If a chapter error appears for this source again, update the
+    extension first (Extensions → the engine's row). See docs/MANGA.md.
+- **Catalogues, episode lists and detail pages inside aniyomi/skystream — and
+  every other engine — now open fast on the second look.** The report: *"clicking
+  any anime or series in an aniyomi and skystream extension takes too much time to
+  show the catalogue, and their episodes take much more time to show"*. Those
+  reads were never slow because of the network: an Aniyomi extension pays an APK
+  class load before its first request, a CloudStream/.hiki plugin boots its runtime
+  and its site session, a nuvio engine starts a QuickJS VM — and every one of
+  those answers was thrown away at the end of the process, so the next visit paid
+  the cold start all over again. A new on-disk cache (`data/MetaCache.kt`, one
+  small JSON file per key under `filesDir/metacache/`) now paints what the last
+  visit got while the engine is asked again in the same breath: an extension's
+  catalogue page appears at once and is replaced by the fresh page a moment later,
+  an episode list appears at once and then refreshes, and a title's enriched meta
+  (overview, backdrop, genres, a plugin's corrected TYPE) is served outright. The
+  cached catalogue page is also the fallback when the fresh read comes back empty,
+  so "it worked yesterday" no longer depends on the process still being alive, and
+  a series whose engine is unreachable right now shows the list it served before
+  instead of "no episodes". Freshness windows (6 h catalogue, 12 h episodes, 3
+  days meta) decide only what is on screen while the refresh runs. See
+  docs/PERFORMANCE.md.
+- **A title opened from a Stremio addon is now searched in every installed
+  Stremio addon even with "Search all installed extensions" off — with its own
+  switch, the same as the Nuvio one.** Every Stremio addon is handed the item's
+  own imdb/tmdb id, so they all resolve the same video: one addon's answer is not
+  evidence about another's, and the real client asks them all for a catalogue id.
+  A Stremio origin now gathers its whole family (`SearchScope.stremioFamily`,
+  default on) — only Stremio addons, so no CloudStream/Aniyomi/SkyStream repo is
+  dragged in — with the origin first. The "Search every Stremio addon" switch sits
+  on the Server search card, right under "Search every Nuvio provider", and off
+  means off. See docs/SEARCH.md invariant 16.
+
+### Changed
+
+- **The app lock's leaving trigger can be switched off too.** "Lock when the
+  screen turns off" already had its own switch; leaving the app now has one as
+  well — **"Lock when I leave the app"** (on by default, which is what the lock has
+  always done). With it off, switching to another app never draws the unlock card;
+  only a screen-off (when that is on) or a fresh start of the app locks it. The
+  grace-period slider is still there and applies to whichever triggers remain on.
+- **The Trackers card no longer opens with a paragraph of explanation** — the
+  heading goes straight to the services list.
+
+### Notes
+
+- **A hard WAF block still cannot be solved by anyone.** If a site answers every
+  request to a host with `403` for the app's traffic (a datacenter-style block, not
+  a challenge), no WebView can earn a clearance either. The honest outcome there is
+  the per-host verification nudge, never a silent "this repo has no chapters".
+- **The media cache stores nothing the user owns.** Library, history, progress and
+  watch state live in their own stores; the cache directory is a re-fetch away from
+  empty, which is why losing it (or trimming it) costs nothing.
+- **"Search every Stremio addon" is stronger than the exception-extensions
+  collapse rule, for Stremio origins only** — same shape as the Nuvio switch, and
+  for the same reason: the user asked for the family in as many words, and this
+  switch is the thing that turns it off.
+
 ## 0.10.37
 
 ### Fixed

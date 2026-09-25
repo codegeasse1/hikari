@@ -113,15 +113,20 @@ point, so cancelling a nuvio call really cancels its HTTP (see invariant 8).
   widening only while answers come back. Firing ~96 cold plugin runtimes at the
   same instant is what wedges them on a phone. Waves only stagger the start —
   every target is still asked, in trust order (`crossExtensionTargets`).
-- **The origin's hold is a HEAD START, not a wait.** With "play as soon as the
-  first server is found" (the default), `originReady` in PlayerActivity stops
-  holding the moment `ORIGIN_HEAD_START_MS` (3 s) has passed since the FIRST
-  server arrived — `originHeadStartMs` in the launch intent, and
-  `firstServersAt` in the live collector. Only "wait for more servers first"
-  uses the full `ORIGIN_PLAY_GRACE_MS` (45 s) window. The report: *"it found
-  70-80 servers but it still searching on loading screen instead of playing"* —
-  a full server list was held behind one repo's answer. The origin's own
-  servers still arrive and are still placed at the top of the list.
+- **The origin's hold is GONE in instant mode.** With "play as soon as the first
+  server is found" (the default), `originGraceMs` and `originHeadStartMs` are
+  both 0 on the launch intent, so `originReady` in PlayerActivity is true the
+  instant anything is in hand and playback starts on that first server — nothing
+  waits for the origin. It used to be a three-second head start
+  (`ORIGIN_HEAD_START_MS`), which read as a wait on top of the pass: *"i told you
+  to make play instantly as soon as 1 server found — see it showing 12 servers
+  found and still the video didnt start"*. Only "wait for more servers first"
+  uses a hold at all, and that one is the full `ORIGIN_PLAY_GRACE_MS` (45 s)
+  window, ended early the moment the origin answers (`StreamsLive.settleOrigin`).
+  The origin is not punished: it is still asked first, still gets the first
+  engine slot, its servers still sort to the top of the list and to the front of
+  the player's own list, and any that land later stream into "Select server"
+  while the video plays.
 
 ### 3. Every state on screen must be able to resolve
 
@@ -503,7 +508,36 @@ toggle there to turn that off too"*.
   and that is deliberate: the user asked for the family in as many words, and
   this switch is the thing that turns it off. A NON-nuvio origin with nuvio
   exception engines marked behaves exactly as before.
-- **The Stremio family does not work this way**, and must not: a Stremio origin
-  already asks every Stremio addon when the scope is "all", and in "only this
-  extension" mode the addon the title came from is the answer — unless the user
-  marks the addons under Exception extensions. See invariants 10 and 11.
+- **The Stremio family worked differently until 0.10.38**, and now has the same
+  switch — see invariant 16.
+
+### 16. A Stremio origin searches the whole Stremio family — unless the user says not to
+
+The request: *"make the same as our nuvio provider toggle for stremio — when the
+search-all-extensions toggle is off, playing anything from one stremio extension
+should search servers from all installed ONLY stremio extensions, not any other
+extension — and add the same toggle button in settings"*.
+
+- **Why it is the same rule as invariant 15.** Every Stremio addon is handed the
+  item's own imdb/tmdb id, so one addon's answer is not evidence about another's
+  — but they all resolve the SAME video, which is exactly what makes the family
+  one source of servers rather than a cross-search. The real Stremio client asks
+  every installed addon for a catalogue id, and Hikari already did that on Home
+  and with the scope switch ON (`primaryTargets`).
+- **`SearchScope.stremioFamily`** (mirrored from `AppStore.stremioSearchAllFlow`
+  by HikariApp, read into a local at the top of `streamsForInner`) adds every
+  installed Stremio addon to the pass's targets when the title was opened FROM
+  one, with the origin first (`stremioOrder`). Default ON; the row that turns it
+  off is "Search every Stremio addon" on the Server search card, right under the
+  Nuvio one.
+- **Only Stremio addons are added.** A Stremio origin never drags a CloudStream,
+  Aniyomi, SkyStream or Hikari repo into the pass — the addons are gathered, and
+  nothing else. (A non-Stremio origin is unaffected: it still asks only itself,
+  plus the nuvio family when it IS a nuvio provider, plus the exception repos.)
+- **`stremioPrimaryIds` covers the family too**, so an addon that is already a
+  primary target is not asked a second time by TITLE in the cross pass — the two
+  asks would put the same servers on the list twice and cost the addon a
+  pointless search.
+- **Off means off**, exactly like the nuvio switch: a Stremio origin in "Only this
+  extension" mode asks the addon it came from (and any addon marked as an
+  exception), and nobody else.

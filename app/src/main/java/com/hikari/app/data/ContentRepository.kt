@@ -85,6 +85,18 @@ object SearchScope {
     @Volatile
     var nuvioFamily: Boolean = true
 
+    /**
+     * "Search every Stremio addon" (Settings → Playback & Servers → Server
+     * search): a title opened FROM a Stremio addon also asks every other
+     * installed Stremio addon, whatever [allExtensions] says. The addons are all
+     * handed the item's own imdb/tmdb id, so the family is one source of servers
+     * rather than a cross-search of unrelated sites — the Stremio model. Mirrored
+     * from `AppStore.stremioSearchAllFlow` by HikariApp. Off, "only this
+     * extension" then means exactly that for a Stremio origin too.
+     */
+    @Volatile
+    var stremioFamily: Boolean = true
+
     /** Extension ids that are always asked for servers (see the class note). */
     @Volatile
     var exceptions: Set<String> = emptySet()
@@ -1104,9 +1116,24 @@ class ContentRepository(private val manager: ProviderManager) {
             ref: CatalogRef,
             page: Int,
             retryEmpty: Boolean = false,
+            /**
+             * Paints a previously-cached page the instant the screen opens,
+             * before the engine is asked at all (see [MetaCache]). The engine is
+             * still asked below and its fresh answer is what this function
+             * returns — the cached page is a head start, never a verdict.
+             */
+            onCached: ((List<MediaItem>) -> Unit)? = null,
         ): List<MediaItem> {
             p ?: return emptyList()
             val key = "${p.config.id}|${ref.type}|${ref.id}|$page"
+            val diskKey = MetaCache.catalogKey(p.config.id, ref, page)
+            // The page the user saw last time, painted immediately: a catalogue's
+            // first paint must not wait for a cold Aniyomi APK class load or a
+            // plugin runtime to boot (the reported "clicking a series in an
+            // aniyomi/skystream extension takes too long to show its catalogue").
+            if (onCached != null) {
+                MetaCache.cachedCatalog(diskKey)?.let(onCached)
+            }
             var items = catalogCatching { p.getCatalog(ref, page) }.getOrDefault(emptyList())
             if (items.isEmpty() && retryEmpty) {
                 delay(CATALOG_RETRY_MS)
@@ -1114,10 +1141,16 @@ class ContentRepository(private val manager: ProviderManager) {
             }
             if (items.isNotEmpty()) {
                 synchronized(lastGoodCatalogPage) { lastGoodCatalogPage[key] = items }
+                MetaCache.putCatalog(diskKey, items)
                 return items
             }
             if (page != 1) return emptyList()
-            return synchronized(lastGoodCatalogPage) { lastGoodCatalogPage[key] }.orEmpty()
+            // Nothing fresh: this process's last good answer first, then the disk
+            // cache at ANY age — a provider that is down right now still shows
+            // the page it served before, which is the "it worked yesterday" case
+            // the in-memory map cannot cover (a new process has no memory).
+            val last = synchronized(lastGoodCatalogPage) { lastGoodCatalogPage[key] }.orEmpty()
+            return last.ifEmpty { MetaCache.cachedCatalog(diskKey, Long.MAX_VALUE).orEmpty() }
         }
 
     }
@@ -1484,6 +1517,17 @@ class ContentRepository(private val manager: ProviderManager) {
             if (idx >= 0) idx else NUVIO_PRIORITY.size
         },
     )
+
+    /**
+     * Stremio addons in the order one lookup should try them: the addon the
+     * title was opened from FIRST (its servers are the ones the user expects at
+     * the top, and it gets an engine slot before its siblings), then the rest in
+     * install order. There is no historical priority list for addons — unlike
+     * [NUVIO_PRIORITY], which exists because nuvio engines differ wildly in
+     * speed — so a stable sort by "is it the origin" is all this needs.
+     */
+    private fun stremioOrder(originId: String): Comparator<ContentProvider> =
+        compareBy { p: ContentProvider -> if (p.config.id == originId) 0 else 1 }
 
     /**
      * How many provider requests this DEVICE is asked to run at once.
@@ -2338,6 +2382,8 @@ class ContentRepository(private val manager: ProviderManager) {
             // Read once, like the two above: one lookup must never be
             // half-scoped (see docs/SEARCH.md). "Search every Nuvio provider".
             val nuvioFamily = SearchScope.nuvioFamily
+            // Read once too: "Search every Stremio addon".
+            val stremioFamily = SearchScope.stremioFamily
             // THE APP'S OWN CATALOGUE IS NOT AN EXTENSION.
             //
             // A title browsed from Home / Search / Collections / a nuvio
@@ -2433,24 +2479,36 @@ class ContentRepository(private val manager: ProviderManager) {
             } else {
                 emptyList()
             }
+            // "Search every Stremio addon": the Stremio twin of the nuvio family
+            // above, and the same reasoning — the addons are all handed the
+            // item's own imdb/tmdb id, so asking the family is one source of
+            // servers, not a cross-search. It applies only to a title opened
+            // FROM a Stremio addon: an addon cannot answer for another engine's
+            // item (see [primaryTargets]), and [originless] items already have
+            // the addons as their primary targets. Off, "only this extension"
+            // means exactly that for a Stremio origin too.
+            val originIsStremio = origin?.config?.type == ProviderType.STREMIO
+            val stremioTargets = if (!scopeAll && originIsStremio && stremioFamily) {
+                all.filter { it.config.type == ProviderType.STREMIO }
+                    .sortedWith(stremioOrder(item.providerId))
+            } else {
+                emptyList()
+            }
             // A Nuvio origin appears in BOTH lists above, which used to launch
             // two identical engines for the same provider — doubling its CPU
             // and network work and stealing a concurrency slot from the other
             // providers, which measurably delayed the first server. Query each
             // provider exactly once.
-            val targets = (primaryTargets + nuvioTargets).distinctBy { it.config.id }
+            val targets = (primaryTargets + nuvioTargets + stremioTargets).distinctBy { it.config.id }
             // The Stremio addons this pass asks BY ID ([originless] above) must
             // not also be searched BY TITLE in the cross pass: that is the same
             // provider asked twice for the same video, and the title route is the
             // one that cannot answer for an addon without a catalogue anyway
             // (which is why the id route exists). Two asks would also put the
             // same servers on the list twice.
-            val stremioPrimaryIds = if (originless) {
-                primaryTargets.filter { it.config.type == ProviderType.STREMIO }
-                    .mapTo(HashSet()) { it.config.id }
-            } else {
-                emptySet()
-            }
+            val stremioPrimaryIds = (if (originless) primaryTargets else stremioTargets)
+                .filter { it.config.type == ProviderType.STREMIO }
+                .mapTo(HashSet()) { it.config.id }
             // This pass's OWN diagnostic state — created BEFORE the target list
             // is built, because the target list records into it (see
             // [CrossTally.filterReasons]), but published only once the pass is
@@ -5059,6 +5117,19 @@ class ContentRepository(private val manager: ProviderManager) {
      *  because one catalog addon serves minimal metadata. */
     suspend fun metaFor(item: MediaItem): MediaItem = withContext(Dispatchers.IO) {
         synchronized(metaCache) { metaCache[item.uniqueId] }?.let { return@withContext it }
+        // The enriched meta this title had last time, served outright. This is
+        // what the detail page's header (overview, backdrop, genres, the
+        // corrected TYPE a CS3 plugin reports) waits on, so a re-open must not
+        // pay a cold provider again. Trusted only once it actually carries an
+        // overview — a cached row that is still bare is not worth skipping the
+        // enrichment for.
+        val metaKey = MetaCache.metaKey(item.uniqueId)
+        MetaCache.cachedMeta(metaKey)?.let { cached ->
+            if (!cached.overview.isNullOrBlank()) {
+                synchronized(metaCache) { metaCache[item.uniqueId] = cached }
+                return@withContext cached
+            }
+        }
         val originProvider = manager.byId(item.providerId)
         var result = originProvider
             ?.let {
@@ -5070,6 +5141,7 @@ class ContentRepository(private val manager: ProviderManager) {
         if (result.backdropUrl != null && result.overview != null) {
             val t = translateItem(result)
             synchronized(metaCache) { metaCache[item.uniqueId] = t }
+            MetaCache.putMeta(metaKey, t)
             return@withContext t
         }
         val others = manager.providers.value.filter {
@@ -5088,6 +5160,7 @@ class ContentRepository(private val manager: ProviderManager) {
         }
         val translated = translateItem(result)
         synchronized(metaCache) { metaCache[item.uniqueId] = translated }
+        if (translated != item) MetaCache.putMeta(metaKey, translated)
         translated
     }
 
@@ -5106,6 +5179,14 @@ class ContentRepository(private val manager: ProviderManager) {
             onPartial?.invoke(it)
             return@withContext it
         }
+        // The list this title had last time, painted immediately while the
+        // engines below are asked for the fresh one — an ongoing series gains
+        // episodes, so this is a head start and not a verdict. It is also what
+        // the page falls back to when every engine comes up empty (see the final
+        // return), which is the "it showed episodes yesterday" case.
+        val epsKey = MetaCache.episodesKey(item.uniqueId)
+        val cachedEps = MetaCache.cachedEpisodes(epsKey)
+        cachedEps?.let { onPartial?.invoke(it) }
         val others = manager.providers.value.filter {
             it.config.enabled && it.config.id != item.providerId && it.config.type == ProviderType.STREMIO
         }
@@ -5135,6 +5216,7 @@ class ContentRepository(private val manager: ProviderManager) {
                 if (translated !== sorted) onPartial?.invoke(translated)
                 val named = withRealEpisodeNames(item, translated)
                 synchronized(episodeCache) { episodeCache[item.uniqueId] = named }
+                MetaCache.putEpisodes(epsKey, named)
                 if (named !== translated) onPartial?.invoke(named)
                 return@withContext named
             }
@@ -5160,11 +5242,16 @@ class ContentRepository(private val manager: ProviderManager) {
                 if (translated !== list) onPartial?.invoke(translated)
                 val named = withRealEpisodeNames(item, translated)
                 synchronized(episodeCache) { episodeCache[item.uniqueId] = named }
+                MetaCache.putEpisodes(epsKey, named)
                 if (named !== translated) onPartial?.invoke(named)
                 return@withContext named
             }
         }
-        null
+        // Nothing fresh. Hand back the disk cache when there is one instead of a
+        // bare null, so a series whose engine is unreachable right now still
+        // shows the list it served before (the "no episodes" verdict for a
+        // title that plainly has them).
+        cachedEps
     }
 
     /**

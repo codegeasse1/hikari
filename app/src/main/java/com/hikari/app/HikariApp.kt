@@ -446,6 +446,15 @@ class HikariApp : Application() {
                 com.hikari.app.data.SearchScope.nuvioFamily = it
             }
         }
+        // "Search every Stremio addon": same shape, same reason — a Stremio
+        // origin keeps asking its sibling addons even in "only this extension"
+        // mode, unless the user turns that off.
+        appScope.launch {
+            com.hikari.app.data.SearchScope.stremioFamily = store.stremioSearchAll()
+            store.stremioSearchAllFlow().collect {
+                com.hikari.app.data.SearchScope.stremioFamily = it
+            }
+        }
         appScope.launch {
             // Seeded through a first read of the EFFECTIVE flow (rather than the
             // raw id flow) so a search started before the first emission already

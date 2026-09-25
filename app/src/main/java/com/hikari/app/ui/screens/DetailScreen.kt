@@ -1250,25 +1250,37 @@ private const val ORIGIN_PLAY_GRACE_MS = 45_000L
  * "play as soon as the first server is found" (the default) and servers are
  * ALREADY available from somewhere else.
  *
- * This is the fix for "it had 70 servers and was still on the searching screen":
- * the origin's own link is worth a moment — it is the extension the user opened
- * the title from, and by then its runtime is warm from browsing — but it is not
- * worth a server list sitting in hand. Three seconds is long enough for a warm
- * repo to answer and short enough that the video starts while the rest of the
- * search continues in the background (its finds still stream into "Select
- * server", and an origin server that lands later is still moved to the top of
- * the list).
+ * ZERO. This used to be a three-second head start, on the theory that the
+ * origin's own link is worth a moment. It is not worth anything at all when the
+ * user has asked for instant playback: the reported case was a movie with
+ * TWELVE servers already on the list and the cover still saying "still
+ * searching" — the head start was the last thing holding playback back, and it
+ * made "play as soon as the first server is found" behave as "play as soon as
+ * the origin answers OR three seconds pass, whichever is later". With 0 there is
+ * no hold in this mode at all: the moment any playable server is in hand,
+ * playback starts.
+ *
+ * The origin is not punished for it: it is still asked first by the pass and
+ * still gets the first engine slot, its servers still sort to the top of the
+ * list ([healthyStartIndex] prefers them when they are present), and any that
+ * land later still stream into "Select server" while the video plays. The
+ * "wait for more servers first" choice is unaffected — that path uses the full
+ * [ORIGIN_PLAY_GRACE_MS] window above.
  */
-private const val ORIGIN_HEAD_START_MS = 3_000L
+private const val ORIGIN_HEAD_START_MS = 0L
 
 /**
  * The BACKSTOP for that case: how long the origin is given in total for "play as
  * soon as the first server is found" when no other server has arrived either.
- * With nothing to play there is nothing to start, so this window costs the user
- * nothing at all — it only decides when the player stops waiting for the origin
- * and says so.
+ *
+ * ZERO, for the same reason as [ORIGIN_HEAD_START_MS]: "instant" means there is
+ * no window in which the app is waiting for one provider while it already has
+ * something to play. With nothing found yet there is nothing to start either
+ * way, so the pass simply reports its progress until the first server lands —
+ * which it does through the live session, starting playback at once. The
+ * "wait for more servers first" choice still uses [ORIGIN_PLAY_GRACE_MS].
  */
-private const val ORIGIN_INSTANT_GRACE_MS = 20_000L
+private const val ORIGIN_INSTANT_GRACE_MS = 0L
 
 /** How long a prefetched source list may be reused before it must be resolved
  *  again. 4KHDHub/hubcloud hand out SIGNED, time-limited workers.dev links, and
@@ -1754,28 +1766,27 @@ fun DetailScreen(
                 // HOW LONG that hold lasts depends on the choice the user made,
                 // and that is the fix for "it had 70 servers and still sat on the
                 // loading screen": with "play as soon as the first server is
-                // found" (the default) the hold is only a HEAD START — a few
-                // seconds for the origin's already-warm runtime to answer — and
-                // the moment any playable server is in hand the video starts,
-                // while the origin keeps working in the background and its
-                // servers still land at the top of the list. The long backstop
-                // is for "wait for more servers first", where the user has asked
-                // for exactly that patience.
+                // found" (the default) there is NO hold at all — the moment any
+                // playable server is in hand the video starts — while the origin
+                // keeps working in the background and its servers still land at
+                // the top of the list. The long window is only for "wait for more
+                // servers first", where the user has asked for exactly that
+                // patience.
                 val originSearched =
                     providers.firstOrNull { it.config.id == livePid }?.config?.enabled == true
                 putExtra(
                     "originGraceMs",
                     if (!originSearched) 0
                     else if (playWaitServers) ORIGIN_PLAY_GRACE_MS.toInt()
-                    // Short: the head start below is what actually ends the
-                    // hold. This is only the "the origin never answers at all"
-                    // backstop, so it can be generous without costing the user
-                    // anything.
+                    // 0: instant playback means nothing waits for the origin
+                    // (see ORIGIN_INSTANT_GRACE_MS).
                     else ORIGIN_INSTANT_GRACE_MS.toInt()
                 )
                 // The head start itself: how long playback will wait for the
-                // origin once servers are ALREADY available. 0 with "wait for
-                // more servers first" (that path uses the full grace window).
+                // origin once servers are ALREADY available. 0 in both modes now
+                // — "wait for more servers first" uses the full grace window
+                // above, and instant playback does not wait at all (see
+                // ORIGIN_HEAD_START_MS).
                 putExtra(
                     "originHeadStartMs",
                     if (originSearched && !playWaitServers) ORIGIN_HEAD_START_MS.toInt() else 0

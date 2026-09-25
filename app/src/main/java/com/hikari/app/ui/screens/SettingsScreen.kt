@@ -3577,6 +3577,10 @@ private fun ServerSearchCard(app: HikariApp) {
     // switch above. See AppStore.nuvioSearchAllFlow / SearchScope.nuvioFamily.
     val nuvioFlow = remember { app.store.nuvioSearchAllFlow() }
     val nuvioAll by nuvioFlow.collectAsState(initial = true)
+    // "Search every Stremio addon" — the addon twin of the switch above. See
+    // AppStore.stremioSearchAllFlow / SearchScope.stremioFamily.
+    val stremioFlow = remember { app.store.stremioSearchAllFlow() }
+    val stremioAll by stremioFlow.collectAsState(initial = true)
     val exceptionOnFlow = remember { app.store.searchExceptionOnFlow() }
     val exceptionOn by exceptionOnFlow.collectAsState(initial = false)
     val exceptionIdsFlow = remember { app.store.searchExceptionIdsFlow() }
@@ -3660,6 +3664,27 @@ private fun ServerSearchCard(app: HikariApp) {
             checked = nuvioAll,
             onCheckedChange = { on ->
                 scope.launch { runCatching { app.store.setNuvioSearchAll(on) } }
+            },
+        )
+
+        Spacer(Modifier.height(10.dp))
+
+        // ---- The Stremio family ----
+        // The addon twin of the nuvio switch above: a title opened FROM a
+        // Stremio addon is asked in every other installed Stremio addon, because
+        // they all resolve the same imdb/tmdb id. See
+        // [com.hikari.app.data.SearchScope.stremioFamily]. Off, "only this
+        // extension" means exactly that for a Stremio origin.
+        SettingsToggle(
+            label = tr("Search every Stremio addon"),
+            supporting = if (stremioAll) {
+                tr("A Stremio title is also searched in your other Stremio addons")
+            } else {
+                tr("A Stremio title plays from that addon alone")
+            },
+            checked = stremioAll,
+            onCheckedChange = { on ->
+                scope.launch { runCatching { app.store.setStremioSearchAll(on) } }
             },
         )
 
@@ -4186,10 +4211,12 @@ private fun AppLockCard(app: HikariApp) {
     val secretLen by lenFlow.collectAsState(initial = 0)
     val bioFlow = remember { app.store.appLockBioFlow() }
     val bioOn by bioFlow.collectAsState(initial = true)
-    // The lock's two extra rules: whether a screen-off locks, and the grace
-    // period after leaving (0 = Instant).
+    // The lock's extra rules: whether a screen-off locks, whether leaving the
+    // app locks, and the grace period after either (0 = Instant).
     val screenOffFlow = remember { app.store.appLockScreenOffFlow() }
     val screenOffLocks by screenOffFlow.collectAsState(initial = true)
+    val leaveFlow = remember { app.store.appLockLeaveFlow() }
+    val leaveLocks by leaveFlow.collectAsState(initial = true)
     val delayFlow = remember { app.store.appLockDelayFlow() }
     val storedDelay by delayFlow.collectAsState(initial = 0)
     var delay by remember { mutableStateOf(0) }
@@ -4264,30 +4291,50 @@ private fun AppLockCard(app: HikariApp) {
                     scope.launch { runCatching { app.store.setAppLockScreenOff(it) } }
                 },
             )
-            Spacer(Modifier.height(8.dp))
-            // The grace period: Instant, then every minute up to 60. A slider
-            // with one step per minute rather than a list of presets, because
-            // that is the shape asked for and because 61 points covers the whole
-            // range with no rounding between the control and the stored value.
-            SettingsSlider(
-                label = tr("Lock after leaving"),
-                value = delay.toFloat(),
-                valueText = if (delay <= 0) tr("Instantly") else delay.toString() + " " + tr("min"),
-                valueRange = 0f..60f,
-                steps = 59,
-                onValueChange = { v -> delay = v.roundToInt().coerceIn(0, 60) },
-                onValueChangeFinished = {
-                    scope.launch { runCatching { app.store.setAppLockDelay(delay) } }
+            // The leaving trigger's own switch, the twin of the screen-off one
+            // above: with it off, switching away from Hikari never draws the
+            // unlock card — only the screen turning off (if that is on) or a
+            // fresh start of the app does.
+            SettingsToggle(
+                label = tr("Lock when I leave the app"),
+                supporting = if (leaveLocks) {
+                    tr("Switching to another app draws the lock again")
+                } else {
+                    tr("Leaving the app does not lock it — only a screen-off does")
+                },
+                checked = leaveLocks,
+                onCheckedChange = {
+                    scope.launch { runCatching { app.store.setAppLockLeave(it) } }
                 },
             )
-            Text(
-                tr(
-                    "How long the app may stay unlocked after you leave it. \"Instantly\" locks " +
-                        "the moment you leave the app or the screen turns off."
-                ),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            // The grace period applies to whichever triggers are on, so it is
+            // only offered while at least one of them is.
+            if (leaveLocks || screenOffLocks) {
+                Spacer(Modifier.height(8.dp))
+                // The grace period: Instant, then every minute up to 60. A slider
+                // with one step per minute rather than a list of presets, because
+                // that is the shape asked for and because 61 points covers the whole
+                // range with no rounding between the control and the stored value.
+                SettingsSlider(
+                    label = tr("Lock after leaving"),
+                    value = delay.toFloat(),
+                    valueText = if (delay <= 0) tr("Instantly") else delay.toString() + " " + tr("min"),
+                    valueRange = 0f..60f,
+                    steps = 59,
+                    onValueChange = { v -> delay = v.roundToInt().coerceIn(0, 60) },
+                    onValueChangeFinished = {
+                        scope.launch { runCatching { app.store.setAppLockDelay(delay) } }
+                    },
+                )
+                Text(
+                    tr(
+                        "How long the app may stay unlocked after you leave it. \"Instantly\" locks " +
+                            "the moment you leave the app or the screen turns off."
+                    ),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             Spacer(Modifier.height(4.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 TextButton(onClick = {
@@ -4544,17 +4591,7 @@ private fun TrackersCard(app: HikariApp) {
 
     Column(Modifier.padding(16.dp)) {
         SettingsCardHeading(Icons.Filled.Sync, tr("Trackers"))
-        Spacer(Modifier.height(4.dp))
-        Text(
-            tr(
-                "Sign in to a service you already keep a list on, and what you watch in " +
-                    "Hikari is reported there automatically — episode by episode, the way " +
-                    "CloudStream does it. Nothing is reported until an episode has actually " +
-                    "been watched, and nothing is ever removed from your list."
-            ),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        Spacer(Modifier.height(10.dp))
 
         for (kind in TrackerKind.entries) {
             val account = accounts.firstOrNull { it.kind == kind }

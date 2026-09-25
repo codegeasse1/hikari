@@ -213,6 +213,14 @@ class AppStore(private val ctx: Context) {
          */
         val APP_LOCK_DELAY_MIN = intPreferencesKey("appLockDelayMin")
         /**
+         * Lock when the APP is left (Settings → Privacy & Browsing → App lock).
+         * On by default — what the lock has always done. Off, leaving the app
+         * never draws the unlock card: only a screen-off (when that is on too,
+         * see [APP_LOCK_SCREEN_OFF]) or a fresh process start does. The grace
+         * period still applies to whichever triggers remain on.
+         */
+        val APP_LOCK_LEAVE = booleanPreferencesKey("appLockLeave")
+        /**
          * The trackers the user signed in to (Settings → Trackers), as JSON —
          * one row per service, with that service's token. See
          * [com.hikari.app.data.TrackerStore].
@@ -404,6 +412,13 @@ class AppStore(private val ctx: Context) {
          *  installed nuvio provider, whatever [SEARCH_ALL_EXTENSIONS] says. On by
          *  default — see [nuvioSearchAllFlow]. */
         val NUVIO_SEARCH_ALL = booleanPreferencesKey("nuvioSearchAllProviders")
+        /** "Search every Stremio addon" (Settings → Playback & Servers → Server
+         *  search): a title opened FROM a Stremio addon also asks every other
+         *  installed Stremio addon, whatever [SEARCH_ALL_EXTENSIONS] says — the
+         *  Stremio model, where the addons in one account all resolve the same
+         *  imdb/tmdb id, so the family is one source of servers. On by default —
+         *  see [stremioSearchAllFlow]. */
+        val STREMIO_SEARCH_ALL = booleanPreferencesKey("stremioSearchAllAddons")
         /** "Exception extensions" (Settings → Playback & Servers → Server
          *  search): extensions that are asked for servers for EVERY title, even
          *  when [SEARCH_ALL_EXTENSIONS] is off. See
@@ -1144,6 +1159,25 @@ class AppStore(private val ctx: Context) {
     }
 
     /**
+     * "Search every Stremio addon" (Settings → Playback & Servers → Server
+     * search). The Stremio twin of [nuvioSearchAllFlow]: a title opened FROM a
+     * Stremio addon also asks every other installed Stremio addon, whatever the
+     * scope switch says, because the addons are handed the item's own imdb/tmdb
+     * id and therefore all resolve the same video. On by default. Off, and a
+     * Stremio origin searches only the addon it was opened from (the exception
+     * extensions still apply). See
+     * [com.hikari.app.data.SearchScope.stremioFamily].
+     */
+    fun stremioSearchAllFlow(): Flow<Boolean> =
+        store.data.map { it[K.STREMIO_SEARCH_ALL] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun stremioSearchAll(): Boolean = stremioSearchAllFlow().first()
+
+    suspend fun setStremioSearchAll(on: Boolean) {
+        write("STREMIO_SEARCH_ALL") { it[K.STREMIO_SEARCH_ALL] = on }
+    }
+
+    /**
      * Are the "exception extensions" in force?
      *
      * On, the extensions picked in Settings (see [searchExceptionIds]) are asked
@@ -1746,6 +1780,22 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setAppLockDelay(minutes: Int) {
         write("APP_LOCK_DELAY_MIN") { it[K.APP_LOCK_DELAY_MIN] = minutes.coerceIn(0, 60) }
+    }
+
+    /**
+     * Lock when the app is LEFT (on by default). Off, the unlock card is never
+     * drawn for leaving the app — only a screen-off (see [appLockScreenOffFlow])
+     * or a fresh process start locks it. The grace period still applies to
+     * whichever triggers are on. Read live by
+     * [com.hikari.app.ui.AppLockGate]'s lifecycle observer.
+     */
+    fun appLockLeaveFlow(): Flow<Boolean> =
+        store.data.map { it[K.APP_LOCK_LEAVE] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun appLockLeave(): Boolean = appLockLeaveFlow().first()
+
+    suspend fun setAppLockLeave(on: Boolean) {
+        write("APP_LOCK_LEAVE") { it[K.APP_LOCK_LEAVE] = on }
     }
 
     // ---- Trackers (Settings → Trackers) ----------------------------------
