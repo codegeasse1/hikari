@@ -602,3 +602,54 @@ others."*
   installed, the pass logs `family(<Engine>) switch is off — N sibling repo(s) of
   the origin's engine are not asked for this title`, so "my other CloudStream repo
   never showed servers" is answerable from the log.
+
+### 18. The cover describes the PLAYBACK once a server is committed — and nothing in front of it may hold the first picture
+
+The report for the fourth and fifth time (0.10.40): *"see it saying 55 server
+loaded and for another too many server still it more loading instead of play,
+didn't I say play instantly as soon as one server found"*, with screenshots of the
+title card reading "Found 53 servers — still searching…" and no picture. Three
+separate mechanisms had to be wrong at once for that screen to be possible, and
+all three were.
+
+- **One line, two meanings.** The cover's status was whatever
+  `StreamsLive.statusFlow` published last — the SEARCH's running count — and it
+  kept being re-published after playback had committed, so "the search found N
+  servers" and "playback has not started" rendered identically. `PlayerActivity`
+  now has a `coverPlaybackLine`: `playSource` clears it, `playDirectInner` sets it
+  to `Starting <server>…`, `advanceToServer` and the stalled-server wait set it to
+  what is happening to that server, and the search's own status is only used while
+  `coverPlaybackLine == null`. The search keeps running and keeps filling
+  "Select server" — it is simply no longer what the one visible line is about.
+- **A probe may not hold the first picture.** `probeAndPlay` awaited
+  `StreamProbe.resolve` before handing anything to ExoPlayer; a wrapper URL's walk
+  can take minutes. The walk is now a detached `async` awaited with
+  `firstProbeWaitMs` (2.5 s); past the deadline the RAW url goes to ExoPlayer
+  (which follows redirects and sniffs the container itself) and the walk's answer
+  is re-applied only if it lands while that server is still the one on screen and
+  no frame has been drawn.
+- **EVERY source is watched for its first frame.** The no-first-frame watchdog
+  was armed `if (mime != null || drmManager != null)`, leaving a plain progressive
+  source that reached READY with no picture completely unrecoverable — the exact
+  "it found N servers and it never plays". It is armed for every source, re-arms
+  every 4 s while not READY, and `recoverNoPicture()` marks the URL and its HOST
+  dead, walks to the next UNTRIED server, allows the same server ONE restart, and
+  otherwise waits for the search (`awaitReplacementForStalledServer`) rather than
+  declaring the video dead. It logs `FAILSAFE:` with the state that led there.
+  A READY player with no reported video track is re-checked three times (bounded)
+  instead of being taken for audio-only.
+- **Failover prefers a PROVED server.** `nextUntriedIndex` walks an untried server
+  a probe has already resolved (`probeVerified()`, invariant 13) before falling
+  back to arrival order; the search warms every server as it arrives, so the
+  verified ones are already known by the time a failover happens.
+- **Nothing has played yet → skip silently.** While the search is still delivering
+  and no frame has been drawn, a stalled server is skipped without a dialog
+  (`maxSilentSkips = 6`, then the question returns). A modal with a 3-second
+  countdown, shown over a list that still has servers to try, is itself the
+  "it keeps loading instead of playing" complaint.
+- **`tryStart` is unchanged in WHAT it waits for** — `searchDone || askMode ||
+  sources.size >= startAfter` — but it is no longer the only guarantee: the
+  `START_FAILSAFE_MS` poll (invariant 2) starts the first server if a list sits
+  unplayed for four seconds, and the polling loop additionally PULLS
+  `StreamsLive.flow(liveId).value` so a player holding none of the servers the
+  detail screen has is structurally impossible.

@@ -279,6 +279,27 @@ class PlayerActivity : ComponentActivity() {
      *  playing anything. */
     private var playbackCommitted = false
 
+    /**
+     * What the loading cover says while playback is COMMITTED — a server has
+     * been handed to the player — instead of the search's own progress line.
+     *
+     * Before this, the cover kept printing whatever the detail screen last
+     * reported ("Found 60 servers — still searching…") for as long as the
+     * background search ran, even after playback had committed and was
+     * preparing a server: the user's report was exactly that — "it says 55
+     * servers loaded and it is still loading instead of playing". Two different
+     * things were being described by one line. With this, the moment a server
+     * is committed the cover says which server is being started ("Starting X…"),
+     * or what is actually happening to it ("Server failed — trying next"), and
+     * the search's count goes back to being what it is — progress of a search
+     * that is running in the BACKGROUND, which is what the user asked for.
+     *
+     * Cleared by [playSource] on every new attempt and never read once the
+     * first frame has rendered (the cover is gone by then).
+     */
+    @Volatile
+    private var coverPlaybackLine: String? = null
+
     /** Set when the player was opened by a "download this" tap from OUTSIDE the
      *  player (an episode row's download button, or the detail page's download
      *  action — see DetailScreen's `openDownload` intent extra).
@@ -588,6 +609,15 @@ class PlayerActivity : ComponentActivity() {
     /** True once the current source has been restarted by the first-frame
      *  watchdog (guards against an infinite restart loop). */
     private var firstFrameRetried = false
+
+    /** How many times the first-frame watchdog has re-checked a READY source
+     *  whose track groups did not report a video track yet (see the task in
+     *  [playDirectInner]). Bounded, so an audio-only source is left alone. */
+    private var noVideoPolls = 0
+
+    /** How many servers have been skipped silently because nothing had played
+     *  yet and the search was still delivering (see [promptSlowServer]). */
+    private var silentSkips = 0
 
     /** First-frame watchdog: a video source that reaches READY but never draws
      *  a frame is a silently-hanging decoder (black screen) — the buffering
@@ -1781,6 +1811,28 @@ class PlayerActivity : ComponentActivity() {
                     while (true) {
                         delay(START_FAILSAFE_POLL_MS)
                         if (playbackCommitted) return@launch
+                        // PULL as well as observe. The collector above is a
+                        // StateFlow subscription, which cannot miss an emission
+                        // — but the title card must never be ABLE to sit on
+                        // "found N servers" while this player holds none of
+                        // them, whatever the reason (a collector that threw, a
+                        // session that was replaced, an append that landed
+                        // before the subscription attached). Reading the
+                        // session's current value here is the structural
+                        // backstop for that: if the detail screen has servers,
+                        // this player takes them.
+                        if (sources.isEmpty() && liveId != null) {
+                            val current = StreamsLive.flow(liveId).value
+                            if (current.isNotEmpty()) {
+                                val have = sources.mapTo(HashSet()) { it.infoHash ?: it.url }
+                                val fresh = current.map { it.toPlayerSource() }
+                                    .filter { (it.infoHash ?: it.url) !in have }
+                                if (fresh.isNotEmpty()) {
+                                    sources = sources + fresh
+                                    notifySourcesChanged()
+                                }
+                            }
+                        }
                         if (!pendingStart || askMode || sources.isEmpty()) continue
                         val now = System.currentTimeMillis()
                         if (firstBatchAt == 0L) {
@@ -1880,7 +1932,12 @@ class PlayerActivity : ComponentActivity() {
                     // [loadingStatusBase], so the base is left alone too).
                     if (!awaitingReplacement) {
                         loadingStatusBase = s
-                        val line = s ?: DEFAULT_LOADING_STATUS
+                        // Playback committed on a server: the cover describes
+                        // THAT, not the background search's count. The search
+                        // keeps running (and keeps filling the Sources panel) —
+                        // it is just no longer what the one line on screen is
+                        // about (see [coverPlaybackLine]).
+                        val line = coverPlaybackLine ?: s ?: DEFAULT_LOADING_STATUS
                         loadingStatus?.text = line
                         loadingSpinnerStatus?.text = line
                     }
@@ -7282,11 +7339,20 @@ class PlayerActivity : ComponentActivity() {
             showError(I18n.t("No more servers to try."), false)
             return
         }
-        if (index != currentIndex) headerVariant = 0
+        if (index != currentIndex) {
+            headerVariant = 0
+            // A DIFFERENT server: the one attempt at a restart it is allowed
+            // (see [firstFrameRetried]) resets with it. Staying on the same
+            // server (a retry after an error, a restart) keeps the flag.
+            firstFrameRetried = false
+        }
         autoRotated = false
         userRotated = false
         userPickedSubs = false
         currentIndex = index
+        // A new attempt: the cover is about to describe THIS server, so the
+        // previous line (and whatever the search was saying) is dropped.
+        coverPlaybackLine = null
         // Every route into playback that is NOT an explicit pick in the chooser
         // clears this: only a server the user tapped themselves is allowed to
         // ask before the player moves on (see [failoverFromCurrent]). The
@@ -7656,7 +7722,16 @@ class PlayerActivity : ComponentActivity() {
                 else -> clean
             }
             val ua = headers["User-Agent"]?.takeIf { it.isNotBlank() } ?: Http.UA
-            val resolved = StreamProbe.resolve(src.url, headers + mapOf("User-Agent" to ua))
+            // The walk runs DETACHED (an `async`, awaited with a deadline): a
+            // probe is a classification, and the queue of dead wrapper hops it
+            // may have to walk is allowed to take its time — it is NOT allowed
+            // to hold the first picture. Past [firstProbeWaitMs] the source
+            // goes to ExoPlayer as-is (ExoPlayer follows the redirect chain and
+            // sniffs the container itself, which is why the raw-URL handover
+            // below works), and the walk's own answer is used when it lands:
+            // see the re-resolve after [playDirectInner].
+            val probing = async { StreamProbe.resolve(src.url, headers + mapOf("User-Agent" to ua)) }
+            val resolved = withTimeoutOrNull(firstProbeWaitMs) { probing.await() }
             probeDialog?.let { runCatching { it.dismiss() } }
             probeDialog = null
             if (currentIndex != index) return@launch
@@ -7685,6 +7760,16 @@ class PlayerActivity : ComponentActivity() {
             // to the next server on an inconclusive probe was what made 4KHDHub
             // "just skip" on every source. If the raw URL really is unplayable,
             // the player's own error handler advances to the next server.
+            playDirectInner(index)
+            if (resolved != null) return@launch
+            // The walk was still going when the deadline passed. Its answer is
+            // exactly what makes a wrapper URL play, so if it arrives while
+            // THIS server is still the one on screen and no picture has been
+            // drawn yet, re-hand ExoPlayer the resolved URL instead of leaving
+            // it crawling the wrapper page.
+            val late = runCatching { probing.await() }.getOrNull() ?: return@launch
+            if (currentIndex != index || renderedFirstFrame) return@launch
+            applyProbe(index, sources.getOrNull(index) ?: return@launch, late)
             playDirectInner(index)
         }
     }
@@ -7717,8 +7802,20 @@ class PlayerActivity : ComponentActivity() {
             badgeSource?.visibility = View.VISIBLE
         }
         errorPanel?.visibility = View.GONE
-        if (loadingBanner?.visibility != View.VISIBLE && loadingSpinner?.visibility != View.VISIBLE)
+        // From here the cover describes the PLAYBACK attempt, not the
+        // background search: which server is being started, and then what
+        // happens to it (see [coverPlaybackLine]). Without this the cover kept
+        // printing the search's running count while a server was already being
+        // prepared, which is what "it says 60 servers and it is still not
+        // playing" was reading.
+        val coverName = sourceBadge.ifBlank { "server" }
+        coverPlaybackLine = I18n.t("Starting %s…").replace("%s", coverName)
+        if (loadingBanner?.visibility != View.VISIBLE && loadingSpinner?.visibility != View.VISIBLE) {
             showLoadingCover()
+        } else {
+            loadingStatus?.text = coverPlaybackLine
+            loadingSpinnerStatus?.text = coverPlaybackLine
+        }
 
         player?.let { old ->
             old.removeListener(listener)
@@ -7728,7 +7825,14 @@ class PlayerActivity : ComponentActivity() {
         firstFrameTask?.let { bufferingWatchdog.removeCallbacks(it) }
         firstFrameTask = null
         renderedFirstFrame = false
-        firstFrameRetried = false
+        noVideoPolls = 0
+        // [firstFrameRetried] is deliberately NOT reset here: a restart of the
+        // SAME server is what it guards, and `playDirectInner` is what a restart
+        // calls — resetting it here made the guard useless, so a server that
+        // prepared and never drew a frame was restarted every 20s for as long as
+        // the player was open. It is reset when the walk moves to a DIFFERENT
+        // server (see [playSource]), which is the only point at which a new
+        // server deserves its own single restart.
         // A brand-new player instance means a brand-new video renderer, which
         // starts with no effects pipeline attached (see [videoSinkArmed]).
         videoSinkArmed = false
@@ -7910,38 +8014,51 @@ class PlayerActivity : ComponentActivity() {
         // automatic failover, so the first source that does play is the one the
         // download is offered on (and it is cleared for good once shown, so
         // backing out of the chooser leaves normal playback alone).
-        // A video source that reaches READY but never draws a frame is a
-        // silently-hanging decoder (black screen) — the buffering watchdog
-        // can't catch it because playbackState is already READY. Give it 20s
-        // to render its first frame, then recover (next server, or restart)
-        // instead of stranding the user on a dead black screen. A DRM source is
-        // armed too: a missing/unsupported key fails exactly this way.
-        if (mime != null || drmManager != null) {
-            firstFrameTask?.let { bufferingWatchdog.removeCallbacks(it) }
-            val task = Runnable {
+        // A source that reaches READY but never draws a frame is a
+        // silently-hanging decoder (black screen) — and the buffering watchdog
+        // CANNOT catch it, because that one only looks at BUFFERING/IDLE.
+        // This used to be armed only when the source already had a known mime
+        // (HLS/DASH) or DRM, so a plain progressive server that prepared
+        // cleanly and then produced no picture had NOTHING watching it: the
+        // title card simply stayed up, with the search's own count still
+        // ticking on it, which is exactly the "N servers and it never starts
+        // playing" report. It is now armed for EVERY source, and re-armed while
+        // the player is still preparing, so a source that only reaches READY
+        // later is covered too.
+        firstFrameTask?.let { bufferingWatchdog.removeCallbacks(it) }
+        val frameTask = object : Runnable {
+            override fun run() {
                 firstFrameTask = null
-                val p = player ?: return@Runnable
-                if (renderedFirstFrame) return@Runnable
-                val hasVideo = p.currentTracks.groups.any { it.type == C.TRACK_TYPE_VIDEO }
-                if (!hasVideo) return@Runnable // audio-only: no video frames expected
-                if (p.playbackState == Player.STATE_ENDED) return@Runnable
-                android.util.Log.w("HikariPlayer", "No first frame rendered in 20s — decoder hang")
-                if (currentIndex + 1 < sources.size) {
-                    Toast.makeText(this@PlayerActivity, I18n.t("Video stuck — trying next server"), Toast.LENGTH_SHORT).show()
-                    noSubsRetry = false
-                    playSource(currentIndex + 1)
-                } else if (!firstFrameRetried) {
-                    firstFrameRetried = true
-                    Toast.makeText(this@PlayerActivity, I18n.t("Video stuck — restarting"), Toast.LENGTH_SHORT).show()
-                    noSubsRetry = false
-                    playSource(currentIndex)
-                } else {
-                    showError(I18n.t("Playback started but no video frame was rendered."), false)
+                val p = player ?: return
+                if (renderedFirstFrame || currentIndex != index) return
+                val state = p.playbackState
+                if (state != Player.STATE_READY) {
+                    if (state == Player.STATE_ENDED) return
+                    // Still preparing or buffering: not this task's case (the
+                    // buffering watchdog owns it), but keep watching — this
+                    // source may yet reach READY with no picture.
+                    firstFrameTask = this
+                    bufferingWatchdog.postDelayed(this, firstFramePollMs)
+                    return
                 }
+                val hasVideo = p.currentTracks.groups.any { it.type == C.TRACK_TYPE_VIDEO }
+                if (!hasVideo) {
+                    // Either an audio-only source (no video frames are coming,
+                    // which is legitimate) or a READY player whose tracks have
+                    // not been reported yet. Re-check a bounded number of times
+                    // rather than concluding "no video" on the first look.
+                    if (noVideoPolls < 3) {
+                        noVideoPolls++
+                        firstFrameTask = this
+                        bufferingWatchdog.postDelayed(this, firstFramePollMs)
+                    }
+                    return
+                }
+                recoverNoPicture(index)
             }
-            firstFrameTask = task
-            bufferingWatchdog.postDelayed(task, 20_000L)
         }
+        firstFrameTask = frameTask
+        bufferingWatchdog.postDelayed(frameTask, firstFrameMs)
         scheduleBufferingWatchdog()
 
         if (noSubsRetry) return@playDirectInner
@@ -8171,6 +8288,62 @@ class PlayerActivity : ComponentActivity() {
         bufferingWatchdog.postDelayed(task, budget)
     }
 
+    /**
+     * A committed server that produced no PICTURE within its budget — the case
+     * nothing else in the player catches: the buffering watchdog only looks at
+     * BUFFERING/IDLE, and once a source has prepared (READY) a hanging decoder
+     * or a stream that carries audio but no decodable video leaves the title
+     * card up forever, with the search's server count still ticking underneath
+     * it. That is the one state that used to be completely unrecoverable, and
+     * it reads to the user as "it found N servers and it never plays".
+     *
+     * Silent (a Toast, no dialog): a dud early in the list is normal while a
+     * search is still delivering servers, and the user's rule is that the first
+     * server that plays wins.
+     */
+    private fun recoverNoPicture(index: Int) {
+        val src = sources.getOrNull(index)
+        com.hikari.app.data.Logs.log(
+            "Player",
+            "FAILSAFE: no picture from server ${index + 1}/${sources.size} " +
+                "(\"${src?.name ?: "?"}\") after ${firstFrameMs / 1000}s " +
+                "(searchDone=$liveSearchDone, rendered=$renderedFirstFrame) — moving on",
+        )
+        // This server is a dud: nothing was drawn after its whole budget. Mark
+        // it — the URL as tried (so no failover hands it back) and its HOST as
+        // failed for the session (every quality of the same file usually lives
+        // on the same mirror, and the start-index pick consults this).
+        src?.let { s ->
+            if (!s.isTorrent && !s.local && s.url.isNotBlank()) {
+                triedUrls.add(s.url)
+                mirrorHostOf(s.url).takeIf { it.isNotBlank() }?.let { deadHosts.add(it) }
+            }
+        }
+        if (renderedFirstFrame || currentIndex != index) return
+        val next = nextUntriedIndex()
+        if (next >= 0) {
+            noSubsRetry = false
+            Toast.makeText(this, I18n.t("Video stuck — trying next server"), Toast.LENGTH_SHORT).show()
+            playSource(next)
+            return
+        }
+        if (!firstFrameRetried) {
+            firstFrameRetried = true
+            noSubsRetry = false
+            Toast.makeText(this, I18n.t("Video stuck — restarting"), Toast.LENGTH_SHORT).show()
+            playSource(index)
+            return
+        }
+        // Nothing else to hand ExoPlayer yet, and the search is still running:
+        // wait for it instead of declaring the video dead (see
+        // [awaitReplacementForStalledServer]).
+        if (liveSessionId != null && !liveSearchDone && src?.isTorrent != true) {
+            awaitReplacementForStalledServer(src)
+            return
+        }
+        showError(I18n.t("Playback started but no video frame was rendered."), false)
+    }
+
     /** "Server too slow" prompt: Wait 30s or switch to the next server, with a
      *  3-second countdown after which it switches automatically if the user
      *  doesn't answer. Switching instantly moves to the next source. */
@@ -8188,8 +8361,7 @@ class PlayerActivity : ComponentActivity() {
             }
         }
         if (currentIndex + 1 >= sources.size) {
-            // Nothing left to walk to — YET. A player that has just opened is
-            // routinely holding one server while the search is still working
+            // Nothing left to walk to — YET. A player that has just opened is            // routinely holding one server while the search is still working
             // (the detail screen opens it on the first hit and the cross pass +
             // sweep keep finding more for minutes), so declaring playback dead
             // here stops the user on a server that is merely early, and the
@@ -8213,6 +8385,26 @@ class PlayerActivity : ComponentActivity() {
                 false
             )
             return
+        }
+        // Nothing has played yet and the search is still delivering servers:
+        // SKIP this one silently instead of asking. The user's rule is "if a
+        // server is not responding then skip it", and while the search runs
+        // there is something else to try in a moment — a modal question with
+        // its own 3-second countdown here is precisely the "it keeps loading
+        // servers instead of playing" that was reported. Bounded
+        // ([maxSilentSkips]) so a list of slow-but-alive servers still gets
+        // the old question rather than being walked through blind.
+        if (!torrent && !renderedFirstFrame && liveSessionId != null &&
+            !liveSearchDone && silentSkips < maxSilentSkips
+        ) {
+            val next = nextUntriedIndex()
+            if (next >= 0) {
+                silentSkips++
+                noSubsRetry = false
+                Toast.makeText(this, I18n.t("Video stuck — trying next server"), Toast.LENGTH_SHORT).show()
+                playSource(next)
+                return
+            }
         }
         if (slowDialog != null) return
         var countdown: TextView? = null
@@ -8289,6 +8481,28 @@ class PlayerActivity : ComponentActivity() {
      *  over a search that was still finding servers. */
     private val stalledReplacementWaitMs: Long = 180_000L
 
+    /** How long a probe may hold up the FIRST picture (see [probeAndPlay]).
+     *  The walk itself is allowed its own, much longer budget — it just does not
+     *  get to spend it in front of the user: past this the raw URL goes to
+     *  ExoPlayer and the walk's answer is applied when it lands. Most probes
+     *  finish in one round trip, so this is rarely reached. */
+    private val firstProbeWaitMs: Long = 2_500L
+
+    /** How long a committed server may take to draw a picture before it is
+     *  treated as a dud (see [recoverNoPicture]). Deliberately the same 20s the
+     *  old mime-gated watchdog used — the change is that EVERY source is now
+     *  watched, not that the budget moved: a server that is merely slow to
+     *  start must not be blacklisted earlier than it used to be. */
+    private val firstFrameMs: Long = 20_000L
+
+    /** How often the first-frame watchdog re-checks a source that has not
+     *  reached READY yet. */
+    private val firstFramePollMs: Long = 4_000L
+
+    /** How many "nothing has played yet" servers may be skipped without asking
+     *  the user (see [promptSlowServer]). */
+    private val maxSilentSkips: Int = 6
+
     /** True while the current server has stalled and playback is waiting for the
      *  search to hand over a replacement (see
      *  [awaitReplacementForStalledServer]). Also mirrored on the cover's status
@@ -8326,6 +8540,7 @@ class PlayerActivity : ComponentActivity() {
         loadingStatusBase = line
         loadingStatus?.text = line
         loadingSpinnerStatus?.text = line
+        coverPlaybackLine = line
         if (loadingBanner?.visibility != View.VISIBLE &&
             loadingSpinner?.visibility != View.VISIBLE
         ) {
@@ -8404,6 +8619,9 @@ class PlayerActivity : ComponentActivity() {
     private fun advanceToServer(nextIndex: Int) {
         noSubsRetry = false
         SlowNetTip.onServerFailed()
+        // What the cover says now — the honest reason the previous attempt
+        // ended, instead of the search's running count (see [coverPlaybackLine]).
+        coverPlaybackLine = I18n.t("Server failed — trying next")
         Toast.makeText(this, I18n.t("Server failed — trying next"), Toast.LENGTH_SHORT).show()
         playSource(nextIndex)
     }
@@ -9271,6 +9489,7 @@ class PlayerActivity : ComponentActivity() {
                 loadingStatusBase = "Reconnecting — $wantName"
                 loadingStatus?.text = loadingStatusBase
                 loadingSpinnerStatus?.text = loadingStatusBase
+                coverPlaybackLine = loadingStatusBase
                 if (loadingBanner?.visibility != View.VISIBLE &&
                     loadingSpinner?.visibility != View.VISIBLE
                 ) showLoadingCover()
@@ -9319,12 +9538,31 @@ class PlayerActivity : ComponentActivity() {
      * list. -1 when there is nothing left to try.
      */
     private fun nextUntriedIndex(): Int {
+        val untried = { i: Int ->
+            i != currentIndex && run {
+                val s = sources[i]
+                (s.isTorrent || s.url.isNotBlank()) && !(s.url.isNotEmpty() && s.url in triedUrls)
+            }
+        }
+        // PASS 1: a server the probe has already RESOLVED. That is a link the
+        // probe has been to and seen a video (or an HLS/DASH manifest) come back
+        // from, so it is the row that will actually show a picture — and the
+        // searches warm every server as it arrives, so on a title with dozens
+        // of servers the verified ones are already known by the time a failover
+        // happens. Without this the failover walked the list in arrival order,
+        // one full probe + prepare + error cycle at a time, which is what "60
+        // servers found and it never plays" was.
+        for (i in sources.indices) {
+            if (!untried(i)) continue
+            val s = sources[i]
+            val h = mirrorHostOf(s.url)
+            if (h.isNotBlank() && h in deadHosts) continue
+            if (s.probeVerified()) return i
+        }
         var fallback = -1
         for (i in sources.indices) {
-            if (i == currentIndex) continue
+            if (!untried(i)) continue
             val s = sources[i]
-            if (!s.isTorrent && s.url.isBlank()) continue
-            if (s.url.isNotEmpty() && s.url in triedUrls) continue
             if (fallback < 0) fallback = i
             val h = mirrorHostOf(s.url)
             if (h.isBlank() || h !in deadHosts) return i
@@ -9414,10 +9652,11 @@ class PlayerActivity : ComponentActivity() {
      *  title card, or — when the user turned it off in Settings — just a round
      *  spinner on black. */
     private fun showLoadingCover() {
-        // Restore whatever the search last reported (or the default line) so a
+        // Restore whatever is actually happening (or the default line) so a
         // cover re-shown mid-session (failover, second attempt) doesn't look
-        // like the app went back to square one.
-        val line = loadingStatusBase ?: DEFAULT_LOADING_STATUS
+        // like the app went back to square one. [coverPlaybackLine] wins while a
+        // server is committed: see the note on it.
+        val line = coverPlaybackLine ?: loadingStatusBase ?: DEFAULT_LOADING_STATUS
         loadingStatus?.text = line
         loadingSpinnerStatus?.text = line
         startLoadingTicker()
@@ -9435,7 +9674,8 @@ class PlayerActivity : ComponentActivity() {
             while (true) {
                 delay(1000L)
                 val secs = (android.os.SystemClock.elapsedRealtime() - startedAt) / 1000
-                val line = (loadingStatusBase ?: DEFAULT_LOADING_STATUS) + "  ($secs" + "s)"
+                val line = (coverPlaybackLine ?: loadingStatusBase ?: DEFAULT_LOADING_STATUS) +
+                    "  ($secs" + "s)"
                 loadingStatus?.text = line
                 loadingSpinnerStatus?.text = line
             }

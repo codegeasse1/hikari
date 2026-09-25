@@ -221,6 +221,28 @@ class AppStore(private val ctx: Context) {
          */
         val APP_LOCK_LEAVE = booleanPreferencesKey("appLockLeave")
         /**
+         * Whether the CURRENT unlock is still in force — the one piece of lock
+         * state that has to survive the process being killed.
+         *
+         * The gate's own `unlocked` flag lives in the composition, so it dies
+         * with the process; that was fine while the lock's two triggers were the
+         * only way to reach the unlock card, but it is wrong for the trigger
+         * that is OFF. Removing Hikari from the background kills its process on
+         * almost every launcher, so "Lock when I leave the app" off still asked
+         * for the password on the next open — the one thing that switch exists
+         * to prevent. Written true the moment the user unlocks (with
+         * [APP_LOCK_SESSION_AT]) and false whenever the app locks, so a fresh
+         * process can tell "the user was in and never locked it" from "it locked
+         * and nobody has opened it since".
+         */
+        val APP_LOCK_SESSION_OPEN = booleanPreferencesKey("appLockSessionOpen")
+        /**
+         * When the current unlock was granted (wall clock, ms). The grace period
+         * is measured from it on the first frame of a fresh process, exactly as
+         * it is measured from `leftAt` inside a live one.
+         */
+        val APP_LOCK_SESSION_AT = longPreferencesKey("appLockSessionAt")
+        /**
          * The trackers the user signed in to (Settings → Trackers), as JSON —
          * one row per service, with that service's token. See
          * [com.hikari.app.data.TrackerStore].
@@ -1757,6 +1779,13 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setAppLock(on: Boolean) {
         write("APP_LOCK") { it[K.APP_LOCK] = on }
+        if (on) {
+            // Turning the lock ON is not an unlock: the stored session is
+            // cleared, so the next launch asks for the new password even if the
+            // previous session had been unlocked (and even if the process is
+            // restarted right after this Settings tap).
+            write("APP_LOCK_SESSION_OPEN") { it[K.APP_LOCK_SESSION_OPEN] = false }
+        }
     }
 
     /**
@@ -1848,6 +1877,38 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setAppLockLeave(on: Boolean) {
         write("APP_LOCK_LEAVE") { it[K.APP_LOCK_LEAVE] = on }
+    }
+
+    /**
+     * The unlock that outlives the process: `(open, grantedAt)`.
+     *
+     * `open` is true from the moment the user unlocks until the app locks again
+     * (by any of the triggers that are switched on, or by the lock being turned
+     * off, which is also "no unlock needed"). `grantedAt` is when that unlock
+     * was granted, for [appLockDelayFlow]'s grace period when the process is
+     * restarted rather than resumed.
+     *
+     * Both are read in ONE pass on the first frame of a fresh process (see
+     * [com.hikari.app.ui.AppLockGate]) so the gate can decide before it draws
+     * anything whether this launch is locked — the alternative, drawing the app
+     * and locking a frame later, is the screen-flash the gate exists to avoid.
+     */
+    suspend fun appLockSession(): Pair<Boolean, Long> {
+        val prefs = store.data.first()
+        return (prefs[K.APP_LOCK_SESSION_OPEN] ?: false) to (prefs[K.APP_LOCK_SESSION_AT] ?: 0L)
+    }
+
+    /** The user has just unlocked (or the lock is off): keep this unlock across
+     *  a process restart. */
+    suspend fun setAppLockSessionOpen(at: Long = System.currentTimeMillis()) {
+        write("APP_LOCK_SESSION_OPEN") { it[K.APP_LOCK_SESSION_OPEN] = true }
+        write("APP_LOCK_SESSION_AT") { it[K.APP_LOCK_SESSION_AT] = at }
+    }
+
+    /** The app has locked (or asks again for another reason): a fresh process
+     *  must ask for the password. */
+    suspend fun setAppLockSessionClosed() {
+        write("APP_LOCK_SESSION_OPEN") { it[K.APP_LOCK_SESSION_OPEN] = false }
     }
 
     // ---- Trackers (Settings → Trackers) ----------------------------------

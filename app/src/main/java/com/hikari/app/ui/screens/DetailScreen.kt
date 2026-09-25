@@ -214,6 +214,40 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
     private var episodeRetryJob: Job? = null
 
     /**
+     * The page's own stream prefetch (see [prefetchFirstStreams]).
+     *
+     * Held so that a REAL Play/episode tap can cancel it. The prefetch is a
+     * full stream pass — inside one Aniyomi extension that is a walk over up to
+     * eight hosters, up to half a minute — and it runs against the SAME
+     * extension the tap needs. Letting it run put the tap's own lookup behind
+     * work the user had just superseded: the reported "it takes almost 15
+     * seconds" on Aniyomi/SkyStream, where the tap's search waited for the
+     * prefetch's search to finish first. Cancelling costs nothing — the
+     * servers the prefetch had already found are on the live feed, which
+     * [openStreams] resets anyway — and the tap's own lookup then runs
+     * immediately.
+     */
+    private var prefetchJob: Job? = null
+
+    /** Starts the page's stream prefetch, superseding any earlier one. Held
+     *  off while the episode list a series' prefetch would be for is still
+     *  coming: the prefetch's stream walk holds the same extension's gate, so
+     *  starting it mid-load is itself what made the episode list wait. */
+    private fun startPrefetch(base: MediaItem) {
+        if (base.type == MediaType.SERIES && _episodesLoading.value) return
+        prefetchJob?.cancel()
+        prefetchJob = viewModelScope.launch { prefetchFirstStreams(base) }
+    }
+
+    /** A real lookup is starting: the prefetch is superseded (see
+     *  [prefetchJob]). Returns immediately; the cancelled job's own provider
+     *  call is released by cancellation. */
+    fun cancelPrefetch() {
+        prefetchJob?.cancel()
+        prefetchJob = null
+    }
+
+    /**
      * Which episode load is the live one.
      *
      * Every load that can touch the episode state takes a ticket: `load()` for
@@ -585,7 +619,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             // only began after meta+episodes landed, which is why tapping Play
             // sat on a spinner while the (slow) providers were still warming up.
             if (type != MediaType.SERIES) {
-                launch { prefetchFirstStreams(base) }
+                startPrefetch(base)
             }
             // The origin's own /meta and the shelf lookups (TMDB extras, cast,
             // trailers, ratings, Related/Similar) are INDEPENDENT of the episode
@@ -652,7 +686,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             // started above, in parallel with the episode list: they are a bonus
             // that must never gate the page, but they must also never wait for
             // the episodes to finish before they begin.)
-            prefetchFirstStreams(item)
+            startPrefetch(item)
         }
         loadJob?.invokeOnCompletion { com.hikari.app.work.BackgroundWork.end(work) }
     }
@@ -1785,6 +1819,10 @@ fun DetailScreen(
         // server is found, the player comes up instantly and starts playback the
         // moment a server lands on the live session. Source resolution keeps
         // running here in the background.
+        // A real Play tap supersedes the page's own prefetch: its stream walk
+        // holds the same extension, and the lookup started below must not queue
+        // behind a search the user has just taken over (see [prefetchJob]).
+        vm.cancelPrefetch()
         selectedEp = ep
         pendingStartPos = startPos
         streams = emptyList()

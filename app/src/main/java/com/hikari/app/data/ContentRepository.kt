@@ -5172,7 +5172,15 @@ class ContentRepository(private val manager: ProviderManager) {
      *  genres, year). If that addon's meta is thin, the next addon that knows
      *  the title fills in the gaps — so a banner/detail never stay blank just
      *  because one catalog addon serves minimal metadata. */
-    suspend fun metaFor(item: MediaItem): MediaItem = withContext(Dispatchers.IO) {
+    suspend fun metaFor(item: MediaItem): MediaItem =
+        // The window in which the user is WAITING on provider work: inside it
+        // every provider call is interactive and no background pass may start
+        // one (see [com.hikari.app.providers.ProviderGate.interactive]). This
+        // is what stops a page's meta/episodes being queued behind a stream
+        // sweep that happened to ask the same extension first.
+        com.hikari.app.providers.ProviderGate.interactive { metaForInner(item) }
+
+    private suspend fun metaForInner(item: MediaItem): MediaItem = withContext(Dispatchers.IO) {
         synchronized(metaCache) { metaCache[item.uniqueId] }?.let { return@withContext it }
         // The enriched meta this title had last time, served outright. This is
         // what the detail page's header (overview, backdrop, genres, the
@@ -5226,6 +5234,17 @@ class ContentRepository(private val manager: ProviderManager) {
      *  different addon, e.g. Cinemeta-backed ids). Non-empty results are cached
      *  so re-opening a detail page doesn't repeat the whole lookup. */
     suspend fun episodesFor(
+        item: MediaItem,
+        onPartial: ((List<Episode>) -> Unit)? = null,
+    ): List<Episode>? = com.hikari.app.providers.ProviderGate.interactive {
+        // Same window as [metaFor]: the detail page's own episode list must
+        // never queue behind a background stream pass in the same extension —
+        // an Aniyomi stream lookup walks up to eight hosters, which is the
+        // reported "~15 seconds for the episode list".
+        episodesForInner(item, onPartial)
+    }
+
+    private suspend fun episodesForInner(
         item: MediaItem,
         onPartial: ((List<Episode>) -> Unit)? = null,
     ): List<Episode>? = withContext(Dispatchers.IO) {

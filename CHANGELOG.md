@@ -1,3 +1,135 @@
+## 0.10.40
+
+### Fixed
+
+- **"55 servers loaded and it still won't play" — the last two mechanisms that
+  could do that are gone.** The screenshots that came with the report settle which
+  one was firing: the cover reading "Found 53 servers — still searching…", no
+  picture, no spinner. (1) **The cover was describing the SEARCH, not the
+  playback.** Playback commits the instant one server exists (`playSource` sets
+  `playbackCommitted`), but the one line on the title card was whatever
+  `StreamsLive.statusFlow` published last — the search's own running count — so a
+  player that had already committed to a server was indistinguishable from one
+  that had not. There is now a `coverPlaybackLine`: the moment a server is
+  committed the cover says which one (`Starting <name>…`), then what actually
+  happens to it (`Server failed — trying next`, `That server isn't responding —
+  looking for another one…`), and the search's count goes back to being what it
+  is: progress of a search running in the BACKGROUND, which is exactly what was
+  asked for — *"keep server loading in player sources in background, just play
+  instantly as soon as 1st server found"*. (2) **A probe could hold the first
+  picture for as long as it liked.** `probeAndPlay` awaited `StreamProbe.resolve`
+  before handing ANYTHING to ExoPlayer, and resolving a wrapper URL can mean
+  walking a queue of dead hops — minutes of it, during which the player held
+  servers, had committed, and was showing the search's count. The walk now runs
+  DETACHED and is awaited with a 2.5 s deadline (`firstProbeWaitMs`): past it the
+  RAW url goes straight to ExoPlayer (which follows the redirect chain and sniffs
+  the container itself — the behaviour that has always made wrapper pages play)
+  and the walk's answer is re-applied if it lands while that server is still the
+  one on screen and no frame has been drawn. See docs/SEARCH.md invariant 18.
+- **A server that reached READY and never drew a picture was unrecoverable for
+  every source without a known mime.** The no-first-frame watchdog was armed
+  `if (mime != null || drmManager != null)`, so a plain progressive server that
+  prepared cleanly and then produced no picture had *nothing* watching it — the
+  title card simply stayed up with the search's count ticking on it. That is the
+  one state that reads exactly as "it found N servers and it never plays". The
+  watchdog is now armed for EVERY source, and re-arms every 4 s while the player
+  is not READY yet, recovering through a new `recoverNoPicture()`: the URL and its
+  HOST are marked dead for the session, the next UNTRIED server is walked to, one
+  restart of the same server is allowed, and if there is nothing else yet the
+  player waits for the search to hand one over
+  (`awaitReplacementForStalledServer`) instead of declaring the video dead. Each
+  recovery logs a `FAILSAFE:` line with the state that got there. Two related
+  holes fixed in the same task: the "one restart" guard was reset by the very
+  restart path it was meant to guard, so a frameless server was restarted every
+  20 s for as long as the player stayed open (it now resets only when the walk
+  moves to a different server); and a READY player whose video track had not been
+  reported yet was treated as audio-only and dropped on the floor (now re-checked
+  a bounded three times).
+- **Failover walked the servers in ARRIVAL order.** `nextUntriedIndex` now has a
+  first pass over the servers a PROBE has already resolved — links the app has
+  been to and seen a video (or an HLS/DASH manifest) come back from — before
+  falling back to arrival order. The search warms every server as it arrives
+  (`StreamProbe.warm`), so on a title with dozens of servers the verified ones are
+  already known by the time a failover happens; walking in arrival order spent one
+  full probe + prepare + error cycle per dead row, which is what made a 60-server
+  list feel like it "never plays".
+- **"Server too slow" is no longer a question while nothing has played yet.**
+  With the search still delivering and no frame drawn, a stalled server is now
+  SKIPPED SILENTLY (bounded by `maxSilentSkips = 6`) instead of putting up a modal
+  with its own 3-second countdown — the modal is precisely the "it keeps loading
+  servers instead of playing" that was reported. The question still appears once
+  the silent skips are spent, or after something has played.
+- **The app lock asked for the password on a launch the user had switched off.**
+  The screenshots show "Lock when I leave the app" OFF — with the app's own
+  subtitle saying so ("Leaving the app does not lock it") — and yet removing
+  Hikari from the background and opening it again drew the unlock card. Cause: the
+  gate's `unlocked` flag was a `remember { mutableStateOf(false) }`, i.e. it died
+  with the process, and dismissing an app from recents kills its process on
+  essentially every launcher — so a fresh process was indistinguishable from "the
+  app was left". The unlock is now STORED (`APP_LOCK_SESSION_OPEN` /
+  `APP_LOCK_SESSION_AT`) and the first frame decides from it plus only the
+  triggers that are actually switched ON: with leaving not a trigger, an unlock
+  stays an unlock however the process ended; with a grace period the stored
+  timestamp is compared, so the deadline survives the device sleeping and the
+  process being killed (and the timestamp is refreshed at the moment of leaving,
+  so the grace means what it says). Two further holes in the trigger logic fixed:
+  a screen-off that happens AFTER the app is already backgrounded never fired
+  another `ON_STOP` and `ON_START` reset the screen-off flag, so the screen-off
+  trigger was silently ignored in that order — `ACTION_SCREEN_OFF` now locks on
+  the event itself; and the seed consulted only the leave switch, so a
+  screen-off-only lock could be lost across a process death. See
+  docs/APP_LOCK.md.
+- **Aniyomi / SkyStream took ~15 seconds to load the episode list and the whole
+  detail page.** Two independent causes, both in the app. (1)
+  `AniyomiProvider.metaLocked` asked for the EPISODES first — through a walk of up
+  to three call shapes — and for the details second, and a shape that answered
+  EMPTY triggered a details-then-retry pass on top of that: up to ~7 serial
+  requests for one episode list, on the page that is waiting for it. It now makes
+  ONE combined call (`getAnimeEpisodeUpdate(anime, emptyList(), true, true)` —
+  details AND episodes) whenever the source implements it, decided by DECLARATION
+  through reflection (`combinedSupported`, cached per provider) so an
+  extensions-lib 14/16 source never pays a failed call; `episodesLocked` gained
+  `preDetailed` so the details-then-retry pass is skipped when the caller has
+  already enriched the title; and `fetchEpisodeList` tries only the two shapes it
+  needs, the implemented one first. (2) `ProviderGate` was a plain FIFO mutex, so
+  the page's meta/episodes queued behind whatever background work had asked the
+  same extension first — including the page's own stream prefetch, which for an
+  Aniyomi source walks up to eight hosters. The gate now has LANES: INTERACTIVE
+  work (the page the user is waiting on) is never overtaken, and BACKGROUND work
+  (stream lookups, cross passes, prefetches) only takes a lock when no interactive
+  caller is waiting and no page is loading at all. `ContentRepository.metaFor` /
+  `episodesFor` open an interactive window; `AniyomiProvider`, `MangaProvider` and
+  `HikariProviderAdapter` `getStreams` run in the background lane. Background work
+  can never be starved: after `BACKGROUND_MAX_HOLD_MS` (20 s) it proceeds anyway.
+  See docs/PERFORMANCE.md.
+
+### Changed
+
+- **The detail page's stream prefetch is a tracked, cancellable job.**
+  `DetailViewModel` gained `prefetchJob` / `startPrefetch()` / `cancelPrefetch()`.
+  It no longer starts for a series whose episode list is still loading (there is
+  nothing to prefetch yet), and the first thing a real Play tap does is cancel it
+  — a prefetch must never be in flight against the provider the player is about to
+  ask, which is the second half of the Aniyomi story above.
+- **The first-frame watchdog's budget is unchanged (20 s).** The change is that
+  every source is watched now, not that a merely-slow server gets less time.
+
+### Notes
+
+- The two playback reports in this release are the same report for the fourth and
+  fifth time ("N servers found and it is still not playing"). The previous three
+  releases each removed a WAIT — the origin hold, the "wait for more servers"
+  grace, the last-played-server hold — and each time the real culprit turned out
+  to be something else on the same screen. This release removes the remaining
+  non-wait causes: the cover line that described the search instead of the
+  playback, the unbounded probe in front of the first picture, and the watchdog
+  that only watched sources with a known mime. The rule the user has stated since
+  the beginning — *"play instantly as soon as 1st server found; keep loading
+  servers in the background"* — is now enforced by three separate mechanisms
+  (`tryStart` on the first server, the 4 s `START_FAILSAFE_MS` poll, and a
+  first-frame watchdog armed for every source), so no single condition can leave a
+  server list sitting on a cover with nothing playing.
+
 ## 0.10.39
 
 ### Fixed

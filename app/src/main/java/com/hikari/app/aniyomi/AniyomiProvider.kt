@@ -177,6 +177,13 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
         synchronized(map) { map[key] = value }
     }
 
+    /**
+     * Per provider: does this extension implement the extensions-lib 17
+     * combined call? Asked once per process (see [combinedSupported]) — the
+     * answer is a property of the installed class, not of a title.
+     */
+    private val combinedCalls = ConcurrentHashMap<String, Boolean>()
+
     // ---- Catalogue ----
 
     override suspend fun catalogs(): List<CatalogRef> = gate {
@@ -309,6 +316,42 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
 
     // ---- Details + episodes ----
 
+    /**
+     * Whether this source implements the extensions-lib 17 combined call
+     * (`getAnimeEpisodeUpdate`), which fetches the details AND the episodes in
+     * ONE request.
+     *
+     * Decided by DECLARATION, never by calling it: the method is abstract in
+     * [AnimeSource], so an extension built against extensions-lib 14/16 does not
+     * implement it and calling it throws `AbstractMethodError` — free, but
+     * indistinguishable from a real failure, and the old code compensated by
+     * trying every call shape every time. A source that answered empty on the
+     * first shape then walked the other two, and the "details first, then list"
+     * pass walked them all again: up to seven serial requests for one episode
+     * list, which on a slow extension is the reported "almost 15 seconds to load
+     * the episode and everything on the detail page".
+     *
+     * Reflection answers it exactly, and without naming the parameter types:
+     * look for a 4-arg `getAnimeEpisodeUpdate` whose [java.lang.reflect.Method.getDeclaringClass]
+     * is NOT [AnimeSource] itself. A method declared by the interface means "the
+     * extension never overrode it" (a 14/16 source); a method declared by the
+     * extension (or a base it extends) means it is implemented. Matching by name
+     * and arity rather than by exact parameter types matters: the boolean
+     * parameters are `boolean` or `java.lang.Boolean` depending on whether the
+     * source's Kotlin signature used `Boolean` or `Boolean?`, and a mismatch
+     * would silently report "unsupported" for a source that does implement it.
+     */
+    private fun combinedSupported(src: AnimeSource): Boolean =
+        combinedCalls.getOrPut(config.id) {
+            runCatching {
+                src.javaClass.methods.any { m ->
+                    m.name == "getAnimeEpisodeUpdate" &&
+                        m.parameterTypes.size == 4 &&
+                        m.declaringClass != AnimeSource::class.java
+                }
+            }.getOrDefault(false)
+        }
+
     override suspend fun getMeta(item: MediaItem): MediaItem = gate {
         lockedGet(metaByAnime, item.id) ?: metaLocked(item)
     }
@@ -316,13 +359,33 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
     private suspend fun metaLocked(item: MediaItem): MediaItem {
         val src = source() ?: return item
         val anime = animeFor(item)
-        val episodes = episodesLocked(src, anime, item.id)
-        val detailed = runCatching {
-            src.getAnimeEpisodeUpdate(anime, emptyList(), true, false).anime
-        }.getOrNull()
-            ?: runCatching { src.getAnimeDetails(anime) }.getOrNull()
-            ?: anime
-        if (detailed !== anime) lockedPut(animeCache, item.id, detailed)
+        // ONE round trip for the details AND the episodes whenever the source
+        // speaks the combined API: `fetchDetails = true, fetchEpisodes = true`
+        // IS "give me everything about this title". Asking for the episodes
+        // first and the details after — two calls, the first of them through the
+        // three-shape walk below — is exactly what the combined call exists to
+        // replace, and it is what a slow Aniyomi extension was paying.
+        var detailed: SAnime? = null
+        var episodes: List<Episode> = emptyList()
+        if (combinedSupported(src)) {
+            val update = runCatching {
+                src.getAnimeEpisodeUpdate(anime, emptyList(), true, true)
+            }.getOrNull()
+            if (update != null) {
+                detailed = update.anime
+                episodes = storeEpisodes(update.episodes, item.id)
+            }
+        }
+        if (detailed == null) {
+            detailed = runCatching { src.getAnimeDetails(anime) }.getOrNull()
+        }
+        val full = detailed ?: anime
+        if (full !== anime) lockedPut(animeCache, item.id, full)
+        if (episodes.isEmpty()) {
+            // Nothing from the combined call: the legacy list (or the combined
+            // one, if this source does not implement the old API at all).
+            episodes = episodesLocked(src, anime, item.id, full)
+        }
 
         // Deliberately NOT "MOVIE when the episode list is empty": an Aniyomi
         // source is an anime source either way, and a slow extension whose
@@ -334,16 +397,16 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
         val out = MediaItem(
             providerId = item.providerId,
             id = item.id,
-            title = runCatching { detailed.title }.getOrNull()?.takeIf { it.isNotBlank() } ?: item.title,
+            title = runCatching { full.title }.getOrNull()?.takeIf { it.isNotBlank() } ?: item.title,
             type = type,
-            posterUrl = runCatching { detailed.thumbnail_url }.getOrNull()?.takeIf { it.isNotBlank() }
+            posterUrl = runCatching { full.thumbnail_url }.getOrNull()?.takeIf { it.isNotBlank() }
                 ?: item.posterUrl,
             year = item.year,
-            overview = runCatching { detailed.description }.getOrNull()?.takeIf { it.isNotBlank() }
+            overview = runCatching { full.description }.getOrNull()?.takeIf { it.isNotBlank() }
                 ?: item.overview,
-            genres = runCatching { detailed.getGenres() }.getOrNull()?.takeIf { it.isNotEmpty() }
+            genres = runCatching { full.getGenres() }.getOrNull()?.takeIf { it.isNotEmpty() }
                 ?: item.genres,
-            backdropUrl = runCatching { detailed.background_url }.getOrNull()?.takeIf { it.isNotBlank() }
+            backdropUrl = runCatching { full.background_url }.getOrNull()?.takeIf { it.isNotBlank() }
                 ?: item.backdropUrl,
             rawType = item.rawType,
         )
@@ -359,26 +422,25 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
     }
 
     /**
-     * The episode list for [anime] — the extensions-lib 17 combined call first,
-     * then the older `getEpisodeList` an extensions-lib 14/16 source implements
-     * (the vendored `AnimeHttpSource` is what actually performs that fetch).
+     * The episode list for [anime] — the extensions-lib 17 combined call when
+     * the source implements it, otherwise the older `getEpisodeList` (the
+     * vendored `AnimeHttpSource` is what actually performs that fetch).
      * Returns an empty list (never throws) so a source that can't answer is a
      * blank episode list rather than a crashed detail page.
      *
-     * Every shape of the API is tried before giving up, and an EMPTY answer is
-     * never kept ([episodesMissAt]): the three call shapes exist on every source
-     * (the vendored base class supplies defaults that throw) and only ONE of them
-     * is the one the extension actually implements, so a source whose
-     * `getEpisodeList` is a stub still answers through the combined call — and a
-     * source whose combined call is a stub still answers through
-     * `getEpisodeList`. A source that needs its DETAILS fetched before it can
-     * list episodes gets that too, because that is what Aniyomi's own
-     * `EpisodeLoader` does when a list comes back empty.
+     * [preDetailed] is a [SAnime] the CALLER has already enriched (the combined
+     * call, or a details fetch). Some sources cannot list episodes for a title
+     * they have not detailed yet — their episode parse reads a field only their
+     * details call fills in — and handing the richer object straight in is what
+     * removes the "empty, so fetch the details, so try again" double pass. It is
+     * only used as the first attempt; the details-then-retry path below stays
+     * for callers that have nothing enriched.
      */
     private suspend fun episodesLocked(
         src: AnimeSource,
         anime: SAnime,
         animeId: String,
+        preDetailed: SAnime? = null,
     ): List<Episode> {
         lockedGet(episodesByAnime, animeId)?.let { return it }
         val missAt = lockedGet(episodesMissAt, animeId)
@@ -386,8 +448,8 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
             return emptyList()
         }
         var why: Throwable? = null
-        var raw = fetchEpisodeList(src, anime) { why = it }
-        if (raw.isEmpty()) {
+        var raw = fetchEpisodeList(src, preDetailed ?: anime) { why = it }
+        if (raw.isEmpty() && preDetailed == null) {
             // Some sources cannot list a title they have not DETAILED yet: their
             // episode parse reads a field (an id, a slug, a "seasons" block) that
             // only their details call fills in. Ask for the details and try again
@@ -407,6 +469,13 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
             )
             return emptyList()
         }
+        return storeEpisodes(raw, animeId)
+    }
+
+    /** Converts the source's episodes into Hikari's and files them. Shared by
+     *  the combined call and the legacy list, so both cache identically. */
+    private fun storeEpisodes(raw: List<SEpisode>, animeId: String): List<Episode> {
+        if (raw.isEmpty()) return emptyList()
         synchronized(episodesMissAt) { episodesMissAt.remove(animeId) }
         val out = ArrayList<Episode>(minOf(raw.size, MAX_EPISODES))
         raw.take(MAX_EPISODES).forEachIndexed { index, ep ->
@@ -427,23 +496,23 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
     }
 
     /**
-     * The episode list through every call shape the source API offers, in the
-     * order most likely to be implemented: the extensions-lib 17 combined call
-     * (episodes only), then the plain [AnimeSource.getEpisodeList] a 14/16 source
-     * implements, then the combined call with details. A shape the source does
-     * not implement throws `UnsupportedOperationException` (the vendored base
-     * class's default) and costs nothing; the first non-empty answer wins.
+     * The episode list through the call shapes this source can actually answer:
+     * the shape it IMPLEMENTS first (see [combinedSupported]), the other one as
+     * the single fallback. A shape the source does not implement throws
+     * `UnsupportedOperationException`/`AbstractMethodError` (the vendored base
+     * class's default) and costs nothing; the first non-empty answer wins and
+     * ends the walk, so a source that answers costs ONE request.
      */
     private suspend fun fetchEpisodeList(
         src: AnimeSource,
         anime: SAnime,
         onFailure: (Throwable) -> Unit,
     ): List<SEpisode> {
-        val attempts: List<suspend () -> List<SEpisode>> = listOf(
-            { src.getAnimeEpisodeUpdate(anime, emptyList(), false, true).episodes },
-            { src.getEpisodeList(anime) },
-            { src.getAnimeEpisodeUpdate(anime, emptyList(), true, true).episodes },
-        )
+        val combined: suspend () -> List<SEpisode> =
+            { src.getAnimeEpisodeUpdate(anime, emptyList(), false, true).episodes }
+        val legacy: suspend () -> List<SEpisode> = { src.getEpisodeList(anime) }
+        val attempts = if (combinedSupported(src)) listOf(combined, legacy)
+        else listOf(legacy, combined)
         for (attempt in attempts) {
             val got = runCatching { attempt() }.onFailure(onFailure).getOrDefault(emptyList())
             if (got.isNotEmpty()) return got
@@ -464,7 +533,7 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
     // ---- Streams ----
 
     override suspend fun getStreams(item: MediaItem, episode: Episode?): List<StreamSource> =
-        gate { streamsLocked(item, episode) }
+        gate(ProviderGate.Lane.BACKGROUND) { streamsLocked(item, episode) }
 
     private suspend fun streamsLocked(item: MediaItem, episode: Episode?): List<StreamSource> {
         val startedAt = System.currentTimeMillis()
@@ -667,7 +736,18 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
     }
 
     /** Runs [block] inside Hikari's per-provider lock (mutex, NOT re-entrant —
-     *  the private `…Locked` helpers are what the public overrides compose). */
-    private suspend fun <T> gate(block: suspend () -> T): T =
-        ProviderGate.withProvider(config.id) { withContext(Dispatchers.IO) { block() } }
+     *  the private `…Locked` helpers are what the public overrides compose).
+     *
+     *  [lane] is the PRIORITY: metadata and catalogs are what the user is
+     *  looking at ([ProviderGate.Lane.INTERACTIVE]), a stream search is
+     *  background work that must never queue in front of them
+     *  ([ProviderGate.Lane.BACKGROUND]) — a stream search inside one Aniyomi
+     *  extension walks up to eight hosters, so a detail page queued behind one
+     *  is the reported "~15 seconds to load the episode list". */
+    private suspend fun <T> gate(
+        lane: ProviderGate.Lane = ProviderGate.Lane.INTERACTIVE,
+        block: suspend () -> T,
+    ): T = ProviderGate.withProvider(config.id, lane) {
+        withContext(Dispatchers.IO) { block() }
+    }
 }

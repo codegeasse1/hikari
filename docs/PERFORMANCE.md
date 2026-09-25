@@ -277,3 +277,69 @@ files).
 Rule for future work: **if a screen waits on a provider, check whether the last
 answer can be painted from `MetaCache` first** — that is the difference between a
 cold engine costing the user seconds and costing them nothing.
+
+## A page the user is waiting on goes FIRST — provider lanes, and one request per detail page
+
+The report (0.10.40): *"in aniyomi and like skystream extension it still takes
+almost 15 seconds to load the episode and everything in detail screen — make it
+instant in all sources"*. Two causes, both of them the app's own doing.
+
+**1. One detail page cost up to seven serial requests.** An Aniyomi extension
+exposes an episode list through three call shapes, and
+`AniyomiProvider.metaLocked` asked for the EPISODES first (walking the shapes),
+then for the DETAILS, and a shape that answered *empty* triggered a
+details-then-retry pass on top. On a slow engine that is the whole 15 seconds. Now:
+
+* **The combined call, decided by DECLARATION.** extensions-lib 17's
+  `getAnimeEpisodeUpdate(anime, hosterList, fetchDetails, fetchEpisodes)` returns
+  details AND episodes in one request. Whether a source implements it is answered
+  by reflection once per provider (`combinedSupported`, cached in `combinedCalls`):
+  `Method.getDeclaringClass == AnimeSource::class.java` means "not implemented"
+  (a 14/16 source), anything else means the extension — or a base it extends —
+  supplies it. The old code discovered this by CALLING, which cost a failed call
+  per shape per attempt.
+* **One call for both.** `metaLocked` issues
+  `getAnimeEpisodeUpdate(anime, emptyList(), true, true)` and gets the enriched
+  `SAnime` and the episodes together; the details-only and legacy paths remain as
+  fallbacks.
+* **No details-then-retry when the caller already enriched the title.**
+  `episodesLocked(src, anime, animeId, preDetailed)` skips that second pass when it
+  was handed the enriched object; `fetchEpisodeList` tries only the two shapes it
+  needs, the implemented one first, and ends at the first non-empty answer.
+* `storeEpisodes()` is the single funnel for both paths, so the cache, the
+  `episodesMissAt` bookkeeping and the conversion stay identical.
+
+**2. Background work could hold the extension the page needed.**
+`ProviderGate` serialises calls into one extension instance (two concurrent calls
+into a third-party object that keeps its own mutable state is the crash it exists
+to prevent) — but it was a plain FIFO mutex with no notion of who was waiting, so
+a detail page's meta/episodes queued behind whatever background pass had asked
+that extension first. That pass is often the page's own stream prefetch, and for
+an Aniyomi source a single stream lookup walks up to eight hosters.
+
+The gate now has LANES:
+
+* **`Lane.INTERACTIVE`** — the user is waiting on this: meta, episodes, a
+  catalogue page, a search they asked for. FIFO among themselves, never overtaken.
+* **`Lane.BACKGROUND`** — a stream lookup, a cross pass, a prefetch. It only takes
+  a lock when **no** interactive caller is waiting for that provider and **no**
+  interactive window is open app-wide, and it holds off for at most
+  `BACKGROUND_MAX_HOLD_MS` (20 s) so background work can never be starved by a page
+  that wedged.
+* **`ProviderGate.interactive { … }`** opens a window in which every provider call
+  is interactive — `ContentRepository.metaFor` and `episodesFor` each wrap their
+  body in one, which is what makes "the page's data" one unit of priority rather
+  than a call-by-call accident. `AniyomiProvider`, `MangaProvider` and
+  `HikariProviderAdapter` `getStreams` are explicitly `Lane.BACKGROUND`.
+
+And the prefetch itself is now a **tracked, cancellable job**
+(`DetailViewModel.prefetchJob` / `startPrefetch()` / `cancelPrefetch()`): it does
+not start for a series whose episode list is still loading, and a real Play tap
+cancels it before anything else — a prefetch must never be in flight against the
+provider the player is about to ask.
+
+Rule for future work: **a call the user is waiting on is INTERACTIVE, everything a
+screen starts for its own convenience is BACKGROUND, and any new caller of
+`ProviderGate.withProvider` must say which it is.** The default is INTERACTIVE, so
+the failure mode of forgetting is a background pass that holds up nothing rather
+than a page that waits.

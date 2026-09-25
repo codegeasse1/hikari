@@ -142,7 +142,12 @@ class HikariProviderAdapter(override val config: ProviderConfig) : ContentProvid
         val ep = episode?.let { HikariEpisode(it.number, it.id, it.name, it.image) }
         // One call at a time into this extension: a bridge provider that keeps
         // state (see [ProviderGate]) is corrupted by two concurrent passes.
-        return com.hikari.app.providers.ProviderGate.withProvider(config.id) {
+        return com.hikari.app.providers.ProviderGate.withProvider(
+            config.id,
+            // A stream lookup is BACKGROUND: it must never queue in front of a
+            // page the user is waiting on (see [ProviderGate.Lane]).
+            com.hikari.app.providers.ProviderGate.Lane.BACKGROUND,
+        ) {
             p.getStreams(item.toExt(), ep).map { it.toApp() }
         }
     }

@@ -156,10 +156,102 @@ class ProviderManager(private val store: AppStore, private val context: Context)
  * it.
  */
 object ProviderGate {
+    /**
+     * Which kind of caller wants the provider — and therefore who goes first.
+     *
+     * The gate serialises calls into one extension so Hikari never contributes
+     * to a race inside it. That is about *mutual exclusion*, not about *order*,
+     * and order is what this enum is for: a plain FIFO mutex made a screen the
+     * user is waiting on queue behind whatever background work happened to ask
+     * first. The reported shape of that was "Aniyomi and SkyStream take almost
+     * 15 seconds to load the episode list and everything on the detail page":
+     * the page's own source prefetch (a stream pass, tens of seconds inside one
+     * Aniyomi extension) ran on the same provider, and the metadata/episode
+     * calls the page was actually waiting on were queued behind it.
+     *
+     *  * [INTERACTIVE] — something the user is watching: meta, episodes, a
+     *    catalog page, a search they asked for. These queue in FIFO order among
+     *    themselves and are never overtaken.
+     *  * [BACKGROUND] — the cross pass, a background sweep, a stream prefetch.
+     *    These never START while interactive work is waiting or active (see
+     *    [withProvider]) so they can no longer hold a page up.
+     */
+    enum class Lane { INTERACTIVE, BACKGROUND }
+
     private val locks = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.sync.Mutex>()
+
+    /** Per provider: how many INTERACTIVE callers are waiting for its lock. */
+    private val interactiveWaiters =
+        java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicInteger>()
+
+    /** How many interactive windows are open app-wide (see [interactive]). */
+    private val interactiveWindows = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /** True while any interactive window is open — a page is being loaded. */
+    fun interactiveActive(): Boolean = interactiveWindows.get() > 0
+
+    /**
+     * Marks [block] as a window in which the user is waiting on provider work
+     * (a detail page loading its meta and episodes). Inside it every provider
+     * call is INTERACTIVE, and — the part that matters — no BACKGROUND pass
+     * will START a provider call for the duration, so the page is not queued
+     * behind work nobody is watching.
+     *
+     * Bounded by nature: a window is one page load. Background work is never
+     * starved indefinitely (see [BACKGROUND_MAX_HOLD_MS]).
+     */
+    suspend fun <T> interactive(block: suspend () -> T): T {
+        interactiveWindows.incrementAndGet()
+        try {
+            return block()
+        } finally {
+            interactiveWindows.decrementAndGet()
+        }
+    }
+
+    /** How long a BACKGROUND caller may be held off by interactive work before
+     *  it goes anyway — a page that wedged must not stop the whole app's
+     *  searching, and this is the backstop that says so. */
+    private const val BACKGROUND_MAX_HOLD_MS = 20_000L
 
     private fun lockFor(id: String) = locks.computeIfAbsent(id) { kotlinx.coroutines.sync.Mutex() }
 
-    suspend fun <T> withProvider(id: String, block: suspend () -> T): T =
-        lockFor(id).withLock { block() }
+    private fun waitersFor(id: String) =
+        interactiveWaiters.computeIfAbsent(id) { java.util.concurrent.atomic.AtomicInteger(0) }
+
+    suspend fun <T> withProvider(
+        id: String,
+        lane: Lane = Lane.INTERACTIVE,
+        block: suspend () -> T,
+    ): T {
+        if (lane == Lane.INTERACTIVE) {
+            val waiters = waitersFor(id)
+            waiters.incrementAndGet()
+            try {
+                return lockFor(id).withLock { block() }
+            } finally {
+                waiters.decrementAndGet()
+            }
+        }
+        // BACKGROUND: never queue in front of interactive work — not for this
+        // provider (a waiting page), and not while any page is loading at all.
+        // Polling rather than a fairness queue because the condition is "is the
+        // user waiting", which changes while we wait; the poll is 25 ms, which
+        // is nothing next to the calls this is protecting.
+        val mutex = lockFor(id)
+        val waiters = waitersFor(id)
+        val startedAt = System.currentTimeMillis()
+        while (true) {
+            val held = System.currentTimeMillis() - startedAt < BACKGROUND_MAX_HOLD_MS
+            val yieldToInteractive = held && (waiters.get() > 0 || interactiveWindows.get() > 0)
+            if (!yieldToInteractive && mutex.tryLock()) {
+                try {
+                    return block()
+                } finally {
+                    mutex.unlock()
+                }
+            }
+            kotlinx.coroutines.delay(25L)
+        }
+    }
 }

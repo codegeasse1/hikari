@@ -79,8 +79,15 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
         return fallback
     }
 
-    private suspend fun <T> gate(block: suspend () -> T): T =
-        ProviderGate.withProvider(config.id) { withContext(Dispatchers.IO) { block() } }
+    /** See [com.hikari.app.aniyomi.AniyomiProvider.gate]: metadata and catalogs
+     *  are what the user is looking at, and a stream lookup is background
+     *  work that must never queue in front of them. */
+    private suspend fun <T> gate(
+        lane: ProviderGate.Lane = ProviderGate.Lane.INTERACTIVE,
+        block: suspend () -> T,
+    ): T = ProviderGate.withProvider(config.id, lane) {
+        withContext(Dispatchers.IO) { block() }
+    }
 
     // ---- Catalogues ----
 
@@ -219,7 +226,8 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
      * from it, which is why a page fetched with an empty one came back refused or
      * scrambled.
      */
-    override suspend fun getStreams(item: MediaItem, episode: Episode?): List<StreamSource> = gate {
+    override suspend fun getStreams(item: MediaItem, episode: Episode?): List<StreamSource> =
+        gate(ProviderGate.Lane.BACKGROUND) {
         val src = source() ?: return@gate fail(missingReason(), emptyList())
         val chapter = episode ?: return@gate fail("No chapter selected", emptyList())
         try {

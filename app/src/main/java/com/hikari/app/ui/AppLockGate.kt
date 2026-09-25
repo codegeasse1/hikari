@@ -88,18 +88,24 @@ import kotlinx.coroutines.withContext
  *    only actually leaving the app locks it, and putting the phone down and
  *    picking it up again does not ask for the password.
  *  * **Leaving the app is its own trigger too** (`appLockLeaveFlow`, on by
- *    default). The twin of the switch above: OFF, switching to another app
+ *    default). The twin of the switch above: OFF, switching to another app —
+ *    or dismissing Hikari from the recents list, which kills its process —
  *    never draws the unlock card, so the lock answers only to a screen-off (if
- *    that is on) or to a fresh start of the process. Both switches OFF is a
- *    lock that only asks once per app launch.
+ *    that is on). Both switches OFF is a lock that only asks once per unlock.
  *  * **A grace period** (`appLockDelayFlow`, Instant by default). Past zero
  *    minutes the app stays unlocked for that long after it is left, so a glance
  *    at a notification does not cost a PIN. The deadline is a wall-clock
- *    timestamp compared when the app comes back, NOT a running timer: an app
- *    left for an hour has very likely had its process killed (a fresh process
- *    starts locked anyway), and a wall-clock comparison also survives the device
- *    sleeping, which a coroutine timer would not. It applies to whichever
+ *    timestamp compared when the app comes back, NOT a running timer — and it
+ *    is compared against the STORED unlock ([com.hikari.app.data.AppStore.appLockSession]),
+ *    so it survives the device sleeping and the process being killed, which a
+ *    coroutine timer or an in-memory flag would not. It applies to whichever
  *    triggers are on.
+ *
+ * Which launches are locked is decided ONCE, on the first frame, from the
+ * stored unlock plus the triggers above (see [AppLockGate]'s session read).
+ * That is what makes "Lock when I leave the app" mean what it says: an app
+ * dismissed from recents and reopened comes back as it was left, because
+ * nothing about that sequence is a trigger the user switched on.
  *
  * The password is the required half: the fingerprint/face is only ever an
  * additional way in (see [AppLock]), so a device with no enrolled biometric
@@ -129,10 +135,62 @@ fun AppLockGate(activity: android.app.Activity, content: @Composable () -> Unit)
     val leaveLocks by leaveFlow.collectAsState(initial = true)
     val delayFlow = remember { app.store.appLockDelayFlow() }
     val delayMin by delayFlow.collectAsState(initial = 0)
-    // The unlocked flag lives in the composition, not in saved state: a fresh
-    // process (or a recreated activity after the process was killed) starts
-    // locked, which is the whole point.
+    // The unlocked flag lives in the composition — but it is SEEDED from the
+    // stored session below, because a fresh process is not automatically a
+    // locked one any more: "Lock when I leave the app" off has to mean that
+    // removing Hikari from the background and opening it again does not ask
+    // for the password, and every launcher kills the process when an app is
+    // dismissed from recents. `sessionRead` is false until that decision has
+    // been made, so nothing is drawn (not even the app) before it exists.
     var unlocked by remember { mutableStateOf(false) }
+    var sessionRead by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
+    /** Locks the app AND records it, so a fresh process asks again. */
+    fun lockNow() {
+        if (!unlocked) return
+        unlocked = false
+        scope.launch { runCatching { app.store.setAppLockSessionClosed() } }
+    }
+
+    // The decision this launch starts with. It is deliberately read from the
+    // STORE rather than from the collected settings state: this runs once, on
+    // the first frame, where a `collectAsState(initial = …)` may still be
+    // showing its initial value rather than the stored one.
+    LaunchedEffect(Unit) {
+        val (open, at) = runCatching { app.store.appLockSession() }
+            .getOrDefault(false to 0L)
+        val leave = runCatching { app.store.appLockLeave() }.getOrDefault(true)
+        val screenOff = runCatching { app.store.appLockScreenOff() }.getOrDefault(true)
+        val delay = runCatching { app.store.appLockDelay() }.getOrDefault(0)
+        unlocked = open && when {
+            // NEITHER trigger is on: an unlock stays an unlock until the user
+            // turns the lock off. This is exactly the case that used to
+            // re-lock on every recents-dismiss — removing Hikari from the
+            // background kills its process on nearly every launcher, so a
+            // fresh process must not be read as "the app was left".
+            !leave && !screenOff -> true
+            // A trigger is on, with a grace period: inside it the app comes
+            // back unlocked, past it the unlock card is drawn. The timestamp
+            // is the moment of the LAST unlock-or-leave (see the ON_STOP
+            // branch below), so it means the same thing here as `leftAt`
+            // means inside a live process.
+            delay > 0 -> at > 0L &&
+                System.currentTimeMillis() - at < delay * 60_000L
+            // Leaving IS a trigger and locks instantly: whatever the stored
+            // session says, a fresh process is a session the user has not
+            // opened — and this is the default shape of the lock, where the
+            // safe reading is the locked one.
+            leave -> false
+            // Only the SCREEN-OFF trigger is on, so the stored session is the
+            // whole answer: it is cleared the moment the screen goes off
+            // (see the broadcast below) and never by leaving the app, which
+            // is what makes "leave off" mean what it says even when the
+            // process is killed in the background.
+            else -> true
+        }
+        sessionRead = true
+    }
     // When the app was last left, for the grace period. A one-element array
     // because the lifecycle observer both writes and reads it and nothing draws
     // it: it is a timestamp, not UI state.
@@ -155,7 +213,20 @@ fun AppLockGate(activity: android.app.Activity, content: @Composable () -> Unit)
         val receiver = object : android.content.BroadcastReceiver() {
             override fun onReceive(c: Context?, intent: android.content.Intent?) {
                 when (intent?.action) {
-                    android.content.Intent.ACTION_SCREEN_OFF -> screenWasOff.set(true)
+                    android.content.Intent.ACTION_SCREEN_OFF -> {
+                        screenWasOff.set(true)
+                        // A screen-off is its own trigger, and it locks HERE
+                        // rather than only at the next ON_STOP. The ON_STOP
+                        // path only fires when the app was in the FOREGROUND
+                        // when the screen went off: an app already in the
+                        // background — the ordinary "I left the app, then put
+                        // the phone down" order — never gets another ON_STOP,
+                        // and its ON_START (the screen turning back on with the
+                        // app in front) resets the flag, so the screen-off was
+                        // silently ignored. Locking on the event itself cannot
+                        // be raced or missed.
+                        if (screenOffLocks) lockNow()
+                    }
                     android.content.Intent.ACTION_SCREEN_ON -> screenWasOff.set(false)
                 }
             }
@@ -191,11 +262,27 @@ fun AppLockGate(activity: android.app.Activity, content: @Composable () -> Unit)
                 if (!locks) {
                     // The user asked for this trigger not to lock: nothing to do
                     // at all, not even a grace period. The other trigger (and a
-                    // fresh process start) still locks.
+                    // fresh process start) still locks. The stored session is
+                    // left OPEN on purpose: that is what carries this decision
+                    // across a process death, which is how an app dismissed from
+                    // recents comes back without asking for the password when
+                    // leaving is not a trigger.
                 } else if (delayMin <= 0) {
-                    unlocked = false
-                } else {
-                    leftAt[0] = System.currentTimeMillis()
+                    lockNow()
+                } else if (unlocked) {
+                    // Left with a grace period: the session stays OPEN, and
+                    // its timestamp becomes the moment of leaving, because
+                    // the grace is "how long after LEAVING may the app still
+                    // be opened". Persisting it is what makes the very same
+                    // rule apply when the process is killed while the app is
+                    // in the background — the normal case on a recents-
+                    // dismiss, where there is no live `leftAt` to compare to
+                    // (see the session read above).
+                    val now = System.currentTimeMillis()
+                    leftAt[0] = now
+                    scope.launch {
+                        runCatching { app.store.setAppLockSessionOpen(at = now) }
+                    }
                 }
             } else if (event == Lifecycle.Event.ON_START) {
                 // The app is back in front of the user: the screen state is
@@ -206,7 +293,7 @@ fun AppLockGate(activity: android.app.Activity, content: @Composable () -> Unit)
                 if (since > 0L && unlocked &&
                     System.currentTimeMillis() - since >= delayMin * 60_000L
                 ) {
-                    unlocked = false
+                    lockNow()
                 }
             }
         }
@@ -217,10 +304,11 @@ fun AppLockGate(activity: android.app.Activity, content: @Composable () -> Unit)
         }
     }
 
-    if (enabledState == null) {
-        // The stored state has not arrived yet: draw a blank card rather than
-        // the app. One frame, and the app's content is never composed with the
-        // lock possibly on (see the note on [enabledState]).
+    if (enabledState == null || !sessionRead) {
+        // The stored state (or the stored unlock) has not arrived yet: draw a
+        // blank card rather than the app. One frame, and the app's content is
+        // never composed with the lock possibly on (see the note on
+        // [enabledState]).
         Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background))
         return
     }
@@ -228,7 +316,17 @@ fun AppLockGate(activity: android.app.Activity, content: @Composable () -> Unit)
         content()
         return
     }
-    AppLockScreen(activity = activity, bioOn = bioOn, onUnlocked = { unlocked = true })
+    AppLockScreen(
+        activity = activity,
+        bioOn = bioOn,
+        onUnlocked = {
+            unlocked = true
+            // Carried across a process restart: with "Lock when I leave the
+            // app" off, this unlock IS the answer to the next launch, however
+            // the process ended.
+            scope.launch { runCatching { app.store.setAppLockSessionOpen() } }
+        },
+    )
 }
 
 /**
