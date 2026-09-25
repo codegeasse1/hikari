@@ -3573,6 +3573,10 @@ private fun ServerSearchCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
     val flow = remember { app.store.searchAllExtensionsFlow() }
     val all by flow.collectAsState(initial = true)
+    // "Search every Nuvio provider" — the one widening that does not follow the
+    // switch above. See AppStore.nuvioSearchAllFlow / SearchScope.nuvioFamily.
+    val nuvioFlow = remember { app.store.nuvioSearchAllFlow() }
+    val nuvioAll by nuvioFlow.collectAsState(initial = true)
     val exceptionOnFlow = remember { app.store.searchExceptionOnFlow() }
     val exceptionOn by exceptionOnFlow.collectAsState(initial = false)
     val exceptionIdsFlow = remember { app.store.searchExceptionIdsFlow() }
@@ -3637,6 +3641,28 @@ private fun ServerSearchCard(app: HikariApp) {
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        Spacer(Modifier.height(14.dp))
+
+        // ---- The nuvio family ----
+        // The one widening that does not depend on the switch above: a title
+        // opened FROM a nuvio provider is also asked in every other installed
+        // nuvio provider, because they all resolve the same TMDB id and episode
+        // — one source of servers, not a cross-search of unrelated sites. See
+        // [com.hikari.app.data.SearchScope.nuvioFamily]. Off, "only this
+        // extension" means exactly that for nuvio too.
+        SettingsToggle(
+            label = tr("Search every Nuvio provider"),
+            supporting = if (nuvioAll) {
+                tr("A Nuvio title is also searched in your other Nuvio providers")
+            } else {
+                tr("A Nuvio title plays from that provider alone")
+            },
+            checked = nuvioAll,
+            onCheckedChange = { on ->
+                scope.launch { runCatching { app.store.setNuvioSearchAll(on) } }
+            },
+        )
+
         Spacer(Modifier.height(14.dp))
 
         // ---- Exception extensions ----
@@ -4160,6 +4186,14 @@ private fun AppLockCard(app: HikariApp) {
     val secretLen by lenFlow.collectAsState(initial = 0)
     val bioFlow = remember { app.store.appLockBioFlow() }
     val bioOn by bioFlow.collectAsState(initial = true)
+    // The lock's two extra rules: whether a screen-off locks, and the grace
+    // period after leaving (0 = Instant).
+    val screenOffFlow = remember { app.store.appLockScreenOffFlow() }
+    val screenOffLocks by screenOffFlow.collectAsState(initial = true)
+    val delayFlow = remember { app.store.appLockDelayFlow() }
+    val storedDelay by delayFlow.collectAsState(initial = 0)
+    var delay by remember { mutableStateOf(0) }
+    LaunchedEffect(storedDelay) { delay = storedDelay }
     val hasSecret = AppLock.isSet(secret)
     // Whether this device can offer the fingerprint at all: no sensor, nothing
     // enrolled, or a biometric stack that says no all read as "not available",
@@ -4217,6 +4251,42 @@ private fun AppLockCard(app: HikariApp) {
                 },
                 checked = bioOn && biometrics,
                 onCheckedChange = { scope.launch { runCatching { app.store.setAppLockBio(it) } } },
+            )
+            SettingsToggle(
+                label = tr("Lock when the screen turns off"),
+                supporting = if (screenOffLocks) {
+                    tr("A screen-off locks it too, like leaving the app")
+                } else {
+                    tr("Only leaving the app locks it")
+                },
+                checked = screenOffLocks,
+                onCheckedChange = {
+                    scope.launch { runCatching { app.store.setAppLockScreenOff(it) } }
+                },
+            )
+            Spacer(Modifier.height(8.dp))
+            // The grace period: Instant, then every minute up to 60. A slider
+            // with one step per minute rather than a list of presets, because
+            // that is the shape asked for and because 61 points covers the whole
+            // range with no rounding between the control and the stored value.
+            SettingsSlider(
+                label = tr("Lock after leaving"),
+                value = delay.toFloat(),
+                valueText = if (delay <= 0) tr("Instantly") else delay.toString() + " " + tr("min"),
+                valueRange = 0f..60f,
+                steps = 59,
+                onValueChange = { v -> delay = v.roundToInt().coerceIn(0, 60) },
+                onValueChangeFinished = {
+                    scope.launch { runCatching { app.store.setAppLockDelay(delay) } }
+                },
+            )
+            Text(
+                tr(
+                    "How long the app may stay unlocked after you leave it. \"Instantly\" locks " +
+                        "the moment you leave the app or the screen turns off."
+                ),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Spacer(Modifier.height(4.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -5040,7 +5110,10 @@ private fun WebViewUserAgentCard(app: HikariApp) {
     ) {
         SettingsToggle(
             label = tr("Use Android default user agent"),
-            supporting = tr("Works on most sites"),
+            supporting = tr(
+                "The device's own UA, with the WebView marker (`; wv`) removed — sites that " +
+                    "refuse to be read inside another app answer HTTP 403 to it"
+            ),
             checked = useDefault,
             onCheckedChange = { on -> persist(on, draft) },
         )

@@ -80,6 +80,21 @@ import kotlinx.coroutines.withContext
  * one stops behind it — the user would come back from a film to a PIN prompt,
  * which is not what an app lock is for.
  *
+ * Two rules refine "the app left the foreground":
+ *
+ *  * **A screen-off is its own trigger** (`appLockScreenOffFlow`, on by
+ *    default). Turning the screen off stops the activity exactly like switching
+ *    apps does, so the lock could never tell them apart — with the switch OFF,
+ *    only actually leaving the app locks it, and putting the phone down and
+ *    picking it up again does not ask for the password.
+ *  * **A grace period** (`appLockDelayFlow`, Instant by default). Past zero
+ *    minutes the app stays unlocked for that long after it is left, so a glance
+ *    at a notification does not cost a PIN. The deadline is a wall-clock
+ *    timestamp compared when the app comes back, NOT a running timer: an app
+ *    left for an hour has very likely had its process killed (a fresh process
+ *    starts locked anyway), and a wall-clock comparison also survives the device
+ *    sleeping, which a coroutine timer would not.
+ *
  * The password is the required half: the fingerprint/face is only ever an
  * additional way in (see [AppLock]), so a device with no enrolled biometric
  * still opens with the password, and there is no recovery for a forgotten one —
@@ -88,19 +103,55 @@ import kotlinx.coroutines.withContext
 @Composable
 fun AppLockGate(activity: android.app.Activity, content: @Composable () -> Unit) {
     val app = LocalContext.current.applicationContext as HikariApp
+    val context = LocalContext.current
     val enabledFlow = remember { app.store.appLockFlow() }
     val enabled by enabledFlow.collectAsState(initial = false)
     val bioFlow = remember { app.store.appLockBioFlow() }
     val bioOn by bioFlow.collectAsState(initial = true)
+    // The two rules beyond "the lock is on" — see the doc comment. Both are read
+    // live by the lifecycle observer below (they are State-backed, so the
+    // observer always compares against the current settings).
+    val screenOffFlow = remember { app.store.appLockScreenOffFlow() }
+    val screenOffLocks by screenOffFlow.collectAsState(initial = true)
+    val delayFlow = remember { app.store.appLockDelayFlow() }
+    val delayMin by delayFlow.collectAsState(initial = 0)
     // The unlocked flag lives in the composition, not in saved state: a fresh
     // process (or a recreated activity after the process was killed) starts
     // locked, which is the whole point.
     var unlocked by remember { mutableStateOf(false) }
+    // When the app was last left, for the grace period. A one-element array
+    // because the lifecycle observer both writes and reads it and nothing draws
+    // it: it is a timestamp, not UI state.
+    val leftAt = remember { longArrayOf(0L) }
 
     DisposableEffect(Unit) {
         val owner: LifecycleOwner = ProcessLifecycleOwner.get()
+        val power = context.getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_STOP) unlocked = false
+            if (event == Lifecycle.Event.ON_STOP) {
+                // Was this the screen going off, or the user actually leaving?
+                // The power state answers that, and reading it here is more
+                // reliable than waiting for ACTION_SCREEN_OFF's broadcast, whose
+                // ordering against onStop is not promised.
+                val screenOff = power?.isInteractive == false
+                if (screenOff && !screenOffLocks) {
+                    // The user asked for a screen-off not to lock: nothing to do
+                    // at all, not even a grace period. Actually leaving the app
+                    // (screen on) still locks below.
+                } else if (delayMin <= 0) {
+                    unlocked = false
+                } else {
+                    leftAt[0] = System.currentTimeMillis()
+                }
+            } else if (event == Lifecycle.Event.ON_START) {
+                val since = leftAt[0]
+                leftAt[0] = 0L
+                if (since > 0L && unlocked &&
+                    System.currentTimeMillis() - since >= delayMin * 60_000L
+                ) {
+                    unlocked = false
+                }
+            }
         }
         owner.lifecycle.addObserver(observer)
         onDispose { owner.lifecycle.removeObserver(observer) }

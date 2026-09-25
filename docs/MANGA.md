@@ -88,6 +88,50 @@ it.**
   once the clearance is in the cookie jar) and re-fetches the chapter on the way
   back; a chapter whose page list never arrives also shows `VerificationNudge`.
 
+### Sites that refuse a WebView: the `; wv` marker
+
+The report: *"THE BLANK loads its catalogues in Nekoread but Hikari says `catalog
+failed: Exception: HTTP Error 403`"* — and the same site, opened in Hikari's
+verification view, shows its own "You are reading from inside another app. Our
+reader needs a real browser to display pages" page.
+
+The extension's source names the failing request precisely: the Pam multisrc
+class the THE BLANK source is built on GETs the site root first (to read the
+Inertia `version`, the `csrf-token` meta and the `XSRF-TOKEN` cookie the API
+calls are signed with) and throws `Exception("HTTP Error ${code}")` when that
+request is not a 200 — the exact string on screen. So the root GET is what 403s.
+
+**Cause: the app presented a WebView.** `HikariApp.effectiveWebViewUa()` returned
+`WebSettings.getDefaultUserAgent()`, the stock Android WebView string, which
+carries the WebView-only tokens `; wv` and `Version/4.0`. That same value was
+also the default User-Agent for EVERY Aniyomi/Mihon extension request
+(`NetworkHelper.defaultUserAgentProvider`), so a site that refuses to be read
+inside another app answered HTTP 403 to the extension's very first request.
+(The URLs in that block page are also why tapping **Verify site** could not help:
+the verification WebView advertised the same marked string, so the site refused
+it too and no clearance could ever be earned.) Nekoread/Mihon work because their
+reader *installs* a plain browser UA into the WebView it solves in (Mihon's
+`WebViewInterceptor` sets `settings.userAgentString`), so nothing they send
+carries the marker.
+
+Probed against the live site to be sure:
+
+| User-Agent | Result |
+| --- | --- |
+| stock WebView UA (`…Android 10; K; wv) … Version/4.0 Chrome/141…`) | **403**, 2 746 bytes — the "another app" block page |
+| the same string with `; wv` / `Version/4.0` removed | **200**, 112 678 bytes — the real page |
+
+**Fix** (universal — it is one function): `effectiveWebViewUa()` strips the two
+markers (`withoutWebViewMarkers`), and because that one value is what the
+extension client sends, what the verify WebView advertises and what the offscreen
+solver advertises, the clearance still matches the requests that follow. A
+clearance earned before this change was minted for the old (marked) string and is
+simply re-earned once.
+
+The general rule this leaves behind: **never present a WebView-marked UA to a
+site**, because a site that refuses embedded readers cannot even be verified from
+inside one.
+
 ## Images that only an extension's client can fetch
 
 Two images in this app are not ordinary URLs, and both belong to the manga

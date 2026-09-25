@@ -436,6 +436,16 @@ class HikariApp : Application() {
                 com.hikari.app.data.SearchScope.allExtensions = it
             }
         }
+        // "Search every Nuvio provider": the nuvio family is asked for a nuvio
+        // origin's title even in "only this extension" mode, unless the user
+        // turns that off. Its own flag, so it does not follow the switch above
+        // (and is not affected by the exception set below).
+        appScope.launch {
+            com.hikari.app.data.SearchScope.nuvioFamily = store.nuvioSearchAll()
+            store.nuvioSearchAllFlow().collect {
+                com.hikari.app.data.SearchScope.nuvioFamily = it
+            }
+        }
         appScope.launch {
             // Seeded through a first read of the EFFECTIVE flow (rather than the
             // raw id flow) so a search started before the first emission already
@@ -969,11 +979,12 @@ class HikariApp : Application() {
 
     /**
      * WebView user-agent override (Settings → Privacy & Browsing → WebView user agent). Default ON:
-     * the WebView advertises the STOCK Android WebView UA — the fingerprint the
-     * engine actually presents, which is what makes Cloudflare's JS challenge
-     * (cf_clearance) complete instead of looping on a desktop UA claim. Off +
-     * custom UA lets users force a desktop/mobile UA for sites that need one.
-     * Loaded from prefs at startup; updated live by the settings card.
+     * the WebView advertises the device's Android WebView UA with its two
+     * WebView-only tokens REMOVED (`; wv` and `Version/4.0`) — see
+     * [withoutWebViewMarkers], which is the whole reason this is not simply
+     * `WebSettings.getDefaultUserAgent`. Off + custom UA lets users force a
+     * desktop/mobile UA for sites that need one. Loaded from prefs at startup;
+     * updated live by the settings card.
      */
     @Volatile
     var webViewUseDefaultUa = true
@@ -981,17 +992,61 @@ class HikariApp : Application() {
     @Volatile
     var webViewCustomUa: String? = null
 
-    /** UA string the WebViews should advertise. [pluginUa] is the UA a
-     *  CloudStream-style plugin explicitly requested (used only when the user
-     *  has turned the override off and typed nothing). */
+    /**
+     * UA string the WebViews should advertise. [pluginUa] is the UA a
+     * CloudStream-style plugin explicitly requested (used only when the user
+     * has turned the override off and typed nothing).
+     *
+     * This is the STOCK WebView UA minus its WebView-only tokens, and that
+     * subtraction is the point. `; wv` is Android WebView's own marker, and a
+     * site that refuses to be read inside another app answers ANY request
+     * carrying it with HTTP 403 — theblank.net is one, and its block page says
+     * so in as many words ("You are reading from inside another app. Our reader
+     * needs a real browser to display pages"), which is what the user saw when
+     * they opened it in the verification view. Verified against the live site:
+     * the stock WebView UA is served that 403 page, and the same string with
+     * `; wv` / `Version/4.0` removed is served the real page (HTTP 200).
+     *
+     * This value is also the default User-Agent for EVERY Aniyomi/Mihon
+     * extension request ([eu.kanade.tachiyomi.network.NetworkHelper]), so the
+     * marked string made those extensions fail on exactly those sites while the
+     * same extension worked in Nekoread/Mihon, whose readers install a plain
+     * browser UA into their WebViews. The manga report — "THE BLANK loads in
+     * Nekoread and shows HTTP Error 403 here" — was that: the extension's own
+     * first request threw `HTTP Error 403` because our client presented a
+     * WebView.
+     *
+     * It stays CONSISTENT: this one value is what the extension client sends,
+     * what the verify WebView advertises and what the offscreen solver
+     * advertises, so a `cf_clearance` is still minted for the exact UA the
+     * requests then present. A clearance earned before this change was minted
+     * for the old, marked string and is simply earned again once.
+     */
     fun effectiveWebViewUa(pluginUa: String? = null): String {
         val custom = webViewCustomUa?.trim()
         if (!webViewUseDefaultUa) {
             if (!custom.isNullOrBlank()) return custom
             if (!pluginUa.isNullOrBlank()) return pluginUa
         }
-        return runCatching { android.webkit.WebSettings.getDefaultUserAgent(this) }
+        val stock = runCatching { android.webkit.WebSettings.getDefaultUserAgent(this) }
             .getOrDefault(Http.UA)
+        return withoutWebViewMarkers(stock)
+    }
+
+    /**
+     * [ua] with the Android-WebView-only tokens removed — see
+     * [effectiveWebViewUa]. Takes the marker wherever it sits (`; wv)` in the
+     * modern reduced UA, `; wv;` in some legacy strings) plus `Version/4.0`, the
+     * other token a WebView adds, and tidies the double space the removal can
+     * leave behind. Anything else is the device's own UA, untouched.
+     */
+    private fun withoutWebViewMarkers(ua: String): String {
+        if (!ua.contains("; wv") && !ua.contains("Version/4.0")) return ua
+        return ua
+            .replace("; wv", "")
+            .replace(" Version/4.0", "")
+            .replace("  ", " ")
+            .trim()
     }
 
     /**

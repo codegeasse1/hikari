@@ -17,8 +17,9 @@ Everything lives in `ContentRepository.kt` unless stated otherwise.
    addons, no nuvio engines, no cross pass, no sweep, and no episode list
    borrowed from another site. The switch is read once at the top of
    `streamsForInner` into a local, so one lookup can never be half-scoped.
-   **Exception extensions** (`SearchScope.exceptions`) are the one thing that
-   widens that, and they carry a rule of their own — see invariant 6.
+   **Exception extensions** (`SearchScope.exceptions`) and **"Search every Nuvio
+   provider"** (`SearchScope.nuvioFamily`, on by default) are the two things that
+   widen it, and each carries a rule of its own — see invariants 6 and 15.
    **An item with no origin is the exception to both** — see invariant 10.
 2. **Same-engine family** — the other repos of the origin's own engine, queued
    first in the cross pass.
@@ -207,7 +208,10 @@ other extension for server and only play with its own server."*
   extension".** `originIsException` in `streamsForInner` forces `scopeAll = false`
   and clears `exceptions` for that lookups, whatever the two switches say. This is
   the second half of the report and it is deliberate: a repo the user marked keeps
-  its own catalogue to itself.
+  its own catalogue to itself. (The nuvio family switch is deliberately stronger
+  than this rule for a NUVIO origin — see invariant 15 — because the user asked
+  for the nuvio engines to be gathered together in as many words, and that switch
+  is the one that turns it off.)
 - **Everywhere else they are ADDED, never a replacement.** With `scopeAll` false
   but exceptions present, the pass asks the origin (as always) plus the exception
   repos: nuvio exception ids go through the nuvio (by-TMDB-id) path, and every
@@ -473,3 +477,33 @@ Home row's read of the SAME catalogue succeeded.
   is held back from the feed (it stays in `catalogs()`, where `search()` asks it
   with the query it needs) and `search()` skips catalogues that declare extras
   and no `search` (see `supportsSearch`).
+
+### 15. A Nuvio origin searches the whole Nuvio family — unless the user says not to
+
+The request: *"even with the search-all-extensions toggle off, for a nuvio
+provider it should still search all my installed nuvio providers — and add a
+toggle there to turn that off too"*.
+
+- **Why it is its own rule rather than a consequence of the scope switch.** The
+  nuvio engines all resolve the same `(tmdbId, mediaType, season, episode)` tuple
+  from the item itself, so the family is ONE source of servers, not a
+  cross-search of unrelated sites. A reader browsing a nuvio catalogue wants
+  their nuvio servers gathered for the title, which is what the real nuvio app
+  does — and that is true whether or not the user wants CloudStream/Aniyomi repos
+  in the mix.
+- **`SearchScope.nuvioFamily`** (mirrored from `AppStore.nuvioSearchAllFlow` by
+  HikariApp, read into a local at the top of `streamsForInner` like
+  `allExtensions`) adds every installed nuvio provider to the pass's targets when
+  the title was opened FROM one, with the origin first and the rest in
+  `NUVIO_PRIORITY` order (`nuvioOrder`). Default ON; the switch that turns it off
+  is the "Search every Nuvio provider" row on the Server search card.
+- **Off means off.** With it off, a nuvio origin in "Only this extension" mode
+  asks only the exception nuvio ids, or nobody — exactly the previous behaviour.
+- **It outranks the exception-collapse rule (invariant 6) for nuvio origins,**
+  and that is deliberate: the user asked for the family in as many words, and
+  this switch is the thing that turns it off. A NON-nuvio origin with nuvio
+  exception engines marked behaves exactly as before.
+- **The Stremio family does not work this way**, and must not: a Stremio origin
+  already asks every Stremio addon when the scope is "all", and in "only this
+  extension" mode the addon the title came from is the answer — unless the user
+  marks the addons under Exception extensions. See invariants 10 and 11.

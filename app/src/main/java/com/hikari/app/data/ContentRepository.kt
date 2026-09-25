@@ -75,6 +75,16 @@ object SearchScope {
     @Volatile
     var allExtensions: Boolean = true
 
+    /**
+     * "Search every Nuvio provider" (Settings → Playback & Servers → Server
+     * search): a title opened FROM a nuvio provider also asks every other
+     * installed nuvio provider, whatever [allExtensions] says. Mirrored from
+     * `AppStore.nuvioSearchAllFlow` by HikariApp, exactly like [allExtensions],
+     * because the target builder reads it synchronously mid-pass.
+     */
+    @Volatile
+    var nuvioFamily: Boolean = true
+
     /** Extension ids that are always asked for servers (see the class note). */
     @Volatile
     var exceptions: Set<String> = emptySet()
@@ -1461,6 +1471,21 @@ class ContentRepository(private val manager: ProviderManager) {
     private val CROSS_EXT_DETAIL_GATE = RefundableGate(CROSS_EXT_DETAIL_CONCURRENCY)
 
     /**
+     * Nuvio providers in the order one lookup should try them: the provider the
+     * title was opened from FIRST — its own servers are the ones the user
+     * expects at the top, and it gets an engine slot before the rest of the pool
+     * (a Nuvio origin used to be sorted purely by the priority list, so it could
+     * be last) — then the historically fast ones (`NUVIO_PRIORITY`).
+     */
+    private fun nuvioOrder(originId: String): Comparator<ContentProvider> = compareBy(
+        { p: ContentProvider -> if (p.config.id == originId) 0 else 1 },
+        { p: ContentProvider ->
+            val idx = NUVIO_PRIORITY.indexOf(p.config.name.lowercase())
+            if (idx >= 0) idx else NUVIO_PRIORITY.size
+        },
+    )
+
+    /**
      * How many provider requests this DEVICE is asked to run at once.
      *
      * Every device used to be given the same 96-way fan-out. On a phone with
@@ -2310,6 +2335,9 @@ class ContentRepository(private val manager: ProviderManager) {
             } else {
                 SearchScope.exceptions
             }
+            // Read once, like the two above: one lookup must never be
+            // half-scoped (see docs/SEARCH.md). "Search every Nuvio provider".
+            val nuvioFamily = SearchScope.nuvioFamily
             // THE APP'S OWN CATALOGUE IS NOT AN EXTENSION.
             //
             // A title browsed from Home / Search / Collections / a nuvio
@@ -2361,43 +2389,47 @@ class ContentRepository(private val manager: ProviderManager) {
             // source servers alongside the origin. Cheap pre-filter first,
             // then sorted so the historically-fast providers get first shot
             // at the parallel engine slots (NUVIO_PRIORITY order).
+            //
+            // "Search every Nuvio provider" (the Server search card) is the one
+            // widening that does not depend on the scope switch: a title opened
+            // FROM a nuvio provider keeps asking the whole nuvio family even in
+            // "only this extension" mode, because those engines all resolve the
+            // same (tmdbId, mediaType, season, episode) tuple — the family is
+            // one source of servers, not a cross-search of unrelated sites.
+            // [SearchScope.nuvioFamily] is that switch; off, it changes nothing
+            // here.
+            val originIsNuvio = origin?.config?.type == ProviderType.NUVIO
             val nuvioTargets = if (!scopeAll) {
-                // "Only this extension": a nuvio engine is another source, so
-                // none of them are asked (the origin, if it IS one, is already
-                // in [primaryTargets]) — except the ones marked as exceptions,
-                // which the user asked to always include, and except when there
-                // was no extension to restrict to at all ([originless]), where
-                // they are the item's only possible source and asking them is
-                // the whole point.
-                if (originless) {
-                    if (com.hikari.app.nuvio.TmdbResolver.isLikelyResolvable(item)) {
+                when {
+                    // "Only this extension": a nuvio engine is another source, so
+                    // none of them are asked (the origin, if it IS one, is already
+                    // in [primaryTargets]) — except:
+                    //
+                    //  * when there was no extension to restrict to at all
+                    //    ([originless]), where they are the item's only possible
+                    //    source and asking them is the whole point;
+                    //  * the whole family, when the origin IS a nuvio provider and
+                    //    the family switch is on (see above);
+                    //  * the ones marked as exceptions, which the user asked to
+                    //    always include.
+                    originless ->
+                        if (com.hikari.app.nuvio.TmdbResolver.isLikelyResolvable(item)) {
+                            all.filter { it.config.type == ProviderType.NUVIO }
+                                .sortedWith(nuvioOrder(item.providerId))
+                        } else {
+                            emptyList()
+                        }
+                    originIsNuvio && nuvioFamily ->
                         all.filter { it.config.type == ProviderType.NUVIO }
-                    } else {
-                        emptyList()
-                    }
-                } else if (exceptions.isEmpty()) {
-                    emptyList()
-                } else {
-                    all.filter {
+                            .sortedWith(nuvioOrder(item.providerId))
+                    exceptions.isEmpty() -> emptyList()
+                    else -> all.filter {
                         it.config.type == ProviderType.NUVIO && it.config.id in exceptions
                     }
                 }
             } else if (com.hikari.app.nuvio.TmdbResolver.isLikelyResolvable(item)) {
                 all.filter { it.config.type == ProviderType.NUVIO }
-                    .sortedWith(
-                        compareBy(
-                            // The provider the user opened this title from goes
-                            // FIRST: its own servers are the ones they expect at
-                            // the top, and it gets an engine slot before the
-                            // rest of the pool (a Nuvio origin used to be sorted
-                            // purely by the priority list, so it could be last).
-                            { p: ContentProvider -> if (p.config.id == item.providerId) 0 else 1 },
-                            { p: ContentProvider ->
-                                val idx = NUVIO_PRIORITY.indexOf(p.config.name.lowercase())
-                                if (idx >= 0) idx else NUVIO_PRIORITY.size
-                            },
-                        )
-                    )
+                    .sortedWith(nuvioOrder(item.providerId))
             } else {
                 emptyList()
             }

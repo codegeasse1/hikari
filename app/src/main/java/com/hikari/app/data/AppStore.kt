@@ -197,6 +197,22 @@ class AppStore(private val ctx: Context) {
         /** Unlock with the device's fingerprint/face as well as the password. */
         val APP_LOCK_BIO = booleanPreferencesKey("appLockBiometric")
         /**
+         * Lock when the SCREEN turns off, not only when the app is left
+         * (Settings → Privacy & Browsing → App lock). On by default, which is
+         * what the lock has always done — turning the screen off stops the
+         * activity, and the lock could not tell the two apart before this key
+         * existed. Off + a grace period is "lock after I actually leave the
+         * app, not every time I put the phone down".
+         */
+        val APP_LOCK_SCREEN_OFF = booleanPreferencesKey("appLockScreenOff")
+        /**
+         * How many minutes the app may stay unlocked after the app is left (0 =
+         * lock immediately). The unlock screen's grace period: see
+         * [com.hikari.app.ui.AppLockGate]. Storage is minutes, 0..60, and the
+         * settings slider offers every minute from Instant to 60.
+         */
+        val APP_LOCK_DELAY_MIN = intPreferencesKey("appLockDelayMin")
+        /**
          * The trackers the user signed in to (Settings → Trackers), as JSON —
          * one row per service, with that service's token. See
          * [com.hikari.app.data.TrackerStore].
@@ -383,6 +399,11 @@ class AppStore(private val ctx: Context) {
          *  film plays from the repo you picked and nowhere else. See
          *  [com.hikari.app.data.SearchScope]. */
         val SEARCH_ALL_EXTENSIONS = booleanPreferencesKey("searchAllExtensions")
+        /** "Search every Nuvio provider" (Settings → Playback & Servers → Server
+         *  search): a title opened FROM a nuvio provider also asks every other
+         *  installed nuvio provider, whatever [SEARCH_ALL_EXTENSIONS] says. On by
+         *  default — see [nuvioSearchAllFlow]. */
+        val NUVIO_SEARCH_ALL = booleanPreferencesKey("nuvioSearchAllProviders")
         /** "Exception extensions" (Settings → Playback & Servers → Server
          *  search): extensions that are asked for servers for EVERY title, even
          *  when [SEARCH_ALL_EXTENSIONS] is off. See
@@ -1100,6 +1121,29 @@ class AppStore(private val ctx: Context) {
     }
 
     /**
+     * "Search every Nuvio provider": a title opened FROM a nuvio provider is
+     * also searched in every other installed nuvio provider, whatever the
+     * "search all installed extensions" switch says.
+     *
+     * On by default, and it is the one widening that does not depend on that
+     * switch. The nuvio engines all resolve the same (tmdbId, mediaType, season,
+     * episode) tuple, so the family is one source of servers rather than a
+     * cross-search of unrelated sites — a reader browsing a nuvio catalogue
+     * wants their nuvio servers gathered for the title, the way the real nuvio
+     * app gathers them. Off, the scope switch means what it says everywhere,
+     * nuvio included (and the exception extensions still apply). See
+     * [com.hikari.app.data.SearchScope.nuvioFamily] for the flag the pass reads.
+     */
+    fun nuvioSearchAllFlow(): Flow<Boolean> =
+        store.data.map { it[K.NUVIO_SEARCH_ALL] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun nuvioSearchAll(): Boolean = nuvioSearchAllFlow().first()
+
+    suspend fun setNuvioSearchAll(on: Boolean) {
+        write("NUVIO_SEARCH_ALL") { it[K.NUVIO_SEARCH_ALL] = on }
+    }
+
+    /**
      * Are the "exception extensions" in force?
      *
      * On, the extensions picked in Settings (see [searchExceptionIds]) are asked
@@ -1669,6 +1713,39 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setAppLockBio(on: Boolean) {
         write("APP_LOCK_BIO") { it[K.APP_LOCK_BIO] = on }
+    }
+
+    /**
+     * Lock when the screen turns off (on by default — what the lock has always
+     * done, since a screen-off stops the activity). Off, only LEAVING the app
+     * locks it, so putting the phone down and picking it up again does not ask
+     * for the password. The grace period below still applies.
+     */
+    fun appLockScreenOffFlow(): Flow<Boolean> =
+        store.data.map { it[K.APP_LOCK_SCREEN_OFF] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun appLockScreenOff(): Boolean = appLockScreenOffFlow().first()
+
+    suspend fun setAppLockScreenOff(on: Boolean) {
+        write("APP_LOCK_SCREEN_OFF") { it[K.APP_LOCK_SCREEN_OFF] = on }
+    }
+
+    /**
+     * Minutes the app may stay unlocked after it is left, 0 = lock immediately
+     * (the default, and the lock's historical behaviour). Read by
+     * [com.hikari.app.ui.AppLockGate] when the app comes back: inside the grace
+     * period the screen is simply shown again, past it the unlock card is
+     * drawn. Stored as minutes so the settings slider (Instant, 1..60) has a
+     * one-to-one mapping with no rounding between them.
+     */
+    fun appLockDelayFlow(): Flow<Int> =
+        store.data.map { (it[K.APP_LOCK_DELAY_MIN] ?: 0).coerceIn(0, 60) }
+            .distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun appLockDelay(): Int = appLockDelayFlow().first()
+
+    suspend fun setAppLockDelay(minutes: Int) {
+        write("APP_LOCK_DELAY_MIN") { it[K.APP_LOCK_DELAY_MIN] = minutes.coerceIn(0, 60) }
     }
 
     // ---- Trackers (Settings → Trackers) ----------------------------------

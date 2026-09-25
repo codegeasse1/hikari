@@ -1,3 +1,61 @@
+## 0.10.37
+
+### Fixed
+
+- **Extensions now work on sites that refuse to be read inside another app (THE BLANK: `catalog
+  failed: Exception: HTTP Error 403` while the same extension loads its catalogues in Nekoread).**
+  The extension's own source names the failing request: the Pam multisrc base that THE BLANK is
+  built on GETs the site root first (to read the Inertia `version`, the `csrf-token` meta and the
+  `XSRF-TOKEN` cookie its signed API calls need) and throws `Exception("HTTP Error ${code}")` when
+  that request is not a 200 — the exact wording on screen. It was not a Cloudflare wall the app had
+  to pass; the site was answering 403 because of the User-Agent Hikari presented. The lock's own
+  effective WebView UA (used as the default UA for EVERY Aniyomi/Mihon extension request) is the
+  STOCK Android WebView string, which carries the WebView-only tokens `; wv` and `Version/4.0`, and
+  theblank.net refuses anything marked as an embedded reader — its block page says so ("You are
+  reading from inside another app. Our reader needs a real browser to display pages"), and that is
+  the page the verification view showed too, which is why tapping Verify site could never earn a
+  clearance either. Probed against the live site: the stock WebView UA gets HTTP 403 (the 2.7 KB
+  block page) and the same string with `; wv` / `Version/4.0` removed gets HTTP 200 (the real
+  112 KB page). The UA is now stripped of both markers before it is used anywhere
+  (`HikariApp.withoutWebViewMarkers`), and since that one value is what the extension client sends,
+  what the verify WebView advertises and what the offscreen solver advertises, a `cf_clearance`
+  still matches the requests that follow it. This is one function, so it fixes every extension, not
+  just this one — and it explains the whole family of "this source works in other apps and not
+  here". Nekoread/Mihon work because their reader installs a plain browser UA into the WebView it
+  solves in, so nothing they send carries the marker. See docs/MANGA.md.
+- **A title opened from a Nuvio provider is now searched in every installed Nuvio provider, even
+  with \"Search all installed extensions\" off — with its own switch to turn that off.** The nuvio
+  engines all resolve the same `(tmdbId, mediaType, season, episode)` tuple from the item, so the
+  family is one source of servers rather than a cross-search of unrelated sites: a reader who
+  browses a nuvio catalogue wants their nuvio servers gathered for the title, which is what the
+  real nuvio app does. It has its own flag (`SearchScope.nuvioFamily`, read once per lookup like the
+  scope switch) rather than riding on the exception-extensions list, and the switch lives on the
+  same Server search card (Settings → Playback & Servers): \"Search every Nuvio provider\", on by
+  default. Off, \"only this extension\" means exactly that for nuvio too. It deliberately outranks
+  the exception-collapse rule for a NUVIO origin (see docs/SEARCH.md invariant 15).
+- **The app lock can now lock on the screen turning off, and can wait before locking at all.**
+  Turning the screen off stops the activity exactly like switching apps does, so the lock could not
+  tell the two apart: it now reads the power state at that moment and honours a new **\"Lock when the
+  screen turns off\"** switch (on by default — what the lock already did). And a new **\"Lock after
+  leaving\"** slider sets a grace period of Instant, 1, 2, … up to 60 minutes with one step per
+  minute; inside it the app is simply shown again, past it the unlock card is drawn. Instant is the
+  default and is exactly today's behaviour. The deadline is a wall-clock timestamp compared when the
+  app comes back, not a running timer, so a grace period survives the device sleeping and a killed
+  process (which starts locked anyway).
+
+### Notes
+
+- **The User-Agent change re-earns any clearance earned before it.** A `cf_clearance` is bound to
+  the exact UA that minted it, and the old one was minted for the marked (WebView) string — so a site
+  the user had already verified may ask once more. Every part of the app now agrees on the clean
+  string, so it cannot lapse back into challenging (which is what the old comment was protecting
+  against).
+- **\"Search every Nuvio provider\" is stronger than the exception-extensions collapse rule, for nuvio
+  origins only**, because the request for it was explicit and this switch is the thing that turns it
+  off. A non-nuvio origin with nuvio exception engines marked behaves exactly as before.
+- The lock's grace period applies to both triggers (leaving the app and the screen turning off).
+  With the screen-off switch OFF, putting the phone down and picking it up again never asks for the
+  password; actually leaving the app still does (after the grace period, if one is set).
 ## 0.10.36
 
 ### Fixed
