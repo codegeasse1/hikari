@@ -2,6 +2,7 @@ package com.hikari.app.net
 
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.OkHttpClient
@@ -393,7 +394,7 @@ object Http {
                 }
                 val bytes = outcome.getOrNull()
                 if (bytes != null) {
-                    runCatching { cont.resumeWith(Result.success(bytes)) }
+                    runCatching { cont.resume(Result.success(bytes)) }
                 } else {
                     val cause = outcome.exceptionOrNull() ?: Exception("the file could not be downloaded")
                     runCatching { cont.resumeWith(Result.failure(cause)) }
