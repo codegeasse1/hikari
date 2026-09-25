@@ -933,8 +933,15 @@ object Td {
         val newer = query(
             TdApi.GetChatHistory(chatId, anchor.id, -POST_WALK_MESSAGES, POST_WALK_MESSAGES, false),
         ) as? TdApi.Messages ?: return out
-        // TDLib answers newest-first; a post reads oldest-first.
-        for (m in newer.messages.asReversed()) {
+        // TDLib answers newest-first; a post reads oldest-first. Walked by
+        // index on purpose: `messages` is a Java array, and this avoids
+        // depending on which `reversed`/`asReversed` overload the stdlib
+        // exposes for one.
+        val messages = newer.messages
+        var i = messages.size - 1
+        while (i >= 0) {
+            val m = messages[i]
+            i--
             if (m.id <= anchor.id) continue
             val video = videoOf(chatId, m)
             if (video != null) {
