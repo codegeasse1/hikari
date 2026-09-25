@@ -46,6 +46,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.hikari.app.data.LibraryCategory
 import com.hikari.app.i18n.tr
+import com.hikari.app.tv.tvToggle
 import kotlinx.coroutines.launch
 
 /**
@@ -218,10 +219,14 @@ private fun CategoryToggleRow(name: String, checked: Boolean, onToggle: () -> Un
     Row(
         Modifier
             .fillMaxWidth()
-            .padding(vertical = 2.dp),
+            .padding(vertical = 2.dp)
+            // The whole line is the target, and it answers the D-pad itself —
+            // see [Modifier.tvToggle]. A bare Checkbox at the start of a row is
+            // skipped by the focus search on a television.
+            .tvToggle(checked, onValueChange = { onToggle() }),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Checkbox(checked = checked, onCheckedChange = { onToggle() })
+        Checkbox(checked = checked, onCheckedChange = null)
         Text(
             name,
             style = MaterialTheme.typography.bodyMedium,

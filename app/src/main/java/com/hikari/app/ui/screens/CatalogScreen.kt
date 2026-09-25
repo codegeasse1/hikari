@@ -236,7 +236,19 @@ class CatalogViewModel(
                 val raw = if (rawType == "manga" && _query.value.isNotBlank()) {
                     provider?.search(_query.value.trim(), page) ?: emptyList()
                 } else {
-                    provider?.getCatalog(ref, page) ?: emptyList()
+                    // One funnel for every engine (see
+                    // [ContentRepository.loadCatalogPage]): a catalogue host
+                    // that answers an empty page one moment and its real page the
+                    // next is re-asked here, and page 1 falls back to the last
+                    // answer this catalogue actually gave — so "Show all" shows
+                    // what the Home row just showed instead of "Nothing here
+                    // right now".
+                    com.hikari.app.data.ContentRepository.loadCatalogPage(
+                        provider,
+                        ref,
+                        page,
+                        retryEmpty = page == 1,
+                    )
                 }
                 withContext(Dispatchers.IO) { raw.map { it.tokenizePoster() } }
             } catch (t: Throwable) {

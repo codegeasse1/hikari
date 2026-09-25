@@ -1,3 +1,79 @@
+## 0.10.36
+
+### Fixed
+
+- **A series now plays on a Stremio addon that lists dozens of servers for it in Stremio itself.**
+  The report was exact: *"movies play, but any series episode says no playable source — the same
+  PenguPlay addon in Stremio shows 79 servers"*. The addon was not at fault; three protocol
+  mistakes in `StremioAddon.getStreams` were, and every one of them only bites a series.
+  The `type` segment of `/stream/{type}/{id}` was tried with the item's own `rawType` first — which
+  for a title browsed from Hikari's own Home is TMDB's `tv`, a spelling PenguPlay does not serve
+  videos from (its `tv` resource is IPTV-only), so a series' whole fan-out was spent on a request the
+  addon answers with nothing while a movie's spelling happened to work. The segments the addon
+  actually declares *for the id in hand* now come first (matching each resource's own `idPrefixes`,
+  not just the manifest's), ordered by the item's kind. The walk also used to STOP at the first
+  non-empty answer, and a Stremio "link" row (`externalUrl`/`ytId` — "watch it on the site") parses
+  as a stream: a spelling that answered only with a link ended the search before the spelling that
+  carries the servers was ever asked, which is where *"Found 1 link in your extensions, but none
+  could be turned into a video"* came from. The walk now goes past a link-only answer and keeps
+  only a row that can actually play. Last, the id the addon is asked about was not translated into a
+  namespace it knows: the numeric part of a `tmdb:…` id (what an addon's own catalogue rows carry)
+  was read with `takeWhile { it.isDigit() }` on the RAW id, which sees no digits at all, so an addon
+  declaring only `tt` (Torrentio, Cinemeta) was asked about a namespace it does not know; both
+  spellings are now built and offered, round-robin across the type segments. A series with no
+  episode list at all (normal for a stream-only addon) also plays now: the addon is asked for season
+  1 episode 1, and the `/meta` fallback for a `tmdb:` id asks TMDB for the list the addon never
+  published.
+- **Playback starts the instant ONE working server is found.** The player deliberately held for the
+  title's own extension for a couple of seconds before starting (so "if I'm on MovieBox, play
+  MovieBox's server first"), and that hold did not know the difference between "waiting for the
+  right server" and "a server has already been probed and answered with a real video stream". It
+  does now: a source whose URL a probe has already resolved to a video/HLS/DASH manifest ends the
+  hold, so the fastest working server starts the video immediately while every other server keeps
+  arriving in the background and remains in the player's server list to switch to. Row choice also
+  prefers a probe-verified server over one that merely looks most promising.
+- **Installing an extension no longer leaves the app heavy for a while afterwards.** The download
+  behind an install was a blocking OkHttp call inside the install's own 20-second budget: when the
+  budget ran out (or the install was cancelled, e.g. by starting the next one), the timeout
+  abandoned the WAIT but the read kept running on its IO thread to its own 30-second timeout, so a
+  cancelled or overrunning install left a leaked download competing with the install that replaced
+  it. Extension downloads are now enqueued and actually CANCELLED when the coroutine that owns them
+  ends (`Http.fetchBytesCancellable` / `downloadBytesCancellable`), and the between-attempt pause is
+  a cancellable `delay` instead of a `Thread.sleep`. The Nuvio first-run provider seeding uses the
+  same path.
+- **"Nothing here right now" on a catalogue that plainly has items.** A catalogue host answers HTTP
+  200 with an empty list while its upstream is rate-limited or cold-starting (StremioLabAR's
+  Trakt/MDBList lists do exactly this, and say so in an `error` field), so a row full of posters on
+  Home could be followed by "Show all" showing nothing a second later — the two reads were of the
+  same catalogue and the second one believed a transient empty answer.
+  `ContentRepository.loadCatalogPage` is now the one funnel every catalogue read goes through, for
+  every engine: the page the user is LOOKING at re-asks once after a short pause before believing an
+  empty answer, and page 1 falls back to the last non-empty answer that catalogue gave (from a
+  process-wide cache, because Home's row and the catalogue's own page are different repository
+  instances). The addon's own words are shown when it has any (`error`, `totalItems: 0`, a non-JSON
+  body, a timeout — each its own sentence instead of "returned no items"), and a catalogue that can
+  only be answered WITH a query is no longer offered as a Home row, since such a row is empty by
+  construction (`StremioAddon.homeCatalogs`; it is still searched globally, and `search()` now skips
+  catalogues that declare extras and no `search`).
+- **The whole TV layout answers the remote.** The TV layer was in place, but a bare
+  `Switch`/`Slider`/`Checkbox` at the far end of a full-width row is skipped by Compose's focus
+  search, so a handful of settings could not be reached or flipped from a D-pad at all. Every
+  remaining one is now wrapped in the app's own `tvToggle`/`tvAdjust` (Settings, Collections,
+  Extensions, History, Player controls, the library-category picker and the reader's settings sheet),
+  which makes the control focusable, flips a toggle on centre/left/right and steps a slider with the
+  same commit a drag-release runs.
+
+### Notes
+
+- The series fix is Stremio-protocol-specific by nature: the other engines (nuvio, CloudStream,
+  Aniyomi, SkyStream, universal scrapers) address their own site's API and have no `type` segment or
+  id-namespace handshake to get wrong, so there is nothing analogous to change in them. What is
+  shared — the catalogue funnel above, the id-resolving engines being asked for a title that came
+  from Hikari's own rows (0.10.35, `docs/SEARCH.md` invariants 10-11) and the episode-list fallback
+  through TMDB — applies to all of them.
+- The reader's live chrome keeps its own remote handling on purpose: left/right on the page scrubber
+  and the auto-scroll panel is page navigation, so those two sliders were deliberately left alone
+  (the reader's settings sheet, which is where settings belong, is covered).
 ## 0.10.35
 
 ### Fixed

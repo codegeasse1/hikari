@@ -403,3 +403,73 @@ server and could never play.
   a pass with nothing to search does not publish, so the newest tally can belong
   to a different title — which is how "asked 3 · 2 don't carry it" came to be
   printed under a search that had asked nobody.
+
+### 12. A series on a Stremio addon is asked as a VIDEO, in the namespaces the addon DECLARED
+
+The report: *"movies play, but every series says no playable source — the same
+addon in Stremio shows dozens of servers"*. Three separate protocol mistakes in
+`StremioAddon.getStreams`, all of which only bite a series:
+
+- **The `type` segment of `/stream/{type}/{id}` must be one the addon serves for
+  THIS id.** `streamTypeOrder` used to lead with the item's own `rawType` — which
+  for a TMDB-browsed title is TMDB's `tv`, a spelling an addon like PenguPlay
+  (which declares `movie` and `series`, and whose `tv` resource is IPTV only)
+  answers with nothing. The declared types for the id in hand now come first,
+  ordered by the item's kind, and the canonical spellings follow as a fallback.
+  `declaredStreamTypes` matches the resource's `idPrefixes` too, so the IPTV-only
+  `tv` resource is not counted as a `tv` the addon serves for a `tt…` id.
+- **The walk may not stop on a row that is only a LINK.** A row with an
+  `externalUrl` or a `ytId` parses as a stream and used to end the search at the
+  first spelling that produced one — so the spelling carrying the addon's real
+  servers was never asked, and the verdict was "Found 1 link … none could be
+  turned into a video". The walk now continues past a link-only answer (the rows
+  are kept and returned if nothing better is found), and only a row that can
+  actually play ends it.
+- **The id must be translated into a namespace the addon knows.** A `tmdb:…` id
+  (what an addon's own catalogue rows carry) is offered as `tmdb:` when the addon
+  declares that prefix, and the numeric part is resolved to an IMDb id (via TMDB)
+  when it declares `tt` — a `tmdb:`-prefixed id used to be read with
+  `takeWhile { isDigit }` on the RAW id, which saw no digits at all, so an addon
+  declaring only `tt` (Torrentio, Cinemeta) was asked about a namespace it does
+  not know. Both spellings are handed over when the addon declares both, in a
+  round-robin across the type segments rather than one spelling to exhaustion.
+- **A series with no episode list is still playable**: the episode id is
+  `"{show}:1:1"` for the addon's stream call, and the `/meta` fallback for a
+  `tmdb:` id asks TMDB (`TmdbBrowse.episodes`) for the list the addon does not
+  publish. Addons that are catalogue-less (PenguPlay) never had an episode list
+  from their own manifest.
+
+### 13. Playback starts on the first server a probe has PROVED — the rest keep loading
+
+The report: *"it found 79 servers and the video still did not start"*. The hold
+that gives the title's own extension a head start (`originReady`, a couple of
+seconds) was unconditional: the player waited for the origin even when a server
+from elsewhere had already been PROBED and answered with a video/HLS manifest.
+A source a probe has verified is now enough to end the hold
+(`PlayerSource.probeVerified`, checked in both `originReady` and
+`healthyStartIndex`), so playback commits the instant one working server exists
+while the remaining servers continue to arrive in the background and are still
+offered in the player's server sheet.
+
+### 14. An empty catalogue page is not an answer
+
+The report: *"a row on Home is full of posters, tapping Show all says nothing
+here right now"*. Catalogue hosts answer HTTP 200 with an empty list while their
+upstream is rate-limited (StremioLabAR's Trakt/MDBList lists do exactly this,
+and say so in an `error` field), and the page read happened a second after the
+Home row's read of the SAME catalogue succeeded.
+
+- **One funnel for every engine** (`ContentRepository.loadCatalogPage`): the
+  page that opens on a tap re-asks once after a short pause when the answer is
+  empty (`retryEmpty`), and page 1 falls back to the last NON-EMPTY answer this
+  catalogue gave — from a process-wide cache, because the two reads come from
+  different repository instances (Home's row and the catalogue screen).
+- **The addon's own words are shown when it has any** (`StremioAddon.catalogErrors`):
+  an `error` field, `totalItems == 0`, a non-JSON body or a timeout each get
+  their own sentence instead of the generic "returned no items".
+- **A catalogue that can ONLY be answered with a query is not a Home row**
+  (`StremioAddon.homeCatalogs`): a catalogue whose `extra` marks `search` as
+  required answers an empty list to a plain page request by construction, so it
+  is held back from the feed (it stays in `catalogs()`, where `search()` asks it
+  with the query it needs) and `search()` skips catalogues that declare extras
+  and no `search` (see `supportsSearch`).

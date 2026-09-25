@@ -1037,6 +1037,79 @@ class ContentRepository(private val manager: ProviderManager) {
                 if (counts.isNotEmpty()) append(" · ").append(counts)
             }
         }
+        /** How long [loadCatalogPage] waits before re-asking a catalogue that
+         *  answered an empty page while the user was looking at it. */
+        private const val CATALOG_RETRY_MS = 900L
+
+        /** The last NON-EMPTY page a provider answered for a catalogue — see
+         *  [loadCatalogPage]. Process-wide on purpose: the reads it reconciles
+         *  come from different repository instances (Home's row and the
+         *  catalogue's own page are separate screens), so an instance-level
+         *  cache would never see the answer the other screen already got.
+         *  Bounded and access-ordered, like the other caches here: at most one
+         *  page per catalogue of the titles on screen. */
+        private val lastGoodCatalogPage =
+            object : LinkedHashMap<String, List<MediaItem>>(48, 0.75f, true) {
+                override fun removeEldestEntry(
+                    eldest: MutableMap.MutableEntry<String, List<MediaItem>>?,
+                ): Boolean = size > 240
+            }
+
+        /** Like runCatching but re-throws CancellationException, so a cancelled
+         *  coroutine stops its provider call instead of swallowing the
+         *  cancellation and keeping the network busy in the background. */
+        private inline fun <T> catalogCatching(block: () -> T): Result<T> =
+            try {
+                Result.success(block())
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                Result.failure(t)
+            }
+
+        /**
+         * Where a catalogue page is loaded from, for every engine at once.
+         *
+         * Two robustness rules live here so that Home's rows and a catalogue's
+         * own page can never disagree about what a provider has:
+         *
+         *  * A catalogue host that is rate-limited or cold-starting answers HTTP
+         *    200 with an empty list (or an `error` field) one second and the
+         *    full page the next — StremioLabAR's Trakt/MDBList lists do this.
+         *    The caller that had the user LOOKING at the page (`retryEmpty`)
+         *    therefore asks once more after a short pause before believing an
+         *    empty answer.
+         *  * When page 1 still comes back empty and this catalogue has answered
+         *    before, the last real answer is served instead — from the
+         *    process-wide cache above, so the answer Home's row already got is
+         *    the one the catalogue's own page shows. That is what fixes "the
+         *    row on Home is full of posters and tapping Show all says nothing
+         *    here right now": the two reads were of the same catalogue seconds
+         *    apart, and the second one believed a transient empty answer. Page
+         *    2+ is never served from the cache — an empty page there really is
+         *    the end of the list.
+         */
+        suspend fun loadCatalogPage(
+            p: ContentProvider?,
+            ref: CatalogRef,
+            page: Int,
+            retryEmpty: Boolean = false,
+        ): List<MediaItem> {
+            p ?: return emptyList()
+            val key = "${p.config.id}|${ref.type}|${ref.id}|$page"
+            var items = catalogCatching { p.getCatalog(ref, page) }.getOrDefault(emptyList())
+            if (items.isEmpty() && retryEmpty) {
+                delay(CATALOG_RETRY_MS)
+                items = catalogCatching { p.getCatalog(ref, page) }.getOrDefault(emptyList())
+            }
+            if (items.isNotEmpty()) {
+                synchronized(lastGoodCatalogPage) { lastGoodCatalogPage[key] = items }
+                return items
+            }
+            if (page != 1) return emptyList()
+            return synchronized(lastGoodCatalogPage) { lastGoodCatalogPage[key] }.orEmpty()
+        }
+
     }
 
     /** Messages THIS app wrote into a provider's error map (see
@@ -1782,7 +1855,7 @@ class ContentRepository(private val manager: ProviderManager) {
                             // boots a whole JS engine before its first byte,
                             // and its own home page can fetch a dozen sections).
                             val loaded = withTimeoutOrNull(homeProviderCeilingMs(p)) {
-                                val catalogs = p.catalogs()
+                                val catalogs = p.homeCatalogs()
                                     .distinctBy { it.type to it.id }
                                     .take(24)
                                 coroutineScope {
@@ -1790,7 +1863,8 @@ class ContentRepository(private val manager: ProviderManager) {
                                         async {
                                             catalogGate.withPermit {
                                                 val items = withTimeoutOrNull(homeCatalogCeilingMs(p)) {
-                                                    cancellableCatching { p.getCatalog(c, 1) }.getOrDefault(emptyList())
+                                                    cancellableCatching { loadCatalogPage(p, c, 1) }
+                                                        .getOrDefault(emptyList())
                                                 }.orEmpty().distinctBy { it.uniqueId }.take(40)
                                                 if (items.isEmpty()) null
                                                 else CatalogRow(
@@ -1889,7 +1963,7 @@ class ContentRepository(private val manager: ProviderManager) {
                     try {
                         providerGate.withPermit {
                             val settled = withTimeoutOrNull(homeProviderCeilingMs(p)) {
-                                val catalogs = p.catalogs()
+                                val catalogs = p.homeCatalogs()
                                     .distinctBy { it.type to it.id }
                                     .take(24)
                                 coroutineScope {
@@ -1898,7 +1972,8 @@ class ContentRepository(private val manager: ProviderManager) {
                                             try {
                                                 catalogGate.withPermit {
                                                     val items = withTimeoutOrNull(homeCatalogCeilingMs(p)) {
-                                                        cancellableCatching { p.getCatalog(c, 1) }.getOrDefault(emptyList())
+                                                        cancellableCatching { loadCatalogPage(p, c, 1) }
+                                                            .getOrDefault(emptyList())
                                                     }.orEmpty().distinctBy { it.uniqueId }.take(40)
                                                     if (items.isNotEmpty()) {
                                                         var row = CatalogRow(

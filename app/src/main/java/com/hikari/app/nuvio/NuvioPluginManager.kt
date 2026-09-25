@@ -76,7 +76,7 @@ object NuvioPluginManager {
             val filename = o.optString("filename")
             if (filename.isBlank()) continue
             val codeUrl = "$base/$filename"
-            val bytes = runCatching { Http.fetchBytesRobust(codeUrl) }.getOrNull() ?: continue
+            val bytes = Http.fetchBytesCancellable(codeUrl) ?: continue
             val rawName = filename.substringAfterLast('/')
             runCatching { installScraper(context, bytes, rawName, codeUrl, o.optString("logo").ifBlank { null }) }
         }

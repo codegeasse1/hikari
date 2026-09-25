@@ -1,10 +1,15 @@
 package com.hikari.app.net
 
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.suspendCancellableCoroutine
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
+import java.io.IOException
 import java.util.concurrent.TimeUnit
 
 object Http {
@@ -291,6 +296,110 @@ object Http {
             }
         }
         return null
+    }
+
+    /**
+     * [fetchBytesRobust] that a coroutine can actually STOP — the one every
+     * extension-install path should use.
+     *
+     * The install's own budget is 20 seconds (see ExtensionsScreen.runInstall),
+     * and the old shape was `withTimeoutOrNull(20_000) { fetchBytesRobust(…) }`:
+     * the timeout abandoned the WAIT, but the OkHttp call kept running on its IO
+     * thread to its own 30-second read timeout, for every install the user
+     * cancelled or that overran — a leaked download competing with the install
+     * that replaced it and with everything else the app was doing, which is felt
+     * as the app going heavy for a while after an install. Here the call is
+     * enqueued and cancelled when the coroutine is, so a capped install really
+     * stops its download, and the between-attempt pause is a cancellable `delay`
+     * rather than a `Thread.sleep`.
+     *
+     * Same URL variants, same retry count, same "null means it did not come back"
+     * contract as [fetchBytesRobust].
+     */
+    suspend fun fetchBytesCancellable(
+        url: String,
+        headers: Map<String, String> = emptyMap(),
+        readTimeoutSec: Long = 30,
+        callTimeoutSec: Long = 300,
+    ): ByteArray? {
+        for (variant in urlVariants(url)) {
+            for (attempt in 0 until 2) {
+                val outcome = downloadCancellableOne(variant, headers, readTimeoutSec, callTimeoutSec)
+                outcome.getOrNull()?.let { return it }
+                delay(300L)
+            }
+        }
+        return null
+    }
+
+    /**
+     * [downloadBytes] that a coroutine can actually STOP, with the same
+     * per-attempt failure messages (see [describeFailure]). Used by the
+     * extension-install paths so the install's own time cap aborts the download
+     * instead of leaving it running behind a cancelled wait.
+     */
+    suspend fun downloadBytesCancellable(
+        url: String,
+        headers: Map<String, String> = emptyMap(),
+        readTimeoutSec: Long = 60,
+        callTimeoutSec: Long = 300,
+    ): Result<ByteArray> {
+        var last: Throwable = Exception("the file could not be downloaded")
+        for (variant in urlVariants(url)) {
+            for (attempt in 0 until 2) {
+                val outcome = downloadCancellableOne(variant, headers, readTimeoutSec, callTimeoutSec)
+                outcome.getOrNull()?.let { return Result.success(it) }
+                outcome.exceptionOrNull()?.let { last = it }
+                // A failed attempt against a wrong spelling is worth retrying once;
+                // a failure that is already a described HTTP status is not.
+                if (outcome.exceptionOrNull()?.message?.startsWith("HTTP ") == true) break
+                delay(300L)
+            }
+        }
+        return Result.failure(last)
+    }
+
+    /** One enqueued download, cancelled if the coroutine is. */
+    private suspend fun downloadCancellableOne(
+        url: String,
+        headers: Map<String, String>,
+        readTimeoutSec: Long,
+        callTimeoutSec: Long,
+    ): Result<ByteArray> = suspendCancellableCoroutine { cont ->
+        val perCall = client.newBuilder()
+            .readTimeout(readTimeoutSec, TimeUnit.SECONDS)
+            .callTimeout(callTimeoutSec, TimeUnit.SECONDS)
+            .build()
+        val builder = Request.Builder().url(url).header("User-Agent", UA)
+        headers.forEach { (k, v) -> builder.header(k, v) }
+        val call = perCall.newCall(builder.build())
+        // Cancelling the coroutine cancels the HTTP CALL: an install that hits its
+        // 20-second cap stops downloading rather than running on in the background.
+        cont.invokeOnCancellation { runCatching { call.cancel() } }
+        call.enqueue(object : Callback {
+            override fun onFailure(c: Call, e: IOException) {
+                // A cancelled continuation must not be resumed as if it had
+                // completed — but the callback can fire after cancellation, so
+                // the resume is guarded and never allowed to escape.
+                runCatching { cont.resumeWith(Result.failure(e)) }
+            }
+
+            override fun onResponse(c: Call, resp: Response) {
+                val outcome = runCatching {
+                    resp.use {
+                        if (!it.isSuccessful) throw Exception(describeFailure(url, it.code, false))
+                        it.body?.bytes() ?: throw Exception("the server sent an empty file")
+                    }
+                }
+                val bytes = outcome.getOrNull()
+                if (bytes != null) {
+                    runCatching { cont.resumeWith(Result.success(bytes)) }
+                } else {
+                    val cause = outcome.exceptionOrNull() ?: Exception("the file could not be downloaded")
+                    runCatching { cont.resumeWith(Result.failure(cause)) }
+                }
+            }
+        })
     }
 
     /**

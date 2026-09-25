@@ -48,6 +48,7 @@ import com.hikari.app.ui.PosterLoader
 import com.hikari.app.ui.components.EmptyState
 import com.hikari.app.ui.navigation.LocalTaskbarInset
 import com.hikari.app.ui.navigation.Routes
+import com.hikari.app.tv.tvToggle
 import kotlinx.coroutines.launch
 import java.util.Locale
 
@@ -108,7 +109,11 @@ fun HistoryScreen(nav: NavHostController, embedded: Boolean = false) {
                 Switch(
                     checked = paused,
                     onCheckedChange = { scope.launch { app.store.setHistoryPaused(it) } },
-                    modifier = Modifier.padding(start = 8.dp)
+                    // A remote cannot land on a bare Switch at the end of a row
+                    // — see [Modifier.tvToggle].
+                    modifier = Modifier
+                        .padding(start = 8.dp)
+                        .tvToggle(paused) { scope.launch { app.store.setHistoryPaused(it) } },
                 )
             }
             if (paused) {

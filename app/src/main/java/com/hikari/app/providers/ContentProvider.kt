@@ -71,6 +71,16 @@ interface ContentProvider {
     fun openSettings(activity: android.app.Activity?): Boolean = false
 
     suspend fun catalogs(): List<CatalogRef>
+
+    /**
+     * The catalogues to draw as rows on Home. Defaults to [catalogs] — a
+     * provider may hold a few back, e.g. a Stremio catalogue that REQUIRES a
+     * search query (asking it for a plain page can only answer an empty list, so
+     * as a Home row it is empty by construction; see StremioAddon.homeCatalogs).
+     * A provider that does not override this sees no change at all.
+     */
+    suspend fun homeCatalogs(): List<CatalogRef> = catalogs()
+
     suspend fun getCatalog(ref: CatalogRef, page: Int): List<MediaItem>
     suspend fun search(query: String, page: Int): List<MediaItem>
     suspend fun getMeta(item: MediaItem): MediaItem

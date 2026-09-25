@@ -982,9 +982,8 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
 
     suspend fun installNuvioPlugin(plugin: Cs3RepoPlugin): Result<Int> =
         withContext(Dispatchers.IO) {
-            val bytes = withTimeoutOrNull(90_000) {
-                Http.fetchBytesRobust(plugin.url, mapOf("User-Agent" to Http.NUVIO_UA))
-            } ?: return@withContext Result.failure(Exception("Download timed out — check your connection"))
+            val bytes = Http.fetchBytesCancellable(plugin.url, mapOf("User-Agent" to Http.NUVIO_UA))
+                ?: return@withContext Result.failure(Exception("Download timed out — check your connection"))
             val hash = plugin.fileHash
             if (hash != null && hash.startsWith("sha256-")) {
                 val expected = hash.removePrefix("sha256-").lowercase()
@@ -1052,7 +1051,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
 
     suspend fun installSkyStreamPlugin(plugin: Cs3RepoPlugin): Result<Int> =
         withContext(Dispatchers.IO) {
-            val bytes = withTimeoutOrNull(90_000) { Http.fetchBytesRobust(plugin.url) }
+            val bytes = Http.fetchBytesCancellable(plugin.url)
                 ?: return@withContext Result.failure(Exception("Download timed out — check your connection"))
             com.hikari.app.skystream.SkyStreamPluginManager.install(
                 getApplication<Application>(),
@@ -1085,7 +1084,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         if (!clean.startsWith("http://") && !clean.startsWith("https://")) {
             return@withContext Result.failure(Exception("Must start with http(s)://"))
         }
-        val bytes = Http.fetchBytesRobust(clean)
+        val bytes = Http.fetchBytesCancellable(clean)
             ?: return@withContext Result.failure(Exception("Download failed — check the URL"))
         com.hikari.app.skystream.SkyStreamPluginManager.install(
             getApplication<Application>(),
@@ -1197,14 +1196,16 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
      * turns "download timed out" (which was never true) into a sentence that
      * names the real problem.
      */
-    private fun downloadExtension(url: String): Pair<ByteArray?, String> {
+    private suspend fun downloadExtension(url: String): Pair<ByteArray?, String> {
         if (!url.startsWith("http://") && !url.startsWith("https://")) {
             return null to "This extension has no download link — remove its repo and add it again"
         }
         // 60s per read, 5 minutes for the whole call: an extension is ~1MB, but
         // the phones this app runs on can be on a connection where that takes a
-        // while, and a fixable slow download must not be cut off at 30s.
-        val result = Http.downloadBytes(url, readTimeoutSec = 60, callTimeoutSec = 300)
+        // while, and a fixable slow download must not be cut off at 30s. The
+        // cancellable variant means a caller that gives up actually stops the
+        // socket instead of leaving the blocking read holding an IO thread.
+        val result = Http.downloadBytesCancellable(url, readTimeoutSec = 60, callTimeoutSec = 300)
         val bytes = result.getOrNull()
             ?: return null to downloadFailureMessage(result.exceptionOrNull())
         if (bytes.size < 4 || bytes[0] != 'P'.toByte() || bytes[1] != 'K'.toByte()) {
@@ -2143,7 +2144,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     suspend fun installCs3Plugin(plugin: Cs3RepoPlugin): Result<Int> = withContext(Dispatchers.IO) {
-        val bytes = withTimeoutOrNull(90_000) { Http.fetchBytesRobust(plugin.url) }
+        val bytes = Http.fetchBytesCancellable(plugin.url)
             ?: return@withContext Result.failure(Exception("Download timed out — check your connection"))
         val hash = plugin.fileHash
         if (hash != null && hash.startsWith("sha256-")) {
@@ -2288,7 +2289,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Installs a .hiki extension listed in a Hikari repo. */
     suspend fun installHikiPlugin(plugin: Cs3RepoPlugin): Result<Int> = withContext(Dispatchers.IO) {
-        val bytes = withTimeoutOrNull(90_000) { Http.fetchBytesRobust(plugin.url) }
+        val bytes = Http.fetchBytesCancellable(plugin.url, readTimeoutSec = 60, callTimeoutSec = 90)
             ?: return@withContext Result.failure(Exception("Download timed out — check your connection"))
         val hash = plugin.fileHash
         if (hash != null && hash.startsWith("sha256-")) {

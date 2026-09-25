@@ -60,6 +60,7 @@ import com.hikari.app.ui.components.GlassCard
 import com.hikari.app.ui.components.GlassShape
 import com.hikari.app.ui.components.SettingsPageHeader
 import com.hikari.app.ui.navigation.LocalTaskbarInset
+import com.hikari.app.tv.tvToggle
 import kotlinx.coroutines.launch
 
 /**
@@ -199,6 +200,12 @@ fun PlayerControlsPage(app: HikariApp, onBack: () -> Unit) {
                         Switch(
                             checked = swipesOn,
                             onCheckedChange = { on ->
+                                scope.launch {
+                                    runCatching { app.store.setPlayerSwipes(on) }
+                                }
+                            },
+                            // See [Modifier.tvToggle].
+                            modifier = Modifier.tvToggle(swipesOn) { on ->
                                 scope.launch {
                                     runCatching { app.store.setPlayerSwipes(on) }
                                 }

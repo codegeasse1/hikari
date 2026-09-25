@@ -188,7 +188,19 @@ class PlayerActivity : ComponentActivity() {
         val providerId: String = "",
         /** That provider's display name (the repo plugin's name). */
         val providerName: String = "",
-    )
+    ) {
+        /**
+         * True when a probe has already been to this URL and come back with a
+         * video / HLS / DASH answer — i.e. a server that is known to WORK, not
+         * one that merely looks likely. The player starts on such a row the
+         * moment one exists (see [healthyStartIndex] and the origin hold in
+         * [originReady]), which is the "play instantly on the first server that
+         * actually plays, while the rest keep loading" rule.
+         */
+        fun probeVerified(): Boolean =
+            !isTorrent && !local && url.isNotBlank() &&
+                !StreamProbe.knownBad(url) && StreamProbe.cached(url) != null
+    }
 
     /** Subtitle tracks contributed by the installed SUBTITLE addons
      *  (OpenSubtitles v3, SubDL…), merged into the playing source's own tracks. */
@@ -1741,6 +1753,13 @@ class PlayerActivity : ComponentActivity() {
                 val originReady = {
                     originGraceMs <= 0 || originProviderId.isBlank() || originFound() ||
                         originSettled || searchDone ||
+                        // A server that a probe has already PROVED playable is in
+                        // hand: the user asked for playback the instant a working
+                        // server is found, so the origin's head start gives way to
+                        // it right here instead of costing the last second of the
+                        // wait. Its own servers still arrive and are still placed
+                        // at the top of the list.
+                        sources.any { it.probeVerified() } ||
                         System.currentTimeMillis() >= originHoldUntil ||
                         // The head start has run out with servers in hand: play
                         // one of them instead of holding the whole server list
@@ -2041,6 +2060,19 @@ class PlayerActivity : ComponentActivity() {
         val healthy = { s: PlayerSource ->
             !s.isTorrent && s.url.isNotBlank() &&
                 mirrorHostOf(s.url) !in deadHosts && !StreamProbe.knownBad(s.url)
+        }
+        // A server a probe has already RESOLVED wins: "start playing the instant
+        // one WORKING server is found" is exactly this set — the probe has been to
+        // the host and seen a video (or an HLS/DASH manifest) come back, so this
+        // row is the one that will show a picture, not the one that merely looks
+        // most promising from its name. The searches warm every source as it
+        // arrives (StreamProbe.warmAsync / warm), so by the time playback commits
+        // the fastest host is usually already verified.
+        val verified = sources.filterIndexed { _, s -> healthy(s) && s.probeVerified() }
+        if (verified.isNotEmpty()) {
+            val originVerified = verified.firstOrNull { it.isFromOrigin() }
+            if (originVerified != null) return sources.indexOf(originVerified)
+            return sources.indexOf(verified.first())
         }
         // "If I am on MovieBox, play MovieBox's server first": among the servers
         // that can actually play, the one from the extension the title was

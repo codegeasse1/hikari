@@ -105,6 +105,8 @@ import com.hikari.app.reader.ReaderMode
 import com.hikari.app.reader.ReaderOrientation
 import com.hikari.app.reader.TappingInvertMode
 import com.hikari.app.reader.WebtoonScaleType
+import com.hikari.app.tv.tvAdjust
+import com.hikari.app.tv.tvToggle
 
 private val ChromeBarColor = Color(0xCC161926)
 private val SheetColor = Color(0xFF1B1E2A)
@@ -1358,7 +1360,10 @@ private fun ColumnScope.WebtoonSettingsSection(
                 onValueChange = { onWebtoonSidePaddingChange(it.toInt()) },
                 valueRange = 0f..25f,
                 colors = sliderAccentColors(),
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1f).tvAdjust { delta ->
+                    // One percent per press — see [Modifier.tvAdjust].
+                    onWebtoonSidePaddingChange((webtoonSidePadding + delta).coerceIn(0, 25))
+                },
             )
             Spacer(Modifier.width(8.dp))
             Text(
@@ -1448,7 +1453,13 @@ private fun ColumnScope.SettingsGeneralTab(
                 colors = sliderAccentColors(),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp),
+                    .padding(horizontal = 12.dp)
+                    .tvAdjust { delta ->
+                        // One 99th of the range per press — see
+                        // [Modifier.tvAdjust].
+                        val nv = (sliderValue + delta).coerceIn(1f, 100f)
+                        onAutoScrollSpeedChange((nv - 1f) / 99f * 180f + 20f)
+                    },
             )
         }
         Text(
@@ -1492,7 +1503,12 @@ private fun ColumnScope.SettingsGeneralTab(
                 onValueChange = { onDoubleTapAnimDurationChange(it.toInt()) },
                 valueRange = 100f..1000f,
                 colors = sliderAccentColors(),
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1f).tvAdjust { delta ->
+                    // 50ms per press — see [Modifier.tvAdjust].
+                    onDoubleTapAnimDurationChange(
+                        (doubleTapAnimDuration + delta * 50).coerceIn(100, 1000)
+                    )
+                },
             )
             Spacer(Modifier.width(8.dp))
             Text(
@@ -1586,7 +1602,12 @@ private fun ColumnScope.SettingsColorTab(
                     onValueChange = { onCustomBrightnessValueChange(it.toInt()) },
                     valueRange = -75f..100f,
                     colors = sliderAccentColors(),
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.weight(1f).tvAdjust { delta ->
+                        // 5% per press — see [Modifier.tvAdjust].
+                        onCustomBrightnessValueChange(
+                            (customBrightnessValue + delta * 5).coerceIn(-75, 100)
+                        )
+                    },
                 )
                 Spacer(Modifier.width(8.dp))
                 Text(
@@ -1913,6 +1934,10 @@ private fun ToggleRow(
         Switch(
             checked = checked,
             onCheckedChange = onCheckedChange,
+            // A remote cannot land on a bare Switch at the end of a row, and
+            // cannot flip one from wherever the focus happens to be — see
+            // [Modifier.tvToggle].
+            modifier = Modifier.tvToggle(checked, onValueChange = onCheckedChange),
         )
     }
 }
@@ -2080,7 +2105,11 @@ private fun ColorChannelSlider(
             onValueChange = { onValue(it.toInt()) },
             valueRange = 0f..255f,
             colors = sliderAccentColors(),
-            modifier = Modifier.weight(1f),
+            modifier = Modifier.weight(1f).tvAdjust { delta ->
+                // One step of 8 per press: a 0-255 channel on a remote has to
+                // move visibly. See [Modifier.tvAdjust].
+                onValue((value + delta * 8).coerceIn(0, 255))
+            },
         )
         Text(
             text = "$value",

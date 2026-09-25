@@ -1248,7 +1248,12 @@ private fun ContinueWatchingCard(
                 checked = !hideContinue,
                 onCheckedChange = { show ->
                     scope.launch { app.store.setHideContinue(!show) }
-                }
+                },
+                // A remote cannot land on a bare Switch at the end of a row —
+                // see [Modifier.tvToggle].
+                modifier = Modifier.tvToggle(!hideContinue) { show ->
+                    scope.launch { app.store.setHideContinue(!show) }
+                },
             )
         }
     }
@@ -1292,6 +1297,10 @@ private fun GifAnimCard(app: HikariApp) {
             Switch(
                 checked = on,
                 onCheckedChange = { v -> scope.launch { runCatching { app.store.setGifAnim(v) } } },
+                // See [Modifier.tvToggle].
+                modifier = Modifier.tvToggle(on) { v ->
+                    scope.launch { runCatching { app.store.setGifAnim(v) } }
+                },
             )
         }
     }
@@ -1341,6 +1350,10 @@ private fun AdultContentCard(app: HikariApp) {
             Switch(
                 checked = on,
                 onCheckedChange = { v ->
+                    scope.launch { runCatching { app.store.setNsfwEnabled(v) } }
+                },
+                // See [Modifier.tvToggle].
+                modifier = Modifier.tvToggle(on) { v ->
                     scope.launch { runCatching { app.store.setNsfwEnabled(v) } }
                 },
             )
@@ -1750,24 +1763,28 @@ private fun TaskbarCard(app: HikariApp) {
                         )
                     }
                 }
+                // Hoisted so the D-pad modifier can run the same lambda (see
+                // [Modifier.tvToggle]) without repeating its body.
+                val tabOn: (Boolean) -> Unit = { on ->
+                    scope.launch {
+                        when (tab.route) {
+                            Routes.IPTV -> app.store.setIptvTab(on)
+                            Routes.MANGA -> app.store.setMangaTab(on)
+                            Routes.STATS -> app.store.setStatsTab(on)
+                            Routes.TELEGRAM -> app.store.setTelegramTab(on)
+                            else -> app.store.setTabHidden(tab.route, !on)
+                        }
+                    }
+                }
+                val tabEnabled = if (tab.route in extras) true else !isOn || coreVisible.size > 1
                 Switch(
                     checked = isOn,
                     // A hidden tab can always be brought back; a shown one only
                     // while at least one other tab is still on (IPTV and Manga
                     // excepted — they are not among the app's core pages).
-                    enabled = if (tab.route in extras) true
-                    else !isOn || coreVisible.size > 1,
-                    onCheckedChange = { on ->
-                        scope.launch {
-                            when (tab.route) {
-                                Routes.IPTV -> app.store.setIptvTab(on)
-                                Routes.MANGA -> app.store.setMangaTab(on)
-                                Routes.STATS -> app.store.setStatsTab(on)
-                                Routes.TELEGRAM -> app.store.setTelegramTab(on)
-                                else -> app.store.setTabHidden(tab.route, !on)
-                            }
-                        }
-                    }
+                    enabled = tabEnabled,
+                    onCheckedChange = tabOn,
+                    modifier = Modifier.tvToggle(isOn, tabEnabled, tabOn),
                 )
             }
             // ---- My Stuff's own sections ----
@@ -3485,7 +3502,12 @@ private fun PlaybackStartCard(app: HikariApp) {
                 onCheckedChange = {
                     askServer = it
                     scope.launch { runCatching { app.store.setAskServerOnPlay(it) } }
-                }
+                },
+                // See [Modifier.tvToggle].
+                modifier = Modifier.tvToggle(askServer) {
+                    askServer = it
+                    scope.launch { runCatching { app.store.setAskServerOnPlay(it) } }
+                },
             )
         }
 
@@ -3511,7 +3533,12 @@ private fun PlaybackStartCard(app: HikariApp) {
                     onCheckedChange = {
                         failoverAsk = it
                         scope.launch { runCatching { app.store.setFailoverAskOnFailure(it) } }
-                    }
+                    },
+                    // See [Modifier.tvToggle].
+                    modifier = Modifier.tvToggle(failoverAsk) {
+                        failoverAsk = it
+                        scope.launch { runCatching { app.store.setFailoverAskOnFailure(it) } }
+                    },
                 )
             }
         }
@@ -5096,7 +5123,13 @@ private fun UserscriptsCard(app: HikariApp) {
                             persist(scripts.map {
                                 if (it.id == s.id) it.copy(enabled = on) else it
                             })
-                        }
+                        },
+                        // See [Modifier.tvToggle].
+                        modifier = Modifier.tvToggle(s.enabled) { on ->
+                            persist(scripts.map {
+                                if (it.id == s.id) it.copy(enabled = on) else it
+                            })
+                        },
                     )
                     TextButton(onClick = { draft = s.code; editing = s }) { Text(tr("Edit")) }
                     IconButton(onClick = { persist(scripts.filterNot { it.id == s.id }) }) {

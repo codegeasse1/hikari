@@ -247,7 +247,9 @@ class CollectionsRepository(private val manager: ProviderManager) {
             rawType = source.rawType,
         )
         val raw = withTimeoutOrNull(perCatalogTimeoutMs) {
-            runCatching { provider.getCatalog(ref, 1) }.getOrDefault(emptyList())
+            runCatching {
+                com.hikari.app.data.ContentRepository.loadCatalogPage(provider, ref, 1)
+            }.getOrDefault(emptyList())
         }.orEmpty().distinctBy { it.uniqueId }
         val items = translate(ref.providerId, raw)
         if (items.isEmpty()) return null
