@@ -13,16 +13,20 @@ Everything lives in `ContentRepository.kt` unless stated otherwise.
    resolves to a TMDB id. These search by the provider's own id and their servers
    stream into the list as they land.
    With **Server search: "Only this extension"** (Settings → Playback & Servers,
-   `SearchScope.allExtensions == false`) it is the origin ALONE: no sibling
-   addons, no nuvio engines, no cross pass, no sweep, and no episode list
-   borrowed from another site. The switch is read once at the top of
-   `streamsForInner` into a local, so one lookup can never be half-scoped.
-   **Exception extensions** (`SearchScope.exceptions`) and **"Search every Nuvio
-   provider"** (`SearchScope.nuvioFamily`, on by default) are the two things that
-   widen it, and each carries a rule of its own — see invariants 6 and 15.
-   **An item with no origin is the exception to both** — see invariant 10.
-2. **Same-engine family** — the other repos of the origin's own engine, queued
-   first in the cross pass.
+   `SearchScope.allExtensions == false`, the DEFAULT since 0.10.39) it is the
+   origin ALONE: no sibling addons, no nuvio engines, no cross pass, no sweep,
+   and no episode list borrowed from another site. The switch is read once at the
+   top of `streamsForInner` into a local, so one lookup can never be half-scoped.
+   Three things widen it, each with its own switch and its own rule:
+   **exception extensions** (`SearchScope.exceptions`, invariant 6), and the
+   **per-engine family set** (`SearchScope.engineFamilies` — invariant 17), which
+   covers Nuvio and Stremio (on by default) and every other engine separately
+   (off by default).
+   **An item with no origin is the exception to all of them** — see invariant 10.
+2. **Same-engine family** — the other repos of the origin's own engine, when that
+   engine's family switch is ON (invariant 17). They are queued first in the cross
+   pass. With the switch off there is no same-engine step at all: the title's own
+   repo is the only one asked, which is what "only this extension" promises.
 3. **Cross pass** — every other installed extension asked *by title*:
    search → pick the best matching entry (`confidentTitleMatch`) → resolve its
    meta + episode list → extract servers.
@@ -113,20 +117,27 @@ point, so cancelling a nuvio call really cancels its HTTP (see invariant 8).
   widening only while answers come back. Firing ~96 cold plugin runtimes at the
   same instant is what wedges them on a phone. Waves only stagger the start —
   every target is still asked, in trust order (`crossExtensionTargets`).
-- **The origin's hold is GONE in instant mode.** With "play as soon as the first
-  server is found" (the default), `originGraceMs` and `originHeadStartMs` are
-  both 0 on the launch intent, so `originReady` in PlayerActivity is true the
-  instant anything is in hand and playback starts on that first server — nothing
-  waits for the origin. It used to be a three-second head start
-  (`ORIGIN_HEAD_START_MS`), which read as a wait on top of the pass: *"i told you
-  to make play instantly as soon as 1 server found — see it showing 12 servers
-  found and still the video didnt start"*. Only "wait for more servers first"
-  uses a hold at all, and that one is the full `ORIGIN_PLAY_GRACE_MS` (45 s)
-  window, ended early the moment the origin answers (`StreamsLive.settleOrigin`).
+- **There is NO origin hold at all** (removed in 0.10.39). This used to be a
+  window in which playback waited for the extension the title was opened FROM —
+  45 s as a backstop in "wait for more servers first" mode, and (after 0.10.38) 0
+  in the instant mode. The instant-mode zero was not enough, because the user's
+  setting was not always the instant one and because a *third* report arrived
+  anyway: *"see still not playing when server found but see 56 servers have found
+  and its still not playing"*, with the cover reading "Found N servers — still
+  searching…" and a 45 s window running out underneath it. The wait is gone in
+  every mode: `originGraceMs` and `originHeadStartMs` are 0 on the launch intent,
+  `tryStart` in PlayerActivity starts on the first server that arrives, and a
+  **failsafe** (`START_FAILSAFE_MS`) starts playback anyway if servers sit on the
+  list for four seconds with nothing committed — which makes "the first server
+  starts the video" structural rather than a property of the current conditions.
   The origin is not punished: it is still asked first, still gets the first
   engine slot, its servers still sort to the top of the list and to the front of
   the player's own list, and any that land later stream into "Select server"
-  while the video plays.
+  while the video plays. What the hold used to protect — a replay continuing on
+  the server that worked last time — is preserved as ORDER instead of waiting
+  (the remembered server is placed directly after the origin's rows).
+  "Wait for more servers first" is still honoured: it waits for a COUNT of
+  servers, never for one provider.
 
 ### 3. Every state on screen must be able to resolve
 
@@ -450,15 +461,17 @@ addon in Stremio shows dozens of servers"*. Three separate protocol mistakes in
 
 ### 13. Playback starts on the first server a probe has PROVED — the rest keep loading
 
-The report: *"it found 79 servers and the video still did not start"*. The hold
-that gives the title's own extension a head start (`originReady`, a couple of
-seconds) was unconditional: the player waited for the origin even when a server
-from elsewhere had already been PROBED and answered with a video/HLS manifest.
-A source a probe has verified is now enough to end the hold
-(`PlayerSource.probeVerified`, checked in both `originReady` and
-`healthyStartIndex`), so playback commits the instant one working server exists
-while the remaining servers continue to arrive in the background and are still
-offered in the player's server sheet.
+The report: *"it found 79 servers and the video still did not start"*. A source a
+probe has verified is enough on its own to start (see `PlayerSource.probeVerified`
+and `healthyStartIndex`), so playback commits on the first server that is known to
+work while the remaining servers continue to arrive in the background and are
+still offered in the player's server sheet.
+
+**Since 0.10.39 there is no hold at all to end** — see invariant 2: this was
+originally written as "a verified server ends the ORIGIN's head start early", and
+the head start itself has now been removed, so a verified server is simply the one
+`healthyStartIndex` prefers. The four-second `START_FAILSAFE_MS` in the player
+guarantees the start even if every preference fails.
 
 ### 14. An empty catalogue page is not an answer
 
@@ -496,12 +509,15 @@ toggle there to turn that off too"*.
   their nuvio servers gathered for the title, which is what the real nuvio app
   does — and that is true whether or not the user wants CloudStream/Aniyomi repos
   in the mix.
-- **`SearchScope.nuvioFamily`** (mirrored from `AppStore.nuvioSearchAllFlow` by
-  HikariApp, read into a local at the top of `streamsForInner` like
-  `allExtensions`) adds every installed nuvio provider to the pass's targets when
-  the title was opened FROM one, with the origin first and the rest in
-  `NUVIO_PRIORITY` order (`nuvioOrder`). Default ON; the switch that turns it off
-  is the "Search every Nuvio provider" row on the Server search card.
+- **`SearchScope.engineFamilies`** is the single value behind it since 0.10.39
+  (mirrored from `AppStore.engineFamiliesFlow` by HikariApp, read into a local at
+  the top of `streamsForInner` like `allExtensions`): a SET of engine names whose
+  family is asked. `SearchScope.family(type)` answers for one engine, and
+  `nuvioFamily` / `stremioFamily` are computed from it — see invariant 17.
+  It adds every installed nuvio provider to the pass's targets when the title was
+  opened FROM one, with the origin first and the rest in `NUVIO_PRIORITY` order
+  (`nuvioOrder`). Default ON; the switch that turns it off is the "Search every
+  Nuvio provider" row on the Server search card.
 - **Off means off.** With it off, a nuvio origin in "Only this extension" mode
   asks only the exception nuvio ids, or nobody — exactly the previous behaviour.
 - **It outranks the exception-collapse rule (invariant 6) for nuvio origins,**
@@ -524,12 +540,13 @@ extension — and add the same toggle button in settings"*.
   one source of servers rather than a cross-search. The real Stremio client asks
   every installed addon for a catalogue id, and Hikari already did that on Home
   and with the scope switch ON (`primaryTargets`).
-- **`SearchScope.stremioFamily`** (mirrored from `AppStore.stremioSearchAllFlow`
-  by HikariApp, read into a local at the top of `streamsForInner`) adds every
-  installed Stremio addon to the pass's targets when the title was opened FROM
-  one, with the origin first (`stremioOrder`). Default ON; the row that turns it
-  off is "Search every Stremio addon" on the Server search card, right under the
-  Nuvio one.
+- **`SearchScope.engineFamilies`** is the one value behind it since 0.10.39
+  (mirrored from `AppStore.engineFamiliesFlow` by HikariApp, read into a local at
+  the top of `streamsForInner`); `stremioFamily` is computed from it. It adds
+  every installed Stremio addon to the pass's targets when the title was opened
+  FROM one, with the origin first (`stremioOrder`). Default ON; the row that turns
+  it off is "Search every Stremio addon" on the Server search card, right under
+  the Nuvio one. See invariant 17.
 - **Only Stremio addons are added.** A Stremio origin never drags a CloudStream,
   Aniyomi, SkyStream or Hikari repo into the pass — the addons are gathered, and
   nothing else. (A non-Stremio origin is unaffected: it still asks only itself,
@@ -541,3 +558,47 @@ extension — and add the same toggle button in settings"*.
 - **Off means off**, exactly like the nuvio switch: a Stremio origin in "Only this
   extension" mode asks the addon it came from (and any addon marked as an
   exception), and nobody else.
+
+### 17. Every engine has its own "search the whole family" switch
+
+The request (0.10.39): *"do the same toggle thing you did for nuvio and stremio
+for all of them — hikari, cloudstream, skystream and all the others. By default
+make search-all-extensions off, and keep only the nuvio and stremio toggles on;
+hikari, cloudstream etc stay off. Turning the cloudstream toggle on will search
+servers from all installed CloudStream extensions, same for hikari, same for the
+others."*
+
+- **One value, one switch per engine.** `SearchScope.engineFamilies` is the set
+  of `ProviderType` names whose whole installed family is searched for a title
+  opened FROM one of its repos. `AppStore.engineFamiliesFlow()` builds it from
+  three stored things — the two dedicated switches that already existed for Nuvio
+  (`NUVIO_SEARCH_ALL`) and Stremio (`STREMIO_SEARCH_ALL`) and a general string set
+  (`searchFamilyTypes`) for every other engine — so an existing choice of theirs
+  survives unchanged, while the UI can be one uniform row per engine
+  (`AppStore.setEngineFamily(type, on)`).
+- **Defaults: STREMIO and NUVIO on, every other engine OFF.** Nuvio and Stremio
+  are the two engines that resolve a title from an id the item already carries,
+  which is what makes their family one source of servers (invariants 15 and 16).
+  For a site-scraper engine the family is a genuine widening: it means asking
+  sibling repos by TITLE, which is a cross-search, and the user asked for it to be
+  off until they turn it on.
+- **Server search: "search all installed extensions" now defaults to OFF.** That
+  is the CloudStream model — a title plays from the repo it was opened from — and
+  it is what makes the per-engine switches the only thing that widens a lookup.
+  An install that had never touched the switch used to get every extension asked
+  for every title; `AppStore.searchAllExtensionsFlow()` returns false when the
+  key is unset. (A stored `true`/`false` is still honoured, so nothing changes for
+  anyone who has made the choice explicitly.)
+- **Where it applies, exactly.** The gate is `sameEngine` in `streamsForInner`:
+  with the origin's engine NOT in the set, no sibling repo of that engine is a
+  same-engine target, so in "Only this extension" mode the origin is the only repo
+  asked. With the scope switch ON the family set changes nothing — every repo is
+  asked by design — and with exception repos in force a repo the user marked by
+  hand is still asked (an explicit instruction outranks a family default).
+- **The family applies to one engine only.** A CloudStream title with the
+  CloudStream switch on never drags in a Hikari or Aniyomi repo: only repos of
+  the origin's own `ProviderType` are added.
+- **A log line records both directions.** With the switch off and siblings
+  installed, the pass logs `family(<Engine>) switch is off — N sibling repo(s) of
+  the origin's engine are not asked for this title`, so "my other CloudStream repo
+  never showed servers" is answerable from the log.

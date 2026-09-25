@@ -76,26 +76,47 @@ object SearchScope {
     var allExtensions: Boolean = true
 
     /**
-     * "Search every Nuvio provider" (Settings → Playback & Servers → Server
-     * search): a title opened FROM a nuvio provider also asks every other
-     * installed nuvio provider, whatever [allExtensions] says. Mirrored from
-     * `AppStore.nuvioSearchAllFlow` by HikariApp, exactly like [allExtensions],
-     * because the target builder reads it synchronously mid-pass.
+     * The ENGINES whose whole installed family is searched when a title was
+     * opened FROM one of their repos, by [ProviderType] name ("NUVIO",
+     * "STREMIO", "CS3", "HIKARI", "SKYSTREAM", "ANIYOMI", "UNIVERSAL").
+     *
+     * This is the per-engine form of the same question the two switches below
+     * used to answer for nuvio and Stremio alone: *"a title I open inside one
+     * CloudStream repo — should the other CloudStream repos I have installed be
+     * asked too?"* With [allExtensions] off, a title plays from the repo it was
+     * opened from; an engine in this set is the exception, because its repos all
+     * index the same kind of content (the user's own words: *"same turning on
+     * cloudstream toggle will search servers from all installed CloudStream
+     * extensions"*).
+     *
+     * Mirrored from `AppStore.engineFamiliesFlow` by HikariApp, exactly like
+     * [allExtensions], because the target builder reads it synchronously
+     * mid-pass. Defaults — nuvio and Stremio ON, everything else OFF — live in
+     * the store, not here.
      */
     @Volatile
-    var nuvioFamily: Boolean = true
+    var engineFamilies: Set<String> = setOf("STREMIO", "NUVIO")
+
+    /** Is [type]'s whole installed family searched for one of its titles? */
+    fun family(type: ProviderType): Boolean = type.name in engineFamilies
 
     /**
-     * "Search every Stremio addon" (Settings → Playback & Servers → Server
-     * search): a title opened FROM a Stremio addon also asks every other
-     * installed Stremio addon, whatever [allExtensions] says. The addons are all
-     * handed the item's own imdb/tmdb id, so the family is one source of servers
-     * rather than a cross-search of unrelated sites — the Stremio model. Mirrored
-     * from `AppStore.stremioSearchAllFlow` by HikariApp. Off, "only this
-     * extension" then means exactly that for a Stremio origin too.
+     * "Search every Nuvio provider" (Settings → Playback & Servers → Server
+     * search): a title opened FROM a nuvio provider also asks every other
+     * installed nuvio provider, whatever [allExtensions] says. Part of
+     * [engineFamilies] — the engines all resolve the same TMDB id and episode,
+     * so the family is one source of servers rather than a cross-search of
+     * unrelated sites.
      */
-    @Volatile
-    var stremioFamily: Boolean = true
+    val nuvioFamily: Boolean get() = family(ProviderType.NUVIO)
+
+    /**
+     * "Search every Stremio addon": the addon twin of [nuvioFamily]. The addons
+     * are all handed the item's own imdb/tmdb id, so asking the family is one
+     * source of servers. Off, "only this extension" then means exactly that for
+     * a Stremio origin too.
+     */
+    val stremioFamily: Boolean get() = family(ProviderType.STREMIO)
 
     /** Extension ids that are always asked for servers (see the class note). */
     @Volatile
@@ -2558,10 +2579,46 @@ class ContentRepository(private val manager: ProviderManager) {
             // by the same kind of id, and they are the closest thing to "my
             // provider". Waiting out the grace window for them is what buried them
             // under forty Hikari servers.
-            val sameEngine = if (origin == null) {
+            //
+            // WHETHER the family is asked at all is the user's own per-engine
+            // switch now (see [SearchScope.engineFamilies]): with "search all
+            // installed extensions" off — the default — and the engine's family
+            // switch off (the default for everything but Nuvio and Stremio), a
+            // title opened inside one extension is searched in THAT extension
+            // and nothing else, which is the CloudStream model the switch
+            // promises. Turned on, every installed repo of that engine is asked
+            // here, beside the origin, before any slot is spent elsewhere.
+            //
+            // Left OUT (not merely sorted later): with the family off, its
+            // siblings must not be asked by the cross pass either, or "only the
+            // extension the title was opened from" would be a lie — they would
+            // just arrive a wave later.
+            val sameEngine = if (origin == null || !SearchScope.family(origin.config.type)) {
                 emptyList()
             } else {
                 crossTargets.filter { it.config.type == origin.config.type }
+            }
+            // The sibling repos left out BY the family switch are not lost when
+            // the scope switch is ON or exception repos are in force: they fall
+            // through to [lateTargets] and are still asked (the cross pass asks
+            // every repo it holds). This is the one case the switch is about —
+            // "only the extension the title was opened from" — and there the
+            // cross target list is empty, so the family gate above is the whole
+            // difference between one repo being asked and every repo of that
+            // engine being asked.
+            if (origin != null && !SearchScope.family(origin.config.type)) {
+                val siblings = all.count {
+                    it.config.enabled && it.config.type == origin.config.type &&
+                        it.config.id != origin.config.id
+                }
+                if (siblings > 0) {
+                    Logs.log(
+                        "Search",
+                        "family(${origin.config.type.groupLabel}) switch is off — " +
+                            "$siblings sibling repo(s) of the origin's engine are not asked " +
+                            "for this title",
+                    )
+                }
             }
             val lateTargets = crossTargets.filter { it !in sameEngine }
             if (targets.isEmpty() && crossTargets.isEmpty()) return@withContext emptyList()

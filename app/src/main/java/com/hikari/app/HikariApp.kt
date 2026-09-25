@@ -436,23 +436,16 @@ class HikariApp : Application() {
                 com.hikari.app.data.SearchScope.allExtensions = it
             }
         }
-        // "Search every Nuvio provider": the nuvio family is asked for a nuvio
-        // origin's title even in "only this extension" mode, unless the user
-        // turns that off. Its own flag, so it does not follow the switch above
-        // (and is not affected by the exception set below).
+        // The per-engine families (Settings → Playback → Server search → the
+        // Server search card): which engines' WHOLE installed family is asked
+        // for a title opened from one of their repos. One mirrored value ("the
+        // set of engine names that are on") because the pass reads it as one
+        // decision — Nuvio and Stremio on by default, everything else off. See
+        // [SearchScope.engineFamilies].
         appScope.launch {
-            com.hikari.app.data.SearchScope.nuvioFamily = store.nuvioSearchAll()
-            store.nuvioSearchAllFlow().collect {
-                com.hikari.app.data.SearchScope.nuvioFamily = it
-            }
-        }
-        // "Search every Stremio addon": same shape, same reason — a Stremio
-        // origin keeps asking its sibling addons even in "only this extension"
-        // mode, unless the user turns that off.
-        appScope.launch {
-            com.hikari.app.data.SearchScope.stremioFamily = store.stremioSearchAll()
-            store.stremioSearchAllFlow().collect {
-                com.hikari.app.data.SearchScope.stremioFamily = it
+            runCatching { com.hikari.app.data.SearchScope.engineFamilies = store.engineFamilies() }
+            store.engineFamiliesFlow().collect {
+                com.hikari.app.data.SearchScope.engineFamilies = it
             }
         }
         appScope.launch {

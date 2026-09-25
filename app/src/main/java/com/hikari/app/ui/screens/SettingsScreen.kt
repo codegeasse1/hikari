@@ -155,6 +155,7 @@ import com.hikari.app.BuildConfig
 import com.hikari.app.HikariApp
 import com.hikari.app.R
 import com.hikari.app.data.BackupManager
+import com.hikari.app.data.ProviderType
 import com.hikari.app.data.TmdbLang
 import com.hikari.app.data.TrackerClient
 import com.hikari.app.data.TrackerKind
@@ -3568,11 +3569,31 @@ private fun PlaybackStartCard(app: HikariApp) {
  * site's episode list" fallback are part of the same behaviour and are switched
  * off with it — except for the exception repos, which are part of both.
  */
+/**
+ * Engines whose repos can be installed many times over and therefore get their
+ * own "search every <engine>" row in the Server search card (see
+ * [ServerSearchCard]).
+ *
+ * Nuvio and Stremio are excluded because they have their own switches above;
+ * IPTV and Manga are excluded because "every repo of this engine" says nothing
+ * useful about them — an IPTV playlist's channels are already all asked, and a
+ * manga source never resolves a video (see [ContentRepository]).
+ */
+private val ProviderType.isFamilyEngine: Boolean
+    get() = this != ProviderType.NUVIO && this != ProviderType.STREMIO &&
+        this != ProviderType.IPTV && this != ProviderType.MANGA
+
 @Composable
 private fun ServerSearchCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
     val flow = remember { app.store.searchAllExtensionsFlow() }
-    val all by flow.collectAsState(initial = true)
+    val all by flow.collectAsState(initial = false)
+    // Every engine whose whole installed family is searched for a title opened
+    // from one of its repos — one value for all of them (see
+    // AppStore.engineFamiliesFlow). Nuvio and Stremio have their own rows below;
+    // the site-scraper engines are rendered as a row each, further down.
+    val familiesFlow = remember { app.store.engineFamiliesFlow() }
+    val families by familiesFlow.collectAsState(initial = setOf("NUVIO", "STREMIO"))
     // "Search every Nuvio provider" — the one widening that does not follow the
     // switch above. See AppStore.nuvioSearchAllFlow / SearchScope.nuvioFamily.
     val nuvioFlow = remember { app.store.nuvioSearchAllFlow() }
@@ -3687,6 +3708,39 @@ private fun ServerSearchCard(app: HikariApp) {
                 scope.launch { runCatching { app.store.setStremioSearchAll(on) } }
             },
         )
+
+        // ---- Every OTHER engine's family ----
+        // The same switch as the two above, one row per engine the user actually
+        // has installed: with "search all installed extensions" off, a title
+        // opened from ONE CloudStream repo plays from that repo alone — unless
+        // this engine's switch is on, in which case every installed repo of that
+        // engine (and only that engine) is asked beside it. Off by default; the
+        // user's own words were "same turning on cloudstream toggle will search
+        // servers from all installed CloudStream extensions".
+        //
+        // One row per ENGINE, not per repo: an engine's repos index the same kind
+        // of content and answer the same shape of id, which is what makes the
+        // family a sensible unit — the same reason the nuvio and Stremio switches
+        // are per engine. Nuvio and Stremio keep their own rows above so their
+        // existing switches (and the stored choices behind them) are untouched.
+        for (type in enginesHere.filter { it.isFamilyEngine }) {
+            Spacer(Modifier.height(10.dp))
+            val on = type.name in families
+            SettingsToggle(
+                label = tr("Search every %s").replace("%s", type.groupLabel),
+                supporting = if (on) {
+                    tr("A title from one of them is also searched in your other %s")
+                        .replace("%s", type.groupLabel)
+                } else {
+                    tr("A title plays from the %s repo you opened it from")
+                        .replace("%s", type.groupLabel)
+                },
+                checked = on,
+                onCheckedChange = { value ->
+                    scope.launch { runCatching { app.store.setEngineFamily(type, value) } }
+                },
+            )
+        }
 
         Spacer(Modifier.height(14.dp))
 

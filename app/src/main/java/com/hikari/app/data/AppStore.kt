@@ -419,6 +419,14 @@ class AppStore(private val ctx: Context) {
          *  imdb/tmdb id, so the family is one source of servers. On by default —
          *  see [stremioSearchAllFlow]. */
         val STREMIO_SEARCH_ALL = booleanPreferencesKey("stremioSearchAllAddons")
+        /** Per-ENGINE "search every repo of this engine too" switches, by
+         *  [ProviderType] name ("CS3", "HIKARI", "SKYSTREAM", "ANIYOMI",
+         *  "UNIVERSAL", …). The stored value is the set of engines that are ON;
+         *  an engine not in the set is OFF, and nuvio/Stremio keep their own
+         *  dedicated keys above so an existing choice of theirs survives.
+         *  Default OFF for every engine — see [engineFamiliesFlow] and
+         *  [com.hikari.app.data.SearchScope.engineFamilies]. */
+        val SEARCH_FAMILY_TYPES = stringSetPreferencesKey("searchFamilyTypes")
         /** "Exception extensions" (Settings → Playback & Servers → Server
          *  search): extensions that are asked for servers for EVERY title, even
          *  when [SEARCH_ALL_EXTENSIONS] is off. See
@@ -1118,16 +1126,17 @@ class AppStore(private val ctx: Context) {
     /**
      * May a lookup ask extensions OTHER than the one the title was opened from?
      *
-     * On by default, which is the behaviour the app has always had: every
-     * installed extension is searched and the player's server list gathers
-     * whatever all of them found. Off, a title is searched ONLY through its own
-     * extension — the CloudStream model, where a film plays from the repo you
-     * picked and its own hosts, and the other ~250 extensions are left alone
-     * entirely (no cross search, no background sweep, no episode list borrowed
-     * from another site).
+     * OFF by default, which is the "only this extension" model: a title plays
+     * from the repo it was opened from, the way CloudStream works. Every engine
+     * still has its own family switch (see [engineFamiliesFlow]) — nuvio and
+     * Stremio on, everything else off — so "only this extension" means one repo
+     * for a CloudStream/Hikari/SkyStream/Aniyomi title and the addon's whole
+     * family for a Nuvio/Stremio one. On, every installed extension is searched
+     * for every title and the server list gathers whatever all of them found
+     * (cross pass, background sweep, borrowed episode lists, the lot).
      */
     fun searchAllExtensionsFlow(): Flow<Boolean> =
-        store.data.map { it[K.SEARCH_ALL_EXTENSIONS] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
+        store.data.map { it[K.SEARCH_ALL_EXTENSIONS] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun searchAllExtensions(): Boolean = searchAllExtensionsFlow().first()
 
@@ -1175,6 +1184,49 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setStremioSearchAll(on: Boolean) {
         write("STREMIO_SEARCH_ALL") { it[K.STREMIO_SEARCH_ALL] = on }
+    }
+
+    /**
+     * Every engine whose whole installed family is searched for a title opened
+     * FROM one of its repos, as [ProviderType] names — the complete answer the
+     * search mirrors into
+     * [com.hikari.app.data.SearchScope.engineFamilies].
+     *
+     * ONE flow rather than three because the search reads it as one value, and
+     * because the three sources it is built from (the two dedicated switches
+     * and the per-engine set) must never be read half-applied: a pass that saw
+     * Nuvio on but Stremio's stored "on" unread would search a different set of
+     * repos than the settings screen shows.
+     *
+     * Defaults, which is the whole point of the shape: NUVIO and STREMIO on
+     * (their engines resolve an item by the id it already has — the family is
+     * genuinely one source of servers), everything else OFF, so a title opened
+     * inside one CloudStream/Hikari/SkyStream/Aniyomi repo plays from that repo
+     * alone until the user asks otherwise.
+     */
+    fun engineFamiliesFlow(): Flow<Set<String>> = store.data.map { prefs ->
+        val out = HashSet<String>(8)
+        if (prefs[K.NUVIO_SEARCH_ALL] != false) out += ProviderType.NUVIO.name
+        if (prefs[K.STREMIO_SEARCH_ALL] != false) out += ProviderType.STREMIO.name
+        out += prefs[K.SEARCH_FAMILY_TYPES].orEmpty()
+        out
+    }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun engineFamilies(): Set<String> = engineFamiliesFlow().first()
+
+    /** Turns one engine's family search on or off. Nuvio and Stremio write their
+     *  own keys so the two switches that already existed keep their meaning (and
+     *  so an older build of the app still reads them). */
+    suspend fun setEngineFamily(type: ProviderType, on: Boolean) {
+        when (type) {
+            ProviderType.NUVIO -> setNuvioSearchAll(on)
+            ProviderType.STREMIO -> setStremioSearchAll(on)
+            else -> write("SEARCH_FAMILY_TYPES") { prefs ->
+                val current = prefs[K.SEARCH_FAMILY_TYPES].orEmpty()
+                prefs[K.SEARCH_FAMILY_TYPES] =
+                    if (on) current + type.name else current - type.name
+            }
+        }
     }
 
     /**

@@ -111,7 +111,13 @@ fun AppLockGate(activity: android.app.Activity, content: @Composable () -> Unit)
     val app = LocalContext.current.applicationContext as HikariApp
     val context = LocalContext.current
     val enabledFlow = remember { app.store.appLockFlow() }
-    val enabled by enabledFlow.collectAsState(initial = false)
+    // `null` until the store has answered, and the gate draws NOTHING for that
+    // instant (see below). It used to start at `false`, which means "the lock is
+    // off" — so on every cold start the app's own content was composed and shown
+    // for a frame or two before the stored value arrived and the lock card
+    // replaced it. A lock whose whole purpose is "nobody reads my screen" cannot
+    // flash the screen it is protecting.
+    val enabledState by enabledFlow.collectAsState(initial = null)
     val bioFlow = remember { app.store.appLockBioFlow() }
     val bioOn by bioFlow.collectAsState(initial = true)
     // The rules beyond "the lock is on" — see the doc comment. All are read
@@ -131,17 +137,53 @@ fun AppLockGate(activity: android.app.Activity, content: @Composable () -> Unit)
     // because the lifecycle observer both writes and reads it and nothing draws
     // it: it is a timestamp, not UI state.
     val leftAt = remember { longArrayOf(0L) }
+    // Was the SCREEN off the last time the app went away? Written by the
+    // screen-off broadcast below and cleared when the screen comes back. The
+    // reason it exists at all: `PowerManager.isInteractive` is the honest answer
+    // to "did the screen go off or did the user leave?", but it is read from a
+    // lifecycle callback that the platform can dispatch either side of the
+    // display state actually settling — so on some devices the check read
+    // `true` for a screen-off, the "Lock when the screen turns off" switch was
+    // never consulted, and the app came back UNLOCKED (the reported "lock when
+    // screen off is not working"). The broadcast is the event itself, so it is
+    // the one that cannot be raced.
+    val screenWasOff = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
 
     DisposableEffect(Unit) {
         val owner: LifecycleOwner = ProcessLifecycleOwner.get()
         val power = context.getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
+        val receiver = object : android.content.BroadcastReceiver() {
+            override fun onReceive(c: Context?, intent: android.content.Intent?) {
+                when (intent?.action) {
+                    android.content.Intent.ACTION_SCREEN_OFF -> screenWasOff.set(true)
+                    android.content.Intent.ACTION_SCREEN_ON -> screenWasOff.set(false)
+                }
+            }
+        }
+        // Only the two screen actions, and NOT exported: the app is not
+        // registering for anything else and nothing outside can reach it. The
+        // ContextCompat form is used because targetSdk 34 wants an explicit
+        // export flag on a runtime-registered receiver.
+        val filter = android.content.IntentFilter().apply {
+            addAction(android.content.Intent.ACTION_SCREEN_OFF)
+            addAction(android.content.Intent.ACTION_SCREEN_ON)
+        }
+        runCatching {
+            androidx.core.content.ContextCompat.registerReceiver(
+                context,
+                receiver,
+                filter,
+                androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED,
+            )
+        }
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_STOP) {
                 // Was this the screen going off, or the user actually leaving?
-                // The power state answers that, and reading it here is more
-                // reliable than waiting for ACTION_SCREEN_OFF's broadcast, whose
-                // ordering against onStop is not promised.
-                val screenOff = power?.isInteractive == false
+                // Either signal is enough: the broadcast says the display went
+                // off, and the power state catches the case where the broadcast
+                // has not been delivered yet. Reading both makes the answer
+                // independent of which one arrives first.
+                val screenOff = screenWasOff.get() || power?.isInteractive == false
                 // Each trigger has its own switch: a screen-off honours
                 // "Lock when the screen turns off", anything else honours
                 // "Lock when I leave the app".
@@ -156,6 +198,9 @@ fun AppLockGate(activity: android.app.Activity, content: @Composable () -> Unit)
                     leftAt[0] = System.currentTimeMillis()
                 }
             } else if (event == Lifecycle.Event.ON_START) {
+                // The app is back in front of the user: the screen state is
+                // settled again, so the next ON_STOP must decide from scratch.
+                screenWasOff.set(power?.isInteractive == false)
                 val since = leftAt[0]
                 leftAt[0] = 0L
                 if (since > 0L && unlocked &&
@@ -166,10 +211,20 @@ fun AppLockGate(activity: android.app.Activity, content: @Composable () -> Unit)
             }
         }
         owner.lifecycle.addObserver(observer)
-        onDispose { owner.lifecycle.removeObserver(observer) }
+        onDispose {
+            owner.lifecycle.removeObserver(observer)
+            runCatching { context.unregisterReceiver(receiver) }
+        }
     }
 
-    if (!enabled || unlocked) {
+    if (enabledState == null) {
+        // The stored state has not arrived yet: draw a blank card rather than
+        // the app. One frame, and the app's content is never composed with the
+        // lock possibly on (see the note on [enabledState]).
+        Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background))
+        return
+    }
+    if (enabledState != true || unlocked) {
         content()
         return
     }

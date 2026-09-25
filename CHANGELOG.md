@@ -1,3 +1,178 @@
+## 0.10.39
+
+### Fixed
+
+- **The video starts the moment ONE server is found — now structurally, in every
+  playback mode.** The report was the same for the third time, and this time with
+  the number that settles it: *"see still not playing when server found but see 56
+  servers have found and its still not playing"*, with the player's cover reading
+  "Found 53 servers — still searching the remaining extensions… (29s)". The cause
+  was the ONE thing that could still hold a start while servers were in hand: the
+  hold for the extension the title was opened FROM. It was 45 seconds in "wait for
+  more servers first" mode (and 20s + a 3s head start in the instant mode until
+  0.10.38 cut it to 0) — so on a build whose setting was the patient one, a full
+  server list sat on the cover until the window ran out. It is now **gone in both
+  modes**: `originGraceMs` and `originHeadStartMs` are 0 on the launch intent,
+  `tryStart` starts playback on the first server that arrives, and the same
+  20-second "wait for the server this was last played with" hold the detail screen
+  applied on a replay is gone with it. What those waits protected is kept as
+  ORDER, not as waiting: the origin is still asked first and its servers still
+  sort to the top, and a replay's remembered server is still placed ahead of the
+  rest. On top of that, a **failsafe** now guarantees the rule rather than
+  assuming it: if any servers sit on the list for four seconds with playback not
+  committed (`START_FAILSAFE_MS`), the player starts the first one anyway and logs
+  `FAILSAFE: … playback had not started` with the state that was holding it, so
+  this class of bug can never come back silently. "Wait for more servers first"
+  still works — it waits for a COUNT of servers, never for one provider. See
+  docs/SEARCH.md invariant 2.
+- **"Lock when the screen turns off" now actually locks.** It could read the
+  display state before the platform had settled it, decide this was an ordinary
+  "user left the app", and consult the *leave* switch instead — so with the
+  screen-off switch on and the leave switch off, turning the screen off and back
+  on returned to an unlocked app. The gate now also listens for `ACTION_SCREEN_OFF`
+  / `ACTION_SCREEN_ON` (the event itself, which cannot be raced) and treats either
+  signal as "the screen went off". Separately, the gate used to render the app's
+  own content for a frame on every cold start while the stored lock state was
+  still loading (`initial = false`); it now draws a blank card until the state
+  arrives, so a locked app never flashes its screen. See docs/APP_LOCK.md.
+
+### Changed
+
+- **Every engine has its own "search the whole family" switch, and "search all
+  installed extensions" is now OFF by default.** One row per engine on the Server
+  search card (`Search every CloudStream`, `Search every Hikari`, `Search every
+  SkyStream`, `Search every Aniyomi`, …) beside the Nuvio and Stremio ones that
+  already existed. Defaults: **Nuvio and Stremio ON, every other engine OFF** —
+  which is what the user asked for in as many words (*"by default make search all
+  extension turn off, and only keep nuvio and stremio toggle on"*). So, with the
+  scope switch off: a title opened inside one CloudStream repo plays from that repo
+  alone, unless the CloudStream switch is on — in which case every installed
+  CloudStream repo (and no other engine's) is asked beside it. Turning the family
+  on for an engine only ever adds repos of THAT engine. `SearchScope.engineFamilies`
+  is the one value behind it; Nuvio's and Stremio's stored choices are read from
+  their existing keys, so nothing an existing install has set is lost. See
+  docs/SEARCH.md invariant 17 for the exact rule and the log line that records when
+  a family was skipped.
+
+### Notes
+
+- The two playback-mode waits that this release removes were both added to serve a
+  real report ("it selected XFree and played the wrong video instead of the MRDS
+  server") and neither is being replaced by nothing: server ORDER still puts the
+  origin first and a replay's remembered server next, and the failure that
+  motivated them — playing the wrong video — is now handled at the point the link
+  is chosen rather than by delaying the start.
+- "Lock when the screen turns off" locks the app's own screens. A video that is
+  playing when the screen goes off keeps playing deliberately (background audio),
+  and the device's own lock screen is what stands between a stranger and the
+  player; the app lock takes over again as soon as you are back in the app.
+- The failsafe's log line is the thing to look for if this is ever reported again
+  (`Player` → `FAILSAFE:`); it names the server count, the "wait for N" setting and
+  the ask-mode flag at the moment it had to fire.
+
+
+
+### Fixed
+
+- **A video starts playing the moment ONE server is found, instead of waiting for
+  the extension the title came from.** The report was exact: *"i told you to make
+  play instantly as soon as 1 server find — see it showing 12 servers found and
+  still the video didnt start playing, it was still finding more servers"*, with
+  "search all installed extensions" off and the Nuvio switch on. Servers were
+  already streaming to the player as they arrived, but the player's own auto-start
+  still held the first one behind the origin's (the extension the title was opened
+  from) answer: in the default "play as soon as the first server is found" mode
+  that hold was a three-second head start (`ORIGIN_HEAD_START_MS`), and it was the
+  last thing between a full server list and a picture. It is gone — the head start
+  and the instant-mode backstop are both 0 now, so `originReady` is true the moment
+  anything playable is in hand and playback starts on it. "Wait for more servers
+  first" is untouched (that is the full 45-second window, still ended early the
+  moment the origin answers — `StreamsLive.settleOrigin`). The origin is not
+  punished for it: it is still asked first, still gets the first engine slot, and
+  its servers still sort to the top of the list and to the front of the player's
+  own server list. See docs/SEARCH.md invariant 2.
+- **THE BLANK's chapter list — and any extension whose first XHR is answered by a
+  Cloudflare wall — now actually gets solved.** The report: *"in nekoread it shows
+  chapters but in hikari it shows http error"*. Two separate things were true, and
+  both are dealt with:
+  - The URL that 403s is `/serie/<slug>`: the extension fetches its chapter list
+    as an Inertia XHR (`Accept: application/json`, `X-Inertia: true`), and
+    theblank.net guards that path with Cloudflare (a live probe answers `403
+    Attention Required! | Cloudflare`). `ExtensionCloudflareInterceptor` — the
+    interceptor on the client every extension uses — required the response BODY
+    to contain an HTML interstitial before it would call a 403 a wall, and an XHR
+    is answered under a JSON content type, which it rejected before reading the
+    body. So the offscreen solve never ran, no `cf_clearance` was ever earned for
+    the host, and the extension was handed the raw 403 — which is the
+    `HttpException: HTTP error 403` on screen, the app's own exception from
+    `HttpSource.fetchChapterList`, NOT the `Exception: HTTP Error 403` that the
+    site-root GET used to throw before 0.10.37. It now takes the same view as the
+    app's other client and CloudStream's own `CloudflareKiller`: a 403/503 served
+    BY Cloudflare is a bot wall whatever its body looks like, so the solve runs
+    and one clearance is earned for the host.
+  - The site's own extension had a chapters bug. `keiyoushi/extensions-source`
+    fixed The Blank's chapter parsing on 2026-09-16 ("support reader v2 attestation
+    and ece pages" — *"Fixes chapters on Epsilon Scan, Soft Epsilon Scan and The
+    Blank"*), shipped as The Blank `versionCode 54`. An installed copy older than
+    that fails on chapters in ANY reader, which is why Nekoread shows them and
+    Hikari did not. If a chapter error appears for this source again, update the
+    extension first (Extensions → the engine's row). See docs/MANGA.md.
+- **Catalogues, episode lists and detail pages inside aniyomi/skystream — and
+  every other engine — now open fast on the second look.** The report: *"clicking
+  any anime or series in an aniyomi and skystream extension takes too much time to
+  show the catalogue, and their episodes take much more time to show"*. Those
+  reads were never slow because of the network: an Aniyomi extension pays an APK
+  class load before its first request, a CloudStream/.hiki plugin boots its runtime
+  and its site session, a nuvio engine starts a QuickJS VM — and every one of
+  those answers was thrown away at the end of the process, so the next visit paid
+  the cold start all over again. A new on-disk cache (`data/MetaCache.kt`, one
+  small JSON file per key under `filesDir/metacache/`) now paints what the last
+  visit got while the engine is asked again in the same breath: an extension's
+  catalogue page appears at once and is replaced by the fresh page a moment later,
+  an episode list appears at once and then refreshes, and a title's enriched meta
+  (overview, backdrop, genres, a plugin's corrected TYPE) is served outright. The
+  cached catalogue page is also the fallback when the fresh read comes back empty,
+  so "it worked yesterday" no longer depends on the process still being alive, and
+  a series whose engine is unreachable right now shows the list it served before
+  instead of "no episodes". Freshness windows (6 h catalogue, 12 h episodes, 3
+  days meta) decide only what is on screen while the refresh runs. See
+  docs/PERFORMANCE.md.
+- **A title opened from a Stremio addon is now searched in every installed
+  Stremio addon even with "Search all installed extensions" off — with its own
+  switch, the same as the Nuvio one.** Every Stremio addon is handed the item's
+  own imdb/tmdb id, so they all resolve the same video: one addon's answer is not
+  evidence about another's, and the real client asks them all for a catalogue id.
+  A Stremio origin now gathers its whole family (`SearchScope.stremioFamily`,
+  default on) — only Stremio addons, so no CloudStream/Aniyomi/SkyStream repo is
+  dragged in — with the origin first. The "Search every Stremio addon" switch sits
+  on the Server search card, right under "Search every Nuvio provider", and off
+  means off. See docs/SEARCH.md invariant 16.
+
+### Changed
+
+- **The app lock's leaving trigger can be switched off too.** "Lock when the
+  screen turns off" already had its own switch; leaving the app now has one as
+  well — **"Lock when I leave the app"** (on by default, which is what the lock has
+  always done). With it off, switching to another app never draws the unlock card;
+  only a screen-off (when that is on) or a fresh start of the app locks it. The
+  grace-period slider is still there and applies to whichever triggers remain on.
+- **The Trackers card no longer opens with a paragraph of explanation** — the
+  heading goes straight to the services list.
+
+### Notes
+
+- **A hard WAF block still cannot be solved by anyone.** If a site answers every
+  request to a host with `403` for the app's traffic (a datacenter-style block, not
+  a challenge), no WebView can earn a clearance either. The honest outcome there is
+  the per-host verification nudge, never a silent "this repo has no chapters".
+- **The media cache stores nothing the user owns.** Library, history, progress and
+  watch state live in their own stores; the cache directory is a re-fetch away from
+  empty, which is why losing it (or trimming it) costs nothing.
+- **"Search every Stremio addon" is stronger than the exception-extensions
+  collapse rule, for Stremio origins only** — same shape as the Nuvio switch, and
+  for the same reason: the user asked for the family in as many words, and this
+  switch is the thing that turns it off.
+
 ## 0.10.38
 
 ### Fixed

@@ -192,10 +192,10 @@ class PlayerActivity : ComponentActivity() {
         /**
          * True when a probe has already been to this URL and come back with a
          * video / HLS / DASH answer — i.e. a server that is known to WORK, not
-         * one that merely looks likely. The player starts on such a row the
-         * moment one exists (see [healthyStartIndex] and the origin hold in
-         * [originReady]), which is the "play instantly on the first server that
-         * actually plays, while the rest keep loading" rule.
+         * one that merely looks likely. The player starts on such a row in
+         * preference to one that has only been guessed at (see
+         * [healthyStartIndex]), which is the "play instantly on the first server
+         * that actually plays, while the rest keep loading" rule.
          */
         fun probeVerified(): Boolean =
             !isTorrent && !local && url.isNotBlank() &&
@@ -1696,78 +1696,42 @@ class PlayerActivity : ComponentActivity() {
                 // "wait for N servers" setting must not hold the chooser back.
                 val askMode = shouldAskServer()
                 var searchDone = false
-                // ---- "Search your own extension first", at the start level --
-                // The detail screen already asks the provider the title was
-                // opened from BEFORE the others (and holds the cross-extension
-                // pass back a moment for it). This is the matching half of that
-                // promise in the player: when the origin is one of the providers
-                // being searched, playback waits a bounded moment for a server
-                // from IT rather than jumping onto whichever other extension
-                // answered first — tapping a movie inside an extension plays
-                // that extension's link. The hold ends the instant the origin's
-                // server lands, and the whole rest of the search keeps streaming
-                // into "Select server" in the background either way (see the
-                // live collector below). [originGraceMs] comes from the intent
-                // and is 0 unless the origin really is being searched (disabled
-                // and uninstalled extensions must not cost a wait).
-                val originGraceMs = intent.getIntExtra("originGraceMs", 0).coerceAtLeast(0)
-                val originHoldUntil = System.currentTimeMillis() + originGraceMs
-                // How long playback waits for the origin once servers are already
-                // IN HAND — see ORIGIN_HEAD_START_MS (DetailScreen). This is what
-                // makes the default "play as soon as the first server is found"
-                // actually instant: the origin gets a few seconds' head start, not
-                // the whole backstop, and its servers keep arriving afterwards.
-                // 0 = the "wait for more servers first" choice, which keeps the
-                // old behaviour of holding for the full grace window.
-                val originHeadStartMs = intent.getIntExtra("originHeadStartMs", 0).coerceAtLeast(0)
-                // When the first server arrived. Written by the live collector
-                // below; the head start is measured from here, not from launch.
-                var firstServersAt = 0L
-                var headStartLogged = false
-                val originFound = {
-                    originProviderId.isNotBlank() &&
-                        sources.any { it.providerId == originProviderId }
-                }
-                // The pass reports the moment the origin has ANSWERED — with
-                // servers or with nothing (see StreamsLive.settleOrigin). That,
-                // not the clock, is what ends the hold in practice: a repo that
-                // plainly has no links for this episode must not cost the user
-                // the whole backstop, and a .hiki plugin that needs twenty
-                // seconds to answer must not be cut off at two.
+                // ---- The origin is asked first, but never WAITED FOR ----
+                // The pass asks the provider the title was opened FROM before
+                // anything else, and lists its servers first — but playback does
+                // not wait for it any more. That wait was the one thing that could
+                // sit between a full server list and a picture: it was reported as
+                // "12 servers found and it still doesn't play", then as "56
+                // servers found and it is still not playing", with the cover
+                // reading "Found N servers — still searching…" while a whole grace
+                // window ran out underneath it. The rule is unconditional now: the
+                // first server that lands starts the video, and the origin's own
+                // links — which arrive afterwards — are still sorted to the front
+                // of the list (see [healthyStartIndex] and the detail screen's
+                // ordering). "Wait for more servers first" is still honoured: it
+                // waits for a COUNT of servers, never for one provider.
                 var originSettled = false
-                // Assigned once [tryStart] exists (below). The settle signal is
-                // not just a flag that the hold's condition reads — it has to
-                // RELEASE a start that is already pending. The origin answering
-                // "nothing for this episode" produces no servers, so it wakes no
-                // feed batch and nothing else would call [tryStart] until the
-                // grace window's own alarm fired: the user would wait out the
-                // whole backstop for an answer that had already come.
+                // Assigned once [tryStart] exists (below). It releases a start
+                // that is already pending when the origin answers, so a start
+                // waiting on nothing but the next batch goes now — it gates
+                // nothing by itself.
                 var onOriginSettled: (() -> Unit)? = null
                 if (!liveId.isNullOrBlank()) launch {
                     StreamsLive.originSettledFlow(liveId).collect { settled ->
-                        originSettled = settled
+                        if (settled && !originSettled) {
+                            originSettled = true
+                            // Recorded, not obeyed: the origin answering no longer
+                            // releases anything (see the note above) — this is the
+                            // line that says WHICH provider answered and how many
+                            // servers were on the list by then.
+                            com.hikari.app.data.Logs.log(
+                                "Player",
+                                "origin \"$originProviderName\" ($originProviderId) answered " +
+                                    "(${sources.size} server(s) in hand)",
+                            )
+                        }
                         if (settled) onOriginSettled?.invoke()
                     }
-                }
-                /** True once there is no reason left to hold for the origin. */
-                val originReady = {
-                    originGraceMs <= 0 || originProviderId.isBlank() || originFound() ||
-                        originSettled || searchDone ||
-                        // A server that a probe has already PROVED playable is in
-                        // hand: the user asked for playback the instant a working
-                        // server is found, so the origin's head start gives way to
-                        // it right here instead of costing the last second of the
-                        // wait. Its own servers still arrive and are still placed
-                        // at the top of the list.
-                        sources.any { it.probeVerified() } ||
-                        System.currentTimeMillis() >= originHoldUntil ||
-                        // The head start has run out with servers in hand: play
-                        // one of them instead of holding the whole server list
-                        // hostage to one repo. The origin's answer is not lost —
-                        // its servers still stream in below and are still placed
-                        // at the top of the list.
-                        (originHeadStartMs > 0 && firstServersAt > 0 &&
-                            System.currentTimeMillis() - firstServersAt >= originHeadStartMs)
                 }
                 val waitTimeout = if (awaitLive) launch {
                     delay(LIVE_WAIT_TIMEOUT_MS)
@@ -1779,24 +1743,12 @@ class PlayerActivity : ComponentActivity() {
                     }
                 } else null
                 // Nothing will call [tryStart] again once the servers stop
-                // arriving, so the hold needs its own alarm — armed just below,
-                // once [tryStart] exists: at the deadline the first server from
-                // anywhere starts playback, exactly as if the origin had
-                // answered with nothing.
+                // arriving, so the start needs its own alarm — armed just below,
+                // once [tryStart] exists: see START_FAILSAFE_MS.
                 val tryStart: suspend () -> Unit = tryStart@{
                     if (pendingStart && sources.isNotEmpty() &&
                         (searchDone || askMode || sources.size >= startAfter)
                     ) {
-                        if (!originReady()) {
-                            // Servers are here, but not the origin's yet: say so
-                            // on the cover, or a two-second pause while a
-                            // perfect-looking server list is already in hand
-                            // reads as the app being stuck.
-                            val line = I18n.t("Checking your own extension first…")
-                            loadingStatusBase = line
-                            loadingStatus?.text = line
-                            return@tryStart
-                        }
                         pendingStart = false
                         waitTimeout?.cancel()
                         // Remember that this link was extracted mid-search: if
@@ -1808,75 +1760,47 @@ class PlayerActivity : ComponentActivity() {
                         startOrAsk()
                     }
                 }
-                // [tryStart] exists now, so the settle signal can release a
-                // pending start the moment it arrives (and again here, in case
-                // the origin had already answered before this block ran — a
-                // MutableStateFlow replays, and the collector above fires
-                // eagerly, before the hook was assigned).
+                // [tryStart] exists now, so an origin that answered still
+                // releases a pending start — not because the origin gates
+                // anything any more (it does not), but because a start that is
+                // pending while the pass reports the origin has settled may as
+                // well go now rather than at the next batch.
                 onOriginSettled = { if (pendingStart) launch { tryStart() } }
                 if (originSettled) onOriginSettled?.invoke()
-                // The hold's own alarm (see the note above): if the origin never
-                // answers, this fires at the deadline and starts the first
-                // server from anywhere — no other call to [tryStart] is coming
-                // once the servers stop arriving.
-                if (awaitLive && originGraceMs > 0) launch {
-                    delay((originHoldUntil - System.currentTimeMillis()).coerceAtLeast(0L) + 60L)
-                    // The origin was given its grace window and the window has
-                    // now run out with nothing from it (originSettled would
-                    // have ended the hold early, and an origin server landing
-                    // would have started playback — see originReady). Say so,
-                    // because the very next thing that happens is the user
-                    // being shown a server from a DIFFERENT extension, and
-                    // that looks like the wrong link being played for no
-                    // reason unless the log explains the origin never
-                    // answered (which is what happened in the "it played a
-                    // XFree/AFree source instead of the MRDS one" report).
-                    if (!originFound()) {
-                        val why = if (originSettled) {
-                            "answered with nothing for this episode"
-                        } else {
-                            "never answered in the ${originGraceMs}ms grace window"
+                // THE FAILSAFE (see [START_FAILSAFE_MS]). Armed here rather than
+                // in the collector because [tryStart] — the thing it calls — does
+                // not exist until this line, and a POLL rather than a one-shot
+                // timer because the servers can arrive at any moment (a minute
+                // into a slow search is normal). It is the structural guarantee
+                // that no condition can leave the user on a cover with servers in
+                // hand: once they have been sitting there for [START_FAILSAFE_MS]
+                // with nothing playing, playback starts on the first one and the
+                // log says the failsafe had to fire.
+                if (awaitLive && !downloadPickMode) launch {
+                    var firstBatchAt = 0L
+                    while (true) {
+                        delay(START_FAILSAFE_POLL_MS)
+                        if (playbackCommitted) return@launch
+                        if (!pendingStart || askMode || sources.isEmpty()) continue
+                        val now = System.currentTimeMillis()
+                        if (firstBatchAt == 0L) {
+                            firstBatchAt = now
+                            continue
                         }
+                        if (now - firstBatchAt < START_FAILSAFE_MS) continue
                         com.hikari.app.data.Logs.log(
                             "Player",
-                            "origin \"$originProviderName\" ($originProviderId) $why — " +
-                                "starting on the first server from anywhere",
+                            "FAILSAFE: ${sources.size} server(s) in hand for " +
+                                "${START_FAILSAFE_MS / 1000}s and playback had not started " +
+                                "(searchDone=$searchDone, need=$startAfter, ask=$askMode) — " +
+                                "starting on the first one now",
                         )
+                        pendingStart = false
+                        waitTimeout?.cancel()
+                        startedWhileSearching = !searchDone
+                        startOrAsk()
+                        return@launch
                     }
-                    tryStart()
-                }
-                // The head start's own alarm (see ORIGIN_HEAD_START_MS).
-                //
-                // The rule inside [originReady] is only consulted when something
-                // calls [tryStart], and after the first batch nothing may call it
-                // again for a while — a slow repo that answered late is exactly
-                // the case where the servers are in hand and the next arrival is
-                // far off. So the hold gets a deadline measured from the moment
-                // there was something to play, and this is it.
-                if (awaitLive && originHeadStartMs > 0) launch {
-                    // Wait for the first servers (bounded by the origin's own
-                    // backstop, in case nothing ever arrives — there is then
-                    // nothing for this to start either).
-                    while (firstServersAt == 0L && System.currentTimeMillis() < originHoldUntil) {
-                        if (sources.isNotEmpty()) {
-                            firstServersAt = System.currentTimeMillis()
-                            break
-                        }
-                        delay(150L)
-                    }
-                    if (firstServersAt == 0L) return@launch
-                    delay(originHeadStartMs.toLong())
-                    if (!originFound() && !originSettled && !headStartLogged) {
-                        headStartLogged = true
-                        com.hikari.app.data.Logs.log(
-                            "Player",
-                            "origin \"$originProviderName\" ($originProviderId) has not " +
-                                "answered yet — starting on a server that has " +
-                                "(${sources.size} in the list). Its own servers are still " +
-                                "being searched for and will be added to \"Select server\".",
-                        )
-                    }
-                    tryStart()
                 }
                 // The detail screen signals when its whole search is finished;
                 // if it ended with nothing, fail fast instead of waiting out
@@ -1928,10 +1852,6 @@ class PlayerActivity : ComponentActivity() {
                         .filter { (it.infoHash ?: it.url) !in have }
                     if (fresh.isEmpty()) return@collect
                     sources = sources + fresh
-                    // When the first server arrived — the head start (see
-                    // [originReady]) is measured from here: the clock only starts
-                    // once there is actually something to play.
-                    if (firstServersAt == 0L) firstServersAt = System.currentTimeMillis()
                     notifySourcesChanged()
                     // Resolve the new servers in the background too, so picking
                     // one from "Select server" doesn't fall back to a probe wait.
@@ -10678,6 +10598,27 @@ class PlayerActivity : ComponentActivity() {
          *  normally signals completion ([StreamsLive.markDone]) long before
          *  this; the timeout only covers the search never reporting back. */
         private const val LIVE_WAIT_TIMEOUT_MS = 90_000L
+
+        /**
+         * How long a server may SIT on the list with playback not committed
+         * before the player starts it anyway, on the first one.
+         *
+         * A structural guarantee, not a timer on the search: whatever a start is
+         * waiting for — a provider still answering, a "wait for N servers"
+         * setting, a condition somebody adds later — once there has been
+         * something playable in hand for this long, playback starts and the log
+         * says the failsafe fired. The user's rule has been the same every time
+         * they reported this ("as soon as ONE server is found the video should
+         * start playing"), and this is what makes it true regardless of which
+         * branch of the start logic is currently holding it back. It is
+         * deliberately short: the fetching of the servers themselves is not
+         * something this waits for, only their being ignored.
+         */
+        private const val START_FAILSAFE_MS = 4_000L
+
+        /** How often the failsafe above re-checks "servers in hand, nothing
+         *  playing" (see [START_FAILSAFE_MS]). */
+        private const val START_FAILSAFE_POLL_MS = 1_000L
 
         /** The cover's default line while the detail screen hasn't reported any
          *  search progress yet (matches the layout's initial text). */

@@ -804,9 +804,10 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
          *  player when every server it was given turned out to be dead. */
         force: Boolean = false,
         /** Fires when the title's OWN provider has answered (see
-         *  ContentRepository.streamsForInner) — the player is holding its
-         *  auto-start until then, so this is what releases it early instead of
-         *  making the user watch the whole grace window. */
+         *  ContentRepository.streamsForInner). It no longer releases any hold —
+         *  playback starts on the first server, whatever the origin is doing —
+         *  but the signal is still passed through and logged, so the log says
+         *  whether and when the origin answered. */
         onOriginSettled: (() -> Unit)? = null,
     ): StreamLookup {
         val key = cacheKey(item, ep)
@@ -1167,11 +1168,16 @@ private fun nuvioReportLines(providers: List<ContentProvider>): List<String> {
     }
 }
 
-/** How long a replay waits for the server it was last played with to appear in
- *  the multi-provider source search before falling back to the first server
- *  found. Long enough for a slower provider to answer, short enough that a tap
- *  never appears to hang. */
-private const val PREFERRED_GRACE_MS = 10_000L
+/**
+ * REMOVED: how long a replay waited for the server it was last played with to
+ * appear before falling back to the first server found.
+ *
+ * The wait is gone (see the note where the source list is ordered): a
+ * remembered server is still preferred — it is placed directly
+ * after the origin's own rows and the player's own start-index rule picks it —
+ * but it can no longer delay playback. "Play as soon as ONE server is found"
+ * means exactly that.
+ */
 
 /** How long a lookup will join an extraction someone else already owns before
  *  giving up on it (see [resolveStreams]). A shared extraction that was
@@ -1223,71 +1229,34 @@ private const val SWEEP_WATCH_CAP_MS = 5 * 60 * 1000L
  *  tail does not leave the player waiting out its own safety timeout. */
 private const val STREAMS_QUIET_MS = 12_000L
 
-/** The longest the player will hold playback waiting for the extension the
- *  title was opened FROM, before it takes whichever other extension answered
- *  first. Passed to the player as the `originGraceMs` extra, and set to 0 when
- *  the origin is disabled or gone, so a dead extension can never cost a wait.
+/**
+ * REMOVED: the "wait for the extension this title was opened from" window.
  *
- *  This used to be a 1.2s nudge, on the theory that the user's rule is "start
- *  playing the instant ANY server is found". It is a real hold now, because
- *  that theory produced the wrong video: a title opened inside a Chinese .hiki
- *  repo had its own link still cold-loading, an adult tube repo that echoes the
- *  search text back into its page titles answered in a second, and playback
- *  started on THAT — "it selected XFree and played the wrong video instead of
- *  the MRDS server, and the MRDS server never even showed up". Waiting for the
- *  provider the user actually tapped is worth seconds; a wrong video is worth
- *  nothing.
+ * Playback used to hold its first start until the provider the title was opened
+ * FROM had answered (`ORIGIN_PLAY_GRACE_MS` = 45s in "wait for more servers
+ * first" mode, a 20s backstop and a 3s head start in "play as soon as the first
+ * server is found"), on the theory that tapping a movie inside an extension
+ * should play THAT extension's link. It bought a marginal ordering preference
+ * and cost the one thing the user reported over and over: *"N servers found and
+ * it is still not playing"* — most recently with 56 servers on the list and the
+ * cover still reading "still searching". The ordering it was protecting is kept
+ * WITHOUT the wait: the pass asks the origin first, its servers are placed at
+ * the top of the list (see [healthyStartIndex] in the player and the ordering in
+ * [launchPlayer]), and the remembered server of a replay is preferred the same
+ * way. What is gone is only the waiting.
  *
- *  What makes this bearable is that the number is only the BACKSTOP: the pass
- *  signals the moment the origin has answered — with servers or with nothing —
- *  and the player releases the hold right then (StreamsLive.settleOrigin). So a
- *  warm origin costs ~0s, a cold one costs its cold start, and only a provider
- *  that never comes back at all costs the full 45s. */
-private const val ORIGIN_PLAY_GRACE_MS = 45_000L
+ * The player is still told 0 for both extras (see [launchPlayer]); a player
+ * build that predates this change therefore also sees "no hold" and starts on
+ * the first server.
+ */
 
 /**
- * How long playback waits for the title's own extension when the user chose
- * "play as soon as the first server is found" (the default) and servers are
- * ALREADY available from somewhere else.
- *
- * ZERO. This used to be a three-second head start, on the theory that the
- * origin's own link is worth a moment. It is not worth anything at all when the
- * user has asked for instant playback: the reported case was a movie with
- * TWELVE servers already on the list and the cover still saying "still
- * searching" — the head start was the last thing holding playback back, and it
- * made "play as soon as the first server is found" behave as "play as soon as
- * the origin answers OR three seconds pass, whichever is later". With 0 there is
- * no hold in this mode at all: the moment any playable server is in hand,
- * playback starts.
- *
- * The origin is not punished for it: it is still asked first by the pass and
- * still gets the first engine slot, its servers still sort to the top of the
- * list ([healthyStartIndex] prefers them when they are present), and any that
- * land later still stream into "Select server" while the video plays. The
- * "wait for more servers first" choice is unaffected — that path uses the full
- * [ORIGIN_PLAY_GRACE_MS] window above.
- */
-private const val ORIGIN_HEAD_START_MS = 0L
-
-/**
- * The BACKSTOP for that case: how long the origin is given in total for "play as
- * soon as the first server is found" when no other server has arrived either.
- *
- * ZERO, for the same reason as [ORIGIN_HEAD_START_MS]: "instant" means there is
- * no window in which the app is waiting for one provider while it already has
- * something to play. With nothing found yet there is nothing to start either
- * way, so the pass simply reports its progress until the first server lands —
- * which it does through the live session, starting playback at once. The
- * "wait for more servers first" choice still uses [ORIGIN_PLAY_GRACE_MS].
- */
-private const val ORIGIN_INSTANT_GRACE_MS = 0L
-
-/** How long a prefetched source list may be reused before it must be resolved
- *  again. 4KHDHub/hubcloud hand out SIGNED, time-limited workers.dev links, and
- *  a detail page left open for a few minutes used to replay those dead links on
- *  a Play tap (every server 403s → "No playable sources found"). Five minutes
- *  is comfortably under the rotation window while still making an immediate
- *  Play tap instant. */
+ * How long a prefetched source list may be reused before it must be resolved
+ * again. 4KHDHub/hubcloud hand out SIGNED, time-limited workers.dev links, and
+ * a detail page left open for a few minutes used to replay those dead links on
+ * a Play tap (every server 403s → "No playable sources found"). Five minutes
+ * is comfortably under the rotation window while still making an immediate
+ * Play tap instant. */
 private const val STREAM_CACHE_TTL_MS = 300_000L
 
 /** How long a Play tap made while episodes are still loading waits for the
@@ -1756,41 +1725,19 @@ fun DetailScreen(
                 // Ask before playing: the player shows every server it found,
                 // grouped by engine, instead of starting one by itself.
                 putExtra("askServer", askServerOnPlay)
-                // "Your own extension goes first": the player holds the first
-                // start until the extension this title was opened from has
-                // answered (see ORIGIN_PLAY_GRACE_MS for the full reasoning), so
-                // the link the user actually asked for is the link that plays.
-                // 0 when that extension is disabled or uninstalled — it is not
-                // in [streamTargets], so there would be nothing to wait for.
-                //
-                // HOW LONG that hold lasts depends on the choice the user made,
-                // and that is the fix for "it had 70 servers and still sat on the
-                // loading screen": with "play as soon as the first server is
-                // found" (the default) there is NO hold at all — the moment any
-                // playable server is in hand the video starts — while the origin
-                // keeps working in the background and its servers still land at
-                // the top of the list. The long window is only for "wait for more
-                // servers first", where the user has asked for exactly that
-                // patience.
-                val originSearched =
-                    providers.firstOrNull { it.config.id == livePid }?.config?.enabled == true
-                putExtra(
-                    "originGraceMs",
-                    if (!originSearched) 0
-                    else if (playWaitServers) ORIGIN_PLAY_GRACE_MS.toInt()
-                    // 0: instant playback means nothing waits for the origin
-                    // (see ORIGIN_INSTANT_GRACE_MS).
-                    else ORIGIN_INSTANT_GRACE_MS.toInt()
-                )
-                // The head start itself: how long playback will wait for the
-                // origin once servers are ALREADY available. 0 in both modes now
-                // — "wait for more servers first" uses the full grace window
-                // above, and instant playback does not wait at all (see
-                // ORIGIN_HEAD_START_MS).
-                putExtra(
-                    "originHeadStartMs",
-                    if (originSearched && !playWaitServers) ORIGIN_HEAD_START_MS.toInt() else 0
-                )
+                // NO origin hold, in either playback mode. These two extras used
+                // to carry the window in which the player waited for the
+                // extension the title was opened FROM; the servers that decide
+                // WHICH one plays are now decided by the list's order instead
+                // (the origin's own servers sort first — see the player's
+                // healthyStartIndex), so the wait bought nothing and cost the
+                // one thing the user kept reporting: "N servers found and it is
+                // still not playing". "Wait for more servers first" is still
+                // honoured by [startAfterServers] above — a count, not a
+                // provider. Kept as explicit 0s (instead of dropped) so an older
+                // player build reading this intent still sees "no hold".
+                putExtra("originGraceMs", 0)
+                putExtra("originHeadStartMs", 0)
                 putExtra("openDownload", wantsDownload)
                 putExtra("histEpisodeId", ep?.id.orEmpty())
                 putExtra("histEpisodeName", ep?.name.orEmpty())
@@ -1868,9 +1815,9 @@ fun DetailScreen(
         sessionId = sid
         vm.resetLiveStreams()
         // Local once-only flag: playback launches exactly ONCE per tap (here —
-        // the immediate launch below — or later from the feed, the
-        // preferred-server grace period, or the final batch); afterwards new
-        // servers are appended to the player's live session, never re-launched.
+        // the immediate launch below — or later from the feed as the first
+        // servers arrive, or from the final batch); afterwards new servers are
+        // appended to the player's live session, never re-launched.
         // Atomic because this search runs on the app scope while the screen's
         // own reads happen on the main thread.
         //
@@ -1989,31 +1936,21 @@ fun DetailScreen(
                     StreamsLive.setEpisode(sid, epForSearch)
                 }
                 // The server this video was last played with, remembered by the
-                // player under the same key as the watch-history entry. When it
-                // exists we hold playback until that exact server shows up (up to
-                // [PREFERRED_GRACE_MS]) instead of jumping onto whichever provider
-                // answers first.
+                // player under the same key as the watch-history entry. It is
+                // PREFERRED, never waited for — see the note below.
                 val historyKey = "${livePid}|${(vm.meta.value ?: m)?.type?.name ?: type.name}|$mediaId|${epForSearch?.id.orEmpty()}"
                 val last = runCatching { app.store.lastSource(historyKey) }.getOrNull()
                 val prefUrl = last?.url.orEmpty()
                 val prefName = last?.name.orEmpty()
-                // Only when the user asked to WAIT for more servers. "Play as
-                // soon as the first server is found" means exactly that: nothing
-                // — not even the server this title was last played with — may
-                // hold playback back. (Before, a remembered server suppressed
-                // the first-server start even with that choice selected, so the
-                // fastest option could still sit on "Finding the best server…"
-                // until every extension had finished answering.)
-                var wantPreferred =
-                    !askServerOnPlay && playWaitServers &&
-                        (prefUrl.isNotBlank() || prefName.isNotBlank())
-                if (wantPreferred) {
-                    StreamsLive.setStatus(
-                        sid,
-                        "Waiting for your last used server (up to " +
-                            (PREFERRED_GRACE_MS / 1000) + "s)…",
-                    )
-                }
+                // NOT a hold any more. A remembered server used to suppress the
+                // first-server start (for up to ten seconds) so a replay
+                // continued on the link that worked last time — which is exactly
+                // the kind of "there are servers and it is not playing" wait this
+                // app has been reported for. The REMEMBERED server keeps its
+                // advantage without the wait: it is placed directly after the
+                // origin's own rows (see the ordering below), and the player's
+                // own [preferredStartIndex] picks it when it is in the list. If
+                // it has not arrived yet, the first server that has starts.
                 val preferredIndex = { list: List<StreamSource> ->
                     if (prefUrl.isBlank() && prefName.isBlank()) -1
                     else list.indexOfFirst { s ->
@@ -2142,22 +2079,12 @@ fun DetailScreen(
                         if (launched.get() || playerLaunched) {
                             // Player already up — hand it the newly found servers.
                             StreamsLive.append(sid, playable)
-                        } else if (!wantPreferred || preferredIndex(playable) >= 0) {
+                        } else {
+                            // No hold to wait out: the first playable server starts
+                            // playback, whatever else is still being searched.
                             startNow()
                         }
                     }
-                }
-                // Give a slow-but-remembered provider a bounded head start, then
-                // fall back to whatever has been found so the tap never hangs.
-                val grace = launch {
-                    delay(PREFERRED_GRACE_MS)
-                    // The head start is over: stop holding out for the remembered
-                    // server. Servers that answer after this moment then start
-                    // playback at once, instead of waiting for the whole search
-                    // to end (which is what made the cover sit on "Finding the
-                    // best server…" for a slow provider).
-                    wantPreferred = false
-                    startNow()
                 }
                 // The final read is the one that decides the outcome, so it is
                 // RETRIED while a pass keeps coming back unfinished. This used
@@ -2195,7 +2122,6 @@ fun DetailScreen(
                     delay(SEARCH_RETRY_PAUSE_MS)
                 }
                 feed.cancel()
-                grace.cancel()
                 // Never downgrade. The live feed above may already have handed
                 // the player a full list from the first providers that
                 // answered, and a late or cached re-read can come back empty
