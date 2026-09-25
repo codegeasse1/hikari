@@ -1,12 +1,12 @@
 package com.hikari.app.tv
 
-import android.view.KeyEvent
 import androidx.compose.foundation.focusable
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusDirection
+import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
-import androidx.compose.ui.input.key.keyCode
+import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalFocusManager
@@ -18,20 +18,21 @@ import androidx.compose.ui.platform.LocalFocusManager
  * finger is, and a switch is dragged. A remote is different in three specific,
  * mechanical ways, and each one has cost this app a report:
  *
- *  1. **A toggle is not a target.** [Switch] is `toggleable`, so it *can* take
- *     focus — but it is a small target at the right-hand end of a full-width
- *     row, and Compose's two-dimensional focus search walks down the page from
- *     whatever was focused to the nearest candidate below it. Navigate down a
- *     settings page and the focus lands on (or skips straight past) the
- *     right-hand switches, so "when using the remote it never lands on the
- *     toggle option — it skips to the next one". [tvToggle] makes the switch
- *     answer the D-pad itself (centre/enter presses it, left/right flips it),
- *     so a toggle is usable from wherever the focus happens to be.
- *  2. **A slider is not a target either.** [Slider] is a wide,
- *     pointer-oriented control; with a remote there is no drag. [tvAdjust] gives
- *     it the D-pad: left/right step it by one of its own steps, through the same
- *     `onValueChange`/`onValueChangeFinished` pair a drag uses, so the setting is
- *     really saved and not merely redrawn.
+ *  1. **A toggle is not a target.** [androidx.compose.material3.Switch] is
+ *     `toggleable`, so it *can* take focus — but it is a small target at the
+ *     right-hand end of a full-width row, and Compose's two-dimensional focus
+ *     search walks down the page from whatever was focused to the nearest
+ *     candidate below it. Navigate down a settings page and the focus lands on
+ *     (or skips straight past) the right-hand switches, so "when using the remote
+ *     it never lands on the toggle option — it skips to the next one". [tvToggle]
+ *     makes the switch answer the D-pad itself (centre/enter presses it,
+ *     left/right flips it), so a toggle is usable from wherever the focus
+ *     happens to be.
+ *  2. **A slider is not a target either.** [androidx.compose.material3.Slider] is
+ *     a wide, pointer-oriented control; with a remote there is no drag.
+ *     [tvAdjust] gives it the D-pad: left/right step it by one of its own steps,
+ *     through the same `onValueChange`/`onValueChangeFinished` pair a drag uses,
+ *     so the setting is really saved and not merely redrawn.
  *  3. **A text field swallows the remote.** Once focus is in a text box the
  *     arrows move the CARET, and a caret that is already at the end of the line
  *     simply does not move: the focus stays in the box no matter which direction
@@ -46,22 +47,28 @@ import androidx.compose.ui.platform.LocalFocusManager
  * root down to the focused node — so a handler installed here always sees the
  * key before the component's own keyboard handling can consume it, and there is
  * no chance of a press being handled twice.
+ *
+ * Keys are read as Compose [Key]s (`event.key`, the platform-independent
+ * mapping — see com.hikari.app.ui.screens.MangaReaderScreen, which has done
+ * remote navigation this way since long before this file existed) rather than as
+ * raw Android key codes: `Key.DirectionCenter` is the D-pad's select button on
+ * every remote, whatever its `KEYCODE_DPAD_CENTER` happens to be on the box.
  */
 
-/** Centre/enter (and space) count as "press"; a remote's select button sends
- *  DPAD_CENTER, an air-mouse/keyboard sends ENTER. */
-private fun isPressKey(code: Int): Boolean = when (code) {
-    KeyEvent.KEYCODE_DPAD_CENTER,
-    KeyEvent.KEYCODE_ENTER,
-    KeyEvent.KEYCODE_NUMPAD_ENTER,
-    KeyEvent.KEYCODE_SPACE -> true
+/** Centre/enter (and the numpad's own enter) count as "press" — a remote's
+ *  select button arrives as [Key.DirectionCenter], an air-mouse or a keyboard as
+ *  [Key.Enter]. */
+private fun isPressKey(key: Key): Boolean = when (key) {
+    Key.Enter,
+    Key.NumPadEnter,
+    Key.DirectionCenter -> true
     else -> false
 }
 
 /**
  * A toggle that a remote can actually use — see the file comment.
  *
- * Applied to a [Switch]/[Checkbox]/[RadioButton]: the control is focusable (so a
+ * Applied to a `Switch`/`Checkbox`/`RadioButton`: the control is focusable (so a
  * D-pad can land on it at all), centre/enter presses it, and left/right flip it.
  * The press is consumed here so the component's own handler cannot apply it a
  * second time.
@@ -75,12 +82,11 @@ fun Modifier.tvToggle(
     .onPreviewKeyEvent { event ->
         if (!enabled || event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
         when {
-            isPressKey(event.keyCode) -> {
+            isPressKey(event.key) -> {
                 onValueChange(!value)
                 true
             }
-            event.keyCode == KeyEvent.KEYCODE_DPAD_LEFT ||
-                event.keyCode == KeyEvent.KEYCODE_DPAD_RIGHT -> {
+            event.key == Key.DirectionLeft || event.key == Key.DirectionRight -> {
                 onValueChange(!value)
                 true
             }
@@ -101,12 +107,12 @@ fun Modifier.tvAdjust(
     .focusable(enabled)
     .onPreviewKeyEvent { event ->
         if (!enabled || event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
-        when (event.keyCode) {
-            KeyEvent.KEYCODE_DPAD_LEFT -> {
+        when (event.key) {
+            Key.DirectionLeft -> {
                 onAdjust(-1)
                 true
             }
-            KeyEvent.KEYCODE_DPAD_RIGHT -> {
+            Key.DirectionRight -> {
                 onAdjust(1)
                 true
             }
@@ -133,22 +139,22 @@ fun Modifier.tvTextFieldKeys(value: String): Modifier {
     val focus = LocalFocusManager.current
     return this.onPreviewKeyEvent { event ->
         if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
-        when (event.keyCode) {
-            KeyEvent.KEYCODE_DPAD_UP -> {
+        when (event.key) {
+            Key.DirectionUp -> {
                 focus.moveFocus(FocusDirection.Up)
                 true
             }
-            KeyEvent.KEYCODE_DPAD_DOWN -> {
+            Key.DirectionDown -> {
                 focus.moveFocus(FocusDirection.Down)
                 true
             }
-            KeyEvent.KEYCODE_DPAD_LEFT -> if (value.isEmpty()) {
+            Key.DirectionLeft -> if (value.isEmpty()) {
                 focus.moveFocus(FocusDirection.Left)
                 true
             } else {
                 false
             }
-            KeyEvent.KEYCODE_DPAD_RIGHT -> if (value.isEmpty()) {
+            Key.DirectionRight -> if (value.isEmpty()) {
                 focus.moveFocus(FocusDirection.Right)
                 true
             } else {
