@@ -1,3 +1,71 @@
+## 0.10.41
+
+### Fixed
+
+- **Tapping the settings gear on a CloudStream extension crashed the app.** The
+  report came with the crash log, and the log names the exact frame:
+  `java.lang.NoSuchMethodError: No static method
+  getDrawable(Landroid/content/res/Resources;ILandroid/content/res/Resources$Theme;)Landroid/graphics/drawable/Drawable; in class Landroidx/core/content/res/ResourcesCompat`
+  at `com.cncverse.Settings.getDrawable(Settings.kt:47)` ← `makeTvCompatible` ←
+  `onViewCreated` — the extension's OWN settings screen calling an androidx method
+  that this build had deleted. It is not the extension's fault, and it is not a
+  version mismatch: `ResourcesCompat` really does have that method in the pinned
+  androidx.core 1.13.1 (confirmed by reading `ResourcesCompat.class` out of the
+  AAR — 19 methods, `getDrawable(Resources,int,Theme)` among them), and
+  androidx.core's own consumer ProGuard rules do not keep it. It was **R8**.
+  Hikari's release build shrinks with `-dontobfuscate` plus a keep list
+  (`app/proguard-rules.pro`), and that list kept the plugin APIs
+  (`com.lagradost.**`, `eu.kanade.**`, `com.hikari.ext.**`) and the androidx
+  namespaces *Hikari's own UI* uses — but not `androidx.core`. So a member nothing
+  in this APK calls was removed even though the class itself survived (a kept
+  class, AppCompatResources, references it): the plugin's call is a string in
+  somebody else's bytecode, which R8 cannot see. That is precisely the failure mode
+  the keep file's own header warns about, and it is why the gear crashed with
+  "No such method" for a method that exists in the library. Because only the
+  *release* build shrinks, this could only ever happen on an installed APK — never
+  in a debug build — which is also why it looked like one broken extension.
+  `app/proguard-rules.pro` now keeps `androidx.core.**`, and — so the same report
+  cannot come back from the next support library a plugin's screen touches — the
+  rest of the androidx surface plugin code can link against: legacy,
+  localbroadcastmanager, mediarouter, palette, customview, cursoradapter,
+  interpolator, vectordrawable, documentfile, dynamicanimation, transition,
+  constraintlayout, coordinatorlayout, drawerlayout, slidingpanelayout,
+  swiperefreshlayout, viewpager, viewpager2, emoji2, autofill, savedstate,
+  arch.core, tracing, startup, profileinstaller, resourceinspection,
+  versionedparcelable, collection, print, loader, asynclayoutinflater, window,
+  exifinterface, graphics and media. That list is not guesswork:
+  `app/libs/cloudstream3.jar` ships the `androidx.**.R` classes of CloudStream's
+  own build, so those are the namespaces a plugin author had on their compile
+  classpath and can therefore be calling — and each is on Hikari's classpath too
+  (transitively via appcompat/material/preference/recyclerview/media3).
+  Compose, Navigation, DataStore, Room, SQLite and Work stay shrunk: no plugin or
+  extension touches them, and that is where the ~10 MB the shrinking saves lives.
+
+### Changed
+
+- **"Clear all data" moved out of the settings list and behind a confirmation.**
+  It was a bare red text link at the very foot of the settings index — the one
+  irreversible action in the app, sitting exactly where a scroll could reach
+  it, and it wiped everything the instant it was tapped, with no warning at
+  all. Settings now has a **Clear App data** folder whose page spells out what
+  goes (every setting, signed-in account, catalog, favorite and history entry
+  the app has stored), says that it cannot be undone, and puts the action
+  behind a warning dialog: a red **Clear** to delete everything, **Cancel** to
+  do nothing. The old links — the one on the index and the one at the bottom
+  of About & Updates — are gone, and About's subtitle no longer advertises a
+  "reset" it does not carry.
+
+### Notes
+
+- The rule this project has followed since shrinking was turned on — *every API a
+  plugin or an extension can touch is kept WHOLE, because their references are
+  strings R8 cannot see* — was being applied to the plugin SDKs but not to the
+  AndroidX surface a plugin's own fragment inevitably uses. That gap is closed,
+  and the reasoning plus the crash that proved it are written up in
+  `app/proguard-rules.pro` section 5b, which is where the next
+  `NoSuchMethodError` / `NoClassDefFoundError` with an `androidx.` frame should
+  send the reader.
+
 ## 0.10.40
 
 ### Fixed

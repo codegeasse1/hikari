@@ -72,6 +72,8 @@ import androidx.compose.material.icons.filled.ColorLens
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DeleteForever
+import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.Lock
@@ -364,8 +366,19 @@ private enum class SettingsFolder(
     ABOUT(
         "about",
         "About & Updates",
-        "Version, links, roadmap & reset",
+        "Version, links & roadmap",
         Icons.Filled.Info,
+    ),
+    // The one irreversible action in Settings, in a folder of its own. It used
+    // to be a red text link at the very foot of the index — easy to hit by
+    // accident while scrolling, impossible to explain, and it acted the instant
+    // it was tapped. A folder gives it a page that says what "everything"
+    // means, and the button there asks first (see ClearDataCard).
+    CLEAR_DATA(
+        "clear-data",
+        "Clear App data",
+        "Delete everything Hikari has stored on this device",
+        Icons.Filled.DeleteForever,
     ),
 
     // ---- Sub-folders (never listed on the index; see [parent]) ----
@@ -543,6 +556,10 @@ fun SettingsScreen(nav: NavHostController) {
     var showStats by remember { mutableStateOf(false) }
     var showPair by remember { mutableStateOf(false) }
     var showLogs by remember { mutableStateOf(false) }
+    // Settings → Clear App data: the confirmation in front of the app's only
+    // irreversible action (see ClearDataCard and the dialog at the end of this
+    // composable).
+    var showClearDataDialog by remember { mutableStateOf(false) }
 
     // Accent colours: the app accent repaints this whole screen live; the
     // player accent (and the "match app & player" switch) decide what the
@@ -1006,14 +1023,13 @@ fun SettingsScreen(nav: NavHostController) {
                     }
                     item { SettingsCard { RoadmapCard() } }
                     item { SettingsCard { AboutCard() } }
-                    item {
-                        TextButton(
-                            onClick = { scope.launch { app.store.clearAll() } },
-                            modifier = Modifier.padding(top = 14.dp)
-                        ) {
-                            Text(tr("Clear all data"), color = MaterialTheme.colorScheme.error)
-                        }
-                    }
+                }
+                // Deleting the app's data lives here, and only here. The card
+                // spells out what goes, the note under it says it cannot be
+                // undone, and the button opens a confirmation — the tap itself
+                // deletes nothing.
+                SettingsFolder.CLEAR_DATA -> {
+                    item { SettingsCard(top = 2.dp) { ClearDataCard(onClear = { showClearDataDialog = true }) } }
                 }
             }
         } else {
@@ -1066,14 +1082,6 @@ fun SettingsScreen(nav: NavHostController) {
                     )
                 }
             }
-            item {
-                TextButton(
-                    onClick = { scope.launch { app.store.clearAll() } },
-                    modifier = Modifier.padding(top = 16.dp)
-                ) {
-                    Text(tr("Clear all data"), color = MaterialTheme.colorScheme.error)
-                }
-            }
         }
     }
 
@@ -1082,6 +1090,38 @@ fun SettingsScreen(nav: NavHostController) {
             context = context,
             onDismiss = { showUpdateDialog = false },
             initialStatus = updateStatus,
+        )
+    }
+
+    // The warning the folder's button opens. Nothing about clearing data is
+    // destructive until the confirm button here is tapped, so this dialog is
+    // the only place the wipe is called from.
+    if (showClearDataDialog) {
+        AlertDialog(
+            onDismissRequest = { showClearDataDialog = false },
+            title = { Text(tr("Clear all data?")) },
+            text = {
+                Text(
+                    tr(
+                        "All your data will be deleted: every setting, signed-in " +
+                            "account, catalog, favorite, watch-history entry and " +
+                            "download record Hikari has stored on this device. " +
+                            "This cannot be undone."
+                    )
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showClearDataDialog = false
+                    scope.launch {
+                        app.store.clearAll()
+                        Toast.makeText(context, I18n.t("All data cleared"), Toast.LENGTH_SHORT).show()
+                    }
+                }) { Text(tr("Clear"), color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearDataDialog = false }) { Text(tr("Cancel")) }
+            },
         )
     }
 }
@@ -1401,6 +1441,68 @@ private fun AboutCard() {
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+    }
+}
+
+/**
+ * Settings → Clear App data: the app's only irreversible action, on a page of
+ * its own.
+ *
+ * It used to be a bare red text link at the foot of the settings index, which
+ * gave the user no warning at all — one stray tap while scrolling and
+ * everything was gone. Here the card says what "everything" means, the note
+ * says it cannot be undone, and the button does not delete anything itself: it
+ * asks first ([onClear] opens the confirmation dialog).
+ */
+@Composable
+private fun ClearDataCard(onClear: () -> Unit) {
+    Column(Modifier.padding(16.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier
+                    .size(44.dp)
+                    .clip(GlassShape)
+                    .background(MaterialTheme.colorScheme.error.copy(alpha = 0.14f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Filled.DeleteForever,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.error
+                )
+            }
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    tr("Clear all data"),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    tr("Every setting, account, catalog, favorite and history entry this app has stored"),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        Spacer(Modifier.height(14.dp))
+        Text(
+            tr("This cannot be undone: the app returns to how it looked the first time you opened it."),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(6.dp))
+        TextButton(onClick = onClear) {
+            Icon(
+                Icons.Filled.DeleteSweep,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.error,
+                modifier = Modifier.size(18.dp),
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(tr("Clear all data"), color = MaterialTheme.colorScheme.error)
+        }
     }
 }
 

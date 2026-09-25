@@ -208,6 +208,86 @@
 -keep class com.google.android.material.** { *; }
 
 # ---------------------------------------------------------------------------
+# 5b. The androidx SUPPORT classes a PLUGIN's own screens link against
+#
+# Section 5 keeps what Hikari's own UI uses. This keeps what a plugin's UI uses,
+# and it exists because of one specific crash report (0.10.41):
+#
+#   java.lang.NoSuchMethodError: No static method
+#     getDrawable(Landroid/content/res/Resources;ILandroid/content/res/Resources$Theme;)Landroid/graphics/drawable/Drawable;
+#     in class Landroidx/core/content/res/ResourcesCompat;
+#     ... (declaration of 'androidx.core.content.res.ResourcesCompat' appears in base.apk)
+#       at com.cncverse.Settings.getDrawable(Settings.kt:47)
+#       at com.cncverse.Settings.makeTvCompatible(Settings.kt:40)
+#       at com.cncverse.Settings.onViewCreated(Settings.kt:94)
+#       at androidx.fragment.app.Fragment.performViewCreated(...)
+#       at androidx.fragment.app.FragmentManager.execPendingActions(...)
+#       at android.os.Handler.handleCallback(...)
+#
+# The method is NOT missing from androidx.core: it is in the pinned 1.13.1
+# (verified by reading `ResourcesCompat.class` out of the AAR — 19 methods,
+# `getDrawable(Resources,int,Theme)` among them) and androidx.core's own consumer
+# ProGuard rules do not keep it (`allowshrinking` on a handful of `Api*Impl`
+# classes, nothing more). It is missing because THIS BUILD deleted it: with R8
+# full-mode shrinking on, a member nothing in this APK calls is removed even
+# when the class survives — and `ResourcesCompat` survives only because some
+# kept class (AppCompatResources) references it. Hikari's own code never calls
+# `ResourcesCompat.getDrawable`, so it went. The plugin's call is a bytecode
+# reference R8 cannot see, so it has to be kept by name — exactly the rule the
+# header of this file is about.
+#
+# The list below is not guesswork: `app/libs/cloudstream3.jar` carries the
+# `androidx.**.R` classes of CloudStream's own build, so the namespaces in it
+# are the ones a plugin author had on their compile classpath and can therefore
+# be calling. Each is on our classpath too (via appcompat / material /
+# preference / recyclerview / media3, directly or transitively). A namespace that
+# is NOT on the classpath is a no-op line, so the cost of an entry is nothing;
+# the cost of a MISSING entry is another "the gear crashes the app" report.
+# Deliberately still shrunk (nothing outside this APK can see them, and they are
+# where the size is): androidx.compose.**, androidx.navigation.**,
+# androidx.datastore.**, androidx.room.**, androidx.sqlite.**, androidx.work.**.
+-keep class androidx.core.** { *; }
+-keep class androidx.legacy.** { *; }
+-keep class androidx.localbroadcastmanager.** { *; }
+-keep class androidx.mediarouter.** { *; }
+-keep class androidx.palette.** { *; }
+-keep class androidx.customview.** { *; }
+-keep class androidx.cursoradapter.** { *; }
+-keep class androidx.interpolator.** { *; }
+-keep class androidx.vectordrawable.** { *; }
+-keep class androidx.documentfile.** { *; }
+-keep class androidx.dynamicanimation.** { *; }
+-keep class androidx.transition.** { *; }
+-keep class androidx.constraintlayout.** { *; }
+-keep class androidx.coordinatorlayout.** { *; }
+-keep class androidx.drawerlayout.** { *; }
+-keep class androidx.slidingpanelayout.** { *; }
+-keep class androidx.swiperefreshlayout.** { *; }
+-keep class androidx.viewpager.** { *; }
+-keep class androidx.viewpager2.** { *; }
+-keep class androidx.emoji2.** { *; }
+-keep class androidx.autofill.** { *; }
+-keep class androidx.savedstate.** { *; }
+-keep class androidx.arch.core.** { *; }
+-keep class androidx.tracing.** { *; }
+-keep class androidx.startup.** { *; }
+-keep class androidx.profileinstaller.** { *; }
+-keep class androidx.resourceinspection.** { *; }
+-keep class androidx.versionedparcelable.** { *; }
+-keep class androidx.collection.** { *; }
+-keep class androidx.print.** { *; }
+-keep class androidx.loader.** { *; }
+-keep class androidx.asynclayoutinflater.** { *; }
+-keep class androidx.window.** { *; }
+-keep class androidx.exifinterface.** { *; }
+-keep class androidx.graphics.** { *; }
+-keep class androidx.media.** { *; }
+# Keeping more of androidx reachable can surface references to optional
+# integrations that are not on the classpath; a missing class in code nothing
+# calls at runtime is not a reason to fail a build (see section 7).
+-dontwarn androidx.**
+
+# ---------------------------------------------------------------------------
 # 6. Reflection anchors
 # ---------------------------------------------------------------------------
 
