@@ -57,6 +57,12 @@
   "is chosen by TDLib and can be smaller than the specified limit", so a short page is normal — and
   the walk declared the chat finished at 181 posts with the user's 200+ videos unfindable from there
   on. The walk now ends on a page with nothing new in it, which is what the end of a chat looks like.
+- **Telegram: "Look in: Both" now means both places.** It ran only the file-name walk, so on the
+  reported case — one word written once with 200 videos posted under it, two of which are also named
+  after it — "Post text" found the batch and "Both" found less than it did, where "Both" should be
+  the two sets added together (the count the user expected). It is now the union of Telegram's own
+  post-text search (each hit expanded to the videos under it) and the file-name walk, deduped by
+  message. A caption is post text, so it belongs to the text half.
 - **Telegram: a chat search walks the whole chat by itself.** It loaded one page and put the rest
   behind a "Search further back" button under the list, so a tag with hundreds of matches showed a
   fraction of them until the user found and tapped that button. It now pages until the chat is really

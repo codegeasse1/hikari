@@ -887,6 +887,10 @@ object Td {
      *  call without the UI ever seeing a page). */
     private const val SCAN_MESSAGES_PER_CALL = 400
 
+    /** The most videos the post-text half of [SearchIn.BOTH] may pull in (see
+     *  [videosOfPost] — one tag post can carry a whole batch). */
+    private const val BOTH_TEXT_MAX = 2_000
+
     /** How many messages one `GetChatHistory` call asks for when walking a
      *  chat's history. TDLib's own maximum. */
     private const val HISTORY_PAGE = 100
@@ -1043,6 +1047,9 @@ object Td {
      * [SCAN_MESSAGES_PER_CALL] posts at a time. The returned [ChatVideoPage]
      * reports how far it got so the UI can say so and offer to go further,
      * rather than pretending a partial walk was exhaustive.
+     *
+     * [SearchIn.BOTH] is the UNION of the two places: the post-text search plus
+     * the file-name walk (see the merge in the body).
      */
     suspend fun searchChatVideos(
         chatId: Long,
@@ -1056,6 +1063,29 @@ object Td {
         // shadow it inside this body — TDLib would then be "sent" a String.
         val q = text.trim()
         if (q.isEmpty()) return ChatVideoPage(emptyList(), 0, 0, true)
+
+        // "Both" means both PLACES, and the two places are found by two
+        // completely different mechanisms: post TEXT by Telegram's own index
+        // (each hit expanded to the whole batch of videos under it — see
+        // [videosOfPost]), and FILE NAMES by walking the chat's history. Only
+        // the walk was run for it, so "Both" found LESS than "Post text" did on
+        // the reported case — a word written once with 200 videos posted under
+        // it, two of which are also named after it — where the answer the user
+        // expects is the two sets added together. A caption is post text, so the
+        // text half already covers it.
+        if (inText == SearchIn.BOTH) {
+            val byText = searchChatVideos(chatId, text, SearchIn.CHAT, cursor = 0L, limit = BOTH_TEXT_MAX)
+            val byName = searchChatVideos(chatId, text, SearchIn.VIDEO, cursor, limit)
+            val seen = HashSet<Long>()
+            return ChatVideoPage(
+                videos = (byText.videos + byName.videos).filter { seen.add(it.messageId) },
+                // The walk is the half with more to ask; the text search is
+                // complete on its first call.
+                nextCursor = byName.nextCursor,
+                scanned = byName.scanned + byText.scanned,
+                exhausted = byName.exhausted,
+            )
+        }
 
         if (inText == SearchIn.CHAT) {
             // NOT filtered to videos. The hits are POSTS: Telegram's text index
@@ -1119,9 +1149,11 @@ object Td {
                 if (!seen.add(m.id)) continue
                 advanced = true
                 val v = videoOf(chatId, m) ?: continue
-                val hit = v.fileName.contains(q, ignoreCase = true) ||
-                    (inText == SearchIn.BOTH && v.caption.contains(q, ignoreCase = true))
-                if (hit) out += v
+                // File-name only: the post-text half is Telegram's own search
+                // (see the [SearchIn.BOTH] merge above), so this walk IS the
+                // "Video names" half by definition. A caption is post text, so
+                // it belongs to that half, not to this one.
+                if (v.fileName.contains(q, ignoreCase = true)) out += v
             }
             from = page.messages.last().id
             // A page SHORTER than asked for is NOT the end of the chat. TDLib's
