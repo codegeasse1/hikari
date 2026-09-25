@@ -580,6 +580,12 @@ fun PairScreen(app: HikariApp, onBack: () -> Unit) {
                         if (r.ok) {
                             Spacer(Modifier.height(4.dp))
                             Text(
+                                tr("Your app lock and this device's layout were left as they are."),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            Text(
                                 tr("Reopen Hikari if a screen still looks like it did before."),
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -601,7 +607,8 @@ fun PairScreen(app: HikariApp, onBack: () -> Unit) {
                 Text(
                     tr(
                         "Your settings, installed extensions, sources and history on this " +
-                            "device will be replaced with the other device's. This cannot be undone."
+                            "device will be replaced with the other device's. Your app lock and " +
+                            "this device's layout stay as they are. This cannot be undone."
                     )
                 )
             },

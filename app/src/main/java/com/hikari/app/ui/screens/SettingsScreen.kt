@@ -5206,7 +5206,7 @@ private fun BackupCard(app: HikariApp, onPair: () -> Unit) {
         }
         Spacer(Modifier.height(10.dp))
         Text(
-            tr("Never includes your videos or passwords."),
+            tr("Never includes your videos or your app lock - and each device keeps its own layout."),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

@@ -516,6 +516,100 @@ class AppStore(private val ctx: Context) {
         val PERF_MODE = booleanPreferencesKey("perfMode")
     }
 
+    /**
+     * The settings that describe THIS DEVICE, and so may never travel to another
+     * one — the list behind the one rule that makes a backup and a device
+     * pairing safe: *a device keeps the settings that are about itself*.
+     *
+     * Both transfer paths answer to it, in both directions, which is the point
+     * of keeping the list here rather than at either call site: [snapshotPreferences]
+     * never puts these keys in a backup file (so a file handed to a support chat
+     * honestly does not contain them), and [restorePreferences] refuses to apply
+     * them even when a file DOES carry them — a file written by an older Hikari,
+     * or one from a device whose "backup" was made before this rule existed. That
+     * second half is not belt-and-braces: the reported bug was a *pairing* that
+     * arrived on a television with the phone's PIN lock and the phone's layout,
+     * and every file already sitting in somebody's Downloads was written by a
+     * build that had no rule at all.
+     *
+     * The test for a key is not "is it a setting?" but **"does its value mean the
+     * same thing on the device it arrives at?"** Everything a user BUILT (sources,
+     * accounts, history, favourites, catalogs, trackers, the theme, the font, the
+     * poster styling, the player preferences) means the same thing anywhere and
+     * travels. What is listed below means something only about the machine it was
+     * set on.
+     */
+    object DeviceLocal {
+
+        /**
+         * The keys, grouped by why they are here:
+         *
+         *  * **The app lock** (`appLock*`) — a PIN is a secret for the device it
+         *    was set on, and a lock is the ONE setting whose arrival the receiver
+         *    cannot undo without the sender's secret. Copying one onto a
+         *    television locked a screen that has no keypad and that its owner
+         *    never asked to lock. It is also a security rule rather than a taste:
+         *    a restore must never change whether a device is locked, and an app
+         *    that silently unlocks itself on an update would be worse still — so
+         *    the receiving device keeps its own lock state, whatever the file
+         *    says.
+         *  * **The layout** (`tvMode`, `tvOverscan`, `uiScale*`,
+         *    `fullscreenOff`) — phone or television is DETECTED per device (see
+         *    [com.hikari.app.tv.TvMode]), and these are the choices that exist to
+         *    suit that screen. A phone's 100% interface scale on a four-metre
+         *    television, its windowed "full screen app mode off", or — the
+         *    reported case — a phone whose `tvMode` is the default "follow the
+         *    device" arriving on a box whose owner had set "this device is a TV"
+         *    (because the box misreports itself) and silently replacing it, are
+         *    all the same bug: the receiving device stopped describing itself and
+         *    started describing the sender.
+         *  * **The device's own capability and first-run state** (`tvPerf*`,
+         *    `tvSeeded`, `perfMode`) — whether this chip can afford the poster
+         *    treatments, and whether this install has already applied its own
+         *    first-run television defaults. `tvSeeded` arriving as `true` from a
+         *    phone is what stopped a television from ever choosing its own
+         *    ("no poster effects, 110% interface scale") again.
+         *  * **The launcher icon** (`appIcon`) — a phone's home-screen icon
+         *    alias. A television launcher draws the app's banner and has no icon
+         *    to change, and the alias is applied from this value on every launch
+         *    (see [com.hikari.app.ui.AppIconManager.ensureApplied]).
+         *
+         * Deliberately NOT here, because the same value means the same thing on
+         * any device and the user who set it should find it there: the taskbar
+         * and its buttons (`navBarStyle`, `tabLabels`, `hiddenTabs`, the
+         * `show*Tab` switches), which sections of My Stuff are drawn, and every
+         * look-and-feel choice from the theme down to the poster glow. The
+         * account logins travel too — the tracker tokens, the Telegram api pair —
+         * because they are the USER's, not the device's, and carrying them is
+         * what "move your setup to another device" means.
+         */
+        val KEYS: Set<String> = setOf(
+            K.APP_LOCK.name,
+            K.APP_LOCK_SECRET.name,
+            K.APP_LOCK_LEN.name,
+            K.APP_LOCK_BIO.name,
+            K.APP_LOCK_SCREEN_OFF.name,
+            K.APP_LOCK_DELAY_MIN.name,
+            K.APP_LOCK_LEAVE.name,
+            K.APP_LOCK_SESSION_OPEN.name,
+            K.APP_LOCK_SESSION_AT.name,
+            K.TV_MODE.name,
+            K.TV_OVERSCAN.name,
+            K.TV_PERF.name,
+            K.TV_PERF_CHOSEN.name,
+            K.TV_SEEDED.name,
+            K.UI_SCALE_ENABLED.name,
+            K.UI_SCALE_PERCENT.name,
+            K.FULLSCREEN_OFF.name,
+            K.APP_ICON.name,
+            K.PERF_MODE.name,
+        )
+
+        /** True when [key] (a stored preference's name) must not leave the
+         *  device it was written on, or arrive on another one. */
+        fun contains(key: String): Boolean = key in KEYS
+    }
+
     // ---- Settings writes ----
     //
     // Every write a setting makes goes through [write] below rather than
@@ -3179,7 +3273,9 @@ class AppStore(private val ctx: Context) {
     // ---- Backup & restore (Settings → Backup & Restore) ----
 
     /**
-     * Every stored preference as plain data, for the backup file.
+     * Every stored preference as plain data, for the backup file — minus the
+     * device-local ones (see [DeviceLocal], which is also why a pair's payload
+     * carries none of them).
      *
      * Deliberately a GENERIC dump rather than a hand-written list of the keys
      * this class happens to declare today: the store is where the whole setup
@@ -3191,18 +3287,32 @@ class AppStore(private val ctx: Context) {
      * list, is a subtly broken setting).
      */
     suspend fun snapshotPreferences(): List<PrefRecord> =
-        store.data.first().asMap().mapNotNull { (key, value) -> recordOf(key.name, value) }
+        store.data.first().asMap()
+            .mapNotNull { (key, value) -> recordOf(key.name, value) }
+            .filterNot { DeviceLocal.contains(it.key) }
 
     /**
      * Applies records from a backup file, overwriting the values for those keys
      * and leaving every other key alone. One edit transaction, so the app can
      * never observe a half-restored store.
+     *
+     * Records naming a device-local setting are dropped without being applied
+     * (see [DeviceLocal]) — the receiving device keeps its own app lock, its own
+     * phone-or-television layout and its own icon, whatever the file says. That
+     * covers files this build would never have written: one made before the rule
+     * existed still carries the sender's lock, and refusing it here is what
+     * repairs that path rather than only closing it.
+     *
+     * Returns how many settings were actually applied, so the caller's report can
+     * be honest about what arrived.
      */
-    suspend fun restorePreferences(records: List<PrefRecord>) {
-        if (records.isEmpty()) return
+    suspend fun restorePreferences(records: List<PrefRecord>): Int {
+        val travelling = records.filterNot { DeviceLocal.contains(it.key) }
+        if (travelling.isEmpty()) return 0
         write("the restored backup") { prefs ->
-            for (r in records) applyRecord(prefs, r)
+            for (r in travelling) applyRecord(prefs, r)
         }
+        return travelling.size
     }
 
     /** [value] in the backup file's own terms, or null for a type the file

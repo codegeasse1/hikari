@@ -35,10 +35,18 @@ import java.util.Locale
  *    in Downloads/Playback and re-downloadable, and a restored queue pointing at
  *    files this device does not have would be worse than no queue at all;
  *  * the poster/artwork/adblock caches — pure caches, re-fetched on demand;
- *  * the download queue store (`hikari_downloads`) — for the first reason.
+ *  * the download queue store (`hikari_downloads`) — for the first reason;
+ *  * **the device-local settings** — the app lock, the phone/television layout
+ *    (interface scale, overscan, full-screen mode), this device's performance
+ *    and first-run state, and the launcher-icon alias. See
+ *    [AppStore.DeviceLocal] for the list and the rule behind it. A pairing
+ *    carries this same payload over Wi-Fi (see [com.hikari.app.pair.PairHost]),
+ *    so excluding them here is what stops a television from being handed a
+ *    phone's PIN lock and a phone's screen shape — the two things a transfer
+ *    must never decide for the device receiving it.
  *
  * The format is a plain JSON object so a support chat can be told "open it in a
- * text editor" and the user can see it contains no video and no passwords.
+ * text editor" and the user can see it contains no video and no app lock.
  */
 object BackupManager {
 
@@ -180,16 +188,33 @@ object BackupManager {
         }
 
         val records = ArrayList<PrefRecord>()
+        // Device-local records are counted but not queued: the store refuses them
+        // regardless (see [AppStore.DeviceLocal], which is where the rule and the
+        // list live), and counting them here is what lets the report below say
+        // that they were left alone rather than silently reporting fewer
+        // settings than the file holds.
+        var deviceLocal = 0
         val prefsArr = root.optJSONArray("prefs")
         for (i in 0 until (prefsArr?.length() ?: 0)) {
             val o = prefsArr?.optJSONObject(i) ?: continue
             val key = o.optString("key")
             if (key.isBlank()) continue
+            if (AppStore.DeviceLocal.contains(key)) {
+                deviceLocal++
+                continue
+            }
             val raw = o.opt("value")
             records.add(PrefRecord(key, o.optString("type"), if (raw == null || raw == JSONObject.NULL) null else raw))
         }
-        runCatching { app.store.restorePreferences(records) }.onFailure {
+        var applied = 0
+        runCatching { applied = app.store.restorePreferences(records) }.onFailure {
             return@withContext Report(false, "Could not restore your settings.", it.message.orEmpty())
+        }
+        if (deviceLocal > 0) {
+            Logs.log(
+                "Backup",
+                "kept $deviceLocal device-local setting(s) of this device's own (app lock / layout)",
+            )
         }
 
         var written = 0
@@ -215,7 +240,9 @@ object BackupManager {
 
         refreshLiveState(app)
 
-        val detail = "settings: ${records.size} · files: $written" +
+        val detail = "settings: $applied" +
+            (if (deviceLocal > 0) " · device-local kept: $deviceLocal" else "") +
+            " · files: $written" +
             (if (skipped > 0) " · skipped: $skipped" else "") +
             " · from $fromApp " + root.optInt("code", 0)
         Logs.log("Backup", "restore ok — $detail")

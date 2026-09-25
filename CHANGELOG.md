@@ -1,3 +1,45 @@
+## 0.10.42
+
+Everything added and fixed since 0.10.25.
+
+### Added
+
+- Telegram, built in. Sign in with your own account, your chats and channels in their own tab, add a channel by `@name` or a `t.me` link, search inside a chat, and play the videos in Hikari's own player.
+- Trackers: AniList, MyAnimeList, Kitsu, Simkl, Shikimori and Trakt. What you watch is sent to the account you already keep, signed in from the app or through your browser.
+- App lock: a PIN or password (fingerprint and face too) asked when Hikari opens, a keypad to type it on, lock when the screen turns off, and a "lock after leaving" wait of Instant to 60 minutes.
+- One search can ask every installed extension, and every repo of the same engine, with a switch for each and a list of exception extensions that are always asked.
+- Extensions tab: search across every repository you have added, and across every installed extension, from one box.
+- Pairing by QR code, and the other device is found on your Wi-Fi by itself - no address to type.
+- TV and remote: navigation rail, a focus ring on every control, the player's own menus walkable with the D-pad, screen-edge padding, and the television's own performance mode.
+- Aniyomi and SkyStream episode lists load in one request instead of seven, and a page you are waiting on is never queued behind a background search.
+- Clear App data in Settings, with a warning and a confirm before anything is deleted.
+
+### Fixed
+
+- Pairing no longer carries your app lock or your layout to the other device. The lock stays on the device it was set on, and phone or television layout is worked out by each device for itself.
+- Tapping the settings gear on a CloudStream extension no longer crashes the app.
+- Playback starts the moment one server is found, instead of holding for the first one or waiting for more of them.
+- A server that loads but never draws a picture is skipped instead of sitting on the loading screen - the "55 servers and nothing playing" case.
+- Extensions on sites that refuse to be read inside another app work again (THE BLANK's chapters), including sites that answer a chapter request with a plain 403.
+- Catalogue pages, episode lists and detail pages come back straight away on a second visit, from a cache on the device.
+- Telegram: videos play on the first tap, a tag post is read whole, a search inside a chat walks the whole chat, and Saved Messages works like any other chat.
+- Trackers: a sign-in finished in the browser comes back into the app, and a refused app id is explained instead of opening a password box.
+- App lock: the "wrong password" that appeared for the right password is gone, the dots match your password's length as you type, and the unlock survives leaving the app and coming back.
+- Manga: a failed chapter list now says why, and a chapter that a site serves behind a wall is read instead of failing.
+- Stremio addons: series play, magnet links play as a torrent, and a server that answers with nothing can no longer end the search.
+- TV: the focus ring is visible on every box, every control a remote is expected to reach works, and the screen-edge gap defaults to 0.
+- Installing an extension no longer stutters, and installing twenty at once no longer ends in a crash.
+- 18+ extensions you already installed are hidden while the adult switch is off, and come back when it is on.
+- The player's fit / crop button also stretches the picture.
+
+### Changed
+
+- "Search every extension" is now explicit: a switch per engine, an exception list, and "only this extension" really means only the extension you opened the title from.
+- The phone and television interfaces are one APK, and the layout follows the device it is installed on.
+- "Clear all data" moved into its own Settings folder, behind a confirmation.
+
+Many other things were also added and fixed. Just download the app and see.
+
 ## 0.10.41
 
 ### Fixed
