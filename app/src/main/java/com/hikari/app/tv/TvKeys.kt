@@ -2,6 +2,7 @@ package com.hikari.app.tv
 
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.indication
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -126,7 +127,15 @@ fun Modifier.tvPress(enabled: Boolean = true, onClick: () -> Unit): Modifier {
     val interactions = remember { MutableInteractionSource() }
     val indication = LocalIndication.current
     return this
-        .focusable(enabled, interactions, indication)
+        // The ring, applied the way `clickable` applies it (that is where every
+        // other control in the app gets its focus highlight from — see
+        // [TvFocusIndication]): the indication is drawn from the SAME
+        // interaction source the focus target reports to, which is why the
+        // source is passed to both. Foundation has no single-call
+        // `focusable(enabled, source, indication)` in this version, so it is
+        // these two modifiers in the order `clickable` itself uses them.
+        .indication(interactions, indication)
+        .focusable(enabled, interactions)
         .onPreviewKeyEvent { event ->
             if (!enabled || event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
             if (isPressKey(event.key)) {
