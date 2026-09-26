@@ -170,6 +170,25 @@ class IptvProvider(override val config: ProviderConfig) : ContentProvider {
         // A link with no `#EXTINF` at all is a bare m3u8/m3u stream rather than a
         // list: the URL itself is the one channel. That is what makes "just paste
         // my m3u8 link" work.
+        //
+        // A NETWORK STREAM is that same idea taken further: it is one link the
+        // user pasted, whatever is behind it, so it needs no download at all to
+        // know what it holds — and asking for one would fetch a whole hosting
+        // page (a Terabox share, an MDisk page) only to throw it away. Its one
+        // channel is built straight from the config; what the link holds is
+        // worked out when it is played (see [com.hikari.app.data.NetworkStream]).
+        if (com.hikari.app.data.NetworkStream.isStream(config)) {
+            val one = singleStreamChannel()
+            if (one == null) {
+                iptvErrors[config.id] = "This network stream has no link — remove it and add it again."
+                return@withLock cached ?: emptyList()
+            }
+            iptvErrors.remove(config.id)
+            channelsCache = listOf(one)
+            loadedAt[config.id] = System.currentTimeMillis()
+            channelCounts[config.id] = 1
+            return@withLock listOf(one)
+        }
         val list = runCatching {
             withTimeoutOrNull(FETCH_TIMEOUT_MS) {
                 withContext(Dispatchers.IO) {
@@ -263,6 +282,11 @@ class IptvProvider(override val config: ProviderConfig) : ContentProvider {
      * an IPTV playlist is the fastest source in the app: the server list gets
      * the exact link the playlist declared, with the playlist's own group as its
      * secondary line.
+     *
+     * The exception is a NETWORK STREAM (see [com.hikari.app.data.NetworkStream]):
+     * a link the user pasted as one file on some host, where what is behind the
+     * link has to be worked out before it can be played. That happens here, on
+     * Play — the moment every other engine does its own extraction.
      */
     override suspend fun getStreams(item: MediaItem, episode: Episode?): List<StreamSource> {
         val all = channels()
@@ -283,6 +307,25 @@ class IptvProvider(override val config: ProviderConfig) : ContentProvider {
                 return emptyList()
             }
         val url = channel.url
+        // A NETWORK STREAM is not a URL the player can open as it stands: it is
+        // a link to a FILE on some host, and what is behind it has to be worked
+        // out first (an m3u8, a Terabox share, an MDisk page, a download page an
+        // installed CloudStream extractor knows). That happens here, on Play —
+        // the same moment every other engine does its extraction — and the
+        // sources it answers with are the channel's servers.
+        if (com.hikari.app.data.NetworkStream.isStream(config)) {
+            val resolved = com.hikari.app.data.NetworkStream.resolve(
+                url = url,
+                label = channel.name,
+                providerId = config.id,
+                providerName = displayName,
+            )
+            if (resolved.isEmpty()) {
+                iptvErrors[config.id] = "That link could not be opened — it may have expired."
+                return emptyList()
+            }
+            return resolved
+        }
         return listOf(
             StreamSource(
                 name = channel.name,

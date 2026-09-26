@@ -71,6 +71,7 @@ import com.hikari.app.HikariApp
 import com.hikari.app.data.IptvPlaylist
 import com.hikari.app.data.MediaItem
 import com.hikari.app.data.MediaType
+import com.hikari.app.data.NetworkStream
 import com.hikari.app.data.ProviderConfig
 import com.hikari.app.data.ProviderType
 import com.hikari.app.data.TileShapes
@@ -131,6 +132,11 @@ fun IptvScreen(nav: NavHostController) {
     var showAdd by remember { mutableStateOf(false) }
     var addLink by remember { mutableStateOf("") }
     var addName by remember { mutableStateOf("") }
+    // Whether the dialog is adding a PLAYLIST or a single NETWORK STREAM. Both
+    // are IPTV providers and both end up as a tile in this tab; the difference
+    // is what the link IS (a list of channels, or one file on some host that has
+    // to be resolved before it plays) — see [NetworkStream].
+    var addStream by remember { mutableStateOf(false) }
     var addFileLabel by remember { mutableStateOf("") }
     var addFilePath by remember { mutableStateOf("") }
     var adding by remember { mutableStateOf(false) }
@@ -154,16 +160,25 @@ fun IptvScreen(nav: NavHostController) {
         val name = addName
         adding = true
         scope.launch {
-            val result = addIptvPlaylist(app, link, local, name)
+            val result = if (addStream) {
+                addNetworkStream(app, link, name)
+            } else {
+                addIptvPlaylist(app, link, local, name)
+            }
             adding = false
             result.fold(
                 onSuccess = { n ->
                     Toast.makeText(
                         uiContext,
-                        I18n.t("Added IPTV playlist (%s channels)").replace("%s", n.toString()),
+                        if (addStream) {
+                            I18n.t("Added network stream")
+                        } else {
+                            I18n.t("Added IPTV playlist (%s channels)").replace("%s", n.toString())
+                        },
                         Toast.LENGTH_LONG,
                     ).show()
                     showAdd = false
+                    addStream = false
                     addLink = ""
                     addName = ""
                     addFileLabel = ""
@@ -278,6 +293,7 @@ fun IptvScreen(nav: NavHostController) {
                         name = card.name,
                         subtitle = when {
                             card.error != null -> card.error
+                            card.stream -> tr("Network stream")
                             card.channels == 0 -> tr("Empty playlist")
                             else -> I18n.t("%s channels · %s groups")
                                 .replace("%s", card.channels.toString())
@@ -296,16 +312,43 @@ fun IptvScreen(nav: NavHostController) {
     if (showAdd) {
         AlertDialog(
             onDismissRequest = { if (!adding) showAdd = false },
-            title = { Text(tr("Add IPTV playlist")) },
+            title = { Text(if (addStream) tr("Add network stream") else tr("Add IPTV playlist")) },
             text = {
                 Column(Modifier.verticalScroll(rememberScrollState())) {
+                    // Playlist or single link. Kept in front of the fields
+                    // because it changes what they mean: a playlist link is
+                    // read and its channels listed, a stream link is kept as it
+                    // is and worked out when it is played.
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        AddModePill(
+                            label = tr("Playlist"),
+                            selected = !addStream,
+                            onClick = { addStream = false },
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        AddModePill(
+                            label = tr("Network stream"),
+                            selected = addStream,
+                            onClick = { addStream = true },
+                        )
+                    }
+                    Spacer(Modifier.height(10.dp))
                     if (!LocalHideHelp.current) {
                     Text(
-                        tr(
-                            "Paste an M3U/M3U8 link — an Xtream panel's " +
-                                "get.php?username=…&password=…&type=m3u_plus link works, and so " +
-                                "does a single m3u8 stream. Or pick a playlist file from storage."
-                        ),
+                        if (addStream) {
+                            tr(
+                                "Paste a link to a stream: an m3u8 or mp4, a Terabox/Telebox " +
+                                    "share, an MDisk link, or a download page — anything an " +
+                                    "installed extension can open. It is resolved when you " +
+                                    "press play."
+                            )
+                        } else {
+                            tr(
+                                "Paste an M3U/M3U8 link — an Xtream panel's " +
+                                    "get.php?username=…&password=…&type=m3u_plus link works, and so " +
+                                    "does a single m3u8 stream. Or pick a playlist file from storage."
+                            )
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -314,13 +357,18 @@ fun IptvScreen(nav: NavHostController) {
                     OutlinedTextField(
                         value = addLink,
                         onValueChange = { addLink = it },
-                        placeholder = { Text(tr("https://…/playlist.m3u")) },
+                        placeholder = {
+                            Text(
+                                if (addStream) tr("https://…/m3u8, terabox, mdisk…")
+                                else tr("https://…/playlist.m3u")
+                            )
+                        },
                         singleLine = false,
                         maxLines = 3,
                         modifier = Modifier.fillMaxWidth().tvTextFieldKeys(addLink),
                     )
                     Spacer(Modifier.height(8.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (!addStream) Row(verticalAlignment = Alignment.CenterVertically) {
                         OutlinedButton(onClick = { filePicker.launch(arrayOf("*/*")) }) {
                             Icon(
                                 Icons.Filled.FolderOpen,
@@ -345,7 +393,9 @@ fun IptvScreen(nav: NavHostController) {
                     OutlinedTextField(
                         value = addName,
                         onValueChange = { addName = it },
-                        label = { Text(tr("Name (optional)")) },
+                        label = {
+                            Text(if (addStream) tr("Name") else tr("Name (optional)"))
+                        },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth().tvTextFieldKeys(addName),
                     )
@@ -355,7 +405,7 @@ fun IptvScreen(nav: NavHostController) {
                             CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
                             Spacer(Modifier.width(8.dp))
                             Text(
-                                tr("Reading playlist…"),
+                                if (addStream) tr("Adding…") else tr("Reading playlist…"),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -372,6 +422,7 @@ fun IptvScreen(nav: NavHostController) {
             dismissButton = {
                 TextButton(onClick = {
                     showAdd = false
+                    addStream = false
                     addLink = ""
                     addName = ""
                     addFileLabel = ""
@@ -459,6 +510,74 @@ private suspend fun addIptvPlaylist(
     )
     app.providers.refresh()
     Result.success(count)
+}
+
+/**
+ * Adds a NETWORK STREAM: one pasted link, kept exactly as the user wrote it and
+ * resolved when it is played (see [NetworkStream]).
+ *
+ * Deliberately NOT read before it is saved, unlike [addIptvPlaylist]. There is
+ * nothing to count — a Terabox share or an m3u8 is not a channel list — and
+ * fetching it here would both make adding slow and fail honest links that the
+ * app can only work out at play time (the host needs the player's own headers,
+ * or asks for a session the resolver sets up then). The entry is saved with
+ * [NetworkStream.MARKER] on its config, which is what makes the tab, the tile
+ * and the play path treat it as a stream rather than a one-channel playlist.
+ */
+private suspend fun addNetworkStream(
+    app: HikariApp,
+    link: String,
+    name: String,
+): Result<Int> = withContext(Dispatchers.IO) {
+    val url = link.trim().let {
+        if (it.startsWith("http://") || it.startsWith("https://")) it
+        else if (it.isBlank()) "" else "https://$it"
+    }
+    if (url.isBlank()) {
+        return@withContext Result.failure(Exception(I18n.t("Paste a link to the stream")))
+    }
+    if (!NetworkStream.isStreamLink(url)) {
+        return@withContext Result.failure(
+            Exception(I18n.t("That is not a link — paste a full http(s) URL")),
+        )
+    }
+    // A stream's name cannot come from the link (a share key is not a name), so
+    // the host stands in when the user did not type one.
+    val display = name.trim().ifBlank {
+        NetworkStream.hostOf(url).removePrefix("www.").substringBefore('.').ifBlank { "Stream" }
+    }
+    app.store.addProvider(
+        ProviderConfig(
+            id = "iptv|" + url.hashCode(),
+            name = display,
+            type = ProviderType.IPTV,
+            url = url,
+            extra = NetworkStream.MARKER,
+        )
+    )
+    app.providers.refresh()
+    Result.success(1)
+}
+
+/** One of the add dialog's two modes: Playlist, or a single Network stream. */
+@Composable
+private fun AddModePill(label: String, selected: Boolean, onClick: () -> Unit) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(50),
+        color = if (selected) MaterialTheme.colorScheme.primary
+        else MaterialTheme.colorScheme.surfaceVariant,
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            color = if (selected) MaterialTheme.colorScheme.onPrimary
+            else MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+        )
+    }
 }
 
 /**
@@ -571,6 +690,9 @@ private data class IptvCard(
     val groups: Int,
     val cover: String?,
     val error: String?,
+    /** True for a link the user added as a single NETWORK STREAM rather than a
+     *  playlist: one channel, and no groups to count. */
+    val stream: Boolean = false,
 )
 
 /** One group inside a playlist. */
@@ -595,6 +717,7 @@ private suspend fun readCard(p: IptvProvider): IptvCard {
         // than a generic glyph.
         cover = list.firstOrNull { !it.logo.isNullOrBlank() }?.logo,
         error = IptvProvider.iptvErrors[p.config.id],
+        stream = NetworkStream.isStream(p.config),
     )
 }
 

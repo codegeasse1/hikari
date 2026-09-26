@@ -52,7 +52,10 @@ import kotlin.coroutines.resume
  * top-level `var`s cannot collide with anything, and the wrapper is compiled to
  * QuickJS bytecode once and reused for every later call ([bytecodeCache]) —
  * the same trick [com.hikari.app.nuvio.NuvioRuntime] uses to stop paying the
- * parse cost per provider.
+ * parse cost per provider. The ONE exception is [detail], which loads meta.js
+ * and episodes.js into a single engine because the season list it needs lives
+ * inside the meta document — two files, one boot, instead of two boots for one
+ * page (see its own doc, and `__vegaDetail` in assets/vega/harness.js).
  */
 object VegaRuntime {
 
@@ -68,6 +71,10 @@ object VegaRuntime {
     /** getPosts/getSearchPosts/getMeta — a catalog or a detail page needs
      *  several page fetches and can outlast [CALL_TIMEOUT_MS] on a slow link. */
     private const val CATALOG_TIMEOUT_MS = 75_000L
+    /** [detail]: one engine that answers a whole detail view — the meta document
+     *  AND the season requests that document asks for — so it gets the catalog
+     *  budget rather than [CALL_TIMEOUT_MS]. */
+    private const val DETAIL_TIMEOUT_MS = 75_000L
     private const val VALIDATE_TIMEOUT_MS = 20_000L
     /** Room on top of a call's budget for the pump loop's own bookkeeping. */
     private const val CALL_GRACE_MS = 20_000L
@@ -196,6 +203,10 @@ object VegaRuntime {
         /** How many bridge fetches are in flight in this engine — the pump loop
          *  uses it to tell "waiting on the network" from "stopped responding". */
         inFlight: java.util.concurrent.atomic.AtomicInteger,
+        /** Called with ("info", <Info as JSON>) the moment a [detail] call's meta
+         *  half answers, so the caller can paint the page's header while the very
+         *  same engine is still fetching the seasons. */
+        onProgress: ((String, String) -> Unit)? = null,
     ): QuickJs {
         val qjs = QuickJs.create(jobDispatcher = Dispatchers.Default)
         qjs.evaluationTimeoutMillis = CALL_TIMEOUT_MS
@@ -237,6 +248,12 @@ object VegaRuntime {
         qjs.function("__vegaLog") { args ->
             val msg = args.getOrNull(0)?.toString() ?: ""
             android.util.Log.d("Vega", msg)
+            ""
+        }
+        qjs.function("__vegProgress") { args ->
+            val stage = args.getOrNull(0)?.toString() ?: ""
+            val payload = args.getOrNull(1)?.toString() ?: ""
+            runCatching { onProgress?.invoke(stage, payload) }
             ""
         }
 
@@ -332,7 +349,14 @@ object VegaRuntime {
                 source +
                 "\n  })(module, module.exports, globalThis.__nuvioRequire, '/', '/' + ${quote("$name.js")});\n" +
                 "  return module.exports;\n" +
-                "})();"
+                "})();\n" +
+                // Every loaded file is also filed by its own name, because ONE
+                // call can need two of them (see [detail]: meta.js's getMeta and
+                // episodes.js's getEpisodes in the same engine) and
+                // `__vegaExports` only ever holds the file loaded last.
+                "globalThis.__vegaModules = globalThis.__vegaModules || {};\n" +
+                "globalThis.__vegaModules[${quote("$name.js")}] = globalThis.__vegaExports;\n" +
+                "void 0;"
         evaluateCached(cacheKey, wrapped)
     }
 
@@ -350,6 +374,11 @@ object VegaRuntime {
         withCheerio: Boolean,
         budgetMs: Long,
         callScript: String,
+        /** Extra provider files to load into the SAME engine before the call —
+         *  the detail call needs meta.js and episodes.js together, which is the
+         *  whole point of it (see [detail]). */
+        extraModules: List<Pair<String, String>> = emptyList(),
+        onProgress: ((String, String) -> Unit)? = null,
     ): String {
         val file = File(providerDir, "$fileName.js")
         if (!file.exists()) {
@@ -368,9 +397,25 @@ object VegaRuntime {
                     val deferred = CompletableDeferred<String>()
                     var qjs: QuickJs? = null
                     try {
-                        qjs = createEngine(deferred, kv, value, withCheerio, inFlight)
-                        val key = "vega/$providerId/$fileName/${source.hashCode()}"
+                        qjs = createEngine(deferred, kv, value, withCheerio, inFlight, onProgress)
+                        val key = "vega/v2/$providerId/$fileName/${source.hashCode()}"
                         qjs.loadModule(key, fileName, source)
+                        for ((extraName, extraSource) in extraModules) {
+                            if (extraSource.isBlank()) continue
+                            // A companion file that will not compile must not cost
+                            // the caller its main answer: the harness simply will
+                            // not find the function it was loaded for.
+                            try {
+                                qjs.loadModule(
+                                    "vega/v2/$providerId/$extraName/${extraSource.hashCode()}",
+                                    extraName,
+                                    extraSource,
+                                )
+                            } catch (e: kotlinx.coroutines.CancellationException) {
+                                throw e
+                            } catch (_: Throwable) {
+                            }
+                        }
                         qjs.evaluate<Any?>("$callScript\n;void 0;", "vega-call.js", false)
                         val deadline = System.currentTimeMillis() + budgetMs
                         var idleRounds = 0
@@ -496,6 +541,51 @@ object VegaRuntime {
         budgetMs = CATALOG_TIMEOUT_MS,
         callScript = "__vegaCallMany(${quote(fnName)}, ${quote(argsArrayJson)});",
     )
+
+    /**
+     * A whole detail view in ONE engine: meta.js's `getMeta` and, in the same
+     * engine and straight after it, episodes.js's `getEpisodes` for every season
+     * the Info's `linkList` asks for. The payload is
+     * `{"ok":true,"data":{"info":<Info>,"episodes":[<array|null>,…]}}`, and
+     * [onInfo] is handed the Info's JSON the moment it answers so the page's
+     * header does not have to wait for the seasons.
+     *
+     * This exists because the detail page used to cost TWO engine boots: one to
+     * read the meta document, and a second to read the episodes out of the
+     * season links that document carries. Booting is the expensive half — a
+     * fresh QuickJS VM, the polyfills, 450KB of cheerio, nuvio's harness and the
+     * provider's own module, all over again — and paying it twice in a row for
+     * what the user reads as one page is what "taking too much time to show info
+     * and episode in detail screen" was. The season list is inside the document,
+     * so there is nothing to parallelise: the only way to make it fast is to ask
+     * both questions of the engine that is already up.
+     *
+     * The index alignment matters: the episode array holds one entry per
+     * `linkList` entry with a non-blank `episodesLink`, in list order, and the
+     * caller maps it back by walking that same list the same way (see
+     * [com.hikari.app.providers.vega.VegaProvider]). A season whose request
+     * throws contributes `null` rather than failing the whole page.
+     */
+    suspend fun detail(
+        providerDir: File,
+        providerId: String,
+        value: String,
+        argsJson: String,
+        onInfo: (String) -> Unit,
+    ): String {
+        val episodes = runCatching { File(providerDir, "episodes.js").readText() }.getOrNull()
+        return run(
+            providerDir = providerDir,
+            providerId = providerId,
+            value = value,
+            fileName = "meta",
+            withCheerio = true,
+            budgetMs = DETAIL_TIMEOUT_MS,
+            callScript = "__vegaDetail(${quote(argsJson)});",
+            extraModules = if (episodes.isNullOrBlank()) emptyList() else listOf("episodes" to episodes),
+            onProgress = { stage, payload -> if (stage == "info") onInfo(payload) },
+        )
+    }
 
     /**
      * True when the provider's files load and it exports something usable.

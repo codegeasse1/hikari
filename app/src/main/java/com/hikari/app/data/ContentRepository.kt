@@ -1914,6 +1914,20 @@ class ContentRepository(private val manager: ProviderManager) {
         return out
     }
 
+    /** Provider id -> engine kind, the index [HomeDedupe] needs: a [CatalogRow]
+     *  knows its provider's id but not which engine that provider is. */
+    private fun typeIndex(providers: List<ContentProvider>): Map<String, ProviderType> =
+        providers.associate { it.config.id to it.config.type }
+
+    /** One emission of [homeRowsStreamingWhere]: the rows placed so far in their
+     *  curated order, with the titles an earlier row already carried removed when
+     *  the feed spans engines that share a catalogue (see [HomeDedupe]). */
+    private fun feedSnapshot(
+        placed: Map<Int, CatalogRow>,
+        types: Map<String, ProviderType>,
+    ): List<CatalogRow> =
+        HomeDedupe.apply(placed.entries.sortedBy { it.key }.map { it.value }, types)
+
     /**
      * Records *why* a provider's catalog came up empty when the whole provider
      * job hit the ceiling below. Without this the provider produced no entry in
@@ -2018,7 +2032,9 @@ class ContentRepository(private val manager: ProviderManager) {
                 }
             }.awaitAll().flatten()
         }
-        translateRows(rows)
+        // Rows from the engines that share a catalogue (Nuvio / Stremio) lose the
+        // titles an earlier row of the feed already carried — see [HomeDedupe].
+        translateRows(HomeDedupe.apply(rows, typeIndex(active)))
     }
 
     /**
@@ -2077,6 +2093,9 @@ class ContentRepository(private val manager: ProviderManager) {
         val catalogGate = Semaphore(12)
         val placed = ConcurrentHashMap<Int, CatalogRow>()
         val version = AtomicInteger(0)
+        // The engine index every emission below is deduplicated against (see
+        // [feedSnapshot] and [HomeDedupe]).
+        val rowTypes = typeIndex(active)
         // Keeps the feed loading while the user is in another app — Android
         // freezes a backgrounded process, which used to stop every catalog
         // mid-fetch (see [com.hikari.app.work.BackgroundWork]).
@@ -2140,7 +2159,7 @@ class ContentRepository(private val manager: ProviderManager) {
             while (true) {
                 if (version.get() != lastVersion) {
                     lastVersion = version.get()
-                    val snapshot = placed.entries.sortedBy { it.key }.map { it.value }
+                    val snapshot = feedSnapshot(placed, rowTypes)
                     lastSnapshot = snapshot
                     emit(snapshot)
                 }
@@ -2153,7 +2172,7 @@ class ContentRepository(private val manager: ProviderManager) {
                 if (System.currentTimeMillis() - started > 150_000L) break
                 delay(100)
             }
-            val finalSnapshot = placed.entries.sortedBy { it.key }.map { it.value }
+            val finalSnapshot = feedSnapshot(placed, rowTypes)
             if (finalSnapshot != lastSnapshot) emit(finalSnapshot)
         } finally {
             scope.cancel()

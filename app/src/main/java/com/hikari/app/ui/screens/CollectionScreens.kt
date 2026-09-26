@@ -4266,11 +4266,24 @@ fun FolderTile(
     val app = LocalContext.current.applicationContext as HikariApp
     val gifAnimFlow = remember { app.store.gifAnimFlow() }
     val animateGif by gifAnimFlow.collectAsState(initial = true)
+    // The tile's rounded panel is DRAWN (fill + border in [GlassShape]) rather
+    // than CLIPPED.
+    //
+    // A `.clip(GlassShape)` on this Column is what cut the name in half. At the
+    // app's 26dp radius a small tile is mostly corner: the curve reaches ~26dp in
+    // from the edge near the bottom, further than the text's own 10dp inset, so
+    // the outer letters of the last line — and of "Empty folder" under it — came
+    // out with their bottoms sliced off, and a long name read as if it had lost
+    // characters ("in nuvio it's cutting some alphabet of name because of round
+    // corner around it"). Nothing inside the tile needs clipping: the artwork
+    // rounds itself (see [CoverArt], and the same note on [PosterCard] and
+    // [LibraryCard]), so the shape only has to be painted, not enforced. The
+    // click ripple loses the rounded corners it used to borrow from the clip,
+    // which is the whole price of the fix.
     Column(
         Modifier
             .then(if (width != null) Modifier.width(width) else Modifier.fillMaxWidth())
-            .clip(GlassShape)
-            .background(tokens.fillTop)
+            .background(tokens.fillTop, GlassShape)
             .border(1.dp, tokens.border, GlassShape)
             .clickable(onClick = onClick)
             .padding(7.dp),

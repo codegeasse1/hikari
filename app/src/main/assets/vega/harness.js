@@ -356,6 +356,56 @@
     return null;
   }
 
+  /* The same pick, but from a NAMED module of the ones the host has loaded
+   * (the host registers each under its file name). The detail call below needs
+   * two files at once — meta.js's getMeta and episodes.js's getEpisodes — and
+   * `vegaExports()` only ever holds the LAST one loaded. The named module is
+   * tried first, then the last-loaded one, then every registered module: a
+   * provider that keeps everything in one file (getEpisodes beside getMeta in
+   * meta.js) is answered by the same rule. */
+  function pickModuleFunction(moduleName, fnName) {
+    var mods = g.__vegaModules || {};
+    var order = [];
+    if (mods[moduleName]) order.push(mods[moduleName]);
+    if (g.__vegaExports && order.indexOf(g.__vegaExports) === -1) order.push(g.__vegaExports);
+    for (var k in mods) {
+      if (mods[k] && order.indexOf(mods[k]) === -1) order.push(mods[k]);
+    }
+    for (var i = 0; i < order.length; i++) {
+      var ex = order[i];
+      if (ex && typeof ex[fnName] === 'function') return ex[fnName];
+      if (ex && ex['default'] && typeof ex['default'][fnName] === 'function') return ex['default'][fnName];
+    }
+    return null;
+  }
+
+  /* The season requests inside an Info: one per `linkList` entry that carries an
+   * `episodesLink`, in list order. The host walks the same list the same way, so
+   * the Nth answer here belongs to the Nth season it asked about. */
+  function seasonRequests(info) {
+    var out = [];
+    try {
+      var list = info && info.linkList;
+      if (!list || !list.length) return out;
+      for (var i = 0; i < list.length; i++) {
+        var s = list[i] || {};
+        var url = s.episodesLink;
+        if (typeof url === 'string' && url.trim()) out.push({ url: url.trim() });
+      }
+    } catch (e) { out = []; }
+    return out;
+  }
+
+  /* Adds the two things every provider function is called with. Named for what
+   * it does rather than for a coroutine helper, so nothing it can shadow in the
+   * engine's global scope (nuvio's harness has its own helpers) is affected. */
+  function vegaArgs(args) {
+    args = args || {};
+    args.providerContext = g.__vegaProviderContext;
+    if (g.__vegaProviderValue !== undefined) args.providerValue = g.__vegaProviderValue;
+    return args;
+  }
+
   /** Pure-data read of catalog.js (its exports are arrays, never functions). */
   g.__vegaCatalogJson = function () {
     var ex = vegaExports();
@@ -438,6 +488,55 @@
         });
       });
       chain.then(function () { done(out, results, null); }, function (e) { done(out, null, e); });
+    } catch (e) {
+      done(out, null, e);
+    }
+  };
+
+  /* The WHOLE detail view in ONE engine: meta.js's `getMeta({link})` and, in the
+   * same engine and straight after it, episodes.js's `getEpisodes({url})` for
+   * every season the Info asks for. Answers
+   * `{info: <Info>, episodes: [<array or null>, …]}`.
+   *
+   * The season list lives INSIDE the meta document, so the old shape — a fresh
+   * engine for the meta, another fresh engine for the episodes — paid twice for
+   * the one thing that is really expensive here (booting the VM: polyfills, the
+   * cheerio bundle, nuvio's harness and the provider's own module all over
+   * again) to answer what the user reads as a single page. The meta half is
+   * pushed to the host AS SOON as it answers (`__vegProgress`), so the detail
+   * page's header still fills in at the moment it used to, and the episode list
+   * follows from the engine that is already up. */
+  g.__vegaDetail = function (linkJson) {
+    var out = { sent: false };
+    try {
+      var metaFn = pickModuleFunction('meta.js', 'getMeta');
+      if (!metaFn) { done(out, null, new Error('provider does not export getMeta')); return; }
+      Promise.resolve()
+        .then(function () { return metaFn(vegaArgs(JSON.parse(linkJson || '{}'))); })
+        .then(function (info) {
+          try {
+            if (typeof g.__vegProgress === 'function') {
+              g.__vegProgress('info', JSON.stringify(info === undefined ? null : info));
+            }
+          } catch (e) {}
+          var requests = seasonRequests(info);
+          var epFn = requests.length ? pickModuleFunction('episodes.js', 'getEpisodes') : null;
+          if (!epFn) { done(out, { info: info, episodes: [] }, null); return; }
+          var results = new Array(requests.length);
+          var chain = Promise.resolve();
+          requests.forEach(function (a, i) {
+            chain = chain.then(function () {
+              return Promise.resolve()
+                .then(function () { return epFn(vegaArgs({ url: a.url })); })
+                .then(function (r) { results[i] = (r === undefined) ? null : r; },
+                  function (e) { results[i] = null; });
+            });
+          });
+          chain.then(
+            function () { done(out, { info: info, episodes: results }, null); },
+            function () { done(out, { info: info, episodes: results }, null); },
+          );
+        }, function (e) { done(out, null, e); });
     } catch (e) {
       done(out, null, e);
     }

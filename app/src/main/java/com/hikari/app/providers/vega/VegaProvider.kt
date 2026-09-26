@@ -10,7 +10,11 @@ import com.hikari.app.data.StreamSource
 import com.hikari.app.data.SubtitleSource
 import com.hikari.app.net.Http
 import com.hikari.app.providers.ContentProvider
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -53,6 +57,9 @@ class VegaProvider(override val config: ProviderConfig) : ContentProvider {
         private const val MAX_STREAMS = 60
         private const val MAX_SEASONS = 24
         private const val CATALOG_TTL_MS = 30 * 60 * 1000L
+        /** Detail jobs kept per provider — an LRU, because a session opens
+         *  hundreds of titles and each job holds one season list's raw JSON. */
+        private const val DETAIL_JOBS_MAX = 8
     }
 
     /** `vega|<value>` → the provider's manifest value (its dist folder name). */
@@ -76,6 +83,33 @@ class VegaProvider(override val config: ProviderConfig) : ContentProvider {
 
     /** The stream link a movie's own meta resolved to. */
     private val movieLinkCache = ConcurrentHashMap<String, String>()
+
+    /**
+     * One detail job per item link — the work [getMeta] and [getEpisodes] share.
+     *
+     * Both halves of it live in the same engine (see [VegaRuntime.detail]) and
+     * the second cannot even be asked for without the first, so they are one
+     * unit of work with two delivery points: the meta document as soon as it
+     * answers, the seasons when they are done. Finished jobs stay in the map
+     * (bounded, least-recently-used first) so a caller that arrives after the
+     * engine has already closed still finds the answer here instead of booting
+     * a third engine for it.
+     */
+    private class DetailJob {
+        val info = CompletableDeferred<JSONObject?>()
+        val episodes = CompletableDeferred<Map<Int, JSONArray>>()
+    }
+
+    private val detailJobs = object : LinkedHashMap<String, DetailJob>(8, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, DetailJob>?) =
+            size > DETAIL_JOBS_MAX
+    }
+
+    /** Runs detail jobs in their own coroutines: their two callers come and go
+     *  (a page's meta fetch and its episode fetch are separate calls, and either
+     *  can be cancelled by its own timeout), while the engine one of them
+     *  started keeps going and its answer lands in the caches either way. */
+    private val detailScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     // ---- catalogue ----
 
@@ -203,6 +237,14 @@ class VegaProvider(override val config: ProviderConfig) : ContentProvider {
     private suspend fun infoFor(item: MediaItem): JSONObject? {
         if (item.id.isBlank()) return null
         infoCache[item.id]?.let { return it }
+        // A detail job already has the document in hand (or is fetching it right
+        // now): await THAT rather than booting a second engine for a page the
+        // user is already looking at.
+        synchronized(detailJobs) { detailJobs[item.id] }?.let { job ->
+            val info = job.info.await()
+            if (info != null) infoCache[item.id] = info
+            return info
+        }
         if (!File(dir, "meta.js").exists()) return null
         val args = JSONObject().put("link", item.id)
         val payload = VegaRuntime.call(dir, value, value, "meta", "getMeta", args.toString())
@@ -212,7 +254,12 @@ class VegaProvider(override val config: ProviderConfig) : ContentProvider {
     }
 
     override suspend fun getMeta(item: MediaItem): MediaItem = withContext(Dispatchers.IO) {
-        val info = infoFor(item) ?: return@withContext item
+        // The detail job, not [infoFor]: this is the call the detail page makes,
+        // and the job is what puts the meta document AND the season list in one
+        // engine instead of two (see [VegaRuntime.detail]). The header still
+        // paints the moment the meta half answers — the job completes `info`
+        // then, while its episodes are still being fetched.
+        val info = detailJob(item).info.await() ?: infoFor(item) ?: return@withContext item
         val type = info.optString("type").trim().lowercase()
         MediaItem(
             providerId = item.providerId,
@@ -228,15 +275,66 @@ class VegaProvider(override val config: ProviderConfig) : ContentProvider {
         )
     }
 
-    override suspend fun getEpisodes(item: MediaItem): List<Episode>? = withContext(Dispatchers.IO) {
-        episodeCache[item.id]?.takeIf { it.isNotEmpty() }?.let { return@withContext it }
-        if (item.type == MediaType.MOVIE) return@withContext null
-        val info = infoFor(item) ?: return@withContext null
-        val type = info.optString("type").trim().lowercase()
-        val list = info.optJSONArray("linkList") ?: return@withContext null
-        if (list.length() == 0) return@withContext null
+    /**
+     * Starts (or finds) the one job behind a title's detail view — meta document
+     * and seasons in a single engine.
+     *
+     * Nothing here waits: the caller awaits whichever half it needs. A job whose
+     * engine dies completes both halves (null / empty) rather than leaving a
+     * caller hanging, and the job stays in [detailJobs] afterwards so the other
+     * caller — which is a separate call from the same screen — gets the same
+     * answer instead of starting a fresh engine.
+     */
+    private fun detailJob(item: MediaItem): DetailJob {
+        synchronized(detailJobs) { detailJobs[item.id] }?.let { return it }
+        val job = DetailJob()
+        val previous = synchronized(detailJobs) { detailJobs.put(item.id, job) }
+        if (previous != null) return previous
+        detailScope.launch {
+            try {
+                val args = JSONObject().put("link", item.id).toString()
+                val payload = VegaRuntime.detail(dir, value, value, args) { infoJson ->
+                    val parsed = runCatching { JSONObject(infoJson) }.getOrNull()
+                    if (parsed != null) infoCache[item.id] = parsed
+                    job.info.complete(parsed)
+                }
+                val data = dataObject(payload)
+                // Whichever half has the document: the progress callback normally
+                // delivered it while the seasons were still being fetched, and the
+                // final payload carries it again. Read through the deferred rather
+                // than through a captured variable — the callback runs on the
+                // engine's own thread.
+                var info: JSONObject? = runCatching { job.info.getCompleted() }.getOrNull()
+                val fromPayload = data?.optJSONObject("info")
+                if (fromPayload != null) info = fromPayload
+                info?.let { infoCache[item.id] = it }
+                if (info == null && File(dir, "meta.js").exists()) {
+                    // The combined run produced no document at all (a module that
+                    // would not compile, an engine that stopped answering): ask
+                    // for the meta on its own, the way this provider always did,
+                    // so a page never loses its header to the detail call's own
+                    // failure.
+                    val args = JSONObject().put("link", item.id).toString()
+                    info = dataObject(VegaRuntime.call(dir, value, value, "meta", "getMeta", args.toString()))
+                        ?.also { infoCache[item.id] = it }
+                }
+                if (!job.info.isCompleted) job.info.complete(info)
+                job.episodes.complete(seasonEpisodesFrom(data, info))
+            } catch (e: Throwable) {
+                if (!job.info.isCompleted) job.info.complete(null)
+                if (!job.episodes.isCompleted) job.episodes.complete(emptyMap())
+            }
+        }
+        return job
+    }
 
-        val seasons = ArrayList<VegaSeason>()
+    /** The season descriptors inside an Info's `linkList`, in list order — the
+     *  order [VegaRuntime.detail] collects their `episodesLink`s in, which is
+     *  what makes the Nth answer belong to the Nth season asked about. */
+    private fun seasonsOf(info: JSONObject): List<VegaSeason> {
+        val list = info.optJSONArray("linkList") ?: return emptyList()
+        if (list.length() == 0) return emptyList()
+        val seasons = ArrayList<VegaSeason>(list.length())
         for (i in 0 until list.length()) {
             val e = list.optJSONObject(i) ?: continue
             val no = seasonNumberOf(e.optString("title"), i + 1)
@@ -255,30 +353,77 @@ class VegaProvider(override val config: ProviderConfig) : ContentProvider {
                 }
             }
         }
+        return seasons
+    }
+
+    /** The detail payload's season arrays, keyed by season number, by walking
+     *  the same `linkList` order the runtime walked. */
+    private fun seasonEpisodesFrom(data: Any?, info: JSONObject?): Map<Int, JSONArray> {
+        val obj = data as? JSONObject ?: return emptyMap()
+        val arr = obj.optJSONArray("episodes") ?: return emptyMap()
+        val source = info ?: obj.optJSONObject("info") ?: return emptyMap()
+        val withLinks = seasonsOf(source)
+            .filter { it.episodesLink.isNotBlank() }
+            .take(MAX_SEASONS)
+        val map = HashMap<Int, JSONArray>()
+        withLinks.forEachIndexed { idx, season ->
+            if (idx < arr.length()) {
+                (arr.opt(idx) as? JSONArray)?.let { a -> map[season.no] = a }
+            }
+        }
+        return map
+    }
+
+    /**
+     * The seasons' episode arrays, fetched by the detail job when there is one
+     * and by an engine of its own when there is not.
+     *
+     * The job is the fast path and the one the detail page takes. The fallback
+     * is for a caller that asks a title for its episodes WITHOUT ever asking for
+     * its meta (a background re-ask, a "next episode" prefetch): it pays for its
+     * own engine, exactly as it always did.
+     */
+    private suspend fun fetchedSeasonEpisodes(
+        item: MediaItem,
+        seasons: List<VegaSeason>,
+    ): Map<Int, JSONArray> {
+        val withLinks = seasons.filter { it.episodesLink.isNotBlank() }.take(MAX_SEASONS)
+        if (withLinks.isEmpty() || !File(dir, "episodes.js").exists()) return emptyMap()
+        synchronized(detailJobs) { detailJobs[item.id] }?.let { job -> return job.episodes.await() }
+        val args = JSONArray()
+        withLinks.forEach { args.put(JSONObject().put("url", it.episodesLink)) }
+        val payload = VegaRuntime.callMany(dir, value, value, "episodes", "getEpisodes", args.toString())
+        val data = dataOf(payload)
+        val map = HashMap<Int, JSONArray>()
+        if (data is JSONArray) {
+            withLinks.forEachIndexed { idx, season ->
+                if (idx < data.length()) {
+                    (data.opt(idx) as? JSONArray)?.let { arr -> map[season.no] = arr }
+                }
+            }
+        }
+        return map
+    }
+
+    override suspend fun getEpisodes(item: MediaItem): List<Episode>? = withContext(Dispatchers.IO) {
+        episodeCache[item.id]?.takeIf { it.isNotEmpty() }?.let { return@withContext it }
+        if (item.type == MediaType.MOVIE) return@withContext null
+        // The season list lives INSIDE the meta document, so this is the job that
+        // has both — one engine for the meta and the seasons together instead of
+        // one boot for each (see [VegaRuntime.detail]). It is also why asking for
+        // the episodes of a title whose page was never opened costs no MORE than
+        // the legacy pair: the job is what does the fetching.
+        val job = detailJob(item)
+        val info = job.info.await() ?: infoCache[item.id] ?: return@withContext null
+        val type = info.optString("type").trim().lowercase()
+        val seasons = seasonsOf(info)
         if (seasons.isEmpty()) return@withContext null
         val isSeries = type == "series" || type == "tv" ||
             (type.isBlank() && (seasons.size > 1 || seasons.any { it.episodesLink.isNotBlank() }))
         if (!isSeries) return@withContext null
 
         val out = ArrayList<Episode>()
-        // Seasons that need their own episodes request are fetched in ONE engine
-        // (see VegaRuntime.callMany) rather than one fresh engine per season.
-        val withLinks = seasons.filter { it.episodesLink.isNotBlank() }.take(MAX_SEASONS)
-        val fetched: Map<Int, JSONArray> = if (withLinks.isNotEmpty() && File(dir, "episodes.js").exists()) {
-            val args = JSONArray()
-            withLinks.forEach { args.put(JSONObject().put("url", it.episodesLink)) }
-            val payload = VegaRuntime.callMany(dir, value, value, "episodes", "getEpisodes", args.toString())
-            val data = dataOf(payload)
-            val map = HashMap<Int, JSONArray>()
-            if (data is JSONArray) {
-                withLinks.forEachIndexed { idx, season ->
-                    if (idx < data.length()) {
-                        (data.opt(idx) as? JSONArray)?.let { arr -> map[season.no] = arr }
-                    }
-                }
-            }
-            map
-        } else emptyMap()
+        val fetched = fetchedSeasonEpisodes(item, seasons)
 
         for (season in seasons) {
             if (out.size >= MAX_EPISODES) break

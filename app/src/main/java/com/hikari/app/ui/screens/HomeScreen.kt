@@ -31,6 +31,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -2449,31 +2450,87 @@ private fun HomeGenreStrip(onPick: (name: String, genresText: String, keywordsTe
             )
         }
     }
+    // The strip is the whole genre vocabulary — every TMDB film and television
+    // genre plus all 99 anime tags — which is far more than fits on a screen, so
+    // reaching "isekai" or "comedy" meant scrolling a strip that never ends
+    // ("there are too many genre so user can just search like isekai or comedy,
+    // and can select fastly instead of scrolling and finding it"). The field
+    // beside the heading filters the chips AS THEY ARE TYPED, and it matches
+    // against both the name a chip prints and the name the vocabulary files it
+    // under, so a translated chip is still found by its English word.
+    var query by remember { mutableStateOf("") }
+    val shown = remember(genres, query) {
+        val q = query.trim().lowercase()
+        if (q.isEmpty()) genres
+        else genres.filter { g ->
+            g.name.lowercase().contains(q) || I18n.t(g.name).lowercase().contains(q)
+        }
+    }
+    // A new filter starts at the top of the strip: a match that happens to sort
+    // late would otherwise be filtered in BEHIND the scrolled-away cards and the
+    // strip would look like it had found nothing.
+    val listState = rememberLazyListState()
+    LaunchedEffect(query) { if (shown.isNotEmpty()) listState.scrollToItem(0) }
     Column(
         Modifier
             .fillMaxWidth()
             .padding(top = 14.dp),
     ) {
-        Text(
-            tr("Browse by genre"),
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.SemiBold,
-            color = MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier.padding(horizontal = 16.dp),
-        )
-        LazyRow(
+        Row(
             Modifier
                 .fillMaxWidth()
-                .padding(top = 6.dp),
-            contentPadding = PaddingValues(horizontal = 16.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                .padding(horizontal = 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            items(genres, key = { it.name }) { g ->
-                FilterChipLine(
-                    label = tr(g.name),
-                    selected = false,
-                    onClick = { onPick(g.name, g.genresText, g.keywordsText) },
-                )
+            Text(
+                tr("Browse by genre"),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(10.dp))
+            GlassSearchField(
+                value = query,
+                onValueChange = { query = it },
+                placeholder = tr("Search genres"),
+                height = 38.dp,
+                modifier = Modifier.width(156.dp),
+            )
+        }
+        if (shown.isEmpty()) {
+            Text(
+                tr("No genre matches") + " \u201c${query.trim()}\u201d",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp),
+            )
+        } else {
+            LazyRow(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = 6.dp),
+                state = listState,
+                contentPadding = PaddingValues(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                items(shown, key = { it.name }) { g ->
+                    FilterChipLine(
+                        label = tr(g.name),
+                        selected = false,
+                        onClick = {
+                            // The pick leaves the screen (it opens the grid), so
+                            // the field is emptied on the way out and the strip
+                            // is whole again on the way back.
+                            query = ""
+                            onPick(g.name, g.genresText, g.keywordsText)
+                        },
+                    )
+                }
             }
         }
     }

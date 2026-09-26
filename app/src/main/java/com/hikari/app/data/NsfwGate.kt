@@ -141,12 +141,24 @@ object NsfwGate {
      * the per-item test inside the switch-off branch would keep everything.
      */
     fun filter(items: List<MediaItem>): List<MediaItem> =
-        if (enabled) items
-        else items.filter {
-            !it.nsfw &&
-                !isAdultText(it.title, it.genres) &&
-                !isAdultText(it.originalTitle, emptyList())
-        }
+        if (enabled) items else items.filter { allows(it) }
+
+    /**
+     * Whether ONE item may be shown under the current switch — the rule [filter]
+     * applies, spelled once so a caller that has to ask about a single title
+     * cannot drift from it.
+     *
+     * The cross-engine duplicate collapse asks (see [HomeDedupe]): a title this
+     * gate is about to HIDE must never claim its identity, or the copy that was
+     * hidden would take the visible copy of the same title on another engine down
+     * with it, and a film the user is allowed to watch would be missing from a
+     * feed that never showed it at all.
+     */
+    fun allows(item: MediaItem): Boolean =
+        enabled ||
+            (!item.nsfw &&
+                !isAdultText(item.title, item.genres) &&
+                !isAdultText(item.originalTitle, emptyList()))
 
     /**
      * The rows of a shelf that may be shown, in order.
