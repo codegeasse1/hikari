@@ -253,7 +253,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
      * being scrolled, which is the stutter the Extensions tab showed. A pass
      * that runs once, after the arrivals stop, produces the same answer.
      */
-    private const val UPDATE_QUIET_MS = 600L
+    private val UPDATE_QUIET_MS = 600L
 
     private val updateTicks = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
 
