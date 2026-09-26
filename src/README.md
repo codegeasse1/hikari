@@ -72,13 +72,15 @@ see the session log below, which is where their design notes live.)
   asks (collapse duplicate titles across engines when "all providers" is
   selected; make the Vega detail screen fast; a genre search box on Home; the
   rounded corner slicing folder-tile names; IPTV network streams), built in one
-  batch and pushed as **two** commits (`8c99a043efc726832fe334886b8d2ad2a1fde2dc`,
+  batch and pushed as **two** code commits (`8c99a043efc726832fe334886b8d2ad2a1fde2dc`,
   then the compile-fix `0ff8850fb2a7e30fd995fb94ce5f962317054772`; parent
   `7a60d7e082f7c366db16e1b75e79633c7cefd7be`; CI run **36273138708** —
   **success**; `continuous` republished 21:43:06Z, `build` branch = `build:
   update test APK 202609262142`; **NO new main release** — the newest real
-  release is still v0.10.42). The FIRST push failed to compile in exactly two
-  places: `NetworkStream.boxList`/`boxListPage` declared `jar: List<String>`
+  release is still v0.10.42), followed by this `src/README.md`-only commit,
+  which the workflow's `paths-ignore: '**.md'` deliberately does **not** build
+  (so the `continuous` APK is still the `0ff8850…` code). The FIRST push failed
+  to compile in exactly two places: `NetworkStream.boxList`/`boxListPage` declared `jar: List<String>`
   but pass it on to `fetchText(jar: MutableList<String>)` (the caller's jar is a
   `LinkedList`), and `IptvProvider` called `NetworkStream.resolve(url = …)` when
   the parameter is named `rawUrl`. Both fixed; nothing else failed.
