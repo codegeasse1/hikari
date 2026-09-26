@@ -106,6 +106,16 @@ class SearchViewModel(
     private val manager = (app as HikariApp).providers
     private val repo = ContentRepository(manager)
 
+    /**
+     * The application as the app class.
+     *
+     * [app] is a plain constructor PARAMETER, which is in scope in the property
+     * initializers and the `init` block below but not in the methods (which is
+     * what the history buttons are), so the cast is kept here once and every
+     * method goes through it.
+     */
+    private val hikari: HikariApp = app as HikariApp
+
     /** The user's own collections — the local half of a search. */
     private val collections = com.hikari.app.data.CollectionsRepository(manager)
 
@@ -163,19 +173,19 @@ class SearchViewModel(
      * [AppStore.searchHistory]). They are recorded by [init], the one place a
      * query that actually RAN is known.
      */
-    val history: Flow<List<String>> = (app as HikariApp).store.searchHistoryFlow()
+    val history: Flow<List<String>> = hikari.store.searchHistoryFlow()
 
     /** Forgets one remembered search — the ✕ on its chip. */
     fun forgetSearch(query: String) {
         viewModelScope.launch {
-            runCatching { (app as HikariApp).store.removeSearchHistory(query) }
+            runCatching { hikari.store.removeSearchHistory(query) }
         }
     }
 
     /** Forgets every remembered search ("Clear all"). */
     fun forgetAllSearches() {
         viewModelScope.launch {
-            runCatching { (app as HikariApp).store.clearSearchHistory() }
+            runCatching { hikari.store.clearSearchHistory() }
         }
     }
 
@@ -197,7 +207,7 @@ class SearchViewModel(
                     // the view model's own scope, so a store failure can never
                     // kill the search flow.
                     viewModelScope.launch {
-                        runCatching { (app as HikariApp).store.addSearchHistory(q) }
+                        runCatching { hikari.store.addSearchHistory(q) }
                     }
                     // The catalog lookup needs at least two characters (see
                     // [CollectionsRepository.searchIn]); below that it answers
@@ -879,7 +889,7 @@ fun SearchScreen(
                     CollectionHitsRow(
                         if (filterOn) {
                             collectionHits.filter {
-                                it.item.passesSearchFilter(kindFilter, yearsFilter)
+                                it.item.passesSearchFilter(kindFilter, yearsFilter, genreFilter)
                             }
                         } else {
                             collectionHits
