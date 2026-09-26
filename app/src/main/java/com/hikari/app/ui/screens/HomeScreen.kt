@@ -1761,7 +1761,12 @@ private fun PickerRow(
                         // remote could not enter this list at all; `tvPress`
                         // adds the focus target and the centre press the pointer
                         // gesture never had (see the report in its own doc).
-                        .tvPress(onClick = onClick)
+                        // `previewPass = false`: the row contains its own
+                        // controls — the pin and the pack caret are clickables
+                        // at its right end — and a press aimed at one of those
+                        // must be theirs, not the row's (the row would otherwise
+                        // pick the provider while the user was pressing Pin).
+                        .tvPress(previewPass = false, onClick = onClick)
                         .pointerInput(label, multi) { holdOrTap(onLongClick, onClick) }
                 )
                 .padding(horizontal = 10.dp, vertical = 13.dp),

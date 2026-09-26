@@ -594,15 +594,21 @@ fun SettingsScreen(nav: NavHostController) {
     val appLanguage by languageFlow.collectAsState(initial = "")
     val installedProviders by app.providers.providers.collectAsState()
     val indexState = rememberLazyListState()
-    val pageState = rememberLazyListState()
-    // TWO states, not one: the index and an open folder are different pages, and
-    // one state cannot remember both. With a single state, opening a folder and
-    // coming back left the index wherever the folder page had been scrolled to,
-    // so the only way to make a folder open at its top was `scrollToItem(0)` on
-    // EVERY change — and that is what made back from a folder land at the top of
-    // the index instead of where the user left it. The index keeps its own state
-    // untouched, so back returns to the exact row it was scrolled to.
-    val listState = if (openFolder == null) indexState else pageState
+    val folderState = rememberLazyListState()
+    val subState = rememberLazyListState()
+    // ONE state per PAGE — the index, the open folder, and a sub-folder of it —
+    // because one state cannot remember three positions. With a single state (and
+    // then with two), going back from a deeper page had to scroll the page it
+    // landed on to its top, since the deeper page's position was the only one
+    // the state knew; that is what threw the page you came back to up to the
+    // top. Each page keeping its own state means the position is simply still
+    // there — nothing has to be reset on the way back (see [openFolderPage] and
+    // [openSubPage], which are where a page's top is requested now).
+    val listState = when {
+        openFolder == null -> indexState
+        openSub != null -> subState
+        else -> folderState
+    }
     // Profiles: the index row says which setup is in use (see ProfilesScreen).
     val profileList by Profiles.all.collectAsState()
     val profileActive by Profiles.activeId.collectAsState()
@@ -660,14 +666,29 @@ fun SettingsScreen(nav: NavHostController) {
         return
     }
 
-    // A folder page opens at its own top and with its cards folded (a page
-    // always arrives with its sections closed); the INDEX is left exactly as it
-    // was, so back lands where the user left it — see the two list states above.
-    LaunchedEffect(openFolder, openSub) {
-        if (openFolder != null) {
-            pageState.scrollToItem(0)
-            openSettingsSections.clear()
-        }
+    // A page the user OPENED arrives at its own top with its cards folded; the
+    // page they come BACK to is left exactly as they left it. That is why the
+    // reset lives here, in the two functions that open a page, and not in an
+    // effect keyed on the open page: an effect cannot tell "opened" from "came
+    // back to", so it also scrolled the page you returned to up to the top — the
+    // report was Settings → App Layout → Poster styling, back, and land at the
+    // top of App Layout instead of on the row that was tapped.
+    //
+    // `requestScrollToItem` (not `scrollToItem`) because it primes the position
+    // for the page's NEXT measure instead of scrolling a list that is not
+    // attached yet — so the page's very first frame is already at its top, with
+    // no flash of the position it was left at.
+    fun openFolderPage(target: SettingsFolder) {
+        folderState.requestScrollToItem(0)
+        openSettingsSections.clear()
+        openSub = null
+        openFolder = target
+    }
+
+    fun openSubPage(target: SettingsFolder) {
+        subState.requestScrollToItem(0)
+        openSettingsSections.clear()
+        openSub = target
     }
 
     LazyColumn(
@@ -806,7 +827,7 @@ fun SettingsScreen(nav: NavHostController) {
                             item {
                                 SettingsFolderRow(
                                     folder = target,
-                                    onClick = { openSub = target },
+                                    onClick = { openSubPage(target) },
                                 )
                             }
                         }
@@ -863,7 +884,7 @@ fun SettingsScreen(nav: NavHostController) {
                                 SettingsFolderRow(
                                     folder = target,
                                     top = 12.dp,
-                                    onClick = { openSub = target },
+                                    onClick = { openSubPage(target) },
                                 )
                             }
                         }
@@ -1083,7 +1104,7 @@ fun SettingsScreen(nav: NavHostController) {
                 .filter { it.parent == null && (!isTv || !it.phoneOnly) }
                 .forEach { target ->
                 item {
-                    SettingsFolderRow(folder = target, onClick = { openFolder = target })
+                    SettingsFolderRow(folder = target, onClick = { openFolderPage(target) })
                 }
             }
             // Stats: a page rather than a folder (it is one screen, like Logs),

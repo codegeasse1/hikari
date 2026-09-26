@@ -514,6 +514,31 @@ private fun TelegramHome(
     // adding a second channel meant going back to the top first. The section
     // itself lives in the caller — see the parameter above.
 
+    // ---- Swipe between the sections, not just tap the pill ----
+    //
+    // The three are PAGES of one screen, so the gesture that reaches the next
+    // one is the gesture every other page of this app answers: a swipe (the My
+    // Stuff tab's strip works exactly like this). The pill the user taps and the
+    // page a swipe lands on are the SAME state, kept in step in both directions:
+    // tapping a pill animates the pager over, so the move reads as a page
+    // turning rather than a jump, and a swipe that settles on a page selects that
+    // section, which is what redraws the pill. Each effect checks before it
+    // writes, so neither can spin the other.
+    val pages = listOf(TgSection.CHATS, TgSection.ADDED, TgSection.LINKS)
+    val pager = androidx.compose.foundation.pager.rememberPagerState(
+        initialPage = pages.indexOf(section).coerceAtLeast(0),
+        pageCount = { pages.size },
+    )
+    val scope = rememberCoroutineScope()
+    LaunchedEffect(section) {
+        val target = pages.indexOf(section)
+        if (target >= 0 && target != pager.currentPage) pager.animateScrollToPage(target)
+    }
+    LaunchedEffect(pager.currentPage) {
+        val shown = pages.getOrNull(pager.currentPage)
+        if (shown != null && shown != section) onSection(shown)
+    }
+
     Column(Modifier.fillMaxSize()) {
         Row(
             Modifier
@@ -547,30 +572,46 @@ private fun TelegramHome(
             chats = chatList.size,
             added = channels.size,
             links = links.size,
-        ) { onSection(it) }
+        ) { picked ->
+            onSection(picked)
+            scope.launch {
+                val target = pages.indexOf(picked)
+                if (target >= 0) pager.animateScrollToPage(target)
+            }
+        }
 
-        when (section) {
-            TgSection.ADDED -> TelegramAddedChannels(
-                channels = channels,
-                onOpenChannel = onOpenChannel,
-                onRemoveChannel = onRemoveChannel,
-                onAddChannel = onAddChannel,
-                hint = hint,
-            )
-            TgSection.LINKS -> TelegramLinksSection(
-                links = links,
-                onAddLink = onAddLink,
-                onRemoveLink = onRemoveLink,
-            )
-            else -> TelegramMyChats(
-                app = app,
-                auth = auth,
-                chatList = chatList,
-                visibleChats = visibleChats,
-                query = query,
-                onQuery = { query = it },
-                onOpenChat = onOpenChat,
-            )
+        // The pages themselves — see the pager above. `weight(1f)`, not
+        // `fillMaxSize()`: the header and the strip above it are not part of any
+        // page, so the pager takes the room that is left.
+        androidx.compose.foundation.pager.HorizontalPager(
+            state = pager,
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f),
+        ) { page ->
+            when (pages.getOrNull(page)) {
+                TgSection.ADDED -> TelegramAddedChannels(
+                    channels = channels,
+                    onOpenChannel = onOpenChannel,
+                    onRemoveChannel = onRemoveChannel,
+                    onAddChannel = onAddChannel,
+                    hint = hint,
+                )
+                TgSection.LINKS -> TelegramLinksSection(
+                    links = links,
+                    onAddLink = onAddLink,
+                    onRemoveLink = onRemoveLink,
+                )
+                else -> TelegramMyChats(
+                    app = app,
+                    auth = auth,
+                    chatList = chatList,
+                    visibleChats = visibleChats,
+                    query = query,
+                    onQuery = { query = it },
+                    onOpenChat = onOpenChat,
+                )
+            }
         }
     }
 }

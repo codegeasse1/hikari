@@ -142,6 +142,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import com.hikari.app.tv.tvPress
 import com.hikari.app.tv.tvToggle
 import com.hikari.app.tv.tvTextFieldKeys
 
@@ -5042,7 +5043,17 @@ private fun ProviderCard(
             top = if (indent) 2.dp else 6.dp,
             bottom = 6.dp,
         )) {
-        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            Modifier
+                .padding(12.dp)
+                // Whole-row focus target: a remote lands on the ROW (a big,
+                // obvious highlight) instead of only on the switch and the small
+                // icons at its right end, and pressing it flips the switch —
+                // the same thing the switch itself does, just from anywhere on
+                // the line. See [com.hikari.app.tv.tvPress].
+                .tvPress(previewPass = false, onClick = { onToggle(!p.config.enabled) }),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
             Box(
                 Modifier
                     .size(40.dp)
@@ -5737,10 +5748,28 @@ private fun PluginRow(
 ) {
     val glass = rememberGlassTokens()
     val tileShape = RoundedCornerShape(12.dp)
+    // What a press of the WHOLE row does: the same thing the row's own trailing
+    // button does — install, update, or uninstall — so the big highlight the
+    // remote lands on always belongs to an action written on the row itself.
+    val rowAction: () -> Unit = when {
+        !installed -> onInstall
+        updateAvailable -> onUpdate ?: onUninstall
+        else -> onUninstall
+    }
     Row(
         Modifier
             .fillMaxWidth()
-            .padding(vertical = 6.dp),
+            .padding(vertical = 6.dp)
+            // The row is a focus TARGET, not just a container. A plain Row has
+            // no focus node at all, so on a television the D-pad could only ever
+            // land on the small button at the row's right end and the row the
+            // user thinks of as "the option" never lit up — the reported "I
+            // press the remote and nothing on screen shows which option I am
+            // on". `tvPress` adds the focus node (with the same focus ring every
+            // other control in the app wears) and the centre press; touch is
+            // untouched, and the trailing buttons stay their own targets, so
+            // pressing Right still steps onto them.
+            .tvPress(previewPass = false, onClick = rowAction),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
@@ -6009,7 +6038,17 @@ private fun SiteRow(
     GlassCard(Modifier
         .fillMaxWidth()
         .padding(horizontal = 16.dp, vertical = 6.dp)) {
-        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            Modifier
+                .padding(12.dp)
+                // Whole-row focus target, so a remote can land on the site
+                // (and its ring shows which one) rather than only on the small
+                // Open/Delete buttons at the end of the line. Pressing it opens
+                // the site — the row's own action. See
+                // [com.hikari.app.tv.tvPress].
+                .tvPress(previewPass = false, onClick = onOpen),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
             Box(
                 Modifier
                     .size(40.dp)

@@ -11,6 +11,7 @@ import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalFocusManager
@@ -123,26 +124,50 @@ fun Modifier.tvToggle(
  * nothing and the user cannot see what the remote is on.
  */
 @Composable
-fun Modifier.tvPress(enabled: Boolean = true, onClick: () -> Unit): Modifier {
+fun Modifier.tvPress(
+    enabled: Boolean = true,
+    /**
+     * Which key pass answers the press.
+     *
+     * `true` (the default) is the PREVIEW pass — right for a control that has no
+     * focusable children of its own: a picker row, a bare button. It sees the key
+     * before anything else can.
+     *
+     * `false` answers it on the way back UP the normal pass, which is what a ROW
+     * THAT CONTAINS ITS OWN CONTROLS needs (an extension row with its Install /
+     * Uninstall buttons, a row with a switch). The preview pass runs
+     * root-first, so a row-level preview handler would swallow a press aimed at
+     * its own button — pressing Uninstall would run the row's action instead.
+     * The normal pass runs leaf-first, so the focused child answers first and
+     * only a press nothing else claimed reaches the row.
+     */
+    previewPass: Boolean = true,
+    onClick: () -> Unit,
+): Modifier {
     val interactions = remember { MutableInteractionSource() }
     val indication = LocalIndication.current
+    fun handle(event: androidx.compose.ui.input.key.KeyEvent): Boolean {
+        if (!enabled || event.type != KeyEventType.KeyDown) return false
+        if (!isPressKey(event.key)) return false
+        onClick()
+        return true
+    }
+    // The ring, applied the way `clickable` applies it (that is where every
+    // other control in the app gets its focus highlight from — see
+    // [TvFocusIndication]): the indication is drawn from the SAME interaction
+    // source the focus target reports to, which is why the source is passed to
+    // both. Foundation has no single-call `focusable(enabled, source,
+    // indication)` in this version, so it is these two modifiers in the order
+    // `clickable` itself uses them.
+    val press = if (previewPass) {
+        Modifier.onPreviewKeyEvent { handle(it) }
+    } else {
+        Modifier.onKeyEvent { handle(it) }
+    }
     return this
-        // The ring, applied the way `clickable` applies it (that is where every
-        // other control in the app gets its focus highlight from — see
-        // [TvFocusIndication]): the indication is drawn from the SAME
-        // interaction source the focus target reports to, which is why the
-        // source is passed to both. Foundation has no single-call
-        // `focusable(enabled, source, indication)` in this version, so it is
-        // these two modifiers in the order `clickable` itself uses them.
         .indication(interactions, indication)
         .focusable(enabled, interactions)
-        .onPreviewKeyEvent { event ->
-            if (!enabled || event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
-            if (isPressKey(event.key)) {
-                onClick()
-                true
-            } else false
-        }
+        .then(press)
 }
 
 /**

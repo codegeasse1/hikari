@@ -171,6 +171,12 @@ class AppStore(private val ctx: Context) {
         val TELEGRAM_VIEW = stringPreferencesKey("telegramViewStyle")
         val HIDDEN_TABS = stringPreferencesKey("hiddenTabs")
         /**
+         * The queries the user has actually searched for on the Search tab,
+         * newest first, as JSON — see [searchHistory]. Capped and de-duplicated
+         * there; this is the store, not the rule.
+         */
+        val SEARCH_HISTORY = stringPreferencesKey("searchHistory")
+        /**
          * Whether the IPTV tab's button is drawn in the taskbar. Its OWN
          * preference rather than an entry in [HIDDEN_TABS] because IPTV has to
          * be off by default on every install, including the ones that already
@@ -661,6 +667,11 @@ class AppStore(private val ctx: Context) {
     /** At most one "couldn't save" toast a minute, so broken storage cannot put
      *  a stream of them on screen. */
     private val WRITE_WARNING_COOLDOWN_MS = 60_000L
+
+    /** How many recent searches the Search tab keeps — see [addSearchHistory].
+     *  Deep enough to hold what someone searches across a session, short enough
+     *  that the chips stay a convenience rather than a page. */
+    private val SEARCH_HISTORY_MAX = 20
 
     @Volatile
     private var lastWriteWarningAt = 0L
@@ -1596,6 +1607,48 @@ class AppStore(private val ctx: Context) {
         val cur = hiddenTabs()
         val next = if (hidden) cur + route else cur - route
         write("HIDDEN_TABS") { it[K.HIDDEN_TABS] = encodeStringList(next.toList()) }
+    }
+
+    // ---- Recent searches (the Search tab) ----
+
+    /**
+     * The queries the user has actually searched for, newest first.
+     *
+     * Short by design ([SEARCH_HISTORY_MAX]): this is the list of things worth
+     * searching again, not a log of everything typed — the box changes on every
+     * keystroke, so only a query that settled and RAN is recorded (see the
+     * Search screen's view model).
+     */
+    fun searchHistoryFlow(): Flow<List<String>> =
+        store.data.map { parseStringList(it[K.SEARCH_HISTORY]) }
+            .distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun searchHistory(): List<String> = searchHistoryFlow().first()
+
+    /**
+     * Records [query] as the most recent search. Searching for something again
+     * MOVES its entry to the top rather than adding a second copy (so the list
+     * is a set of searches, not a tally), and anything under two characters is
+     * ignored: a one-letter box is a search the user has not finished typing.
+     */
+    suspend fun addSearchHistory(query: String) {
+        val q = query.trim()
+        if (q.length < 2) return
+        val next = (listOf(q) + searchHistory().filterNot { it.equals(q, ignoreCase = true) })
+            .take(SEARCH_HISTORY_MAX)
+        write("SEARCH_HISTORY") { it[K.SEARCH_HISTORY] = encodeStringList(next) }
+    }
+
+    /** Forgets one remembered search — the ✕ on its chip. */
+    suspend fun removeSearchHistory(query: String) {
+        val q = query.trim()
+        val next = searchHistory().filterNot { it.equals(q, ignoreCase = true) }
+        write("SEARCH_HISTORY") { it[K.SEARCH_HISTORY] = encodeStringList(next) }
+    }
+
+    /** Forgets every remembered search ("Clear all"). */
+    suspend fun clearSearchHistory() {
+        write("SEARCH_HISTORY") { it[K.SEARCH_HISTORY] = encodeStringList(emptyList()) }
     }
 
     /** Slow / mobile-data mode: raise the source-search and stream-probe

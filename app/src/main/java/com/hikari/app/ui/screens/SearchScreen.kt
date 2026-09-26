@@ -1,6 +1,7 @@
 package com.hikari.app.ui.screens
 import com.hikari.app.tv.TvUi
 import com.hikari.app.i18n.tr
+import com.hikari.app.i18n.trTag
 import com.hikari.app.i18n.I18n
 
 import android.app.Application
@@ -20,6 +21,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -27,6 +29,7 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Translate
@@ -41,6 +44,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -154,6 +158,27 @@ class SearchViewModel(
     val collectionHits: StateFlow<List<com.hikari.app.data.CollectionsRepository.CollectionHit>> =
         _collectionHits.asStateFlow()
 
+    /**
+     * The recent searches, newest first — the chips under the search box (see
+     * [AppStore.searchHistory]). They are recorded by [init], the one place a
+     * query that actually RAN is known.
+     */
+    val history: Flow<List<String>> = (app as HikariApp).store.searchHistoryFlow()
+
+    /** Forgets one remembered search — the ✕ on its chip. */
+    fun forgetSearch(query: String) {
+        viewModelScope.launch {
+            runCatching { (app as HikariApp).store.removeSearchHistory(query) }
+        }
+    }
+
+    /** Forgets every remembered search ("Clear all"). */
+    fun forgetAllSearches() {
+        viewModelScope.launch {
+            runCatching { (app as HikariApp).store.clearSearchHistory() }
+        }
+    }
+
     init {
         viewModelScope.launch {
             combine(_query.debounce(400).distinctUntilChanged(), _selectedProviders) { q, sel ->
@@ -164,6 +189,15 @@ class SearchViewModel(
                         _collectionHits.value = emptyList()
                         SearchSession.clear()
                         return@collectLatest
+                    }
+                    // Remember what was searched for: this is the DEBOUNCED
+                    // query (the box itself changes on every keystroke), so what
+                    // lands in the history is a query the user stopped typing on
+                    // — and the store drops anything under two characters. On
+                    // the view model's own scope, so a store failure can never
+                    // kill the search flow.
+                    viewModelScope.launch {
+                        runCatching { (app as HikariApp).store.addSearchHistory(q) }
                     }
                     // The catalog lookup needs at least two characters (see
                     // [CollectionsRepository.searchIn]); below that it answers
@@ -265,6 +299,7 @@ fun SearchScreen(
     val collectionHits by vm.collectionHits.collectAsState()
     val selected by vm.selectedProviders.collectAsState()
     val providers by vm.providers.collectAsState()
+    val history by vm.history.collectAsState(initial = emptyList())
     // `initial` is required for a plain Flow (a StateFlow carries its own), and
     // it doubles as "no catalogs yet" for the first frame.
     val collections by vm.userCollections.collectAsState(initial = emptyList())
@@ -307,23 +342,51 @@ fun SearchScreen(
     fun toggleYear(year: Int) {
         setYears(if (year in yearsFilter) yearsFilter - year else yearsFilter + year)
     }
+    // The GENRES to keep, chosen from a FIXED list of every genre there is —
+    // never from the results — and holding as many as the user picks ("action,
+    // comedy" keeps both). Held exactly the way the years are (a sorted,
+    // comma-joined string of lower-cased names, so it survives the player
+    // recreating the activity). The names are compared against what the item's
+    // own source said (see [MediaItem.passesSearchFilter]).
+    var genreKey by rememberSaveable { mutableStateOf("") }
+    val genreFilter: Set<String> = remember(genreKey) {
+        genreKey.split(',').mapNotNull { it.trim().takeIf { g -> g.isNotEmpty() } }.toSet()
+    }
+    fun setGenres(next: Set<String>) {
+        genreKey = next.sorted().joinToString(",")
+    }
+    fun toggleGenre(genre: String) {
+        val key = genre.trim().lowercase()
+        if (key.isEmpty()) return
+        setGenres(if (key in genreFilter) genreFilter - key else genreFilter + key)
+    }
     // A filter is only "on" when it can actually hide something.
-    val filterOn = kindFilter != SearchKindFilter.ALL || yearsFilter.isNotEmpty()
-    val filtered = remember(results, kindFilter, yearsKey) {
-        if (!filterOn) results else results.filter { it.passesSearchFilter(kindFilter, yearsFilter) }
+    val filterOn = kindFilter != SearchKindFilter.ALL ||
+        yearsFilter.isNotEmpty() || genreFilter.isNotEmpty()
+    val filtered = remember(results, kindFilter, yearsKey, genreKey) {
+        if (!filterOn) results
+        else results.filter { it.passesSearchFilter(kindFilter, yearsFilter, genreFilter) }
     }
     // What the KIND filter kept although the provider never said what it is
-    // (those are simply shown), and what the YEAR filter dropped for the same
-    // reason — the two numbers the grid explains itself with, so it can never
-    // look like it silently ignored a filter.
-    val keptUnknownKind = remember(results, kindFilter, yearsKey) {
-        if (!filterOn) 0 else results.count { it.unknownKindKept(kindFilter, yearsFilter) }
+    // (those are simply shown), and what the YEAR and GENRE filters dropped for
+    // the same reason — the numbers the grid explains itself with, so it can
+    // never look like it silently ignored a filter.
+    val keptUnknownKind = remember(results, kindFilter, yearsKey, genreKey) {
+        if (!filterOn) 0
+        else results.count { it.unknownKindKept(kindFilter, yearsFilter, genreFilter) }
     }
-    val hiddenNoYear = remember(results, kindFilter, yearsKey) {
+    val hiddenNoYear = remember(results, kindFilter, yearsKey, genreKey) {
         // Only the ones the KIND filter would have shown: an item dropped by
         // "Movies" is not hidden because it has no year.
         if (yearsFilter.isEmpty()) 0 else results.count {
-            it.year == null && it.passesSearchFilter(kindFilter, emptySet())
+            it.year == null && it.passesSearchFilter(kindFilter, emptySet(), genreFilter)
+        }
+    }
+    val hiddenNoGenre = remember(results, kindFilter, yearsKey, genreKey) {
+        // The same rule, for the genre strip: a result whose source said no
+        // genre at all cannot be presented as one of the picked genres.
+        if (genreFilter.isEmpty()) 0 else results.count {
+            it.genres.isEmpty() && it.passesSearchFilter(kindFilter, yearsFilter, emptySet())
         }
     }
 
@@ -435,6 +498,50 @@ fun SearchScreen(
                 }
             }
         )
+        // ---- Recent searches ----
+        //
+        // Shown only while the box is EMPTY: once a search is running or has
+        // results, the screen's job is the results and a strip of old queries
+        // above them is chrome to scroll past. With an empty box it is exactly
+        // what the empty state below is for — the answer to "what do I search
+        // for?" — so the two live together, and a chip re-runs the search.
+        if (query.isBlank() && history.isNotEmpty()) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(start = 16.dp, end = 8.dp, top = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    tr("Recent searches"),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = { vm.forgetAllSearches() }) {
+                    Text(tr("Clear all"), style = MaterialTheme.typography.labelSmall)
+                }
+            }
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.padding(top = 2.dp),
+            ) {
+                items(history, key = { it }) { past ->
+                    HistoryChip(
+                        text = past,
+                        // Picking one is a new search, not a restored one: the
+                        // translator's "show the original" state does not apply
+                        // to a query the user did not type this time.
+                        onPick = {
+                            translatedFrom = null
+                            vm.setQuery(past)
+                        },
+                        onDelete = { vm.forgetSearch(past) },
+                    )
+                }
+            }
+        }
         if (providers.isNotEmpty() || collections.isNotEmpty()) {
             // ---- Where to search: a button, and the picker it opens ----
             //
@@ -549,6 +656,25 @@ fun SearchScreen(
                     )
                 }
                 item {
+                    // Anime: a KIND of its own, though no provider has an
+                    // "anime" media type — see [MediaItem.looksAnime] for what
+                    // the filter counts as one (the addon's type string, an
+                    // "Anime" tag, or TMDB's "Animation", which is the genre
+                    // every TMDB-sourced anime title carries).
+                    FilterChip(
+                        selected = kindFilter == SearchKindFilter.ANIME,
+                        onClick = { kindFilterKey = SearchKindFilter.ANIME.key },
+                        label = { Text(tr("Anime")) },
+                        shape = RoundedCornerShape(24.dp),
+                        colors = FilterChipDefaults.filterChipColors(
+                            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
+                            selectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f),
+                            labelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            selectedLabelColor = MaterialTheme.colorScheme.primary,
+                        )
+                    )
+                }
+                item {
                     // The filter's own status, and the way to clear it: it lists
                     // what is picked (with a ✕ to drop it) and nothing else — the
                     // years themselves are the strip below, which is where they
@@ -613,6 +739,70 @@ fun SearchScreen(
                     }
                 }
             }
+            // ---- The genre strip ----
+            //
+            // The same shape as the year strip above it (a thin box of chips),
+            // because it is the same kind of control: a FIXED list of every
+            // genre, tapped to toggle, multi-select ("action, comedy" keeps both).
+            // A small caption says what it is and how many are picked, since
+            // unlike a year a genre cannot be recognised from the chip alone.
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(start = 16.dp, end = 16.dp, top = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    tr("Genre"),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    if (genreFilter.isEmpty()) tr("Any genre")
+                    else I18n.t("%s picked").replace("%s", genreFilter.size.toString()),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (genreFilter.isEmpty()) MaterialTheme.colorScheme.onSurfaceVariant
+                    else MaterialTheme.colorScheme.primary,
+                )
+            }
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.35f),
+                border = BorderStroke(
+                    1.dp,
+                    MaterialTheme.colorScheme.outline.copy(alpha = 0.22f),
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 16.dp, end = 16.dp, top = 6.dp)
+                    .height(34.dp),
+            ) {
+                LazyRow(
+                    contentPadding = PaddingValues(horizontal = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    item {
+                        GenreChip(
+                            label = tr("Any"),
+                            selected = genreFilter.isEmpty(),
+                            onClick = { setGenres(emptySet()) },
+                        )
+                    }
+                    items(SEARCH_GENRES) { genre ->
+                        GenreChip(
+                            // `trTag`, not `tr`: a genre is CONTENT (it comes
+                            // from TMDB's own vocabulary and from extension
+                            // tags), so it goes through the same dictionary and
+                            // tag translator a title's genre chips do.
+                            label = trTag(genre),
+                            selected = genre.trim().lowercase() in genreFilter,
+                            onClick = { toggleGenre(genre) },
+                        )
+                    }
+                }
+            }
             if (filterOn && results.isNotEmpty()) {
                 Column(Modifier.padding(horizontal = 16.dp, vertical = 2.dp)) {
                     Text(
@@ -642,6 +832,14 @@ fun SearchScreen(
                         Text(
                             tr("%s have no year, so they are hidden")
                                 .replace("%s", hiddenNoYear.toString()),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    if (hiddenNoGenre > 0) {
+                        Text(
+                            tr("%s have no genre, so they are hidden")
+                                .replace("%s", hiddenNoGenre.toString()),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -862,15 +1060,55 @@ private fun CollectionHitsRow(
     }
 }
 
-/** Which kind of result the grid keeps: everything, only films, only shows. */
+/** Which kind of result the grid keeps: everything, only films, only shows, or
+ *  only anime. */
 private enum class SearchKindFilter(val key: String) {
     ALL("all"),
     MOVIES("movies"),
-    SERIES("series");
+    SERIES("series"),
+    ANIME("anime");
 
     companion object {
         fun fromKey(key: String?): SearchKindFilter =
             entries.firstOrNull { it.key == key } ?: ALL
+    }
+}
+
+/**
+ * Every genre the genre strip offers, alphabetically: the union of TMDB's film
+ * and television genres, because those are the names a TMDB-sourced item carries
+ * (a catalog, a collection, a Nuvio/Stremio engine) and the names an extension's
+ * own tags most often match.
+ *
+ * A FIXED list on purpose, exactly like [SEARCH_YEARS]: the genres come from the
+ * catalogue's own vocabulary, not from what this search happens to have found,
+ * so a genre is pickable before a single result is in — and a filter that can
+ * only offer what it has already let through is a filter that cannot narrow
+ * anything.
+ */
+private val SEARCH_GENRES: List<String> = run {
+    val names = LinkedHashSet<String>()
+    com.hikari.app.data.TmdbGenres.MOVIE.forEach { names += it.name }
+    com.hikari.app.data.TmdbGenres.TV.forEach { names += it.name }
+    names.sorted()
+}
+
+/**
+ * Whether a result looks like anime.
+ *
+ * A provider almost never says "anime" in so many words, so this is the union of
+ * the three ways one can say it: the addon's own type string ([MediaItem.rawType]
+ * — a Stremio anime catalogue is the type `anime`), a genre that IS anime, and
+ * TMDB's "Animation" (which is what every TMDB-sourced anime item carries, since
+ * TMDB has no anime genre of its own — an anime title is an animated Japanese
+ * show). An extension that tags its results "Anime" is matched by the first
+ * genre test.
+ */
+private fun MediaItem.looksAnime(): Boolean {
+    if (rawType.equals("anime", true)) return true
+    return genres.any { g ->
+        val t = g.trim().lowercase()
+        t == "anime" || t == "animation" || t == "animated" || t.contains("anime")
     }
 }
 
@@ -911,6 +1149,83 @@ private fun YearChip(label: String, selected: Boolean, onClick: () -> Unit) {
             else MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
         )
+    }
+}
+
+/** One genre in the genre strip — the same chip as [YearChip], so the two
+ *  strips read as one control (which is how the kind chips and the year strip
+ *  already read). */
+@Composable
+private fun GenreChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(50),
+        color = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
+        else MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
+        border = if (selected) BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.75f))
+        else null,
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            color = if (selected) MaterialTheme.colorScheme.primary
+            else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+        )
+    }
+}
+
+/**
+ * One remembered search: the query, and the way to forget that one.
+ *
+ * The chip itself re-runs the search — that is what a history chip is for — and
+ * the ✕ is its OWN click target inside it: a tap on the ✕ must not also run the
+ * search, and a press of the remote's centre button on the ✕ must not run it
+ * either, which is why the ✕ is a clickable of its own rather than part of the
+ * chip's gesture. Both are focus targets, so a D-pad can reach the query and the
+ * ✕ separately.
+ */
+@Composable
+private fun HistoryChip(
+    text: String,
+    onPick: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    Surface(
+        onClick = onPick,
+        shape = RoundedCornerShape(50),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)),
+    ) {
+        Row(
+            Modifier.padding(start = 12.dp, end = 3.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.widthIn(max = 170.dp),
+            )
+            Box(
+                Modifier
+                    .padding(start = 2.dp)
+                    .size(26.dp)
+                    .clip(RoundedCornerShape(50))
+                    .clickable(onClick = onDelete),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Filled.Close,
+                    contentDescription = I18n.t("Forget \"%s\"").replace("%s", text),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(14.dp),
+                )
+            }
+        }
     }
 }
 
@@ -989,23 +1304,35 @@ private fun ProviderScopeButton(
  * question the other way round, so the count can be shown next to "N shown ·
  * M found" instead of the grid silently disagreeing with its own total.
  *
- * The YEAR half is STRICT: the years are picked BEFORE the search, so a result
- * whose source never said when it came out cannot be presented as one of them
- * (it is counted into "…have no year, so they are hidden" instead).
+ * The YEAR and GENRE halves are STRICT: both are picked BEFORE the search, so a
+ * result whose source never said when it came out, or what it is (extension
+ * catalogues usually carry no genre at all), cannot be presented as one of them
+ * — it is counted into "…have no year / no genre, so they are hidden" instead.
+ * Anything else would make the two strongest filters look like they did nothing.
  */
-private fun MediaItem.passesSearchFilter(kind: SearchKindFilter, years: Set<Int>): Boolean {
+private fun MediaItem.passesSearchFilter(
+    kind: SearchKindFilter,
+    years: Set<Int>,
+    genres: Set<String>,
+): Boolean {
     if (years.isNotEmpty() && (year == null || year !in years)) return false
+    if (genres.isNotEmpty() && this.genres.none { it.trim().lowercase() in genres }) return false
     return when (kind) {
         SearchKindFilter.ALL -> true
         SearchKindFilter.MOVIES -> type != MediaType.SERIES
         SearchKindFilter.SERIES -> type != MediaType.MOVIE
+        SearchKindFilter.ANIME -> looksAnime()
     }
 }
 
 /** True when this result is SHOWN only because the provider did not say what it
  *  is (an unknown kind under a Movie/Series filter — see
  *  [MediaItem.passesSearchFilter]). */
-private fun MediaItem.unknownKindKept(kind: SearchKindFilter, years: Set<Int>): Boolean {
+private fun MediaItem.unknownKindKept(
+    kind: SearchKindFilter,
+    years: Set<Int>,
+    genres: Set<String>,
+): Boolean {
     if (kind == SearchKindFilter.ALL) return false
-    return type == MediaType.UNKNOWN && passesSearchFilter(kind, years)
+    return type == MediaType.UNKNOWN && passesSearchFilter(kind, years, genres)
 }

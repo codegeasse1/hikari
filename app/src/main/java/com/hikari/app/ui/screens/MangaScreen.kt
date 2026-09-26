@@ -508,7 +508,11 @@ private fun EngineRow(
                 // The D-pad half: a `pointerInput` is invisible to the focus
                 // system, so without this a remote could not open a manga engine
                 // at all (the same defect the Home picker's rows had).
-                .tvPress(onClick = {
+                // `previewPass = false` because the row holds its own controls
+                // (the Popular/Latest chips): a press aimed at one of those is
+                // theirs, and only a press nothing else claimed opens the
+                // engine.
+                .tvPress(previewPass = false, onClick = {
                     if (revealPin) onRevealPin()
                     else openCatalog(
                         nav, providerId, name, MangaProvider.CATALOG_POPULAR, popularLabel,
