@@ -53,7 +53,16 @@ import androidx.compose.ui.platform.LocalFocusManager
  *     hold-to-multi-select rows, the manga engines — never enters the focus
  *     system, so the D-pad walks past the whole list and a centre press does
  *     nothing. [tvPress] gives such a row the focus target and the press the
- *     gesture never had, without taking the touch gesture away.
+ *     gesture never had, without taking the touch gesture away. The same
+ *     primitive is what makes a plain ROW of a list a target — an extension row
+ *     with its Install button, a website row, an installed extension with its
+ *     switch: without a focus node the remote's highlight could only ever appear
+ *     on the small button at the far end of the line, never on the row itself.
+ *     A row that CONTAINS controls must pass `previewPass = false`: the preview
+ *     pass runs root-first, so a row-level preview handler would swallow a press
+ *     aimed at the row's own button (pressing Uninstall would run the row's
+ *     action instead) — the normal pass runs leaf-first, which is the rule a row
+ *     wants.
  *
  * All four are made to work through the *preview* key pass, which runs from the
  * root down to the focused node — so a handler installed here always sees the

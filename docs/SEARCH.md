@@ -653,3 +653,50 @@ all three were.
   unplayed for four seconds, and the polling loop additionally PULLS
   `StreamsLive.flow(liveId).value` so a player holding none of the servers the
   detail screen has is structurally impossible.
+
+## The Search TAB: what its filters and its history may and may not do
+
+Everything above is about the lookup a search RUNS. The tab around it has rules of
+its own, all of them reported-bug-shaped.
+
+### The filters narrow what has been FOUND; they never re-run the search
+
+Kind (Both / Movies / Series / Anime), year and genre are applied to the list the
+sweep has already produced (`MediaItem.passesSearchFilter`). A filter that
+re-ran the multi-page extension sweep would make picking a year feel like a new
+search — "search moana, pick the year, keep only the movie" has to be instant.
+
+- **Kind — and Anime — are LENIENT about a source that said nothing.** A result
+  whose provider never labelled its type is KEPT under Movies/Series (whole
+  extensions label everything `UNKNOWN`, and hiding them would turn the filter
+  into an empty screen); the count is shown as "…have no year or kind, so they
+  are kept" (`MediaItem.unknownKindKept`). `SearchKindFilter.ANIME` has no
+  media type behind it — see `MediaItem.looksAnime`: the addon's own `anime`
+  type string, an "Anime" tag, or TMDB's "Animation" (which is the genre every
+  TMDB-sourced anime title carries).
+- **Year and genre are STRICT, and counted.** Both are picked from a FIXED list
+  (`SEARCH_YEARS`, `SEARCH_GENRES`) before the search has found anything, so a
+  result whose source never said the year, or carried no genre at all, cannot be
+  presented as one of them; it is reported as "…have no year / no genre, so they
+  are hidden". Do not "fix" this by keeping the unknowns — the two filters would
+  then look like they did nothing.
+- **`SEARCH_GENRES` is fixed, and is TMDB's vocabulary** (film ∪ television,
+  sorted, `TmdbGenres`) because that is what a TMDB-sourced item carries and
+  what extension tags most often match. Never build it from the current results: a
+  filter that can only offer what it has already let through cannot narrow
+  anything.
+- **The three filter states are `rememberSaveable`** (kind, years, genres) so the
+  activity being recreated while the player runs does not lose them — the same
+  reason the query lives in the view model's `SavedStateHandle`.
+
+### The history records queries that RAN, not keystrokes
+
+`AppStore.searchHistory` (preference `SEARCH_HISTORY`, capped at
+`SEARCH_HISTORY_MAX` = 20): the Search view model writes to it from the
+DEBOUNCED query (400 ms) — the first point at which "the user stopped typing" is
+known — and the store ignores anything under two characters. Searching the same
+thing again MOVES the entry to the top instead of adding a duplicate. The chips
+appear only while the search box is EMPTY: with results on screen the results are
+the page, and a strip of old queries above them is chrome. Each chip carries its
+own ✕ — a separate clickable, so forgetting one search cannot also run it — and
+the row carries "Clear all".
