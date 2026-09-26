@@ -132,6 +132,18 @@ object Td {
         val exhausted: Boolean,
     )
 
+    /** One page of a chat's history, reduced to its videos, plus how to ask for
+     *  the page after it — see [chatVideosPage]. */
+    data class ChatHistoryVideos(
+        val videos: List<ChatVideo>,
+        /** The oldest message id on the page (0 when it was empty) — hand it
+         *  back as `before` to walk further into the past. */
+        val nextCursor: Long,
+        /** Whether the page carried any messages at all: false is history's end
+         *  (an exhausted walk is answered with an empty batch). */
+        val more: Boolean,
+    )
+
     /**
      * What a file's download looks like right now, straight out of TDLib.
      *
@@ -588,10 +600,46 @@ object Td {
         }.onFailure { note(it) }
     }
 
-    /** Ask TDLib for the main chat list (again). Safe to repeat. */
+    /** How many chats are brought in per [TdApi.LoadChats] call. */
+    private const val CHAT_LOAD_PAGE = 100
+
+    /**
+     * The ceiling on how many chats the tab will pull in. High enough that
+     * "every channel I have joined" really is every one of them (the report that
+     * started this was an account with 200), low enough that an account with
+     * thousands cannot hold the tab on a spinner.
+     */
+    private const val CHAT_LOAD_MAX = 2_000
+
+    /**
+     * Ask TDLib for the main chat list (again). Safe to repeat.
+     *
+     * `LoadChats` is a PAGED call, and "there is nothing left" is answered with
+     * error 404 — not by an empty batch. The single
+     * `LoadChats(ChatListMain(), 100)` this replaces therefore left every account
+     * with more than 100 chats showing 100 of them and the rest missing from the
+     * list entirely ("i have joined in 200 channels" — half of their channels,
+     * groups and contacts simply were not there, with no way to reach them).
+     */
     fun loadChats() {
-        client?.send(TdApi.LoadChats(TdApi.ChatListMain(), 100), null, null)
+        val c = client ?: return
         scope.launch { refreshMe() }
+        loadChatPage(c, 0)
+    }
+
+    private fun loadChatPage(c: Client, loaded: Int) {
+        if (loaded >= CHAT_LOAD_MAX) return
+        runCatching {
+            c.send(
+                TdApi.LoadChats(TdApi.ChatListMain(), CHAT_LOAD_PAGE),
+                Client.ResultHandler { result ->
+                    // Error 404 is TDLib's "the chat list is fully loaded";
+                    // anything else is a refusal and asking again would not help.
+                    if (result !is TdApi.Error) loadChatPage(c, loaded + CHAT_LOAD_PAGE)
+                },
+                null,
+            )
+        }.onFailure { note(it) }
     }
 
     private suspend fun refreshMe() {
@@ -845,22 +893,107 @@ object Td {
      * Returns null when there is no client, the name is unknown, or Telegram
      * refuses; the caller then reports what the public page could not show.
      */
-    suspend fun publicChatId(username: String): Long? {
+    suspend fun publicChatId(username: String): Long? = publicChat(username)?.first
+
+    /**
+     * The id AND the title of a public channel or group by its name, resolved
+     * without joining it ([publicChatId] plus the name Telegram knows it by).
+     *
+     * The title matters for a row that was added before it could be read: a
+     * public GROUP has no channel header on its web page, so it was stored as
+     * its @handle and printed that way, while the account call answers with the
+     * group's real name.
+     */
+    suspend fun publicChat(username: String): Pair<Long, String>? {
+        val name = handleOf(username) ?: return null
+        val chat = query(TdApi.SearchPublicChat(name)) as? TdApi.Chat ?: return null
+        return chat.id to chat.title
+    }
+
+    /** `"@name"`, `"name"`, a `t.me` link or a post link → the bare name. */
+    private fun handleOf(username: String): String? {
         val name = username.trim()
             .removePrefix("@")
             .removePrefix("https://t.me/")
             .removePrefix("http://t.me/")
             .removePrefix("t.me/")
             .substringBefore('/')
-        if (name.isBlank()) return null
-        return (query(TdApi.SearchPublicChat(name)) as? TdApi.Chat)?.id
+        return name.takeIf { it.isNotBlank() }
     }
 
-    suspend fun chatVideos(chatId: Long, before: Long = 0, limit: Int = 60): List<ChatVideo> {
+    /**
+     * One page of a chat's history as videos, plus the cursor for the page older
+     * than it.
+     *
+     * The cursor and the "was there anything" flag are the two things a walk
+     * needs and [chatVideos] threw away: a page of 60 messages can easily hold no
+     * video at all (a busy group posts far more text than film), and without the
+     * oldest message id there is no way to ask for the next 60 — so a chat whose
+     * videos are a few hundred messages back used to read as a chat with none.
+     */
+    suspend fun chatVideosPage(chatId: Long, before: Long = 0, limit: Int = 60): ChatHistoryVideos {
         val result = query(TdApi.GetChatHistory(chatId, before, 0, limit, false)) as? TdApi.Messages
-            ?: return emptyList()
-        return result.messages.mapNotNull { videoOf(chatId, it) }
+            ?: return ChatHistoryVideos(emptyList(), 0, false)
+        val messages = result.messages
+        return ChatHistoryVideos(
+            videos = messages.mapNotNull { videoOf(chatId, it) },
+            nextCursor = messages.minOfOrNull { it.id } ?: 0L,
+            more = messages.isNotEmpty(),
+        )
     }
+
+    suspend fun chatVideos(chatId: Long, before: Long = 0, limit: Int = 60): List<ChatVideo> =
+        chatVideosPage(chatId, before, limit).videos
+
+    /**
+     * The video a Telegram message LINK points at, resolved through the
+     * signed-in account.
+     *
+     * This is what makes a single pasted `t.me/<channel>/<id>` playable: the same
+     * `getMessageLinkInfo` call the official clients make for a link, and the
+     * only reader that works for a post whose file Telegram does not publish to a
+     * browser — a private channel's post, a group's post, a large upload. The
+     * FILE REFERENCE is deliberately not returned for storage: TDLib's references
+     * expire within days, so the caller keeps the LINK and resolves it again at
+     * play time, which is why this takes a URL rather than a chat id.
+     *
+     * A link can point at the caption or the text a video was posted under (an
+     * album's first message), so when the linked message itself is not a video
+     * the few messages after it are checked too.
+     */
+    suspend fun linkVideo(url: String): ChatVideo? {
+        val info = query(TdApi.GetMessageLinkInfo(url)) as? TdApi.MessageLinkInfo ?: return null
+        val message = info.message ?: return null
+        val chatId = if (info.chatId != 0L) info.chatId else message.chatId
+        if (chatId == 0L) return null
+        videoOf(chatId, message)?.let { return it }
+        var from = message.id
+        var pages = 0
+        while (pages < 2) {
+            pages++
+            val page = query(
+                TdApi.GetChatHistory(chatId, from, -(LINK_TAIL - 1), LINK_TAIL, false),
+            ) as? TdApi.Messages ?: break
+            val messages = page.messages
+            if (messages.isEmpty()) break
+            var newest = from
+            var i = messages.size - 1
+            while (i >= 0) {
+                val m = messages[i]
+                i--
+                if (m.id > newest) newest = m.id
+                if (m.id <= message.id) continue
+                videoOf(chatId, m)?.let { return it }
+            }
+            if (newest <= from) break
+            from = newest
+        }
+        return null
+    }
+
+    /** How many messages after a linked post are checked for its video (an
+     *  album's file sits immediately after the caption; see [linkVideo]). */
+    private const val LINK_TAIL = 10
 
     private fun videoOf(chatId: Long, message: TdApi.Message): ChatVideo? =
         when (val c = message.content) {

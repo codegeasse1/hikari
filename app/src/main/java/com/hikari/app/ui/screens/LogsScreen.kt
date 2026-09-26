@@ -4,13 +4,9 @@ import com.hikari.app.ui.components.LocalHideHelp
 import com.hikari.app.i18n.tr
 import com.hikari.app.i18n.I18n
 
-import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.os.Build
-import android.os.Environment
-import android.provider.MediaStore
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
@@ -53,6 +49,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import com.hikari.app.BuildConfig
 import com.hikari.app.HikariApp
+import com.hikari.app.data.DownloadsSaver
 import com.hikari.app.data.Logs
 import com.hikari.app.ui.components.GlassCard
 import com.hikari.app.ui.components.GlassShape
@@ -143,11 +140,15 @@ fun LogsPage(app: HikariApp, onBack: () -> Unit) {
                             if (existing.isEmpty()) {
                                 toast("No logs to save yet")
                             } else {
-                                var ok = 0
-                                existing.forEach { ok += if (saveToDownloads(context, it.file) != null) 1 else 0 }
+                                val results = existing.map { saveLog(context, it.file) }
+                                val ok = results.count { it.isSuccess }
                                 toast(
-                                    if (ok > 0) "Saved $ok file(s) to Downloads"
-                                    else "Could not save the logs"
+                                    if (ok == existing.size) {
+                                        "Saved $ok file(s) to " +
+                                            DownloadsSaver.pathOf("")
+                                    } else {
+                                        "Could not save: " + failureReason(results)
+                                    }
                                 )
                             }
                         }
@@ -226,10 +227,14 @@ fun LogsPage(app: HikariApp, onBack: () -> Unit) {
                                     label = tr("Save"),
                                     primary = false,
                                 ) {
-                                    val saved = saveToDownloads(context, entry.file)
+                                    val result = saveLog(context, entry.file)
                                     toast(
-                                        if (saved != null) "Saved to Downloads/$saved"
-                                        else "Could not save the file"
+                                        if (result.isSuccess) {
+                                            "Saved to " + result.getOrNull()
+                                        } else {
+                                            "Could not save: " +
+                                                (result.exceptionOrNull()?.message ?: "unknown reason")
+                                        }
                                     )
                                 }
                             }
@@ -359,30 +364,20 @@ internal fun shareFiles(context: Context, files: List<File>, subject: String) {
     }
 }
 
-/** Copy a log into the public Downloads folder; returns the saved file name. */
-private fun saveToDownloads(context: Context, file: File): String? = runCatching {
-    val name = "hikari-" + file.name
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-        val values = ContentValues().apply {
-            put(MediaStore.Downloads.DISPLAY_NAME, name)
-            put(MediaStore.Downloads.MIME_TYPE, "text/plain")
-        }
-        val uri = context.contentResolver
-            .insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-            ?: return@runCatching null
-        context.contentResolver.openOutputStream(uri)?.use { out ->
-            file.inputStream().use { it.copyTo(out) }
-        }
-        name
-    } else {
-        @Suppress("DEPRECATION")
-        val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-        if (!dir.exists()) dir.mkdirs()
-        val out = File(dir, name)
-        file.inputStream().use { input -> out.outputStream().use { input.copyTo(it) } }
-        name
-    }
-}.getOrNull()
+/**
+ * Save one log into `Downloads/Hikari` (see [DownloadsSaver]) and record WHY it
+ * failed when it does, so the next "could not save" report carries its reason in
+ * the app log instead of being a dead end.
+ */
+private fun saveLog(context: Context, file: File): Result<String> {
+    val result = DownloadsSaver.save(context, file, "hikari-" + file.name, "text/plain")
+    result.exceptionOrNull()?.let { Logs.logError("Downloads", "save ${file.name} failed", it) }
+    return result
+}
+
+/** The first real reason among a batch of saves, for the "Save all" message. */
+private fun failureReason(results: List<Result<String>>): String =
+    results.firstNotNullOfOrNull { it.exceptionOrNull()?.message } ?: "unknown reason"
 
 private fun formatSize(bytes: Long): String = when {
     bytes >= 1024L * 1024L -> String.format(Locale.US, "%.1f MB", bytes / 1024.0 / 1024.0)

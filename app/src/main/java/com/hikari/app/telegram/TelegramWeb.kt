@@ -43,6 +43,43 @@ data class TelegramPage(
      * Telegram login has the files.
      */
     val unpublished: Int = 0,
+    /**
+     * How many POSTS the page carried, videos or not.
+     *
+     * Zero means something entirely different from "a channel with no videos":
+     * Telegram publishes a feed for public CHANNELS and for nothing else — a
+     * public GROUP's `t.me/s/<name>` is a small landing page with no posts at all
+     * (only the link-preview metadata), and so is a channel whose owner turned
+     * the preview off. A zero here therefore reads "Telegram gives browsers no
+     * preview of this chat", and the tab must not answer "this channel has no
+     * videos" — which is exactly what it did for a public group full of them.
+     * See [hasFeed].
+     */
+    val posts: Int = 0,
+) {
+    /** True when the page really was a feed (see [posts]). */
+    val hasFeed: Boolean get() = posts > 0
+}
+
+/**
+ * One linked post, as Telegram's own embed page (`?embed=1`) shows it.
+ *
+ * `t.me/s/<name>` is a channel's FEED and carries nothing for a group; the embed
+ * page is the single post itself — the same widget the Telegram website drops
+ * into a blog — so it is how ONE video link is read without an account. It
+ * carries the `<video src>` when Telegram publishes the file to a browser, the
+ * caption in every case, and the "media not supported" block when it withholds
+ * the file (see [TelegramPage.unpublished]).
+ */
+data class TelegramPost(
+    /** The post's caption, or its file name — what a row should print. */
+    val title: String?,
+    /** The playable file, when this page carries one. */
+    val video: TelegramVideo?,
+    /** True when the post exists but Telegram withheld its file from browsers. */
+    val withheld: Boolean,
+    /** The post's own still, when the page carries one. */
+    val posterUrl: String?,
 )
 
 /**
@@ -90,11 +127,20 @@ object TelegramWeb {
 
     /** The channel's own name (its title), or null when the page has none. */
     fun titleOf(html: String): String? = runCatching {
-        Jsoup.parse(html)
-            .selectFirst(".tgme_channel_info_header_title")
+        val doc = Jsoup.parse(html)
+        doc.selectFirst(".tgme_channel_info_header_title")
             ?.text()
             ?.trim()
             ?.takeIf { it.isNotEmpty() }
+            // A page with NO feed (a public group, or a channel whose preview
+            // Telegram does not publish) carries no channel header at all — only
+            // the link-preview metadata, whose title is still the chat's real
+            // name. Without this the row printed the @handle, which is what the
+            // user saw for a group whose name Telegram knows perfectly well.
+            ?: doc.selectFirst("meta[property=\"og:title\"]")
+                ?.attr("content")
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
     }.getOrNull()
 
     /**
@@ -132,7 +178,11 @@ object TelegramWeb {
             ?: return TelegramPage(null, emptyList(), 0)
         val out = ArrayList<TelegramVideo>()
         var unpublished = 0
-        for (msg in doc.select("div.tgme_widget_message")) {
+        // Every post the page carried, films its videos or not: the COUNT is how
+        // the screen tells an empty channel from a chat Telegram publishes no
+        // preview of at all (see [TelegramPage.posts]).
+        val posts = doc.select("div.tgme_widget_message")
+        for (msg in posts) {
             val id = msg.attr("data-post").substringAfterLast('/').toLongOrNull() ?: continue
             val video = msg.selectFirst("video")
             if (video == null) {
@@ -177,11 +227,72 @@ object TelegramWeb {
                 )
             )
         }
-        return TelegramPage(titleOf(html), out, unpublished)
+        return TelegramPage(
+            title = titleOf(html),
+            videos = out,
+            unpublished = unpublished,
+            posts = posts.size,
+        )
     }
 
-    private fun thumbnailOf(msg: Element, video: Element): String? {
-        video.attr("poster").takeIf { it.startsWith("http") }?.let { return it }
+    /** One post's own page (`?embed=1`), which carries just that message. */
+    fun loadPost(channel: String, messageId: Long): TelegramPost? {
+        val name = channel.removePrefix("@")
+        val html = Http.getString("$BASE/$name/$messageId?embed=1", HEADERS) ?: return null
+        return parsePost(html, channel, messageId)
+    }
+
+    /**
+     * [loadPost] without the fetch — the embed page's own markup.
+     *
+     * One message widget is all the page has, so this reuses the feed parser's
+     * pieces ([thumbnailOf]) rather than its whole loop. A page with no widget at
+     * all means the link points at nothing Telegram will show a browser about it
+     * (a private post, a deleted one, a typo), and the link-preview description
+     * is still the post's words when Telegram answered at all.
+     */
+    fun parsePost(html: String, channel: String, messageId: Long): TelegramPost {
+        val doc = runCatching { Jsoup.parse(html) }.getOrNull()
+            ?: return TelegramPost(null, null, false, null)
+        val msg = doc.selectFirst("div.tgme_widget_message")
+        if (msg == null) {
+            val desc = doc.selectFirst("meta[property=\"og:description\"]")
+                ?.attr("content")?.trim()?.takeIf { it.isNotEmpty() }
+            return TelegramPost(desc, null, false, null)
+        }
+        val text = msg.selectFirst(".tgme_widget_message_text")?.text()?.trim().orEmpty()
+        val fileName = msg.selectFirst(".tgme_widget_message_document_title")?.text()?.trim().orEmpty()
+        val title = listOf(text, fileName).firstOrNull { it.isNotBlank() }
+        val video = msg.selectFirst("video")
+        val src = video?.let { it.attr("src").ifBlank { it.attr("data-src") } }.orEmpty()
+        val poster = thumbnailOf(msg, video)
+        if (src.startsWith("http")) {
+            return TelegramPost(
+                title = title,
+                video = TelegramVideo(
+                    channel = channel,
+                    messageId = messageId,
+                    title = title ?: ("Video " + messageId),
+                    url = src,
+                    posterUrl = poster,
+                    duration = msg.selectFirst(".tgme_widget_message_video_duration")
+                        ?.text()?.trim()?.takeIf { it.isNotEmpty() },
+                    dateLabel = null,
+                ),
+                withheld = false,
+                posterUrl = poster,
+            )
+        }
+        // The post is there and it IS a video post, but with no source: Telegram
+        // withholds the file from browsers (a large upload, or saving restricted)
+        // — the same thing a feed page's `unpublished` counts.
+        val withheld = msg.selectFirst(".tgme_widget_message_video_player") != null ||
+            msg.selectFirst(".message_media_not_supported") != null
+        return TelegramPost(title, null, withheld, poster)
+    }
+
+    private fun thumbnailOf(msg: Element, video: Element?): String? {
+        video?.attr("poster")?.takeIf { it.startsWith("http") }?.let { return it }
         for (selector in listOf(
             ".tgme_widget_message_video_thumb",
             ".tgme_widget_message_photo_wrap",

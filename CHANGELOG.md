@@ -1,3 +1,18 @@
+## 0.10.45
+
+### Fixed
+
+- **"Could not save the file" in Settings → Logs & diagnostics — on every log, every time.** The save wrote into Android's Downloads collection with a name and a type and nothing else, and Android 11 and later refuses exactly that: without a folder on the entry it resolves to the root of shared storage, which an app is not allowed to write to, so the system rejected the insert and the page could only report a failure with no reason. Saves now go into `Downloads/Hikari` the way Android asks for them (a pending entry inside a folder, then published), which is the path the app's own download exporter has used all along — and if a save still fails, the message says why instead of nothing.
+- **A Telegram group full of videos said "This channel has no videos on its public page".** Telegram publishes a web page for public channels and for nothing else: a public GROUP's page carries no posts at all, and that was read as an empty chat. A chat is now read with your own Telegram account whenever you are signed in — the only reader that sees every video post (Telegram withholds the file from a browser for large uploads and for channels with saving restricted) and the only reader a group has. The account read walks back through the history until it finds videos, so a chat whose films are a few hundred messages back no longer reads as empty. Signed out, the page now says what is actually going on instead of claiming there are no videos.
+- **Signed in, only 100 of your chats were in the list.** Telegram's chat list arrives in pages and Hikari asked for one of them: an account in 200 channels saw 100 of them, with no way to reach the rest. The list now loads until Telegram says it is finished.
+
+### Added
+
+- **The Telegram tab's + now offers two things: a channel, or a single video link.** A channel is a feed to browse; a video link (`t.me/channel/123` — what Telegram's own "Copy link" gives a post) is ONE video, and the two are read differently, so the + asks which one you are adding instead of guessing. Added links live in a "Video links" section beside "Added channels", and tapping one plays it in Hikari's own player: the link is resolved with your Telegram account when you are signed in (the only reader that sees a post whose file Telegram withholds from browsers, and the only one that can read a private `t.me/c/…` link), and from the post's own public page when you are not. The link itself is what is stored — not the file reference Telegram returned when it was added, which expires within days — so a saved video keeps playing months later.
+- **The Telegram tab has sections now — "My chats", "Added channels" and "Video links", as pills you can swipe across.** With a couple of hundred joined chats the public channels you had added were at the bottom of a scroll nobody reaches; they have their own section now. The + that adds one sits above the list, so it stays reachable while you scroll.
+- The provider picker ("Choose an extension") says how to multi-select, right under the Providers heading: hold a provider for half a second to select more than one.
+- A chat added from a link that carried only its @handle now picks up the name Telegram actually knows it by.
+
 ## 0.10.44
 
 ### Added

@@ -1406,8 +1406,8 @@ internal fun ProviderPickerSheet(
                 } else {
                     tr(
                         "Only the selected extension's catalog is shown on Home. " +
-                            "Hold a source for a second to pick several, or tap its " +
-                            "pin to keep it at the top of this list."
+                            "Hold a source for half a second to pick several, or tap " +
+                            "its pin to keep it at the top of this list."
                     )
                 },
                 style = MaterialTheme.typography.bodySmall,
@@ -1509,6 +1509,20 @@ internal fun ProviderPickerSheet(
                 }
                 item {
                     PickerSectionLabel(tr("Providers"))
+                }
+                // The gesture, said where the rows are. A user who has never
+                // multi-selected has no way to guess that a HOLD is what does it
+                // (the gesture exists because it was asked for by name), and a
+                // row that looks like every other row does not say it either.
+                item(key = "providers-hold-hint") {
+                    if (!LocalHideHelp.current) {
+                        Text(
+                            tr("Hold any provider for half a second to select more than one."),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(start = 10.dp, top = 2.dp, bottom = 4.dp),
+                        )
+                    }
                 }
                 item {
                     PickerRow(

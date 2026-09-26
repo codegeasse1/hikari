@@ -196,6 +196,13 @@ class AppStore(private val ctx: Context) {
         val TELEGRAM_TAB = booleanPreferencesKey("showTelegramTab")
         /** The Telegram channels the Telegram tab browses, as JSON. */
         val TELEGRAM_CHANNELS = stringPreferencesKey("telegramChannels")
+        /**
+         * The individual Telegram video LINKS the tab's "Video links" section
+         * keeps, as JSON — see [com.hikari.app.telegram.TelegramLinks]. Kept
+         * apart from [TELEGRAM_CHANNELS] because the two are different things:
+         * a channel is a feed to browse, a link is one post to play.
+         */
+        val TELEGRAM_LINKS = stringPreferencesKey("telegramLinks")
 
         /** The user's own Telegram API credentials (see telegramApiIdFlow). */
         val TELEGRAM_API_ID = stringPreferencesKey("telegramApiId")
@@ -1883,6 +1890,23 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setTelegramChannels(json: String) {
         write("TELEGRAM_CHANNELS") { it[K.TELEGRAM_CHANNELS] = json }
+    }
+
+    /**
+     * The individual Telegram video links the tab lists, as JSON:
+     * `[{"url":"https://t.me/<channel>/<id>","channel":"@channel","id":123,…}]`.
+     *
+     * A channel is a feed to browse; a link is ONE video post — the thing someone
+     * sends you when they send a video. The two are stored apart for that reason
+     * (see [com.hikari.app.telegram.TelegramLinks]).
+     */
+    fun telegramLinksFlow(): Flow<String> =
+        store.data.map { it[K.TELEGRAM_LINKS] ?: "" }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun telegramLinks(): String = telegramLinksFlow().first()
+
+    suspend fun setTelegramLinks(json: String) {
+        write("TELEGRAM_LINKS") { it[K.TELEGRAM_LINKS] = json }
     }
 
     // ---- App lock (Settings → Privacy & Browsing) -------------------------

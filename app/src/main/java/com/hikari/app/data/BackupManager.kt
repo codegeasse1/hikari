@@ -1,10 +1,7 @@
 package com.hikari.app.data
 
-import android.content.ContentValues
 import android.content.Context
 import android.os.Build
-import android.os.Environment
-import android.provider.MediaStore
 import android.util.Base64
 import com.hikari.app.BuildConfig
 import com.hikari.app.HikariApp
@@ -548,27 +545,15 @@ object BackupManager {
     /**
      * Copies [bytes] into the phone's public Downloads folder (a MediaStore
      * entry on Q+, a plain file before that) and returns the file name, or null
-     * when the write failed. Same approach as the logs page, so there is one
-     * notion of "save a file for the user" in the app.
+     * when the write failed.
+     *
+     * The write itself lives in [DownloadsSaver] — one implementation for every
+     * "save this file for the user" in the app, and the one that actually works
+     * (see its header: an insert without `RELATIVE_PATH` is refused on Android
+     * 11+, which is why this export could never save either).
      */
-    fun saveToDownloads(context: Context, bytes: ByteArray, name: String): String? = runCatching {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val values = ContentValues().apply {
-                put(MediaStore.Downloads.DISPLAY_NAME, name)
-                put(MediaStore.Downloads.MIME_TYPE, "application/json")
-            }
-            val uri = context.contentResolver
-                .insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-                ?: return@runCatching null
-            context.contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
-                ?: return@runCatching null
-            name
-        } else {
-            @Suppress("DEPRECATION")
-            val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-            if (!dir.exists()) dir.mkdirs()
-            File(dir, name).writeBytes(bytes)
-            name
-        }
-    }.getOrNull()
+    fun saveToDownloads(context: Context, bytes: ByteArray, name: String): String? =
+        DownloadsSaver.saveBytes(context, bytes, name, "application/json")
+            .getOrNull()
+            ?.substringAfterLast('/')
 }
