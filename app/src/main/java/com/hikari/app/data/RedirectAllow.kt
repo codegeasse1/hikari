@@ -91,7 +91,7 @@ object RedirectAllow {
      * error ("No type arguments expected for 'data class Collection'").
      */
     fun allowsIn(url: String?, list: Iterable<String>): Boolean {
-        if (url.isNullOrBlank() || list.isEmpty()) return false
+        if (url.isNullOrBlank()) return false
         val u = url.trim().lowercase()
         val host = runCatching { java.net.URI(u).host?.lowercase() }.getOrNull().orEmpty()
         for (raw in list) {
