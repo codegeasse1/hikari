@@ -157,6 +157,10 @@ class AppStore(private val ctx: Context) {
          *  "starter" scrapers) have been removed from an install that already
          *  seeded them. See [com.hikari.app.nuvio.NuvioPluginManager]. */
         val NUVIO_SEED_CLEANED = booleanPreferencesKey("nuvioSeedCleaned")
+        /** True once the bundled YTS extension earlier builds registered on first
+         *  run has been removed from this install. See
+         *  [com.hikari.app.HikariApp] — the file that used to register it. */
+        val YTS_CLEANED = booleanPreferencesKey("ytsCleaned")
         val DOWNLOAD_CONCURRENCY = intPreferencesKey("downloadConcurrency")
         val SLOW_CONNECTION = booleanPreferencesKey("slowConnection")
 
@@ -3358,6 +3362,16 @@ class AppStore(private val ctx: Context) {
 
     suspend fun markNuvioSeedCleaned() {
         write("NUVIO_SEED_CLEANED") { it[K.NUVIO_SEED_CLEANED] = true }
+    }
+
+    /** True once the bundled YTS extension earlier builds registered on first
+     *  run has been removed. One-way, so a row the user somehow re-added by hand
+     *  is not deleted again on every launch. */
+    suspend fun ytsCleaned(): Boolean =
+        store.data.map { it[K.YTS_CLEANED] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default).first()
+
+    suspend fun markYtsCleaned() {
+        write("YTS_CLEANED") { it[K.YTS_CLEANED] = true }
     }
 
     fun favoritesFlow(): Flow<List<MediaItem>> =

@@ -158,6 +158,7 @@ import com.hikari.app.data.MediaType
 import com.hikari.app.data.NuvioCatalogImport
 import com.hikari.app.data.NuvioCollectionsImport
 import com.hikari.app.data.NuvioCollectionsExport
+import com.hikari.app.data.RepoProvenance
 import com.hikari.app.data.TileShapes
 import com.hikari.app.data.TmdbGenre
 import com.hikari.app.data.TmdbGenres
@@ -3092,6 +3093,13 @@ private fun ExtensionPickerSheet(
         else sorted.filter { it.config.name.contains(query, ignoreCase = true) }
     }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    // Engine + repository under each row: the names repeat (four different
+    // "AniKoto"s are installed in a normal setup), and the repo is what tells
+    // them apart. See [RepoProvenance].
+    val repos by remember { app.store.reposFlow() }.collectAsState(initial = emptyList())
+    val repoNameByProvider = remember(all, repos) {
+        RepoProvenance.nameMap(all.map { it.config }, repos)
+    }
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
         Column(
             Modifier
@@ -3128,7 +3136,12 @@ private fun ExtensionPickerSheet(
             } else {
                 LazyColumn(Modifier.padding(top = 8.dp, bottom = 24.dp)) {
                     items(active.distinctBy { it.config.id }, key = { it.config.id }) { p ->
-                        PickerLine(label = p.config.name, selected = false) { onPick(p) }
+                        PickerLine(
+                            label = p.config.name,
+                            selected = false,
+                            supporting = repoNameByProvider[p.config.id]
+                                ?.let { "${p.config.type.groupLabel} · $it" },
+                        ) { onPick(p) }
                     }
                 }
             }

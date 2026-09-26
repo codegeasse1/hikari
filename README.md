@@ -6,6 +6,7 @@
 - **Universal scrapers** — JSON-rule site scrapers, no code needed.
 - **CloudStream .cs3 plugins** — Stage 2 ✅ — your existing `.cs3` extensions run unchanged.
 - **SkyStream extensions** — Stage 3.
+- **Vega providers** — the [Vega](https://github.com/Zenda-Cross/vega-providers) scraper ecosystem, run in-app (see [`docs/VEGA.md`](docs/VEGA.md)).
 
 Modern Material 3 UI, HLS/DASH playback with per-source headers and subtitles, built in pure Kotlin + Compose.
 
@@ -264,6 +265,8 @@ https://github.com/codegeasse1/codegeasse-cloudstream-repos/raw/builds/JustAnime
 ```
 
 The plugin's providers appear in Home/Search and play like any other source. One `.cs3` can register several providers (each gets its own card, toggle and delete). The plugin files are stored in the app's private `filesDir/cs3/`, so they survive app restarts.
+
+**Vega providers:** Extensions → **Vega repos** → the official repo (`Zenda-Cross/vega-providers`) is already there; open it, then tap **Install** next to a provider (AniKoto, 4KHDHub, Showbox, …). Adding another Vega repo means pasting its `manifest.json` URL (or the short name `vega`) into **Add repository**. Vega providers are scrapers written as CommonJS modules, and Hikari runs them in an embedded engine — details in [`docs/VEGA.md`](docs/VEGA.md).
 
 ## Roadmap
 

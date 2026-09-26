@@ -5,6 +5,11 @@ import com.hikari.app.i18n.tr
 import android.app.Application
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -12,9 +17,11 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -44,8 +51,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -178,6 +187,7 @@ class CatalogViewModel(
             ProviderType.NUVIO -> com.hikari.app.nuvio.NuvioScraper.catalogErrors[p.config.id]
             ProviderType.STREMIO -> com.hikari.app.providers.StremioAddon.catalogErrors[p.config.id]
             ProviderType.CS3 -> com.hikari.app.cs3.Cs3MainApiProvider.catalogErrors[p.config.id]
+            ProviderType.VEGA -> com.hikari.app.providers.vega.VegaProvider.catalogErrors[p.config.id]
             else -> null
         }
         return raw?.takeIf { it.isNotBlank() && !it.startsWith("✓") && !it.startsWith("✔") }
@@ -437,6 +447,12 @@ fun CatalogScreen(
     }
 
     val gridState = rememberLazyGridState()
+    // Nuvio's catalogue column count: a FIXED count chosen from the screen
+    // rather than an adaptive minimum (see [catalogColumnsFor]) — three on a
+    // phone, which is the visible difference from the old 84dp adaptive grid
+    // (four cramped columns). On a television the count is still derived from
+    // the living-room cell size instead (see [TvUi.gridColumns]).
+    val columns = TvUi.gridColumns(catalogColumnsFor(LocalConfiguration.current.screenWidthDp))
     // Infinite scroll: fetch the next page when the user scrolls close to the
     // bottom. (A LaunchedEffect keyed on gridState alone never re-fires on
     // scroll — gridState is a stable object — so this watches the scroll
@@ -454,44 +470,21 @@ fun CatalogScreen(
     }
 
     Column(Modifier.fillMaxSize()) {
+        // The catalogue header, in Nuvio's shape: the back control sits on its
+        // own line and the list's own name is then drawn at heading size with
+        // the engine under it — the page's own title block rather than a
+        // toolbar row. It is what makes a catalogue read as a place you are
+        // browsing rather than a dialog you are looking at.
         Row(
             Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 4.dp, vertical = 4.dp),
+                .padding(horizontal = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton(onClick = { nav.popBackStack() }) {
                 Icon(Icons.Filled.ArrowBack, contentDescription = tr("Back"))
             }
-            Column(Modifier.weight(1f)) {
-            Text(
-                tr(shownName),
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                if (providerName.isNotBlank()) {
-                    Text(
-                        providerName.uppercase(),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                }
-                if (mangaPair) {
-                    Row(
-                        Modifier.padding(top = 6.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        CatalogTab(popularLabel, selectedCatalog == MangaProvider.CATALOG_POPULAR) {
-                            vm.switchCatalog(MangaProvider.CATALOG_POPULAR)
-                        }
-                        CatalogTab(latestLabel, selectedCatalog == MangaProvider.CATALOG_LATEST) {
-                            vm.switchCatalog(MangaProvider.CATALOG_LATEST)
-                        }
-                    }
-                }
-            }
+            Spacer(Modifier.weight(1f))
             // The Cloudflare-verification WebView. A manga site behind a bot wall
             // answers every request — including the extension's own — with a
             // challenge until a browser has passed it, and no extension can open
@@ -507,6 +500,42 @@ fun CatalogScreen(
                 }
             }
         }
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp)
+                .padding(bottom = 6.dp)
+        ) {
+            Text(
+                tr(shownName),
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Bold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (providerName.isNotBlank()) {
+                Text(
+                    providerName,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            if (mangaPair) {
+                Row(
+                    Modifier.padding(top = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    CatalogTab(popularLabel, selectedCatalog == MangaProvider.CATALOG_POPULAR) {
+                        vm.switchCatalog(MangaProvider.CATALOG_POPULAR)
+                    }
+                    CatalogTab(latestLabel, selectedCatalog == MangaProvider.CATALOG_LATEST) {
+                        vm.switchCatalog(MangaProvider.CATALOG_LATEST)
+                    }
+                }
+            }
+        }
         if (searchable) {
             GlassSearchField(
                 value = typedQuery,
@@ -519,13 +548,16 @@ fun CatalogScreen(
             )
         }
         if (items.isEmpty() && loading) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator()
+            // Nuvio-style skeletons: while the first page is on its way the
+            // grid keeps the shape it is about to have, instead of a lone
+            // spinner that says nothing about what is coming.
+            Box(Modifier.fillMaxSize()) {
+                CatalogSkeletonGrid(columns = columns)
                 // The spinner, on its own, cannot say WHY nothing is arriving —
                 // and ten seconds in, the usual answer is a Cloudflare check the
                 // site wants a browser to pass (see [VerificationNudge]). The
-                // chip floats under the spinner, says so once, and is itself the
-                // tap that opens the verification view.
+                // chip floats above the skeletons, says so once, and is itself
+                // the tap that opens the verification view.
                 VerificationNudge(
                     waiting = true,
                     onOpenWebView = openVerify,
@@ -567,19 +599,16 @@ fun CatalogScreen(
             val uniqueItems = rememberVisibleItems(items)
             val style = rememberPosterStyle()
             LazyVerticalGrid(
-                // Same small-tile, clearly-gapped look as the search results
-                // grid: smaller posters than before, each in its own cell with
-                // a real gap, so the "Show All" wall never reads as one
-                // continuous sheet of artwork. On a television the same grid is
-                // laid out around a living-room cell size instead (see TvUi) —
-                // a phone's 84dp minimum on a 1920dp screen would be twenty-two
-                // columns of thumbnails.
-                columns = GridCells.Adaptive(minSize = TvUi.gridMinFor(84)),
+                // Nuvio's catalogue grid: a fixed column count chosen from the
+                // screen, sixteen-dp gutters and a real vertical gap so every
+                // tile is its own card instead of one continuous sheet of
+                // artwork.
+                columns = GridCells.Fixed(columns),
                 state = gridState,
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalArrangement = Arrangement.spacedBy(18.dp),
             ) {
                 items(uniqueItems, key = { it.uniqueId }) { item ->
                     CatalogCard(item, style) {
@@ -654,6 +683,16 @@ private fun CatalogTab(label: String, selected: Boolean, onClick: () -> Unit) {
     }
 }
 
+/**
+ * One catalogue tile, in Nuvio's shape: a rounded poster card with the title
+ * drawn UNDER it at label size and a second, quieter line under that (the year
+ * and the first genre — Nuvio prints the release date there). The score badge
+ * stays where Hikari has always drawn it, in the poster's top-right corner.
+ *
+ * [PosterStyle] still has the last word on the two things the user controls:
+ * the corner rounding and whether titles are drawn at all (Settings → App
+ * Layout), so a user who asked for label-free artwork keeps it.
+ */
 @Composable
 private fun CatalogCard(item: MediaItem, style: PosterStyle, onClick: () -> Unit) {
     // The score badge, when Settings → App Layout has it on: warm the ratings
@@ -661,16 +700,17 @@ private fun CatalogCard(item: MediaItem, style: PosterStyle, onClick: () -> Unit
     // rememberPosterScore). Null when the switch is off, so an old device that
     // never wanted badges pays nothing.
     val badge = rememberPosterScore(item, style)
+    val shape = RoundedCornerShape(style.corner.dp)
     Column(
         Modifier
-            .clip(RoundedCornerShape(12.dp))
+            .clip(shape)
             .clickable(onClick = onClick)
     ) {
         Box(
             Modifier
                 .fillMaxWidth()
                 .aspectRatio(2f / 3f)
-                .clip(RoundedCornerShape(12.dp))
+                .clip(shape)
                 .background(MaterialTheme.colorScheme.surfaceVariant),
             contentAlignment = Alignment.Center,
         ) {
@@ -698,13 +738,94 @@ private fun CatalogCard(item: MediaItem, style: PosterStyle, onClick: () -> Unit
                 )
             }
         }
-        Text(
-            item.title,
-            style = MaterialTheme.typography.bodySmall,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-            color = MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier.padding(top = 6.dp, start = 2.dp, end = 2.dp)
-        )
+        if (style.showTitles) {
+            Text(
+                item.title,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.padding(top = 8.dp, start = 2.dp, end = 2.dp)
+            )
+            // The second line: what the item is and when it is from, the way
+            // Nuvio puts the release date under the name. A space keeps the
+            // tile's height honest when neither is known.
+            val detail = buildList {
+                item.year?.let { add(it.toString()) }
+                if (item.genres.isNotEmpty()) add(item.genres.first())
+            }.joinToString(" • ")
+            Text(
+                detail.ifBlank { " " },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(top = 2.dp, start = 2.dp, end = 2.dp)
+            )
+        }
     }
+}
+
+/**
+ * Placeholder tiles shown while a catalogue's first page loads — the same
+ * column count, gutters and corner rounding as the real grid, so the page
+ * settles into place instead of jumping when the items arrive. The pulse is a
+ * plain alpha animation (no shimmer dependency, and it costs one animated
+ * float for the whole grid).
+ */
+@Composable
+private fun CatalogSkeletonGrid(columns: Int, modifier: Modifier = Modifier) {
+    val transition = rememberInfiniteTransition(label = "catalog-skeleton")
+    val pulse by transition.animateFloat(
+        initialValue = 0.30f,
+        targetValue = 0.65f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 900),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "catalog-skeleton-pulse",
+    )
+    LazyVerticalGrid(
+        columns = GridCells.Fixed(columns),
+        modifier = modifier.fillMaxSize(),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalArrangement = Arrangement.spacedBy(18.dp),
+        userScrollEnabled = false,
+    ) {
+        items(columns * 3) {
+            Column(Modifier.alpha(pulse)) {
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(2f / 3f)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                )
+                Box(
+                    Modifier
+                        .padding(top = 8.dp)
+                        .fillMaxWidth(0.85f)
+                        .height(12.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Nuvio's catalogue breakpoints: three columns on a phone, then one more per
+ * width band. This is the phone/laptop answer only — [TvUi.gridColumns] turns
+ * it into the living-room count on a television, where the cell size rather
+ * than the column count is what matters.
+ */
+private fun catalogColumnsFor(widthDp: Int): Int = when {
+    widthDp >= 1400 -> 7
+    widthDp >= 1200 -> 6
+    widthDp >= 1000 -> 5
+    widthDp >= 840 -> 4
+    else -> 3
 }

@@ -576,20 +576,16 @@ class HikariApp : Application() {
             // (The bundled yt-dlp "universal extractor" used to be warmed up
             // here. It was removed in 0.9.1 — see the CHANGELOG — so there is
             // no CPython runtime to start, and the app opens slightly faster.)
-            // First run: register the bundled Hikari demo extension (YTS) so
-            // the extension system ships with a working provider. Harmless if
-            // already added — addProvider dedupes by id.
+            // The bundled "demo" Hikari extension used to be registered here on
+            // first run (YTS, id "hiki|yts"). It shipped with no catalogue at
+            // all — tapping it showed nothing to browse — so it was dropped in
+            // 0.10.49 together with its provider class (see the CHANGELOG). An
+            // install that already has the row gets it swept once here; the
+            // sweep is marked done so it never runs again.
             runCatching {
-                if (store.providers().none { it.type == ProviderType.HIKARI }) {
-                    store.addProvider(
-                        ProviderConfig(
-                            id = "hiki|yts",
-                            name = "YTS (Hikari)",
-                            type = ProviderType.HIKARI,
-                            iconUrl = null,
-                            extra = "com.hikari.ext.providers.YtsProvider",
-                        )
-                    )
+                if (!store.ytsCleaned()) {
+                    runCatching { store.removeProvider("hiki|yts") }
+                    store.markYtsCleaned()
                 }
             }
             // First run: seed the Nuvio provider repos (manifest.json) so nuvio
@@ -605,6 +601,15 @@ class HikariApp : Application() {
             // without hunting for a repo URL.
             runCatching {
                 com.hikari.app.skystream.SkyStreamPluginManager.seedDefaults(this@HikariApp, store)
+            }
+            // First run: seed the official Vega provider repo (Zenda-Cross's
+            // vega-providers, a bare-array manifest.json). Vega providers are
+            // scrapers published as CommonJS modules — see
+            // com.hikari.app.providers.vega.VegaRuntime — and no provider is
+            // installed for the user: the repo is only registered so the Vega
+            // folder in Extensions is never empty.
+            runCatching {
+                com.hikari.app.providers.vega.VegaPluginManager.seedDefaults(this@HikariApp, store)
             }
             // First run: seed the Aniyomi extension repo (Aniyomi's official
             // index.min.json) so Aniyomi-extensions are installable from the

@@ -52,6 +52,10 @@ object ExtensionIcons {
             // the site it reads, so the favicon of that site is the icon.
             ProviderType.MANGA ->
                 com.hikari.app.manga.MangaExtensionManager.iconFallback(config)
+            // A Vega provider has no repo-level icon to probe: the manifest
+            // entry's own `icon` (a jsDelivr URL) is already stored in
+            // [ProviderConfig.iconUrl] when it has one, and there is no site
+            // domain to fall back to — nothing to fetch here.
             else -> null
         }
     }

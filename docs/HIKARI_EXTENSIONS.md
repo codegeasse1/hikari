@@ -126,7 +126,12 @@ Torrents are played by the app's built-in TorrServer engine.
 
 ## Reference implementation
 
-The bundled **YTS** provider (`com.hikari.ext.providers.YtsProvider`) ships in
-the APK and is auto-registered on first run. It is a complete, working provider
-against a public JSON API (torrents → TorrServer) and the cleanest template for
-a new extension.
+A complete example provider lives in the repo's `docs/` history: the **YTS**
+provider (`com.hikari.ext.providers.YtsProvider`, `yts.mx`) was a full working
+provider against a public JSON API (torrents → TorrServer), and it was the
+cleanest template for a new extension. It used to ship in the APK and be
+auto-registered on first run; **0.10.49 removed it** (it exposed no catalogue,
+so there was nothing to browse in it) along with the auto-registration. If you
+want to start from it, copy the class from an older release's sources, change
+`id`/`name`/`mainUrl`, and install your build as a `.hiki` — see the sections
+above.

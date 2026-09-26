@@ -70,6 +70,7 @@ object ProviderPacks {
 
     private const val ANIYOMI_PREFIX = "aniyomi|"
     private const val MANGA_PREFIX = "manga|"
+    private const val VEGA_PREFIX = "vega|"
 
     /**
      * The extension a provider row was published by, or null for every engine
@@ -81,6 +82,10 @@ object ProviderPacks {
         val prefix = when (config.type) {
             ProviderType.ANIYOMI -> ANIYOMI_PREFIX
             ProviderType.MANGA -> MANGA_PREFIX
+            // A Vega provider id is `vega|<value>` with no numeric index, so its
+            // pack key is the id itself — members of one repo do not share a
+            // package the way Aniyomi sources do, and the rows stay separate.
+            ProviderType.VEGA -> VEGA_PREFIX
             else -> return null
         }
         if (!config.id.startsWith(prefix)) return null

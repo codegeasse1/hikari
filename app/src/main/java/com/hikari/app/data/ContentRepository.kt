@@ -4259,6 +4259,7 @@ class ContentRepository(private val manager: ProviderManager) {
             t == ProviderType.UNIVERSAL -> 3
             t == ProviderType.SKYSTREAM -> 3
             t == ProviderType.ANIYOMI -> 3
+            t == ProviderType.VEGA -> 3
             else -> 4
         }
         // `all` is the pass's snapshot of the enabled provider list, NOT a fresh
@@ -4343,6 +4344,11 @@ class ContentRepository(private val manager: ProviderManager) {
                     // source can search by title), so they are asked exactly
                     // like the other site-scraper families.
                     ProviderType.ANIYOMI -> true
+                    // Vega providers export their own search too (a posts
+                    // module's getSearchPosts), so a title opened anywhere
+                    // else can still be found by name there and its streams
+                    // extracted through the same search → meta → stream path.
+                    ProviderType.VEGA -> true
                     // An IPTV playlist carries its whole channel list locally
                     // once read, so "is this title on any of my channels?" costs
                     // a string scan — and a VOD/24-7 playlist genuinely can hold
@@ -4773,6 +4779,7 @@ class ContentRepository(private val manager: ProviderManager) {
         ProviderType.NUVIO -> com.hikari.app.nuvio.NuvioScraper.streamErrors[p.config.id]
         ProviderType.SKYSTREAM -> com.hikari.app.skystream.SkyStreamProvider.streamErrors[p.config.id]
         ProviderType.ANIYOMI -> com.hikari.app.aniyomi.AniyomiProvider.streamErrors[p.config.id]
+        ProviderType.VEGA -> com.hikari.app.providers.vega.VegaProvider.streamErrors[p.config.id]
         ProviderType.IPTV -> IptvProvider.iptvErrors[p.config.id]
         ProviderType.MANGA -> com.hikari.app.manga.MangaProvider.lastOutcome[p.config.id]
     }
@@ -5180,6 +5187,7 @@ class ContentRepository(private val manager: ProviderManager) {
             ProviderType.NUVIO -> com.hikari.app.nuvio.NuvioScraper.streamErrors
             ProviderType.SKYSTREAM -> com.hikari.app.skystream.SkyStreamProvider.streamErrors
             ProviderType.ANIYOMI -> com.hikari.app.aniyomi.AniyomiProvider.streamErrors
+            ProviderType.VEGA -> com.hikari.app.providers.vega.VegaProvider.streamErrors
             ProviderType.MANGA -> com.hikari.app.manga.MangaProvider.lastOutcome
             ProviderType.IPTV -> IptvProvider.iptvErrors
         }
@@ -5422,6 +5430,7 @@ class ContentRepository(private val manager: ProviderManager) {
                         ProviderType.UNIVERSAL,
                         ProviderType.SKYSTREAM,
                         ProviderType.ANIYOMI,
+                        ProviderType.VEGA,
                         ProviderType.IPTV -> true
                         else -> false
                     }

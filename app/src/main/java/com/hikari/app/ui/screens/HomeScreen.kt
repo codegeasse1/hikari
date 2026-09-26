@@ -7,6 +7,7 @@ import com.hikari.app.i18n.I18n
 import android.app.Application
 import android.content.Intent
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -21,6 +22,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.width
@@ -29,10 +31,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
@@ -44,6 +50,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -62,15 +69,19 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -80,6 +91,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.NavHostController
+import coil.compose.AsyncImage
 import com.hikari.app.HikariApp
 import com.hikari.app.data.CatalogRow
 import com.hikari.app.data.Collection
@@ -89,8 +101,15 @@ import com.hikari.app.data.CoverKinds
 import androidx.compose.ui.text.style.TextOverflow
 import com.hikari.app.data.MediaItem
 import com.hikari.app.data.ProviderType
+import com.hikari.app.data.RepoProvenance
+import com.hikari.app.data.TmdbGenres
+import com.hikari.app.data.TmdbSourceType
+import com.hikari.app.data.TmdbSpec
+import com.hikari.app.tv.TvUi
+import com.hikari.app.ui.Artwork
 import com.hikari.app.ui.PosterLoader
 import com.hikari.app.ui.ProviderPacks
+import com.hikari.app.ui.rememberVisibleItems
 import com.hikari.app.ui.components.ContinueWatchingRow
 import com.hikari.app.ui.components.EmptyState
 import com.hikari.app.ui.components.GlassDialog
@@ -597,6 +616,8 @@ fun HomeScreen(nav: NavHostController) {
     var showPicker by remember { mutableStateOf(false) }
     var showTranslate by remember { mutableStateOf(false) }
     var showSearchDialog by remember { mutableStateOf(false) }
+    // The in-place search overlay for a PICKED extension (see [openSearch]).
+    var showHomeSearch by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
     // Cloudflare verification: when the selected extension's site is blocked
@@ -726,8 +747,20 @@ fun HomeScreen(nav: NavHostController) {
     // A COLLECTION counts as a scope too: browsing "abc" and tapping the
     // magnifier must be able to search inside abc and not only everywhere.
     val openSearch: () -> Unit = {
-        if (headerSelection != null || selectedCollection != null) showSearchDialog = true
-        else openGlobalSearch()
+        // With ONE extension picked, the magnifier searches that extension IN
+        // PLACE, here on Home: the button sits inside the picked extension's own
+        // header and that pick is what Home is browsing, so sending the user to
+        // the Search tab to pick the same extension again was a detour — and,
+        // with four identically-named "AniKoto" installs, an obscure one.
+        //
+        // A collection still asks HOW to search (across everything, or inside
+        // it), and "All" goes straight to the Search tab, where the provider row
+        // is the only thing that can narrow a search that has no pick.
+        when {
+            headerSelection != null -> showHomeSearch = true
+            selectedCollection != null -> showSearchDialog = true
+            else -> openGlobalSearch()
+        }
     }
     val openVerify: () -> Unit = {
         scope.launch {
@@ -834,6 +867,26 @@ fun HomeScreen(nav: NavHostController) {
                                 )
                             },
                             config = heroConfig,
+                        )
+                    }
+                    // Genre strip: sits UNDER the hero artwork, which is where a
+                    // viewer who has not decided what to watch looks next. A
+                    // genre pick opens everything tagged with it — films AND
+                    // series (see [HomeGenreStrip]) — so nothing has to be
+                    // searched for before something can be watched.
+                    HomeGenreStrip { name, filter ->
+                        Routes.safeNavigate(
+                            nav,
+                            Routes.tmdbGridSpec(
+                                TmdbSpec(
+                                    type = TmdbSourceType.DISCOVER,
+                                    media = "all",
+                                    genresText = filter,
+                                    sort = "popularity.desc",
+                                    title = name,
+                                ).encode(),
+                                name,
+                            )
                         )
                     }
                 }
@@ -957,33 +1010,7 @@ fun HomeScreen(nav: NavHostController) {
                             action = { Routes.safeNavigate(nav, Routes.COLLECTIONS) },
                         )
                     } else if (selected != null) {
-                        val reason =
-                            com.hikari.app.cs3.Cs3MainApiProvider.catalogErrors[selected]
-                                ?: com.hikari.app.providers.StremioAddon.catalogErrors[selected]
-                                ?: com.hikari.app.nuvio.NuvioScraper.catalogErrors[selected]
-                                ?: com.hikari.app.skystream.SkyStreamProvider.catalogErrors[selected]
-                                // Aniyomi was missing from this chain, so an
-                                // Aniyomi catalog that failed fell through to the
-                                // generic "check the WebView / it may be down"
-                                // line — which sent users looking for a
-                                // Cloudflare verification that was never the
-                                // problem. An Aniyomi extension that failed to
-                                // load has a real, specific reason ("none of its
-                                // sources could be loaded", a class-load failure,
-                                // an unsupported extension library) and it is
-                                // reported here now.
-                                ?: com.hikari.app.aniyomi.AniyomiProvider.catalogErrors[selected]
-                                // Manga engines were missing from this chain for
-                                // the same reason Aniyomi was: a manga source
-                                // that fails to LINK or load (an OkHttp class it
-                                // needs absent from the app, a source whose own
-                                // assertions refuse our client) fell through to
-                                // the generic "the site may be down" line. Its
-                                // own record is `MangaProvider.lastOutcome`, and
-                                // the success lines in that map ("✓ 40 titles")
-                                // are filtered out so only a real failure shows.
-                                ?: com.hikari.app.manga.MangaProvider.lastOutcome[selected]
-                                    ?.takeIf { !it.startsWith("✓") && !it.startsWith("✔") }
+                        val reason = engineFailureReason(selected)
                         // An extension whose site answers with a wall (403/503/429,
                         // a Cloudflare body, a "One moment, please" interstitial)
                         // is the one failure the user can actually do something
@@ -1116,6 +1143,32 @@ fun HomeScreen(nav: NavHostController) {
                     Button(onClick = { dismissCrash() }) { Text(tr("OK")) }
                 }
             }
+        }
+
+        // In-place search for the picked extension — drawn LAST inside the Box so
+        // it covers the feed. Drawn over the feed rather than as a screen of its
+        // own because it answers a question about the feed that is already
+        // loaded: "which of this extension's titles did you mean?".
+        if (showHomeSearch) {
+            HomeSearchOverlay(
+                provider = providers.firstOrNull { it.config.id == headerSelection },
+                providerName = selectedName,
+                onClose = { showHomeSearch = false },
+                onOpen = { item ->
+                    showHomeSearch = false
+                    Routes.safeNavigate(
+                        nav,
+                        if (item.rawType == "manga") {
+                            Routes.mangaDetail(item.providerId, item.id, item.title, item.posterUrl)
+                        } else {
+                            Routes.detail(
+                                item.providerId, item.type, item.id,
+                                item.title, item.posterUrl, item.rawType
+                            )
+                        }
+                    )
+                },
+            )
         }
     }
 
@@ -1339,6 +1392,14 @@ internal fun ProviderPickerSheet(
     // time they open the sheet, and an alphabetical list would break it for
     // every source whose name sorts low.
     val pinOrder = remember(pinned) { pinned.withIndex().associate { (i, id) -> id to i } }
+    // Engine + repository for the plain rows below. The sheet's rows say
+    // nothing but the extension's name, and an install list with four "AniKoto"
+    // entries from four different repos gives the user nothing to choose by —
+    // the repo is what tells them apart (see [RepoProvenance]).
+    val repos by remember { app.store.reposFlow() }.collectAsState(initial = emptyList())
+    val repoNameByProvider = remember(providers, repos) {
+        RepoProvenance.nameMap(providers.map { it.config }, repos)
+    }
     // One row per EXTENSION. An Aniyomi/manga pack publishes many sources under
     // one name (AnimeWorld India is nine: a generic feed plus
     // Bengali/English/Hindi/Japanese/Malayalam/Marathi/Tamil/Telugu), and one
@@ -1576,7 +1637,8 @@ internal fun ProviderPickerSheet(
                                 "%s",
                                 pack.primary.config.type.groupLabel,
                             )
-                            !pack.isPack -> null
+                            !pack.isPack -> repoNameByProvider[pack.primary.config.id]
+                                ?.let { "${pack.primary.config.type.groupLabel} · $it" }
                             // In multi-select the row is a checkbox for a whole
                             // extension, so it says how much of the pack is on.
                             multi && ticked && !allTicked -> I18n.t("%s of %s picked")
@@ -2071,4 +2133,332 @@ private fun HomeHeader(
  */
 private object HomeFeedCache {
     val rows = LinkedHashMap<String, List<CatalogRow>>()
+}
+
+
+/** Collapse an oversized (base64) poster into a tiny disk-cache token — the
+ *  same treatment the feed's own rows get, so a search result whose artwork is
+ *  a data: URI cannot hold a megabyte of string in memory per cell. */
+private fun MediaItem.shrinkPoster(): MediaItem {
+    val p = PosterLoader.tokenize(posterUrl)
+    val b = PosterLoader.tokenize(backdropUrl)
+    return if (p == posterUrl && b == backdropUrl) this
+    else copy(posterUrl = p, backdropUrl = b)
+}
+
+/**
+ * The engine's own record of why the last call to [providerId] failed, when it
+ * failed — the chain Home's empty state reads, and now the in-place search's too.
+ *
+ * Aniyomi was missing from this chain once, so an Aniyomi catalog that failed
+ * fell through to the generic "check the WebView / it may be down" line — which
+ * sent users looking for a Cloudflare verification that was never the problem.
+ * An Aniyomi extension that failed to load has a real, specific reason ("none of
+ * its sources could be loaded", a class-load failure, an unsupported extension
+ * library) and it is reported here now. Manga engines were missing for the same
+ * reason: a manga source that fails to LINK or load (an OkHttp class it needs
+ * absent from the app, a source whose own assertions refuse our client) fell
+ * through to the "the site may be down" line. Its own record is
+ * `MangaProvider.lastOutcome`, and the SUCCESS lines in that map ("✓ 40 titles")
+ * are filtered out so only a real failure shows — an empty result has to be told
+ * apart from a failed one.
+ */
+private fun engineFailureReason(providerId: String): String? =
+    com.hikari.app.cs3.Cs3MainApiProvider.catalogErrors[providerId]
+        ?: com.hikari.app.providers.StremioAddon.catalogErrors[providerId]
+        ?: com.hikari.app.nuvio.NuvioScraper.catalogErrors[providerId]
+        ?: com.hikari.app.skystream.SkyStreamProvider.catalogErrors[providerId]
+        ?: com.hikari.app.aniyomi.AniyomiProvider.catalogErrors[providerId]
+        ?: com.hikari.app.manga.MangaProvider.lastOutcome[providerId]
+            ?.takeIf { !it.startsWith("✓") && !it.startsWith("✔") }
+
+/**
+ * The in-place Home search: one picked extension's own search, drawn over the
+ * feed.
+ *
+ * It runs the SAME sweep the Search tab runs —
+ * [ContentRepository.searchStreaming], scoped to the one picked provider — so
+ * results are paged, deduplicated and STREAMED IN as each page lands, exactly as
+ * they are there. The differences are only that this one is already scoped (the
+ * pick IS the scope) and that it never leaves Home. A tapped result opens the
+ * detail page the way the Search tab's grid does (a manga result opens the manga
+ * page).
+ *
+ * The scan belongs to this composable's own effect, so searching on Home can
+ * never disturb what the Search tab is showing.
+ */
+@Composable
+private fun HomeSearchOverlay(
+    provider: ContentProvider?,
+    providerName: String?,
+    onClose: () -> Unit,
+    onOpen: (MediaItem) -> Unit,
+) {
+    val context = LocalContext.current
+    val app = context.applicationContext as HikariApp
+    val repo = remember { ContentRepository(app.providers) }
+    val label = providerName?.takeIf { it.isNotBlank() } ?: tr("this extension")
+    var typed by rememberSaveable { mutableStateOf("") }
+    var applied by remember { mutableStateOf("") }
+    var results by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
+    var searching by remember { mutableStateOf(false) }
+    val focusRequester = remember { FocusRequester() }
+
+    // The keypad is what the user came for: open with the caret already in the
+    // box. (On a television focus has to be given explicitly for the same
+    // reason — a remote has no pointer to tap the field with.)
+    LaunchedEffect(Unit) { runCatching { focusRequester.requestFocus() } }
+
+    // One request per typed word. A new query replaces the previous effect, which
+    // cancels the old scan with it — so a stale page can never land under a newer
+    // query.
+    LaunchedEffect(applied) {
+        val id = provider?.config?.id
+        if (applied.isBlank() || id == null) {
+            results = emptyList()
+            searching = false
+            return@LaunchedEffect
+        }
+        searching = true
+        try {
+            repo.searchStreaming(applied, providerIds = setOf(id)).collect { raw ->
+                results = withContext(Dispatchers.IO) { raw.map { it.shrinkPoster() } }
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (_: Throwable) {
+            // Whatever pages already landed stay on screen; the empty state below
+            // says the rest did not arrive (see [engineFailureReason]).
+        } finally {
+            searching = false
+        }
+    }
+
+    LaunchedEffect(typed) {
+        delay(400)
+        applied = typed.trim()
+    }
+
+    BackHandler { onClose() }
+
+    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+        Column(Modifier.fillMaxSize()) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(start = 2.dp, end = 12.dp, top = 6.dp, bottom = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(onClick = onClose) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = tr("Close"),
+                    )
+                }
+                OutlinedTextField(
+                    value = typed,
+                    onValueChange = { typed = it },
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodyMedium,
+                    placeholder = {
+                        Text(
+                            I18n.t("Search %s…").replace("%s", label),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    },
+                    leadingIcon = {
+                        Icon(
+                            Icons.Filled.Search,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    },
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .focusRequester(focusRequester)
+                        .tvTextFieldKeys(typed),
+                )
+            }
+            if (!LocalHideHelp.current) {
+                Text(
+                    I18n.t("Searching %s only — a result opens straight from here.")
+                        .replace("%s", label),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
+                )
+            }
+            when {
+                applied.isBlank() -> EmptyState(
+                    title = I18n.t("Search %s").replace("%s", label),
+                    subtitle = tr("Type a title — only this extension is searched."),
+                    actionLabel = null,
+                    action = null,
+                )
+                results.isEmpty() && searching -> Box(
+                    Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center,
+                ) { CircularProgressIndicator() }
+                results.isEmpty() -> EmptyState(
+                    title = tr("No matches"),
+                    subtitle = I18n.t("This extension has no \"%s\" — or its site is not answering.")
+                        .replace("%s", applied),
+                    actionLabel = null,
+                    action = null,
+                    detail = provider?.config?.id?.let { engineFailureReason(it) },
+                )
+                else -> {
+                    // The engine can answer the same title twice (and one engine
+                    // can answer once per mirror): a repeated Lazy key is a hard
+                    // crash in Compose, so repeats are dropped before the grid is
+                    // built — the same treatment the feed and the catalog page
+                    // give their own lists.
+                    val unique = rememberVisibleItems(results)
+                    LazyVerticalGrid(
+                        columns = GridCells.Adaptive(minSize = TvUi.gridMinFor(96)),
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(
+                            start = 10.dp,
+                            end = 10.dp,
+                            top = 8.dp,
+                            // Clear of the floating taskbar (0 when there is no
+                            // bar), exactly as the feed's own grid is.
+                            bottom = LocalTaskbarInset.current + 16.dp,
+                        ),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        items(unique, key = { it.uniqueId }) { item ->
+                            HomeResultCard(item) { onOpen(item) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** One search result: a 2:3 poster with the title under it — the same cell the
+ *  catalog page draws, so results look like a catalog rather than a list. */
+@Composable
+private fun HomeResultCard(item: MediaItem, onClick: () -> Unit) {
+    Column(
+        Modifier
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick),
+    ) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .aspectRatio(2f / 3f)
+                .clip(RoundedCornerShape(12.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant),
+        ) {
+            AsyncImage(
+                model = Artwork.model(item),
+                contentDescription = item.title,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop,
+            )
+        }
+        Text(
+            item.title,
+            style = MaterialTheme.typography.bodySmall,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.padding(top = 6.dp, start = 2.dp, end = 2.dp),
+        )
+    }
+}
+
+
+/**
+ * TMDB's TV-namespace id for each film genre Home's strip offers, where one
+ * exists; 0 when the genre is a film-only one.
+ *
+ * TMDB keeps films and series in SEPARATE genre id spaces, and they do not line
+ * up: film 28 "Action" is series 10759 "Action & Adventure", film 14 "Fantasy"
+ * is series 10765 "Sci-Fi & Fantasy", and History / Music / Romance / Thriller
+ * are film-only. A genre therefore has to name BOTH ids to be browsable as
+ * films and as series, which is what the strip's filter string carries.
+ *
+ * Verified against the live API: \`with_genres=28|10759\` answers with Action
+ * films from /discover/movie and with Action & Adventure series from
+ * /discover/tv — TMDB ignores the id that belongs to the other namespace rather
+ * than erroring. (A single id from the wrong namespace answers nothing, which is
+ * why both are sent as one OR-list instead of the same id twice.)
+ */
+private val HOME_GENRE_TV_IDS = mapOf(
+    "Action" to 10759,
+    "Adventure" to 10759,
+    "Animation" to 16,
+    "Comedy" to 35,
+    "Crime" to 80,
+    "Documentary" to 99,
+    "Drama" to 18,
+    "Family" to 10751,
+    "Fantasy" to 10765,
+    "History" to 0,
+    "Horror" to 0,
+    "Music" to 0,
+    "Mystery" to 9648,
+    "Romance" to 0,
+    "Science Fiction" to 10765,
+    "Thriller" to 0,
+    "War" to 10768,
+    "Western" to 37,
+)
+
+/** One chip of [HomeGenreStrip]: what it says, and what it asks TMDB for. */
+private data class HomeGenre(val name: String, val filter: String)
+
+/**
+ * Home's genre strip — the "no need to search for anything" way in.
+ *
+ * Each chip hands its caller a genre name and a TMDB filter string built from
+ * that genre's film AND series ids (see [HOME_GENRE_TV_IDS]), so the page it
+ * opens carries both kinds of title instead of making the viewer choose a shape
+ * first. The genre list IS [TmdbGenres.MOVIE] — the same genre names the Search
+ * tab's strip is built from — so the two screens offer one vocabulary.
+ */
+@Composable
+private fun HomeGenreStrip(onPick: (name: String, filter: String) -> Unit) {
+    val genres = remember {
+        TmdbGenres.MOVIE.map { g ->
+            val tv = HOME_GENRE_TV_IDS[g.name] ?: 0
+            HomeGenre(g.name, if (tv > 0) "${g.id}|$tv" else g.id.toString())
+        }
+    }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = 14.dp),
+    ) {
+        Text(
+            tr("Browse by genre"),
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.padding(horizontal = 16.dp),
+        )
+        LazyRow(
+            Modifier
+                .fillMaxWidth()
+                .padding(top = 6.dp),
+            contentPadding = PaddingValues(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            items(genres, key = { it.name }) { g ->
+                FilterChipLine(
+                    label = tr(g.name),
+                    selected = false,
+                    onClick = { onPick(g.name, g.filter) },
+                )
+            }
+        }
+    }
 }

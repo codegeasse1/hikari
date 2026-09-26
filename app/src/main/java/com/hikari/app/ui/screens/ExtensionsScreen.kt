@@ -47,6 +47,7 @@ import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.LiveTv
+import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Refresh
@@ -67,8 +68,10 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -107,6 +110,7 @@ import com.hikari.app.data.ProviderConfig
 import com.hikari.app.data.ProviderType
 import com.hikari.app.data.RepoKind
 import com.hikari.app.data.RepoLoadState
+import com.hikari.app.data.RepoProvenance
 import com.hikari.app.data.Site
 import com.hikari.app.data.SourceUrls
 import com.hikari.app.net.Http
@@ -973,7 +977,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 val extra = p.extra ?: return@forEach
                 val source = when (p.type) {
                     ProviderType.CS3, ProviderType.NUVIO, ProviderType.SKYSTREAM,
-                    ProviderType.ANIYOMI, ProviderType.MANGA -> extra
+                    ProviderType.ANIYOMI, ProviderType.MANGA, ProviderType.VEGA -> extra
                     ProviderType.HIKARI -> extra.substringBeforeLast('|')
                     else -> return@forEach
                 }
@@ -1037,6 +1041,31 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         for (source in stored) {
             removed += com.hikari.app.nuvio.NuvioPluginManager.uninstallScraper(app, source)
         }
+        requestRefresh()
+        return removed
+    }
+
+    /** Registers a Vega provider repository — a bare-array `manifest.json` of
+     *  `{display_name, value, …}` entries, each provider published as a folder
+     *  of CommonJS modules under `dist/<value>` (see
+     *  [com.hikari.app.providers.vega.VegaPluginManager.repoPlugins]). A bare
+     *  short name ("vega") resolves through the alias table like every other
+     *  kind. */
+    suspend fun addVegaRepo(rawUrl: String): Result<Cs3Repo> = addRepo(rawUrl, RepoKind.VEGA)
+
+    /** Installs one Vega provider: its modules are downloaded into one folder
+     *  per provider, then the folder is validated by actually loading it in the
+     *  QuickJS runtime ([com.hikari.app.providers.vega.VegaPluginManager.install]). */
+    suspend fun installVegaPlugin(plugin: Cs3RepoPlugin): Result<Int> =
+        com.hikari.app.providers.vega.VegaPluginManager
+            .install(getApplication<Application>(), plugin)
+            .also { requestRefresh() }
+
+    /** Removes every VEGA provider installed from [pluginUrl]. Returns how many
+     *  installed providers were actually removed. */
+    suspend fun uninstallVegaPlugin(pluginUrl: String): Int {
+        val removed = com.hikari.app.providers.vega.VegaPluginManager
+            .uninstall(getApplication<Application>(), pluginUrl)
         requestRefresh()
         return removed
     }
@@ -1132,7 +1161,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                     unknownShortName(
                         rawUrl,
                         "Aniyomi repo name",
-                        "Must be a link to an index.min.json (or the repo folder)",
+                        "Must be a link to an index.min.json / index.pb (or the repo folder)",
                         RepoKind.ANIYOMI,
                     )
                 )
@@ -1148,8 +1177,8 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 val loaded = loadAniyomiIndex(url)
                     ?: throw Exception(
                         "No extension list at that link — tried $ANIYOMI_INDEX, " +
-                            "index.json and the other index file names a " +
-                            "Mihon/Aniyomi repo publishes"
+                            "index.json and every other index file name a " +
+                            "Mihon/Aniyomi repo publishes (JSON or protobuf)"
                     )
                 val repo = Cs3Repo(
                     url = loaded.servedUrl,
@@ -1504,6 +1533,14 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         val keiyoushi = aniyomiExt(
             "https://raw.githubusercontent.com/keiyoushi/extensions/repo/index.json"
         )
+        // Vega provider repos: a bare-array `manifest.json` listing the repo's
+        // providers (`{display_name, value, …}`), each published as a folder of
+        // CommonJS modules under `dist/<value>`. Zenda-Cross's repo is the
+        // upstream one every Vega front end reads.
+        fun vega(url: String) = RepoAlias(url, RepoKind.VEGA)
+        val vegaOfficial = vega(
+            "https://raw.githubusercontent.com/Zenda-Cross/vega-providers/main/manifest.json"
+        )
         val everyNuvio = listOf(yoru, gowaru, phisher, allInOne, animeNuvio, hindiNuvio, michat, spidey, saimuel, mooncrown, kenneth, eclipsia)
         put("megarepo", listOf(mega))
         put("mega", listOf(mega))
@@ -1591,6 +1628,12 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         put("manga", listOf(keiyoushi))
         put("mangarepo", listOf(keiyoushi))
         put("keiyoushimanga", listOf(keiyoushi))
+        put("vega", listOf(vegaOfficial))
+        put("vegarepo", listOf(vegaOfficial))
+        put("vegarepos", listOf(vegaOfficial))
+        put("vegaproviders", listOf(vegaOfficial))
+        put("zendacross", listOf(vegaOfficial))
+        put("zenda", listOf(vegaOfficial))
     }
 
     /** A pasted short name (case-insensitive) resolved to its repo(s), or null
@@ -1700,18 +1743,39 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private suspend fun addRepoUrl(url: String, kind: RepoKind): Result<Cs3Repo> {
-        val file = if (kind == RepoKind.NUVIO) "manifest.json" else "repo.json"
+        // A Nuvio repo and a Vega repo both index themselves with a
+        // `manifest.json`; every other kind publishes `repo.json`.
+        val file = if (kind == RepoKind.NUVIO || kind == RepoKind.VEGA) "manifest.json" else "repo.json"
         return withContext(Dispatchers.IO) {
             runCatching {
                 val text = fetchRepoRaw(url, file, ua = if (kind == RepoKind.NUVIO) Http.NUVIO_UA else null)
                     .getOrElse { throw it }
-                val obj = runCatching { JSONObject(text) }.getOrElse {
-                    throw Exception("Invalid $file: ${it.message}")
+                val name: String
+                val description: String
+                if (kind == RepoKind.VEGA) {
+                    // A Vega manifest is a BARE JSON ARRAY, so it never parses
+                    // as a JSONObject — validating it means asking the Vega
+                    // parser whether it lists any provider at all. The repo's
+                    // own name is not in the file either, so the label comes
+                    // from the URL.
+                    val plugins = com.hikari.app.providers.vega.VegaPluginManager
+                        .repoPlugins(text, lastGoodRepoUrl)
+                    if (plugins.isEmpty()) {
+                        throw Exception("That manifest.json lists no Vega providers")
+                    }
+                    name = niceRepoName(url, "")
+                    description = "Vega provider repository"
+                } else {
+                    val obj = runCatching { JSONObject(text) }.getOrElse {
+                        throw Exception("Invalid $file: ${it.message}")
+                    }
+                    name = niceRepoName(url, obj.optString("name"))
+                    description = PromoGuard.cleanText(obj.optString("description"))
                 }
                 val repo = Cs3Repo(
                     url = lastGoodRepoUrl,
-                    name = niceRepoName(url, obj.optString("name")),
-                    description = PromoGuard.cleanText(obj.optString("description")),
+                    name = name,
+                    description = description,
                     kind = kind,
                 )
                 // Adding a repo that is already in the list (same repo — the
@@ -1827,9 +1891,11 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
      * turned `index.min.json` into a two-entry "Outdated App" / "Update to
      * Mihon 0.20.1+" placeholder that older apps are meant to *display*; the
      * official Aniyomi repo still publishes `index.min.json`; some mirrors
-     * publish only `repo.json`; and several publish a protobuf `index.pb`
-     * beside a JSON one. Reading only `index.min.json` is exactly why the
-     * Keiyoushi folder said "Outdated App" and listed nothing installable.
+     * publish only `repo.json`; and several — including repos that have gone
+     * protobuf-only, which is what Mihon 0.20.1+ reads — publish `index.pb`
+     * and no JSON at all ([AniyomiExtensionManager.pbIndex] decodes it). Reading
+     * only `index.min.json` is exactly why the Keiyoushi folder said "Outdated
+     * App" and listed nothing installable.
      *
      * So every candidate name the repo could be using is tried in order
      * ([AniyomiExtensionManager.indexCandidatesFor]) and the first one that
@@ -1846,15 +1912,31 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     private fun loadAniyomiIndex(url: String, knownName: String = ""): AniyomiIndex? {
         val mgr = com.hikari.app.aniyomi.AniyomiExtensionManager
         for (candidate in mgr.indexCandidatesFor(url)) {
-            val text = fetchRepoRaw(
-                candidate,
-                ANIYOMI_INDEX,
-                remember = false,
-                // A Mihon index can be a 1.5 MB JSON file (keiyoushi's is);
-                // 30s per read is not always enough for it on a slow phone.
-                readSec = 60,
-            ).getOrNull() ?: continue
-            val arr = mgr.indexEntries(text) ?: continue
+            // A protobuf index is BYTES, not text, so it takes its own fetch and
+            // decode path (see AniyomiExtensionManager.pbIndex) and then joins
+            // the SAME entry loop below — the decoder answers in the modern JSON
+            // shape every other index uses, so nothing downstream changes.
+            val arr: org.json.JSONArray
+            val jsonName: String
+            if (candidate.endsWith(".pb", ignoreCase = true)) {
+                val bytes = com.hikari.app.net.Http
+                    .fetchBytesCancellable(candidate, readTimeoutSec = 60)
+                    ?: continue
+                val decoded = mgr.pbIndex(bytes) ?: continue
+                arr = decoded.entries
+                jsonName = decoded.name
+            } else {
+                val text = fetchRepoRaw(
+                    candidate,
+                    ANIYOMI_INDEX,
+                    remember = false,
+                    // A Mihon index can be a 1.5 MB JSON file (keiyoushi's is);
+                    // 30s per read is not always enough for it on a slow phone.
+                    readSec = 60,
+                ).getOrNull() ?: continue
+                arr = mgr.indexEntries(text) ?: continue
+                jsonName = indexNameOf(text)
+            }
             if (arr.length() == 0) continue
             if (mgr.looksLikeStub(arr)) continue
             val baseUrl = mgr.indexDirFor(candidate)
@@ -1865,7 +1947,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
             if (out.isEmpty()) continue
-            val jsonName = indexNameOf(text)
             val name = if (jsonName.isNotBlank() && !knownName.startsWith(jsonName, true)) jsonName else ""
             return AniyomiIndex(candidate, out.values.toList(), name)
         }
@@ -1895,6 +1976,17 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 repo.copy(name = loaded.name)
             } else null
             return loaded.plugins to meta
+        }
+        if (repo.kind == RepoKind.VEGA) {
+            // A Vega repo's manifest is a bare array of provider entries — not
+            // the `{plugins: […]}` shape every other JSON kind uses — so it has
+            // its own parser (VegaPluginManager.repoPlugins) and no name field.
+            val text = fetchRepoRaw(repo.url, "manifest.json", remember = false)
+                .getOrElse { throw Exception("Could not fetch repo: ${it.message}") }
+            val out = LinkedHashMap<String, Cs3RepoPlugin>()
+            com.hikari.app.providers.vega.VegaPluginManager.repoPlugins(text, repo.url)
+                .forEach { out[it.url] = it }
+            return out.values.toList() to null
         }
         val file = when (repo.kind) {
             RepoKind.NUVIO -> "manifest.json"
@@ -2340,6 +2432,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             RepoKind.NUVIO -> "provider"
             RepoKind.SKYSTREAM -> "extension"
             RepoKind.ANIYOMI -> "extension"
+            RepoKind.VEGA -> "provider"
             RepoKind.CS3 -> "plugin"
         }
         val pending = plugins.filterNot { SourceUrls.anyKeyIn(it.url, installedUrls) }
@@ -2375,6 +2468,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                                 RepoKind.NUVIO -> installNuvioPlugin(p)
                                 RepoKind.SKYSTREAM -> installSkyStreamPlugin(p)
                                 RepoKind.ANIYOMI -> installAniyomiPlugin(p)
+                                RepoKind.VEGA -> installVegaPlugin(p)
                             }
                         }
                     }.getOrNull()
@@ -2529,6 +2623,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                                 RepoKind.NUVIO -> installNuvioPlugin(p)
                                 RepoKind.SKYSTREAM -> installSkyStreamPlugin(p)
                                 RepoKind.ANIYOMI -> installAniyomiPlugin(p)
+                                RepoKind.VEGA -> installVegaPlugin(p)
                             }
                         }
                     }.getOrNull()
@@ -2599,6 +2694,21 @@ private fun effectiveRepoKind(default: RepoKind, url: String): RepoKind = when {
 
 /** The file an Aniyomi extension repo publishes (a bare JSON array). */
 private const val ANIYOMI_INDEX = "index.min.json"
+
+/**
+ * Repository provenance for the installed-provider rows: provider id → the name
+ * of the repository that extension was installed from ("CNC Verse", "Phisher",
+ * "PenguPlay", …). Filled in by [ExtensionsScreen] from the stored repos — see
+ * [com.hikari.app.data.RepoProvenance] for how the match is made — and read by
+ * [ProviderCard], which draws it under the engine. Empty everywhere else, where
+ * a row simply shows its engine.
+ *
+ * It is a CompositionLocal rather than a parameter because the rows are drawn
+ * from six different list views (the Installed folder, the Sources overview,
+ * search, …) three call levels deep, and none of them has any other use for the
+ * repository list.
+ */
+private val LocalRepoNameByProvider = compositionLocalOf<Map<String, String>> { emptyMap() }
 
 /**
  * How long ONE repo's manifest (and any sub-list it points at) may take before
@@ -2767,6 +2877,7 @@ fun ExtensionsScreen() {
                 RepoKind.NUVIO -> vm.installNuvioPlugin(p)
                 RepoKind.SKYSTREAM -> vm.installSkyStreamPlugin(p)
                 RepoKind.ANIYOMI -> vm.installAniyomiPlugin(p)
+                RepoKind.VEGA -> vm.installVegaPlugin(p)
             }
             // The listing's own 18+ tag goes onto the rows that were just
             // created, so with the adult-content switch off an adult extension
@@ -2787,6 +2898,7 @@ fun ExtensionsScreen() {
                 RepoKind.NUVIO -> vm.uninstallNuvioPlugin(p.url)
                 RepoKind.SKYSTREAM -> vm.uninstallSkyStreamPlugin(p.url)
                 RepoKind.ANIYOMI -> vm.uninstallAniyomiPlugin(p.url)
+                RepoKind.VEGA -> vm.uninstallVegaPlugin(p.url)
             }
         }
     }
@@ -2829,6 +2941,13 @@ fun ExtensionsScreen() {
         }
     }
 
+    // Which repository each installed extension came from, for the rows that
+    // draw it (see [LocalRepoNameByProvider]).
+    val repoNameByProvider = remember(providers, repos) {
+        RepoProvenance.nameMap(providers.map { it.config }, repos)
+    }
+
+    CompositionLocalProvider(LocalRepoNameByProvider provides repoNameByProvider) {
     when {
         openRepo != null -> RepoPluginsView(
             repo = openRepo,
@@ -2886,6 +3005,7 @@ fun ExtensionsScreen() {
                     SourceFolder.NUVIO -> RepoKind.NUVIO
                     SourceFolder.SKYSTREAM -> RepoKind.SKYSTREAM
                     SourceFolder.ANIYOMI -> RepoKind.ANIYOMI
+                    SourceFolder.VEGA -> RepoKind.VEGA
                     else -> RepoKind.CS3
                 }
                 showRepoDialog = true
@@ -2964,6 +3084,7 @@ fun ExtensionsScreen() {
             onAddNuvioRepo = { vm.clearStatus(); repoDialogKind = RepoKind.NUVIO; showRepoDialog = true },
             onAddSkyStreamRepo = { vm.clearStatus(); repoDialogKind = RepoKind.SKYSTREAM; showRepoDialog = true },
             onAddAniyomiRepo = { vm.clearStatus(); repoDialogKind = RepoKind.ANIYOMI; showRepoDialog = true },
+            onAddVegaRepo = { vm.clearStatus(); repoDialogKind = RepoKind.VEGA; showRepoDialog = true },
             onAddStremio = { vm.clearStatus(); showStremio = true },
             onAddIptv = { vm.clearStatus(); showIptv = true },
             onToggleProvider = { id, enabled -> scope.launch { vm.toggle(id, enabled) } },
@@ -3050,12 +3171,14 @@ fun ExtensionsScreen() {
             onOpenSettings = { openProviderSettings(it) },
         )
     }
+    }
 
     if (showRepoDialog) {
         val isHikari = repoDialogKind == RepoKind.HIKARI
         val isNuvio = repoDialogKind == RepoKind.NUVIO
         val isSky = repoDialogKind == RepoKind.SKYSTREAM
         val isAniyomi = repoDialogKind == RepoKind.ANIYOMI
+        val isVega = repoDialogKind == RepoKind.VEGA
         AlertDialog(
             onDismissRequest = { showRepoDialog = false },
             title = {
@@ -3065,6 +3188,7 @@ fun ExtensionsScreen() {
                         RepoKind.NUVIO -> "Add Nuvio repo"
                         RepoKind.SKYSTREAM -> "Add SkyStream repo"
                         RepoKind.ANIYOMI -> "Add Aniyomi repo"
+                        RepoKind.VEGA -> "Add Vega repo"
                         RepoKind.CS3 -> "Add CloudStream repo"
                     }
                 )
@@ -3084,8 +3208,14 @@ fun ExtensionsScreen() {
                                     "code. For example:\n" +
                                     "https://raw.githubusercontent.com/akashdh11/skystream-plugins/main/repo.json"
                             isAniyomi ->
-                                "Paste an Aniyomi repo URL (an index.min.json). For example:\n" +
+                                "Paste an Aniyomi/Mihon repo URL — a link to its index " +
+                                    "(index.min.json, index.json or index.pb), or just the repo " +
+                                    "folder. For example:\n" +
                                     "https://raw.githubusercontent.com/aniyomiorg/aniyomi-extensions/repo/index.min.json"
+                            isVega ->
+                                "Paste a Vega provider repo URL (a manifest.json — a JSON " +
+                                    "array of the repo's providers). For example:\n" +
+                                    "https://raw.githubusercontent.com/Zenda-Cross/vega-providers/main/manifest.json"
                             else ->
                                 "Paste a CloudStream-style repo URL (a repo.json). For example:\n" +
                                     "https://raw.githubusercontent.com/codegeasse1/codegeasse-cloudstream-repos/builds/repo.json"
@@ -3103,7 +3233,8 @@ fun ExtensionsScreen() {
                                 "gowaru, phishernuvio, allinone, michat88, spidey, saimuel, " +
                                 "mooncrown, kennethjys, eclipsia. SkyStream repos: skystream, " +
                                 "akash, skyourge, rougegz. Aniyomi repos: aniyomiext " +
-                                "(the official Aniyomi extensions repo)."
+                                "(the official Aniyomi extensions repo). Vega repos: vega " +
+                                "(Zenda-Cross's official Vega providers)."
                         ),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -3115,7 +3246,13 @@ fun ExtensionsScreen() {
                         onValueChange = { repoUrl = it },
                         placeholder = {
                             Text(
-                                tr(if (isAniyomi) "https://…/index.min.json" else "https://…/repo.json")
+                                tr(
+                                    when {
+                                        isAniyomi -> "https://…/index.min.json"
+                                        isVega -> "https://…/manifest.json"
+                                        else -> "https://…/repo.json"
+                                    }
+                                )
                             )
                         },
                         singleLine = true,
@@ -3148,6 +3285,7 @@ fun ExtensionsScreen() {
                                     RepoKind.NUVIO -> vm.addNuvioRepo(repoUrl)
                                     RepoKind.SKYSTREAM -> vm.addSkyStreamRepo(repoUrl)
                                     RepoKind.ANIYOMI -> vm.addAniyomiRepo(repoUrl)
+                                    RepoKind.VEGA -> vm.addVegaRepo(repoUrl)
                                     RepoKind.CS3 -> vm.addCs3Repo(repoUrl)
                                 }
                             },
@@ -4077,6 +4215,13 @@ private fun RepoBrowserView(
                     )
                     SourceDivider()
                     SourceActionRow(
+                        icon = Icons.Filled.Movie,
+                        title = tr("Vega repos"),
+                        subtitle = tr("manifest.json · Vega providers"),
+                        onClick = { onOpenFolder(SourceFolder.VEGA) }
+                    )
+                    SourceDivider()
+                    SourceActionRow(
                         icon = Icons.Filled.PlayArrow,
                         title = tr("Stremio addons"),
                         subtitle = tr("manifest.json · Stremio addons"),
@@ -4288,6 +4433,7 @@ private fun LazyListScope.extensionsSearchItems(
                     onUpdate = { onUpdatePlugin(p, repo.kind) },
                     kind = repo.kind,
                     repoUrl = repo.url,
+                    repoName = repo.name,
                 )
             }
         }
@@ -4513,6 +4659,7 @@ private fun RepoPluginsView(
             RepoKind.NUVIO -> "provider"
             RepoKind.SKYSTREAM -> "extension"
             RepoKind.ANIYOMI -> "extension"
+            RepoKind.VEGA -> "provider"
             RepoKind.CS3 -> "plugin"
         }
         Row(
@@ -5081,10 +5228,18 @@ private fun ProviderCard(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+                // Engine, plus the repository it was installed from when that is
+                // known ("Cs3 · CNC Verse"). Four "AniKoto" entries from four
+                // different repos used to read as four identical "AniKoto / Cs3"
+                // rows; the repo is the only thing that tells them apart.
+                val engineLabel = p.config.type.name.lowercase().replaceFirstChar { it.uppercase() }
+                val repoLabel = LocalRepoNameByProvider.current[p.config.id]
                 Text(
-                    p.config.type.name.lowercase().replaceFirstChar { it.uppercase() },
+                    if (repoLabel.isNullOrBlank()) engineLabel else "$engineLabel · $repoLabel",
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
                 if (!supportingLine.isNullOrBlank()) {
                     Text(
@@ -5682,6 +5837,7 @@ private fun RepoCard(
                             RepoKind.NUVIO -> "Nuvio"
                             RepoKind.SKYSTREAM -> "SkyStream"
                             RepoKind.ANIYOMI -> "Aniyomi"
+                            RepoKind.VEGA -> "Vega"
                         },
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.primary,
@@ -5701,6 +5857,7 @@ private fun RepoCard(
                                 RepoKind.NUVIO -> "provider"
                                 RepoKind.SKYSTREAM -> "extension"
                                 RepoKind.ANIYOMI -> "extension"
+                                RepoKind.VEGA -> "provider"
                                 else -> "plugin"
                             }
                             "$pluginCount $unit${if (pluginCount == 1) "" else "s"}"
@@ -5751,6 +5908,13 @@ private fun PluginRow(
     onUpdate: (() -> Unit)? = null,
     kind: RepoKind = RepoKind.CS3,
     repoUrl: String = "",
+    /** The NAME of the repository this listing came from, drawn as the first
+     *  item of the row's meta line. A repo can list the same extension name
+     *  several times over — four "AniKoto" rows whose only label used to be the
+     *  engine — so the row has to say where it is from even when the group
+     *  heading above it has scrolled away (and the search results, which flatten
+     *  the groups, always show it). */
+    repoName: String = "",
 ) {
     val glass = rememberGlassTokens()
     val tileShape = RoundedCornerShape(12.dp)
@@ -5802,6 +5966,7 @@ private fun PluginRow(
                 overflow = TextOverflow.Ellipsis
             )
             val meta = listOfNotNull(
+                repoName.ifBlank { null },
                 p.description.ifBlank { null },
                 p.authors.joinToString(", ").ifBlank { null },
                 if (p.version > 0) "v${p.version}" else null,
@@ -6102,7 +6267,7 @@ private fun SiteRow(
     }
 }
 
-enum class SourceFolder { CLOUDSTREAM, HIKARI, NUVIO, SKYSTREAM, ANIYOMI, STREMIO, IPTV }
+enum class SourceFolder { CLOUDSTREAM, HIKARI, NUVIO, SKYSTREAM, ANIYOMI, VEGA, STREMIO, IPTV }
 
 @Composable
 private fun SourceFolderView(
@@ -6139,6 +6304,7 @@ private fun SourceFolderView(
         SourceFolder.NUVIO -> RepoKind.NUVIO
         SourceFolder.SKYSTREAM -> RepoKind.SKYSTREAM
         SourceFolder.ANIYOMI -> RepoKind.ANIYOMI
+        SourceFolder.VEGA -> RepoKind.VEGA
         SourceFolder.STREMIO, SourceFolder.IPTV -> null
     }
     val (title, subtitle) = when (folder) {
@@ -6147,6 +6313,7 @@ private fun SourceFolderView(
         SourceFolder.NUVIO -> "Nuvio repos" to "manifest.json · Nuvio providers"
         SourceFolder.SKYSTREAM -> "SkyStream repos" to "repo.json · SkyStream extensions"
         SourceFolder.ANIYOMI -> "Aniyomi repos" to "index.min.json · Aniyomi extensions"
+        SourceFolder.VEGA -> "Vega repos" to "manifest.json · Vega providers"
         SourceFolder.STREMIO -> "Stremio addons" to "manifest.json · Stremio addons"
         SourceFolder.IPTV -> "IPTV playlists" to "M3U / M3U8 links and files · your channels"
     }
@@ -6156,6 +6323,7 @@ private fun SourceFolderView(
         SourceFolder.NUVIO -> "Nuvio"
         SourceFolder.SKYSTREAM -> "SkyStream"
         SourceFolder.ANIYOMI -> "Aniyomi"
+        SourceFolder.VEGA -> "Vega"
         SourceFolder.STREMIO -> "Stremio"
         SourceFolder.IPTV -> "IPTV"
     }
@@ -6372,6 +6540,7 @@ private fun SourcesOverviewView(
     onAddNuvioRepo: () -> Unit,
     onAddSkyStreamRepo: () -> Unit,
     onAddAniyomiRepo: () -> Unit,
+    onAddVegaRepo: () -> Unit,
     onAddStremio: () -> Unit,
     onAddIptv: () -> Unit,
     onToggleProvider: (String, Boolean) -> Unit,
@@ -6387,6 +6556,7 @@ private fun SourcesOverviewView(
     val nuvioGroupTitle = tr("Nuvio")
     val skyGroupTitle = tr("SkyStream")
     val aniyomiGroupTitle = tr("Aniyomi")
+    val vegaGroupTitle = tr("Vega")
     Column(Modifier.fillMaxSize()) {
         Row(
             Modifier
@@ -6499,6 +6669,16 @@ private fun SourcesOverviewView(
                 pluginsByRepo = pluginsByRepo,
                 repoState = repoState,
                 onAdd = onAddAniyomiRepo,
+                onOpenRepo = onOpenRepo,
+                onRefreshRepo = onRefreshRepo,
+                onRemoveRepo = onRemoveRepo,
+            )
+            repoGroup(
+                title = vegaGroupTitle,
+                groupRepos = repos.filter { it.kind == RepoKind.VEGA },
+                pluginsByRepo = pluginsByRepo,
+                repoState = repoState,
+                onAdd = onAddVegaRepo,
                 onOpenRepo = onOpenRepo,
                 onRefreshRepo = onRefreshRepo,
                 onRemoveRepo = onRemoveRepo,

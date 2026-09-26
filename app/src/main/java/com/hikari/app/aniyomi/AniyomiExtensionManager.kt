@@ -24,8 +24,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.ByteArrayInputStream
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
+import java.util.zip.GZIPInputStream
 
 /**
  * One display name per source: the source's own name, with a ` (n)` suffix on
@@ -314,11 +316,15 @@ object AniyomiExtensionManager {
     )
 
     /**
-     * Binary (protobuf) indexes — `index.pb`, `index.min.pb`, `repo.pb`. Hikari
-     * cannot parse the binary form, but a repo that publishes one virtually
-     * always serves the JSON sibling too, so a URL pointing at a `.pb` file is
-     * transparently rewritten to its `.json` form rather than failing with
-     * "not a list of extensions" on a perfectly good repo.
+     * Binary (protobuf) indexes — `index.pb`, `index.min.pb`, `repo.pb`.
+     *
+     * Mihon 0.20.1+ reads this form, the ecosystem's main repo (keiyoushi)
+     * publishes one, and several repos publish ONLY this one (their `index.pb`
+     * has no JSON sibling at all). Hikari decodes it (see [pbIndex]) — the bytes
+     * are gzip-compressed and the schema is Mihon's own `NetworkExtensionStore` —
+     * so a `.pb`-only repo lists and installs like any other. Where both forms
+     * exist the JSON one is still tried first: it is human-readable, and the
+     * binary form is the same list.
      */
     val PB_INDEX_FILE_NAMES = listOf("index.pb", "index.min.pb", "repo.pb")
 
@@ -355,10 +361,14 @@ object AniyomiExtensionManager {
 
     /**
      * The index URLs worth trying for a repo URL, best-first. A repo folder gets
-     * the common file names appended; a direct index URL keeps that file first
-     * — except a `.min.json`/`.pb` one, where the full `index.json` is tried
-     * first (that is the one that actually lists the extensions today) and the
-     * given file stays as the fallback.
+     * the common file names appended — JSON names first, then the protobuf ones;
+     * a direct index URL keeps that file first — except a `.min.json`/`.pb` one,
+     * where the full `index.json` is tried first (that is the one that actually
+     * lists the extensions today) and the given file stays as the fallback.
+     *
+     * The `.pb` candidates are real fallbacks, not decoration: a repo that
+     * publishes its list ONLY in the binary form has nothing else to offer, and
+     * it is tried last precisely because the JSON form is the readable one.
      */
     fun indexCandidatesFor(url: String): List<String> {
         val clean = url.trim().trimEnd('/')
@@ -366,12 +376,12 @@ object AniyomiExtensionManager {
         if (clean.endsWith(".pb", ignoreCase = true)) {
             val stem = clean.dropLast(3)
             val min = if (stem.endsWith(".min", ignoreCase = true)) null else "$stem.min.json"
-            return listOfNotNull("$stem.json", min)
+            return listOfNotNull("$stem.json", min, clean)
         }
-        if (!isIndexUrl(clean)) return INDEX_FILE_NAMES.map { "$clean/$it" }
+        if (!isIndexUrl(clean)) return ALL_INDEX_FILE_NAMES.map { "$clean/$it" }
         val dir = indexDirFor(clean)
         val given = clean.substringAfterLast('/')
-        val others = INDEX_FILE_NAMES.filterNot { it.equals(given, ignoreCase = true) }
+        val others = ALL_INDEX_FILE_NAMES.filterNot { it.equals(given, ignoreCase = true) }
         val order = if (given.equals("index.min.json", ignoreCase = true)) {
             listOf("index.json") + others
         } else {
@@ -758,6 +768,191 @@ object AniyomiExtensionManager {
         return null
     }
 
+    /**
+     * A protobuf (`index.pb`) extension index, decoded: the store's own [name]
+     * (keiyoushi's says "Keiyoushi", used for the repo row exactly as a JSON
+     * index's top-level `name` is) and its [entries].
+     */
+    class PbIndex(val name: String, val entries: JSONArray)
+
+    /**
+     * Reads a protobuf extension index — the form Mihon 0.20.1+ reads, which the
+     * ecosystem's main repo (keiyoushi) publishes and several repos publish
+     * ALONE, with no JSON sibling at all. A `.pb` link used to be rewritten to a
+     * `.json` the repo never served, so those repos could not be added.
+     *
+     * The schema is Mihon's own `NetworkExtensionStore`
+     * (`data/src/main/java/mihon/data/extension/model/NetworkExtensionStore.kt`
+     * in mihonapp/mihon) and its bytes arrive GZIP-compressed — the file starts
+     * `1f 8b`, and Mihon's `ExtensionStoreService` decompresses before decoding.
+     * Both facts, and every field number below, were checked against a real
+     * keiyoushi index.pb (1377 extensions, every field populated) rather than
+     * assumed.
+     *
+     * The wire format is read here by hand instead of through a serialization
+     * library: it is a handful of field numbers on a fixed schema, so a
+     * hand-written reader has no version-specific behaviour to surprise us with.
+     *
+     * The result is handed back as the MODERN JSON shape the rest of this manager
+     * already reads (`resources.apkUrl`, a string `versionCode`, `extensionLib`,
+     * `contentWarning`, `sources[].language`/`homeUrl`), so installing, icons, the
+     * 18+ flag and the manga/anime split are unchanged: one index format, one
+     * code path.
+     *
+     * Null when the bytes are not a decodable store or carry no extensions.
+     */
+    fun pbIndex(bytes: ByteArray): PbIndex? {
+        val raw = gunzipIfNeeded(bytes) ?: return null
+        val top = pbFields(raw) ?: return null
+        val storeName = pbString(top[1]?.firstOrNull())
+        val list = top[101]?.firstOrNull()?.bytes?.let { pbFields(it) } ?: return null
+        val entries = list[1].orEmpty()
+        if (entries.isEmpty()) return null
+        val arr = JSONArray()
+        for (entry in entries) {
+            val f = entry.bytes?.let { pbFields(it) } ?: continue
+            val name = pbString(f[1]?.firstOrNull())
+            val pkg = pbString(f[2]?.firstOrNull())
+            if (name.isBlank() || pkg.isBlank()) continue
+            val resources = JSONObject()
+            f[3]?.firstOrNull()?.bytes?.let { r ->
+                val rf = pbFields(r)
+                val apk = pbString(rf?.get(1)?.firstOrNull())
+                val icon = pbString(rf?.get(2)?.firstOrNull())
+                if (apk.isNotBlank()) resources.put("apkUrl", apk)
+                if (icon.isNotBlank()) resources.put("iconUrl", icon)
+            }
+            val sources = JSONArray()
+            for (s in f[8].orEmpty()) {
+                val sf = s.bytes?.let { pbFields(it) } ?: continue
+                val lang = pbString(sf[3]?.firstOrNull())
+                val home = pbString(sf[4]?.firstOrNull())
+                sources.put(
+                    JSONObject()
+                        .put("id", (sf[1]?.firstOrNull()?.varint ?: 0L).toString())
+                        .put("name", pbString(sf[2]?.firstOrNull()))
+                        .put("lang", lang)
+                        .put("language", lang)
+                        .put("baseUrl", home)
+                        .put("homeUrl", home)
+                )
+            }
+            arr.put(
+                JSONObject()
+                    .put("name", name)
+                    .put("packageName", pkg)
+                    // extensionLib (field 4) is the library version the extension
+                    // was built against ("1.6"); versionName (field 6) is the
+                    // extension's own version ("1.6.4"), and versionCode (field 5)
+                    // pins it.
+                    .put("extensionLib", pbString(f[4]?.firstOrNull()))
+                    .put("versionCode", (f[5]?.firstOrNull()?.varint ?: 0L).toString())
+                    .put("versionName", pbString(f[6]?.firstOrNull()))
+                    // contentWarning (field 7) is Mihon's enum: 0 unspecified,
+                    // 1 safe, 2 mixed, 3 nsfw.
+                    .put(
+                        "contentWarning",
+                        contentWarningName((f[7]?.firstOrNull()?.varint ?: 0L).toInt()),
+                    )
+                    .put("resources", resources)
+                    .put("sources", sources)
+            )
+        }
+        return if (arr.length() == 0) null else PbIndex(storeName.trim(), arr)
+    }
+
+    /** Mihon's `ContentWarning` enum value, spelt the way a JSON index spells it
+     *  (`CONTENT_WARNING_NSFW`) — which is what
+     *  [com.hikari.app.data.ExtensionNsfw] reads. */
+    private fun contentWarningName(level: Int): String = when (level) {
+        1 -> "CONTENT_WARNING_SAFE"
+        2 -> "CONTENT_WARNING_MIXED"
+        3 -> "CONTENT_WARNING_NSFW"
+        else -> ""
+    }
+
+    /** One protobuf field: its wire type and payload (a varint, or the raw bytes
+     *  of a length-delimited field — a string or a nested message). */
+    private class PbField(val wireType: Int, val varint: Long, val bytes: ByteArray?)
+
+    /**
+     * Every field of a protobuf message, keyed by field number, in order. Null
+     * when the bytes are not a well-formed message.
+     *
+     * Length-delimited fields keep their raw bytes because the same wire type
+     * carries both strings and nested messages, and only the caller knows which
+     * it is asking for. A field this schema does not declare (the
+     * `Resources.jarUrl = 501` every real entry carries) is parsed and then
+     * simply never looked up.
+     */
+    private fun pbFields(msg: ByteArray): Map<Int, List<PbField>>? {
+        val out = HashMap<Int, MutableList<PbField>>()
+        var i = 0
+        while (i < msg.size) {
+            val key = pbVarint(msg, i) ?: return null
+            i = key.second
+            val field = (key.first ushr 3).toInt()
+            when ((key.first and 7L).toInt()) {
+                0 -> {
+                    val v = pbVarint(msg, i) ?: return null
+                    i = v.second
+                    out.getOrPut(field) { mutableListOf() }.add(PbField(0, v.first, null))
+                }
+                2 -> {
+                    val len = pbVarint(msg, i) ?: return null
+                    val from = len.second
+                    val to = from + len.first.toInt()
+                    if (len.first < 0L || to > msg.size || to < from) return null
+                    out.getOrPut(field) { mutableListOf() }
+                        .add(PbField(2, 0L, msg.copyOfRange(from, to)))
+                    i = to
+                }
+                // 64-bit and 32-bit fixed fields are legal protobuf but unused by
+                // this schema; skipping them keeps a future field from breaking
+                // the whole index.
+                1 -> {
+                    if (i + 8 > msg.size) return null
+                    i += 8
+                }
+                5 -> {
+                    if (i + 4 > msg.size) return null
+                    i += 4
+                }
+                else -> return null
+            }
+        }
+        return out
+    }
+
+    /** A base-128 varint at [from], with the offset just past it; null when the
+     *  bytes run out mid-value. */
+    private fun pbVarint(buf: ByteArray, from: Int): Pair<Long, Int>? {
+        var result = 0L
+        var shift = 0
+        var i = from
+        while (i < buf.size && shift <= 63) {
+            val b = buf[i++].toInt() and 0xFF
+            result = result or ((b and 0x7F).toLong() shl shift)
+            if (b and 0x80 == 0) return result to i
+            shift += 7
+        }
+        return null
+    }
+
+    /** The UTF-8 text of a length-delimited field, or "" for anything else. */
+    private fun pbString(f: PbField?): String =
+        f?.bytes?.let { runCatching { String(it, Charsets.UTF_8) }.getOrDefault("") }.orEmpty()
+
+    /** The bytes as they are, or gunzipped when they are a gzip stream (which is
+     *  how every published `.pb` index arrives). Null when decompression fails. */
+    private fun gunzipIfNeeded(bytes: ByteArray): ByteArray? = runCatching {
+        if (bytes.size >= 2 && bytes[0] == 0x1f.toByte() && bytes[1] == 0x8b.toByte()) {
+            GZIPInputStream(ByteArrayInputStream(bytes)).use { it.readBytes() }
+        } else {
+            bytes
+        }
+    }.getOrNull()
+
     /** The host of the first source's URL of an index entry, if any — the key
      *  for the favicon fallback icon. `baseUrl` is the legacy field name,
      *  `homeUrl` the modern one. */
@@ -808,7 +1003,13 @@ object AniyomiExtensionManager {
             }
         }
         val trimmed = withScheme.trimEnd('/')
-        if (trimmed.endsWith(".json", ignoreCase = true)) return trimmed
+        // A link that already names an index FILE is used as-is — `.json` AND
+        // `.pb`: several repos publish their list only in the binary form, and
+        // appending `/index.min.json` to `…/repo/index.pb` produced a path that
+        // exists nowhere.
+        if (trimmed.endsWith(".json", ignoreCase = true) ||
+            trimmed.endsWith(".pb", ignoreCase = true)
+        ) return trimmed
         return "$trimmed/index.min.json"
     }
 

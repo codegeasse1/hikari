@@ -3,6 +3,14 @@ package com.hikari.app.data
 enum class ProviderType {
     STREMIO, UNIVERSAL, CS3, HIKARI, NUVIO, SKYSTREAM, ANIYOMI, IPTV,
     /**
+     * A VEGA provider — one folder of CommonJS modules published by
+     * `github.com/Zenda-Cross/vega-providers` (AniKoto, 4KHDHub, Showbox,
+     * NetflixMirror, …). Unlike a nuvio provider it carries its own catalogue,
+     * search, details and episodes as well as streams, so it behaves like a
+     * whole site (see com.hikari.app.providers.vega.VegaProvider).
+     */
+    VEGA,
+    /**
      * A MANGA extension — a Mihon/Tachiyomi-format `.apk` (keiyoushi and the
      * other mirrors of that repo). It speaks the same `eu.kanade.tachiyomi.*`
      * API the Aniyomi side does, but its catalogues are titles, its "episodes"
@@ -16,14 +24,15 @@ enum class ProviderType {
      * Which section of the player's server chooser a source from this engine
      * belongs to. The player divides the servers it found into one group per
      * engine — CloudStream plugins, Hikari's own extensions (and its universal
-     * scrapers), Nuvio providers, Stremio addons — so the picker reads like the
-     * reference client's grouped source list instead of one undifferentiated
-     * column of links.
+     * scrapers), Nuvio providers, Vega providers, Stremio addons — so the
+     * picker reads like the reference client's grouped source list instead of
+     * one undifferentiated column of links.
      */
     val groupLabel: String
         get() = when (this) {
             STREMIO -> "Stremio"
             NUVIO -> "Nuvio"
+            VEGA -> "Vega"
             CS3 -> "CloudStream"
             SKYSTREAM -> "SkyStream"
             ANIYOMI -> "Aniyomi"
@@ -59,7 +68,7 @@ data class ProviderConfig(
 )
 
 /** A CloudStream-style plugin repository (repo.json → pluginLists → plugin list). */
-enum class RepoKind { CS3, HIKARI, NUVIO, SKYSTREAM, ANIYOMI }
+enum class RepoKind { CS3, HIKARI, NUVIO, SKYSTREAM, ANIYOMI, VEGA }
 
 /** A plugin repository, either CloudStream (.cs3) or Hikari (.hiki) style. */
 data class Cs3Repo(

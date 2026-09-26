@@ -495,6 +495,8 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 ProviderType.ANIYOMI ->
                     com.hikari.app.aniyomi.AniyomiProvider.lastOutcome[item.providerId]
                         ?: com.hikari.app.aniyomi.AniyomiProvider.streamErrors[item.providerId]
+                ProviderType.VEGA ->
+                    com.hikari.app.providers.vega.VegaProvider.streamErrors[item.providerId]
                 ProviderType.IPTV ->
                     com.hikari.app.providers.IptvProvider.iptvErrors[item.providerId]
                 else -> null
@@ -1172,6 +1174,8 @@ private fun providerOutcomeLine(p: ContentProvider): String? {
         ProviderType.ANIYOMI ->
             com.hikari.app.aniyomi.AniyomiProvider.lastOutcome[p.config.id]
                 ?: com.hikari.app.aniyomi.AniyomiProvider.streamErrors[p.config.id]
+        ProviderType.VEGA ->
+            com.hikari.app.providers.vega.VegaProvider.streamErrors[p.config.id]
         else -> null
     }
     return msg?.takeIf { !com.hikari.app.net.CloudflareVerifier.isVerificationMessage(it) }

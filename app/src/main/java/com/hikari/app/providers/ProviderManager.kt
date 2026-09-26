@@ -155,6 +155,7 @@ class ProviderManager(private val store: AppStore, private val context: Context)
         ProviderType.ANIYOMI -> com.hikari.app.aniyomi.AniyomiProvider(c)
         ProviderType.MANGA -> com.hikari.app.manga.MangaProvider(c)
         ProviderType.IPTV -> IptvProvider(c)
+        ProviderType.VEGA -> com.hikari.app.providers.vega.VegaProvider(c)
     }
 
     fun byId(id: String): ContentProvider? =

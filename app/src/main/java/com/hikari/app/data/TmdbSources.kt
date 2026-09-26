@@ -319,7 +319,8 @@ object TmdbSources {
         TmdbSourceType.NETWORK -> "Network"
         TmdbSourceType.PERSON -> "Starring"
         TmdbSourceType.DIRECTOR -> "Directed by"
-        TmdbSourceType.DISCOVER -> if (spec.isTv) "Series" else "Movies"
+        TmdbSourceType.DISCOVER ->
+            if (spec.isTv) "Series" else if (spec.isAll) "Movies & series" else "Movies"
     }
 
     /** The one-line caption of a saved source ("Network · Series", the way a
@@ -346,7 +347,11 @@ object TmdbSources {
             TmdbSourceType.COLLECTION -> "Collection"
             TmdbSourceType.PERSON -> "Person"
             TmdbSourceType.DIRECTOR -> "Director"
-            TmdbSourceType.DISCOVER -> "Custom"
+            TmdbSourceType.DISCOVER ->
+                // A discover query that carries a genre IS a genre browse ("Custom
+                // · Movies & series" told the viewer nothing); everything else is
+                // a hand-built filter query.
+                if (spec.genre > 0 || spec.genresText.isNotBlank()) "Genre" else "Custom"
         }
         val media = when {
             spec.isMovie -> "Movies"
@@ -480,7 +485,19 @@ object TmdbSources {
                 )
             } else discover(spec, p, spec.media.ifBlank { "movie" }, "with_companies")
             TmdbSourceType.NETWORK -> discover(spec, p, "tv", "with_networks")
-            TmdbSourceType.DISCOVER -> discover(spec, p, spec.media.ifBlank { "movie" }, null)
+            TmdbSourceType.DISCOVER -> if (spec.isAll) {
+                // "Everything tagged with this" is BOTH kinds: TMDB has no
+                // endpoint that answers for films and series at once, so the two
+                // discover pages are merged, alternating, exactly as a studio's
+                // are. Sending the same genre filter to both is safe because a
+                // genre carries the id EACH namespace knows it by (see Home's
+                // genre strip) — TMDB ignores the id that belongs to the other
+                // namespace rather than erroring, verified against the live API.
+                mergeMedia(
+                    discover(spec, p, "movie", null),
+                    discover(spec, p, "tv", null),
+                )
+            } else discover(spec, p, spec.media.ifBlank { "movie" }, null)
         }
     }
 

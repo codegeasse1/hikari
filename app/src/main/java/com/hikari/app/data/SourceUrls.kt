@@ -235,6 +235,45 @@ object SourceUrls {
         return matchKeys(raw).any { it in keys }
     }
 
+    /**
+     * The GitHub `owner/repo` (lowercased) [raw] belongs to, or null when [raw]
+     * is not a GitHub URL.
+     *
+     * A repository page, a release asset, a raw file and the jsDelivr mirror of
+     * all of them share this — which is what lets an INSTALLED extension be
+     * traced back to the repository it came from. The two never agree on a path
+     * (the install remembers the extension FILE, the repo list remembers the
+     * repo's own index URL, and a CI-built repo publishes its files as release
+     * assets), so a whole-path comparison answers nothing; the repository
+     * answers everything. See [com.hikari.app.data.RepoProvenance].
+     */
+    fun githubRoot(raw: String): String? =
+        githubParts(raw)?.let { "${it.first}/${it.second}" }
+
+    /** The path of [raw] inside its GitHub repo (lowercased, no leading slash,
+     *  with the branch segment dropped), or null when [raw] is not a GitHub
+     *  URL. Used to prefer the repository whose in-repo DIRECTORY a file sits
+     *  in when one GitHub repo holds more than one Hikari repository. */
+    fun repoPath(raw: String): String? = githubParts(raw)?.third
+
+    private fun githubParts(raw: String): Triple<String, String, String>? {
+        val c = canonical(clean(raw))
+        RAW_GH.find(c)?.let { m ->
+            return Triple(
+                m.groupValues[1].lowercase(),
+                m.groupValues[2].lowercase(),
+                m.groupValues[3].substringAfter('/', "").lowercase(),
+            )
+        }
+        GH_RELEASE.find(c)?.let { m ->
+            return Triple(m.groupValues[1].lowercase(), m.groupValues[2].lowercase(), "")
+        }
+        GH_WEB.find(c)?.let { m ->
+            return Triple(m.groupValues[1].lowercase(), m.groupValues[2].lowercase(), "")
+        }
+        return null
+    }
+
     /** True when [raw] is served through the jsDelivr mirror rather than the
      *  origin host — the mirror is a fallback for a blocked/rate-limited
      *  fetch, so the origin spelling is the one worth persisting. */
