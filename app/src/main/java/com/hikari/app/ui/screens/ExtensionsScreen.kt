@@ -241,11 +241,39 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
      */
     private val refreshTicks = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
 
+    /**
+     * How long a burst of "the provider/repo lists moved" settles for before the
+     * update check and the 18+ pass run.
+     *
+     * Those two passes are expensive (the update check hashes every installed
+     * extension file, the 18+ pass walks every installed row) and they depend on
+     * BOTH the repo listings and the installed list — and during a fresh load
+     * the listings arrive one repo at a time. Running them per arrival meant
+     * dozens of full passes over a 500-provider library while the screen was
+     * being scrolled, which is the stutter the Extensions tab showed. A pass
+     * that runs once, after the arrivals stop, produces the same answer.
+     */
+    private const val UPDATE_QUIET_MS = 600L
+
+    private val updateTicks = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+
+    /** Asks for a coalesced update check + 18+ pass (see [UPDATE_QUIET_MS]). */
+    fun requestUpdateCheck() {
+        updateTicks.tryEmit(Unit)
+    }
+
     init {
         viewModelScope.launch {
             refreshTicks.collectLatest {
                 delay(REFRESH_QUIET_MS)
                 refreshProvidersNow()
+            }
+        }
+        viewModelScope.launch {
+            updateTicks.collectLatest {
+                delay(UPDATE_QUIET_MS)
+                adoptAdultFlags()
+                checkUpdates()
             }
         }
     }
@@ -2827,8 +2855,12 @@ fun ExtensionsScreen() {
     // — so with the adult-content switch off, an installed 18+ extension
     // disappears from the provider list as soon as its repo's listing is read.
     LaunchedEffect(pluginsByRepo, installed, providers) {
-        vm.adoptAdultFlags()
-        vm.checkUpdates()
+        // Coalesced in the ViewModel: the repo listings arrive one repo at a
+        // time and the provider list is rebuilt after every install, so running
+        // the (file-hashing) update check and the 18+ pass per arrival was
+        // dozens of full passes over the whole library (see
+        // [ExtensionsViewModel.requestUpdateCheck]).
+        vm.requestUpdateCheck()
     }
 
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -4930,6 +4962,15 @@ private fun ExtensionIcon(url: String?, modifier: Modifier = Modifier) {
     }
 }
 
+/**
+ * How long a row must stay on screen before its icon is resolved.
+ *
+ * Only a FEW ROWS at a time are ever resolved — the ones the user actually
+ * stopped on — because a row that scrolled past cancels its probe before it
+ * runs. See [ProviderIcon].
+ */
+private const val ICON_SETTLE_MS = 320L
+
 @Composable
 private fun RepoPluginIcon(
     p: Cs3RepoPlugin,
@@ -4948,6 +4989,7 @@ private fun RepoPluginIcon(
     var icon by remember(p.url, kind) { mutableStateOf(p.iconUrl) }
     LaunchedEffect(p.url, kind) {
         if (icon.isNullOrBlank()) {
+            delay(ICON_SETTLE_MS)
             icon = withContext(Dispatchers.IO) {
                 com.hikari.app.ui.ExtensionIcons.forRepoPlugin(p, kind, repoUrl)
             }
@@ -4965,6 +5007,16 @@ private fun ProviderIcon(p: ContentProvider, modifier: Modifier = Modifier) {
     var icon by remember(p.config.id) { mutableStateOf(p.config.iconUrl) }
     LaunchedEffect(p.config.id) {
         if (icon == null) {
+            // A row that is FLUNG past is composed for a few frames and then
+            // dropped, and resolving an icon is the one thing here that can
+            // cost real time — a CS3 plugin load, an Aniyomi extension load, a
+            // manga extension load (to read its site) or a Stremio manifest
+            // fetch, all of it off the draw path but all of it contending for
+            // the same plugin loader the catalogue calls use. Waiting out a
+            // short settle means only the rows that STOP on screen probe;
+            // anything already answered is cached, so the rows scrolled past
+            // fill in the moment they come back.
+            delay(ICON_SETTLE_MS)
             icon = withContext(Dispatchers.IO) {
                 com.hikari.app.ui.ExtensionIcons.forConfig(p.config)
             }
@@ -4975,22 +5027,36 @@ private fun ProviderIcon(p: ContentProvider, modifier: Modifier = Modifier) {
 
 /**
  * Provider ids whose CloudStream plugin exposes its own settings screen
- * (`Plugin.openSettings`, e.g. SKTech's sub-provider picker). Resolved off the
- * main thread because loading a plugin can block; until the answer arrives the
- * card simply shows no settings button, which is exactly CloudStream's rule.
+ * (`Plugin.openSettings`, e.g. SKTech's sub-provider picker).
+ *
+ * Two rules keep this off the critical path:
+ *
+ *  * the question is asked of the CACHE only ([ContentProvider.settingsReady]) —
+ *    the old probe ([ContentProvider.settingsAvailable]) instantiated the plugin
+ *    to answer, so a list of two hundred installed CS3 plugins DEX-loaded two
+ *    hundred plugins every time this ran, on the same IO pool the installs use.
+ *    The plugins the app has already warmed (HikariApp warms them at startup)
+ *    answer instantly, and one that failed to load has no settings screen to
+ *    open anyway. A tap on the gear still loads the plugin on demand
+ *    ([openProviderSettingsSafely] → `prepareSettings`), so nothing is lost;
+ *  * it is keyed on the SET of ids, not on the provider list instance.
+ *    `manager.providers` emits a fresh list on every rebuild (an install, a
+ *    toggle, a repo sync), and re-answering for the whole list on each of them
+ *    was pure work: the ids are what the answer depends on.
  */
 @Composable
 private fun rememberCs3SettingsIds(providers: List<ContentProvider>): Set<String> {
-    var ids by remember { mutableStateOf<Set<String>>(emptySet()) }
-    LaunchedEffect(providers) {
-        ids = withContext(Dispatchers.IO) {
+    val ids = remember(providers) { providers.map { it.config.id } }
+    var answer by remember { mutableStateOf<Set<String>>(emptySet()) }
+    LaunchedEffect(ids) {
+        answer = withContext(Dispatchers.IO) {
             providers.mapNotNull { p ->
                 if (p.config.type != ProviderType.CS3) return@mapNotNull null
-                if (runCatching { p.settingsAvailable }.getOrDefault(false)) p.config.id else null
+                if (runCatching { p.settingsReady }.getOrDefault(false)) p.config.id else null
             }.toSet()
         }
     }
-    return ids
+    return answer
 }
 
 /**
@@ -6554,6 +6620,14 @@ private fun SourcesOverviewView(
 ) {
     var extFilter by remember { mutableStateOf("") }
     val cs3SettingsIds = rememberCs3SettingsIds(providers)
+    // Grouped once per filter/provider change — see the same note in
+    // [InstalledExtensionsView].
+    val installedPacks = remember(providers, extFilter) {
+        ProviderPacks.rows(
+            if (extFilter.isBlank()) providers
+            else providers.filter { it.config.name.contains(extFilter, ignoreCase = true) },
+        )
+    }
     val cs3GroupTitle = tr("CloudStream")
     val hikiGroupTitle = tr("Hikari")
     val nuvioGroupTitle = tr("Nuvio")
@@ -6757,7 +6831,7 @@ private fun SourcesOverviewView(
                     )
                 }
             }
-            items(ProviderPacks.rows(filteredProviders), key = { it.key }) { pack ->
+            items(installedPacks, key = { it.key }) { pack ->
                 ProviderRecordRow(
                     pack = pack,
                     statusFor = { p -> pluginStatus(p) },
@@ -6995,6 +7069,17 @@ private fun InstalledExtensionsView(
     fun openCs3Settings(p: ContentProvider) {
         openProviderSettingsSafely(p, context, scope) {}
     }
+    // The drawable rows, grouped into one per extension (see [ProviderPacks]).
+    // Built ONCE per filter/provider change rather than inside the LazyColumn's
+    // item list: the lambda there is re-invoked on every recomposition of this
+    // screen, and regrouping the whole installed list on each of them is work
+    // nothing on screen depends on.
+    val packs = remember(providers, extFilter) {
+        ProviderPacks.rows(
+            if (extFilter.isBlank()) providers
+            else providers.filter { it.config.name.contains(extFilter, ignoreCase = true) },
+        )
+    }
     Column(Modifier.fillMaxSize()) {
         Row(
             Modifier
@@ -7088,7 +7173,7 @@ private fun InstalledExtensionsView(
                     )
                 }
             }
-            items(ProviderPacks.rows(filteredProviders), key = { it.key }) { pack ->
+            items(packs, key = { it.key }) { pack ->
                 ProviderRecordRow(
                     pack = pack,
                     statusFor = { p -> pluginStatus(p) },

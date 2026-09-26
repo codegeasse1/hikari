@@ -611,9 +611,25 @@ object TmdbSources {
         if (spec.country.isNotBlank()) {
             query["with_origin_country"] = spec.country.trim().uppercase()
         }
-        if (spec.keywords.isNotBlank()) query["with_keywords"] = spec.keywords.trim()
+        // Keywords are IDs to TMDB, but a genre Home's strip has no genre id for
+        // (an anime tag — see [Genres.keywordCandidates]) is expressible only as
+        // a keyword NAME. [keywordsAsIds] resolves a name through TMDB's own
+        // keyword search and answers the id list discover needs; a value that is
+        // already a list of ids passes straight through, so the advanced
+        // filter's numeric form is unchanged.
+        //
+        // A name that resolves to NOTHING stops the query instead of being
+        // dropped: without the parameter the grid would come back as "every
+        // title, by popularity", which reads exactly like a filter that was
+        // applied. An empty row is honest; a wrong row is not. (Every tag in
+        // [Genres.ANIME_TAGS] was checked against the live API, so this is the
+        // belt to that pair of braces.)
+        if (spec.keywords.isNotBlank()) {
+            val ids = keywordsAsIds(spec.keywords) ?: return emptyList()
+            query["with_keywords"] = ids
+        }
         if (spec.keywordsExclude.isNotBlank()) {
-            query["without_keywords"] = spec.keywordsExclude.trim()
+            keywordsAsIds(spec.keywordsExclude)?.let { query["without_keywords"] = it }
         }
         // with_companies / with_networks are ALSO how a Production or Network
         // source names its own entity (see [filterKey]); an extra filter that
@@ -658,6 +674,74 @@ object TmdbSources {
         isMovie -> kind == MediaType.MOVIE
         isTv -> kind == MediaType.SERIES
         else -> true
+    }
+
+    /** Resolved keyword name (lowercased) → TMDB keyword id. */
+    private val keywordIds = ConcurrentHashMap<String, String>()
+
+    /** Keyword names TMDB had no id for, so a miss is not re-asked per page. */
+    private val keywordMisses = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    /**
+     * A `with_keywords` value as the id list TMDB needs: numeric tokens are
+     * passed through, a NAME is resolved through TMDB's `/search/keyword`
+     * (`"isekai" → 210024`, `"high school" → …`) and the ids are OR-ed
+     * together. Null when nothing resolved, so the caller sends no parameter
+     * instead of an empty one.
+     *
+     * The resolution is cached for the process (hits and misses), because it is
+     * asked once per page of a grid — a keyword search per page for a chip the
+     * user is scrolling would be a request per scroll.
+     */
+    private suspend fun keywordsAsIds(raw: String): String? {
+        val tokens = raw.split('|', ',', '+', ';')
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+        if (tokens.isEmpty()) return null
+        val out = LinkedHashSet<String>()
+        for (token in tokens) {
+            if (token.all { it.isDigit() }) {
+                out += token
+                continue
+            }
+            resolveKeywordId(token)?.let { out += it }
+        }
+        return out.joinToString(",").takeIf { it.isNotBlank() }
+    }
+
+    /** One keyword name → its TMDB id, or null when TMDB has no such keyword. */
+    private suspend fun resolveKeywordId(name: String): String? {
+        val key = name.trim().lowercase()
+        if (key.isBlank()) return null
+        keywordIds[key]?.let { return it }
+        if (key in keywordMisses) return null
+        val data = TmdbResolver.apiGet("/search/keyword", mapOf("query" to key)) ?: return null
+        val arr = data.optJSONArray("results") ?: return null
+        var exact: String? = null
+        var loose: String? = null
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val id = o.optString("id")
+            if (id.isBlank()) continue
+            val hit = o.optString("name").trim().lowercase()
+            if (hit == key) {
+                exact = id
+                break
+            }
+            // TMDB's keyword search is fuzzy ("school life" also answers
+            // "school"), so a non-exact hit is only used when it CONTAINS the
+            // whole query — never a partial-word match.
+            if (loose == null && hit.contains(key)) loose = id
+        }
+        val found = exact ?: loose
+        if (found == null) {
+            // Bound the miss set: a burst of odd names must not grow it forever.
+            if (keywordMisses.size > 256) keywordMisses.clear()
+            keywordMisses += key
+            return null
+        }
+        keywordIds[key] = found
+        return found
     }
 
     private fun collect(

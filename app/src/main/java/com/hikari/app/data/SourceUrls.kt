@@ -73,8 +73,41 @@ object SourceUrls {
      * `/<branch>/` collapse together, and trailing slashes / queries / `%20`
      * vs a literal space no longer distinguish two URLs.
      */
-    fun canonical(raw: String): String {
-        val t = clean(raw)
+    /**
+     * The memoised form of [canonical].
+     *
+     * These helpers run on the DRAW path — every provider row's "is this
+     * installed / is there an update" check goes through [anyKeyIn], the
+     * Extensions lists resolve [com.hikari.app.data.RepoProvenance] for every
+     * provider, and Home's picker builds that map for the whole installed list
+     * the moment it opens. Each call used to re-run up to six regexes over the
+     * URL, and the same few hundred URLs were re-parsed thousands of times; the
+     * canonical form of a URL does not change while the app runs, so it is
+     * computed once and remembered.
+     *
+     * Bounded and access-ordered, like this file's other caches: a session
+     * touches a few thousand distinct URLs at most.
+     */
+    private const val CACHE_MAX = 4096
+
+    private val canonicalCache =
+        object : LinkedHashMap<String, String>(512, 0.75f, true) {
+            override fun removeEldestEntry(
+                eldest: MutableMap.MutableEntry<String, String>?,
+            ): Boolean = size > CACHE_MAX
+        }
+
+    private fun cachedCanonical(cleaned: String): String {
+        if (cleaned.isEmpty()) return cleaned
+        synchronized(canonicalCache) { canonicalCache[cleaned]?.let { return it } }
+        val value = canonicalUncached(cleaned)
+        synchronized(canonicalCache) { canonicalCache[cleaned] = value }
+        return value
+    }
+
+    fun canonical(raw: String): String = cachedCanonical(clean(raw))
+
+    private fun canonicalUncached(t: String): String {
         if (t.isEmpty()) return t
         JSDELIVR.find(t)?.let { m ->
             return "https://raw.githubusercontent.com/${m.groupValues[1].lowercase()}/" +
@@ -210,11 +243,21 @@ object SourceUrls {
      * and its file key. Anything sourced from [raw] then matches a repo listing
      * that spells the URL differently, in either direction.
      */
+    private val matchKeysCache =
+        object : LinkedHashMap<String, List<String>>(256, 0.75f, true) {
+            override fun removeEldestEntry(
+                eldest: MutableMap.MutableEntry<String, List<String>>?,
+            ): Boolean = size > CACHE_MAX
+        }
+
     fun matchKeys(raw: String): List<String> {
         val c = clean(raw)
         if (c.isEmpty()) return emptyList()
+        synchronized(matchKeysCache) { matchKeysCache[c]?.let { return it } }
         val canon = canonical(c)
-        return listOfNotNull(c, canon.takeIf { it != c }, fileKey(c))
+        val keys = listOfNotNull(c, canon.takeIf { it != c }, fileKey(c))
+        synchronized(matchKeysCache) { matchKeysCache[c] = keys }
+        return keys
     }
 
     /**

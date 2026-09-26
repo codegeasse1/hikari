@@ -29,8 +29,32 @@ object ExtensionIcons {
     /** Resolved icons for repo-listing rows, keyed by repo kind + entry URL. */
     private val repoCache = ConcurrentHashMap<String, String>()
 
+    /**
+     * Providers whose icon probe came back with nothing, and when.
+     *
+     * A row's icon is resolved from a `LaunchedEffect` that runs every time the
+     * row enters composition — so a provider with no icon at all was re-probed
+     * every time its row scrolled back into view (a plugin load and a disk stat
+     * for a CS3 one, a blocking site lookup for a manga one). The negative
+     * answer is remembered for [MISS_TTL_MS] instead, which is long enough to
+     * stop the churn and short enough that an icon that becomes resolvable later
+     * (a plugin that failed to load on the first try) is still picked up.
+     */
+    private val missAt = ConcurrentHashMap<String, Long>()
+    private const val MISS_TTL_MS = 5 * 60_000L
+
     suspend fun forConfig(config: ProviderConfig): String? {
         if (!config.iconUrl.isNullOrBlank()) return config.iconUrl
+        missAt[config.id]?.let {
+            if (System.currentTimeMillis() - it <= MISS_TTL_MS) return null
+        }
+        val icon = resolveForConfig(config)
+        if (icon == null) missAt[config.id] = System.currentTimeMillis()
+        else missAt.remove(config.id)
+        return icon
+    }
+
+    private suspend fun resolveForConfig(config: ProviderConfig): String? {
         return when (config.type) {
             ProviderType.STREMIO -> {
                 stremioCache[config.id]?.let { return it }

@@ -41,36 +41,65 @@ object RepoProvenance {
         return raw?.takeIf { it.startsWith("http://", true) || it.startsWith("https://", true) }
     }
 
-    /** The added repository [c] came from, or null when it cannot be told. */
-    fun repoFor(c: ProviderConfig, repos: List<Cs3Repo>): Cs3Repo? {
-        val origin = originOf(c) ?: return null
-        if (repos.isEmpty()) return null
-        val key = SourceUrls.repoKey(origin)
-        repos.firstOrNull { SourceUrls.repoKey(it.url) == key }?.let { return it }
-        val root = SourceUrls.githubRoot(origin)
-        if (root != null) {
-            val dir = SourceUrls.repoPath(origin)?.substringBeforeLast('/')
-            if (!dir.isNullOrBlank()) {
-                repos.firstOrNull { r ->
-                    SourceUrls.githubRoot(r.url) == root &&
-                        SourceUrls.repoPath(r.url)?.substringBeforeLast('/') == dir
-                }?.let { return it }
+    /**
+     * [repos] pre-indexed three ways, so ONE provider lookup is O(1) instead of
+     * a walk over the repo list.
+     *
+     * This is what makes [nameMap] usable on the draw path. It used to answer
+     * each provider by SCANNING every repo (and computing each repo's identity
+     * inside the scan, which meant re-parsing every repo URL once per provider)
+     * — O(providers × repos) URL parses. With five hundred installed providers
+     * and a couple of hundred added repos that was hundreds of thousands of
+     * regexes, run the moment Home's provider picker opened, which is the
+     * second of delay a tap on the provider pill used to have.
+     */
+    class Index(private val repos: List<Cs3Repo>) {
+
+        private val byKey = HashMap<String, Cs3Repo>()
+        private val byRootDir = HashMap<String, Cs3Repo>()
+        private val byRoot = HashMap<String, Cs3Repo>()
+
+        init {
+            for (repo in repos) {
+                SourceUrls.repoKey(repo.url)?.let { byKey.putIfAbsent(it, repo) }
+                val root = SourceUrls.githubRoot(repo.url) ?: continue
+                byRoot.putIfAbsent(root, repo)
+                val dir = SourceUrls.repoPath(repo.url)?.substringBeforeLast('/').orEmpty()
+                if (dir.isNotBlank()) byRootDir.putIfAbsent("$root|$dir", repo)
             }
-            repos.firstOrNull { SourceUrls.githubRoot(it.url) == root }?.let { return it }
         }
-        return null
+
+        /** The added repository [c] came from, or null when it cannot be told. */
+        fun repoFor(c: ProviderConfig): Cs3Repo? {
+            val origin = RepoProvenance.originOf(c) ?: return null
+            SourceUrls.repoKey(origin)?.let { byKey[it]?.let { r -> return r } }
+            val root = SourceUrls.githubRoot(origin) ?: return null
+            val dir = SourceUrls.repoPath(origin)?.substringBeforeLast('/')
+            if (!dir.isNullOrBlank()) byRootDir["$root|$dir"]?.let { return it }
+            return byRoot[root]
+        }
     }
+
+    /** The added repository [c] came from, or null when it cannot be told. */
+    fun repoFor(c: ProviderConfig, repos: List<Cs3Repo>): Cs3Repo? =
+        if (repos.isEmpty()) null else Index(repos).repoFor(c)
 
     /** The NAME of the repository [c] came from, or null. */
     fun nameOf(c: ProviderConfig, repos: List<Cs3Repo>): String? =
         repoFor(c, repos)?.name?.takeIf { it.isNotBlank() }
 
-    /** One entry per provider id, for the rows that only have the config. */
+    /**
+     * One entry per provider id, for the rows that only have the config: the map
+     * the Extensions lists, Home's picker and the collection picker all draw
+     * from. The repo list is indexed ONCE here (see [Index]), so the whole map
+     * costs one pass over the repos plus one pass over the providers.
+     */
     fun nameMap(providers: List<ProviderConfig>, repos: List<Cs3Repo>): Map<String, String> {
         if (providers.isEmpty() || repos.isEmpty()) return emptyMap()
-        val out = HashMap<String, String>()
+        val index = Index(repos)
+        val out = HashMap<String, String>(providers.size)
         for (c in providers) {
-            val name = nameOf(c, repos) ?: continue
+            val name = index.repoFor(c)?.name?.takeIf { it.isNotBlank() } ?: continue
             out[c.id] = name
         }
         return out

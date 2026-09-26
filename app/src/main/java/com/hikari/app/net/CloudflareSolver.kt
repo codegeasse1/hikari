@@ -99,6 +99,61 @@ object CloudflareSolver {
      *  the cookie it earned. */
     private val locks = ConcurrentHashMap<String, Any>()
 
+    /**
+     * How long WebView warm-ups ([warm]) for one host are spaced apart. A warm is
+     * asked for by a source whose request came back empty or blocked — and a
+     * source can be asked many times in a row (paging a catalogue, opening
+     * titles), so without this a site that simply has nothing to give would be
+     * loaded offscreen once per request.
+     */
+    private const val WARM_COOLDOWN_MS = 90_000L
+
+    private val warmedAt = ConcurrentHashMap<String, Long>()
+
+    /**
+     * Load [url] offscreen once to earn its session cookies/clearance, for a
+     * caller that has ALREADY been refused (see
+     * [com.hikari.app.manga.MangaProvider]).
+     *
+     * This is [solve] with two differences, both deliberate:
+     *
+     *  * it is not gated on [CloudflareVerifier.needsVerification], which is
+     *    what [solve] uses to refuse re-loading a host the app has already
+     *    failed on. A page load that the extension could not complete — an
+     *    emptiness with no error, a challenge the interceptor did not recognise
+     *    — leaves no block record to reason from, and the whole point here is to
+     *    try being the browser ONCE for a request that failed, without waiting
+     *    for the user to tap the globe;
+     *  * it is spaced per host by [WARM_COOLDOWN_MS], so the retry it enables
+     *    cannot become a WebView load per request.
+     *
+     * BLOCKING and off-screen; call it from a network thread.
+     */
+    fun warm(
+        url: String,
+        userAgent: String,
+        referer: String? = null,
+        timeoutMs: Long = 25_000L,
+    ): Boolean {
+        val host = hostOf(url) ?: return false
+        if (recentlySolved(url)) return true
+        val last = warmedAt[host]
+        if (last != null && System.currentTimeMillis() - last < WARM_COOLDOWN_MS) return false
+        warmedAt[host] = System.currentTimeMillis()
+        val lock = locks.getOrPut(host) { Any() }
+        return synchronized(lock) {
+            if (recentlySolved(url)) return@synchronized true
+            val ok = runCatching { loadAndWait(url, userAgent, referer, timeoutMs) }
+                .getOrDefault(false)
+            if (ok) {
+                solvedAt[host] = System.currentTimeMillis()
+                CloudflareVerifier.clearBlocked(host)
+                runCatching { CookieManager.getInstance().flush() }
+            }
+            ok
+        }
+    }
+
     /** True when this host was solved recently enough to trust. */
     fun recentlySolved(url: String): Boolean {
         val host = hostOf(url) ?: return false

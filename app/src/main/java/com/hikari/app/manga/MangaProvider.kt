@@ -79,6 +79,71 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
         return fallback
     }
 
+    /**
+     * The site this engine reads, for a warm-up.
+     *
+     * A manga provider's `config.url` is the LOCAL `.ext` path, so the site has
+     * to come out of the extension's own source (`baseUrl`) — BLOCKING, which is
+     * fine here because every caller is already inside [gate] on IO. Cached per
+     * provider by the manager.
+     */
+    private fun siteUrl(): String? = runCatching {
+        MangaExtensionManager.siteUrlOf(config)
+    }.getOrNull()?.takeIf { it.isNotBlank() }
+
+    /**
+     * Be the browser for one failed request — WITHOUT waiting for the user to
+     * tap the globe.
+     *
+     * The reported shape was: a manga catalogue (and its chapter list) comes up
+     * empty, no verification is ever offered, and the only thing that makes it
+     * load is opening the site in the WebView by hand and closing it again —
+     * i.e. the site wanted a real browser session and the app never tried to give
+     * it one. The extension's own client only solves a challenge it can
+     * RECOGNISE (see [com.hikari.app.net.ExtensionCloudflareInterceptor]), and a
+     * manga source that builds its own OkHttp stack, or a site that answers the
+     * XHR with an empty 200, leaves nothing to recognise — so the page stayed
+     * blank.
+     *
+     * This loads the site once in the offscreen WebView ([CloudflareSolver.warm],
+     * spaced per host) and says whether that earned something worth retrying.
+     * NOTHING opens on the user's screen.
+     */
+    private fun warmSite(): Boolean {
+        val site = siteUrl() ?: return false
+        val ua = runCatching { HikariApp.instance.effectiveWebViewUa() }.getOrNull().orEmpty()
+        val ok = runCatching {
+            com.hikari.app.net.CloudflareSolver.warm(
+                url = site,
+                userAgent = ua.ifBlank { "Mozilla/5.0" },
+            )
+        }.getOrDefault(false)
+        if (ok) Logs.log("Manga", "${config.name}: warmed $site after a refused request")
+        return ok
+    }
+
+    /**
+     * Records a site as needing the user's own verification when a failure is a
+     * bot wall rather than a broken extension — HTTP 403/429/503/Cloudflare.
+     *
+     * The anime engine has always done this ([
+     * com.hikari.app.aniyomi.AniyomiProvider]); the manga engine did not, so a
+     * walled manga site was never named to the UI and was never skipped by the
+     * cross-extension search — it just answered nothing, every time.
+     */
+    private fun noteWall(text: String) {
+        if (text.isBlank() || !WALL_MESSAGE.containsMatchIn(text)) return
+        siteUrl()?.let { com.hikari.app.net.CloudflareVerifier.markBlocked(it) }
+    }
+
+    /** A wall's own words. Deliberately not "any 4xx" — a 404 is a missing page,
+     *  not a challenge the user can pass. */
+    private val WALL_MESSAGE = Regex(
+        "\\b(403|429|503)\\b|cloudflare|just a moment|one moment, please|wsidchk" +
+            "|verify you are human|ddos",
+        RegexOption.IGNORE_CASE,
+    )
+
     /** See [com.hikari.app.aniyomi.AniyomiProvider.gate]: metadata and catalogs
      *  are what the user is looking at, and a stream lookup is background
      *  work that must never queue in front of them. */
@@ -104,45 +169,93 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
 
     override suspend fun getCatalog(ref: CatalogRef, page: Int): List<MediaItem> = gate {
         val src = source() ?: return@gate fail(missingReason(), emptyList())
-        try {
-            val mangas = when (ref.id) {
+        val ask: suspend () -> List<eu.kanade.tachiyomi.source.model.SManga> = {
+            when (ref.id) {
                 CATALOG_LATEST -> src.getLatestUpdates(page)
                 else -> src.getPopularManga(page)
-            }
-            // An EMPTY page is not a success, and calling it one is what left the
-            // reader staring at "The site may be blocking or down" with nothing
-            // else to go on: no exception was thrown, so no reason was recorded
-            // anywhere, and the one thing the app could have said ("the site
-            // answered, but this list came back with no titles in it") was lost.
-            // It is reported now — it is a different problem from a block, and it
-            // is the one the reader can take back to the extension's own page
-            // (the site's markup moved), rather than to a Cloudflare check that
-            // was never the issue.
-            if (mangas.mangas.isEmpty()) {
-                lastOutcome[config.id] =
-                    "✗ the site answered, but ${ref.name.lowercase()} came back with no titles " +
-                        "(page $page) — its markup may have changed"
-            } else {
-                lastOutcome[config.id] = "✓ ${mangas.mangas.size} title(s)"
-            }
-            mangas.mangas.map { toItem(it, src) }
-        } catch (t: Throwable) {
-            if (t is kotlinx.coroutines.CancellationException) throw t
-            fail("catalog failed: ${reason(t)}", emptyList())
+            }.mangas
         }
+        val first = runCatching { ask() }
+        var mangas = first.getOrNull()
+        var failure = first.exceptionOrNull()?.takeIf { it !is kotlinx.coroutines.CancellationException }
+            ?.let { reason(it) }
+        first.exceptionOrNull()?.let { if (it is kotlinx.coroutines.CancellationException) throw it }
+        // A REFUSED catalogue: either an exception, or (the case that used to be
+        // invisible) a page the site served with nothing in it because the request
+        // never got past its browser check. Be the browser once and ask again —
+        // see [warmSite]; page 1 only, since an empty page 2+ is just the end of
+        // the list.
+        if (page == 1 && (mangas == null || mangas.isEmpty()) && warmSite()) {
+            val second = runCatching { ask() }
+            second.exceptionOrNull()?.let {
+                if (it is kotlinx.coroutines.CancellationException) throw it
+                // The RETRY's reason is the one worth reporting: the first
+                // failure is often the wall this warm-up was meant to clear.
+                failure = reason(it)
+                mangas = null
+            }
+            if (second.isSuccess) {
+                mangas = second.getOrNull()
+                failure = null
+            }
+        }
+        if (mangas == null) {
+            val why = failure ?: "unknown error"
+            noteWall(why)
+            return@gate fail("catalog failed: $why", emptyList())
+        }
+        // An EMPTY page is not a success, and calling it one is what left the
+        // reader staring at "The site may be blocking or down" with nothing else
+        // to go on: no exception was thrown, so no reason was recorded anywhere,
+        // and the one thing the app could have said ("the site answered, but this
+        // list came back with no titles in it") was lost. It is reported now — it
+        // is a different problem from a block, and it is the one the reader can
+        // take back to the extension's own page (the site's markup moved), rather
+        // than to a Cloudflare check that was never the issue.
+        if (mangas.isEmpty()) {
+            lastOutcome[config.id] =
+                "✗ the site answered, but ${ref.name.lowercase()} came back with no titles " +
+                    "(page $page) — its markup may have changed, or the site wants a " +
+                    "browser first"
+        } else {
+            lastOutcome[config.id] = "✓ ${mangas.size} title(s)"
+        }
+        mangas.map { toItem(it, src) }
     }
 
     override suspend fun search(query: String, page: Int): List<MediaItem> = gate {
         val src = source() ?: return@gate fail(missingReason(), emptyList())
-        try {
+        val ask: suspend () -> List<eu.kanade.tachiyomi.source.model.SManga> = {
             val filters = runCatching { src.getFilterList() }.getOrDefault(FilterList())
-            val found = src.getSearchManga(page, query, filters)
-            lastOutcome[config.id] = "✓ ${found.mangas.size} result(s)"
-            found.mangas.map { toItem(it, src) }
-        } catch (t: Throwable) {
-            if (t is kotlinx.coroutines.CancellationException) throw t
-            fail("search failed: ${reason(t)}", emptyList())
+            src.getSearchManga(page, query, filters).mangas
         }
+        val first = runCatching { ask() }
+        var found = first.getOrNull()
+        var failure = first.exceptionOrNull()?.takeIf { it !is kotlinx.coroutines.CancellationException }
+            ?.let { reason(it) }
+        first.exceptionOrNull()?.let { if (it is kotlinx.coroutines.CancellationException) throw it }
+        // Only a FAILED search is retried: an empty result list is a perfectly
+        // ordinary answer ("this engine has no such title"), and warming the
+        // site for every miss would be a WebView load per search. A 403 from a
+        // browser check is not an answer.
+        if (found == null && warmSite()) {
+            val second = runCatching { ask() }
+            second.exceptionOrNull()?.let {
+                if (it is kotlinx.coroutines.CancellationException) throw it
+                failure = reason(it)
+            }
+            if (second.isSuccess) {
+                found = second.getOrNull()
+                failure = null
+            }
+        }
+        if (found == null) {
+            val why = failure ?: "unknown error"
+            noteWall(why)
+            return@gate fail("search failed: $why", emptyList())
+        }
+        lastOutcome[config.id] = "✓ ${found.size} result(s)"
+        found.map { toItem(it, src) }
     }
 
     // ---- Details ----
@@ -227,23 +340,47 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
      */
     override suspend fun getEpisodes(item: MediaItem): List<Episode>? = gate {
         val src = source() ?: return@gate failEpisodes(missingReason())
-        try {
-            val raw = updateOf(src, item, details = false, chapters = true).chapters
-            val sorted = sortChapters(raw)
-            MangaStore.putChapters(item.providerId + "|" + item.id, sorted.map { it.toChapter() })
-            lastOutcome[config.id] = "✓ ${sorted.size} chapter(s)"
-            sorted.mapIndexed { i, c ->
-                Episode(
-                    number = i + 1,
-                    id = c.url,
-                    name = c.labelOf(),
-                    image = null,
-                    season = 1,
-                )
+        val ask: suspend () -> List<SChapter> = {
+            updateOf(src, item, details = false, chapters = true).chapters
+        }
+        val first = runCatching { ask() }
+        first.exceptionOrNull()?.let { if (it is kotlinx.coroutines.CancellationException) throw it }
+        var raw = first.getOrNull()
+        var failure = first.exceptionOrNull()?.let { reason(it) }
+        // The same refused-site case as the catalogue: an empty (or failed)
+        // chapter list on a site behind a browser check is what made the globe
+        // button the only way to make a title's chapters appear. Warm the site
+        // once and ask again.
+        if (raw == null || raw.isEmpty()) {
+            if (warmSite()) {
+                val second = runCatching { ask() }
+                second.exceptionOrNull()?.let {
+                    if (it is kotlinx.coroutines.CancellationException) throw it
+                    failure = reason(it)
+                    raw = null
+                }
+                if (second.isSuccess) {
+                    raw = second.getOrNull()
+                    failure = null
+                }
             }
-        } catch (t: Throwable) {
-            if (t is kotlinx.coroutines.CancellationException) throw t
-            failEpisodes("chapters failed: ${reason(t)}")
+        }
+        if (raw == null) {
+            val why = failure ?: "unknown error"
+            noteWall(why)
+            return@gate failEpisodes("chapters failed: $why")
+        }
+        val sorted = sortChapters(raw)
+        MangaStore.putChapters(item.providerId + "|" + item.id, sorted.map { it.toChapter() })
+        lastOutcome[config.id] = "✓ ${sorted.size} chapter(s)"
+        sorted.mapIndexed { i, c ->
+            Episode(
+                number = i + 1,
+                id = c.url,
+                name = c.labelOf(),
+                image = null,
+                season = 1,
+            )
         }
     }
 

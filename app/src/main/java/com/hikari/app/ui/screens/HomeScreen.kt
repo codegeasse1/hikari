@@ -640,6 +640,17 @@ fun HomeScreen(nav: NavHostController) {
     // collection's folders.
     val collectionsFlow = remember { app.store.collectionsFlow() }
     val collections by collectionsFlow.collectAsState(initial = emptyList())
+    // Which repository each installed extension came from, for the picker's
+    // rows ("Cs3 · CNC Verse"). Built HERE — while Home's feed is loading —
+    // rather than inside the picker sheet: computing it in the sheet charged the
+    // whole 500-provider × repo-list match to the moment the user tapped the
+    // provider pill, which is the ~1s the picker used to take to appear. The
+    // flow instance is remembered for the same reason as historyFlow below.
+    val reposFlow = remember { app.store.reposFlow() }
+    val repos by reposFlow.collectAsState(initial = emptyList())
+    val repoNameByProvider = remember(providers, repos) {
+        RepoProvenance.nameMap(providers.map { it.config }, repos)
+    }
     val selectedCollection = collections.firstOrNull { selected == "$COLLECTION_PREFIX${it.id}" }
     // Which collections Home draws as FOLDER rows — a row titled with the
     // collection's name whose tiles are the folders inside it, so a tap ENTERS
@@ -874,14 +885,15 @@ fun HomeScreen(nav: NavHostController) {
                     // genre pick opens everything tagged with it — films AND
                     // series (see [HomeGenreStrip]) — so nothing has to be
                     // searched for before something can be watched.
-                    HomeGenreStrip { name, filter ->
+                    HomeGenreStrip { name, genresText, keywordsText ->
                         Routes.safeNavigate(
                             nav,
                             Routes.tmdbGridSpec(
                                 TmdbSpec(
                                     type = TmdbSourceType.DISCOVER,
                                     media = "all",
-                                    genresText = filter,
+                                    genresText = genresText,
+                                    keywords = keywordsText,
                                     sort = "popularity.desc",
                                     title = name,
                                 ).encode(),
@@ -1195,6 +1207,7 @@ fun HomeScreen(nav: NavHostController) {
                 vm.setSelection(ids)
             },
             onDismiss = { showPicker = false },
+            repoNameByProvider = repoNameByProvider,
         )
     }
 
@@ -1365,6 +1378,13 @@ internal fun ProviderPickerSheet(
     /** Multi-select's Done button: the keys to save. */
     onDone: (List<String>) -> Unit,
     onDismiss: () -> Unit,
+    /**
+     * Repo provenance for [providers], hoisted by the caller when it already has
+     * the map — Home computes it while idle so tapping a provider pill opens the
+     * sheet with no work on the tap path. Null (Search) means "compute it here"
+     * from the same two inputs. See [RepoProvenance.nameMap].
+     */
+    repoNameByProvider: Map<String, String>? = null,
 ) {
     var query by remember { mutableStateOf("") }
     // Multi-select is OFF until a row is HELD: that is the gesture the user
@@ -1399,10 +1419,17 @@ internal fun ProviderPickerSheet(
     // nothing but the extension's name, and an install list with four "AniKoto"
     // entries from four different repos gives the user nothing to choose by —
     // the repo is what tells them apart (see [RepoProvenance]).
+    // Repo provenance for the plain rows below. When the caller hoisted the map
+    // we use it; otherwise (Search) it is computed here from the same inputs.
+    // `remember` is called unconditionally — with the provided map the computed
+    // half is an empty map — because a conditional `remember` would change the
+    // sheet's composition structure between its two callers.
     val repos by remember { app.store.reposFlow() }.collectAsState(initial = emptyList())
-    val repoNameByProvider = remember(providers, repos) {
-        RepoProvenance.nameMap(providers.map { it.config }, repos)
+    val computedRepoNames = remember(providers, repos) {
+        if (repoNameByProvider != null) emptyMap()
+        else RepoProvenance.nameMap(providers.map { it.config }, repos)
     }
+    val repoLabels = repoNameByProvider ?: computedRepoNames
     // One row per EXTENSION. An Aniyomi/manga pack publishes many sources under
     // one name (AnimeWorld India is nine: a generic feed plus
     // Bengali/English/Hindi/Japanese/Malayalam/Marathi/Tamil/Telugu), and one
@@ -1640,7 +1667,7 @@ internal fun ProviderPickerSheet(
                                 "%s",
                                 pack.primary.config.type.groupLabel,
                             )
-                            !pack.isPack -> repoNameByProvider[pack.primary.config.id]
+                            !pack.isPack -> repoLabels[pack.primary.config.id]
                                 ?.let { "${pack.primary.config.type.groupLabel} · $it" }
                             // In multi-select the row is a checkbox for a whole
                             // extension, so it says how much of the pack is on.
@@ -2380,60 +2407,46 @@ private fun HomeResultCard(item: MediaItem, onClick: () -> Unit) {
 
 
 /**
- * TMDB's TV-namespace id for each film genre Home's strip offers, where one
- * exists; 0 when the genre is a film-only one.
+ * One chip of [HomeGenreStrip]: what it says, and what it asks TMDB for.
  *
- * TMDB keeps films and series in SEPARATE genre id spaces, and they do not line
- * up: film 28 "Action" is series 10759 "Action & Adventure", film 14 "Fantasy"
- * is series 10765 "Sci-Fi & Fantasy", and History / Music / Romance / Thriller
- * are film-only. A genre therefore has to name BOTH ids to be browsable as
- * films and as series, which is what the strip's filter string carries.
- *
- * Verified against the live API: \`with_genres=28|10759\` answers with Action
- * films from /discover/movie and with Action & Adventure series from
- * /discover/tv — TMDB ignores the id that belongs to the other namespace rather
- * than erroring. (A single id from the wrong namespace answers nothing, which is
- * why both are sent as one OR-list instead of the same id twice.)
+ * [genresText] is TMDB's `with_genres` OR-list built from BOTH namespaces (see
+ * [com.hikari.app.data.Genres.tmdbGenreFilter]), so the page a chip opens
+ * carries films AND series instead of making the viewer choose a shape first.
+ * [keywordsText] is the fallback for a genre TMDB has no genre id for at all —
+ * the anime vocabulary (Isekai, Harem, School Life, …), which is expressible
+ * only as a keyword name; `TmdbSources` resolves it through TMDB's own keyword
+ * search and sends `with_keywords`.
  */
-private val HOME_GENRE_TV_IDS = mapOf(
-    "Action" to 10759,
-    "Adventure" to 10759,
-    "Animation" to 16,
-    "Comedy" to 35,
-    "Crime" to 80,
-    "Documentary" to 99,
-    "Drama" to 18,
-    "Family" to 10751,
-    "Fantasy" to 10765,
-    "History" to 0,
-    "Horror" to 0,
-    "Music" to 0,
-    "Mystery" to 9648,
-    "Romance" to 0,
-    "Science Fiction" to 10765,
-    "Thriller" to 0,
-    "War" to 10768,
-    "Western" to 37,
+private data class HomeGenre(
+    val name: String,
+    val genresText: String,
+    val keywordsText: String,
 )
-
-/** One chip of [HomeGenreStrip]: what it says, and what it asks TMDB for. */
-private data class HomeGenre(val name: String, val filter: String)
 
 /**
  * Home's genre strip — the "no need to search for anything" way in.
  *
- * Each chip hands its caller a genre name and a TMDB filter string built from
- * that genre's film AND series ids (see [HOME_GENRE_TV_IDS]), so the page it
- * opens carries both kinds of title instead of making the viewer choose a shape
- * first. The genre list IS [TmdbGenres.MOVIE] — the same genre names the Search
- * tab's strip is built from — so the two screens offer one vocabulary.
+ * The list IS [com.hikari.app.data.Genres.ALL], the same vocabulary the Search
+ * tab's strip offers, so the two screens can never disagree again: Home used to
+ * show only TMDB's FILM genre names, which left out both the television-only
+ * names (Reality, Soap, Talk, Sci-Fi & Fantasy, …) and the whole anime
+ * vocabulary (Isekai, Harem, School Life, …) that Search offered.
+ *
+ * Every chip leads somewhere real: a genre TMDB names opens the combined
+ * film+series grid for it, and an anime tag with no TMDB genre opens the grid
+ * for its TMDB keyword (resolved by name at load — see [TmdbSources]).
  */
 @Composable
-private fun HomeGenreStrip(onPick: (name: String, filter: String) -> Unit) {
+private fun HomeGenreStrip(onPick: (name: String, genresText: String, keywordsText: String) -> Unit) {
     val genres = remember {
-        TmdbGenres.MOVIE.map { g ->
-            val tv = HOME_GENRE_TV_IDS[g.name] ?: 0
-            HomeGenre(g.name, if (tv > 0) "${g.id}|$tv" else g.id.toString())
+        com.hikari.app.data.Genres.ALL.map { name ->
+            val ids = com.hikari.app.data.Genres.tmdbGenreFilter(name)
+            HomeGenre(
+                name = name,
+                genresText = ids,
+                keywordsText = if (ids.isNotEmpty()) ""
+                else com.hikari.app.data.Genres.keywordCandidates(name).joinToString("|"),
+            )
         }
     }
     Column(
@@ -2459,7 +2472,7 @@ private fun HomeGenreStrip(onPick: (name: String, filter: String) -> Unit) {
                 FilterChipLine(
                     label = tr(g.name),
                     selected = false,
-                    onClick = { onPick(g.name, g.filter) },
+                    onClick = { onPick(g.name, g.genresText, g.keywordsText) },
                 )
             }
         }
