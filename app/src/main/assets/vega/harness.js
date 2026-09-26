@@ -328,12 +328,44 @@
   } catch (e) {}
   if (!cheerio) cheerio = g.__nuvioCheerio || null;
   if (cheerio && !cheerio.load && cheerio.default) cheerio = cheerio.default;
+  // Result sets must be iterable (`for (const el of $(...))`) — the Vega app's
+  // own bundle patches this into cheerio, and providers rely on it. See
+  // __hikariMakeCheerioIterable in nuvio/harness.js. Called again here so this
+  // runtime does not depend on nuvio's harness having loaded first.
+  try {
+    if (typeof g.__hikariMakeCheerioIterable === 'function') {
+      g.__hikariMakeCheerioIterable(cheerio);
+    }
+  } catch (e) {}
+
+  // ---- getBaseUrl ----
+  // The Vega app hands providers a `getBaseUrl(providerValue)` that answers the
+  // provider's own site. It is backed here by the repo's urls.json — the same
+  // file the providers' own inline getBaseUrl helper reads — so both answers
+  // agree, and one fetch serves every provider in this engine.
+  var vegaBaseUrlPromise = null;
+  function vegaGetBaseUrl(providerValue) {
+    if (!vegaBaseUrlPromise) {
+      vegaBaseUrlPromise = (typeof g.fetch === 'function')
+        ? g.fetch('https://raw.githubusercontent.com/Zenda-Cross/vega-providers/refs/heads/main/urls.json')
+          .then(function (r) { return r && r.ok ? r.json() : null; })
+          .catch(function () { return null; })
+        : Promise.resolve(null);
+    }
+    return vegaBaseUrlPromise.then(function (table) {
+      var entry = table && table[String(providerValue || '')];
+      if (typeof entry === 'string') return entry;
+      var url = entry && (entry.url || entry.baseUrl || entry.base);
+      return typeof url === 'string' ? url : '';
+    });
+  }
 
   // ---- providerContext ----
   g.__vegaProviderContext = {
     axios: vegaAxios,
     cheerio: cheerio,
     commonHeaders: commonHeaders,
+    getBaseUrl: vegaGetBaseUrl,
     kvStore: kvStore,
     openWebView: openWebView,
     providerGlobal: g.providerGlobal
@@ -463,7 +495,7 @@
   };
 
   /* Runs ONE exported function once per entry of an array of argument objects,
-   * sequentially, and answers the array of results. Used for episodes.js: a
+   * concurrently, and answers the array of results. Used for episodes.js: a
    * season list is several `getEpisodes({url})` calls, and paying for one fresh
    * engine per season would be wasteful. A season whose call throws contributes
    * null rather than failing the whole list. */
@@ -475,19 +507,22 @@
       var list = JSON.parse(argsArrayJson || '[]');
       if (!Array.isArray(list)) list = [];
       var results = new Array(list.length);
-      var chain = Promise.resolve();
-      list.forEach(function (a, i) {
-        chain = chain.then(function () {
-          var args = a || {};
-          args.providerContext = g.__vegaProviderContext;
-          if (g.__vegaProviderValue !== undefined) args.providerValue = g.__vegaProviderValue;
-          return Promise.resolve()
-            .then(function () { return fn(args); })
-            .then(function (r) { results[i] = (r === undefined) ? null : r; },
-              function (e) { results[i] = null; });
-        });
+      // The entries are independent network fetches (one per season), so they
+      // run TOGETHER: sequentially, a multi-season show paid for each season's
+      // request one after the other, which is most of the several seconds the
+      // episode list took to appear. A failing entry still contributes null
+      // rather than failing the whole list.
+      var jobs = list.map(function (a, i) {
+        var args = a || {};
+        args.providerContext = g.__vegaProviderContext;
+        if (g.__vegaProviderValue !== undefined) args.providerValue = g.__vegaProviderValue;
+        return Promise.resolve()
+          .then(function () { return fn(args); })
+          .then(function (r) { results[i] = (r === undefined) ? null : r; },
+            function (e) { results[i] = null; });
       });
-      chain.then(function () { done(out, results, null); }, function (e) { done(out, null, e); });
+      Promise.all(jobs).then(function () { done(out, results, null); },
+        function (e) { done(out, null, e); });
     } catch (e) {
       done(out, null, e);
     }
@@ -523,16 +558,18 @@
           var epFn = requests.length ? pickModuleFunction('episodes.js', 'getEpisodes') : null;
           if (!epFn) { done(out, { info: info, episodes: [] }, null); return; }
           var results = new Array(requests.length);
-          var chain = Promise.resolve();
-          requests.forEach(function (a, i) {
-            chain = chain.then(function () {
-              return Promise.resolve()
-                .then(function () { return epFn(vegaArgs({ url: a.url })); })
-                .then(function (r) { results[i] = (r === undefined) ? null : r; },
-                  function (e) { results[i] = null; });
-            });
+          // Every season request is an independent network fetch, so they all
+          // run at once and the list lands when the SLOWEST season answers
+          // rather than after all of them in turn — the episodes half of the
+          // detail page was the several seconds the user waited through. A
+          // season that throws contributes null to its own slot only.
+          var jobs = requests.map(function (a, i) {
+            return Promise.resolve()
+              .then(function () { return epFn(vegaArgs({ url: a.url })); })
+              .then(function (r) { results[i] = (r === undefined) ? null : r; },
+                function (e) { results[i] = null; });
           });
-          chain.then(
+          Promise.all(jobs).then(
             function () { done(out, { info: info, episodes: results }, null); },
             function () { done(out, { info: info, episodes: results }, null); },
           );

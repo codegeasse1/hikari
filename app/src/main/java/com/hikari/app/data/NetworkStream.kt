@@ -126,8 +126,50 @@ object NetworkStream {
         }
         val chosen = sources.ifEmpty { listOf(sourceOf(url, name)) }
         chosen.distinctBy { it.url }.map {
-            it.copy(provider = ProviderType.IPTV.groupLabel, providerId = providerId, providerName = providerName)
+            it.copy(
+                headers = withStreamHeaders(it.headers, url),
+                provider = ProviderType.IPTV.groupLabel,
+                providerId = providerId,
+                providerName = providerName,
+            )
         }
+    }
+
+    /**
+     * The headers a BROWSER would send for this stream, filled in wherever the
+     * link itself did not say.
+     *
+     * A "network stream" is an address copied out of a page — the player page,
+     * a share, a copied video address — and those hosts hotlink-protect it: the
+     * CDN checks the request's Referer and User-Agent and answers 403 without
+     * them, which the player reports as
+     * `ExoPlaybackException [ERROR_CODE_IO_BAD_HTTP_STATUS] 403` on a playlist
+     * that plays fine in the browser it was copied from.
+     *
+     * The page's ORIGIN is the right Referer: [pageUrl] is what the user pasted
+     * (before any extraction), so it is the page the link came from — and when
+     * they pasted the stream address itself, it is the stream's own origin, which
+     * is what such hosts check for. Headers an extractor already chose are kept
+     * untouched (the box hosts' own User-Agent/Referer/Cookie, for instance).
+     *
+     * Nothing here can break a link that already works: the player drops headers
+     * one step at a time when a server rejects them (see
+     * PlayerActivity.headerVariant), so a wrong guess costs one retry while a
+     * missing one costs the whole play.
+     */
+    private fun withStreamHeaders(
+        headers: Map<String, String>,
+        pageUrl: String,
+    ): Map<String, String> {
+        val out = LinkedHashMap<String, String>()
+        headers.forEach { (k, v) -> if (k.isNotBlank() && v.isNotBlank()) out[k] = v }
+        val names = out.keys.map { it.lowercase() }
+        if (names.none { it == "user-agent" }) out["User-Agent"] = Http.UA
+        if (names.none { it == "referer" || it == "referrer" || it == "referrer-policy" }) {
+            val origin = runCatching { originOf(pageUrl) }.getOrNull()
+            if (!origin.isNullOrBlank()) out["Referer"] = "$origin/"
+        }
+        return out
     }
 
     private suspend fun resolveBounded(url: String, label: String): List<StreamSource> {

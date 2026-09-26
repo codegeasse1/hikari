@@ -3077,7 +3077,27 @@ fun DetailScreen(
                 // series OR the provider actually returned episodes, and always
                 // give mislabeled/unknown items a Play button so nothing is
                 // ever unplayable.
-                val isSeries = m?.type == MediaType.SERIES || (episodes?.isNotEmpty() == true)
+                //
+                // The Vega engines are the one case that needs more than that.
+                // Their catalog rows carry no movie/series flag at all (see
+                // VegaProvider.toItems: type UNKNOWN, the provider's own `type`
+                // string kept as rawType), and the thing that DOES know — the
+                // provider's meta.js — is the slow part of opening the page (one
+                // engine boot that runs getMeta and then every season's
+                // getEpisodes). So for those, an unknown kind is "show the
+                // episode area in its LOADING state" rather than "hide it":
+                // opening a series used to show nothing but a Play button for
+                // those seconds, which reads as "this show has no episodes".
+                // Once meta answers — series or movie — this collapses to the
+                // truth, and the loading row is the same one any other engine
+                // shows. Other engines' items are not UNKNOWN, so nothing
+                // changes for them.
+                val unknownVegaKind = m?.type == MediaType.UNKNOWN &&
+                    m?.providerId?.startsWith("vega|") == true &&
+                    !episodesLoaded
+                val isSeries = m?.type == MediaType.SERIES ||
+                    unknownVegaKind ||
+                    (episodes?.isNotEmpty() == true)
                 // A movie (or a series whose provider exposes no episode list)
                 // plays straight from this button. A real series gets the SAME
                 // button, pointed at the episode the viewer is up to, so a

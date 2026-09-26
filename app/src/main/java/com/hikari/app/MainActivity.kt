@@ -67,6 +67,18 @@ class MainActivity : AppCompatActivity() {
         )
         installSplashScreen()
         super.onCreate(savedInstanceState)
+        // Publish a real result launcher to the CloudStream runtime. Extension
+        // settings screens use `MainActivity.companion.activityResultLauncher`
+        // for their file/folder pickers (see the shadow's companion in
+        // com/lagradost/cloudstream3/MainActivity.kt); without one registered
+        // they either crash on a null or silently do nothing. This is the only
+        // window androidx allows for it — after super.onCreate, before onStart.
+        runCatching {
+            com.lagradost.cloudstream3.MainActivity.activityResultLauncher =
+                registerForActivityResult(
+                    androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
+                ) { }
+        }
         // API 33+: the download and background-work notifications are how the
         // user sees (and controls) work that keeps running while Hikari is in
         // the background, so ask for the permission up front instead of only
