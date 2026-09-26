@@ -17,6 +17,54 @@ same index.
 Both write the repo URL the entry came from into `ProviderConfig.extra` — that
 is the key uninstall and the update check match on.
 
+## Which extension call answers details and chapters
+
+**Use the combined call. Never call `getMangaDetails`/`getChapterList` from
+`MangaProvider`.**
+
+`manga/MangaProvider.updateOf` is the only entry point:
+
+```kotlin
+src.getMangaUpdate(sm(item), emptyList(), details = true, chapters = false) // details
+src.getMangaUpdate(sm(item), emptyList(), details = false, chapters = true) // chapters
+```
+
+`getMangaDetails` / `getChapterList` (and the deprecated Rx `fetch*` forms) are
+the extensions-lib **1.5** API. A source built against extensions-lib **1.6** — a
+keiyoushi `KeiSource`, which is every source in that ecosystem now — does not
+implement them: it overrides `getMangaUpdate(manga, chapters, fetchDetails,
+fetchChapters)` and leaves the old pair to the base class, whose request is
+built as `baseUrl + manga.url`. The catalogue hands out a RELATIVE url
+(`/12345-slug`, the extension's own code is what turns it into
+`site/title/12345-slug`), so the old call requests a page that does not exist and
+the site answers **404** — the reported `chapters failed: HttpException: HTTP
+error 404` on Comix, whose chapter list is in any case a cipher-SIGNED API reply
+the extension can only produce inside its own combined call.
+
+Both the reference reader (`TachiyomiHttpSourceAdapter.getChapters`/`getDetails`)
+and Hikari's anime half (`AniyomiProvider.metaLocked` →
+`getAnimeEpisodeUpdate`) already work this way; the manga half was the last
+caller of the old API.
+
+Rules:
+
+* **One flag per call.** `fetchDetails = true, fetchChapters = false` IS "details"
+  and the reverse IS "chapters" — asking for both on a details call makes every
+  title page fetch a chapter list nobody reads.
+* **Legacy sources are unaffected.** Hikari's vendored
+  `eu.kanade.tachiyomi.source.MangaSource.getMangaUpdate` has a default body
+  that bridges to `getMangaDetails`/`getChapterList`, so a 1.4/1.5 source keeps
+  working through the same call.
+* **`ProviderGate` serialises it.** A `KeiSource` refuses a second in-flight
+  `getMangaUpdate` for the same manga, and `getMeta`/`getEpisodes` both run
+  inside `gate { }`.
+* **`sm(item)` reuses the `SManga` the source handed the catalogue**
+  (`MangaRecordCache`), because some sources build their requests from more than
+  the url. A stub is built from the item only when the record is gone (a cold
+  open from history).
+* `getPageList` is NOT affected — the reader's pages come from the extension's
+  own `getPageList`, exactly as before.
+
 ## "Is this entry manga or anime?" (the repo listing's split)
 
 An index can hold both kinds. A row's kind is decided by

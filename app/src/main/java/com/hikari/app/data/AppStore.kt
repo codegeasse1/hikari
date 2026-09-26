@@ -94,6 +94,10 @@ class AppStore(private val ctx: Context) {
         val THEME_LINKED = booleanPreferencesKey("themeLinked")
         val PLAYER_CONTROLS = stringPreferencesKey("playerControls")
         val PLAYER_ENHANCE = stringPreferencesKey("playerEnhance")
+        /** True once the user has worked the video-enhance picker themselves, so
+         *  the television layout stops forcing its own (light) preset. See
+         *  [com.hikari.app.HikariApp] and [com.hikari.app.ui.screens.SettingsScreen]. */
+        val PLAYER_ENHANCE_CHOSEN = booleanPreferencesKey("playerEnhanceChosen")
         val PLAYER_ENHANCE_UNSUPPORTED = booleanPreferencesKey("playerEnhanceUnsupported")
         val UI_SCALE_ENABLED = booleanPreferencesKey("uiScaleEnabled")
         val UI_SCALE_PERCENT = intPreferencesKey("uiScalePercent")
@@ -149,6 +153,10 @@ class AppStore(private val ctx: Context) {
         val TRANSLATE_PROVIDERS = stringPreferencesKey("translateProviders")
         val TRANSLATE_CACHE = stringPreferencesKey("translateCache")
         val SEEDED_REPOS = booleanPreferencesKey("seededRepos")
+        /** True once the providers earlier builds pre-installed (the Nuvio
+         *  "starter" scrapers) have been removed from an install that already
+         *  seeded them. See [com.hikari.app.nuvio.NuvioPluginManager]. */
+        val NUVIO_SEED_CLEANED = booleanPreferencesKey("nuvioSeedCleaned")
         val DOWNLOAD_CONCURRENCY = intPreferencesKey("downloadConcurrency")
         val SLOW_CONNECTION = booleanPreferencesKey("slowConnection")
 
@@ -599,11 +607,17 @@ class AppStore(private val ctx: Context) {
          *    all the same bug: the receiving device stopped describing itself and
          *    started describing the sender.
          *  * **The device's own capability and first-run state** (`tvPerf*`,
-         *    `tvSeeded`, `perfMode`) — whether this chip can afford the poster
-         *    treatments, and whether this install has already applied its own
-         *    first-run television defaults. `tvSeeded` arriving as `true` from a
+         *    `tvSeeded`, `perfMode`, `playerEnhance*`) — whether this chip can
+         *    afford the poster treatments, whether this install has already
+         *    applied its own first-run television defaults, and whether the
+         *    video-enhance colour pass is on. `tvSeeded` arriving as `true` from a
          *    phone is what stopped a television from ever choosing its own
-         *    ("no poster effects, 110% interface scale") again.
+         *    ("no poster effects, 110% interface scale") again — and a phone's
+         *    "Vibrant" **playerEnhance** is a GPU pass on every decoded frame,
+         *    which a TV stick pays for in dropped frames, so it does not travel
+         *    either. `playerEnhanceUnsupported` is the same kind of value read
+         *    from the other side: a phone whose GL stack refused media3's
+         *    pipeline must not tell a television that IT cannot run one.
          *  * **The launcher icon** (`appIcon`) — a phone's home-screen icon
          *    alias. A television launcher draws the app's banner and has no icon
          *    to change, and the alias is applied from this value on every launch
@@ -632,6 +646,9 @@ class AppStore(private val ctx: Context) {
             K.TV_OVERSCAN.name,
             K.TV_PERF.name,
             K.TV_PERF_CHOSEN.name,
+            K.PLAYER_ENHANCE.name,
+            K.PLAYER_ENHANCE_CHOSEN.name,
+            K.PLAYER_ENHANCE_UNSUPPORTED.name,
             K.TV_SEEDED.name,
             K.UI_SCALE_ENABLED.name,
             K.UI_SCALE_PERCENT.name,
@@ -2707,6 +2724,18 @@ class AppStore(private val ctx: Context) {
         write("PLAYER_ENHANCE") { it[K.PLAYER_ENHANCE] = key }
     }
 
+    /** True once the user has picked a video-enhance preset themselves. The
+     *  television layout only forces its own preset while this is false — the
+     *  same rule as [tvPerfChosen]. */
+    fun enhanceChosenFlow(): Flow<Boolean> =
+        store.data.map { it[K.PLAYER_ENHANCE_CHOSEN] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun enhanceChosen(): Boolean = enhanceChosenFlow().first()
+
+    suspend fun setEnhanceChosen(chosen: Boolean) {
+        write("PLAYER_ENHANCE_CHOSEN") { it[K.PLAYER_ENHANCE_CHOSEN] = chosen }
+    }
+
     /**
      * True once a device has proven it cannot run media3's video-effects
      * pipeline (its GL stack refuses the frame processor). Remembered so the
@@ -3318,6 +3347,17 @@ class AppStore(private val ctx: Context) {
 
     suspend fun markReposSeeded() {
         write("SEEDED_REPOS") { it[K.SEEDED_REPOS] = true }
+    }
+
+    /** True once the providers earlier builds bundled as pre-installed scrapers
+     *  have been removed from this install. One-way: it is set after the sweep
+     *  and never cleared, so a user who installs one of those scrapers again
+     *  afterwards keeps it (see [com.hikari.app.nuvio.NuvioPluginManager]). */
+    suspend fun nuvioSeedCleaned(): Boolean =
+        store.data.map { it[K.NUVIO_SEED_CLEANED] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default).first()
+
+    suspend fun markNuvioSeedCleaned() {
+        write("NUVIO_SEED_CLEANED") { it[K.NUVIO_SEED_CLEANED] = true }
     }
 
     fun favoritesFlow(): Flow<List<MediaItem>> =

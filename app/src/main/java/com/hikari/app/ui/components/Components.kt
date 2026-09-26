@@ -56,6 +56,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -73,6 +74,9 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.focusRequester
 import coil.compose.AsyncImage
 import com.hikari.app.data.HistoryEntry
 import com.hikari.app.data.MediaItem
@@ -1428,14 +1432,51 @@ fun GlassDialog(
     modifier: Modifier = Modifier,
     title: String? = null,
     showClose: Boolean = true,
+    /**
+     * The control the remote should land on when this dialog opens on a
+     * television. Optional: without it the dialog still works (the first
+     * focusable inside it takes the focus), but a caller whose content is a LIST
+     * should pass the requester of its first row, so the very first arrow press
+     * walks the list instead of starting on the ✕.
+     *
+     * This exists because of what the scrim and the tap-swallower below used to
+     * do: both are `clickable` (a tap outside closes the dialog, a tap on the
+     * card must not), and a `clickable` is a FOCUS TARGET — so on a television
+     * the first thing the D-pad landed on when a picker opened was the
+     * full-screen scrim, and pressing OK on it ran `onDismiss`. The reported
+     * "I cannot change the app language with the remote — the D-pad does not
+     * select any language": the picker was closing instead of picking. Both
+     * containers are now non-focusable on a television (touch is untouched —
+     * `focusProperties` only removes the focus target).
+     */
+    initialFocus: FocusRequester? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val glass = rememberGlassTokens()
     val shape = GlassShape
+    val tv = TvMode.current()
     // A short fade + scale so the panel appears rather than blinks.
     val appear = remember { Animatable(0f) }
     LaunchedEffect(Unit) { appear.animateTo(1f, tween(durationMillis = 170)) }
     val a = appear.value
+
+    // Put the remote's focus INSIDE the panel as soon as the new window exists.
+    // A Dialog is a second window, and Compose can only deliver focus to it once
+    // the platform has attached it — which is not the frame the composable first
+    // runs in — so the request is retried over the next few frames instead of
+    // being lost. `requestFocus` throws while the requester is unattached, which
+    // is exactly what the retry condition tests for. The budget is generous on
+    // purpose: a cold television box can take a moment to compose and attach a
+    // new window, and the cost of giving up early is a picker whose D-pad starts
+    // on the ✕ instead of the list.
+    LaunchedEffect(tv, initialFocus) {
+        val target = initialFocus ?: return@LaunchedEffect
+        if (!tv) return@LaunchedEffect
+        repeat(30) {
+            withFrameNanos { }
+            if (runCatching { target.requestFocus() }.isSuccess) return@LaunchedEffect
+        }
+    }
 
     // A REAL window, not a Box drawn into whichever subtree happened to open
     // the dialog. That distinction is the whole fix for "the picker opens at
@@ -1462,6 +1503,11 @@ fun GlassDialog(
                 .fillMaxSize()
                 .graphicsLayer { alpha = a }
                 .background(Color.Black.copy(alpha = 0.62f * a))
+                // A television must not be able to LAND on the scrim: it is a
+                // focus target only because it is clickable, and a remote OK on
+                // it would dismiss the dialog the user just opened (see
+                // [initialFocus]). Touch is unaffected.
+                .then(if (tv) Modifier.focusProperties { canFocus = false } else Modifier)
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null,
@@ -1476,6 +1522,11 @@ fun GlassDialog(
                         scaleY = 0.94f + 0.06f * a
                     }
                     // Swallow taps: reaching for a row must not close the dialog.
+                    // …and for the same reason as the scrim, it must not be a
+                    // focus target on a television: it wraps every row, so the
+                    // D-pad used to stop on it and OK did nothing at all (its
+                    // handler is empty by design).
+                    .then(if (tv) Modifier.focusProperties { canFocus = false } else Modifier)
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,

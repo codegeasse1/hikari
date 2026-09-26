@@ -3718,7 +3718,12 @@ class PlayerActivity : ComponentActivity() {
             playSource(currentIndex)
             lifecycleScope.launch {
                 runCatching {
-                    (applicationContext as HikariApp).store.setEnhancePreset(preset.key)
+                    val s = (applicationContext as HikariApp).store
+                    s.setEnhancePreset(preset.key)
+                    // The user has now chosen this themselves: HikariApp's TV
+                    // layout must stop forcing Natural from here on
+                    // (see [HikariApp.syncTvEnhance]).
+                    s.setEnhanceChosen(true)
                 }
             }
             return
@@ -3735,7 +3740,10 @@ class PlayerActivity : ComponentActivity() {
         }
         lifecycleScope.launch {
             runCatching {
-                (applicationContext as HikariApp).store.setEnhancePreset(preset.key)
+                val s = (applicationContext as HikariApp).store
+                s.setEnhancePreset(preset.key)
+                // See the other call site: this is the user's own pick.
+                s.setEnhanceChosen(true)
             }
         }
     }

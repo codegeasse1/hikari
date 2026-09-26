@@ -5,9 +5,11 @@ import com.hikari.app.HikariApp
 import com.hikari.app.data.AppStore
 import com.hikari.app.data.Cs3Repo
 import com.hikari.app.data.Cs3RepoPlugin
+import com.hikari.app.data.Logs
 import com.hikari.app.data.ProviderConfig
 import com.hikari.app.data.ProviderType
 import com.hikari.app.data.RepoKind
+import com.hikari.app.data.SourceUrls
 import com.hikari.app.net.Http
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -15,9 +17,13 @@ import org.json.JSONObject
 import java.io.File
 
 /**
- * Install/uninstall of Nuvio JS scrapers, plus first-run seeding of the three
- * canonical Nuvio provider repos and a few pre-installed providers so the
- * feature works out of the box.
+ * Install/uninstall of Nuvio JS scrapers, plus first-run seeding of the Nuvio
+ * provider repos so the feature works out of the box.
+ *
+ * The app no longer installs any provider FOR the user: the repos are seeded (so
+ * the Extensions screen's Nuvio folders are never empty and a working scraper is
+ * one tap away), but which scrapers are installed is the user's choice.
+ * [removeFormerlySeededProviders] takes back the ones earlier builds put there.
  */
 object NuvioPluginManager {
 
@@ -51,35 +57,93 @@ object NuvioPluginManager {
             "Eclipsia",
             "Eclipsia nuvio providers (HDHub4u, VegaMovies, AnimeWorld, …)",
         ),
+        Triple(
+            "https://raw.githubusercontent.com/D3adlyRocket/Anime-Nuvio/refs/heads/main/manifest.json",
+            "All-in-One-Anime",
+            "Anime nuvio providers (AllAnime, AniKai, AnimePahe, Anime-Sama, …)",
+        ),
+        Triple(
+            "https://raw.githubusercontent.com/D3adlyRocket/Hindi-Nuvio/refs/heads/main/manifest.json",
+            "Hindi-Nuvio",
+            "Hindi/Indian nuvio providers (4KHDHub, VegaMovies, HDMovie2, …)",
+        ),
     )
 
-    /** Curated providers pre-installed on first run (from Yoru's repo). */
-    private val SEED_PROVIDERS = listOf("vixsrc", "moviebox", "showbox")
+    /**
+     * The providers earlier builds installed FOR the user on first run — until
+     * 0.10.48 [seedDefaults] fetched Yoru's manifest and installed the three
+     * named in `SEED_PROVIDERS`. The owner's instruction is that the app must not
+     * put providers in front of the user, so the seeding is gone (the repos are
+     * still seeded) and [removeFormerlySeededProviders] takes back what the old
+     * build left on an install that already has them.
+     *
+     * `dahmermovies.js` is here even though the last build's list named only
+     * three: it is one of Yoru's scrapers and shows up installed in the report
+     * the owner sent, so an earlier build seeded it and it has to go with the
+     * rest.
+     */
+    private val FORMERLY_SEEDED = setOf(
+        "vixsrc.js",
+        "moviebox.js",
+        "showbox.js",
+        "dahmermovies.js",
+    )
 
-    /** Adds the default repos once and pre-installs a few providers so nuvio
-     *  sources are available immediately. Non-fatal on any failure. */
+    /** The repo the old seeding read, as [SourceUrls.fileKey] spells it. */
+    private const val SEED_REPO = "tapframe/nuvio-providers"
+
+    /** Adds the default repos once, so nuvio sources have somewhere to come
+     *  from. Non-fatal on any failure. */
     suspend fun seedDefaults(context: Context, store: AppStore) {
         for ((url, name, desc) in DEFAULT_REPOS) {
             runCatching { store.addCs3Repo(Cs3Repo(url, name, desc, RepoKind.NUVIO)) }
         }
-        // Only pre-install providers on the very first run (no NUVIO provider
-        // installed yet) — afterwards the user curates their own set.
-        if (store.providers().any { it.type == ProviderType.NUVIO }) return
-        val manifest = runCatching { Http.getString(DEFAULT_REPOS[0].first) }.getOrNull()
-            ?.let { runCatching { JSONObject(it) }.getOrNull() } ?: return
-        val base = DEFAULT_REPOS[0].first.substringBeforeLast('/')
-        val scrapers = runCatching { manifest.getJSONArray("scrapers") }.getOrNull() ?: return
-        for (i in 0 until scrapers.length()) {
-            val o = runCatching { scrapers.getJSONObject(i) }.getOrNull() ?: continue
-            val name = o.optString("name")
-            if (name.isBlank() || !SEED_PROVIDERS.any { name.equals(it, true) }) continue
-            val filename = o.optString("filename")
-            if (filename.isBlank()) continue
-            val codeUrl = "$base/$filename"
-            val bytes = Http.fetchBytesCancellable(codeUrl) ?: continue
-            val rawName = filename.substringAfterLast('/')
-            runCatching { installScraper(context, bytes, rawName, codeUrl, o.optString("logo").ifBlank { null }) }
+    }
+
+    /**
+     * Removes the Nuvio providers earlier builds pre-installed (see
+     * [FORMERLY_SEEDED]), once per install. Repos are left alone — only the
+     * scrapers go, and only the exact files the old seeding named.
+     *
+     * Matched on the FILE, not the name: MovieBox (`moviebox.js`) and 4KHDHub
+     * also ship in the Hindi-Nuvio and All-in-One bundles seeded above, and a
+     * copy the user installed from one of those is theirs to keep. Only a
+     * provider whose stored source URL resolves inside Yoru's repo AND whose
+     * file name is one of the four is removed (the URL identity helpers are the
+     * same ones the Extensions screen's install/uninstall use, so a
+     * `refs/heads`/jsDelivr respelling of the same file still matches).
+     */
+    suspend fun removeFormerlySeededProviders(context: Context) {
+        val store = HikariApp.instance.store
+        // `getOrDefault(true)`: if the flag cannot be read, do nothing rather
+        // than run a destructive sweep on a guess — the next launch will ask
+        // again.
+        if (runCatching { store.nuvioSeedCleaned() }.getOrDefault(true)) return
+        val targets = store.providers().filter { cfg ->
+            if (cfg.type != ProviderType.NUVIO) return@filter false
+            val key = SourceUrls.fileKey(cfg.extra ?: "") ?: return@filter false
+            key.startsWith("$SEED_REPO/") && key.substringAfterLast('/') in FORMERLY_SEEDED
         }
+        if (targets.isNotEmpty()) {
+            val ids = targets.map { it.id }.toSet()
+            val paths = targets.map { it.url }.toSet()
+            // Locked read-modify-write: see [AppStore.updateProviders].
+            store.updateProviders { list -> list.filterNot { it.id in ids } }
+            HikariApp.instance.providers.refresh()
+            withContext(Dispatchers.IO) {
+                val remaining = store.providers().map { it.url }.toSet()
+                val base = context.filesDir.absolutePath
+                paths.forEach { p ->
+                    if (p.startsWith(base) && p !in remaining) runCatching { File(p).delete() }
+                }
+            }
+            Logs.log(
+                "Providers",
+                "removed ${targets.size} provider(s) an older build installed for you: " +
+                    targets.joinToString { it.name },
+            )
+        }
+        runCatching { store.markNuvioSeedCleaned() }
     }
 
     /** Writes a scraper JS file and registers it as a NUVIO provider. The

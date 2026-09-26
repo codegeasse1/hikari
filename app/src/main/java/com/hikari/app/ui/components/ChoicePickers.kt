@@ -33,6 +33,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -80,7 +82,10 @@ fun ChoiceDialog(
     // Aliased so `items` inside the LazyColumn below is unambiguously
     // LazyListScope.items and not this parameter.
     val options = items
-    GlassDialog(onDismiss = onDismiss, title = title) {
+    // The remote's landing spot on a television: the FIRST row, so the very
+    // first arrow press walks the list (see [GlassDialog.initialFocus]).
+    val firstRow = remember { FocusRequester() }
+    GlassDialog(onDismiss = onDismiss, title = title, initialFocus = firstRow) {
         LazyColumn(
             Modifier.heightIn(max = maxHeight),
             // The panel is drawn over the page, so it can end up sitting behind
@@ -99,6 +104,7 @@ fun ChoiceDialog(
                             if (isOn) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
                             else Color.Transparent
                         )
+                        .then(if (index == 0) Modifier.focusRequester(firstRow) else Modifier)
                         .clickable {
                             onDismiss()
                             onPick(item.key)
@@ -184,6 +190,11 @@ fun MultiChoiceDialog(
 ) {
     val options = items
     var query by remember { mutableStateOf("") }
+    // The remote's landing spot on a television (see [GlassDialog.initialFocus]).
+    // The rows, not the filter field: the list is what the user came for, and a
+    // text field would swallow the arrows (the field has its own
+    // [tvTextFieldKeys] once it is focused deliberately).
+    val firstRow = remember { FocusRequester() }
     val shown = if (!searchable || query.isBlank()) {
         options
     } else {
@@ -193,7 +204,7 @@ fun MultiChoiceDialog(
                 it.supporting?.lowercase()?.contains(q) == true
         }
     }
-    GlassDialog(onDismiss = onDismiss, title = title) {
+    GlassDialog(onDismiss = onDismiss, title = title, initialFocus = firstRow) {
         if (!footnote.isNullOrBlank()) {
             Text(
                 tr(footnote),
@@ -261,6 +272,7 @@ fun MultiChoiceDialog(
                             if (isOn) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
                             else Color.Transparent
                         )
+                        .then(if (index == 0) Modifier.focusRequester(firstRow) else Modifier)
                         .clickable(enabled = !locked) { onToggle(item.key) }
                         .padding(horizontal = 12.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,

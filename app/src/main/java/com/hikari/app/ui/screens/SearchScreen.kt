@@ -1085,10 +1085,83 @@ private enum class SearchKindFilter(val key: String) {
 }
 
 /**
+ * The genres TMDB has no name for, because they are ANIME's own vocabulary.
+ *
+ * A manga/anime extension tags a title with these — "Isekai", "School Life",
+ * "Shounen", "Seinen", "Mecha", "Harem" — and a TMDB-sourced item can carry
+ * "Animation" and nothing else, so without this list the strip could not be
+ * used to narrow to any of them: a genre is pickable only if the strip offers
+ * it (see [SEARCH_GENRES]). The names are the ones the extension ecosystems
+ * actually write (keiyoushi / MangaDex / AniList tags), and they are matched
+ * case-insensitively against a result's own genre strings, so a name no source
+ * happens to use simply never matches anything.
+ *
+ * Declared BEFORE [SEARCH_GENRES] on purpose: a file's top-level properties are
+ * initialised in declaration order, so a `SEARCH_GENRES` that read a list
+ * declared below it would read a still-null one and crash on class load.
+ *
+ * Genres TMDB DOES name (Action, Comedy, Romance, …) are deliberately not
+ * repeated here: the union below already carries them.
+ */
+private val ANIME_GENRES: List<String> = listOf(
+    "Isekai",
+    "School Life",
+    "Slice of Life",
+    "Shounen",
+    "Shoujo",
+    "Seinen",
+    "Josei",
+    "Mecha",
+    "Harem",
+    "Reverse Harem",
+    "Ecchi",
+    "Mahou Shoujo",
+    "Martial Arts",
+    "Otaku Culture",
+    "Super Power",
+    "Samurai",
+    "Idol",
+    "Delinquents",
+    "Reincarnation",
+    "Time Travel",
+    "Cooking",
+    "Gore",
+    "Survival",
+    "Parody",
+    "Kids",
+    "Music",
+    "Sports",
+    "Supernatural",
+    "Psychological",
+    "Military",
+    "Mythology",
+    "Historical",
+    "Vampire",
+    "Demons",
+    "Space",
+    "Game",
+    "Magic",
+    "Tragedy",
+    "Racing",
+    "Detective",
+    "Police",
+    "Gender Bender",
+    "Boys Love",
+    "Girls Love",
+    "Iyashikei",
+    "Gourmet",
+    "Award Winning",
+    "Workplace",
+    "Villainess",
+    "Crossdressing",
+)
+
+/**
  * Every genre the genre strip offers, alphabetically: the union of TMDB's film
- * and television genres, because those are the names a TMDB-sourced item carries
- * (a catalog, a collection, a Nuvio/Stremio engine) and the names an extension's
- * own tags most often match.
+ * and television genres — because those are the names a TMDB-sourced item
+ * carries (a catalog, a collection, a Nuvio/Stremio engine) and the names an
+ * extension's own tags most often match — plus [ANIME_GENRES], the ones only an
+ * anime/manga source uses and TMDB does not name at all.
  *
  * A FIXED list on purpose, exactly like [SEARCH_YEARS]: the genres come from the
  * catalogue's own vocabulary, not from what this search happens to have found,
@@ -1100,6 +1173,7 @@ private val SEARCH_GENRES: List<String> = run {
     val names = LinkedHashSet<String>()
     com.hikari.app.data.TmdbGenres.MOVIE.forEach { names += it.name }
     com.hikari.app.data.TmdbGenres.TV.forEach { names += it.name }
+    names += ANIME_GENRES
     names.sorted()
 }
 

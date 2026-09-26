@@ -147,21 +147,70 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
 
     // ---- Details ----
 
+    /**
+     * The extensions-lib 1.6 combined call — the ONE entry point a modern manga
+     * extension actually implements — and the reason this engine could not list
+     * chapters for a whole generation of sources.
+     *
+     * `getMangaDetails`/`getChapterList` (and their deprecated Rx `fetch*`
+     * forms) are the OLD entry points: a source that predates extensions-lib
+     * 1.6 answers them, and a `KeiSource` (every keiyoushi source since 2026)
+     * **does not implement them at all**. Such a source overrides
+     * `getMangaUpdate(manga, chapters, fetchDetails, fetchChapters)` instead and
+     * leaves the two old calls to the base class — whose
+     * `mangaDetailsRequest`/`chapterListRequest` build "baseUrl + manga.url".
+     *
+     * That is exactly the reported `chapters failed: HttpException: HTTP error
+     * 404` on Comix. The catalogue hands out `SManga.url = "/12345-slug"` (the
+     * extension's own `getMangaUrl` is what turns it into
+     * "https://comix.to/title/12345-slug"), so the old chapter call asked the
+     * site for "https://comix.to/12345-slug" — a page that does not exist — and
+     * the site answered 404. Comix's chapter list is an API call that must be
+     * SIGNED with a cipher the extension only learns inside its own
+     * `getMangaUpdate`, so the old path could never have worked for it whatever
+     * the URL looked like.
+     *
+     * Nekoread drives every manga extension through `getMangaUpdate` for this
+     * reason, and this is the same call the ANIYOMI half of this app has always
+     * used (`getAnimeEpisodeUpdate`, see
+     * [com.hikari.app.aniyomi.AniyomiProvider]). For a source that predates the
+     * combined call, Hikari's vendored `MangaSource` bridges `getMangaUpdate`
+     * straight back to `getMangaDetails`/`getChapterList`, so nothing changes
+     * for it.
+     *
+     * ONE flag per call, never both: `fetchDetails = true, fetchChapters =
+     * false` IS "give me details", and the reverse IS "give me chapters" — so
+     * each screen costs exactly the requests it used to, on an extension that
+     * can actually answer them. (`fetchChapters = true` on the details call
+     * would make every title's page fetch a chapter list nothing is going to
+     * read — a second round trip per open, for nothing.)
+     *
+     * [gate] is what makes this safe for the sources that refuse it: `KeiSource`
+     * throws if `getMangaUpdate` is in flight twice for the same manga, and
+     * [ProviderGate] serialises every call into one extension instance.
+     */
+    private suspend fun updateOf(
+        src: MangaSource,
+        item: MediaItem,
+        details: Boolean,
+        chapters: Boolean,
+    ) = src.getMangaUpdate(sm(item), emptyList(), details, chapters)
+
     override suspend fun getMeta(item: MediaItem): MediaItem = gate {
         val src = source() ?: return@gate item
         try {
-            val details = src.getMangaDetails(sm(item))
+            val manga = updateOf(src, item, details = true, chapters = false).manga
             lastOutcome[config.id] = "✓ details"
             item.copy(
-                title = details.title.ifBlank { item.title },
-                posterUrl = details.thumbnail_url?.takeIf { it.isNotBlank() } ?: item.posterUrl,
-                overview = details.description?.takeIf { it.isNotBlank() } ?: item.overview,
-                genres = details.getGenres().orEmpty().ifEmpty { item.genres },
+                title = manga.title.ifBlank { item.title },
+                posterUrl = manga.thumbnail_url?.takeIf { it.isNotBlank() } ?: item.posterUrl,
+                overview = manga.description?.takeIf { it.isNotBlank() } ?: item.overview,
+                genres = manga.getGenres().orEmpty().ifEmpty { item.genres },
                 // The manga "status" rides along as the year-like line the
                 // detail screen already draws; the manga screen shows it as the
                 // published status instead.
                 year = item.year,
-                rating = details.rating.takeIf { it > 0f }?.toDouble() ?: item.rating,
+                rating = manga.rating.takeIf { it > 0f }?.toDouble() ?: item.rating,
             )
         } catch (t: Throwable) {
             if (t is kotlinx.coroutines.CancellationException) throw t
@@ -179,7 +228,7 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
     override suspend fun getEpisodes(item: MediaItem): List<Episode>? = gate {
         val src = source() ?: return@gate failEpisodes(missingReason())
         try {
-            val raw = src.getChapterList(sm(item))
+            val raw = updateOf(src, item, details = false, chapters = true).chapters
             val sorted = sortChapters(raw)
             MangaStore.putChapters(item.providerId + "|" + item.id, sorted.map { it.toChapter() })
             lastOutcome[config.id] = "✓ ${sorted.size} chapter(s)"
@@ -424,9 +473,9 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
     private fun isRxWrapper(t: Throwable): Boolean = t.javaClass.name.startsWith("rx.")
 }
 
-/** The `SManga` per item, so `getMangaDetails`/`getChapterList` get the url and
- *  title the source itself reported (some sources build their requests from
- *  more than the url). */
+/** The `SManga` per item, so `getMangaUpdate` (and, on a legacy source, the
+ *  `getChapterList` it bridges to) gets the url and title the source itself
+ *  reported (some sources build their requests from more than the url). */
 private object MangaRecordCache {
     private val map = object : LinkedHashMap<String, Pair<SManga, CatalogueSource>>(32, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Pair<SManga, CatalogueSource>>?) =

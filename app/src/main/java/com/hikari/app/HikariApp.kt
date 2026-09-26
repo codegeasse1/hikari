@@ -229,6 +229,42 @@ class HikariApp : Application() {
         }
     }
 
+    /**
+     * Keeps the VIDEO ENHANCE preset off on a television that has not chosen one
+     * for itself.
+     *
+     * This is the one thing the app adds to the PICTURE during playback:
+     * [com.hikari.app.player.EnhancePreset] hands media3 a list of GPU colour
+     * grades, and a non-empty list costs a GL pass on every decoded frame — the
+     * player's own comment says so ("Natural is the default and applies NOTHING
+     * … so it stays off until the user asks for it"). On a TV stick, which is
+     * busy enough with the decoder, that per-frame pass is what a viewer sees as
+     * a video that stutters. A fresh install is already Natural, so this only
+     * matters when a preset arrived from somewhere else: from a paired phone (the
+     * reason `playerEnhance` is now in [com.hikari.app.data.DeviceLocal.KEYS]) or
+     * from a build that pre-dated that rule.
+     *
+     * The same rule as [syncTvPerformance]: the layout only sets a default, and
+     * the moment the user picks a preset themselves ([AppStore.enhanceChosen])
+     * it never touches the setting again.
+     */
+    private suspend fun syncTvEnhance(store: com.hikari.app.data.AppStore) {
+        if (!com.hikari.app.tv.TvMode.isTv) return
+        // Unreadable flag reads as "the user chose": never override a choice we
+        // cannot see, on a guess.
+        if (runCatching { store.enhanceChosen() }.getOrDefault(true)) return
+        val natural = com.hikari.app.player.EnhancePreset.DEFAULT.key
+        if (runCatching { store.enhancePreset() }.getOrDefault(natural) == natural) return
+        runCatching {
+            store.setEnhancePreset(natural)
+            Logs.log(
+                "App",
+                "video enhance reset to $natural — the TV layout does not keep a " +
+                    "per-frame colour pass on, see syncTvEnhance",
+            )
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         instance = this
@@ -385,6 +421,7 @@ class HikariApp : Application() {
                     store.setTvSeeded(true)
                 }
                 syncTvPerformance(store)
+                syncTvEnhance(store)
                 // Keep the PERFORMANCE MODE in step with the layout from here
                 // on: switching "Layout" in Settings → TV & Remote to the TV
                 // layout turns the lighter visuals on by itself, and switching
@@ -399,6 +436,7 @@ class HikariApp : Application() {
                 store.tvModeFlow().distinctUntilChanged().collect { current ->
                     com.hikari.app.tv.TvMode.setOverride(current)
                     syncTvPerformance(store)
+                    syncTvEnhance(store)
                 }
             }
         }
@@ -554,10 +592,13 @@ class HikariApp : Application() {
                     )
                 }
             }
-            // First run: seed the Nuvio provider repos (manifest.json) and a few
-            // pre-installed providers so nuvio sources work out of the box.
+            // First run: seed the Nuvio provider repos (manifest.json) so nuvio
+            // sources have somewhere to come from. No provider is installed for
+            // the user any more, and the ones earlier builds put there are taken
+            // back right after (see removeFormerlySeededProviders).
             runCatching {
                 com.hikari.app.nuvio.NuvioPluginManager.seedDefaults(this@HikariApp, store)
+                com.hikari.app.nuvio.NuvioPluginManager.removeFormerlySeededProviders(this@HikariApp)
             }
             // First run: seed the community SkyStream extension repos too, so
             // SkyStream extensions are installable from the Extensions screen

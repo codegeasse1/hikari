@@ -6104,7 +6104,14 @@ private fun VideoEnhanceCard(app: HikariApp) {
             },
             selectedKey = preset.key,
             onPick = { pick ->
-                scope.launch { runCatching { app.store.setEnhancePreset(pick) } }
+                scope.launch {
+                    runCatching {
+                        app.store.setEnhancePreset(pick)
+                        // The user picked it themselves — the TV layout stops
+                        // forcing Natural from here on (HikariApp.syncTvEnhance).
+                        app.store.setEnhanceChosen(true)
+                    }
+                }
             },
             onDismiss = { menuOpen = false },
         )

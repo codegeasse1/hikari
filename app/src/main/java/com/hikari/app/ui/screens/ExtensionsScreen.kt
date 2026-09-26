@@ -1475,6 +1475,8 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         val gowaru = nuvio("https://raw.githubusercontent.com/Gowaru/gowaru-nuvio-providers/main/manifest.json")
         val phisher = nuvio("https://raw.githubusercontent.com/phisher98/phisher-nuvio-providers/main/manifest.json")
         val allInOne = nuvio("https://raw.githubusercontent.com/D3adlyRocket/All-in-One-Nuvio/refs/heads/main/manifest.json")
+        val animeNuvio = nuvio("https://raw.githubusercontent.com/D3adlyRocket/Anime-Nuvio/refs/heads/main/manifest.json")
+        val hindiNuvio = nuvio("https://raw.githubusercontent.com/D3adlyRocket/Hindi-Nuvio/refs/heads/main/manifest.json")
         val michat = nuvio("https://raw.githubusercontent.com/michat88/nuvio-providers/refs/heads/main/manifest.json")
         val spidey = nuvio("https://raw.githubusercontent.com/Abinanthankv/NuvioRepo/refs/heads/master/manifest.json")
         val saimuel = nuvio("https://raw.githubusercontent.com/saimuelbr/saimuel-nuvio-repo/refs/heads/main/manifest.json")
@@ -1502,7 +1504,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         val keiyoushi = aniyomiExt(
             "https://raw.githubusercontent.com/keiyoushi/extensions/repo/index.json"
         )
-        val everyNuvio = listOf(yoru, gowaru, phisher, allInOne, michat, spidey, saimuel, mooncrown, kenneth, eclipsia)
+        val everyNuvio = listOf(yoru, gowaru, phisher, allInOne, animeNuvio, hindiNuvio, michat, spidey, saimuel, mooncrown, kenneth, eclipsia)
         put("megarepo", listOf(mega))
         put("mega", listOf(mega))
         put("csrepos", listOf(mega))
@@ -1558,6 +1560,10 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         put("phishernuvio", listOf(phisher))
         put("allinone", listOf(allInOne))
         put("d3adlyrocket", listOf(allInOne))
+        put("animenuvio", listOf(animeNuvio))
+        put("allinoneanime", listOf(animeNuvio))
+        put("hindinuvio", listOf(hindiNuvio))
+        put("hindi", listOf(hindiNuvio))
         put("michat", listOf(michat))
         put("michat88", listOf(michat))
         put("spidey", listOf(spidey))
