@@ -1,0 +1,1185 @@
+# Hikari — what this workspace is for
+
+This perchance *generator* workspace is **not** Hikari. It is the workbench used to
+edit the Android app in the GitHub repo **`codegeasse1/hikari`** on the user's
+behalf, on their instruction, from chat.
+
+Nothing here ships to the user's users: the app they install is built by that
+repo's GitHub Actions workflow. `main.pjs` / `index.html` are unused scaffolding.
+
+## How the work is done
+
+- The repo is read and written through the **GitHub REST API** (Git Data API for
+  a multi-file commit) with a **PAT the user pastes into chat**. The token is
+  never written into a file, a commit, or a plan — re-ask for it if a session
+  does not have it. (A previous session's token is in that session's transcript
+  only.)
+- The working copy of the repo lives at `scratch/repo/…` (repo-relative
+  paths). **`scratch/` is EPHEMERAL** — it is gone in the next session. If a
+  rebuild recipe matters, put it in the repo itself (a code comment, `docs/`,
+  or `CHANGELOG.md`), not in `scratch/`.
+- Push recipe that works (see `docs/RELEASING.md` in the repo for the project's
+  own view): `GET /repos/codegeasse1/hikari/commits/main` → its `tree.sha` →
+  `POST /git/blobs` per file (base64) → `POST /git/trees` with `base_tree` →
+  `POST /git/commits` with `parents: [head]` → `PATCH /git/refs/heads/main`.
+  `POST /git/commits` intermittently answers **422** through the proxy: retry the
+  same body and it succeeds. Trust `GET /actions/runs?head_sha=…` for the pushed
+  sha — a `GET /git/refs/heads/main` right after a push can return the OLD sha.
+- Verify what is about to be pushed by hashing each local file as a git blob and
+  comparing against the remote tree. This caught a **corrupted local
+  `app/libs/quickjs-kt-android-1.0.5-nuvio.aar`** (3.5 MB locally vs 1.9 MB in the
+  repo) that must NEVER be pushed.
+
+## Rules the user set (do not break these)
+
+- **Push code to `main`; never create a `main` release — unless the owner asks for
+  one in writing in the current conversation.** CI (`.github/workflows/build.yml`)
+  builds a signed APK on every push and publishes it to the **`continuous`
+  pre-release** and the **`build`** branch, and that is what the user installs.
+  Publishing a real release requires a manual `workflow_dispatch` with typed
+  `CONFIRM-RELEASE`; it was done exactly once, for **v0.10.42** (the owner asked for
+  it in chat, the build was green, and the release body is that version's CHANGELOG
+  section — so the CHANGELOG section for a version that will be released has to read
+  like user-facing release notes, not like an engineering post-mortem). Never
+  dispatch it without an explicit request.
+- **No blind fixes.** Read the full code path, read the upstream/library source
+  when a behaviour is in question (TDLib's source settled the Telegram bug; a
+  vendored base class settled the manga one), and say in the CHANGELOG what the
+  real cause was.
+- Bump `versionCode`/`versionName` and prepend a `CHANGELOG.md` section per
+  release, in the existing house style (bold lead-in, then the cause and the fix
+  in plain prose).
+- After a push, wait for the Actions run and check it is green. On failure, read
+  the job log (`/actions/jobs/{id}/logs`) and fix the compiler errors before
+  reporting anything as done.
+
+## Where the app's own knowledge lives
+
+The repo documents itself: `docs/` (catalogs, manga reader, subtitle sites,
+search, player panels, releasing, …) and a very detailed `CHANGELOG.md`. Read
+those before changing a subsystem — most of this app's behaviour is deliberate
+and written down.
+
+## Requested, not yet built
+
+(Nothing outstanding: the two features the owner asked about in chat — profiles,
+and a switch that hides the explanation lines — were both built in **0.10.44**;
+see the session log below, which is where their design notes live.)
+
+## Session log (newest first)
+
+- **0.10.51** (versionCode 222) — the owner's sixth "fix some things" round; five
+  asks (collapse duplicate titles across engines when "all providers" is
+  selected; make the Vega detail screen fast; a genre search box on Home; the
+  rounded corner slicing folder-tile names; IPTV network streams), built in one
+  batch and pushed as **two** commits (`8c99a043efc726832fe334886b8d2ad2a1fde2dc`,
+  then the compile-fix `0ff8850fb2a7e30fd995fb94ce5f962317054772`; parent
+  `7a60d7e082f7c366db16e1b75e79633c7cefd7be`; CI run **36273138708** —
+  **success**; `continuous` republished 21:43:06Z, `build` branch = `build:
+  update test APK 202609262142`; **NO new main release** — the newest real
+  release is still v0.10.42). The FIRST push failed to compile in exactly two
+  places: `NetworkStream.boxList`/`boxListPage` declared `jar: List<String>`
+  but pass it on to `fetchText(jar: MutableList<String>)` (the caller's jar is a
+  `LinkedList`), and `IptvProvider` called `NetworkStream.resolve(url = …)` when
+  the parameter is named `rawUrl`. Both fixed; nothing else failed.
+  - **Cross-engine duplicates.** NEW `data/HomeDedupe.kt` — `apply(rows, types)`
+    walks the placed rows in placement order, and only for
+    `ProviderType.NUVIO`/`STREMIO` rows, dropping an item whose key was already
+    claimed and dropping a row left empty; a key is claimed only by an item
+    `NsfwGate.allows(item)` permits (so a hidden item never suppresses a visible
+    one). Keys: TMDB id (a bare numeric id or `tmdb:<id>[:kind]`), IMDb (`tt…`),
+    or `t:<normalizeTitle(searchTitle)>|<year>|<movie|tv>` — the title key only
+    when a year is known, so a yearless item can never claim one.
+    `ContentRepository` builds `typeIndex(providers)`, funnels the two emission
+    points in `homeRowsStreamingWhere` through `feedSnapshot(...)`, and
+    `homeRows` through `translateRows(...)`; with no duplicate (or no
+    Nuvio/Stremio row) it returns the input list untouched.
+  - **Vega detail speed (one engine boot instead of two).**
+    `assets/vega/harness.js` gained `pickModuleFunction(name, fn)`,
+    `seasonRequests(info)`, `vegaArgs(args)` and `g.__vegaDetail(linkJson)`:
+    it runs `getMeta`, pushes the Info to the host immediately via a new
+    `__vegProgress('info', …)` bridge, then runs `getEpisodes` for the seasons
+    and answers `{info, episodes:[…]}`. `VegaRuntime.createEngine`/`run` take an
+    `onProgress` and `extraModules` (loaded after the main module, each load in
+    a try/catch that rethrows `CancellationException`, so a broken companion
+    file can't cost the main answer); detail runs on a `vega/v2/` cache key.
+    `VegaProvider` gained a private `DetailJob(item)` — single-flight, bounded
+    to `DETAIL_JOBS_MAX=8` with an access-ordered map and its own
+    `Dispatchers.IO` scope — so opening a detail page boots ONE engine and the
+    Info shows as soon as `getMeta` returns; `getEpisodes` reuses that job's
+    episodes (falling back to the legacy per-season `callMany` only for a caller
+    that never opened the page).
+  - **Genre search.** `HomeScreen.HomeGenreStrip` filters the chips on both
+    `g.name` and `I18n.t(g.name)` (case-insensitive) behind a
+    `GlassSearchField` in the strip header, resets the chip list's scroll on
+    each query, shows a "No genre matches …" line, and clears the query when a
+    chip is picked.
+  - **Folder-tile names.** `CollectionScreens.FolderTile` clipped its whole
+    Column to `GlassShape`; the 26dp corner then sliced the last letters off a
+    long folder name (the 10dp text inset sits inside the curve). The clip is
+    gone and the background takes the shape instead (the border already did);
+    the ripple is square by design. This was the only tile in the app that had
+    a clip wrapping text — the other `.clip(GlassShape)` call sites clip images
+    or colour only.
+  - **IPTV network streams.** NEW `data/NetworkStream.kt`, plus an "Add network
+    stream" mode in the IPTV add dialog (`extra = "netstream"` channel marker).
+    Play resolves a stored link to playable sources instead of handing a file
+    page to the player: direct media → Google-Drive normalisation → pixeldrain
+    `/api/file/<id>?download` → the Terabox family (`/main` for `jsToken` +
+    cookies → `/api/shorturlinfo` → `/share/list`, one level into up to 3
+    folders, `dlink` as the source with the `terabox;…` UA + Referer, one
+    fresh-cookie retry) → CloudStream's `FallbackResolver` (`resolve`, then
+    `resolveEmbedUrl`) → a Range-request Content-Type sniff → the raw URL as a
+    last resort. Box host list: terabox, 1024tera, 4funbox, momerybox, tibibox,
+    nepnepbox, telebox, mirrobox, shibabox (covers the asked-for m3u8, Terabox,
+    Telebox, MDisk and "Diskwala"-style page links; an installed extractor
+    handles the rest). The whole resolve is budgeted at 45s (20s per stage),
+    never throws and never answers empty for an http link; a stream channel's
+    `channels()` short-circuits, so selecting one costs no network.
+
+- **0.10.50** (versionCode 221) — the owner's fifth "fix some things" round; three
+  asks (Extensions scroll freeze, Home provider-picker delay, manga catalogue
+  needing the globe button) plus "add the anime genres to Home too, and any
+  genre missing from either strip", built in one batch and pushed as **two**
+  commits (`6f74ff018156067dc11e59ee982f55b4d09f0d94`, then the compile-fix
+  `7a60d7e082f7c366db16e1b75e79633c7cefd7be`; parent
+  `6a1bc244b6691651d4773762067b5d67fd8326fb`; CI run **36266806891** —
+  **success**, 10 min; `continuous` republished 19:50:34Z, `build` branch =
+  `build: update test APK 202609261950`; **NO new main release** — the newest
+  real release is still v0.10.42). The FIRST push failed to compile in exactly
+  one place: `UPDATE_QUIET_MS` was declared `private const val` **inside** the
+  ViewModel class, and Kotlin only allows `const` at top level / in an
+  object/companion — the house pattern beside it is `private val
+  REFRESH_QUIET_MS = 500L`. Everything else in the batch compiled first try.
+
+  - **Extensions scroll (the "full freeze").** Three things ran per draw, and
+    compounded: `RepoProvenance.nameMap` scanned the whole repo list per
+    provider *and re-parsed each repo URL inside that scan* (now
+    `RepoProvenance.Index` — one pass over repos, O(1) lookups; `nameMap` is
+    O(P+R)); `checkUpdates()` (sha256 of every installed extension file) and
+    `adoptAdultFlags()` ran on EVERY repo-listing arrival, and listings arrive
+    one repo at a time (now `requestUpdateCheck()` → `updateTicks`
+    `collectLatest` + 600ms quiet); every row re-probed its icon on re-entry
+    (now `ExtensionIcons.missAt`, 5-min TTL, + a 320ms `ICON_SETTLE_MS` delay in
+    `ProviderIcon`/`RepoPluginIcon` so a fling never probes); `rememberCs3SettingsIds`
+    now probes cache-only `ContentProvider.settingsReady` (it used to call
+    `settingsAvailable`, which DEX-loads the plugin) and is keyed on the id SET;
+    `ProviderPacks.rows` is `remember`ed above the lazy list in both
+    `InstalledExtensionsView` and `SourcesOverviewView`; `SourceUrls.canonical`/
+    `matchKeys` are memoised (bounded LinkedHashMaps). Note `LazyListScope`
+    functions cannot use `remember` — `extensionsSearchItems` (line ~4419) still
+    groups its rows inline, deliberately.
+  - **Home provider picker delay.** `ProviderPickerSheet` took a new trailing
+    `repoNameByProvider: Map<String,String>? = null`; Home hoists
+    `RepoProvenance.nameMap(providers.map{it.config}, repos)` while idle and
+    passes it (the sheet calls `remember` unconditionally — `computedRepoNames`
+    is empty when the map was provided — because a conditional `remember` would
+    change the composition structure between its two callers). Search still
+    passes nothing and computes locally.
+  - **Genre vocabulary.** NEW `data/Genres.kt` is the ONE list: `ALL` =
+    `TmdbGenres.MOVIE` ∪ `TmdbGenres.TV` ∪ 99 `ANIME_TAGS` (sorted);
+    `tmdbGenreFilter(name)` = `with_genres` OR-list across BOTH namespaces
+    (`TV_FOR_MOVIE`/`MOVIE_FOR_TV` cover the differently-spelled names);
+    `keywordCandidates(name)` = TMDB keyword names for a tag TMDB has no genre
+    id for. `SearchScreen.SEARCH_GENRES = Genres.ALL` (its private
+    `ANIME_GENRES`/`SEARCH_GENRES` block is deleted); `HomeScreen.HomeGenreStrip`
+    is rebuilt from it (`HomeGenre(name, genresText, keywordsText)`; ids →
+    `genresText`, else keywords joined with `|` → `keywordsText`).
+    `TmdbSources.discover` now RESOLVES keyword NAMES via `/search/keyword`
+    (`keywordsAsIds`/`resolveKeywordId`, `keywordIds` + `keywordMisses` caches)
+    and **returns emptyList() when an asked-for keyword resolves to nothing** —
+    dropping the parameter would answer with the whole popular catalogue and
+    read like a filter that had been applied.
+  - **Verified against the LIVE TMDB API** (do this again if the tag list is
+    touched): 97 of 99 tags resolve to a keyword and every one answers a
+    non-empty `/discover` grid in at least one namespace. TMDB has **no** guild
+    keyword → "Guilds" falls back to **adventurer** (175428; 136 films/62
+    series); TMDB spells it **"cross dressing"** (12090; 187/138) → that
+    candidate was added. `with_genres=28|10759` answers Action films on
+    `/discover/movie` (20001) AND Action&Adventure series on `/discover/tv`
+    (10199), and a bogus id (999999) answers **0**, so the combined OR-list is
+    safe. Surprise worth knowing: TV series carry MOVIE-namespace genre ids —
+    `with_genres=36` on `/discover/tv` answers 42 History series even though
+    `/genre/tv/list` never lists 36.
+  - **Manga walls.** `MangaProvider` gained `siteUrl()` (via
+    `MangaExtensionManager.siteUrlOf`, cached, blocking — fine inside `gate`),
+    `warmSite()` (→ `CloudflareSolver.warm`, NOT gated on
+    `needsVerification`, 90s per-host cooldown, records `solvedAt` +
+    `clearBlocked` + `CookieManager.flush()`) and `noteWall()` (the same
+    `WALL_MESSAGE` regex `AniyomiProvider` uses → `CloudflareVerifier.markBlocked`).
+    `getCatalog` warms + retries when page 1 is empty **or** threw; `search`
+    warms only on a THROWN failure (an empty search is a legitimate answer);
+    `getEpisodes` warms when the list is null **or** empty. The retry's own
+    reason is what gets reported (the first failure is usually the wall the
+    warm-up existed to clear). Root cause of the reported "no catalogue until I
+    open the globe once": the site wanted a real browser session and the app
+    never tried to give it one — the globe worked because that WebView earned
+    the site's cookies, which `AndroidCookieJar` then fed to the extension's
+    OkHttp client.
+
+- **0.10.49** (versionCode 220) — the owner's fourth "fix some things" round;
+  seven asks, built in one batch and pushed to `main` as **two** commits
+  (`1e8ec82932e08095bf7bc45e0bfb2fb9d500a2f4`, then the compile-fix
+  `6a1bc244b6691651d4773762067b5d67fd8326fb`; parent `ff55b179026ce7895ad8404d61b78806253a74b7`;
+  CI run **36260261345** — **success**; `continuous` pre-release republished
+  18:02Z, `build` branch = `build: update test APK 202609261802`; **NO new main
+  release** — the newest real release is still v0.10.42). The FIRST push failed
+  to compile in exactly three places, all in this batch's new code: `obj` out of
+  scope at the tail of `addRepoUrl` (hoist the JSONObject — a Vega manifest has
+  none), `Http.fetchBytesCancellable` called from a non-suspend
+  `loadAniyomiIndex` (it is `suspend` now), and a `by remember` property that
+  cannot be smart-cast in HomeScreen (`val selectedKey = selected ?: ""`). Read the
+  run's **`build-log` artifact** for compiler errors — the job summary carries
+  none. Download it from `/actions/artifacts/{id}/zip` (the Authorization header
+  survives the 302) and unzip with `@zip.js/zip.js`; the log is `gradle-build.log`.
+  26 files (7 new):
+  `CHANGELOG.md`, `README.md`, `app/build.gradle.kts`,
+  `app/src/main/assets/vega/{harness.js,commonHeaders.js}`,
+  `app/src/main/java/com/hikari/app/data/{Models,SourceUrls,ContentRepository,TmdbSources,AppStore,RepoProvenance}.kt`,
+  `app/src/main/java/com/hikari/app/HikariApp.kt`,
+  `app/src/main/java/com/hikari/app/providers/ProviderManager.kt`,
+  `app/src/main/java/com/hikari/app/providers/vega/{VegaRuntime,VegaProvider,VegaPluginManager}.kt`,
+  `app/src/main/java/com/hikari/app/ui/{ExtensionIcons,ProviderPacks}.kt`,
+  `app/src/main/java/com/hikari/app/ui/screens/{CatalogScreen,CollectionScreens,DetailScreen,ExtensionsScreen,HomeScreen}.kt`,
+  `app/src/main/java/com/hikari/app/aniyomi/AniyomiExtensionManager.kt`,
+  `docs/{HIKARI_EXTENSIONS,VEGA}.md`; deleted
+  `app/src/main/java/com/hikari/ext/providers/YtsProvider.kt` (as `sha: null`).
+  Notes worth keeping:
+  1. **Vega** (ask 2) — `Zenda-Cross/vega-providers`'s `manifest.json` is a BARE
+     JSON ARRAY of `{display_name, value, version, icon, type, disabled,
+     hasSettings}`; provider code is `dist/<value>/{catalog,posts,meta,stream,
+     episodes,settings}.js`, each a **self-contained bundle** (no cross-file
+     `require` anywhere in the 259 published files) ⇒ **one module per call**.
+     `VegaRuntime` boots boot.js → cheerio (optional) → nuvio/harness.js → a
+     per-call register script → `assets/vega/harness.js` (providerContext: a
+     faithful axios over the async OkHttp bridge, cheerio, the repo's
+     `headers.js` as `commonHeaders`, kvStore persisted to
+     `<providerDir>/kv.json`, an honest `openWebView` returning
+     `{success:false}`), then loads ONE file wrapped in a CommonJS function and
+     bytecode-caches the wrapper. Provider files destructure named keys, so
+     passing a superset args object (`{filter,page}` + `providerValue` +
+     `providerContext`) is safe. `.data` must be JSON-parsed when the body is
+     JSON and left as a string when it is HTML (the harness's axios
+     transformResponse does exactly that). Repo kind, provider type, the
+     Extensions screen (Sources row, folder, add dialog, short names
+     `vega`/`vegarepo`/`vegarepos`/`vegaproviders`/`zendacross`), ProviderManager, ContentRepository's
+     error maps and cross-search filters, ProviderPacks, ExtensionIcons,
+     RepoProvenance and HikariApp's seeding are all wired. `RepoProvenance`
+     matches a Vega provider through the `githubRoot` fallback: the install
+     remembers `…/main/dist/AniKoto` and the repo list `…/main/manifest.json`,
+     and `SourceUrls.repoKey` does NOT collapse those.
+  2. **Aniyomi `.pb`** (ask 3) — protobuf `index.pb` is gzipped (`1f 8b`), so
+     `AniyomiExtensionManager.pbIndex` gunzips then hand-parses the varint tag
+     stream (schema checked field-by-field against Mihon's
+     `NetworkExtensionStore.kt` and the real keiyoushi file: 1377 entries,
+     store "Keiyoushi", 365 NSFW, 0 empty apk URLs). `indexCandidatesFor` now
+     appends `PB_INDEX_FILE_NAMES` and `isIndexUrl`/`indexDirFor` use
+     `ALL_INDEX_FILE_NAMES`; a `.pb` candidate takes
+     `Http.fetchBytesCancellable(..., readTimeoutSec = 60)`, which is why
+     `loadAniyomiIndex` had to become `suspend`.
+  3. **Nuvio-style catalogue** (ask 4) — `CatalogScreen` now mirrors Nuvio's
+     `CatalogScreen.kt`: a header row (back + globe) then a title block
+     (`headlineMedium` + engine as subtitle), `GridCells.Fixed(columns)` with
+     `catalogColumnsFor(widthDp)` (3/4/5/6/7) passed through
+     `TvUi.gridColumns(...)` so a TV still sizes by living-room cell width,
+     16dp gutters / 12dp / 18dp, a tile that honours `PosterStyle.corner` and
+     `showTitles`, a year+genre second line, and a pulsing skeleton grid while
+     the first page loads (the Cloudflare nudge floats over it).
+  4. **Home genre strip** (ask 5) — `HomeGenreStrip` under the hero, using
+     `TmdbGenres.MOVIE` names and `HOME_GENRE_TV_IDS` so each chip's filter is
+     `"<movieId>|<tvId>"` (TMDB keeps the two genre id spaces SEPARATE — film 28
+     = series 10759 — and ignores the id from the other namespace rather than
+     erroring). It opens `Routes.tmdbGridSpec(TmdbSpec(DISCOVER, media="all",
+     genresText=filter, …))`; `TmdbSources.page()`'s DISCOVER branch merges
+     movie+tv when `spec.isAll`. Verified against the live API with the app key.
+  5. **Repo provenance** (ask 6) — `data/RepoProvenance.kt` + the
+     `LocalRepoNameByProvider` CompositionLocal wrapped around ExtensionsScreen's
+     whole `when {}`, plus `PluginRow(repoName=…)` from both
+     `RepoPluginsView` call sites, the Home picker sheet and
+     `ExtensionPickerSheet`.
+  6. **In-place Home search** (ask 7) — `HomeSearchOverlay` over Home, scoped to
+     the provider Home is loading its catalogue from
+     (`repo.searchStreaming(q, providerIds = setOf(id))`), 400ms debounce,
+     `BackHandler`, `MediaItem.shrinkPoster()`, `engineFailureReason()` detail.
+  7. **YTS removal** (ask 1) — `YtsProvider.kt` deleted, `AppStore` gained
+     `ytsCleaned()`/`markYtsCleaned()`, `HikariApp` sweeps `hiki|yts` once.
+
+- **0.10.48** (versionCode 219) — the owner's third "fix some things" round; five
+  asks, built in one batch and pushed to `main` (commit
+  `ff55b179026ce7895ad8404d61b78806253a74b7`, parent `c5aa72b`; CI run
+  **36252396826** — **success**; `continuous` pre-release republished 15:46Z and
+  the `build` branch updated to `build: update test APK 202609261546`; NO new main
+  release — the newest real release is still v0.10.42). 13 files pushed:
+  `app/build.gradle.kts`, `CHANGELOG.md`, `docs/MANGA.md`, `MangaProvider.kt`,
+  `SearchScreen.kt`, `Components.kt`, `ChoicePickers.kt`, `AppStore.kt`,
+  `HikariApp.kt`, `NuvioPluginManager.kt`, `ExtensionsScreen.kt`,
+  `PlayerActivity.kt`, `SettingsScreen.kt`. Notes worth keeping:
+  1. **Manga chapters / HTTP 404** (`manga/MangaProvider.kt`) — the call, not the
+     source. `getMeta`/`getEpisodes` used `src.getMangaDetails` /
+     `src.getChapterList` (extensions-lib **1.5** API). A keiyoushi
+     `KeiSource` (lib **1.6**, e.g. Comix = comix.to v1.6.40) does not implement
+     those; it overrides `getMangaUpdate(manga, chapters, fetchDetails,
+     fetchChapters)`, and the base class's `chapterListRequest` builds
+     `baseUrl + manga.url` = `https://comix.to/12345-slug` → **404** (the real
+     page is `/title/12345-slug`); Comix's chapter list is a cipher-SIGNED API
+     call only producible inside its own `getMangaUpdate`. New
+     `MangaProvider.updateOf(src, item, details, chapters) =
+     src.getMangaUpdate(sm(item), emptyList(), details, chapters)` — `getMeta`
+     uses `(true, false)`, `getEpisodes` `(false, true)`. Hikari's vendored
+     `eu.kanade.tachiyomi.source.MangaSource.getMangaUpdate` has a default body
+     bridging to the old pair, so legacy sources are unchanged. This is
+     Nekoread's `TachiyomiHttpSourceAdapter` wiring and the same shape as the
+     ANIYOMI half (`getAnimeEpisodeUpdate`). `getPageList` untouched. Written up
+     in `docs/MANGA.md` §"Which extension call answers details and chapters".
+  2. **Search genres** (`ui/screens/SearchScreen.kt`) — `ANIME_GENRES` declared
+     BEFORE `SEARCH_GENRES` (top-level init order — a later-declared list would
+     read null and NPE on class load) and unioned into it. Must-adds: Isekai,
+     School Life, plus the rest of the MAL/AniList tag set. TMDB names (Romance,
+     Action, …) are deliberately NOT repeated.
+  3. **TV: any picker's first D-pad press ran "close"** (`GlassDialog` in
+     `ui/components/Components.kt`). The scrim and the tap-swallowing Column are
+     both `clickable`, and a `clickable` is a FOCUS TARGET — so on a TV the
+     cursor landed on the full-screen scrim first and centre press ran
+     `onDismiss()`. Exactly the "I cannot change the app language with the
+     remote" report. Both containers now wear
+     `.then(if (tv) Modifier.focusProperties { canFocus = false } else Modifier)`
+     BEFORE their `.clickable` (touch untouched), and `GlassDialog` gained an
+     `initialFocus: FocusRequester?` that a `LaunchedEffect` retries for up to
+     30 frames via `withFrameNanos` (a Dialog's window is not attached on the
+     frame the composable first runs, and `requestFocus()` throws until it is).
+     `ChoiceDialog` + `MultiChoiceDialog` pass their first row's requester
+     (`focusRequester` must PRECEDE the `.clickable`/focus target).
+  4. **TV video stutter → the video-enhance preset** (`player/EnhancePreset.kt`
+     is the evidence: a non-empty effect list is a GL pass on EVERY decoded
+     frame; `NATURAL` is the default and applies nothing). `AppStore` gained
+     `playerEnhanceChosen`, `HikariApp.syncTvEnhance(store)` mirrors
+     `syncTvPerformance` (a TV that has not chosen a preset is put back on
+     Natural, once) and is called at BOTH `syncTvPerformance` call sites;
+     `PLAYER_ENHANCE`, `PLAYER_ENHANCE_CHOSEN` and `PLAYER_ENHANCE_UNSUPPORTED`
+     joined `DeviceLocal.KEYS` (the last one is a CAPABILITY — a phone whose GL
+     stack refused the pipeline must not tell a TV it cannot run one).
+     `setEnhanceChosen(true)` is written wherever the USER picks a preset:
+     `PlayerActivity.setEnhancePreset` (both the re-open path and the tail) and
+     `SettingsScreen` → Player → Video enhance. NOTE: the player has no
+     continuous animation during playback (the loading banner's four infinite
+     animators are cancelled by `hideLoadingBanner`), no blur/RenderEffect, and
+     the pollers are 700ms/1s/2s — so the enhance pass is the only per-frame
+     cost the app adds to the picture.
+  5. **Pre-installed providers removed, repos kept**
+     (`nuvio/NuvioPluginManager.kt`). Deleted `SEED_PROVIDERS` + the pre-install
+     block inside `seedDefaults` (the repo-adding loop stays). New
+     `FORMERLY_SEEDED = {vixsrc.js, moviebox.js, showbox.js, dahmermovies.js}`
+     and `removeFormerlySeededProviders(context)`, called right after
+     `seedDefaults` in `HikariApp`; one-shot via the new
+     `AppStore.nuvioSeedCleaned`/`markNuvioSeedCleaned`. Matched on the FILE, not
+     the name — `SourceUrls.fileKey(extra).startsWith("tapframe/nuvio-providers/")`
+     — because MovieBox also ships in the Hindi/All-in-One bundles the app now
+     seeds, and a copy the user installed themselves must survive. (All four
+     were confirmed pre-installed: the owner's Extensions screenshot lists
+     exactly 8 extensions, of which the Nuvio ones are moviebox, vixsrc,
+     DahmerMovies, ShowBox.)
+  6. **Two more bundled Nuvio repos** — added to BOTH places:
+     `NuvioPluginManager.DEFAULT_REPOS` (the first-run seed) and
+     `ExtensionsScreen.REPO_ALIASES`'s `everyNuvio` (what typing `nuvio` adds),
+     plus their own short names `animenuvio`/`allinoneanime` and
+     `hindinuvio`/`hindi`. URLs:
+     `https://raw.githubusercontent.com/D3adlyRocket/Anime-Nuvio/refs/heads/main/manifest.json`
+     (name "All-in-One-Anime", 9 scrapers) and
+     `.../D3adlyRocket/Hindi-Nuvio/refs/heads/main/manifest.json` (name
+     "Hindi-Nuvio", 14 scrapers). Both fetched 200 OK this session.
+  - TV work here is reasoning + compile-verified only — nothing in this
+    environment can drive a D-pad.
+
+- **0.10.47** (versionCode 218) — the owner's second "fix some things" round; four
+  asks, built in one batch and pushed (CI green on runs 36244630235→fixed
+  36245044856 and 36246012604 for the docs; `continuous` republished 13:39Z, no
+  main release). Notes worth keeping:
+  1. **Telegram: the three sections swipe** (`ui/screens/TelegramScreen.kt`).
+     `TelegramHome`'s `when (section)` became a `HorizontalPager` over
+     `listOf(TgSection.CHATS, ADDED, LINKS)`, with the My Stuff pattern
+     (`ui/screens/MyStuffScreen.kt`): two `LaunchedEffect`s keep the pill and the
+     pager in step in both directions (each checks before it writes), a pill tap
+     also animates, and `section` stays hoisted in `TelegramScreen` (so "add
+     lands on the section you added to" and the `BackHandler` still work).
+  2. **Settings: back from a SUB-folder no longer jumps to the top** — the fix is
+     now universal across the three page levels. Root cause of the remaining case:
+     the reset lived in `LaunchedEffect(openFolder, openSub) { pageState.scrollToItem(0) }`,
+     and an effect cannot tell "the page was OPENED" from "we came BACK to it", so
+     the page returned to was scrolled to its top (report: App Layout → Poster
+     styling → back → top of App Layout). Now: `indexState` + `folderState` +
+     `subState`, the reset moved INTO the two functions that open a page
+     (`openFolderPage` / `openSubPage`) as `requestScrollToItem(0)`, and there is
+     no effect at all. `LazyListState.requestScrollToItem` is public in foundation
+     1.7.6 (verified in `foundation-android-1.7.6-sources.jar`) and primes the
+     position for the next measure — so the page's first frame is already at its
+     top, no flash. (`focusRestorer` does NOT exist in 1.7.6 — checked; do not
+     plan a fix around it.)
+  3. **Search tab: Anime + a genre strip + recent searches**
+     (`ui/screens/SearchScreen.kt`, `data/AppStore.kt`, `docs/SEARCH.md`).
+     - `SearchKindFilter.ANIME` + `MediaItem.looksAnime` (the addon's `anime`
+       rawType, an "Anime" tag, or TMDB's "Animation").
+     - `SEARCH_GENRES` (TMDB film ∪ TV names, sorted) in a year-strip-shaped
+       scrollable multi-select; `passesSearchFilter`/`unknownKindKept` gained a
+       `genres` parameter and `hiddenNoGenre` reports "N have no genre, so they
+       are hidden" (strict, like the year strip; the kind filter stays lenient).
+     - Recent searches: `AppStore` key `SEARCH_HISTORY` + `searchHistoryFlow` /
+       `addSearchHistory` (dedupe case-insensitively, newest first, cap
+       `SEARCH_HISTORY_MAX` = 20, ignores < 2 chars) / `removeSearchHistory` /
+       `clearSearchHistory`; recorded from the **debounced** query in the view
+       model's `init`; chips with their own ✕ (a separate clickable, so forgetting
+       one cannot also run it) + "Clear all", shown only while the box is empty.
+     - Two compile lessons from the first push: `app` in `SearchViewModel` is a
+       plain CONSTRUCTOR PARAMETER — in scope in property initializers/`init` but
+       NOT in member functions (added `private val hikari = app as HikariApp`); and
+       adding a parameter to `passesSearchFilter` means finding EVERY call site
+       (one filter in the collection-hits row was missed). CI caught both.
+  4. **TV: the Extensions tab's rows are focus targets with the ring**
+     (`ui/screens/ExtensionsScreen.kt`). Root cause of "I press the button on the
+     remote and nothing shows which option I'm on": those rows are plain `Row`s,
+     and a plain `Row` has no focus node — the D-pad could only ever land on the
+     small button at the end of the line. `PluginRow` (press = install / update /
+     uninstall, matching its own trailing button), `ProviderCard` (press = the
+     switch) and `SiteRow` (press = open) now wear `Modifier.tvPress`.
+     - **`tvPress` gained `previewPass`** (`tv/TvKeys.kt`), and this is the
+       durable trap: the preview pass runs ROOT-first, so a row-level preview
+       handler swallows a press aimed at the row's own button (pressing Uninstall
+       would run the row's action). A row that CONTAINS controls must use
+       `previewPass = false` (the normal pass, leaf-first). Verified in the
+       foundation sources that `clickable` handles Enter/DirectionCenter in
+       `onKeyEvent` (the normal pass) — so leaf-first is exactly right.
+       `HomeScreen`'s PickerRow and `MangaScreen`'s engine row were switched to
+       `previewPass = false` too: both contain their own clickables (the pin and
+       pack caret; the Popular/Latest chips).
+     - As always for TV work: this is compile-verified only — nothing here can
+       drive a D-pad, so the behaviour rests on the reasoning above.
+
+- **0.10.46** (versionCode 217) — the owner's "do some fixes" round, seven asks,
+  all built in one commit and pushed to `main` (CI green, run 36241494969;
+  `continuous` republished). The notes worth keeping:
+  1. **Telegram's "Video links" pill was off-screen** — the section strip was laid
+     out with the 16dp edge inset as *layout* padding (32dp narrower than the
+     screen), so with the counts on the first two pills the third sat entirely
+     past the right edge. Fixed in `ui/screens/TelegramScreen.kt`: the strip's
+     `Modifier` is `fillMaxWidth()` with the inset moved to `contentPadding`, and
+     `TgSectionPill` is compact (11/7dp padding, 15dp icon, `labelMedium`), so
+     ~57dp of the third pill peeks at rest.
+  2. **Adding lands on the section you added to** — `section` was state *inside*
+     `TelegramHome`; it is hoisted into `TelegramScreen` (rememberSaveable) so
+     `addChannel()` can set `TgSection.ADDED` and `addLink()` `TgSection.LINKS`.
+  3. **Back out of a Telegram chat/channel/section left the tab** — nothing in the
+     tab consumed back, so the press fell through to the NavHost (tabs are routes:
+     `ui/navigation/AppNav.kt`, `composable(Routes.TELEGRAM)`). A `BackHandler` in
+     `TelegramScreen` now steps out: chat → channel → section → tab.
+  4. **Back out of a Settings folder threw the index to the top** — one
+     `rememberLazyListState()` served both the index and the open folder, and
+     `LaunchedEffect(openFolder, openSub) { listState.scrollToItem(0) }` ran on
+     the way back too. Now `indexState` + `pageState` (the folder resets to its own
+     top; the index is never touched).
+  5. **The Profiles explanation ignored the hide-explanations switch** — it was
+     drawn outside the `LocalHideHelp` scope; the read is now inside the
+     `item { }` (a `LazyListScope` lambda is NOT composable — reading a
+     composition local there is a compile error).
+  6. **The remote could not select a provider on Home.** Root cause (this is the
+     durable lesson): `PickerRow` in `ui/screens/HomeScreen.kt` handles taps with
+     `Modifier.pointerInput(label, multi) { holdOrTap(onLongClick, onClick) }`, and
+     **a `pointerInput` is invisible to Compose's focus system** — no focus target
+     is created at all, so the D-pad walks past the row and centre does nothing.
+     New **`Modifier.tvPress`** in `tv/TvKeys.kt` (the fourth primitive there,
+     documented in the file header) adds the focus target + a centre-press
+     handler *alongside* the gesture (touch is untouched); applied to `PickerRow`
+     and to the manga engine rows in `ui/screens/MangaScreen.kt`. Also closed the
+     remaining remote gaps found by auditing every `Slider(`/`Switch(`/`Checkbox(`/
+     `RadioButton(`/`pointerInput` in the app: the reader's auto-scroll-speed
+     slider and page scrubber got `tvAdjust`, the two "Playback start" radio rows
+     in Settings became whole-row `clickable` + `tvToggle` (the radio alone is a
+     small target the focus search skips), and the search box's translate button
+     (a bare `detectTapGestures` Box in `ui/screens/SearchScreen.kt`) got
+     `tvPress`. `tvToggle`/`tvAdjust`/`tvPress` are now applied at every Slider
+     and Switch in the app; no Slider is without one.
+  7. **A subtitle-language bar in the player's "Load from internet" panel** (the
+     "only selected language subs show" ask). Built in `player/PlayerActivity.kt`
+     `showSubtitleSearchDialog()`: a `HorizontalScrollView` of focusable pill
+     chips (All / the user's own tag / en, hi, ar, fr, es, pt, id, bn, ta, te, ml,
+     ur, ru, zh, ja, ko), inserted at index 0 of the panel's content. Finding that
+     decided the design: **no subtitle site narrows by `locale`** (grep:
+     `SubtitleQuery.locale` is only ever *set* by the caller and read by nobody),
+     so the narrowing is CLIENT-SIDE in `render()` — `keep(lang)` compares through
+     `SubtitleLang.of(lang).code` (so "Arabic" and "ara" match), the per-source
+     counts are recomputed for the filtered list, and picking a language re-filters
+     the tracks already on screen (`lastQuery`/`searchDone`) instead of searching
+     again. The pick persists in the player's `subsPrefs` ("sub_lang_filter") and
+     is also sent as the query's `locale` so sites that order by language put it
+     first. The bar is built *after* `render` (a local function cannot be
+     referenced before its declaration) and placed with `contentView.addView(bar,
+     0, …)`.
+  8. The "Hold any provider for half a second…" line is now drawn regardless of
+     the hide-explanations switch (it is the only place the gesture is written
+     down). `HomeScreen.kt`'s `providers-hold-hint` item lost its
+     `if (!LocalHideHelp.current)` guard.
+  - **CI lesson this round:** the job summary in `GET /actions/jobs/{id}` does not
+    contain compiler errors — download the run's **`build-log` artifact**
+    (`GET /actions/artifacts/{id}/zip` with the token, unzip with
+    `@zip.js/zip.js`, read `gradle-build.log`, grep `^e: `). The one error this
+    round: **this Compose (BOM 2025.01.01 / foundation 1.7.6) has no
+    `Modifier.focusable(enabled, source, indication)`** — verified against the real
+    `foundation-android-1.7.6-sources.jar` — so the ring must be applied the way
+    `Clickable.kt` does it: `Modifier.indication(source, LocalIndication.current)`
+    then `.focusable(enabled, source)`.
+
+- **0.10.45** (versionCode 216) — the owner's two messages this round. The first
+  was a batch of four reports/fixes, the second added a feature on top:
+  1. **"Could not save the file" in Settings → Logs & diagnostics — on every log,
+     every time.** Root cause read out of the code, not guessed: the save inserted
+     into `MediaStore.Downloads` with DISPLAY_NAME + MIME_TYPE and nothing else,
+     and Android 11+ refuses exactly that (an insert with no
+     `RELATIVE_PATH` resolves to the root of shared storage, which an app cannot
+     write). The app's own download exporter (`download/DownloadEngine.kt`) had
+     always done it correctly (`RELATIVE_PATH = Download/Hikari` + `IS_PENDING`),
+     so the fix extracts ONE shared saver — new **`data/DownloadsSaver.kt`**
+     (`save`/`saveBytes`/`pathOf`), used by both `LogsScreen.saveLog` and
+     `BackupManager.saveToDownloads` — with a legacy public-dir fallback and a
+     failure REASON so the toast says why instead of nothing.
+  2. **A Telegram group full of videos said "This channel has no videos on its
+     public page".** Proved against the real page (`scratch/tg-young2.html` is
+     gone with the session; the finding is in the code): `t.me/s/izero5g` is a
+     public GROUP, whose page is a 12 KB landing page with ZERO
+     `tgme_widget_message` blocks — Telegram publishes a feed for public
+     *channels* and for nothing else — while the old `parsePage` returned an empty
+     video list and the tab claimed the chat had none. `TelegramPage` gained
+     `posts` (`hasFeed`), the account path became PRIMARY when signed in
+     (`Td.publicChat` → `walkChatVideos`, 4 pages × 60 up front), and the three
+     empty states are now honest (no preview / files withheld / genuinely none).
+  3. **Signed in, only 100 of your chats were listed.** `Td.loadChats` asked for
+     one `LoadChats` page; it now pages (`loadChatPage`, cap 2000) until TDLib
+     says there is nothing more.
+  4. **The provider picker's multi-select was undiscoverable.** A hint under the
+     "Providers" heading in `ProviderPickerSheet` (HomeScreen): "Hold any provider
+     for half a second to select more than one."
+  5. **The Telegram tab was restructured into sections.** `TelegramHome` is now a
+     fixed header (title + an always-visible **+**) over a horizontally
+     scrollable pill strip — "My chats · N", "Added channels · N" and (new, see
+     below) "Video links · N" — with the account card + chat search in the
+     My-chats section. `TgSection`, `TelegramSectionStrip`, `TgSectionPill`,
+     `TelegramMyChats`, `TelegramAddedChannels`.
+  6. **The owner's second message: "when click plus in telegram section give
+     option to add telegram video link to stream … pasting video link also add in
+     folder videos link, and can stream by clicking any added video link too."**
+     The + now opens a chooser (new `AddOptionRow`): **Public channel** (the old
+     flow) or **Video link**. Links live in a new **`telegram/TelegramLinks.kt`**
+     (`Link(url, channel, messageId, title, poster)`; `normalize` accepts
+     `t.me/<name>/<id>`, `?single`/`?comment`, `t.me/c/<internal>/<id>` and
+     `tg://resolve`; `describe` fills the title/still; `decode`/`encode`/`add`/
+     `remove`) stored under a new key `K.TELEGRAM_LINKS` / `telegramLinksFlow` /
+     `setTelegramLinks`, rendered by a new `TelegramLinksSection` +
+     `TelegramLinkRow`. Playing a row resolves the LINK at tap time — the account
+     first via new **`Td.linkVideo(url)`** (`TdApi.GetMessageLinkInfo`, then
+     `videoOf`, then a short forward walk for an album caption), the post's own
+     embed page second via new **`TelegramWeb.loadPost`/`parsePost`/
+     `TelegramPost`** (`t.me/<name>/<id>?embed=1`) — so a saved row outlives the
+     short-lived file reference Telegram returned when it was added. Evidence
+     gathered with `fetch_url` before coding: `t.me/telegram/441?embed=1` carries
+     one `tgme_widget_message` with a real `<video src>`, while
+     `t.me/Youngupdatesource/1444?embed=1` (a withheld 855 MB upload) carries the
+     `message_media_not_supported` block and the caption but no source — which is
+     why a withheld post gives the "sign in to play" toast rather than a silent
+     no-op.
+  - CHANGELOG section (### Fixed + ### Added) prepended; `versionName` 0.10.45.
+  - **CI:** the first push (`21236949`) FAILED to compile with exactly ONE error,
+    twice (debug + release): `TelegramWeb.kt:267:30 Type annotation class
+    'org.jspecify.annotations.Nullable' of the inferred type is inaccessible`.
+    Cause: **jsoup 1.22 annotates its API with the JSpecify `@Nullable`
+    TYPE-USE annotation** (`Element.selectFirst` → `@Nullable Element`), the
+    project has no `org.jspecify` on the compile classpath, and a generic
+    inference (`let`/`ifBlank`) that has to name one of those inferred types is a
+    hard ERROR, not a warning. Fixed in `86d3119` by giving every jsoup-derived
+    local an EXPLICIT type and avoiding `let`/`ifBlank` over jsoup returns (the
+    shape the pre-existing `parsePage`/`titleOf` already used). **A reusable trap
+    for a future session: never write `val x = someJsoupCall()` AND then pass `x`
+    through a generic function whose type parameter is inferred from it — declare
+    the type first.** CI run `36237448940` is green; the `continuous` pre-release
+    was re-published (three APKs, 11:14Z) and the `build` branch moved to
+    `637f1da0`. Latest non-prerelease release is still **`v0.10.42`** — no main
+    release from this round.
+
+- **0.10.44** (versionCode 215) — the owner's message: *"do those 2 things and this too"* — (a)
+  Profiles, (b) a switch that hides the explanation lines, (c) the Library sheet's
+  ticks not responding, (d) a Telegram public channel reporting "no video
+  available" although Telegram plays it, (e) a crash log. All in one push,
+  continuous build only — **no main release**. Four features/fixes plus one
+  data-format repair, so the details below are the reference for each.
+  - **(a) Profiles: `data/Profiles.kt` + `ui/screens/ProfilesScreen.kt` + entry on
+    the Settings index.** A profile is a SNAPSHOT of the whole preferences store
+    (minus `DeviceLocal`) in `filesDir/profiles/<id>.json`, plus a registry
+    (`profiles/registry.json`) holding the list and the active id. Switching =
+    `AppStore.replacePreferences(records)`, which CLEARS every key except
+    `DeviceLocal` and applies the target's — the mechanism that already existed
+    for backup/restore is `restorePreferences` (which deliberately does NOT clear:
+    right for a file, wrong for a profile). `BackupManager.refreshLiveState` was
+    made public and is reused so the once-at-startup settings (language, ad-block
+    selectors, WebView UA, DNS, extension instances) are re-read after a switch.
+    The download queue (`DownloadStore.raw`/`writeRaw`, new) is snapshotted too.
+    Design decisions worth keeping: the first profile is the setup the user
+    already has (`adopt`, offered when the picker is first opened — otherwise
+    creating a profile would look like it wiped their app); `createEmpty` writes
+    the registry with the OLD active id and lets `switchTo` do the save (a bug
+    caught in review: marking the new profile active first made the save a
+    no-op); `AppStore.K.PROFILE_TAG` is the store-side marker that makes "the
+    store and the registry agree" checkable, so a cleared store or a restored
+    backup re-applies the active profile instead of showing an empty app under a
+    profile's name; extension FILES and downloads stay shared, so
+    `ExtensionsScreen.remove` now also asks `Profiles.otherProfilesReference`
+    before deleting a plugin file (uninstalling in one profile used to take a
+    file another profile listed with it). Verified by reading the engines:
+    `AniyomiProviderSync`/`Cs3ProviderSync` only REPAIR existing rows
+    (`if (mine.isEmpty()) return false`), so an empty providers list really does
+    read as "nothing installed" — a new profile is a fresh install.
+  - **(b) Hide-explanations: `ui/components/HelpText.kt` (`LocalHideHelp` +
+    `helpShown()`), provided in `MainActivity` from `AppStore.hideHelpFlow()`, plus
+    the switch card (`HideHelpCard`) in Settings → App Layout.** The captions are
+    drawn by a dozen rows/cards/dialogs, so there is no single component to
+    change: the local is read where each line is drawn. Sites guarded: the
+    `supporting` parameter family (`SettingsToggle`, `MyStuffSectionRow`,
+    `SettingsSection.summary`, `SettingsFolderRow.subtitle`,
+    `SettingsPageHeader.subtitle`, `CollectionScreens.PickerLine`,
+    `ExtensionsScreen.ProviderCard`), and 60-odd inline "explanation paragraph"
+    `Text`s wrapped in `if (!LocalHideHelp.current) { … }` — found mechanically by
+    the rule *labelSmall/bodySmall + onSurfaceVariant + a literal ≥ 60 chars*,
+    then hand-filtered to EXCLUDE status/empty-state/error lines (e.g. "Nothing on
+    TMDB matched", "Waiting for the other device…", the Clear-data warning, DNS
+    check results). Unbalanced-brace check over all 281 .kt files after the sweep:
+    clean (the one flagged file, `cs3/FallbackResolver.kt`, was untouched and is a
+    tokenizer artifact of its regex string).
+  - **(c) Library ticks — root cause found, and it was exactly what it looked
+    like.** `CategoryToggleRow` (LibraryCategories.kt) applied ONLY
+    `Modifier.tvToggle(...)` — which is `focusable` + `onPreviewKeyEvent`, i.e.
+    D-pad only — and its `Checkbox` had `onCheckedChange = null` (decoration), so
+    on a touch device NOTHING in the row had a click handler: a tap on the row or
+    the box did nothing, which is why a ticked category could not be unticked.
+    Fixed with `Modifier.toggleable(value, role = Role.Checkbox, onValueChange)`
+    (touch + ripple + a11y) kept alongside `tvToggle` (the D-pad, consumed in the
+    preview pass so it cannot double-toggle).
+  - **(d) Telegram public channels — root cause proved by fetching the page.**
+    `t.me/s/Youngupdatesource` (the reported channel) DOES carry the posts, but
+    the video ones arrive with Telegram's `message_media_not_supported` block and
+    **no `<video src>` at all** (verified: 19 messages, zero `<video>` tags; the
+    per-post embed page `t.me/<ch>/1444?embed=1` too, and those posts are the
+    12:58 / 855 MB ones Telegram withholds from anonymous visitors). So
+    `TelegramWeb.parse` returned an empty list and the screen said "This channel
+    has no videos on its public page" — a claim about the channel that was simply
+    false. Fix: `TelegramWeb.parsePage`/`loadPage` return a `TelegramPage` with an
+    `unpublished` count; when a channel's page has video posts but no publishable
+    files, the tab now reads the channel through the user's OWN account —
+    `Td.publicChatId(@name)` (new; `TdApi.SearchPublicChat`, no join needed) then
+    `Td.chatVideos(...)`, rendered with the existing `ChatVideoCollection` and
+    played by the existing `playTdVideo`/`TdStream`, with "Load older" paging. Not
+    signed in → the empty state says what is actually happening and that signing
+    in fixes it.
+  - **(e) The crash: `IllegalArgumentException: Key "stremio|1617974660" was
+    already used`** — a lazy list with two items sharing an id. Keys of that shape
+    are provider ids, and two render sites had no dedupe
+    (`ExtensionsScreen` "STREMIO ADDONS",
+    `CollectionScreens` catalog-source picker). The real source is the installed
+    list itself: `AniyomiExtensionManager`'s own comment documents a past bug that
+    GREW duplicates ("I installed Anime World again and now it lists six of the
+    same provider"), so a store written by an older build can legitimately hold
+    two rows with one id — and `addProvider`/`setEnabled` cannot repair that.
+    Fixed at the source (`ProviderManager.refresh` prunes `distinctBy { it.id }`
+    AND writes the pruned list back, so the repair sticks) plus `distinctBy` at
+    both render sites.
+  - **Bonus data-format fix found while building profiles.** `PrefRecord` carries a
+    string set as a JSON array, and `AppStore.applyRecord`'s "ss" branch only
+    accepted a `List<*>` — a `JSONArray` (which is what a file gives back) was
+    silently DROPPED, so a restored backup lost every set-valued setting (hidden
+    tabs, disabled extensions, allowed sources). Both the backup and the profile
+    path are fixed by accepting a `JSONArray` there (and `Profiles` converts
+    explicitly).
+  - **Verification done here:** brace/paren balance over all 281 .kt files after
+    the scripted sweep; the Telegram root cause against the real fetched HTML;
+    the profiles-no-auto-adopt assumption against the Aniyomi/CS3 sync sources.
+    The compile itself is the CI run on the pushed sha.
+  - **CI:** the first push (`c547ab50`) FAILED to compile — 40 errors, all in 3
+    files: a glued `import` line in `SettingsScreen.kt` (a my-edit artifact);
+    a nullable `<video>` element in `TelegramWeb.kt` (the `msg.selectFirst`
+    result was passed where non-null was required — the loop now `continue`s on
+    a null element, so it smart-casts); and seven `tr()` calls inside
+    NON-composable lambdas in `ProfilesScreen.kt` (`scope.launch` bodies, the
+    dialog `onConfirm`s) — hoisted into `val msg… = tr(…)` at the top of the
+    composable and referenced from the lambdas. Fixed in `d922d750`; CI run
+    **`36233429646` is green**, the `continuous` pre-release was re-published
+    (`hikari-arm64-v8a/armeabi-v7a/signed.apk`, 09:50Z today) and the `build`
+    branch moved to `build: update test APK 202609260950`. Latest non-prerelease
+    release is still **`v0.10.42`** — no main release from this round. Note for a
+    future session: a plain `import` edit in a Kotlin file is easy to glue into
+    the neighbouring line; after any scripted edit, re-read the region.
+- **0.10.43** (versionCode 214) — two requests in one message. (a) *The report:* two
+  screenshots of the loading screen stuck on "Searching your extension for servers…"
+  for **51s** and **53s** (燃气十年 ep 379, 遮天 ep 182) while the SAME episode plays in
+  a couple of seconds in CloudStream, plus the decisive new clue — *"i tried play same
+  after closing and restarting app, and same episode plays in instant like not even
+  took 2 second"*. (b) *The feature:* in the WebView's ⋯ menu, an "allow redirect to
+  this site" for the link that was just blocked, and an allowed-redirect list that
+  accepts a single word (`filester` ⇒ any link containing it, whatever the TLD).
+  Continuous build only — **no main release**.
+  - **Which extension is the origin (evidence).** The Home log line in the user's own
+    crash-report breadcrumbs reads `Home: pick=hiki|2033716227|0 … from=Anime4i`, and
+    `hiki|<hash>|<i>` is exactly how `ExtensionsScreen` mints a `.hiki` provider id —
+    so the title's own extension is a **HIKARI** provider, i.e. the one engine whose
+    stream call goes through `ProviderGate` (`HikariProviderAdapter.getStreams`, lane
+    BACKGROUND). Same log: **531 installed providers**, device INFINIX X6815D / Android
+    13.
+  - **Root cause of the ~51s: the origin was asked twice, and the two asks could not
+    overlap.** `ContentRepository.fetchStreams` gave the origin a 12s **probe** and then
+    a full-budget retry. A provider call cannot be interrupted (`withTimeoutOrNull` only
+    abandons the WAIT), and `ProviderGate` allows ONE call into an extension at a time —
+    so the abandoned probe kept holding the extension while the "retry" waited for the
+    lock, i.e. probe-wait + probe's real duration + the whole second extraction. 12 +
+    ~40 ≈ the 51s/53s on screen, and a fresh launch has no abandoned call inside the
+    extension, which is why the restart played instantly. Fixed by giving **every
+    attempt the full budget** (45s, 90s Aniyomi — the same budget CloudStream gives a
+    plugin) and retrying only after a call really came back empty, which is the only
+    retry that can no longer queue behind a running call. The old 12s cap bought
+    nothing: nothing the player does waits on the origin any more (its auto-start waits
+    for the FIRST server, `StreamsLive.settleOrigin`), and the pass deadline + the
+    player's 4s failsafe bound the wait.
+  - **"First server fast" was structurally impossible for the CloudStream engine.**
+    `Cs3MainApiProvider.pluginSources()` returned an empty list unless
+    `pluginJob.isCompleted`, so the merge loop's `!pluginDone && sawPluginSource` branch
+    (its comment: "it streams them in as it goes") was **dead code** — no server could
+    be handed over until the whole `loadLinks` run returned, i.e. until the plugin's own
+    loadLinks budget expired. Now the partial list is read (guarded by a links/subs size
+    check so the 80ms poll does not re-map it for nothing), the loop breaks 2s after the
+    first link as its own comment intended, and a log line records when servers were
+    handed over while the plugin was still extracting.
+  - **`ProviderGate`'s BACKGROUND lane yielded app-wide.** Its "don't start while a page
+    is loading" test used `interactiveWindows` — a counter for ANY provider's page —
+    and parked a background call for up to `BACKGROUND_MAX_HOLD_MS` (20s) even when
+    nothing was contending its own extension, which a player's stream lookup sat behind.
+    Now that check buys `BACKGROUND_COURTESY_MS` (2s) and a page waiting on the SAME
+    extension keeps its full 20s hold (the case that was ever reported as a page being
+    held up). A `WAIT_LOG_MS` line names the reason a background call started late —
+    "a page is waiting for this extension" / "a page was loading" / "this extension was
+    still finishing an earlier call" — which is how the next report gets attributed.
+  - **Instrumentation for the next round.** `fetchStreams` logs `N server(s) in Ns
+    (attempt k/m)` for the origin and for any call ≥3s (`SLOW_CALL_LOG_MS`), plus a line
+    when an attempt answers nothing and is re-asked with the full budget. If the wait
+    persists after this build, the user's **Settings → Logs** will show whether the
+    extension itself took the time (its own seconds in that line) or Hikari held it (a
+    ProviderGate line).
+  - **Feature: allow-a-blocked-redirect, from the menu and as a word.**
+    `Data/RedirectAllow` is now the single matcher — `allowsIn(url, list)` / `allows(url)`:
+    an entry WITH a dot is a host (itself + subdomains), an entry WITHOUT one is matched
+    as a case-insensitive substring of the **whole URL** (`filester` ⇒ filester.com/.me/
+    .gg/.sh, and a host carried in a query). `WebViewActivity` remembers the refused
+    main-frame navigation (`lastBlockedRedirectUrl/Host`, cleared per page, set at all
+    four block sites including the Cloudflare-verify view), the ⋯ menu adds **"✔ Allow
+    redirect to <host>"** (id 11) only while there is one, and the action appends the
+    host to the stored list via `AppStore.setWebviewRedirectAllow` (which mirrors it
+    before the DataStore write) and immediately loads the refused URL; the blocked-redirect
+    toast now says where the way out is. Settings' supporting line explains both forms.
+  - **Costs/risks knowingly taken:** a CloudStream extraction now hands over the servers
+    it has ~2s after the first one and cancels the rest (the code's own intent:
+    "its later servers are a nice-to-have; playback speed is the point") — if a
+    "fewer servers than before" report comes back for a CS3 extension, this is it, and
+    the fix is a late-links channel from `getStreams` to the live session.
+  - **Two compile-fix commits followed the batch, both in `RedirectAllow.kt`.**
+    `com.hikari.app.data` has its own `data class Collection` (Models.kt), which shadows
+    `kotlin.collections.Collection` in EVERY file of that package — so `list: Collection<String>`
+    was `No type arguments expected for 'data class Collection'` (and `list.iterator()`
+    ambiguous). Parameter is now `list: Iterable<String>`; `Iterable` is not shadowed, but it
+    has no `isEmpty()`, so the guard is just `if (url.isNullOrBlank()) return false` — an empty
+    list falls through the loop to `false` anyway. Final green CI run: `36229174778` on
+    `22e19ac2`; `continuous` pre-release + `build` branch refreshed 08:25Z, no main release.
+- **0.10.42** (versionCode 213) — the user's report: *pairing from phone to TV copied
+  the phone's app lock (the TV came up on a PIN screen) and the phone's layout; the
+  fix must never carry either, the layout must be detected per device, and this build
+  is to be published as a MAIN RELEASE* (the first since 0.10.25 — dispatches
+  `build.yml` with `release=true`, `confirm_release=CONFIRM-RELEASE`,
+  `version=0.10.42`; the release body is the `## 0.10.42` CHANGELOG section, so that
+  section was written as a normal user-facing changelog "Everything added and fixed
+  since 0.10.25" in the same voice as `v0.10.25`'s notes — no debugging narrative).
+  - **Root cause (evidence, not a guess).** Pairing's payload *is*
+    `BackupManager.export(app)` (`PairHost.start`), and the guest applies it with
+    `BackupManager.restore` → `AppStore.restorePreferences`, which wrote EVERY key of
+    the one DataStore (`snapshotPreferences` = all 145 keys, no filter). Three separate
+    transfers came out of that single hole: (1) `appLock` + `appLockSecret` (+ length,
+    biometric, screen-off, delay, leave) → `AppLockGate` reads them and the TV comes up
+    locked with the phone's PIN; (2) `tvMode` — the phone's *default* `"auto"` (i.e.
+    "follow the device") overwrote the box's own explicit "this device is a TV"
+    override, so a box that misreports itself fell back to the phone layout, and
+    `uiScaleEnabled=false`/`uiScalePercent=100` plus `fullscreenOff` overwrote the
+    television's own 110% scale and immersive mode → the phone layout on the TV;
+    (3) `tvSeeded=true` arrived from the phone, so the TV's own first-run defaults
+    ("no poster effects, 110% UI scale", `HikariApp.onCreate`) could never be applied,
+    and `tvPerf`/`tvPerfChosen` replaced its lighter visuals.
+  - **Fix: one rule, one list, both directions.** New `AppStore.DeviceLocal` object
+    (`KEYS` built from `K.*.name` so it cannot drift, `contains(key)`): app lock (9
+    keys), layout (`tvMode`, `tvOverscan`, `uiScaleEnabled/Percent`, `fullscreenOff`),
+    this device's capability/first-run state (`tvPerf`, `tvPerfChosen`, `tvSeeded`,
+    `perfMode`), and the launcher-icon alias (`appIcon`). `snapshotPreferences()`
+    filters it (so a backup never contains them) and `restorePreferences()` filters it
+    again and now returns the number of settings actually applied — which is what
+    repairs a file written BEFORE the rule existed (the user's case). `BackupManager`
+    counts the kept-out records and reports them (`device-local kept: N`). UI copy
+    updated: Backup & Restore's footer, the pair confirm dialog ("Your app lock and
+    this device's layout stay as they are"), and a line on the guest screen after a
+    successful restore. Deliberately NOT device-local (documented in the code):
+    taskbar/buttons, My Stuff sections, theme/font/poster styling, and the *account*
+    logins (tracker tokens, Telegram api pair) — those are the user's, not the
+    device's. Deliberate non-fix: a device that ALREADY received a lock keeps it (an
+    update must never silently unlock an app); the lock screen's "Forgot password? →
+    Turn it off" is the way out, and the user was told.
+  - Bumped 212 → 213 (`0.10.41` → `0.10.42`); CHANGELOG section prepended; main
+    release published (see the release note above).
+- **0.10.41** (versionCode 212) — one user report, fixed from the crash log they
+  attached:
+  - **Tapping the settings gear on a CloudStream (Cs3) extension crashed the
+    app.** The attached `hikari-crash.log` named the frame exactly:
+    `java.lang.NoSuchMethodError: No static method
+    getDrawable(Resources;ILResources$Theme;)Drawable; in class
+    androidx.core.content.res.ResourcesCompat` at
+    `com.cncverse.Settings.getDrawable(Settings.kt:47)` ← `makeTvCompatible` ←
+    `onViewCreated` ← `FragmentManager.execPendingActions`. **Root cause: R8
+    release shrinking (app/proguard-rules.pro had no keep rule for
+    `androidx.core`), NOT a missing method in the library.** Evidence gathered:
+    (a) the stack trace shows the class present in base.apk but the METHOD absent;
+    (b) downloaded `androidx/core/core/1.13.1/core-1.13.1.aar` (google maven), read
+    `androidx/core/content/res/ResourcesCompat.class` out of `classes.jar` with a
+    hand-written class-file parser → 19 methods incl.
+    `getDrawable(Landroid/content/res/Resources;ILandroid/content/res/Resources$Theme;)Landroid/graphics/drawable/Drawable;`
+    → the pinned library HAS it;
+    (c) `proguard.txt` inside that AAR only has
+    `-keepclassmembernames,allowshrinking` rules for a few `Api*Impl` classes → the
+    library does not protect it;
+    (d) `grep ResourcesCompat` over the whole repo → ZERO app references, so with
+    R8 full-mode member removal the class survived (referenced by the kept
+    `androidx.appcompat` → `AppCompatResources`) but the method was deleted. A
+    plugin's call is a string in its own bytecode, so it must be kept by name —
+    the exact doctrine in that file's header (section "the two rules this whole
+    file is built on") which had been applied to the plugin SDKs but not to
+    androidx.
+  - **Fix:** new section **5b** in `app/proguard-rules.pro`: `-keep class
+    androidx.core.** { *; }` plus the rest of the androidx surface a plugin's own
+    screens can link (legacy, localbroadcastmanager, mediarouter, palette,
+    customview, cursoradapter, interpolator, vectordrawable, documentfile,
+    dynamicanimation, transition, constraintlayout, coordinatorlayout,
+    drawerlayout, slidingpanelayout, swiperefreshlayout, viewpager, viewpager2,
+    emoji2, autofill, savedstate, arch.core, tracing, startup, profileinstaller,
+    resourceinspection, versionedparcelable, collection, print, loader,
+    asynclayoutinflater, window, exifinterface, graphics, media) +
+    `-dontwarn androidx.**`. The list was derived from evidence, not guessing:
+    `app/libs/cloudstream3.jar` carries the `androidx.**.R` classes of
+    CloudStream's own build, which enumerates the androidx namespaces a plugin
+    author had on their compile classpath (activity, annotation, appcompat, arch,
+    autofill, biometric, cardview, compose, constraintlayout, coordinatorlayout,
+    core, cursoradapter, customview, documentfile, drawerlayout, dynamicanimation,
+    emoji2, exifinterface, fragment, graphics, interpolator, legacy, lifecycle,
+    loader, localbroadcastmanager, media, media3, mediarouter, navigation,
+    navigationevent, palette, preference, print, profileinstaller, recyclerview,
+    room, savedstate, slidingpanelayout, sqlite, startup, tracing, transition,
+    tvprovider, vectordrawable, versionedparcelable, viewbinding, viewpager,
+    viewpager2, window, work, core/ktx, core/viewtree); the namespaces already
+    kept by section 5 (appcompat/fragment/recyclerview/preference/cardview/
+    viewbinding/annotation/activity/lifecycle/webkit/media3/material/biometric)
+    and the ones only Hikari's own stack uses and which no plugin can see
+    (compose, navigation, datastore, room, sqlite, work) are deliberately left
+    out. Also note: **this bug class is release-only** (debug builds are not
+    shrunk), so it can never be reproduced in a debug APK — the user's installed
+    `continuous` build is a release build, which is why it crashed for them.
+  - **Second report in the same batch: "the clear all data button in settings is
+    in open — create a new setting folder Clear App data and put it in there,
+    with a warning on tap".** The button was a red `TextButton` at the very foot
+    of the settings index (a second copy sat at the bottom of About & Updates),
+    and it wiped every stored preference on the tap itself, with no warning.
+    Now: a top-level **Clear App data** folder (`SettingsFolder.CLEAR_DATA`, key
+    `clear-data`, `Icons.Filled.DeleteForever`, subtitle "Delete everything
+    Hikari has stored on this device") whose page is `ClearDataCard` — it says
+    what "everything" means, says it cannot be undone, and its button only opens
+    an `AlertDialog` ("Clear all data?" body "All your data will be deleted: …
+    This cannot be undone.") with a red **Clear** confirm and **Cancel**. That
+    dialog is the only remaining call site of `app.store.clearAll()`. Both old
+    links are gone, and ABOUT's subtitle dropped the "& reset" it no longer
+    carries ("Version, links, roadmap & reset" → "Version, links & roadmap").
+    The new English literals are deliberately NOT added to `assets/i18n/*.json`:
+    `tr()` falls back to the literal and `TagTranslator` live-translates the gap,
+    which is the established behaviour for new copy.
+  - Version bump 211 → 212 (`0.10.40` → `0.10.41`), CHANGELOG section prepended,
+    pushed to `main`; **no release** (CI publishes the `continuous` pre-release +
+    `build` branch).
+- **0.10.40** (versionCode 211) — three user reports in one push, all "do a real
+  fix, not a blind one":
+  - **"Still 55/60 servers and it will not play" (4th and 5th report of the same
+    complaint).** The screenshots that came with it are what settled it: the player
+    cover reading "Found 53 servers — still searching…" with no picture. Three
+    mechanisms were wrong at once. (1) `PlayerActivity` had NO `coverPlaybackLine`,
+    so the cover kept printing the SEARCH's count (`StreamsLive.statusFlow`) after
+    playback had already committed — the user's own screenshot of a committed
+    player is indistinguishable from a stuck one. Added: `playSource` clears it,
+    `playDirectInner` sets `Starting <server>…`, `advanceToServer` /
+    `awaitReplacementForStalledServer` set what is happening to the server, and the
+    status collector prefers it over the search line. (2) `probeAndPlay` awaited
+    `StreamProbe.resolve(...)` BEFORE `playDirectInner` — resolving a wrapper URL
+    walks dead hops and can take minutes, so the player held servers, had
+    committed, and sat in a probe. Now the walk is a detached `async` awaited with
+    `withTimeoutOrNull(firstProbeWaitMs = 2_500L)`; past it the RAW url goes to
+    ExoPlayer and the walk's answer is re-applied if it lands while that server is
+    still current and no frame has been drawn. (3) The no-first-frame watchdog was
+    armed `if (mime != null || drmManager != null)` (line 7919 of the previous
+    build), so a plain progressive source that reached READY with no picture was
+    unrecoverable — `recoverNoPicture(index)` now exists and the task is armed for
+    EVERY source, re-arming every `firstFramePollMs = 4_000L` while not READY.
+    Related fixes in the same area: `nextUntriedIndex` PASS 1 prefers an untried
+    `probeVerified()` server not on a dead host; `promptSlowServer` skips silently
+    (`maxSilentSkips = 6`) while nothing has played and the search is live; the
+    `START_FAILSAFE` poll also PULLS `StreamsLive.flow(liveId).value` and appends
+    anything missing, so the cover cannot say N servers while the player holds
+    none; `firstFrameRetried` is no longer reset by `playDirectInner` (it was reset
+    by the very restart path it guarded → a frameless server restarted every 20 s
+    forever) but when the walk moves to a different index; `noVideoPolls` bounds
+    the "READY but no video track reported yet" case at 3 re-checks.
+    `docs/SEARCH.md` invariant 18.
+  - **App lock still asked for the password with "Lock when I leave the app" OFF**
+    (screenshot: lock on, fingerprint on, screen-off switch ON, leave switch OFF,
+    grace Instant). Cause: `unlocked` was composition-only, so ANY fresh process
+    started locked, and removing an app from recents kills its process on nearly
+    every launcher. Added `AppStore.APP_LOCK_SESSION_OPEN` + `APP_LOCK_SESSION_AT`
+    (`appLockSession()` / `setAppLockSessionOpen(at)` / `setAppLockSessionClosed()`),
+    written by `setAppLock(on = true)` as closed and by the unlock as open; the
+    first frame seeds `unlocked` from `(open, at)` + the switches in this order:
+    leave OFF + screen-off OFF → unlocked; grace > 0 → `now - at < grace`;
+    leave ON + grace 0 → locked; leave OFF + screen-off ON → the stored session
+    decides. With a grace period, `ON_STOP` re-stamps the session with the moment
+    of leaving (that is what makes the stored deadline mean "since I left").
+    `ACTION_SCREEN_OFF` now calls `lockNow()` on the event itself (an already
+    backgrounded app never got another `ON_STOP`), and `lockNow()` persists the
+    closed session. `docs/APP_LOCK.md` rewritten around the table of decisions.
+  - **Aniyomi/SkyStream ~15 s to load the episode list and the detail page.**
+    (1) `AniyomiProvider.metaLocked` asked for episodes first through a 3-shape
+    walk then details, with a details-then-retry pass when a shape answered empty
+    (up to ~7 serial requests). Now: `combinedSupported(src)` answers by
+    REFLECTION (`Method.getDeclaringClass != AnimeSource::class.java`, cached in
+    `combinedCalls`) and `metaLocked` makes ONE
+    `getAnimeEpisodeUpdate(anime, emptyList(), true, true)` call for details +
+    episodes; `episodesLocked(..., preDetailed)` skips the double pass;
+    `fetchEpisodeList` tries only two shapes with the implemented one first;
+    `storeEpisodes(raw, animeId)` is the shared funnel. (2) `ProviderGate` gained
+    `enum class Lane { INTERACTIVE, BACKGROUND }`, `interactiveWaiters`,
+    `interactiveWindows`, `interactiveActive()`, `suspend fun <T> interactive(block)`
+    and `withProvider(id, lane = INTERACTIVE, block)`: INTERACTIVE = FIFO; BACKGROUND
+    = poll/tryLock only when no interactive waiter or window exists, with
+    `BACKGROUND_MAX_HOLD_MS = 20_000L` as the anti-starvation backstop.
+    `ContentRepository.metaFor`/`episodesFor` are now thin `ProviderGate.interactive`
+    wrappers around `metaForInner`/`episodesForInner`; `AniyomiProvider`,
+    `MangaProvider` and `HikariProviderAdapter` `getStreams` use
+    `Lane.BACKGROUND`; `DetailViewModel` gained `prefetchJob`/`startPrefetch()`/
+    `cancelPrefetch()` and `openStreams` cancels the prefetch first.
+    `docs/PERFORMANCE.md` new section.
+  - Version bump 210 → 211 (`0.10.39` → `0.10.40`), `CHANGELOG.md` section
+    prepended, docs above updated, pushed to `main` — **no release** (CI publishes
+    the `continuous` pre-release + `build` branch, which is what the user installs).
+- **0.10.39** (commit `b0bc0e63`, versionCode 210, CI green, published to
+  `continuous` — no main release) — three user reports in one push:
+  - **"56 servers found and it is still not playing" (third report of the same
+    thing).** The cause was the ONE remaining hold: the wait for the extension the
+    title was opened FROM — 45 s in "wait for more servers first" mode (`originReady`
+    in PlayerActivity, alarms at `originHoldUntil`/`originHeadStartMs`). 0.10.38 had
+    already zeroed it for the instant mode, which fixed nothing for a user whose
+    setting was the patient one. The hold is now GONE in both modes: DetailScreen
+    sends `originGraceMs = 0` / `originHeadStartMs = 0`, `tryStart` starts on the
+    first server, the 10 s `PREFERRED_GRACE_MS` "wait for the server last played
+    with" hold is gone too (kept as ORDER instead), and PlayerActivity gained a
+    `START_FAILSAFE_MS` (4 s poll) that starts playback and logs `FAILSAFE: …` if
+    servers ever sit with nothing committed. `docs/SEARCH.md` invariants 2 + 13.
+  - **Screen-off app lock did not lock.** `ProcessLifecycleOwner`'s `ON_STOP` read
+    `PowerManager.isInteractive`, which the platform can dispatch before the
+    display state settles → read as an ordinary "left the app" → consulted the
+    leave switch. `AppLockGate` now also registers a receiver for
+    `ACTION_SCREEN_OFF`/`ACTION_SCREEN_ON` (via `ContextCompat.registerReceiver`,
+    NOT_EXPORTED) and ORs the two signals; `enabled` is collected as `Boolean?` so
+    a locked app cannot flash its content during the cold-start read. New
+    `docs/APP_LOCK.md`.
+  - **Per-engine family switches.** `SearchScope.engineFamilies: Set<String>` +
+    `SearchScope.family(type)`; `nuvioFamily`/`stremioFamily` are computed
+    getters now. `AppStore.engineFamiliesFlow()` merges the two dedicated keys
+    (`NUVIO_SEARCH_ALL`/`STREMIO_SEARCH_ALL`, kept so existing choices survive)
+    with the new `searchFamilyTypes` set, and `setEngineFamily(type, on)` writes
+    whichever applies. `AppStore.searchAllExtensionsFlow()` now defaults to
+    **false**. `sameEngine` in `streamsForInner` is gated on
+    `SearchScope.family(origin.config.type)` and logs when siblings are skipped.
+    SettingsScreen renders one "Search every <engine>" row per installed engine
+    (`ProviderType.isFamilyEngine` filters out Nuvio/Stremio/IPTV/MANGA).
+    `docs/SEARCH.md` invariant 17.
+- **0.10.38** (commit `9db50401`, versionCode 209, CI green, published to
+  `continuous` — no main release) — five user reports in one push:
+  - **"Play instantly as soon as 1 server is found"** (reported with 12 servers
+    found and the video still not starting). The player's auto-start still held
+    the first server behind the ORIGIN's answer: in the default instant mode that
+    hold was a 3 s head start (`ORIGIN_HEAD_START_MS`). Both it and the
+    instant-mode backstop (`ORIGIN_INSTANT_GRACE_MS`) are 0 now, so
+    `originGraceMs = 0` on the launch intent makes `originReady` true the instant
+    anything is in hand. "Wait for more servers first" still uses
+    `ORIGIN_PLAY_GRACE_MS` (45 s). `docs/SEARCH.md` invariant 2.
+  - **THE BLANK chapters (`HttpException: HTTP error 403`) — two causes.**
+    (1) The chapter list is an Inertia XHR to `/serie/<slug>`, which theblank.net
+    guards with Cloudflare (live probe: `403 Attention Required! | Cloudflare`);
+    `ExtensionCloudflareInterceptor.isChallenge` demanded an HTML interstitial in
+    the BODY, but a JSON XHR body has none, so the solve never ran. It now treats
+    a 403/503 served BY Cloudflare as a wall (same as `CloudflareVerifier` and
+    CloudStream's `CloudflareKiller`). (2) Upstream, keiyoushi fixed The Blank's
+    chapters on 2026-09-16 ("reader v2 attestation and ece pages", versionCode
+    54) — an older installed extension fails in ANY reader, which is why Nekoread
+    works. `docs/MANGA.md`.
+  - **Catalogue / episode / detail loads are slow on the second look** (aniyomi &
+    skystream called out). New `data/MetaCache.kt`: on-disk JSON per key under
+    `filesDir/metacache/` (bounded, trimmable, no user data). `loadCatalogPage`
+    gained an `onCached` callback (CatalogScreen paints it at once) and now falls
+    back to the disk cache at any age; `episodesFor` paints a cached list via
+    `onPartial` then refreshes and returns the cache instead of `null` when every
+    engine is empty; `metaFor` serves a cached enriched meta outright (overview
+    present) and stores partial results it used to discard. TTLs 6 h / 12 h / 3 d.
+    `docs/PERFORMANCE.md`.
+  - **Stremio family search.** `SearchScope.stremioFamily` (mirrored from
+    `AppStore.stremioSearchAllFlow`, default on) + `stremioOrder` add every
+    installed Stremio addon when the title was opened FROM one and scope is "only
+    this extension"; `stremioPrimaryIds` now covers the family so the cross pass
+    does not re-ask them by title. New "Search every Stremio addon" switch on the
+    Server search card. `docs/SEARCH.md` invariant 16.
+  - **App lock: "Lock when I leave the app"** switch (default on) + the Trackers
+    card's intro paragraph removed. `AppStore.APP_LOCK_LEAVE`,
+    `AppLockGate` now picks the switch by trigger (`isInteractive` at `ON_STOP`).
+- **0.10.37** (versionCode 208) — three user reports in one push:
+  - **THE BLANK fails in Hikari with `Exception: HTTP Error 403` but loads in
+    Nekoread.** Not a Cloudflare wall: the extension's own Pam multisrc base GETs
+    the *site root* first and throws that exact string on any non-200. The site
+    was refusing Hikari's User-Agent — `effectiveWebViewUa()` returned the stock
+    Android WebView UA, and that one value is the default UA for *every*
+    Aniyomi/Mihon extension request. The stock string carries `; wv` and
+    `Version/4.0`, and theblank.net refuses anything marked as an embedded
+    reader (its own block page says so). Proved live with `root.superFetch`:
+    stock UA → 403 / 2746 bytes (block page); same string minus the two markers
+    → 200 / 112678 bytes; `; wv` alone → 403. Fix: `HikariApp.withoutWebViewMarkers()`
+    strips both markers before the UA is used anywhere (extension client, verify
+    WebView, offscreen solver), so a `cf_clearance` still matches what follows
+    it. One function, fixes every extension. See `docs/MANGA.md`.
+    *(The temporary `superFetch = {import:super-fetch-plugin}` added to this
+    workspace's `main.pjs` for the live probe has been removed.)*
+  - **A title opened from a Nuvio provider should search every installed Nuvio
+    provider**, even with "Search all installed extensions" off — and there is now
+    a dedicated switch ("Search every Nuvio provider", default on) in Settings →
+    Playback & Servers. New `SearchScope.nuvioFamily` flag + `nuvioOrder()`
+    comparator in `ContentRepository`; the family case outranks the
+    exception-collapse rule for nuvio origins only. `docs/SEARCH.md` invariant 15.
+  - **App lock: lock on screen-off, and a grace period.** "Lock when the screen
+    turns off" switch (default on = today's behaviour) plus a "Lock after
+    leaving" slider from Instant to 60 min (1-minute steps, default Instant).
+    `AppLockGate` reads `PowerManager.isInteractive` at `ON_STOP` to tell a
+    screen-off from an app switch, and stores a wall-clock timestamp (not a
+    running timer) so the grace period survives sleep and a killed process.
+- **0.10.36** (versionCode 207, published to `continuous`) — five user reports in
+  one push:
+  - **"Movies play, but every series on PenguPlay says no playable source; the
+    same addon shows 79 servers in Stremio."** Three Stremio-protocol mistakes in
+    `StremioAddon.getStreams`, all series-only: the `/stream/{type}/{id}` segment
+    used the item's `rawType` (TMDB's `tv`) first instead of the types the addon
+    declares FOR THAT ID; the walk stopped at the first non-empty parse, and a
+    link row (`externalUrl`/`ytId`) parses as a stream so it ended the search
+    before the spelling carrying the servers was asked; and the numeric part of a
+    `tmdb:…` id was read with `takeWhile { isDigit }` on the raw id, so an
+    addon declaring only `tt` was asked about an unknown namespace. Also: a
+    series with no episode list is asked for `:1:1`, and `/meta` falls back to
+    `TmdbBrowse.episodes` for a `tmdb:` id. See `docs/SEARCH.md` invariant 12.
+  - **"79 servers found and the video still does not start."** `originReady`'s
+    head start for the origin ignored servers a probe had already PROVED
+    playable; `PlayerSource.probeVerified()` now ends the hold (and wins
+    `healthyStartIndex`), so playback starts on the first proved server while the
+    rest keep loading in the background. Invariant 13.
+  - **"Installing extensions still feels laggy."** The install's 20 s timeout
+    abandoned the WAIT while the blocking OkHttp read ran on to 30 s on its IO
+    thread — a leaked download per cancelled/overrunning install. New
+    `Http.fetchBytesCancellable` / `downloadBytesCancellable` enqueue the call and
+    CANCEL it with the coroutine (`invokeOnCancellation { call.cancel() }`); every
+    install path (hiki/nuvio/skystream/cs3/aniyomi + nuvio first-run seeding) uses
+    them.
+  - **"Show all says nothing here right now although Home's row is full."**
+    `ContentRepository.loadCatalogPage` is now the single funnel for every
+    engine's catalogue read: retry once when the page the user is looking at comes
+    back empty, serve the last non-empty page 1 from a process-wide cache, and
+    surface the addon's own `error`/`totalItems` words. A search-only catalogue is
+    no longer a Home row (`StremioAddon.homeCatalogs`), and `search()` skips
+    catalogues that declare extras without `search`. Invariant 14.
+  - **D-pad completeness.** The TV layer existed; the remaining bare
+    `Switch`/`Slider`/`Checkbox` controls (Settings, Collections, Extensions,
+    History, Player controls, library-category picker, reader settings sheet) are
+    wrapped in `Modifier.tvToggle`/`Modifier.tvAdjust`. The reader's LIVE chrome
+    page scrubber deliberately keeps left/right for page navigation.
+
+- **0.10.35** (commits `750d385` + `78e4da3`, both CI green, published to
+  `continuous` as versionCode 206) — two user reports:
+  - **"The same PenguPlay addon shows dozens of servers in Stremio and Hikari
+    says no playable source found."** The real cause was that a title browsed
+    from Hikari's own Home/Search/Collections carries `providerId = "tmdb"`
+    (`TmdbMeta`) and `manager.byId("tmdb")` returns null, so `streamsForInner`
+    built every target list from a null origin: with "Server search: only this
+    extension" on, **no provider was asked at all**; Stremio addons were only
+    ever asked *by title* (useless for a catalogue-less addon like PenguPlay).
+    New `originless` case asks the id-resolving engines (all Stremio addons by
+    id + nuvio engines) whatever the scope switch says, and excludes them from
+    the by-title cross pass (`crossExtensionTargets(alsoSkip=…)`). See
+    `docs/SEARCH.md` invariants 10 and 11.
+  - **"It shows servers and then says no playable source."** `playableEvery`
+    filters `ytId`/`externalUrl` rows out of playback while the sheet renders the
+    raw list, and the resolver ran once at the end of a pass for the first 6 rows
+    in a 20 s budget. `PlayableResolver.warmLinks` now resolves every link row in
+    the background as it arrives and pushes the servers back through the view
+    model's live feed; `magnet:`/`torrent:` URLs in a Stremio `url` are parsed
+    into a torrent row; the verdict wording is honest ("Found N links … none
+    could be turned into a video") and `PlayerActivity.isNoResultVerdict`
+    recognises it; `CrossTally.title` stops a summary describing another title's
+    search.
+  - **Telegram Saved Messages search.** `videosOfPost` walked only 20 newer
+    messages and capped at 40 videos, so a tag with 200+ videos under it showed a
+    fifth of them; `searchChatVideos` cut a hit's tail at the page size and moved
+    the cursor to the next hit; the history walk treated a short page as the end
+    of the chat (TDLib documents that it may return fewer than asked); and the UI
+    needed a "Search further back" tap per page. All four are fixed (the tail
+    walk pages with `GetChatHistory(offset = -99, limit = 100)`, the walk ends on
+    a page with nothing new, the UI auto-pages with a live progress line), and
+    "Look in: Both" is now the union of the post-text search and the file-name
+    walk (`chatTextSearch` + `historySearch`).
+  - Telegram bugs here must be reasoned from `TdApi.java`'s own doc comments
+    (the vendored copy in `scratch/TdApi.java` is gone with the session; the
+    aar's `TdApi` in `app/libs/` is the source of truth) — e.g. negative
+    `GetChatHistory.offset` = "additionally -offset NEWER messages", and the
+    returned count "can be smaller than the specified limit".
+
+- **0.10.34** (commit `57e4050`, CI green, published to `continuous`) — six
+  user reports, all in one push:
+  - Telegram: chat/channel taps never opened anything (the "no chat open"
+    sentinel was `-1` while every channel id is negative); a tag written as its
+    own message above the videos found nothing (the search asked TDLib for VIDEO
+    messages whose text matched, and those videos have no text — it now searches
+    POSTS and resolves each hit to the videos that follow it). See
+    `Td.searchChatVideos` / `Td.videosOfPost` / `TelegramScreen` (`openChat`).
+  - Extension install jank/crash: `requestRefresh()` is ignored during a bulk
+    run (which rebuilds once itself), `checkUpdates` streams the file hash and
+    caches it per `(size, mtime)`, `updateProviders` and `reloadInstalled` skip
+    publishing an unchanged value, and `ProviderManager.refresh` skips a rebuild
+    whose configs are identical.
+  - Stremio "no playable source": `ytId` and `externalUrl` rows were filtered
+    out downstream and never played. New `cs3/PlayableResolver.kt` resolves both
+    (`ytId` via NewPipeExtractor, whose `NewPipe.init(Downloader)` had **never**
+    been called in this app, so the jar's YouTube extractor could not work at
+    all; only MUXED YouTube formats are offered — the player has no audio-track
+    field). Wired in at the end of `ContentRepository.streamsForInner`.
+  - Trackers: the sign-in dialog now preflights the authorize URL
+    (`TrackerApi.checkAuthorize`) so a refused client id is *explained* instead
+    of opening MAL's `401` + `WWW-Authenticate: Basic realm="OAuth"` — which a
+    browser renders as a username/password box. The WebView cancels
+    `onReceivedHttpAuthRequest`. The pending sign-in (`TrackerApi.Pending`,
+    `AppStore.trackerPending`) is persisted so a browser redirect finishes the
+    code exchange in `MainActivity` even if the dialog is gone.
+  - **AnimeOnline.Ninja (Aniyomi)** — investigated, no Hikari-side defect found
+    (site markup matches the extension's selectors; the QuickJS bridge, the
+    `wsidchk` solver and the `Injekt` singletons the extension needs are all
+    present). The extension's own repo rewrote that source on 2026-08-31, so an
+    older installed build is the thing to check. Recorded in the 0.10.34
+    `### Notes` section of the repo's CHANGELOG.
