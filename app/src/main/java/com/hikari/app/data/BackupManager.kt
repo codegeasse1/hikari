@@ -501,8 +501,12 @@ object BackupManager {
      * element blocker's selectors, the WebView UA, slow-connection timeouts, the
      * UI language, the extension-verification guard). Without this the restored
      * values would look like they "did not take" until the next launch.
+     *
+     * Public because a PROFILE switch is the same kind of event — see
+     * [com.hikari.app.data.Profiles.switchTo], which re-uses this rather than
+     * keeping a second list of "the settings that are read once at startup".
      */
-    private suspend fun refreshLiveState(app: HikariApp) {
+    suspend fun refreshLiveState(app: HikariApp) {
         runCatching { app.elementBlocks = app.store.elementBlocks() }
         runCatching {
             app.webViewUseDefaultUa = app.store.webviewUseDefaultUa()

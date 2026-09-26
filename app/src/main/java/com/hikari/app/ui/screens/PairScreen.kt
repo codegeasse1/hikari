@@ -1,4 +1,6 @@
 package com.hikari.app.ui.screens
+
+import com.hikari.app.ui.components.LocalHideHelp
 import com.hikari.app.i18n.tr
 
 import android.Manifest
@@ -265,6 +267,7 @@ fun PairScreen(app: HikariApp, onBack: () -> Unit) {
             )
         }
         item {
+            if (!LocalHideHelp.current) {
             Text(
                 tr(
                     "Both devices have to be on the same Wi-Fi. Nothing is uploaded " +
@@ -274,6 +277,7 @@ fun PairScreen(app: HikariApp, onBack: () -> Unit) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(bottom = 12.dp),
             )
+            }
         }
 
         // ---- Copy from this device ----------------------------------------
@@ -303,6 +307,7 @@ fun PairScreen(app: HikariApp, onBack: () -> Unit) {
                         }
                     }
                     Spacer(Modifier.height(6.dp))
+                    if (!LocalHideHelp.current) {
                     Text(
                         tr(
                             "Shows a code for the other device. Open this same page there and " +
@@ -311,6 +316,7 @@ fun PairScreen(app: HikariApp, onBack: () -> Unit) {
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    }
                     if (!hosting) {
                         Spacer(Modifier.height(12.dp))
                         Button(
@@ -463,6 +469,7 @@ fun PairScreen(app: HikariApp, onBack: () -> Unit) {
                         )
                     }
                     Spacer(Modifier.height(6.dp))
+                    if (!LocalHideHelp.current) {
                     Text(
                         tr(
                             "On the other device choose \"Copy my setup\", then scan its QR " +
@@ -472,6 +479,7 @@ fun PairScreen(app: HikariApp, onBack: () -> Unit) {
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    }
                     Spacer(Modifier.height(12.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         OutlinedTextField(

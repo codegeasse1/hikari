@@ -102,6 +102,28 @@ class AppStore(private val ctx: Context) {
         val HIDE_CONTINUE = booleanPreferencesKey("hideContinue")
         /** Animate animated covers on tiles (see [gifAnimFlow]). */
         val GIF_ANIM = booleanPreferencesKey("gifAnim")
+        /**
+         * Draw the app's small grey EXPLANATION lines: the caption under a
+         * settings row, a sheet's note, a dialog's paragraph. ON is the app as
+         * it has always been; OFF removes them everywhere at once and leaves the
+         * titles, the controls and the values — see
+         * [com.hikari.app.ui.components.LocalHideHelp], which is how every
+         * screen reads it.
+         */
+        val HIDE_HELP = booleanPreferencesKey("hideHelp")
+        /**
+         * Which profile the store's contents currently ARE — the only link
+         * between the preferences file and the profile registry that lives in
+         * the app's files directory (see [Profiles]).
+         *
+         * It is what makes "the store and the registry agree" a checkable fact
+         * instead of an assumption: it is written on every profile switch, and a
+         * mismatch (the app's data was cleared, or restored from a file, while
+         * the registry survived) is what tells the app to re-apply the active
+         * profile's snapshot instead of showing an empty app under a profile
+         * that says otherwise.
+         */
+        val PROFILE_TAG = stringPreferencesKey("profileTag")
         val LAST_SOURCE = stringPreferencesKey("lastSource")
         val ELEMENT_BLOCKS = stringPreferencesKey("elementBlocks")
         val AD_ENABLED = booleanPreferencesKey("adEnabled")
@@ -2441,6 +2463,28 @@ class AppStore(private val ctx: Context) {
         write("GIF_ANIM") { it[K.GIF_ANIM] = on }
     }
 
+    /**
+     * Whether the app's explanation lines are hidden (Settings → App Layout →
+     * "Explanations"). Off by default: the captions are what explain a setting
+     * to a user who has never seen it, and a user who does not want them can say
+     * so once — see [com.hikari.app.ui.components.LocalHideHelp].
+     */
+    fun hideHelpFlow(): Flow<Boolean> =
+        store.data.map { it[K.HIDE_HELP] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun hideHelp(): Boolean = hideHelpFlow().first()
+
+    suspend fun setHideHelp(on: Boolean) {
+        write("HIDE_HELP") { it[K.HIDE_HELP] = on }
+    }
+
+    /** Which profile the store currently holds — see [K.PROFILE_TAG] and [Profiles]. */
+    suspend fun profileTag(): String = store.data.first()[K.PROFILE_TAG] ?: ""
+
+    suspend fun setProfileTag(id: String) {
+        write("PROFILE_TAG") { it[K.PROFILE_TAG] = id }
+    }
+
     // ---- Per-extension auto-translate (WebView pages → English) ----
 
     /** Provider ids whose web pages are always translated to English. */
@@ -3315,6 +3359,39 @@ class AppStore(private val ctx: Context) {
         return travelling.size
     }
 
+    /**
+     * Replaces the WHOLE store with [records] — except for the settings that
+     * describe THIS DEVICE ([DeviceLocal]), which are kept exactly as they are.
+     *
+     * This is what switching profile is (see [Profiles]): a profile is a
+     * snapshot of everything the user built — installed extensions, library,
+     * history, favourites, collections, accounts, preferences — so arriving in
+     * one has to leave nothing of the profile being left behind.
+     * [restorePreferences] deliberately cannot do that: it writes the keys it is
+     * handed and leaves every other key alone, which is right for a backup file
+     * (it must not wipe a setting the file predates) and wrong here.
+     *
+     * The device-local settings survive by design, for the same reason they do
+     * not travel in a backup: the app lock and the phone/television layout
+     * describe the MACHINE, and a second profile is not a second device. A
+     * profile therefore inherits this device's layout and lock rather than being
+     * able to lock or unlock the app by being switched to.
+     *
+     * Returns how many settings the incoming profile brought.
+     */
+    suspend fun replacePreferences(records: List<PrefRecord>): Int {
+        val keep = store.data.first().asMap()
+            .filterKeys { DeviceLocal.contains(it.name) }
+            .mapNotNull { (key, value) -> recordOf(key.name, value) }
+        val incoming = records.filterNot { DeviceLocal.contains(it.key) }
+        write("the profile switch") { prefs ->
+            prefs.clear()
+            for (r in keep) applyRecord(prefs, r)
+            for (r in incoming) applyRecord(prefs, r)
+        }
+        return incoming.size
+    }
+
     /** [value] in the backup file's own terms, or null for a type the file
      *  format has no code for (nothing in this store uses one today). */
     private fun recordOf(name: String, value: Any): PrefRecord? = when (value) {
@@ -3340,8 +3417,18 @@ class AppStore(private val ctx: Context) {
             "l" -> (r.value as? Number)?.let { prefs[longPreferencesKey(r.key)] = it.toLong() }
             "f" -> (r.value as? Number)?.let { prefs[floatPreferencesKey(r.key)] = it.toFloat() }
             "d" -> (r.value as? Number)?.let { prefs[doublePreferencesKey(r.key)] = it.toDouble() }
-            "ss" -> (r.value as? List<*>)?.let { list ->
-                prefs[stringSetPreferencesKey(r.key)] = list.filterIsInstance<String>().toSet()
+            "ss" -> {
+                // A string set arrives as a List when it came from the store and
+                // as a JSONArray when it came from a JSON file (a backup or a
+                // profile snapshot), because org.json has no other way to carry
+                // one. Accepting only the List is how a restored "hidden tabs" /
+                // "disabled extensions" set used to be dropped in silence.
+                val list: List<*>? = when (val v = r.value) {
+                    is List<*> -> v
+                    is JSONArray -> (0 until v.length()).map { v.optString(it) }
+                    else -> null
+                }
+                list?.let { prefs[stringSetPreferencesKey(r.key)] = it.filterIsInstance<String>().toSet() }
             }
             "bin" -> (r.value as? String)?.let { b64 ->
                 runCatching { android.util.Base64.decode(b64, android.util.Base64.NO_WRAP) }

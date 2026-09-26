@@ -319,6 +319,18 @@ class HikariApp : Application() {
         // the log could never answer which heap ran out (see [MemoryReport]).
         Logs.log("Memory", com.hikari.app.data.MemoryReport.device(this))
         providers = ProviderManager(store, this)
+        // Profiles (Settings → Profiles): read the registry, and make the store
+        // agree with the active profile. Normally that is a no-op — the store IS
+        // the active profile's contents — but if the two were separated (the
+        // app's data was cleared while the registry survived, or a backup
+        // replaced the store), the profile's snapshot is re-applied instead of
+        // the app coming up empty under a profile that says otherwise. See
+        // [com.hikari.app.data.Profiles.load], which is also what publishes the
+        // profile list every screen reads.
+        appScope.launch {
+            runCatching { com.hikari.app.data.Profiles.load(this@HikariApp) }
+                .onFailure { Logs.log("Profiles", "could not read the profile registry: ${it.message}") }
+        }
         // Nothing in Hikari ever loads a Cloudflare challenge on its own: a
         // verification page opens only when the user taps the WebView (globe)
         // button themselves (see CloudflareVerifier).

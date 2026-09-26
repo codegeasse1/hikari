@@ -33,6 +33,10 @@ import androidx.compose.ui.unit.sp
 import com.hikari.app.i18n.tr
 import com.hikari.app.ui.theme.rememberGlassTokens
 
+// Part of this file's own package: the app-wide "hide the explanations" switch
+// (see LocalHideHelp), which every caption here answers to.
+import com.hikari.app.ui.components.helpShown
+
 /**
  * The header of EVERY page inside Settings — a folder page, the Logs page, the
  * player-control editor — draws its name at this one size, so no settings page
@@ -165,13 +169,15 @@ fun SettingsPageHeader(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Spacer(Modifier.height(1.dp))
-                Text(
-                    subtitle,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                if (helpShown()) {
+                    Text(
+                        subtitle,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
             if (trailing != null) {
                 Spacer(Modifier.width(8.dp))

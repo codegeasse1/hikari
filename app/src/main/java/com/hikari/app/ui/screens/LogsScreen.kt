@@ -1,4 +1,6 @@
 package com.hikari.app.ui.screens
+
+import com.hikari.app.ui.components.LocalHideHelp
 import com.hikari.app.i18n.tr
 import com.hikari.app.i18n.I18n
 
@@ -239,12 +241,14 @@ fun LogsPage(app: HikariApp, onBack: () -> Unit) {
 
         item {
             Column(Modifier.fillMaxWidth().padding(top = 14.dp)) {
+                if (!LocalHideHelp.current) {
                 Text(
                     tr("Logs live only on this device and are never uploaded " + "automatically — nothing leaves your phone until you tap ") +
                         "Share or Save.",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                }
                 Spacer(Modifier.height(6.dp))
                 TextButton(onClick = { showClearDialog = true }) {
                     Icon(

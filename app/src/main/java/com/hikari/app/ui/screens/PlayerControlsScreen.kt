@@ -1,4 +1,6 @@
 package com.hikari.app.ui.screens
+
+import com.hikari.app.ui.components.LocalHideHelp
 import com.hikari.app.i18n.tr
 
 import androidx.activity.compose.BackHandler
@@ -190,11 +192,13 @@ fun PlayerControlsPage(app: HikariApp, onBack: () -> Unit) {
                                 tr("Brightness & volume swipes"),
                                 style = MaterialTheme.typography.titleSmall,
                             )
+                            if (!LocalHideHelp.current) {
                             Text(
                                 tr("Drag up or down on the video: the left half changes the brightness, the right half the volume. Off means the surface only plays."),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
+                            }
                         }
                         Spacer(Modifier.width(10.dp))
                         Switch(

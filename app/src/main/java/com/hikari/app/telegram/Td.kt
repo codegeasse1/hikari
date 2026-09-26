@@ -827,6 +827,35 @@ object Td {
     }
 
     /** The videos of a chat, newest first; [before] walks back through history. */
+    /** True when a query can be answered right now — the account is signed in
+     *  and the client is running. */
+    fun isSignedIn(): Boolean = _auth.value is Auth.Ready
+
+    /**
+     * The chat id of a PUBLIC channel (or group) by its name, resolved WITHOUT
+     * joining it: `SearchPublicChat` is Telegram's own "look this up" call, and
+     * reading the history of a public channel this way is how a client shows a
+     * channel it has not joined.
+     *
+     * This is what makes a channel playable when the anonymous web preview
+     * cannot publish its videos (see
+     * [com.hikari.app.telegram.TelegramPage.unpublished]) — the file is
+     * the same one the user's own Telegram client plays.
+     *
+     * Returns null when there is no client, the name is unknown, or Telegram
+     * refuses; the caller then reports what the public page could not show.
+     */
+    suspend fun publicChatId(username: String): Long? {
+        val name = username.trim()
+            .removePrefix("@")
+            .removePrefix("https://t.me/")
+            .removePrefix("http://t.me/")
+            .removePrefix("t.me/")
+            .substringBefore('/')
+        if (name.isBlank()) return null
+        return (query(TdApi.SearchPublicChat(name)) as? TdApi.Chat)?.id
+    }
+
     suspend fun chatVideos(chatId: Long, before: Long = 0, limit: Int = 60): List<ChatVideo> {
         val result = query(TdApi.GetChatHistory(chatId, before, 0, limit, false)) as? TdApi.Messages
             ?: return emptyList()

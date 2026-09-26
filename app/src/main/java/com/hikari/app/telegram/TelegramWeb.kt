@@ -22,6 +22,29 @@ data class TelegramVideo(
     val dateLabel: String?,
 )
 
+/** One page of a channel's public web preview. */
+data class TelegramPage(
+    /** The channel's own title, when the page carries one. */
+    val title: String?,
+    /** The playable videos on this page, newest first. */
+    val videos: List<TelegramVideo>,
+    /**
+     * How many posts on this page carry a video that Telegram does NOT publish
+     * to a browser — the message shows Telegram's own "media not supported /
+     * view in Telegram" block instead of a `<video src>`.
+     *
+     * This number is the difference between two very different answers: "this
+     * channel has no videos" and "this channel's videos are not available
+     * anonymously". Telegram withholds the file for a large upload (the
+     * reported channel's posts are 12:58 / 855 MB) and for content its owner
+     * restricted, and a channel of those looks EMPTY to [parse] — which is what
+     * the tab used to tell the user. It is what the account-based fallback keys
+     * on (see the Telegram screen): the same channel read through the user's own
+     * Telegram login has the files.
+     */
+    val unpublished: Int = 0,
+)
+
 /**
  * Telegram channels, read from the web preview Telegram publishes for them.
  *
@@ -85,20 +108,47 @@ object TelegramWeb {
         channel: String,
         before: Long? = null,
         query: String? = null,
-    ): Pair<String?, List<TelegramVideo>>? {
+    ): Pair<String?, List<TelegramVideo>>? =
+        loadPage(channel, before, query)?.let { it.title to it.videos }
+
+    /** As [load], keeping the count of video posts Telegram did not publish —
+     *  see [TelegramPage.unpublished]. */
+    fun loadPage(
+        channel: String,
+        before: Long? = null,
+        query: String? = null,
+    ): TelegramPage? {
         val html = Http.getString(pageUrl(channel, before, query), HEADERS) ?: return null
-        return titleOf(html) to parse(html, channel)
+        return parsePage(html, channel)
     }
 
     /** Every post on a preview page whose video can actually be played. */
-    fun parse(html: String, channel: String): List<TelegramVideo> {
-        val doc = runCatching { Jsoup.parse(html) }.getOrNull() ?: return emptyList()
+    fun parse(html: String, channel: String): List<TelegramVideo> = parsePage(html, channel).videos
+
+    /** [parse], plus the channel's title and how many video posts were withheld
+     *  (see [TelegramPage]). */
+    fun parsePage(html: String, channel: String): TelegramPage {
+        val doc = runCatching { Jsoup.parse(html) }.getOrNull()
+            ?: return TelegramPage(null, emptyList(), 0)
         val out = ArrayList<TelegramVideo>()
+        var unpublished = 0
         for (msg in doc.select("div.tgme_widget_message")) {
             val id = msg.attr("data-post").substringAfterLast('/').toLongOrNull() ?: continue
-            val video = msg.selectFirst("video") ?: continue
-            val src = video.attr("src").ifBlank { video.attr("data-src") }
-            if (!src.startsWith("http")) continue
+            val video = msg.selectFirst("video")
+            val src = video?.let { it.attr("src").ifBlank { it.attr("data-src") } }.orEmpty()
+            if (!src.startsWith("http")) {
+                // A post that IS a video Telegram will not hand to a browser:
+                // either its player arrived without a source, or the message
+                // carries the "media not supported" block. Counted, so the tab
+                // can tell the user the truth about the channel (and fall back to
+                // the account) instead of reporting an empty channel.
+                if (msg.selectFirst(".tgme_widget_message_video_player") != null ||
+                    msg.selectFirst(".message_media_not_supported") != null
+                ) {
+                    unpublished++
+                }
+                continue
+            }
             val text = msg.selectFirst(".tgme_widget_message_text")?.text()?.trim().orEmpty()
             val fileName = msg.selectFirst(".tgme_widget_message_document_title")?.text()?.trim().orEmpty()
             val date = msg.selectFirst("time")?.attr("datetime")?.takeIf { it.isNotBlank() }
@@ -120,7 +170,7 @@ object TelegramWeb {
                 )
             )
         }
-        return out
+        return TelegramPage(titleOf(html), out, unpublished)
     }
 
     private fun thumbnailOf(msg: Element, video: Element): String? {

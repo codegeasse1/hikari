@@ -1,5 +1,7 @@
 package com.hikari.app.ui.screens
 
+import com.hikari.app.ui.components.LocalHideHelp
+
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -297,6 +299,7 @@ fun IptvScreen(nav: NavHostController) {
             title = { Text(tr("Add IPTV playlist")) },
             text = {
                 Column(Modifier.verticalScroll(rememberScrollState())) {
+                    if (!LocalHideHelp.current) {
                     Text(
                         tr(
                             "Paste an M3U/M3U8 link — an Xtream panel's " +
@@ -306,6 +309,7 @@ fun IptvScreen(nav: NavHostController) {
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    }
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
                         value = addLink,

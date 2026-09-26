@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -41,6 +42,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -220,9 +222,26 @@ private fun CategoryToggleRow(name: String, checked: Boolean, onToggle: () -> Un
         Modifier
             .fillMaxWidth()
             .padding(vertical = 2.dp)
-            // The whole line is the target, and it answers the D-pad itself —
-            // see [Modifier.tvToggle]. A bare Checkbox at the start of a row is
-            // skipped by the focus search on a television.
+            // The whole line is the target — for a FINGER as well: a tap
+            // anywhere on the row ticks or unticks the category. This is the
+            // half that was missing: the row used to answer only the D-pad (see
+            // [Modifier.tvToggle]) while its Checkbox was decorative
+            // (`onCheckedChange = null`), so on a phone a tap on the row did
+            // nothing at all and there was no way to untick what was ticked —
+            // "clicking anything to tick, untick is unclickable".
+            //
+            // [Modifier.toggleable] is what gives a row the touch handler, the
+            // pressed-state ripple AND the accessibility semantics a checkbox
+            // row needs, in one modifier — the same thing Material's own
+            // Checkbox is built on.
+            .toggleable(
+                value = checked,
+                role = Role.Checkbox,
+                onValueChange = { onToggle() },
+            )
+            // …and this is the half that was already there: the D-pad presses
+            // and left/right flips arrive in the PREVIEW pass, so a remote
+            // cannot tick it twice through both modifiers.
             .tvToggle(checked, onValueChange = { onToggle() }),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -269,12 +288,14 @@ fun CategoryManagerSheet(
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold,
             )
+            if (!LocalHideHelp.current) {
             Text(
                 tr("Organise your saved titles. Renaming keeps every title filed under it."),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 2.dp, bottom = 8.dp),
             )
+            }
             LazyColumn(Modifier.heightIn(max = 300.dp)) {
                 items(categories, key = { it.id }) { c ->
                     if (editingId == c.id) {

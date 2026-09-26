@@ -1,5 +1,7 @@
 package com.hikari.app.ui.screens
 
+import com.hikari.app.ui.components.LocalHideHelp
+
 import android.content.Intent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -226,11 +228,13 @@ fun TelegramScreen(nav: NavHostController) {
                         )
                     }
                     Spacer(Modifier.height(8.dp))
+                    if (!LocalHideHelp.current) {
                     Text(
                         tr("Only public channels can be read without signing in to Telegram."),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    }
                 }
             },
             confirmButton = {
@@ -1650,24 +1654,67 @@ private fun TelegramChannelVideos(
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
+    val app = LocalContext.current.applicationContext as HikariApp
     var videos by remember(channel) { mutableStateOf<List<TelegramVideo>?>(null) }
     var failed by remember(channel) { mutableStateOf(false) }
     var loadingMore by remember(channel) { mutableStateOf(false) }
     var reachedEnd by remember(channel) { mutableStateOf(false) }
+    // How many of the channel's posts carry a video Telegram does NOT publish to
+    // a browser (see TelegramPage.unpublished) — the difference between "this
+    // channel has no videos" and "this channel's videos are not available
+    // anonymously", which used to be reported as the former.
+    var unpublished by remember(channel) { mutableStateOf(0) }
+    // The account path: this channel read through the user's own Telegram login.
+    // Used exactly when the public page has video posts whose files it will not
+    // hand over — Telegram withholds them for large uploads and for restricted
+    // channels, and the user's own account plays them (the same files the
+    // Telegram app the user is looking at is playing).
+    var tdVideos by remember(channel) { mutableStateOf<List<Td.ChatVideo>?>(null) }
+    var tdChatId by remember(channel) { mutableStateOf<Long?>(null) }
+    var tdEnded by remember(channel) { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    // How the videos are drawn — the same stored preference the account's own
+    // chat pages use (see TgView), so the fallback list looks like every other
+    // list of Telegram videos in the app.
+    var viewKey by rememberSaveable { mutableStateOf(TgView.LIST.key) }
+    val view = TgView.fromKey(viewKey)
+    LaunchedEffect(Unit) { viewKey = TgView.fromKey(app.store.telegramView()).key }
 
     // Hoisted strings: the loading ones run outside composition.
     val errText = tr("Telegram did not answer. Check your connection and try again.")
     val emptyText = tr("This channel has no videos on its public page.")
+    // The honest version of the empty state: the posts ARE there, the FILES are
+    // not published to anonymous visitors.
+    val withheldText = tr(
+        "Telegram's public page for this channel lists its posts but not the video " +
+            "files — it shows them as \"view in Telegram\" only, which is what it " +
+            "does for large uploads and for channels with saving restricted. Sign " +
+            "in to Telegram above and they play here with your own account."
+    )
 
-    LaunchedEffect(channel) {
-        val page = withContext(Dispatchers.IO) { TelegramWeb.load(channel) }
+    /**
+     * One page of the channel: the anonymous public preview, and — only when it
+     * turns out to have videos it cannot publish — the same channel through the
+     * account.
+     */
+    suspend fun loadFirstPage() {
+        val page = withContext(Dispatchers.IO) { TelegramWeb.loadPage(channel) }
         if (page == null) {
             failed = true
-        } else {
-            videos = page.second
+            return
         }
+        videos = page.videos
+        unpublished = page.unpublished
+        if (page.videos.isNotEmpty() || page.unpublished == 0) return
+        val ctx = context.applicationContext
+        Td.init(ctx)
+        if (!Td.isSignedIn()) return
+        val id = withContext(Dispatchers.IO) { Td.publicChatId(channel) } ?: return
+        tdChatId = id
+        tdVideos = withContext(Dispatchers.IO) { Td.chatVideos(id, 0, 60) }
     }
+
+    LaunchedEffect(channel) { loadFirstPage() }
 
     Column(Modifier.fillMaxSize()) {
         Row(
@@ -1706,12 +1753,56 @@ private fun TelegramChannelVideos(
                 action = {
                     failed = false
                     videos = null
-                    scope.launch {
-                        val page = withContext(Dispatchers.IO) { TelegramWeb.load(channel) }
-                        if (page == null) failed = true else videos = page.second
-                    }
+                    tdVideos = null
+                    scope.launch { loadFirstPage() }
                 },
             )
+
+            // The account path took over: the public page has these posts but
+            // will not publish their files (see loadFirstPage), so this is the
+            // channel read through the user's own Telegram login.
+            tdVideos != null -> {
+                val list = tdVideos.orEmpty()
+                if (list.isEmpty()) {
+                    EmptyState(title = tr("No videos here"), subtitle = withheldText)
+                } else {
+                    ChatVideoCollection(
+                        videos = list,
+                        view = view,
+                        onPlay = { playTdVideo(context, it) },
+                    ) {
+                        item(key = "telegram-channel-td-more") {
+                            if (tdEnded) {
+                                Text(
+                                    tr("That is the oldest post in this channel."),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(12.dp),
+                                )
+                            } else {
+                                TextButton(
+                                    enabled = !loadingMore,
+                                    onClick = {
+                                        val last = list.lastOrNull() ?: return@TextButton
+                                        val id = tdChatId ?: return@TextButton
+                                        loadingMore = true
+                                        scope.launch {
+                                            val older = withContext(Dispatchers.IO) {
+                                                Td.chatVideos(id, last.messageId, 60)
+                                            }.filterNot { v -> list.any { it.messageId == v.messageId } }
+                                            loadingMore = false
+                                            if (older.isEmpty()) tdEnded = true
+                                            else tdVideos = list + older
+                                        }
+                                    },
+                                ) {
+                                    Text(if (loadingMore) tr("Loading…") else tr("Load older"))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
 
             videos == null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
@@ -1719,7 +1810,9 @@ private fun TelegramChannelVideos(
 
             videos.orEmpty().isEmpty() -> EmptyState(
                 title = tr("No videos here"),
-                subtitle = emptyText,
+                // Two different empty channels: one has no videos at all, and
+                // one has videos Telegram will not publish (see withheldText).
+                subtitle = if (unpublished > 0) withheldText else emptyText,
             )
 
             else -> {

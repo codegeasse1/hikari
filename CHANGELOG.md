@@ -1,3 +1,17 @@
+## 0.10.44
+
+### Added
+
+- **Profiles: more than one Hikari on the same device.** Settings → Profiles. A profile is a whole setup of its own — the extensions you have installed, your Library and its categories, your watch history, your accounts, your collections and every setting — so a new profile starts out looking like the app the day it was installed (nothing installed, an empty Library, an empty history), and choosing an older one brings all of it back exactly as it was. Nothing is deleted to do it: the first profile saves the setup you already have, switching back and forth is one tap, and the picker shows what each profile holds ("12 extensions · 34 saved · 120 watched"). Extension files and films already downloaded stay on the device and are shared, so installing the same extension in another profile costs no second download — and uninstalling one profile no longer removes a file another profile still uses. Your app lock and this device's layout (phone or TV, interface scale) belong to the device, so every profile keeps them.
+- **One switch to hide the explanation lines.** Settings → App Layout → "Explanations". Off removes the small grey notes that explain a setting — the caption under a row, a sheet's note, a dialog's paragraph, the line under a folder's name — everywhere in the app at once, leaving the titles, the controls and the values. The settings themselves are untouched; turn it back on for the full text.
+
+### Fixed
+
+- **Adding a title to the Library could not be changed once it was open.** In the "Add to library" sheet, tapping a category did nothing at all on a phone, so a ticked category could not be unticked and an unticked one could not be picked — only the (decorative) checkbox was drawn, and the row answered the television remote alone. Every line in that sheet is now a real, tappable toggle.
+- **A Telegram channel whose videos play in Telegram showed "This channel has no videos on its public page".** Telegram's public web page publishes the *posts* of a channel but deliberately withholds the video FILE for a large upload (and for channels with saving restricted) — those posts arrive carrying Telegram's own "media not supported, view in Telegram" block, and Hikari read that as an empty channel. Those channels are now read through your own Telegram account (sign in above): the same videos, in the same player as every other Telegram video, with the same layouts. If you have not signed in, the empty state now says what is actually going on instead of claiming the channel has no videos.
+- **A crash while scrolling a list of extensions.** Compose refuses to draw a list with a repeated key, and two installed-provider rows carrying the same id produced exactly that ("Key \"stremio|1617974660\" was already used") on a flick through Extensions, a search or the collection editor. Duplicate rows are now pruned from the installed list at the source, and written back so the repair sticks — every screen that lists extensions is safe from it.
+- Restoring a backup (or switching profile) no longer drops "set" settings — the tabs you hid, the extensions you switched off, the sources you allow — which were written to the file as a list and read back as a shape the store rejected.
+
 ## 0.10.43
 
 ### Fixed

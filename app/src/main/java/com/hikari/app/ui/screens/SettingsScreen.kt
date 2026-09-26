@@ -62,6 +62,7 @@ import androidx.compose.material.icons.filled.Android
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Panorama
 import androidx.compose.material.icons.filled.SmartDisplay
+import androidx.compose.material.icons.filled.SwitchAccount
 import androidx.compose.material.icons.filled.ViewCarousel
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.BarChart
@@ -189,8 +190,10 @@ import com.hikari.app.ui.components.HeroStyles
 import com.hikari.app.ui.components.MultiChoiceDialog
 import com.hikari.app.ui.components.SettingsIconBadge
 import com.hikari.app.ui.components.SettingsPageHeader
+import com.hikari.app.data.Profiles
+import com.hikari.app.ui.components.LocalHideHelp
 import com.hikari.app.ui.components.TrackerLoginDialog
-import com.hikari.app.ui.LanguageManager
+import com.hikari.app.ui.components.helpShownimport com.hikari.app.ui.LanguageManager
 import com.hikari.app.ui.components.UpdateDialog
 import com.hikari.app.ui.navigation.BottomTab
 import com.hikari.app.ui.navigation.BottomTabs
@@ -496,7 +499,7 @@ private fun SettingsSection(
                     style = MaterialTheme.typography.titleSmall,
                     color = MaterialTheme.colorScheme.primary,
                 )
-                if (!summary.isNullOrBlank()) {
+                if (!summary.isNullOrBlank() && helpShown()) {
                     Text(
                         summary,
                         style = MaterialTheme.typography.labelSmall,
@@ -556,6 +559,9 @@ fun SettingsScreen(nav: NavHostController) {
     var showStats by remember { mutableStateOf(false) }
     var showPair by remember { mutableStateOf(false) }
     var showLogs by remember { mutableStateOf(false) }
+    // Settings → Profiles: its own page, like Logs and Pair — a list that is
+    // created, renamed, deleted and switched between does not fit in a card.
+    var showProfiles by remember { mutableStateOf(false) }
     // Settings → Clear App data: the confirmation in front of the app's only
     // irreversible action (see ClearDataCard and the dialog at the end of this
     // composable).
@@ -587,6 +593,9 @@ fun SettingsScreen(nav: NavHostController) {
     val appLanguage by languageFlow.collectAsState(initial = "")
     val installedProviders by app.providers.providers.collectAsState()
     val listState = rememberLazyListState()
+    // Profiles: the index row says which setup is in use (see ProfilesScreen).
+    val profileList by Profiles.all.collectAsState()
+    val profileActive by Profiles.activeId.collectAsState()
 
     // System back steps out of the open settings folder (Player, Sources…) —
     // and out of a sub-folder before that — instead of popping the whole
@@ -631,6 +640,13 @@ fun SettingsScreen(nav: NavHostController) {
     // is: two ends of a transfer, a QR code and a camera do not fit in a card.
     if (showPair) {
         PairScreen(app, onBack = { showPair = false })
+        return
+    }
+
+    // Profiles is a page too: the list of setups, what each of them holds, and
+    // the actions on them (see ProfilesScreen).
+    if (showProfiles) {
+        ProfilesScreen(app, onBack = { showProfiles = false })
         return
     }
 
@@ -822,6 +838,13 @@ fun SettingsScreen(nav: NavHostController) {
                     // phone that renders a row of GIFs happily and to a TV stick
                     // that would rather not spend its frames on them.
                     item { SettingsCard { GifAnimCard(app) } }
+                    // The one switch that turns every explanation line in the
+                    // app off — the caption under a row, a sheet's note, a
+                    // dialog's paragraph (see LocalHideHelp). It lives here,
+                    // with the other "how the app is arranged" settings,
+                    // because that is what it changes: how much text is on a
+                    // page, not what the page does.
+                    item { SettingsCard { HideHelpCard(app) } }
                     SettingsFolder.entries
                         .filter { it.parent == SettingsFolder.APP_LAYOUT.key }
                         .filter { !isTv || !it.phoneOnly }
@@ -1069,7 +1092,7 @@ fun SettingsScreen(nav: NavHostController) {
                         },
                         headlineContent = { Text(tr("Stats")) },
                         supportingContent = {
-                            Text(tr("Time spent, streaks and what you watched most"))
+                            if (helpShown()) Text(tr("Time spent, streaks and what you watched most"))
                         },
                         trailingContent = {
                             Icon(
@@ -1079,6 +1102,45 @@ fun SettingsScreen(nav: NavHostController) {
                             )
                         },
                         modifier = Modifier.clickable { showStats = true }
+                    )
+                }
+            }
+            // Profiles: more than one Hikari on this device — a page of its own
+            // (see ProfilesScreen). On the index rather than inside a folder
+            // because it is about the WHOLE setup: what a profile is, is
+            // everything the other folders configure.
+            item {
+                SettingsCard(top = 12.dp) {
+                    ListItem(
+                        leadingContent = {
+                            Icon(
+                                Icons.Filled.SwitchAccount,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        },
+                        headlineContent = { Text(tr("Profiles")) },
+                        supportingContent = {
+                            if (helpShown()) {
+                                val activeName = profileList.firstOrNull { it.id == profileActive }?.name
+                                Text(
+                                    if (activeName == null) {
+                                        tr("Separate setups on one device — extensions, Library, history & settings")
+                                    } else {
+                                        tr("In use") + ": " + activeName + " — " +
+                                            tr("tap to switch, rename or add another")
+                                    }
+                                )
+                            }
+                        },
+                        trailingContent = {
+                            Icon(
+                                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        },
+                        modifier = Modifier.clickable { showProfiles = true }
                     )
                 }
             }
@@ -1177,11 +1239,13 @@ private fun SettingsFolderRow(folder: SettingsFolder, top: Dp = 12.dp, onClick: 
                     fontWeight = FontWeight.SemiBold
                 )
                 Spacer(Modifier.height(2.dp))
-                Text(
-                    tr(folder.subtitle),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                if (helpShown()) {
+                    Text(
+                        tr(folder.subtitle),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
             Spacer(Modifier.width(10.dp))
             Icon(
@@ -1234,6 +1298,7 @@ private fun ExtensionsShortcutCard(installed: Int, onOpen: () -> Unit) {
                     fontWeight = FontWeight.SemiBold
                 )
                 Spacer(Modifier.height(3.dp))
+                if (!LocalHideHelp.current) {
                 Text(
                     if (installed > 0) {
                         "$installed installed — browse repos, install or remove extensions."
@@ -1243,6 +1308,7 @@ private fun ExtensionsShortcutCard(installed: Int, onOpen: () -> Unit) {
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                }
             }
             Spacer(Modifier.width(10.dp))
             Box(
@@ -1325,6 +1391,7 @@ private fun GifAnimCard(app: HikariApp) {
                     color = MaterialTheme.colorScheme.primary,
                 )
                 Spacer(Modifier.height(4.dp))
+                if (!LocalHideHelp.current) {
                 Text(
                     tr(
                         "Play animated folder covers (GIFs) in your personal catalogs. Off " +
@@ -1333,6 +1400,7 @@ private fun GifAnimCard(app: HikariApp) {
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                }
             }
             Spacer(Modifier.width(12.dp))
             Switch(
@@ -1341,6 +1409,57 @@ private fun GifAnimCard(app: HikariApp) {
                 // See [Modifier.tvToggle].
                 modifier = Modifier.tvToggle(on) { v ->
                     scope.launch { runCatching { app.store.setGifAnim(v) } }
+                },
+            )
+        }
+    }
+}
+
+/**
+ * The one switch for every EXPLANATION line in the app (Settings → App Layout).
+ *
+ * OFF hides them everywhere at once — the caption under a settings row, a
+ * sheet's note, a dialog's paragraph, the line under a folder's name — through
+ * [LocalHideHelp], which the app provides at its root and each caption reads
+ * where it draws. What is left is the same pages with only the titles, the
+ * controls and the values on them, which is what a user who already knows the
+ * app wants: the paragraphs are what makes a settings page a long scroll.
+ *
+ * ON is the default and the app as it always was.
+ */
+@Composable
+private fun HideHelpCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    val flow = remember { app.store.hideHelpFlow() }
+    val hidden by flow.collectAsState(initial = false)
+    Column(Modifier.padding(16.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    tr("Explanations"),
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Spacer(Modifier.height(4.dp))
+                if (helpShown()) {
+                    Text(
+                        tr(
+                            "Off hides the small grey notes that explain a setting, in " +
+                                "every screen — a cleaner, shorter app. The settings " +
+                                "themselves are untouched."
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            Spacer(Modifier.width(12.dp))
+            Switch(
+                checked = !hidden,
+                onCheckedChange = { on -> scope.launch { runCatching { app.store.setHideHelp(!on) } } },
+                // See [Modifier.tvToggle].
+                modifier = Modifier.tvToggle(!hidden) { on ->
+                    scope.launch { runCatching { app.store.setHideHelp(!on) } }
                 },
             )
         }
@@ -1376,6 +1495,7 @@ private fun AdultContentCard(app: HikariApp) {
                     color = MaterialTheme.colorScheme.primary,
                 )
                 Spacer(Modifier.height(4.dp))
+                if (!LocalHideHelp.current) {
                 Text(
                     tr(
                         "On (the default) shows everything your extensions publish. Off " +
@@ -1386,6 +1506,7 @@ private fun AdultContentCard(app: HikariApp) {
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                }
             }
             Spacer(Modifier.width(12.dp))
             Switch(
@@ -1411,6 +1532,7 @@ private fun RoadmapCard() {
             color = MaterialTheme.colorScheme.primary
         )
         Spacer(Modifier.height(6.dp))
+        if (!LocalHideHelp.current) {
         Text(
             tr("✓ Stremio addons\n" + "✓ Universal scrapers\n") +
                 I18n.t("✓ HLS/DASH player with headers + subtitles\n") +
@@ -1424,6 +1546,7 @@ private fun RoadmapCard() {
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+        }
     }
 }
 
@@ -1957,12 +2080,14 @@ private fun MyStuffSectionToggles(app: HikariApp) {
             onChange = { on -> scope.launch { runCatching { app.store.setMyStuffSection(com.hikari.app.data.MyStuffSection.DOWNLOADS, on) } } },
         )
         if (onCount == 1) {
+            if (!LocalHideHelp.current) {
             Text(
                 tr("One section always stays — the page would otherwise be empty."),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 2.dp, bottom = 4.dp),
             )
+            }
         }
     }
 }
@@ -1988,11 +2113,13 @@ private fun MyStuffSectionRow(
                 color = if (enabled || checked) MaterialTheme.colorScheme.onSurface
                 else MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Text(
-                supporting,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            if (helpShown()) {
+                Text(
+                    supporting,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
         Switch(
             checked = checked,
@@ -2494,6 +2621,7 @@ private fun TvDeviceCard(app: HikariApp) {
                 onDismiss = { menuOpen = false },
             )
         }
+        if (!LocalHideHelp.current) {
         Text(
             tr(
                 "One APK, two layouts. The TV layout puts the tabs in a rail down " +
@@ -2512,6 +2640,7 @@ private fun TvDeviceCard(app: HikariApp) {
             // plus a bottom inset of its own.
             modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 14.dp),
         )
+        }
     }
 }
 
@@ -2552,6 +2681,7 @@ private fun TvOverscanCard(app: HikariApp) {
                 scope.launch { runCatching { app.store.setTvOverscan(slider.roundToInt()) } }
             },
         )
+        if (!LocalHideHelp.current) {
         Text(
             tr(
                 "Televisions crop a few percent off the picture, so content drawn " +
@@ -2562,6 +2692,7 @@ private fun TvOverscanCard(app: HikariApp) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(top = 8.dp),
         )
+        }
     }
 }
 
@@ -2603,6 +2734,7 @@ private fun TvPerformanceCard(app: HikariApp) {
                 }
             },
         )
+        if (!LocalHideHelp.current) {
         Text(
             tr(
                 "Television boxes are much weaker than phones, and smoother " +
@@ -2613,6 +2745,7 @@ private fun TvPerformanceCard(app: HikariApp) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(top = 8.dp),
         )
+        }
         Text(
             tr(
                 "It is switched on for you whenever the TV layout is active, and " +
@@ -2751,8 +2884,10 @@ private fun SettingsToggle(
                 color = MaterialTheme.colorScheme.onSurface,
             )
             // Only when a switch actually needs explaining: a caption under
-            // every one of them made the folder pages read like a manual.
-            if (supporting.isNotBlank()) {
+            // every one of them made the folder pages read like a manual. And
+            // not at all when the user has turned explanations off — see
+            // [com.hikari.app.ui.components.LocalHideHelp].
+            if (supporting.isNotBlank() && helpShown()) {
                 Text(
                     supporting,
                     style = MaterialTheme.typography.labelSmall,
@@ -2932,11 +3067,13 @@ private fun DetailHeaderCard(app: HikariApp) {
                 scope.launch { runCatching { app.store.setDetailLogoSize(pct) } }
             },
         )
+        if (!LocalHideHelp.current) {
         Text(
             tr("How big the title artwork is drawn — over the header image, and as the pinned title once it scrolls up"),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+        }
     }
 
     if (pickerOpen) {
@@ -3750,6 +3887,7 @@ private fun ServerSearchCard(app: HikariApp) {
             },
         )
         Spacer(Modifier.height(8.dp))
+        if (!LocalHideHelp.current) {
         Text(
             if (all) {
                 tr(
@@ -3768,6 +3906,7 @@ private fun ServerSearchCard(app: HikariApp) {
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        }
         Spacer(Modifier.height(14.dp))
 
         // ---- The nuvio family ----
@@ -3895,6 +4034,7 @@ private fun ServerSearchCard(app: HikariApp) {
             Spacer(Modifier.height(8.dp))
             // The two lines the user asked for: what the setting does, in the
             // order it happens.
+            if (!LocalHideHelp.current) {
             Text(
                 tr(
                     "Any title you play from another extension is also searched through the repos " +
@@ -3904,7 +4044,9 @@ private fun ServerSearchCard(app: HikariApp) {
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            }
             Spacer(Modifier.height(3.dp))
+            if (!LocalHideHelp.current) {
             Text(
                 tr(
                     "A title you open INSIDE one of those repos plays from that repo alone: it is " +
@@ -3913,6 +4055,7 @@ private fun ServerSearchCard(app: HikariApp) {
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            }
         }
         Spacer(Modifier.height(6.dp))
         Text(
@@ -4212,11 +4355,13 @@ private fun LoadingBannerCard(app: HikariApp) {    val scope = rememberCoroutine
                         scope.launch { runCatching { app.store.setLoadingLogoSize(pct) } }
                     },
                 )
+                if (!LocalHideHelp.current) {
                 Text(
                     tr("How big the wordmark is drawn on the loading cover, as a percentage of its default size"),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                }
             }
             Spacer(Modifier.height(6.dp))
             Text(
@@ -4313,6 +4458,7 @@ private fun PerformanceBoosterCard(app: HikariApp) {
             },
         )
         Spacer(Modifier.height(10.dp))
+        if (!LocalHideHelp.current) {
         Text(
             tr(
                 "Off, Hikari draws and searches as it always has. On, it drops the " +
@@ -4325,6 +4471,7 @@ private fun PerformanceBoosterCard(app: HikariApp) {
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        }
         Spacer(Modifier.height(8.dp))
         Text(
             if (tvOn) {
@@ -4482,6 +4629,7 @@ private fun AppLockCard(app: HikariApp) {
                         scope.launch { runCatching { app.store.setAppLockDelay(delay) } }
                     },
                 )
+                if (!LocalHideHelp.current) {
                 Text(
                     tr(
                         "How long the app may stay unlocked after you leave it. \"Instantly\" locks " +
@@ -4490,6 +4638,7 @@ private fun AppLockCard(app: HikariApp) {
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                }
             }
             Spacer(Modifier.height(4.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -4545,6 +4694,7 @@ private fun AppLockCard(app: HikariApp) {
             }
         }
         Spacer(Modifier.height(8.dp))
+        if (!LocalHideHelp.current) {
         Text(
             tr(
                 "The password is always required — the fingerprint is only a " +
@@ -4555,6 +4705,7 @@ private fun AppLockCard(app: HikariApp) {
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        }
     }
 
     if (setDialog) {
@@ -4646,6 +4797,7 @@ private fun AppLockCard(app: HikariApp) {
                             )
                         }
                         Spacer(Modifier.height(8.dp))
+                        if (!LocalHideHelp.current) {
                         Text(
                             tr(
                                 "A PIN works here too — the unlock screen has a keypad for it, " +
@@ -4656,6 +4808,7 @@ private fun AppLockCard(app: HikariApp) {
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                        }
                     } else {
                         Spacer(Modifier.height(8.dp))
                         Text(
@@ -4852,6 +5005,7 @@ private fun TrackersCard(app: HikariApp) {
                 },
             ) { Text(tr("Test connections")) }
         }
+        if (!LocalHideHelp.current) {
         Text(
             tr(
                 "The last 12 watched titles are checked, newest first — a title nobody has " +
@@ -4860,6 +5014,7 @@ private fun TrackersCard(app: HikariApp) {
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        }
         (message ?: last.takeIf { it.isNotBlank() })?.let { text ->
             Spacer(Modifier.height(8.dp))
             Text(
@@ -4996,11 +5151,13 @@ private fun WebViewSafetyCard(app: HikariApp) {
             color = MaterialTheme.colorScheme.onSurface
         )
         Spacer(Modifier.height(4.dp))
+        if (!LocalHideHelp.current) {
         Text(
             tr("A host (player.example.com), or one word — a word allows any link that contains it, whatever comes after it: add 'filester' and filester.com, filester.gg and filester.sh all work."),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+        }
         Spacer(Modifier.height(6.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             OutlinedTextField(
@@ -5205,11 +5362,13 @@ private fun BackupCard(app: HikariApp, onPair: () -> Unit) {
             )
         }
         Spacer(Modifier.height(10.dp))
+        if (!LocalHideHelp.current) {
         Text(
             tr("Never includes your videos or your app lock - and each device keeps its own layout."),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        }
     }
 }
 

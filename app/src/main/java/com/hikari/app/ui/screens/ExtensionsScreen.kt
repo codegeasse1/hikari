@@ -1,4 +1,7 @@
 package com.hikari.app.ui.screens
+
+import com.hikari.app.data.Profiles
+import com.hikari.app.ui.components.LocalHideHelp
 import com.hikari.app.i18n.I18n
 import com.hikari.app.i18n.tr
 
@@ -698,20 +701,30 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         val target = store.providers().firstOrNull { it.id == id }
         store.removeProvider(id)
         manager.refresh()
+        // Everything below DELETES a file once nothing references it — and with
+        // profiles (Settings → Profiles) "nothing" has to mean no PROFILE, not
+        // just this one: the extension files are shared on purpose (a profile
+        // carries the setup, not a second copy of every plugin), so uninstalling
+        // in one profile must not take the file another profile still lists out
+        // from under it. [Profiles.otherProfilesReference] answers exactly that,
+        // by looking for the path in the other profiles' snapshots.
+        val sharedElsewhere = { path: String ->
+            Profiles.otherProfilesReference(getApplication(), path)
+        }
         // An IPTV playlist that was imported from storage is the app's own copy
         // of it — removing the provider removes the file too (a playlist the
         // user pasted as a link has nothing local to clean up).
         if (target != null && target.type == ProviderType.IPTV) {
             val path = target.url
             val base = getApplication<Application>().filesDir.absolutePath + "/iptv/"
-            if (path.startsWith(base) && store.providers().none { it.url == path }) {
+            if (path.startsWith(base) && store.providers().none { it.url == path } && !sharedElsewhere(path)) {
                 withContext(Dispatchers.IO) { runCatching { File(path).delete() } }
             }
         }
         if (target != null && target.type == ProviderType.HIKARI &&
             target.url.startsWith(getApplication<Application>().filesDir.absolutePath)
         ) {
-            val stillUsed = store.providers().any { it.url == target.url }
+            val stillUsed = store.providers().any { it.url == target.url } || sharedElsewhere(target.url)
             if (!stillUsed) {
                 withContext(Dispatchers.IO) { runCatching { File(target.url).delete() } }
             }
@@ -720,7 +733,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         if (target != null && target.type == ProviderType.NUVIO &&
             target.url.startsWith(getApplication<Application>().filesDir.absolutePath)
         ) {
-            val stillUsed = store.providers().any { it.url == target.url }
+            val stillUsed = store.providers().any { it.url == target.url } || sharedElsewhere(target.url)
             if (!stillUsed) {
                 withContext(Dispatchers.IO) { runCatching { File(target.url).delete() } }
             }
@@ -737,7 +750,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             (target.type == ProviderType.ANIYOMI || target.type == ProviderType.MANGA) &&
             target.url.startsWith(getApplication<Application>().filesDir.absolutePath)
         ) {
-            val stillUsed = store.providers().any { it.url == target.url }
+            val stillUsed = store.providers().any { it.url == target.url } || sharedElsewhere(target.url)
             if (!stillUsed) {
                 withContext(Dispatchers.IO) { runCatching { File(target.url).delete() } }
             }
@@ -3072,6 +3085,7 @@ fun ExtensionsScreen() {
                         }
                     )
                     Spacer(Modifier.height(6.dp))
+                    if (!LocalHideHelp.current) {
                     Text(
                         tr(
                             "Short names work too — CloudStream repos: megarepo (every " +
@@ -3087,6 +3101,7 @@ fun ExtensionsScreen() {
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    }
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
                         value = repoUrl,
@@ -3206,6 +3221,7 @@ fun ExtensionsScreen() {
             title = { Text(tr("Add IPTV playlist")) },
             text = {
                 Column(Modifier.verticalScroll(rememberScrollState())) {
+                    if (!LocalHideHelp.current) {
                     Text(
                         tr(
                             "Paste an M3U/M3U8 link — an Xtream panel's " +
@@ -3215,6 +3231,7 @@ fun ExtensionsScreen() {
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    }
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
                         value = iptvUrl,
@@ -5360,6 +5377,7 @@ private fun StremioAddonInfoDialog(provider: ContentProvider, onDismiss: () -> U
                     style = MaterialTheme.typography.bodySmall
                 )
                 Spacer(Modifier.height(10.dp))
+                if (!LocalHideHelp.current) {
                 Text(
                     tr(
                         when {
@@ -5371,7 +5389,9 @@ private fun StremioAddonInfoDialog(provider: ContentProvider, onDismiss: () -> U
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                }
                 Spacer(Modifier.height(6.dp))
+                if (!LocalHideHelp.current) {
                 Text(
                     tr(
                         "Addons have no settings of their own — use the switch to turn this one off " +
@@ -5380,6 +5400,7 @@ private fun StremioAddonInfoDialog(provider: ContentProvider, onDismiss: () -> U
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                }
             }
         },
         confirmButton = {
@@ -5423,6 +5444,7 @@ private fun IptvInfoDialog(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Spacer(Modifier.height(10.dp))
+                if (!LocalHideHelp.current) {
                 Text(
                     when {
                         error != null -> error
@@ -5436,13 +5458,16 @@ private fun IptvInfoDialog(
                     color = if (error != null) MaterialTheme.colorScheme.error
                     else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                }
                 if (local) {
                     Spacer(Modifier.height(6.dp))
+                    if (!LocalHideHelp.current) {
                     Text(
                         tr("Stored inside the app — removing this playlist deletes the file too."),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    }
                 }
             }
         },
@@ -5953,12 +5978,14 @@ private fun SitesFolder(
             if (expanded) {
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
                 if (sites.isEmpty()) {
+                    if (!LocalHideHelp.current) {
                     Text(
                         tr("Add any movie/streaming website and it opens in an ad-free web view — ads, trackers and popups blocked, with one-tap video playback in the player."),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(16.dp)
                     )
+                    }
                 } else {
                     sites.forEach { site ->
                         SiteRow(
@@ -6464,7 +6491,7 @@ private fun SourcesOverviewView(
                     )
                 }
             }
-            items(stremioProviders, key = { it.config.id }) { p ->
+            items(stremioProviders.distinctBy { it.config.id }, key = { it.config.id }) { p ->
                 ProviderCard(
                     p = p,
                     onVerify = rememberVerifyAction(p),

@@ -30,4 +30,19 @@ object DownloadStore {
         tasks.forEach { arr.put(it.toJson()) }
         ctx.downloadDataStore.edit { it[TASKS_KEY] = arr.toString() }
     }
+
+    /**
+     * The queue exactly as stored, for a profile snapshot (see
+     * [com.hikari.app.data.Profiles]): the download FILES stay on the device and
+     * are shared, but which of them the app thinks it has queued or finished is
+     * part of the setup a profile carries. Empty/absent reads as `""`.
+     */
+    suspend fun raw(ctx: Context): String = ctx.downloadDataStore.data.first()[TASKS_KEY] ?: ""
+
+    /** Puts a snapshot's queue back verbatim — see [raw]. */
+    suspend fun writeRaw(ctx: Context, raw: String) {
+        ctx.downloadDataStore.edit { prefs ->
+            if (raw.isBlank()) prefs.remove(TASKS_KEY) else prefs[TASKS_KEY] = raw
+        }
+    }
 }

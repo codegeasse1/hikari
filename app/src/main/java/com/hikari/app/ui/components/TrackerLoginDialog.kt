@@ -424,6 +424,7 @@ fun TrackerLoginDialog(
                         )
                     }
                     Spacer(Modifier.height(4.dp))
+                    if (!LocalHideHelp.current) {
                     Text(
                         tr(
                             "Both values stay on this device and are only ever sent to " +
@@ -432,6 +433,7 @@ fun TrackerLoginDialog(
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    }
                     return@Column
                 }
 
@@ -465,6 +467,7 @@ fun TrackerLoginDialog(
                             modifier = Modifier.fillMaxWidth().tvTextFieldKeys(passwordField),
                         )
                         Spacer(Modifier.height(4.dp))
+                        if (!LocalHideHelp.current) {
                         Text(
                             tr(
                                 "The password goes straight to Kitsu over HTTPS and is never " +
@@ -473,6 +476,7 @@ fun TrackerLoginDialog(
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                        }
                     }
 
                     TrackerFlow.PIN, TrackerFlow.DEVICE -> {
@@ -666,12 +670,15 @@ fun TrackerLoginDialog(
                                 },
                             )
                             Spacer(Modifier.height(6.dp))
+                            if (!LocalHideHelp.current) {
                             Text(
                                 tr("Pinch to zoom the page, then drag to pan — the whole page is reachable."),
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
+                            }
                             Spacer(Modifier.height(4.dp))
+                            if (!LocalHideHelp.current) {
                             Text(
                                 (if (kind.flow == TrackerFlow.TOKEN) {
                                     tr(
@@ -699,6 +706,7 @@ fun TrackerLoginDialog(
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
+                            }
                             // Some services (AniList is the reliable one) put a
                             // Cloudflare "verify you are human" step in front of
                             // their login page, and a WebView is exactly what

@@ -1,4 +1,6 @@
 package com.hikari.app.ui.screens
+
+import com.hikari.app.ui.components.LocalHideHelp
 import com.hikari.app.i18n.tr
 import com.hikari.app.i18n.I18n
 
@@ -1395,6 +1397,7 @@ internal fun ProviderPickerSheet(
                     }
                 }
             }
+            if (!LocalHideHelp.current) {
             Text(
                 if (multi) {
                     if (working.isEmpty()) tr("Tap the sources to show on Home, then Done.")
@@ -1411,6 +1414,7 @@ internal fun ProviderPickerSheet(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 4.dp, bottom = 14.dp)
             )
+            }
             OutlinedTextField(
                 value = query,
                 onValueChange = { query = it },

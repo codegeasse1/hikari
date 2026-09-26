@@ -60,7 +60,32 @@ class ProviderManager(private val store: AppStore, private val context: Context)
         try {
             do {
                 refreshQueued = false
-                val configs = ExtensionNsfw.filter(context, store.providers())
+                val stored = store.providers()
+                // DUPLICATES ARE PRUNED HERE, at the source, and the prune is
+                // written back.
+                //
+                // A provider's id is its identity, and several screens key a
+                // lazy list by it (`key = { it.config.id }`) — so two rows
+                // carrying one id is not a cosmetic problem but a hard crash:
+                // Compose refuses to lay out a list with a repeated key
+                // (`IllegalArgumentException: Key "stremio|1617974660" was
+                // already used`), which is the crash this repairs. addProvider()
+                // filters by id, so this build cannot normally create one — but
+                // an install that raced a repo sync on an older build could, and
+                // rows are also merged by id when an engine fixes a stale URL,
+                // so a duplicate can come from data this build never wrote.
+                // Pruning here (rather than only in the two screens that draw
+                // them) means every reader of [providers] is safe, and writing it
+                // back means the repair survives the next launch.
+                val unique = stored.distinctBy { it.id }
+                if (unique.size != stored.size) {
+                    com.hikari.app.data.Logs.log(
+                        "Providers",
+                        "pruned ${stored.size - unique.size} duplicate row(s) from the installed list",
+                    )
+                    runCatching { store.saveProviders(unique) }
+                }
+                val configs = ExtensionNsfw.filter(context, unique)
                 // Same configs in, same providers out — and assigning the same
                 // list again is NOT harmless: it emits on [providers], which
                 // re-runs every screen effect that watches it (the extensions

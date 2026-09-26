@@ -1,5 +1,7 @@
 package com.hikari.app.ui
 
+import com.hikari.app.ui.components.LocalHideHelp
+
 import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -762,6 +764,7 @@ private fun BrokenLockScreen(onTurnOff: () -> Unit) {
                 Text(tr("Reset the app lock"))
             }
             Spacer(Modifier.height(6.dp))
+            if (!LocalHideHelp.current) {
             Text(
                 tr(
                     "Resetting turns the lock off. You can set a new password afterwards in " +
@@ -770,6 +773,7 @@ private fun BrokenLockScreen(onTurnOff: () -> Unit) {
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            }
         }
     }
     if (ask) {

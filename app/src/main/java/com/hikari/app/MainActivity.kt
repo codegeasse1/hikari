@@ -360,6 +360,12 @@ class MainActivity : AppCompatActivity() {
                 com.hikari.app.ui.AppFonts.fontFamily(this@MainActivity, appFontKey, appFontFile)
             }
 
+            // Hide the explanation lines (Settings → App Layout → "Explanations"):
+            // provided app-wide below, so every caption in the app answers to one
+            // switch. See [com.hikari.app.ui.components.LocalHideHelp].
+            val hideHelpFlow = remember { store.hideHelpFlow() }
+            val hideHelp by hideHelpFlow.collectAsState(initial = false)
+
             // Which language TMDB answers in. "" follows the app language (the
             // point of the feature: switch the app to Spanish and the movies
             // and series are titled in Spanish too), "none" leaves TMDB on
@@ -432,7 +438,10 @@ class MainActivity : AppCompatActivity() {
                 LocalConfiguration provides localizedConfig,
                 LocalLayoutDirection provides
                     if (rtl) LayoutDirection.Rtl else LayoutDirection.Ltr,
-                com.hikari.app.i18n.I18n.LocalMap provides i18nMap
+                com.hikari.app.i18n.I18n.LocalMap provides i18nMap,
+                // One switch, every explanation line in the app (Settings → App
+                // Layout → "Explanations") — see LocalHideHelp.
+                com.hikari.app.ui.components.LocalHideHelp provides hideHelp,
             ) {
             HikariTheme(
                 mode = themeMode,

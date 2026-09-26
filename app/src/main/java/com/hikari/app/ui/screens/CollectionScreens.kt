@@ -1,4 +1,6 @@
 package com.hikari.app.ui.screens
+
+import com.hikari.app.ui.components.LocalHideHelp
 import com.hikari.app.tv.TvUi
 import com.hikari.app.i18n.tr
 import com.hikari.app.i18n.I18n
@@ -356,11 +358,13 @@ fun CollectionsScreen(nav: NavHostController, onBack: () -> Unit) {
                                     style = MaterialTheme.typography.titleSmall,
                                     fontWeight = FontWeight.SemiBold,
                                 )
+                                if (!LocalHideHelp.current) {
                                 Text(
                                     tr("Name it, then add a folder for each kind of content you want."),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
+                                }
                             }
                         }
                     }
@@ -396,6 +400,7 @@ fun CollectionsScreen(nav: NavHostController, onBack: () -> Unit) {
                                     style = MaterialTheme.typography.titleSmall,
                                     fontWeight = FontWeight.SemiBold,
                                 )
+                                if (!LocalHideHelp.current) {
                                 Text(
                                     tr(
                                         "Paste a Nuvio/SkyStream collections export, or open a .json " +
@@ -404,6 +409,7 @@ fun CollectionsScreen(nav: NavHostController, onBack: () -> Unit) {
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
+                                }
                             }
                         }
                     }
@@ -791,6 +797,7 @@ private fun CollectionEditorPage(
                                     style = MaterialTheme.typography.titleSmall,
                                     fontWeight = FontWeight.SemiBold,
                                 )
+                                if (!LocalHideHelp.current) {
                                 Text(
                                     tr(
                                         "Show this catalog's folders on Home even when nothing " +
@@ -799,6 +806,7 @@ private fun CollectionEditorPage(
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
+                                }
                             }
                             Spacer(Modifier.width(12.dp))
                             Switch(
@@ -821,6 +829,7 @@ private fun CollectionEditorPage(
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.SemiBold,
                         )
+                        if (!LocalHideHelp.current) {
                         Text(
                             tr(
                                 "Rows stacks one shelf per folder. Tabs puts a tab strip at " +
@@ -829,6 +838,7 @@ private fun CollectionEditorPage(
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                        }
                         Row(Modifier.padding(top = 8.dp)) {
                             ChoiceChip(
                                 label = tr("Rows"),
@@ -857,6 +867,7 @@ private fun CollectionEditorPage(
                                         style = MaterialTheme.typography.titleSmall,
                                         fontWeight = FontWeight.SemiBold,
                                     )
+                                    if (!LocalHideHelp.current) {
                                     Text(
                                         tr(
                                             "An extra tab holding every folder's catalogs, " +
@@ -865,6 +876,7 @@ private fun CollectionEditorPage(
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
+                                    }
                                 }
                                 Spacer(Modifier.width(12.dp))
                                 Switch(
@@ -1168,6 +1180,7 @@ private fun FolderEditorPage(
                                     style = MaterialTheme.typography.titleSmall,
                                     fontWeight = FontWeight.SemiBold,
                                 )
+                                if (!LocalHideHelp.current) {
                                 Text(
                                     tr(
                                         "Draw the tile as cover art only — the name still shows " +
@@ -1176,6 +1189,7 @@ private fun FolderEditorPage(
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
+                                }
                             }
                             Spacer(Modifier.width(12.dp))
                             Switch(
@@ -1473,12 +1487,14 @@ private fun FolderEditorPage(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
+                if (!LocalHideHelp.current) {
                 Text(
                     tr("Tap every catalog this folder should show — tap one to add it, tap it again to take it out."),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 2.dp, bottom = 10.dp),
                 )
+                }
                 if (loaded == null) {
                     Box(
                         Modifier
@@ -1971,12 +1987,14 @@ private fun TmdbSourceSheet(
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold,
             )
+            if (!LocalHideHelp.current) {
             Text(
                 tr("Tap a ready-made source to add it — tap several in a row — or build one from a TMDB id, a name or a link."),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 2.dp),
             )
+            }
             ChipRow(Modifier.padding(top = 12.dp)) {
                 TmdbSourceType.entries.forEach { t ->
                     ChoiceChip(
@@ -2550,6 +2568,7 @@ private fun ImportCollectionsSheet(
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold,
             )
+            if (!LocalHideHelp.current) {
             Text(
                 tr(
                     "Paste your collections JSON below. Every collection's folders and " +
@@ -2559,6 +2578,7 @@ private fun ImportCollectionsSheet(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 2.dp, bottom = 10.dp),
             )
+            }
             OutlinedTextField(
                 shape = GlassShape,
                 value = fieldLabel.ifBlank { body },
@@ -3107,7 +3127,7 @@ private fun ExtensionPickerSheet(
                 )
             } else {
                 LazyColumn(Modifier.padding(top = 8.dp, bottom = 24.dp)) {
-                    items(active, key = { it.config.id }) { p ->
+                    items(active.distinctBy { it.config.id }, key = { it.config.id }) { p ->
                         PickerLine(label = p.config.name, selected = false) { onPick(p) }
                     }
                 }
@@ -3534,11 +3554,13 @@ private fun CoverCropDialog(
                     fontWeight = FontWeight.SemiBold,
                 )
                 Spacer(Modifier.height(4.dp))
+                if (!LocalHideHelp.current) {
                 Text(
                     tr("Drag to move, pinch or use the slider to zoom. The tile shows exactly this."),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                }
                 Spacer(Modifier.height(12.dp))
 
                 Box(
@@ -3822,11 +3844,13 @@ private fun CoverSection(
                 }
                 if (k == CoverKinds.GIF) {
                     Spacer(Modifier.height(6.dp))
+                    if (!LocalHideHelp.current) {
                     Text(
                         tr("A GIF plays while its tile is on screen; otherwise the first frame is shown."),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    }
                 }
                 if (value.isNotBlank()) {
                     Spacer(Modifier.height(8.dp))
