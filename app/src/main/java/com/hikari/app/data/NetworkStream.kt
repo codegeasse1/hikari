@@ -324,7 +324,7 @@ object NetworkStream {
         origin: String,
         key: String,
         jsToken: String,
-        jar: List<String>,
+        jar: MutableList<String>,
     ): List<JSONObject>? {
         val root = boxListPage(origin, key, jsToken, jar, dir = null) ?: return null
         val out = ArrayList<JSONObject>(root)
@@ -347,7 +347,7 @@ object NetworkStream {
         origin: String,
         key: String,
         jsToken: String,
-        jar: List<String>,
+        jar: MutableList<String>,
         dir: String?,
     ): List<JSONObject>? {
         val query = buildString {

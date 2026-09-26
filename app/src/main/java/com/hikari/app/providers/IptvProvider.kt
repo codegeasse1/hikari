@@ -315,7 +315,7 @@ class IptvProvider(override val config: ProviderConfig) : ContentProvider {
         // sources it answers with are the channel's servers.
         if (com.hikari.app.data.NetworkStream.isStream(config)) {
             val resolved = com.hikari.app.data.NetworkStream.resolve(
-                url = url,
+                rawUrl = url,
                 label = channel.name,
                 providerId = config.id,
                 providerName = displayName,
