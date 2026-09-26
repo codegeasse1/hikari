@@ -84,6 +84,17 @@ fun ProfilesScreen(app: HikariApp, onBack: () -> Unit) {
     val profiles by Profiles.all.collectAsState()
     val activeId by Profiles.activeId.collectAsState()
 
+    // Hoisted strings: `tr` is composable, and the ones below are also read from
+    // plain lambdas — a coroutine that has finished switching, a dialog button —
+    // which cannot call it.
+    val msgNowUsing = tr("Now using")
+    val msgOtherKept = tr("The other setup is still here — switch back any time.")
+    val msgSwitchFailed = tr("Could not switch profile. The current one is unchanged.")
+    val msgDefaultName = tr("Default")
+    val msgCreated = tr("Created. You can switch between this and your other setup any time.")
+    val msgCreateFailed = tr("Could not create that profile.")
+    val msgDeleted = tr("Profile deleted.")
+
     var busy by remember { mutableStateOf(false) }
     var naming by remember { mutableStateOf(false) }
     var renameTarget by remember { mutableStateOf<Profiles.Profile?>(null) }
@@ -124,10 +135,9 @@ fun ProfilesScreen(app: HikariApp, onBack: () -> Unit) {
             val result = runCatching { Profiles.switchTo(app, profile.id) }
             busy = false
             status = if (result.isSuccess) {
-                tr("Now using") + " \"" + profile.name + "\". " +
-                    tr("The other setup is still here — switch back any time.")
+                msgNowUsing + " \"" + profile.name + "\". " + msgOtherKept
             } else {
-                tr("Could not switch profile. The current one is unchanged.")
+                msgSwitchFailed
             }
         }
     }
@@ -177,7 +187,7 @@ fun ProfilesScreen(app: HikariApp, onBack: () -> Unit) {
                             label = tr("Save this setup as a profile"),
                             enabled = !busy,
                         ) {
-                            typed = tr("Default")
+                            typed = msgDefaultName
                             naming = true
                         }
                     }
@@ -304,9 +314,9 @@ fun ProfilesScreen(app: HikariApp, onBack: () -> Unit) {
                     }
                     busy = false
                     status = if (result.isSuccess) {
-                        tr("Created. You can switch between this and your other setup any time.")
+                        msgCreated
                     } else {
-                        tr("Could not create that profile.")
+                        msgCreateFailed
                     }
                 }
             },
@@ -353,7 +363,7 @@ fun ProfilesScreen(app: HikariApp, onBack: () -> Unit) {
                     scope.launch {
                         runCatching { Profiles.delete(app, target.id) }
                         busy = false
-                        status = tr("Profile deleted.")
+                        status = msgDeleted
                     }
                 }) {
                     Text(tr("Delete"), color = MaterialTheme.colorScheme.error)
@@ -386,7 +396,8 @@ private fun summaryText(summary: Profiles.Summary?): String {
 
 /** One profile: name, what it holds, and the three things to do with it. */
 @Composable
-private fun ProfileRow(    profile: Profiles.Profile,
+private fun ProfileRow(
+    profile: Profiles.Profile,
     active: Boolean,
     summary: String,
     busy: Boolean,

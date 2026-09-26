@@ -193,7 +193,8 @@ import com.hikari.app.ui.components.SettingsPageHeader
 import com.hikari.app.data.Profiles
 import com.hikari.app.ui.components.LocalHideHelp
 import com.hikari.app.ui.components.TrackerLoginDialog
-import com.hikari.app.ui.components.helpShownimport com.hikari.app.ui.LanguageManager
+import com.hikari.app.ui.components.helpShown
+import com.hikari.app.ui.LanguageManager
 import com.hikari.app.ui.components.UpdateDialog
 import com.hikari.app.ui.navigation.BottomTab
 import com.hikari.app.ui.navigation.BottomTabs

@@ -135,7 +135,14 @@ object TelegramWeb {
         for (msg in doc.select("div.tgme_widget_message")) {
             val id = msg.attr("data-post").substringAfterLast('/').toLongOrNull() ?: continue
             val video = msg.selectFirst("video")
-            val src = video?.let { it.attr("src").ifBlank { it.attr("data-src") } }.orEmpty()
+            if (video == null) {
+                // A video post whose player arrived with no `<video>` element at
+                // all — counted the same way as one Telegram refuses to give a
+                // source for (see TelegramPage.unpublished).
+                if (msg.selectFirst(".message_media_not_supported") != null) unpublished++
+                continue
+            }
+            val src = video.attr("src").ifBlank { video.attr("data-src") }
             if (!src.startsWith("http")) {
                 // A post that IS a video Telegram will not hand to a browser:
                 // either its player arrived without a source, or the message
