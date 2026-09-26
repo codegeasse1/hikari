@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Hikari</string>
+    <string name="settings_language_title">Γλώσσα εφαρμογής</string>
+    <string name="settings_language_subtitle">Αλλάζει τα κείμενα της εφαρμογής και τα χειριστήρια του player</string>
+    <string name="settings_language_system">Προεπιλογή συστήματος</string>
+    <string name="player_options">Επιλογές player</string>
+    <string name="player_fit_video">Προσαρμογή βίντεο</string>
+    <string name="player_fit_video_desc">Εμφάνιση ολόκληρου του κάδρου</string>
+    <string name="player_crop_to_fill">Περικοπή για πλήρωση</string>
+    <string name="player_crop_to_fill_desc">Μεγέθυνση μέχρι να γεμίσει το κάδρο</string>
+    <string name="player_stretch_video">Τέντωμα για πλήρωση</string>
+    <string name="player_stretch_video_desc">Γέμισε την οθόνη, αγνοώντας το σχήμα</string>
+    <string name="player_rotate_screen">Περιστροφή οθόνης</string>
+    <string name="player_rotate_screen_desc">Περιστροφή βίντεο κατά 90°</string>
+    <string name="player_server_chooser">Επιλογή διακομιστή</string>
+    <string name="player_server_on">Ενεργό — επιλογή διακομιστή κάθε φορά</string>
+    <string name="player_server_off">Ανενεργό — εκκίνηση στον καλύτερο διακομιστή</string>
+    <string name="player_options_hint">Προσαρμογή βίντεο, περιστροφή και αυτόματη εκκίνηση διακομιστών.</string>
+    <string name="player_episodes">Επεισόδια</string>
+    <string name="player_source">Πηγή</string>
+    <string name="player_quality">Ποιότητα</string>
+    <string name="player_audio">Ήχος</string>
+    <string name="player_subtitles">Υπότιτλοι</string>
+    <string name="player_rotate">Περιστροφή</string>
+    <string name="player_skip_intro">Παράλειψη intro</string>
+    <string name="player_enhance">Βελτίωση</string>
+    <string name="player_tap_to_play">Πατήστε για αναπαραγωγή</string>
+    <string name="cd_back">Πίσω</string>
+    <string name="cd_add_to_library">Προσθήκη στη βιβλιοθήκη</string>
+    <string name="cd_download">Λήψη</string>
+    <string name="cd_pip">Εικόνα σε εικόνα</string>
+    <string name="cd_player_options">Επιλογές player</string>
+    <string name="cd_lock_controls">Κλείδωμα χειριστηρίων</string>
+    <string name="cd_fit_or_crop">Προσαρμογή, περικοπή ή τέντωμα βίντεο</string>
+</resources>

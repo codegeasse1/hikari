@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The player's dialog shell: a soft accent "glow" ring around a dark glass
+     panel, so every menu reads as part of the cyan -> violet player UI. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <corners android:radius="30dp" />
+            <stroke
+                android:width="3dp"
+                android:color="#2E7B5CFF" />
+        </shape>
+    </item>
+    <item
+        android:bottom="1dp"
+        android:left="1dp"
+        android:right="1dp"
+        android:top="1dp">
+        <shape android:shape="rectangle">
+            <corners android:radius="29dp" />
+            <gradient
+                android:angle="270"
+                android:endColor="#F00A0C16"
+                android:startColor="#F4161D2E" />
+            <stroke
+                android:width="1dp"
+                android:color="#807B5CFF" />
+        </shape>
+    </item>
+</layer-list>

@@ -1,0 +1,540 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Custom media3 PlayerControlView layout, following the reference player UI:
+     a frosted top bar (round back button, title + metadata badges, then the
+     round action buttons), a big centre play cluster with a cyan->violet
+     gradient ring, and a bottom block of time labels flanking a gradient
+     progress bar with the frosted pill row underneath.
+
+     NOTE for anyone editing this file: XML comments may NOT contain a double
+     hyphen, so do not draw ASCII rule lines inside them.
+
+     IMPORTANT: media3 inspects this layout at runtime.
+     (1) PlayerControlViewLayoutManager.onLayoutWidthChanged() assumes the LAST
+         child of @id/exo_basic_controls is @id/exo_overflow_show, and it MOVES
+         children of exo_basic_controls into the (invisible) extra-controls
+         container once they stop fitting. Our own pill buttons therefore live
+         in their own container (@+id/player_pills), never inside
+         exo_basic_controls, and every media3 button inside exo_basic_controls
+         is hidden, so nothing visible can be relocated or replaced by an
+         overflow chevron.
+     (2) updateLayoutForSizeChange()/useMinimalMode() size the centre cluster
+         and the bottom bar; both are kept compact so minimal mode isn't
+         triggered on ordinary phone windows.
+     (3) @id/exo_time is intentionally absent: the position/duration labels sit
+         on the same row as @id/exo_progress instead. media3 resolves the labels
+         by id directly and treats a missing time container as zero width.
+
+     SIZING: the controls are deliberately compact (back 30, round buttons 26,
+     prev/next 30, rew/ffwd 34, play 52, pills 11dp) because the earlier, larger
+     set read as chunky on a phone in landscape. All text sizes are in dp, not
+     sp, so an increased system font size cannot inflate the overlay. -->
+
+<merge xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+  <View android:id="@id/exo_controls_background"
+      android:layout_width="0dp"
+      android:layout_height="0dp"
+      android:background="#3D000000"/>
+
+  <!-- Top bar: back button, title + metadata badges, round action buttons.
+       The id is Hikari's own (media3 does not know it); PlayerActivity's
+       applyPlayerSkin() finds it here to swap the bar background and its
+       margins when the Player UI skin changes. -->
+  <LinearLayout
+      android:id="@+id/player_top_bar"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:layout_gravity="top"
+      android:orientation="vertical"
+      android:background="@drawable/top_bar_bg"
+      android:paddingStart="8dp"
+      android:paddingEnd="6dp"
+      android:paddingTop="5dp"
+      android:paddingBottom="8dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:layoutDirection="ltr">
+
+      <ImageButton
+          android:id="@+id/back_btn"
+          android:layout_width="30dp"
+          android:layout_height="30dp"
+          android:src="@drawable/ic_back"
+          android:tint="#FFFFFF"
+          android:contentDescription="@string/cd_back"
+          android:background="@drawable/circle_glass_ripple"
+          android:scaleType="centerInside" />
+
+      <LinearLayout
+          android:layout_width="0dp"
+          android:layout_height="wrap_content"
+          android:layout_weight="1"
+          android:orientation="vertical"
+          android:gravity="center_vertical"
+          android:paddingStart="12dp"
+          android:paddingEnd="6dp">
+
+        <TextView
+            android:id="@+id/title_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textSize="13dp"
+            android:textStyle="bold"
+            android:textColor="#FFFFFF"
+            android:maxLines="1"
+            android:ellipsize="end" />
+
+        <HorizontalScrollView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:scrollbars="none"
+            android:overScrollMode="never"
+            android:clipToPadding="false">
+
+          <LinearLayout
+              android:layout_width="wrap_content"
+              android:layout_height="wrap_content"
+              android:orientation="horizontal"
+              android:gravity="center_vertical">
+
+            <!-- S1 E1 (episode line) / total runtime / quality / source, in the
+                 same order the mockup shows them. -->
+            <TextView
+                android:id="@+id/subtitle_text"
+                style="@style/HikariBadge"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/badge_duration"
+                style="@style/HikariBadge"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/badge_quality"
+                style="@style/HikariBadge.Accent"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/badge_source"
+                style="@style/HikariBadge"
+                android:visibility="gone" />
+          </LinearLayout>
+        </HorizontalScrollView>
+      </LinearLayout>
+
+      <!-- Round action buttons, in the mockup's right-hand slots. Each one is a
+           real feature: favourite, download, picture-in-picture, player
+           options (fit/crop/rotate) and screen lock. The container's id is what
+           PlayerActivity's control-layout setting moves buttons into/out of
+           (Settings -> Player -> Player controls); a pill moved up here is
+           drawn as a compact round icon button so the bar can never overflow. -->
+      <LinearLayout
+          android:id="@+id/player_top_actions"
+          android:layout_width="wrap_content"
+          android:layout_height="wrap_content"
+          android:orientation="horizontal"
+          android:gravity="center_vertical"
+          android:layoutDirection="ltr">
+
+      <ImageButton
+          android:id="@+id/fav_btn"
+          android:layout_width="26dp"
+          android:layout_height="26dp"
+          android:src="@drawable/ic_heart"
+          android:tint="#FFFFFF"
+          android:contentDescription="@string/cd_add_to_library"
+          android:background="@drawable/circle_glass_ripple"
+          android:scaleType="centerInside" />
+
+      <ImageButton
+          android:id="@+id/download_btn"
+          android:layout_width="26dp"
+          android:layout_height="26dp"
+          android:layout_marginStart="3dp"
+          android:src="@drawable/ic_download"
+          android:tint="#FFFFFF"
+          android:contentDescription="@string/cd_download"
+          android:background="@drawable/circle_glass_ripple"
+          android:scaleType="centerInside" />
+
+      <ImageButton
+          android:id="@+id/pip_btn"
+          android:layout_width="26dp"
+          android:layout_height="26dp"
+          android:layout_marginStart="3dp"
+          android:src="@drawable/ic_pip"
+          android:tint="#FFFFFF"
+          android:contentDescription="@string/cd_pip"
+          android:background="@drawable/circle_glass_ripple"
+          android:scaleType="centerInside" />
+
+      <ImageButton
+          android:id="@+id/options_btn"
+          android:layout_width="26dp"
+          android:layout_height="26dp"
+          android:layout_marginStart="3dp"
+          android:src="@drawable/ic_settings"
+          android:tint="#FFFFFF"
+          android:contentDescription="@string/cd_player_options"
+          android:background="@drawable/circle_glass_ripple"
+          android:scaleType="centerInside" />
+
+      <ImageButton
+          android:id="@+id/lock_btn"
+          android:layout_width="26dp"
+          android:layout_height="26dp"
+          android:layout_marginStart="3dp"
+          android:src="@drawable/ic_lock"
+          android:tint="#FFFFFF"
+          android:contentDescription="@string/cd_lock_controls"
+          android:background="@drawable/circle_glass_ripple"
+          android:scaleType="centerInside" />
+      </LinearLayout>
+    </LinearLayout>
+  </LinearLayout>
+
+  <!-- Bottom bar: time labels flanking the progress bar, then the pill row -->
+  <LinearLayout
+      android:id="@id/exo_bottom_bar"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:layout_gravity="bottom"
+      android:orientation="vertical"
+      android:background="@drawable/bottom_bar_bg"
+      android:paddingStart="6dp"
+      android:paddingEnd="6dp"
+      android:paddingTop="9dp"
+      android:paddingBottom="5dp"
+      android:layoutDirection="ltr">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:layoutDirection="ltr">
+
+      <TextView
+          android:id="@id/exo_position"
+          style="@style/HikariTime"
+          android:layout_marginStart="8dp" />
+
+      <androidx.media3.ui.DefaultTimeBar
+          android:id="@id/exo_progress"
+          android:layout_width="0dp"
+          android:layout_height="18dp"
+          android:layout_weight="1"
+          android:layout_marginStart="6dp"
+          android:layout_marginEnd="6dp"
+          app:bar_height="3dp"
+          app:bar_gravity="center"
+          app:touch_target_height="18dp"
+          app:played_color="@color/hikari_accent_mid"
+          app:buffered_color="#66FFFFFF"
+          app:unplayed_color="#40FFFFFF"
+          app:scrubber_color="#FFFFFF"
+          app:scrubber_enabled_size="11dp"
+          app:scrubber_dragged_size="14dp" />
+
+      <TextView
+          android:id="@id/exo_duration"
+          style="@style/HikariTime"
+          android:layout_marginEnd="8dp" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:layoutDirection="ltr">
+
+      <!-- Mirrors the width of the right-hand action container (see
+           @id/player_right_actions), so a centred pill row still sits on the
+           screen's centre line. PlayerActivity re-measures it at runtime,
+           because the right container changes size as buttons are moved into or
+           out of it by the control-layout setting. -->
+      <View
+          android:id="@+id/player_left_spacer"
+          android:layout_width="31dp"
+          android:layout_height="1dp" />
+
+      <!-- Our own pills. Deliberately a DIFFERENT parent from
+           exo_basic_controls so media3's overflow logic can never move them,
+           and scrollable so a narrow phone just scrolls the row. -->
+      <HorizontalScrollView
+          android:id="@+id/player_pill_scroll"
+          android:layout_width="0dp"
+          android:layout_height="wrap_content"
+          android:layout_weight="1"
+          android:scrollbars="none"
+          android:overScrollMode="never"
+          android:clipToPadding="false"
+          android:fillViewport="true"
+          android:descendantFocusability="blocksDescendants"
+          android:paddingStart="2dp"
+          android:paddingEnd="2dp">
+
+        <!-- No layout_gravity here: with fillViewport the row is stretched to
+             the viewport when it fits, and gravity=center inside it centres the
+             pills on the screen's centre line. A layout_gravity of center would
+             instead park an over-wide row at a NEGATIVE x (its left end clipped
+             and unreachable), which is what made the bar look like it led to the
+             right. -->
+        <LinearLayout
+            android:id="@+id/player_pills"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center"
+            android:layoutDirection="ltr">
+
+          <TextView
+              android:id="@+id/speed_btn"
+              style="@style/HikariPill"
+              android:drawableStart="@drawable/ic_speed"
+              android:drawableEnd="@drawable/ic_chevron_down"
+              android:text="1x" />
+
+          <TextView
+              android:id="@+id/episodes_btn"
+              style="@style/HikariPill"
+              android:drawableStart="@drawable/ic_episodes"
+              android:text="@string/player_episodes" />
+
+          <TextView
+              android:id="@+id/sources_btn"
+              style="@style/HikariPill.Accent"
+              android:drawableStart="@drawable/ic_server"
+              android:maxWidth="200dp"
+              android:text="@string/player_source" />
+
+          <TextView
+              android:id="@+id/quality_btn"
+              style="@style/HikariPill"
+              android:drawableStart="@drawable/ic_quality"
+              android:text="@string/player_quality" />
+
+          <TextView
+              android:id="@+id/audio_btn"
+              style="@style/HikariPill"
+              android:drawableStart="@drawable/ic_audio"
+              android:text="@string/player_audio" />
+
+          <TextView
+              android:id="@+id/subs_btn"
+              style="@style/HikariPill"
+              android:drawableStart="@drawable/ic_subtitles"
+              android:text="@string/player_subtitles" />
+
+          <TextView
+              android:id="@+id/rotate_btn"
+              style="@style/HikariPill"
+              android:drawableStart="@drawable/ic_rotate"
+              android:text="@string/player_rotate" />
+
+          <TextView
+              android:id="@+id/skip_btn"
+              style="@style/HikariPill.Accent"
+              android:drawableStart="@drawable/ic_skip"
+              android:text="@string/player_skip_intro" />
+        </LinearLayout>
+      </HorizontalScrollView>
+
+      <!-- Pinned at the right edge (doesn't scroll with the pills): the
+           fit/crop toggle and the video-enhance preset, drawn as a pill plus a
+           round button like the mockup's far-right expand control. This
+           container is the control-layout setting's "Bottom right" slot. -->
+      <LinearLayout
+          android:id="@+id/player_right_actions"
+          android:layout_width="wrap_content"
+          android:layout_height="wrap_content"
+          android:orientation="horizontal"
+          android:gravity="center_vertical"
+          android:layoutDirection="ltr">
+
+      <TextView
+          android:id="@+id/enhance_btn"
+          style="@style/HikariPill.Accent"
+          android:drawableStart="@drawable/ic_enhance"
+          android:text="@string/player_enhance" />
+
+      <ImageButton
+          android:id="@+id/resize_btn"
+          android:layout_width="26dp"
+          android:layout_height="26dp"
+          android:layout_marginStart="3dp"
+          android:layout_marginEnd="2dp"
+          android:src="@drawable/ic_resize"
+          android:tint="#FFFFFF"
+          android:contentDescription="@string/cd_fit_or_crop"
+          android:background="@drawable/circle_glass_ripple"
+          android:scaleType="centerInside" />
+      </LinearLayout>
+    </LinearLayout>
+
+    <!-- media3's own bottom buttons. All hidden (and all zero-width), and
+         @id/exo_overflow_show is kept as the LAST child so the library's
+         overflow logic, which is a no-op here, stays consistent. -->
+    <LinearLayout
+        android:id="@id/exo_basic_controls"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:layoutDirection="ltr">
+
+      <ImageButton android:id="@id/exo_vr"
+          style="@style/ExoStyledControls.Button.Bottom.VR"
+          android:visibility="gone" />
+
+      <ImageButton android:id="@id/exo_shuffle"
+          style="@style/ExoStyledControls.Button.Bottom.Shuffle"
+          android:visibility="gone" />
+
+      <ImageButton android:id="@id/exo_repeat_toggle"
+          style="@style/ExoStyledControls.Button.Bottom.RepeatToggle"
+          android:visibility="gone" />
+
+      <ImageButton android:id="@id/exo_settings"
+          style="@style/ExoStyledControls.Button.Bottom.Settings"
+          android:visibility="gone" />
+
+      <ImageButton android:id="@id/exo_fullscreen"
+          style="@style/ExoStyledControls.Button.Bottom.FullScreen"
+          android:visibility="gone" />
+
+      <ImageButton android:id="@id/exo_overflow_show"
+          style="@style/ExoStyledControls.Button.Bottom.OverflowShow"
+          android:visibility="gone" />
+    </LinearLayout>
+  </LinearLayout>
+
+  <HorizontalScrollView android:id="@id/exo_extra_controls_scroll_view"
+      android:layout_width="wrap_content"
+      android:layout_height="wrap_content"
+      android:layout_gravity="bottom|end"
+      android:visibility="invisible">
+
+    <LinearLayout android:id="@id/exo_extra_controls"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layoutDirection="ltr">
+
+      <ImageButton android:id="@id/exo_overflow_hide"
+          style="@style/ExoStyledControls.Button.Bottom.OverflowHide" />
+
+    </LinearLayout>
+  </HorizontalScrollView>
+
+  <LinearLayout android:id="@id/exo_minimal_controls"
+      android:layout_width="wrap_content"
+      android:layout_height="wrap_content"
+      android:layout_gravity="bottom|end"
+      android:layout_marginBottom="@dimen/exo_styled_minimal_controls_margin_bottom"
+      android:orientation="horizontal"
+      android:gravity="center_vertical"
+      android:layoutDirection="ltr"
+      android:visibility="gone">
+
+    <ImageButton android:id="@id/exo_minimal_fullscreen"
+        style="@style/ExoStyledControls.Button.Bottom.FullScreen" />
+
+  </LinearLayout>
+
+  <!-- Centre cluster: prev 30 + 6 + rew 34 + 6 + play 52 + 6 + ffwd 34 + 6
+       + next 30 = 204dp wide, with the "Tap to play" hint under the play
+       button. Keeping the cluster small avoids media3's minimal mode. -->
+  <LinearLayout
+      android:id="@id/exo_center_controls"
+      android:layout_width="wrap_content"
+      android:layout_height="wrap_content"
+      android:layout_gravity="center"
+      android:background="@android:color/transparent"
+      android:orientation="vertical"
+      android:gravity="center"
+      android:clipToPadding="false"
+      android:layoutDirection="ltr">
+
+    <LinearLayout
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:layoutDirection="ltr">
+
+      <ImageButton android:id="@id/exo_prev"
+          style="@style/ExoStyledControls.Button.Center.Previous"
+          android:layout_width="30dp"
+          android:layout_height="30dp"
+          android:background="@drawable/circle_glass_ripple"
+          android:tint="#FFFFFF" />
+
+      <FrameLayout
+          android:layout_width="34dp"
+          android:layout_height="34dp"
+          android:layout_marginStart="6dp"
+          android:layout_marginEnd="6dp"
+          android:background="@drawable/circle_glass_ripple"
+          android:addStatesFromChildren="true">
+        <Button android:id="@id/exo_rew_with_amount"
+            style="@style/ExoStyledControls.Button.Center.RewWithAmount"
+            android:layout_width="34dp"
+            android:layout_height="34dp"
+            android:layout_marginStart="0dp"
+            android:layout_marginEnd="0dp"
+            android:singleLine="false" />
+      </FrameLayout>
+
+      <ImageButton
+          android:id="@id/exo_play_pause"
+          style="@style/ExoStyledControls.Button.Center.PlayPause"
+          android:layout_width="52dp"
+          android:layout_height="52dp"
+          android:padding="9dp"
+          android:background="@drawable/player_play_ring" />
+
+      <FrameLayout
+          android:layout_width="34dp"
+          android:layout_height="34dp"
+          android:layout_marginStart="6dp"
+          android:layout_marginEnd="6dp"
+          android:background="@drawable/circle_glass_ripple"
+          android:addStatesFromChildren="true">
+        <Button android:id="@id/exo_ffwd_with_amount"
+            style="@style/ExoStyledControls.Button.Center.FfwdWithAmount"
+            android:layout_width="34dp"
+            android:layout_height="34dp"
+            android:layout_marginStart="0dp"
+            android:layout_marginEnd="0dp"
+            android:singleLine="false" />
+      </FrameLayout>
+
+      <ImageButton android:id="@id/exo_next"
+          style="@style/ExoStyledControls.Button.Center.Next"
+          android:layout_width="30dp"
+          android:layout_height="30dp"
+          android:background="@drawable/circle_glass_ripple"
+          android:tint="#FFFFFF" />
+    </LinearLayout>
+
+    <!-- Shown by PlayerActivity only while playback is paused. -->
+    <TextView
+        android:id="@+id/play_hint"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:text="@string/player_tap_to_play"
+        android:textSize="10dp"
+        android:textStyle="bold"
+        android:textColor="#DDFFFFFF"
+        android:visibility="gone" />
+  </LinearLayout>
+
+</merge>

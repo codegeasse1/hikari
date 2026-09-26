@@ -1,0 +1,16 @@
+<!-- Video enhance: a sparkle plus a smaller one, the usual "effects /
+     enhancement" glyph. White because the pills tint their start drawable
+     (@style/HikariPill sets drawableTint=#FFFFFF). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="16dp"
+    android:height="16dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="#FFFFFF">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M10,2.6 C10.62,8 12,9.4 17.4,10 C12,10.6 10.62,12 10,17.4 C9.38,12 8,10.6 2.6,10 C8,9.4 9.38,8 10,2.6 Z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M18.6,13.8 C18.96,16.7 19.8,17.5 22.7,17.9 C19.8,18.3 18.96,19.1 18.6,22 C18.24,19.1 17.4,18.3 14.5,17.9 C17.4,17.5 18.24,16.7 18.6,13.8 Z" />
+</vector>

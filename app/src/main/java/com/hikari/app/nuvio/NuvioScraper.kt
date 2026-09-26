@@ -1,0 +1,692 @@
+package com.hikari.app.nuvio
+
+import com.hikari.app.HikariApp
+import com.hikari.app.data.CatalogRef
+import com.hikari.app.data.Episode
+import com.hikari.app.data.MediaItem
+import com.hikari.app.data.MediaType
+import com.hikari.app.data.ProviderConfig
+import com.hikari.app.data.ProviderType
+import com.hikari.app.data.StreamSource
+import com.hikari.app.data.SubtitleSource
+import com.hikari.app.net.Http
+import com.hikari.app.providers.ContentProvider
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.File
+import java.util.concurrent.ConcurrentHashMap
+
+/**
+ * Adapts a Nuvio JS provider to Hikari's ContentProvider contract. Nuvio
+ * providers have no catalogs/search of their own — they resolve sources purely
+ * from a TMDB id + mediaType (+ season/episode for series), which is exactly
+ * how the official NuvioMobile app calls them. Hikari resolves the TMDB id via
+ * [TmdbResolver] and plays whatever the provider returns.
+ */
+class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
+
+    companion object {
+        /** Per-provider last failure (shown on the Detail screen). */
+        val streamErrors = ConcurrentHashMap<String, String>()
+        /** Per-provider last lookup outcome — one short line per extension
+         *  ("✓ 3 sources in 18s" or "✗ …"). Shown in the sources sheet so the
+         *  user can see which extension actually failed and why, instead of
+         *  one global "no sources found". */
+        val lastOutcome = ConcurrentHashMap<String, String>()
+        /** Per-provider catalog failure (shown on the Home empty state). */
+        val catalogErrors = ConcurrentHashMap<String, String>()
+
+        private const val IMG = "https://image.tmdb.org/t/p/w500"
+        private const val IMG_L = "https://image.tmdb.org/t/p/w1280"
+        private const val MAX_SEASONS = 24
+
+        /** What a nuvio site actually hosts, inferred from its scraper file
+         *  name. Nuvio providers export no catalog/search API of their own, so
+         *  Hikari browses TMDB on their behalf — but the catalog must match the
+         *  site's niche (an anime provider showing live-action movies is
+         *  useless), and it must differ between providers so installing three
+         *  extensions doesn't show three identical home screens. */
+        private enum class Niche { ANIME, HINDI, KDRAMA, FRENCH, PERSIAN, GENERAL }
+
+        private class RowDef(
+            val id: String,
+            val type: MediaType,
+            val path: String,
+            val params: Map<String, String>,
+            val title: String,
+        )
+
+        private val GENERAL_ROWS = listOf(
+            RowDef("g0", MediaType.UNKNOWN, "/trending/all/week", emptyMap(), "Trending"),
+            RowDef("g1", MediaType.MOVIE, "/movie/popular", emptyMap(), "Popular Movies"),
+            RowDef("g2", MediaType.MOVIE, "/movie/top_rated", emptyMap(), "Top Rated Movies"),
+            RowDef("g3", MediaType.MOVIE, "/movie/now_playing", emptyMap(), "In Cinemas"),
+            RowDef("g4", MediaType.MOVIE, "/movie/upcoming", emptyMap(), "Coming Soon"),
+            RowDef("g5", MediaType.SERIES, "/tv/popular", emptyMap(), "Popular Series"),
+            RowDef("g6", MediaType.SERIES, "/tv/top_rated", emptyMap(), "Top Rated Series"),
+            RowDef("g7", MediaType.SERIES, "/tv/airing_today", emptyMap(), "Airing Today"),
+            RowDef("g8", MediaType.SERIES, "/tv/on_the_air", emptyMap(), "On TV"),
+        )
+
+        // TMDB genre 16 = Animation, restricted to Japanese origin so anime
+        // sites actually show anime (not Family Guy). vote_count.gte=100 keeps
+        // "Top Rated" rows free of obscure 1-vote junk.
+        private val ANIME_ROWS = listOf(
+            RowDef("a0", MediaType.SERIES, "/discover/tv", mapOf("with_genres" to "16", "with_origin_country" to "JP", "sort_by" to "popularity.desc"), "Popular Anime"),
+            RowDef("a1", MediaType.SERIES, "/discover/tv", mapOf("with_genres" to "16", "with_origin_country" to "JP", "sort_by" to "vote_average.desc", "vote_count.gte" to "100"), "Top Rated Anime"),
+            RowDef("a2", MediaType.SERIES, "/discover/tv", mapOf("with_genres" to "16", "with_origin_country" to "JP", "sort_by" to "first_air_date.desc"), "New Anime"),
+            RowDef("a3", MediaType.MOVIE, "/discover/movie", mapOf("with_genres" to "16", "with_origin_country" to "JP", "sort_by" to "popularity.desc"), "Popular Anime Movies"),
+            RowDef("a4", MediaType.MOVIE, "/discover/movie", mapOf("with_genres" to "16", "with_origin_country" to "JP", "sort_by" to "vote_average.desc", "vote_count.gte" to "100"), "Top Rated Anime Movies"),
+            RowDef("a5", MediaType.MOVIE, "/discover/movie", mapOf("with_genres" to "16", "with_origin_country" to "JP", "sort_by" to "primary_release_date.desc"), "New Anime Movies"),
+            // Anime movies often lack the JP origin country tag but still have
+            // the ja original language — these catch the stragglers.
+            RowDef("a6", MediaType.MOVIE, "/discover/movie", mapOf("with_genres" to "16", "with_original_language" to "ja", "sort_by" to "popularity.desc"), "Japanese Anime Movies"),
+            RowDef("a7", MediaType.SERIES, "/discover/tv", mapOf("with_genres" to "16", "with_original_language" to "ja", "sort_by" to "popularity.desc"), "Japanese Anime Series"),
+            RowDef("a8", MediaType.SERIES, "/discover/tv", mapOf("with_genres" to "16", "with_origin_country" to "JP", "sort_by" to "vote_count.desc"), "Most Discussed Anime"),
+        )
+
+        private val HINDI_ROWS = listOf(
+            RowDef("h0", MediaType.MOVIE, "/discover/movie", mapOf("with_original_language" to "hi", "sort_by" to "popularity.desc"), "Popular Hindi Movies"),
+            RowDef("h1", MediaType.SERIES, "/discover/tv", mapOf("with_original_language" to "hi", "sort_by" to "popularity.desc"), "Popular Hindi Series"),
+            RowDef("h2", MediaType.MOVIE, "/discover/movie", mapOf("with_original_language" to "hi", "sort_by" to "vote_average.desc", "vote_count.gte" to "100"), "Top Rated Hindi Movies"),
+            RowDef("h3", MediaType.SERIES, "/discover/tv", mapOf("with_original_language" to "hi", "sort_by" to "vote_average.desc", "vote_count.gte" to "100"), "Top Rated Hindi Series"),
+            RowDef("h4", MediaType.MOVIE, "/discover/movie", mapOf("with_original_language" to "hi", "sort_by" to "primary_release_date.desc"), "New Hindi Movies"),
+        )
+
+        private val KDRAMA_ROWS = listOf(
+            RowDef("k0", MediaType.SERIES, "/discover/tv", mapOf("with_original_language" to "ko", "sort_by" to "popularity.desc"), "Popular Korean Dramas"),
+            RowDef("k1", MediaType.SERIES, "/discover/tv", mapOf("with_original_language" to "ko", "sort_by" to "vote_average.desc", "vote_count.gte" to "100"), "Top Rated Korean Dramas"),
+            RowDef("k2", MediaType.SERIES, "/discover/tv", mapOf("with_original_language" to "ko", "sort_by" to "first_air_date.desc"), "New Korean Dramas"),
+            RowDef("k3", MediaType.MOVIE, "/discover/movie", mapOf("with_original_language" to "ko", "sort_by" to "popularity.desc"), "Popular Korean Movies"),
+        )
+
+        private val FRENCH_ROWS = listOf(
+            RowDef("f0", MediaType.MOVIE, "/discover/movie", mapOf("with_original_language" to "fr", "sort_by" to "popularity.desc"), "Popular French Movies"),
+            RowDef("f1", MediaType.SERIES, "/discover/tv", mapOf("with_original_language" to "fr", "sort_by" to "popularity.desc"), "Popular French Series"),
+            RowDef("f2", MediaType.MOVIE, "/discover/movie", mapOf("with_original_language" to "fr", "sort_by" to "vote_average.desc", "vote_count.gte" to "100"), "Top Rated French Movies"),
+            RowDef("f3", MediaType.SERIES, "/discover/tv", mapOf("with_original_language" to "fr", "sort_by" to "vote_average.desc", "vote_count.gte" to "100"), "Top Rated French Series"),
+        )
+
+        private val PERSIAN_ROWS = listOf(
+            RowDef("p0", MediaType.MOVIE, "/discover/movie", mapOf("with_original_language" to "fa", "sort_by" to "popularity.desc"), "Popular Persian Movies"),
+            RowDef("p1", MediaType.SERIES, "/discover/tv", mapOf("with_original_language" to "fa", "sort_by" to "popularity.desc"), "Popular Persian Series"),
+            RowDef("p2", MediaType.MOVIE, "/discover/movie", mapOf("with_original_language" to "fa", "sort_by" to "vote_average.desc", "vote_count.gte" to "100"), "Top Rated Persian Movies"),
+            RowDef("p3", MediaType.SERIES, "/discover/tv", mapOf("with_original_language" to "fa", "sort_by" to "vote_average.desc", "vote_count.gte" to "100"), "Top Rated Persian Series"),
+        )
+
+        private fun nicheOf(name: String): Niche {
+            val n = name.lowercase()
+            return when {
+                listOf("anime", "hianime", "anidb", "anikoto", "kurage", "cartoon").any { n.contains(it) } -> Niche.ANIME
+                listOf(
+                    "desi", "hindi", "hindmoviez", "einthusan", "gramcinema", "moonflix", "ctgmovies",
+                    "hdghar", "hdhub", "moviebox", "movieblast", "movieshunt", "movies4u",
+                    "vegamovies", "zinkmovie", "bollywood",
+                ).any { n.contains(it) } -> Niche.HINDI
+                listOf("kdrama", "kisskh").any { n.contains(it) } -> Niche.KDRAMA
+                listOf("movix", "nakios", "purstream", "wiflix", "vostfr", "frenchstream", "streamingvf", "papadustream").any { n.contains(it) } -> Niche.FRENCH
+                n.contains("persian") -> Niche.PERSIAN
+                else -> Niche.GENERAL
+            }
+        }
+
+        /** Deterministic slice of [pool] so different providers of the same
+         *  niche still show different rows. Windows are CIRCULAR (they wrap
+         *  past the end of the pool), so every row gets a fair chance of
+         *  appearing and the number of distinct catalogs equals the pool size,
+         *  not pool.size - take + 1. The caller passes an [offset] that is
+         *  unique per provider (see [rows]) — two same-niche providers can then
+         *  never land on the same home screen. */
+        private fun window(pool: List<RowDef>, take: Int, offset: Int): List<RowDef> {
+            val n = pool.size
+            if (n <= 0) return emptyList()
+            val start = (offset % n + n) % n
+            return List(take) { i -> pool[(start + i) % n] }
+        }
+    }
+
+    // Nuvio providers resolve sources purely from a TMDB id, and export no
+    // catalog/search API of their own — so Hikari browses TMDB on their
+    // behalf (same as the official NuvioMobile app). But instead of one shared
+    // catalog for every extension, each provider gets its own niche-matched
+    // catalog: anime sites show anime, Hindi sites show Hindi content, Korean
+    // drama sites show K-dramas, and general sites get the usual rows. Rows are
+    // picked deterministically from the niche's pool — CIRCULAR windows offset
+    // by the provider's ordinal among the installed same-niche nuvio providers
+    // (sorted by name) — so no two extensions ever end up with identical home
+    // screens, even when several of them share a niche (hianime + animepahe +
+    // allanime must show three different catalogs, not one).
+    private val rows: List<RowDef> by lazy {
+        val h = config.name.hashCode() and 0x7fffffff
+        val niche = nicheOf(config.name)
+        // Order of this provider among the currently-installed nuvio providers
+        // of the same niche. Distinct ordinals ⇒ distinct window offsets ⇒
+        // distinct catalogs, guaranteed regardless of name-hash collisions.
+        // (One tiny blocking read of the already-loaded provider list — the
+        // home screen has to list providers anyway, so the DataStore value is
+        // hot by the time any catalog row is rendered.)
+        val ordinal = runCatching {
+            runBlocking {
+                HikariApp.instance.store.providers()
+                    .filter { it.type == ProviderType.NUVIO && nicheOf(it.name) == niche }
+                    .sortedBy { it.name.lowercase() }
+                    .indexOfFirst { it.id == config.id }
+            }
+        }.getOrDefault(-1)
+        val offset = if (ordinal >= 0) ordinal else h
+        when (niche) {
+            Niche.GENERAL -> window(GENERAL_ROWS, 5, offset)
+            Niche.ANIME -> window(ANIME_ROWS, 4, offset)
+            Niche.HINDI -> window(HINDI_ROWS, 3, offset)
+            Niche.KDRAMA -> window(KDRAMA_ROWS, 3, offset)
+            Niche.FRENCH -> window(FRENCH_ROWS, 3, offset)
+            Niche.PERSIAN -> window(PERSIAN_ROWS, 3, offset)
+        }
+    }
+
+    override suspend fun catalogs(): List<CatalogRef> = rows.map { r ->
+        CatalogRef(config.id, r.type, r.id, r.title)
+    }
+
+    override suspend fun getCatalog(ref: CatalogRef, page: Int): List<MediaItem> = withContext(Dispatchers.IO) {
+        val def = rows.firstOrNull { it.id == ref.id } ?: return@withContext emptyList()
+        val params = LinkedHashMap(def.params)
+        params["page"] = page.coerceAtLeast(1).toString()
+        val data = TmdbResolver.apiGet(def.path, params)
+        if (data == null) {
+            catalogErrors[config.id] = "TMDB catalog unavailable right now (network or API key)."
+            return@withContext emptyList()
+        }
+        catalogErrors.remove(config.id)
+        val arr = data.optJSONArray("results") ?: return@withContext emptyList()
+        (0 until arr.length()).mapNotNull { i ->
+            val o = arr.optJSONObject(i) ?: return@mapNotNull null
+            fromTmdbRow(o)
+        }
+    }
+
+    override suspend fun search(query: String, page: Int): List<MediaItem> = withContext(Dispatchers.IO) {
+        if (query.isBlank()) return@withContext emptyList()
+        val data = TmdbResolver.apiGet(
+            "/search/multi", mapOf("query" to query, "page" to page.coerceAtLeast(1).toString())
+        ) ?: return@withContext emptyList()
+        val arr = data.optJSONArray("results") ?: return@withContext emptyList()
+        (0 until arr.length()).mapNotNull { i ->
+            val o = arr.optJSONObject(i) ?: return@mapNotNull null
+            val mt = o.optString("media_type")
+            if (mt != "movie" && mt != "tv") return@mapNotNull null
+            fromTmdbRow(o)
+        }
+    }
+
+    override suspend fun getMeta(item: MediaItem): MediaItem {
+        if (item.id.isBlank() || !item.id.all { it.isDigit() }) return item
+        val type = if (item.type == MediaType.SERIES) "tv" else "movie"
+        val d = TmdbResolver.apiGet("/$type/${item.id}", emptyMap()) ?: return item
+        val year = listOf("release_date", "first_air_date")
+            .firstNotNullOfOrNull { k ->
+                d.optString(k).takeIf { it.isNotBlank() }?.take(4)?.toIntOrNull()
+            }
+        return MediaItem(
+            providerId = item.providerId,
+            id = item.id,
+            title = d.optString("title").ifBlank { d.optString("name") }.ifBlank { item.title },
+            type = item.type,
+            posterUrl = d.tmdbPath("poster_path")?.let { IMG + it } ?: item.posterUrl,
+            year = year ?: item.year,
+            overview = d.optString("overview").ifBlank { item.overview.orEmpty() }.ifBlank { null },
+            genres = (0 until (d.optJSONArray("genres")?.length() ?: 0)).mapNotNull { i ->
+                d.optJSONArray("genres")?.optJSONObject(i)?.optString("name")?.takeIf { it.isNotBlank() }
+            },
+            backdropUrl = d.tmdbPath("backdrop_path")?.let { IMG_L + it } ?: item.backdropUrl,
+            rawType = item.rawType,
+        )
+    }
+
+    override suspend fun getEpisodes(item: MediaItem): List<Episode>? = withContext(Dispatchers.IO) {
+        if (item.type != MediaType.SERIES) return@withContext null
+        val id = item.id
+        if (id.isBlank() || !id.all { it.isDigit() }) return@withContext null
+        val tv = TmdbResolver.apiGet("/tv/$id", emptyMap()) ?: return@withContext null
+        val seasons = tv.optJSONArray("seasons") ?: return@withContext null
+        val nums = (0 until seasons.length()).mapNotNull { i ->
+            val s = seasons.optJSONObject(i) ?: return@mapNotNull null
+            val n = s.optInt("season_number")
+            if (n > 0 && s.optInt("episode_count") > 0) n else null
+        }.take(MAX_SEASONS)
+        val rows = mutableListOf<TmdbEp>()
+        for (sn in nums) {
+            val sd = TmdbResolver.apiGet("/tv/$id/season/$sn", emptyMap()) ?: continue
+            val eps = sd.optJSONArray("episodes") ?: continue
+            for (i in 0 until eps.length()) {
+                val e = eps.optJSONObject(i) ?: continue
+                val en = e.optInt("episode_number")
+                if (en <= 0) continue
+                rows += TmdbEp(
+                    season = sn,
+                    number = en,
+                    name = e.optString("name").takeIf { it.isNotBlank() && it != "null" },
+                    image = e.tmdbPath("still_path")?.let { IMG + it },
+                    air = e.optString("air_date").trim().takeIf { it.length == 10 },
+                )
+            }
+        }
+        if (rows.isEmpty()) return@withContext null
+
+        // TMDB lists the WHOLE planned run, not just what has aired: Renegade
+        // Immortal has 200 rows today with only 158 aired, and tapping one of
+        // the future ones can never play because no site has a video for it
+        // yet. Drop them here instead of offering dead rows.
+        val today = isoDay(0)
+        var list = rows.filter { it.air == null || it.air <= today }
+        if (list.isEmpty()) return@withContext null
+
+        // Donghua rescue: TMDB's long-runner coverage stalls on some titles
+        // (Battle Through the Heavens is frozen at its 2018 season). Safe only
+        // for the single continuous season these shows use, where the row
+        // numbers are the absolute episode numbers the sites actually serve.
+        if (nums.size == 1 && nums[0] == 1) {
+            list = mergeBangumi(item, tv, list)
+        }
+
+        list.sortedWith(compareBy({ it.season }, { it.number })).map {
+            Episode(
+                number = it.number,
+                id = "S${it.season}E${it.number}",
+                name = it.name,
+                image = it.image,
+                season = it.season,
+            )
+        }
+    }
+
+    /** One episode row as read from TMDB, plus the air date the released-only
+     *  filter (and the Bangumi merge) work on. */
+    private data class TmdbEp(
+        val season: Int,
+        val number: Int,
+        val name: String?,
+        val image: String?,
+        val air: String?,
+    )
+
+    /** Today, shifted by [offsetDays], as the ISO date TMDB uses for `air_date`. */
+    private fun isoDay(offsetDays: Int): String =
+        java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+            .format(java.util.Date(System.currentTimeMillis() + offsetDays * 86_400_000L))
+
+    /**
+     * TMDB is complete for most shows, but its donghua coverage stalls on some
+     * long-runners. Bangumi — the Chinese anime database — tracks those week by
+     * week and its numbering concatenates to the same absolute numbers these
+     * providers serve, so the two merge by number alone: TMDB stays the base
+     * (it owns the stills, the air dates the sites agree with, and the English
+     * names the UI is in), and Bangumi only contributes the episodes TMDB is
+     * missing entirely.
+     *
+     * Bangumi deliberately does NOT rename anything: its titles are Chinese, so
+     * letting it overwrite TMDB's generic "Episode 128" would put Chinese rows
+     * in an English list — the caller's promise is an English title if one
+     * exists, and otherwise the source's own name.
+     *
+     * Never throws and never shortens the list: any Bangumi problem (no match,
+     * timeout, offline) just returns TMDB's own episodes.
+     */
+    private suspend fun mergeBangumi(
+        item: MediaItem,
+        tv: JSONObject,
+        tmdb: List<TmdbEp>,
+    ): List<TmdbEp> {
+        val original = tv.optString("original_name").trim().takeIf { it.isNotBlank() && it != "null" }
+        val year = tv.optString("first_air_date").take(4).toIntOrNull()
+        val bgm = withTimeoutOrNull(9_000) {
+            runCatching { BangumiMeta.episodes(item.title, original, year) }.getOrNull()
+        } ?: return tmdb
+        if (bgm.isEmpty()) return tmdb
+        val byNumber = bgm.associateBy { it.number }
+        // Bangumi's dates run a day behind TMDB's (it lists the Chinese
+        // broadcast date), so an episode the sites already serve must not be
+        // dropped just because Bangumi still dates it tomorrow.
+        val grace = isoDay(1)
+        val maxTmdb = tmdb.maxOfOrNull { it.number } ?: 0
+        val maxBgm = bgm.filter { it.airDate != null && it.airDate <= grace }
+            .maxOfOrNull { it.number } ?: 0
+
+        var out = tmdb
+        // TMDB behind (or missing a whole season) → take Bangumi's tail. The
+        // cap keeps a bad match from inventing hundreds of episodes.
+        if (maxBgm > maxTmdb && maxBgm - maxTmdb <= 400) {
+            val have = out.mapTo(HashSet()) { it.number }
+            val extra = (maxTmdb + 1..maxBgm).mapNotNull { n ->
+                if (n in have) return@mapNotNull null
+                val b = byNumber[n] ?: return@mapNotNull null
+                TmdbEp(season = 1, number = n, name = b.name, image = null, air = b.airDate)
+            }
+            if (extra.isNotEmpty()) out = out + extra
+        }
+        return out
+    }
+
+    /** Reads a TMDB image path, treating JSON null / "" / "null" as absent.
+     *  (org.json's optString returns the literal "null" for a JSON null, which
+     *  would otherwise produce broken URLs like "…/w500null" → HTTP 404.) */
+    private fun JSONObject.tmdbPath(key: String): String? {
+        if (!has(key) || isNull(key)) return null
+        return optString(key).trim().takeIf { it.isNotBlank() && it != "null" }
+    }
+
+    /** Maps a TMDB result object (movie/tv/trending rows) to a MediaItem. */
+    private fun fromTmdbRow(o: JSONObject): MediaItem? {
+        val id = o.optString("id")
+        if (id.isBlank()) return null
+        val title = o.optString("title").ifBlank { o.optString("name") }
+        if (title.isBlank()) return null
+        val isTv = o.optString("media_type") == "tv" || o.has("name") || o.has("first_air_date")
+        val t = if (isTv) MediaType.SERIES else MediaType.MOVIE
+        val year = listOf("release_date", "first_air_date")
+            .firstNotNullOfOrNull { k -> o.optString(k).takeIf { it.isNotBlank() }?.take(4)?.toIntOrNull() }
+        return MediaItem(
+            providerId = config.id,
+            id = id,
+            title = title,
+            type = t,
+            posterUrl = o.tmdbPath("poster_path")?.let { IMG + it },
+            year = year,
+            overview = o.optString("overview").takeIf { it.isNotBlank() },
+            backdropUrl = o.tmdbPath("backdrop_path")?.let { IMG_L + it },
+            rawType = if (t == MediaType.SERIES) "tv" else "movie",
+        )
+    }
+
+    override suspend fun getStreams(item: MediaItem, episode: Episode?): List<StreamSource> =
+        withContext(Dispatchers.IO) {
+            val startedAt = System.currentTimeMillis()
+            val resolved = TmdbResolver.resolve(item)
+            if (resolved == null) {
+                // Hikari could not map this title to TMDB — the provider was
+                // never really asked, so this must not be recorded as its answer
+                // (a TMDB hiccup used to hide every nuvio engine for the rest of
+                // the session). "provider failed" gets it re-asked.
+                val msg = "✗ provider failed: couldn't resolve a TMDB id for this title"
+                streamErrors[config.id] = msg
+                lastOutcome[config.id] = msg
+                return@withContext emptyList()
+            }
+            val source = runCatching { File(config.url).readText() }.getOrNull()
+            if (source.isNullOrBlank()) {
+                val msg = "✗ scraper file missing — reinstall this extension"
+                streamErrors[config.id] = msg
+                lastOutcome[config.id] = msg
+                return@withContext emptyList()
+            }
+            // Series: nuvio needs the season + episode numbers. The episode's
+            // id/name usually carries them ("S2E5", "2x3", …).
+            val season = if (episode == null) null else seasonOf(episode)
+            val epNum = if (episode == null) 1 else epNumberInSeason(episode)
+            // TMDB has exactly two namespaces, and every nuvio provider is
+            // written for those two: the whole ecosystem tests
+            // `mediaType === "tv" ? "tv" : "movie"` (or builds
+            // `${mediaType}/${tmdbId}` URL segments with it), so a series asked
+            // as anything else is asked as a MOVIE — the provider fetches
+            // /movie/<tvId>, gets a 404, and returns [] without a single
+            // network request to its own site.
+            //
+            // [TmdbResolver] carries one extra value, its own "anime" hint for a
+            // series (see [TmdbResolver.Resolved] — Ratings, TmdbMeta and the
+            // rest map it back through the same test), and this call used to
+            // pass that value straight into the engines. Every anime title
+            // therefore came back from every nuvio engine as "no sources" while
+            // the very same engines found servers in the real NuvioMobile app,
+            // which only ever sends "tv"/"movie". Map the hint here, at the one
+            // place that hands a media type to a foreign engine.
+            val mediaType = if (resolved.mediaType.equals("movie", true)) "movie" else "tv"
+            // Everything the engine is about to be told, plus the HTTP trail it
+            // leaves, in one line per provider that comes back empty — see
+            // [logNuvioOutcome]. "In nuvio this extension shows servers and in
+            // Hikari it says no sources" is only answerable with both halves:
+            // WHAT was asked (a wrong/short TMDB id or the wrong namespace makes
+            // a provider return [] with no request to its own site at all) and
+            // what actually came back from the network.
+            val asked = "tmdb=${resolved.tmdbId} $mediaType" +
+                (if (season != null) " S$season" else "") +
+                (if (season != null) "E$epNum" else "")
+            val fetchMark = NuvioRuntime.fetchLogMark()
+            val payload = NuvioRuntime.getStreams(
+                HikariApp.instance,
+                source,
+                config.id,
+                resolved.tmdbId,
+                mediaType,
+                season,
+                epNum,
+            )
+            val parsed = runCatching { JSONObject(payload) }.getOrNull()
+            if (parsed == null) {
+                // "provider failed" is a marker ContentRepository recognises as
+                // "this call did NOT answer" (see its isNoAnswer): the provider
+                // threw, crashed or ran out of budget, so the engine is asked
+                // again in the background rather than being recorded as having
+                // nothing for this title — which is what a bare "✗ …" used to
+                // turn into, hiding a whole tab of working engines.
+                val msg = "✗ provider failed: unreadable result"
+                streamErrors[config.id] = msg
+                lastOutcome[config.id] = msg
+                logNuvioOutcome(config, asked, msg, fetchMark)
+                return@withContext emptyList()
+            }
+            if (!parsed.optBoolean("ok", false)) {
+                val err = parsed.optString("error").ifBlank { "no sources found" }
+                val msg = if (err == "timeout") "✗ provider failed: timed out after 60s"
+                else "✗ provider failed: $err"
+                streamErrors[config.id] = msg.take(400)
+                lastOutcome[config.id] = msg.take(80)
+                logNuvioOutcome(config, asked, msg, fetchMark)
+                return@withContext emptyList()
+            }
+            val data = parsed.optJSONArray("data")
+            if (data == null || data.length() == 0) {
+                // A REAL answer: the engine ran and this provider's own site has
+                // nothing for this title. No "provider failed" marker, so it is
+                // reported as what it is and is not re-asked in a loop.
+                val msg = "no sources for this title"
+                streamErrors[config.id] = msg
+                lastOutcome[config.id] = "no sources"
+                logNuvioOutcome(config, asked, msg, fetchMark)
+                return@withContext emptyList()
+            }
+            val out = mutableListOf<StreamSource>()
+            for (i in 0 until data.length()) {
+                val s = data.optJSONObject(i) ?: continue
+                toStreamSource(s)?.let { out.add(it) }
+            }
+            if (out.isNotEmpty()) {
+                streamErrors.remove(config.id)
+                lastOutcome[config.id] = "✓ ${out.size} source${if (out.size == 1) "" else "s"} in ${(System.currentTimeMillis() - startedAt) / 1000}s"
+            } else {
+                // Rows came back but none of them is something the player can
+                // open. A real answer about this provider's links — recorded on
+                // both maps so the diagnosis says which, instead of keeping a
+                // stale message from an earlier search.
+                val msg = "✗ returned ${data.length()} rows but none playable"
+                streamErrors[config.id] = msg
+                lastOutcome[config.id] = msg
+                logNuvioOutcome(config, asked, msg, fetchMark)
+            }
+            val distinct = out.distinctBy { it.url }
+            // Warm the probe cache the moment the sources are found, so a
+            // wrapper server (4KHDHub/HubCloud) is already resolved by the time
+            // the user taps Play — no "Preparing stream…" wait.
+            com.hikari.app.net.StreamProbe.warmAsync(distinct)
+            distinct
+        }
+
+    /**
+     * One line per nuvio provider that came back with NOTHING: what it was
+     * asked, what the bridge actually saw on the wire during that call, and the
+     * verdict.
+     *
+     * This is the line that answers "the same extension shows servers in the
+     * nuvio app and none here", because it separates the three cases that all
+     * used to read as one:
+     *
+     *  - **no HTTP request at all** — the provider gave up before touching its
+     *    own site, which means the arguments were wrong for it (a TMDB id that
+     *    resolves to something else, or a namespace it does not serve), not that
+     *    the site is empty;
+     *  - **a request, and what it returned** — a 403/503 is the site refusing
+     *    the device (a Cloudflare challenge), a 404 is a bad id/path, a 200 with
+     *    a body is the provider's own parsing finding nothing;
+     *  - **a failure before the first byte** — a timeout, a DNS error, a dead
+     *    host.
+     *
+     * Only logged when a provider produced nothing: a working engine needs no
+     * explanation, and the pass already prints its "✓ N sources" line.
+     */
+    private fun logNuvioOutcome(
+        config: ProviderConfig,
+        asked: String,
+        verdict: String,
+        mark: Int,
+    ) {
+        val trail = runCatching { NuvioRuntime.fetchLogSince(mark, 6) }.getOrDefault(emptyList())
+        com.hikari.app.data.Logs.log(
+            "Nuvio",
+            "${config.name}: $asked → $verdict" +
+                (if (trail.isEmpty()) " · no HTTP request at all" else " · " + trail.joinToString(" | ")),
+        )
+    }
+
+    private fun toStreamSource(s: JSONObject): StreamSource? {
+        // Some providers wrap url+headers in a nested object.
+        var url = s.optString("url")
+        var headers = s.optJSONObject("headers")
+        if (url.isBlank() && s.has("url")) {
+            val nested = s.optJSONObject("url")
+            if (nested != null) {
+                url = nested.optString("url")
+                headers = nested.optJSONObject("headers") ?: headers
+            }
+        }
+        if (url.isBlank() && s.optString("externalUrl").isBlank() && s.optString("ytId").isBlank()) {
+            return null
+        }
+        // Generic providers sometimes capture non-content links — the classic
+        // being the SVG xmlns namespace (http://www.w3.org/2000/svg), which
+        // must never become a playable source (or open a w3.org page in the
+        // web view). Drop such streams outright.
+        if (isGarbageUrl(url) || isGarbageUrl(s.optString("externalUrl"))) return null
+        val name = s.optString("name").ifBlank { s.optString("title") }.ifBlank { config.name }
+        val quality = s.optString("quality").ifBlank { "" }
+        val displayName = if (quality.isNotBlank() && !name.contains(quality, true)) "$name $quality" else name
+
+        val h = LinkedHashMap<String, String>()
+        fun putHeaders(obj: JSONObject?) {
+            if (obj == null) return
+            obj.keys().forEach { k ->
+                val v = obj.optString(k).filter { it.code < 128 }
+                if (v.isNotBlank()) h[k] = v
+            }
+        }
+        // Stremio-style `behaviorHints.proxyHeaders.request` is where nuvio
+        // providers put the headers their CDN demands (4KHDHub's workers.dev /
+        // r2 links are Referer-locked: without it the CDN answers 403, the
+        // probe can't resolve the wrapper page, and the server gets skipped).
+        // Some providers use `behaviorHints.headers` instead — accept both.
+        val hints = s.optJSONObject("behaviorHints")
+        putHeaders(hints?.optJSONObject("proxyHeaders")?.optJSONObject("request"))
+        putHeaders(hints?.optJSONObject("headers"))
+        // Explicit headers win over the hint block when both are present.
+        putHeaders(headers)
+        // Always send a browser UA unless the provider explicitly set one.
+        h.putIfAbsent("User-Agent", Http.UA)
+
+        val subs = mutableListOf<SubtitleSource>()
+        val subArr = runCatching { s.getJSONArray("subtitles") }.getOrNull()
+        if (subArr != null) {
+            for (i in 0 until subArr.length()) {
+                val st = subArr.optJSONObject(i) ?: continue
+                val su = st.optString("url")
+                if (su.isBlank()) continue
+                subs.add(
+                    SubtitleSource(
+                        st.optString("lang").ifBlank { st.optString("language") }.ifBlank { "Sub" },
+                        su,
+                    )
+                )
+            }
+        }
+
+        val isTorrent = s.optBoolean("isTorrent", false) ||
+            url.startsWith("magnet:", true) || url.startsWith("torrent:", true)
+        val infoHash = s.optString("infoHash").ifBlank { null }
+            ?: infoHashOf(url)
+        val isM3u8 = s.optBoolean("isM3u8", false) || url.contains(".m3u8", true)
+        val isMpd = s.optBoolean("isMpd", false) || url.contains(".mpd", true)
+
+        return StreamSource(
+            name = displayName,
+            url = if (isTorrent) url else Http.normalizeDriveUrl(url),
+            headers = h,
+            subtitles = subs,
+            isTorrent = isTorrent,
+            infoHash = infoHash,
+            isM3u8 = isM3u8,
+            isMpd = isMpd,
+            fileIdx = if (s.has("fileIdx")) s.optInt("fileIdx", -1).takeIf { it >= 0 } else null,
+            trackers = runCatching {
+                val a = s.getJSONArray("trackers")
+                (0 until a.length()).mapNotNull { i -> a.optString(i).ifBlank { null } }
+            }.getOrDefault(emptyList()),
+            ytId = s.optString("ytId").ifBlank { null },
+            externalUrl = s.optBoolean("externalUrl", false),
+        )
+    }
+
+    private fun infoHashOf(url: String): String? {
+        Regex("""[?&]xt=urn:btih:([a-zA-Z0-9]{32,40})""").find(url)?.let { return it.groupValues[1] }
+        Regex("""urn:btih:([a-zA-Z0-9]{32,40})""").find(url)?.let { return it.groupValues[1] }
+        return null
+    }
+
+    /** True for URLs that point at non-content scaffolding (e.g. the SVG
+     *  xmlns namespace http://www.w3.org/2000/svg). Such links must never be
+     *  handed to the player, which would otherwise open them in the web view. */
+    private fun isGarbageUrl(url: String): Boolean {
+        if (url.isBlank()) return false
+        if (url.contains("w3.org/2000/svg", ignoreCase = true)) return true
+        val host = runCatching { java.net.URI(url).host?.lowercase() }.getOrNull() ?: return false
+        return host == "w3.org" || host.endsWith(".w3.org")
+    }
+
+    /** Best-effort season number from the episode's id or name. */
+    private fun seasonOf(ep: Episode): Int {
+        val text = listOfNotNull(ep.id, ep.name).firstOrNull { it.isNotBlank() } ?: return 1
+        Regex("""(?i)[sS]\s*(\d+)\s*[eE]\s*(\d+)""").find(text)?.let { m ->
+            m.groupValues[1].toIntOrNull()?.let { return it }
+        }
+        Regex("""(?i)season\s+(\d+)""").find(text)?.let { m ->
+            m.groupValues[1].toIntOrNull()?.let { return it }
+        }
+        Regex("""(?:^|[^\d])(\d+)\s*[xX:.\-]\s*\d+(?:$|[^\d])""").find(text)?.let { m ->
+            m.groupValues[1].toIntOrNull()?.let { return it }
+        }
+        return 1
+    }
+
+    /** Best-effort in-season episode number from the episode's id or name
+     *  (e.g. "S2E5" → 5). Falls back to [Episode.number]. */
+    private fun epNumberInSeason(ep: Episode): Int {
+        val text = listOfNotNull(ep.id, ep.name).firstOrNull { it.isNotBlank() } ?: return ep.number
+        Regex("""(?i)[sS]\s*(\d+)\s*[eE]\s*(\d+)""").find(text)?.let { m ->
+            m.groupValues[2].toIntOrNull()?.let { return it }
+        }
+        Regex("""(?:^|[^\d])(\d+)\s*[xX:.\-]\s*(\d+)(?:$|[^\d])""").find(text)?.let { m ->
+            m.groupValues[2].toIntOrNull()?.let { return it }
+        }
+        return ep.number
+    }
+}

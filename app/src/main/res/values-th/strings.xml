@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Hikari</string>
+    <string name="settings_language_title">ภาษาของแอป</string>
+    <string name="settings_language_subtitle">เปลี่ยนข้อความในแอปและปุ่มควบคุมเครื่องเล่น</string>
+    <string name="settings_language_system">ค่าเริ่มต้นของระบบ</string>
+    <string name="player_options">ตัวเลือกเครื่องเล่น</string>
+    <string name="player_fit_video">พอดีวิดีโอ</string>
+    <string name="player_fit_video_desc">แสดงเฟรมทั้งหมด</string>
+    <string name="player_crop_to_fill">ครอปให้เต็มจอ</string>
+    <string name="player_crop_to_fill_desc">ซูมจนเต็มเฟรม</string>
+    <string name="player_stretch_video">ยืดให้เต็มจอ</string>
+    <string name="player_stretch_video_desc">เต็มหน้าจอโดยไม่สนใจสัดส่วน</string>
+    <string name="player_rotate_screen">หมุนหน้าจอ</string>
+    <string name="player_rotate_screen_desc">หมุนวิดีโอครั้งละ 90°</string>
+    <string name="player_server_chooser">เลือกเซิร์ฟเวอร์</string>
+    <string name="player_server_on">เปิด — เลือกเซิร์ฟเวอร์ทุกครั้ง</string>
+    <string name="player_server_off">ปิด — เริ่มจากเซิร์ฟเวอร์ที่ดีที่สุด</string>
+    <string name="player_options_hint">การปรับวิดีโอ การหมุน และเซิร์ฟเวอร์เริ่มเองหรือไม่</string>
+    <string name="player_episodes">ตอน</string>
+    <string name="player_source">แหล่ง</string>
+    <string name="player_quality">คุณภาพ</string>
+    <string name="player_audio">เสียง</string>
+    <string name="player_subtitles">คำบรรยาย</string>
+    <string name="player_rotate">หมุน</string>
+    <string name="player_skip_intro">ข้ามอินโทร</string>
+    <string name="player_enhance">ปรับปรุง</string>
+    <string name="player_tap_to_play">แตะเพื่อเล่น</string>
+    <string name="cd_back">ย้อนกลับ</string>
+    <string name="cd_add_to_library">เพิ่มในคลัง</string>
+    <string name="cd_download">ดาวน์โหลด</string>
+    <string name="cd_pip">ภาพซ้อนภาพ</string>
+    <string name="cd_player_options">ตัวเลือกเครื่องเล่น</string>
+    <string name="cd_lock_controls">ล็อกปุ่มควบคุม</string>
+    <string name="cd_fit_or_crop">พอดี ครอป หรือยืดวิดีโอ</string>
+</resources>

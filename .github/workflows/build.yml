@@ -1,0 +1,312 @@
+# =============================================================================
+#  DO NOT CREATE A MAIN RELEASE WITHOUT THE OWNER ASKING FOR IT, IN WRITING.
+#
+#  Pushing to `main` publishes the test APKs to the `continuous` pre-release and
+#  to the `build` branch. That is the only thing a normal push may do.
+#
+#  A *main* release (a non-prerelease `v<version>` on the releases page) makes
+#  that build the version every user is offered, so it is opt-in by hand only,
+#  and it is gated twice: the `release` checkbox AND the `confirm_release`
+#  input, which must be typed as exactly  CONFIRM-RELEASE . If either is
+#  missing the release step does not run; a warning step says so in the log.
+#
+#  Automation / coding agents: NEVER dispatch this workflow with
+#  release=true. Only a human owner, who has explicitly asked for a release
+#  in the current conversation, may do that.
+# =============================================================================
+name: Build
+
+on:
+  push:
+    branches: [ main ]
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+      - '.gitignore'
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "Create a main release (v<version>) from current main"
+        type: boolean
+        default: false
+      confirm_release:
+        description: "Safety gate: type CONFIRM-RELEASE (exactly) to actually publish a main release"
+        type: string
+        default: ""
+      version:
+        description: "Release version (e.g. 0.1.0)"
+        type: string
+        default: "0.1.0"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # A build that stalls (a Maven download that never lands) used to sit on
+    # the runner for half an hour with no output. The per-attempt timeout in
+    # the build step handles the common case; this is the backstop.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Accept Android SDK licenses
+        run: |
+          if [ -n "$ANDROID_HOME" ]; then
+            yes | "$ANDROID_HOME"/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null 2>&1 || true
+            "$ANDROID_HOME"/cmdline-tools/latest/bin/sdkmanager "platforms;android-34" "platforms;android-35" "platforms;android-36" "build-tools;34.0.0" "build-tools;35.0.0" > /dev/null 2>&1 || true
+          fi
+
+      - name: Prepare signing keystore
+        env:
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+        run: |
+          if [ -n "$SIGNING_KEY" ]; then
+            echo "$SIGNING_KEY" | base64 -d > "$RUNNER_TEMP/hikari-keystore.p12"
+            echo "SIGNING_STORE_PATH=$RUNNER_TEMP/hikari-keystore.p12" >> "$GITHUB_ENV"
+          fi
+
+      - uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: "8.11.1"
+          # The GitHub cache service occasionally has outages that make the
+          # restore/save steps exit 1 and kill the whole build before gradle
+          # even runs. Disabling the cache costs a couple of minutes of
+          # dependency re-downloads but makes builds deterministic.
+          cache-disabled: true
+
+      - name: Build APKs (debug + release)
+        env:
+          GIT_SHA: ${{ github.sha }}
+          SIGNING_STORE_PATH: ${{ env.SIGNING_STORE_PATH }}
+          SIGNING_STORE_PASSWORD: ${{ secrets.KEY_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          # Maven Central occasionally rate-limits (HTTP 429) cold dependency
+          # resolution. Retry the whole build a few times with a pause so the
+          # rate-limit bucket can drain, instead of failing the first run.
+          # Each attempt is capped as well as retried: a stalled download can
+          # hang a Gradle build indefinitely (no output, no exit code), and
+          # that is worse than a clean failure, because the retry never gets a
+          # chance to run. "timeout" turns a hang into exit code 124, which the
+          # retry below treats like any other transient network problem.
+          # `set +e` is load-bearing: this step's shell runs with `-e` (see
+          # `shell:` above), and a failing `timeout gradle…` would abort the
+          # script at that line — before `code=$?`, before the retry, and before
+          # the error dump below. That is why a failed build used to be logged
+          # as "attempt 1/5" followed by nothing at all: the actual Kotlin
+          # errors were in gradle-build.log, and the step never printed them.
+          set +e
+          code=1
+          for attempt in 1 2 3 4 5; do
+            echo "==== Gradle build attempt $attempt/5 ===="
+            timeout 1500 gradle assembleDebug assembleRelease --no-daemon --stacktrace \
+              -Dorg.gradle.internal.http.connectionTimeout=30000 \
+              -Dorg.gradle.internal.http.socketTimeout=60000 > gradle-build.log 2>&1
+            code=$?
+            if [ $code -eq 0 ]; then
+              break
+            fi
+            if [ $code -eq 124 ] || grep -qE "429|Too Many Requests|Connection reset|Read timed out|SocketTimeout|connect timed out|Could not resolve|Unable to load Maven meta-data" gradle-build.log; then
+              echo "==== Attempt $attempt hit a rate-limit or network stall (exit $code); retrying in 45s ===="
+              sleep 45
+            else
+              echo "==== Attempt $attempt failed with a non-network error; stopping ===="
+              break
+            fi
+          done
+          if [ $code -ne 0 ]; then
+            echo "==== BUILD FAILED (exit $code) ===="
+            tail -n 200 gradle-build.log
+            echo "==== KOTLIN ERRORS ===="
+            grep -E "^e: " gradle-build.log | head -n 40
+            grep -E "^e: " gradle-build.log | head -n 40 | sed -E 's/^e: (.+): \(([0-9]+), ([0-9]+)\): (.*)/::error file=\1,line=\2,col=\3::\4/' || true
+          fi
+          exit $code
+
+      # ---- Split APKs: work out which files this build produced ----
+      # The release build now emits one APK per phone processor
+      # (`-armeabi-v7a-` = 32-bit arm, `-arm64-v8a-` = 64-bit arm) plus a
+      # universal one carrying both, so the file names depend on the split
+      # filter. This step resolves them once (into $GITHUB_ENV, so every step
+      # below can use them) and dumps the build's own output-metadata.json into
+      # the log, which is where the version code of each APK is recorded.
+      - name: Collect release APKs
+        run: |
+          OUT=app/build/outputs/apk/release
+          echo "==== release output files ===="
+          ls -la "$OUT"
+          echo "==== release output-metadata.json ===="
+          cat "$OUT/output-metadata.json" 2>/dev/null || echo "(no output-metadata.json)"
+          echo "==== debug output files ===="
+          ls -la app/build/outputs/apk/debug 2>/dev/null || true
+          APK_ARM64=$(ls "$OUT" 2>/dev/null | grep -E 'arm64-v8a.*\.apk$' | head -n1 || true)
+          APK_ARM32=$(ls "$OUT" 2>/dev/null | grep -E 'armeabi-v7a.*\.apk$' | head -n1 || true)
+          APK_UNIVERSAL=$(ls "$OUT" 2>/dev/null | grep -E 'universal.*\.apk$' | head -n1 || true)
+          # Some AGP versions name the universal APK plainly app-release.apk;
+          # accept that too so this step can never be what breaks a release.
+          if [ -z "$APK_UNIVERSAL" ] && [ -f "$OUT/app-release.apk" ]; then
+            APK_UNIVERSAL=app-release.apk
+          fi
+          {
+            echo "APK_ARM64=$APK_ARM64"
+            echo "APK_ARM32=$APK_ARM32"
+            echo "APK_UNIVERSAL=$APK_UNIVERSAL"
+          } >> "$GITHUB_ENV"
+          echo "armv8=[$APK_ARM64] armv7=[$APK_ARM32] universal=[$APK_UNIVERSAL]"
+
+      - name: Verify release APKs are signed
+        run: |
+          if [ -z "$APK_UNIVERSAL" ]; then
+            echo "::error::Release APK is missing - signing was not configured. Check the SIGNING_KEY / ALIAS / KEY_STORE_PASSWORD / KEY_PASSWORD secrets, and that the ABI splits still produce a universal APK."
+            exit 1
+          fi
+          # One APK per processor type plus the universal one, each plausibly
+          # sized (a split whose signing was skipped would come out near-empty).
+          for f in "$APK_ARM64" "$APK_ARM32" "$APK_UNIVERSAL"; do
+            if [ -z "$f" ]; then
+              echo "::error::A release APK is missing - expected one per ABI plus a universal APK."
+              exit 1
+            fi
+            size=$(stat -c%s "app/build/outputs/apk/release/$f")
+            echo "$f = $size bytes"
+            if [ "$size" -lt 1000000 ]; then
+              echo "::error::$f is only $size bytes - signing was probably not configured."
+              exit 1
+            fi
+          done
+          ls -la app/build/outputs/apk/release/
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: gradle-build.log
+          if-no-files-found: ignore
+
+      - name: Upload APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: hikari-apk
+          path: |
+            app/build/outputs/apk/debug/*.apk
+            app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+
+      # ---- TEST CHANNELS: updated on every push to main ----
+      - name: Publish test APK to build branch
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cp "app/build/outputs/apk/release/$APK_UNIVERSAL" hikari.apk
+          SIZE_MB=$(du -m hikari.apk | cut -f1)
+          if [ "$SIZE_MB" -ge 100 ]; then
+            echo "hikari.apk is ${SIZE_MB}MB - over GitHub's 100MB file limit, skipping build-branch push (the release APK is still in the artifacts)."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin build >/dev/null 2>&1 && git checkout build 2>/dev/null || git checkout --orphan build
+          cp "app/build/outputs/apk/release/$APK_UNIVERSAL" hikari.apk
+          git add hikari.apk
+          git commit -m "build: update test APK $(date -u +%Y%m%d%H%M)" || true
+          git push origin build --force || { echo "build-branch push rejected (APK too large for GitHub's 100MB limit) - not fatal, release APK stays in artifacts."; exit 0; }
+
+      - name: Publish test APK to continuous release
+        if: github.ref == 'refs/heads/main'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cp "app/build/outputs/apk/release/$APK_UNIVERSAL" hikari-signed.apk
+          cp "app/build/outputs/apk/release/$APK_ARM64" hikari-arm64-v8a.apk
+          cp "app/build/outputs/apk/release/$APK_ARM32" hikari-armeabi-v7a.apk
+          if gh release view continuous --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            for i in 1 2 3; do
+              gh release upload continuous hikari-signed.apk hikari-arm64-v8a.apk hikari-armeabi-v7a.apk --repo "$GITHUB_REPOSITORY" --clobber && break
+              echo "continuous upload attempt $i failed (often a transient race with a concurrent build), retrying..."
+              sleep 5
+            done
+          else
+            gh release create continuous hikari-signed.apk hikari-arm64-v8a.apk hikari-armeabi-v7a.apk --repo "$GITHUB_REPOSITORY" \
+              --title "Continuous build" \
+              --notes "Signed test APKs, auto-built from main. hikari-signed.apk is the universal build; the arm64-v8a / armeabi-v7a ones are smaller and for that processor type only." || true
+          fi
+
+      # ---- MAIN RELEASE: manual only, and only with the typed confirmation ----
+      # A main release is the build every user gets offered, so it never happens
+      # as a side effect of a push, and an accidental dispatch cannot trigger it:
+      # both the `release` checkbox and the typed `confirm_release` gate must be
+      # present. See the header of this file.
+      - name: Refuse unconfirmed main release
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true' && github.event.inputs.confirm_release != 'CONFIRM-RELEASE'
+        run: |
+          echo "::warning title=Main release refused::A main release was requested but NOT published: the 'confirm_release' input must be set to exactly CONFIRM-RELEASE. Nothing was released - the continuous pre-release is unaffected."
+
+      - name: Publish main release (manual only)
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true' && github.event.inputs.confirm_release == 'CONFIRM-RELEASE'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          TAG="v${VERSION:-0.1.0}"
+          cp "app/build/outputs/apk/release/$APK_UNIVERSAL" hikari.apk
+          # Each release carries all three builds: the universal APK under the
+          # name every existing link and the in-app updater already use, plus
+          # the two processor-specific ones so a user can download the smaller
+          # file that matches their phone.
+          cp "app/build/outputs/apk/release/$APK_ARM64" hikari-arm64-v8a.apk
+          cp "app/build/outputs/apk/release/$APK_ARM32" hikari-armeabi-v7a.apk
+          # The release body is that version's own CHANGELOG.md section, so the
+          # releases page and the changelog can never drift apart.
+          NOTES=""
+          if [ -f CHANGELOG.md ]; then
+            NOTES=$(awk -v v="$VERSION" '$0 == "## " v {p=1; next} /^## / {p=0} p' CHANGELOG.md | sed -e 's/[[:space:]]*$//' | cat -s)
+          fi
+          if [ -z "$NOTES" ]; then
+            NOTES="Signed release APK."
+            echo "No CHANGELOG.md section found for $VERSION; using the default notes."
+          fi
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            for i in 1 2 3; do
+              gh release upload "$TAG" hikari.apk hikari-arm64-v8a.apk hikari-armeabi-v7a.apk --repo "$GITHUB_REPOSITORY" --clobber && break
+              echo "release upload attempt $i failed (often a transient race with a concurrent build), retrying..."
+              sleep 5
+            done
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "Hikari $VERSION" --notes "$NOTES" || true
+          else
+            gh release create "$TAG" hikari.apk hikari-arm64-v8a.apk hikari-armeabi-v7a.apk --repo "$GITHUB_REPOSITORY" \
+              --title "Hikari $VERSION" \
+              --notes "$NOTES" || true
+          fi
+          # Give each file a readable name on the releases page. GitHub shows an
+          # asset's `label` INSTEAD of its file name, so "hikari.apk" reads as
+          # "Hikari Android & TV Universal" while the download URL keeps the
+          # file name the in-app updater and every existing link already use.
+          REL_ID=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq .id 2>/dev/null || true)
+          if [ -n "$REL_ID" ]; then
+            for spec in \
+              "hikari.apk=Hikari Android & TV Universal" \
+              "hikari-arm64-v8a.apk=Hikari Android & TV 64-bit (arm64-v8a)" \
+              "hikari-armeabi-v7a.apk=Hikari Android & TV 32-bit (armeabi-v7a)"
+            do
+              FILE="${spec%%=*}"
+              LABEL="${spec#*=}"
+              ASSET_ID=$(gh api "repos/$GITHUB_REPOSITORY/releases/$REL_ID/assets" \
+                --jq ".[] | select(.name==\"$FILE\") | .id" 2>/dev/null | head -n1 || true)
+              if [ -n "$ASSET_ID" ]; then
+                gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/assets/$ASSET_ID" \
+                  -f label="$LABEL" --jq '"asset label: " + .name + " -> " + .label' || true
+              fi
+            done
+          fi
