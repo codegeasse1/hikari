@@ -254,19 +254,37 @@ object TelegramWeb {
     fun parsePost(html: String, channel: String, messageId: Long): TelegramPost {
         val doc = runCatching { Jsoup.parse(html) }.getOrNull()
             ?: return TelegramPost(null, null, false, null)
-        val msg = doc.selectFirst("div.tgme_widget_message")
+        // Explicit types throughout: jsoup 1.22 annotates its API with the
+        // JSpecify `@Nullable` TYPE-USE annotation, which this module's
+        // classpath does not carry, and a generic inference (`let` / `ifBlank`)
+        // over one of those inferred types is a compile ERROR, not a warning.
+        // Naming each type keeps the annotation out of an inference position.
+        val msg: Element? = doc.selectFirst("div.tgme_widget_message")
         if (msg == null) {
-            val desc = doc.selectFirst("meta[property=\"og:description\"]")
-                ?.attr("content")?.trim()?.takeIf { it.isNotEmpty() }
+            val meta: Element? = doc.selectFirst("meta[property=\"og:description\"]")
+            val descText: String = if (meta == null) "" else meta.attr("content").trim()
+            val desc: String? = if (descText.isEmpty()) null else descText
             return TelegramPost(desc, null, false, null)
         }
-        val text = msg.selectFirst(".tgme_widget_message_text")?.text()?.trim().orEmpty()
-        val fileName = msg.selectFirst(".tgme_widget_message_document_title")?.text()?.trim().orEmpty()
-        val title = listOf(text, fileName).firstOrNull { it.isNotBlank() }
-        val video = msg.selectFirst("video")
-        val src = video?.let { it.attr("src").ifBlank { it.attr("data-src") } }.orEmpty()
-        val poster = thumbnailOf(msg, video)
+        val textEl: Element? = msg.selectFirst(".tgme_widget_message_text")
+        val fileEl: Element? = msg.selectFirst(".tgme_widget_message_document_title")
+        val text: String = if (textEl == null) "" else textEl.text().trim()
+        val fileName: String = if (fileEl == null) "" else fileEl.text().trim()
+        val title: String? = when {
+            text.isNotBlank() -> text
+            fileName.isNotBlank() -> fileName
+            else -> null
+        }
+        val videoEl: Element? = msg.selectFirst("video")
+        var src: String = ""
+        if (videoEl != null) {
+            src = videoEl.attr("src")
+            if (src.isBlank()) src = videoEl.attr("data-src")
+        }
+        val poster: String? = thumbnailOf(msg, videoEl)
         if (src.startsWith("http")) {
+            val durationEl: Element? = msg.selectFirst(".tgme_widget_message_video_duration")
+            val durText: String = if (durationEl == null) "" else durationEl.text().trim()
             return TelegramPost(
                 title = title,
                 video = TelegramVideo(
@@ -275,8 +293,7 @@ object TelegramWeb {
                     title = title ?: ("Video " + messageId),
                     url = src,
                     posterUrl = poster,
-                    duration = msg.selectFirst(".tgme_widget_message_video_duration")
-                        ?.text()?.trim()?.takeIf { it.isNotEmpty() },
+                    duration = if (durText.isBlank()) null else durText,
                     dateLabel = null,
                 ),
                 withheld = false,
@@ -292,7 +309,10 @@ object TelegramWeb {
     }
 
     private fun thumbnailOf(msg: Element, video: Element?): String? {
-        video?.attr("poster")?.takeIf { it.startsWith("http") }?.let { return it }
+        if (video != null) {
+            val poster: String = video.attr("poster")
+            if (poster.startsWith("http")) return poster
+        }
         for (selector in listOf(
             ".tgme_widget_message_video_thumb",
             ".tgme_widget_message_photo_wrap",
