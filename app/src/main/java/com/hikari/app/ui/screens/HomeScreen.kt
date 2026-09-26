@@ -1010,7 +1010,10 @@ fun HomeScreen(nav: NavHostController) {
                             action = { Routes.safeNavigate(nav, Routes.COLLECTIONS) },
                         )
                     } else if (selected != null) {
-                        val reason = engineFailureReason(selected)
+                        // A `by remember` property cannot be smart-cast, so the
+                        // non-null answer is taken once into a local.
+                        val selectedKey = selected ?: ""
+                        val reason = engineFailureReason(selectedKey)
                         // An extension whose site answers with a wall (403/503/429,
                         // a Cloudflare body, a "One moment, please" interstitial)
                         // is the one failure the user can actually do something

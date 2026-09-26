@@ -1752,6 +1752,9 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                     .getOrElse { throw it }
                 val name: String
                 val description: String
+                // Hoisted for the bundle check at the tail of this function: a
+                // Vega manifest has no JSONObject at all (see below).
+                var obj: JSONObject? = null
                 if (kind == RepoKind.VEGA) {
                     // A Vega manifest is a BARE JSON ARRAY, so it never parses
                     // as a JSONObject — validating it means asking the Vega
@@ -1766,7 +1769,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                     name = niceRepoName(url, "")
                     description = "Vega provider repository"
                 } else {
-                    val obj = runCatching { JSONObject(text) }.getOrElse {
+                    obj = runCatching { JSONObject(text) }.getOrElse {
                         throw Exception("Invalid $file: ${it.message}")
                     }
                     name = niceRepoName(url, obj.optString("name"))
@@ -1814,7 +1817,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 // canonical repos-db.json (and relies on the real CloudStream
                 // RepositoryManager, which Hikari doesn't run). Import the
                 // repos natively instead so they all show up and install.
-                if (isMegaBundle(obj)) {
+                if (obj != null && isMegaBundle(obj)) {
                     markBundle(repo.url)
                     importMegaRepos()
                 }
@@ -1909,7 +1912,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
      * itself ("Keiyoushi") only replaces a URL-shaped name, never one the user
      * already recognises.
      */
-    private fun loadAniyomiIndex(url: String, knownName: String = ""): AniyomiIndex? {
+    private suspend fun loadAniyomiIndex(url: String, knownName: String = ""): AniyomiIndex? {
         val mgr = com.hikari.app.aniyomi.AniyomiExtensionManager
         for (candidate in mgr.indexCandidatesFor(url)) {
             // A protobuf index is BYTES, not text, so it takes its own fetch and
