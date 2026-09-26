@@ -68,6 +68,89 @@ see the session log below, which is where their design notes live.)
 
 ## Session log (newest first)
 
+- **0.10.52** (versionCode 223) — the owner's seventh round; four asks (a network stream
+  pasted out of a playing site must play; Movies4u from the Vega provider must work the way
+  it does in the Vega app; a Vega series must SHOW that its episode list is loading, and load
+  faster; a crash when tapping an extension's settings gear), built in one batch and pushed
+  as one commit (`b329e79bdf4aff8eb6fb45b1a8f444c7447ba096`; parent
+  `382efe26a3aeff940de958a9197545eec811ced1`; CI run **36275989456** — **success**;
+  `continuous` republished 22:36:05Z, `build` branch = `build: update test APK 202609262235`;
+  **NO new main release** — the newest real release is still v0.10.42), followed by this
+  `src/README.md`-only commit, which `paths-ignore: '**.md'` does not build. Compiled first
+  try — unlike the two rounds before it, which each needed a compile-fix commit.
+  - **Vega/Movies4u: cheerio result sets were not iterable.** `nuvio/cheerio.js` is
+    `cheerio-without-node-native@0.20.2`, whose result sets are array-LIKE objects with no
+    `Symbol.iterator`, so `for (const el of $(...))` — ordinary provider code — throws
+    `TypeError: value is not iterable` (QuickJS's wording), which is exactly what Movies4u
+    reported on every title (`Movies4u stream failed: HubCloud extract <url> failed: value is
+    not iterable`). The Vega app's own bundled cheerio is patched for this; its minified
+    runtime contains the two lines verbatim — `ut.prototype.splice =
+    Array.prototype.splice; ut.prototype[Symbol.iterator] = Array.prototype[Symbol.iterator];`.
+    `nuvio/harness.js` now defines `__hikariMakeCheerioIterable(module)` (published on the
+    global, so the vega harness calls the same one), which reaches the BASE prototype through
+    one throwaway `load()` (`module.load(...)` → `$('a')` → proto → proto) and patches
+    `Symbol.iterator` + `splice` there — so every later `load()`, and one a provider captured
+    before the patch ran, inherits it. Verified against the real bundle in a V8 worker:
+    iteration works, an EMPTY set iterates (`ok:0`), and `.filter(fn)`/`.first()`/`.attr()` are
+    unchanged.
+  - **Vega providerContext completeness.** The Vega app hands providers
+    `{axios, cheerio, Crypto, commonHeaders, getBaseUrl, openWebView, kvStore}`; ours lacked
+    `getBaseUrl` (`undefined` → TypeError for any provider that destructures it). Added,
+    answered from the repo's own `urls.json` (one cached fetch per engine — the same table the
+    providers' own inline helper reads). `Crypto` (expo-crypto's digest API) was NOT added:
+    nothing in the movies4u bundle uses it, and it would mean either bundling crypto-js into
+    the vega engine (boot cost, the thing we are trying to reduce) or writing digests by hand.
+    **Known limitation, still open: `openWebView` is a stub.** It answers `{success:false}`
+    because this engine has no interactive WebView to hand a captcha to, while the Vega app
+    opens a real one (its `WafWebViewDialog`) to earn a `cf_clearance` cookie. A title whose
+    page the site only serves behind a challenge therefore still cannot be extracted here —
+    that is the next real fix for this class of provider (the machinery to start from is
+    `com/lagradost/cloudstream3/network/WebViewResolver.kt` and `net/CloudflareSolver`).
+  - **Crash: the missing `MainActivity.Companion`.** `cloudstreamJarClean` drops the jar's
+    `MainActivity$*.class` along with `MainActivity.class`, so any plugin touching
+    `MainActivity.Companion.x` died with `NoSuchFieldError: No field Companion of type
+    Lcom/lagradost/cloudstream3/MainActivity$Companion;` on the MAIN thread (the log's
+    BingeCloud `BingeCloudPlugin.load$lambda$0$0` ← its `Settings.showSettingsDialog`).
+    The shadow now carries a companion mirroring the jar's `MainActivity$Companion`,
+    javap-verified member for member: `activityResultLauncher: ActivityResultLauncher<Intent>?`,
+    `lastError: String?` (plus the jar's odd `setLastError(Context)` overload),
+    `nextSearchQuery: String?`, `filesToDelete: MutableSet<String>`, `deleteFileOnExit(File)`,
+    `centerView(View)`, `handleAppIntentUrl(FragmentActivity, String, Boolean = false,
+    Bundle? = null): Boolean` — defaults ON PURPOSE, because the jar emits
+    `handleAppIntentUrl$default` and a Kotlin declaration without defaults emits none — and the
+    seven `Event<Boolean>` observers (`afterPluginsLoadedEvent`, `mainPluginsLoadedEvent`,
+    `afterRepositoryLoadedEvent`, `bookmarksUpdatedEvent`, `reloadHomeEvent`,
+    `reloadLibraryEvent`, `reloadAccountEvent`; the jar's `utils/Event` is public with a no-arg
+    constructor). Hikari's own MainActivity additionally registers a real
+    `registerForActivityResult(StartActivityForResult())` launcher right after
+    `super.onCreate` and publishes it, so a plugin's file/folder picker opens instead of
+    dereferencing null one line later.
+  - **Vega series: the episode-loading state, and parallel seasons.** Vega catalog rows are
+    `MediaType.UNKNOWN` (VegaProvider.toItems keeps the provider's own `type` only as
+    `rawType`), and the real kind is only learned from meta.js — the slow half of opening the
+    page — so during those seconds `DetailScreen`'s `isSeries` was false and the page drew NO
+    episode area at all, which reads as "this show has no episodes". `DetailScreen` (~3080) now
+    treats an UNKNOWN kind on a `vega|` provider, while the episodes are not loaded yet, as
+    "show the episode area in its loading state" — the ordinary "Loading episodes…" row and
+    spinner — collapsing to the truth once meta answers. Scoped to vega ids deliberately:
+    other engines' rows already carry their kind. And `__vegaDetail` / `__vegaCallMany` in
+    `vega/harness.js` now issue the per-season `getEpisodes` calls CONCURRENTLY (`Promise.all`,
+    a failing season contributing null to its own slot) instead of one after another, so a
+    multi-season list lands when the slowest season answers rather than after all of them in
+    turn.
+  - **Network streams: browser headers.** A network stream is a page's link, and these hosts
+    hotlink-protect what they serve: the player's 403 (an `ExoPlaybackException
+    [ERROR_CODE_IO_BAD_HTTP_STATUS] 403` on an `*.tnmr.org/hls2/...` playlist resolved out of a
+    Luluvdo/LuluStream embed) is the CDN rejecting a request that carries no Referer /
+    User-Agent. `NetworkStream.resolve` now runs every source through
+    `withStreamHeaders(headers, url)`, which keeps whatever an extractor chose (the box hosts'
+    own UA/Referer/Cookie) and otherwise adds `User-Agent: Http.UA` and
+    `Referer: <origin of the pasted link>/`. That origin is the page the stream came from; when
+    the stream address itself was pasted it is the stream's own origin, which is what such
+    hosts check for. Bounded risk by design: the player already drops headers one step at a
+    time when a server rejects them (`PlayerActivity.headerVariant`), so a wrong guess costs
+    one retry while a missing one costs the whole play.
+
 - **0.10.51** (versionCode 222) — the owner's sixth "fix some things" round; five
   asks (collapse duplicate titles across engines when "all providers" is
   selected; make the Vega detail screen fast; a genre search box on Home; the
