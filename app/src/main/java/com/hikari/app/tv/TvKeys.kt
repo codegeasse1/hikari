@@ -1,7 +1,10 @@
 package com.hikari.app.tv
 
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.input.key.Key
@@ -43,7 +46,14 @@ import androidx.compose.ui.platform.LocalFocusManager
  *     them) and hands them to the focus system, and does the same for left/right
  *     once the field is empty and the caret has nowhere to go.
  *
- * All three are made to work through the *preview* key pass, which runs from the
+ *  4. **A `pointerInput` row is not a target at all.** A row that handles its
+ *     own taps with a raw pointer gesture — the Home extension picker's
+ *     hold-to-multi-select rows, the manga engines — never enters the focus
+ *     system, so the D-pad walks past the whole list and a centre press does
+ *     nothing. [tvPress] gives such a row the focus target and the press the
+ *     gesture never had, without taking the touch gesture away.
+ *
+ * All four are made to work through the *preview* key pass, which runs from the
  * root down to the focused node — so a handler installed here always sees the
  * key before the component's own keyboard handling can consume it, and there is
  * no chance of a press being handled twice.
@@ -93,6 +103,38 @@ fun Modifier.tvToggle(
             else -> false
         }
     }
+
+/**
+ * A press-only row a remote can actually use — see the file comment.
+ *
+ * This is the missing third primitive. `clickable` already gives a row a focus
+ * target and a centre-press handler, but a row whose tap handling is a raw
+ * `pointerInput` ([holdOrTap]'s hold-to-multi-select rows, the manga engines)
+ * has NEITHER: a `pointerInput` is invisible to the focus system, so the D-pad
+ * walks straight past the row and a centre press does nothing at all. That is
+ * exactly the report "unable to select provider button at home … using DPAD
+ * remote" — the Home extension picker's rows are all `pointerInput` rows.
+ *
+ * It is applied ALONGSIDE the `pointerInput`, never instead of it: the pointer
+ * still owns the touch gesture (including the hold), and this adds the focus
+ * target and the press. The default [Indication] is passed through so a focused
+ * row is visibly highlighted on a television, where `focusable()` alone draws
+ * nothing and the user cannot see what the remote is on.
+ */
+@Composable
+fun Modifier.tvPress(enabled: Boolean = true, onClick: () -> Unit): Modifier {
+    val interactions = remember { MutableInteractionSource() }
+    val indication = LocalIndication.current
+    return this
+        .focusable(enabled, interactions, indication)
+        .onPreviewKeyEvent { event ->
+            if (!enabled || event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+            if (isPressKey(event.key)) {
+                onClick()
+                true
+            } else false
+        }
+}
 
 /**
  * A slider a remote can actually use — see the file comment.

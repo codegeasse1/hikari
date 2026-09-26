@@ -586,7 +586,13 @@ private fun AutoScrollControlsPanel(
             onValueChange = { v -> onAutoScrollSpeedChange((v - 1f) / 99f * 180f + 20f) },
             valueRange = 1f..100f,
             colors = sliderAccentColors(),
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .tvAdjust { delta ->
+                    // One 99th of the range per press — see [Modifier.tvAdjust].
+                    val nv = (sliderValue + delta).coerceIn(1f, 100f)
+                    onAutoScrollSpeedChange((nv - 1f) / 99f * 180f + 20f)
+                },
         )
 
         Row(
@@ -710,7 +716,14 @@ private fun ChapterNavigatorPill(
                 modifier = Modifier
                     .weight(1f)
                     .padding(horizontal = 6.dp)
-                    .testTag("reader_page_slider"),
+                    .testTag("reader_page_slider")
+                    .tvAdjust { delta ->
+                        // One page per press of the D-pad, through the same call
+                        // a drag makes — see [Modifier.tvAdjust].
+                        val page = (shownPage + delta).coerceIn(1, pageCount)
+                        pendingPage = page
+                        onSeekPage(page - 1)
+                    },
             )
             if (showPageNumber) {
                 Text(

@@ -72,6 +72,7 @@ import com.hikari.app.manga.MangaProgress
 import com.hikari.app.manga.MangaRecord
 import com.hikari.app.manga.MangaStore
 import com.hikari.app.tv.TvUi
+import com.hikari.app.tv.tvPress
 import com.hikari.app.ui.ExtensionIcons
 import com.hikari.app.ui.PosterLoader
 import com.hikari.app.ui.components.EmptyState
@@ -504,6 +505,15 @@ private fun EngineRow(
                         },
                     )
                 }
+                // The D-pad half: a `pointerInput` is invisible to the focus
+                // system, so without this a remote could not open a manga engine
+                // at all (the same defect the Home picker's rows had).
+                .tvPress(onClick = {
+                    if (revealPin) onRevealPin()
+                    else openCatalog(
+                        nav, providerId, name, MangaProvider.CATALOG_POPULAR, popularLabel,
+                    )
+                })
                 .padding(start = 12.dp, top = 12.dp, bottom = 12.dp, end = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {

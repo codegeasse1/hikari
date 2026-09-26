@@ -593,7 +593,16 @@ fun SettingsScreen(nav: NavHostController) {
     val languageFlow = remember { app.store.languageFlow() }
     val appLanguage by languageFlow.collectAsState(initial = "")
     val installedProviders by app.providers.providers.collectAsState()
-    val listState = rememberLazyListState()
+    val indexState = rememberLazyListState()
+    val pageState = rememberLazyListState()
+    // TWO states, not one: the index and an open folder are different pages, and
+    // one state cannot remember both. With a single state, opening a folder and
+    // coming back left the index wherever the folder page had been scrolled to,
+    // so the only way to make a folder open at its top was `scrollToItem(0)` on
+    // EVERY change — and that is what made back from a folder land at the top of
+    // the index instead of where the user left it. The index keeps its own state
+    // untouched, so back returns to the exact row it was scrolled to.
+    val listState = if (openFolder == null) indexState else pageState
     // Profiles: the index row says which setup is in use (see ProfilesScreen).
     val profileList by Profiles.all.collectAsState()
     val profileActive by Profiles.activeId.collectAsState()
@@ -651,14 +660,14 @@ fun SettingsScreen(nav: NavHostController) {
         return
     }
 
-    // A folder opens at its own top: without this, opening one from partway
-    // down the index would leave the new page scrolled by the old offset.
-    // The same move folds every settings section again: a page always arrives
-    // with its cards closed, so the user never comes back to a page they left
-    // half-unfolded.
+    // A folder page opens at its own top and with its cards folded (a page
+    // always arrives with its sections closed); the INDEX is left exactly as it
+    // was, so back lands where the user left it — see the two list states above.
     LaunchedEffect(openFolder, openSub) {
-        listState.scrollToItem(0)
-        openSettingsSections.clear()
+        if (openFolder != null) {
+            pageState.scrollToItem(0)
+            openSettingsSections.clear()
+        }
     }
 
     LazyColumn(
@@ -3642,8 +3651,17 @@ private fun PlaybackStartCard(app: HikariApp) {
             else -> tr("Play the first server found")
         },
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            RadioButton(selected = !waitServers, onClick = { persist(false) })
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clickable { persist(false) }
+                // A remote lands on the ROW — the radio button alone is a small
+                // right-hand target the focus search skips past — and its centre
+                // press picks the option. See [Modifier.tvToggle].
+                .tvToggle(!waitServers, onValueChange = { persist(false) }),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            RadioButton(selected = !waitServers, onClick = null)
             Column(Modifier.weight(1f)) {
                 Text(
                     tr("Play as soon as the first server is found"),
@@ -3656,8 +3674,16 @@ private fun PlaybackStartCard(app: HikariApp) {
                 )
             }
         }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            RadioButton(selected = waitServers, onClick = { persist(true) })
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clickable { persist(true) }
+                // See the row above: the whole line is the target, so the D-pad
+                // can reach this choice too.
+                .tvToggle(waitServers, onValueChange = { persist(true) }),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            RadioButton(selected = waitServers, onClick = null)
             Column(Modifier.weight(1f)) {
                 Text(
                     tr("Wait for more servers first"),

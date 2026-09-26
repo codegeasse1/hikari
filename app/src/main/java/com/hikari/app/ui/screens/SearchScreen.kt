@@ -81,6 +81,7 @@ import com.hikari.app.ui.navigation.Routes
 import com.hikari.app.ui.rememberPosterScore
 import com.hikari.app.ui.rememberPosterStyle
 import com.hikari.app.ui.rememberVisibleItems
+import com.hikari.app.tv.tvPress
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -389,6 +390,10 @@ fun SearchScreen(
                     Box(
                         Modifier
                             .clip(RoundedCornerShape(50))
+                            // The D-pad half: a raw pointerInput is invisible to
+                            // the focus system, so a remote could not reach the
+                            // translate button at all — see [Modifier.tvPress].
+                            .tvPress { toggleTranslate() }
                             .pointerInput(Unit) {
                                 detectTapGestures(
                                     onTap = { toggleTranslate() },

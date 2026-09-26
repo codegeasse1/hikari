@@ -6310,6 +6310,18 @@ class PlayerActivity : ComponentActivity() {
         val base = favouriteItem
         val wanted = com.hikari.app.i18n.I18n.currentTag.substringBefore('-').lowercase()
 
+        // The language bar's state. It is built further down, once [render]
+        // exists — a local function cannot be referenced before it is declared —
+        // but the state lives here because [render] reads it. "" is "All"; the
+        // choice is remembered between openings like the panel's other
+        // preferences.
+        var langFilter = subsPrefs.getString("sub_lang_filter", "").orEmpty()
+        // The query the last search ran with, and whether it finished, so a
+        // language tap can RE-FILTER what is already on screen instead of
+        // searching the sites again.
+        var lastQuery = ""
+        var searchDone = false
+
         // Everything the CURRENT search has so far: the sites' tracks, the
         // addons' tracks, a per-source count, the sources that never answered,
         // and the ids that were asked with. Filled in as each source lands —
@@ -6334,9 +6346,13 @@ class PlayerActivity : ComponentActivity() {
             val now = System.currentTimeMillis()
             if (!isDone && now - lastRender < 250L) return
             lastRender = now
-            val countsText = synchronized(counts) {
-                counts.entries.joinToString(" · ") { "${it.key} ${it.value}" }
-            }
+            // The language bar's choice. A blank code is "All" (no narrowing),
+            // and the comparison goes through SubtitleLang.of so that a site
+            // answering "Arabic" and one answering "ara" are the same language.
+            val filterCode = langFilter
+            fun keep(lang: String): Boolean = filterCode.isBlank() ||
+                com.hikari.app.subtitles.SubtitleLang.of(lang).code == filterCode
+
             // The user's own language first, then English, then the rest — each
             // group keeping the order the site itself offered (which is by
             // downloads for the sites that report one).
@@ -6350,7 +6366,7 @@ class PlayerActivity : ComponentActivity() {
                         )
                     )
                     .map { it.value }
-            }
+            }.filter { keep(it.lang) }
             val addonList = synchronized(addonTracks) {
                 addonTracks.withIndex()
                     .sortedWith(
@@ -6360,8 +6376,22 @@ class PlayerActivity : ComponentActivity() {
                         )
                     )
                     .map { it.value }
-            }
+            }.filter { keep(it.lang) }
             val total = siteList.size + addonList.size
+            // While a search is running this line is the live per-source
+            // PROGRESS, so it counts everything that has arrived. Once it is
+            // done AND a language is selected it counts what is actually SHOWN —
+            // otherwise "Found 0 subtitles" sat beside "OpenSubtitles 40".
+            val countsText = if (isDone && filterCode.isNotBlank()) {
+                val narrowed = LinkedHashMap<String, Int>()
+                for (t in siteList) narrowed[t.siteName] = (narrowed[t.siteName] ?: 0) + 1
+                for (s in addonList) narrowed[s.name] = (narrowed[s.name] ?: 0) + 1
+                narrowed.entries.joinToString(" · ") { "${it.key} ${it.value}" }
+            } else synchronized(counts) {
+                counts.entries.joinToString(" · ") { "${it.key} ${it.value}" }
+            }
+            val langName = if (filterCode.isBlank()) ""
+            else com.hikari.app.subtitles.SubtitleLang.of(filterCode).label
             results.removeAllViews()
             when {
                 !isDone -> setStatus(
@@ -6378,6 +6408,7 @@ class PlayerActivity : ComponentActivity() {
                     val down = synchronized(failures) { failures.toList() }
                     setStatus(
                         I18n.t("No subtitles found for \"%s\"").replace("%s", query) +
+                            (if (langName.isBlank()) "" else " · " + langName) +
                             (if (countsText.isBlank()) "" else " · " + countsText) +
                             (if (down.isEmpty()) "" else " · " +
                                 I18n.t("No answer from %s").replace("%s", down.joinToString(", "))) +
@@ -6388,7 +6419,8 @@ class PlayerActivity : ComponentActivity() {
                 else -> {
                     setStatus(
                         I18n.t("Found %s subtitles").replace("%s", total.toString()) +
-                            if (countsText.isBlank()) "" else "   " + countsText
+                            (if (langName.isBlank()) "" else " · " + langName) +
+                            (if (countsText.isBlank()) "" else "   " + countsText)
                     )
                     var shown = 0
                     for (t in siteList) {
@@ -6446,6 +6478,11 @@ class PlayerActivity : ComponentActivity() {
             counts.clear()
             failures.clear()
             idsTried.clear()
+            // No query is on screen while a search is starting, so a language tap
+            // in that window only changes the filter the arriving results are
+            // drawn with (see [render]).
+            lastQuery = ""
+            searchDone = false
             setStatus(I18n.t("Searching…"))
             setBusy(true)
             val sites = com.hikari.app.subtitles.SubtitleSites.ALL
@@ -6478,6 +6515,8 @@ class PlayerActivity : ComponentActivity() {
                 // `searchTitle` — the same rule the extension search follows.
                 val query = (if (sameTitle) base?.searchTitle.orEmpty() else typed)
                     .ifBlank { typed }
+                // What a language tap re-renders with (see the bar below).
+                lastQuery = query
                 val known = if (sameTitle) base?.id.orEmpty() else ""
                 val year = if (sameTitle) base?.year else null
                 // `tt…`: OpenSubtitles and Subscene answer by it, and the
@@ -6497,7 +6536,11 @@ class PlayerActivity : ComponentActivity() {
                     isSeries = isSeries,
                     season = episode?.season ?: 0,
                     episode = episode?.number ?: 0,
-                    locale = wanted,
+                    // The language bar's pick, when there is one: the sites that
+                    // order by it then put that language first (nothing filters
+                    // the request itself — the filtering is client-side, in
+                    // [render], because no site narrows by locale).
+                    locale = if (langFilter.isBlank()) wanted else langFilter,
                 )
                 // The addons are asked with the typed name alone (an item from
                 // a site scraper carries an id none of them knows, and a
@@ -6537,11 +6580,124 @@ class PlayerActivity : ComponentActivity() {
                 }
                 if (isFinishing || isDestroyed) return@launch
                 setBusy(false)
+                searchDone = true
                 render(query, true)
             }
         }
         searchBtn.setOnClickListener { runSearch() }
         input.setOnEditorActionListener { _, _, _ -> runSearch(); true }
+
+        // ---- The subtitle-language bar ----
+        //
+        // It sits ABOVE the title box and the Search button, so the panel reads
+        // "pick a language (All by default), type the name, Search". Without it
+        // a search came back with every language the sites held at once and the
+        // Hindi track the user wanted was somewhere in the middle of fifty
+        // others — the report this exists to answer.
+        //
+        // Built down HERE rather than up with the other views for one mechanical
+        // reason: it has to call [render] (to re-filter what is already on screen
+        // the moment the choice changes), and a local function cannot be
+        // referenced before it is declared. `addView(child, 0, …)` is what still
+        // puts it at the very top of the panel.
+        val ctx = this
+        val langStrip = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
+        // The codes offered: All, then the user's OWN language (so the common
+        // choice is one tap away rather than a scroll), then the ones this app is
+        // most often asked for. Each chip's label comes from the same table the
+        // result rows use, so "Hindi" means one thing everywhere.
+        val langCodes = ArrayList<String>()
+        run {
+            val common = listOf(
+                "en", "hi", "ar", "fr", "es", "pt", "id", "bn", "ta", "te",
+                "ml", "ur", "ru", "zh", "ja", "ko",
+            )
+            langCodes.add("")
+            if (wanted.isNotBlank() && wanted != "en" && wanted in common) langCodes.add(wanted)
+            for (c in common) if (c !in langCodes) langCodes.add(c)
+        }
+        val langChips = LinkedHashMap<String, TextView>()
+        fun langLabelOf(code: String): String =
+            if (code.isBlank()) I18n.t("All")
+            else com.hikari.app.subtitles.SubtitleLang.of(code).label
+        fun paintChips() {
+            for ((code, chip) in langChips) {
+                val on = code == langFilter
+                (chip.background as? GradientDrawable)?.apply {
+                    setColor(if (on) withAlpha(accentMidColor, 0.85f) else 0x1AFFFFFF)
+                    setStroke(
+                        (1 * density).toInt().coerceAtLeast(1),
+                        if (on) withAlpha(accentMidColor, 0.95f) else 0x33FFFFFF,
+                    )
+                }
+                chip.setTextColor(if (on) 0xFFFFFFFF.toInt() else 0xCCFFFFFF.toInt())
+            }
+        }
+        fun chooseLang(code: String) {
+            langFilter = code
+            subsPrefs.edit().putString("sub_lang_filter", code).apply()
+            paintChips()
+            // Re-FILTER what is already on screen instead of searching again: the
+            // sites have answered, and the only thing that changed is which of
+            // their answers the user wants to see.
+            if (lastQuery.isNotBlank()) render(lastQuery, searchDone)
+        }
+        for (code in langCodes) {
+            val chip = TextView(ctx).apply {
+                text = langLabelOf(code)
+                dpText(11f)
+                gravity = Gravity.CENTER
+                includeFontPadding = false
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.RECTANGLE
+                    cornerRadius = 999f
+                }
+                setPadding(
+                    (12 * density).toInt(), (6 * density).toInt(),
+                    (12 * density).toInt(), (6 * density).toInt(),
+                )
+                isClickable = true
+                isFocusable = true
+                setOnClickListener { chooseLang(code) }
+            }
+            langChips[code] = chip
+            langStrip.addView(
+                chip,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                ).apply { marginEnd = (6 * density).toInt() },
+            )
+        }
+        paintChips()
+        val langBar = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding((13 * density).toInt(), (6 * density).toInt(), 0, 0)
+            addView(TextView(ctx).apply {
+                text = I18n.t("Subtitle language")
+                dpText(10f)
+                setTextColor(0xFF9AA5B5.toInt())
+                includeFontPadding = false
+            })
+            addView(
+                android.widget.HorizontalScrollView(ctx).apply {
+                    isHorizontalScrollBarEnabled = false
+                    addView(langStrip)
+                },
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                ).apply { topMargin = (5 * density).toInt() },
+            )
+        }
+        content.addView(
+            langBar,
+            0,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ),
+        )
 
         presentGlass(
             dialog,

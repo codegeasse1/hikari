@@ -54,6 +54,7 @@ import com.hikari.app.i18n.tr
 import com.hikari.app.tv.tvTextFieldKeys
 import com.hikari.app.ui.components.GlassCard
 import com.hikari.app.ui.components.GlassShape
+import com.hikari.app.ui.components.LocalHideHelp
 import com.hikari.app.ui.components.SettingsPageHeader
 import com.hikari.app.ui.navigation.LocalTaskbarInset
 import kotlinx.coroutines.Dispatchers
@@ -250,18 +251,25 @@ fun ProfilesScreen(app: HikariApp, onBack: () -> Unit) {
                     }
                 }
             }
+            // An explanation paragraph, so it obeys the hide-explanations switch
+            // like every other one (it was the line that kept showing with the
+            // switch off). The `if` is INSIDE the item because `LocalHideHelp`
+            // is a composition-local read and the LazyColumn's content lambda is
+            // not composable — reading it out there is a compile error.
             item(key = "profiles-note") {
-                Text(
-                    tr(
-                        "Extension files and anything already downloaded stay on this " +
-                            "device and are shared — a profile carries the setup, not a " +
-                            "second copy of your videos. Your app lock and this device's " +
-                            "layout are kept for every profile."
-                    ),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 6.dp, start = 4.dp, end = 4.dp),
-                )
+                if (!LocalHideHelp.current) {
+                    Text(
+                        tr(
+                            "Extension files and anything already downloaded stay on this " +
+                                "device and are shared — a profile carries the setup, not a " +
+                                "second copy of your videos. Your app lock and this device's " +
+                                "layout are kept for every profile."
+                        ),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 6.dp, start = 4.dp, end = 4.dp),
+                    )
+                }
             }
         }
 

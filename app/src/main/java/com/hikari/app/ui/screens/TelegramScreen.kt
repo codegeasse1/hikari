@@ -3,6 +3,7 @@ package com.hikari.app.ui.screens
 import com.hikari.app.ui.components.LocalHideHelp
 
 import android.content.Intent
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -152,6 +153,11 @@ fun TelegramScreen(nav: NavHostController) {
     var linkTyped by remember { mutableStateOf("") }
     var linkError by remember { mutableStateOf("") }
     var linking by remember { mutableStateOf(false) }
+    // Which section the list is showing. Held HERE rather than inside
+    // [TelegramHome] because adding a channel or a video link has to land the
+    // user on the section they just added to (see [addChannel]/[addLink]), and
+    // back has to step out of a section before it leaves the tab.
+    var section by rememberSaveable { mutableStateOf(TgSection.CHATS) }
 
     // Hoisted: `tr` is composable and these are read inside plain functions.
     val errBad = tr("That is not a channel — paste a @name or a t.me link")
@@ -190,6 +196,9 @@ fun TelegramScreen(nav: NavHostController) {
                 typed = ""
                 addError = ""
                 addOpen = false
+                // Land the user on the section the channel went into, so the
+                // thing they just added is what they are looking at.
+                section = TgSection.ADDED
             }
         }
     }
@@ -218,6 +227,21 @@ fun TelegramScreen(nav: NavHostController) {
             linkTyped = ""
             linkError = ""
             linkOpen = false
+            // …and show the row it just created (see addChannel).
+            section = TgSection.LINKS
+        }
+    }
+
+    // Back steps OUT of what is open instead of leaving the tab: an open chat or
+    // channel first, then a section other than the first one. Without this the
+    // press fell through to the navigation host, so backing out of a chat landed
+    // on the app's Home tab — the report — and a section was a place the user
+    // could only leave with the tab's own controls.
+    BackHandler(enabled = openChat != 0L || openName != null || section != TgSection.CHATS) {
+        when {
+            openChat != 0L -> openChat = 0L
+            openName != null -> openName = null
+            else -> section = TgSection.CHATS
         }
     }
 
@@ -246,6 +270,8 @@ fun TelegramScreen(nav: NavHostController) {
         TelegramHome(
             channels = channels,
             links = links,
+            section = section,
+            onSection = { section = it },
             onOpenChannel = { openName = it },
             onOpenChat = { id, title ->
                 openChat = id
@@ -454,6 +480,11 @@ private fun AddOptionRow(
 private fun TelegramHome(
     channels: List<Pair<String, String>>,
     links: List<TelegramLinks.Link>,
+    /** Which of the tab's sections is showing, and its setter. Held by the
+     *  caller so an add can land on the section it added to, and back can step
+     *  out of a section (see the Telegram screen). */
+    section: String,
+    onSection: (String) -> Unit,
     onOpenChannel: (String) -> Unit,
     onOpenChat: (Long, String) -> Unit,
     onAddChannel: () -> Unit,
@@ -477,11 +508,11 @@ private fun TelegramHome(
         }
     }
 
-    // Two halves, one strip, and a header that does NOT scroll. With a couple of
-    // hundred joined chats (the report) the added channels sat at the bottom of a
-    // scroll nobody reaches, and the + that adds one scrolled away with the list,
-    // so adding a second channel meant going back to the top first.
-    var section by rememberSaveable { mutableStateOf(TgSection.CHATS) }
+    // One strip and a header that does NOT scroll. With a couple of hundred
+    // joined chats (the report) the added channels sat at the bottom of a scroll
+    // nobody reaches, and the + that adds one scrolled away with the list, so
+    // adding a second channel meant going back to the top first. The section
+    // itself lives in the caller — see the parameter above.
 
     Column(Modifier.fillMaxSize()) {
         Row(
@@ -516,7 +547,7 @@ private fun TelegramHome(
             chats = chatList.size,
             added = channels.size,
             links = links.size,
-        ) { section = it }
+        ) { onSection(it) }
 
         when (section) {
             TgSection.ADDED -> TelegramAddedChannels(
@@ -567,11 +598,19 @@ private fun TelegramSectionStrip(
     links: Int,
     onPick: (String) -> Unit,
 ) {
+    // The row spans the FULL width, with the 16dp edge inset as CONTENT padding
+    // rather than layout padding. That is what makes the next pill run under the
+    // screen edge and stay genuinely visible at rest: a peeking pill is the only
+    // thing that says "there are more sections this way" on a row with no
+    // scrollbar, and with layout padding the strip was 32dp narrower and the
+    // third pill ("Video links") sat entirely off-screen — which is how a whole
+    // section went unnoticed.
     LazyRow(
         Modifier
             .fillMaxWidth()
-            .padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+            .padding(top = 8.dp, bottom = 8.dp),
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(7.dp),
     ) {
         item(key = "strip-chats") {
             TgSectionPill(
@@ -618,14 +657,17 @@ private fun TgSectionPill(
         else MaterialTheme.colorScheme.surfaceVariant,
     ) {
         Row(
-            Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+            // Compact on purpose: the pills have to leave room for the NEXT one
+            // to peek at the right edge (see TelegramSectionStrip), so every dp
+            // of padding and a step down in the type scale is what buys that.
+            Modifier.padding(horizontal = 11.dp, vertical = 7.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(icon, contentDescription = null, tint = fg, modifier = Modifier.size(16.dp))
-            Spacer(Modifier.width(6.dp))
+            Icon(icon, contentDescription = null, tint = fg, modifier = Modifier.size(15.dp))
+            Spacer(Modifier.width(5.dp))
             Text(
                 label,
-                style = MaterialTheme.typography.labelLarge,
+                style = MaterialTheme.typography.labelMedium,
                 fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
                 color = fg,
                 maxLines = 1,

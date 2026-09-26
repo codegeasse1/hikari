@@ -114,6 +114,7 @@ import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import com.hikari.app.tv.tvPress
 import com.hikari.app.tv.tvTextFieldKeys
 
 /**
@@ -1514,15 +1515,19 @@ internal fun ProviderPickerSheet(
                 // multi-selected has no way to guess that a HOLD is what does it
                 // (the gesture exists because it was asked for by name), and a
                 // row that looks like every other row does not say it either.
+                //
+                // Deliberately NOT behind the hide-explanations switch: the row
+                // that would be hidden is the only place the gesture is
+                // documented, so hiding it with the other explanations made
+                // multi-select undiscoverable exactly for the user who had
+                // tidied the interface.
                 item(key = "providers-hold-hint") {
-                    if (!LocalHideHelp.current) {
-                        Text(
-                            tr("Hold any provider for half a second to select more than one."),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(start = 10.dp, top = 2.dp, bottom = 4.dp),
-                        )
-                    }
+                    Text(
+                        tr("Hold any provider for half a second to select more than one."),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 10.dp, top = 2.dp, bottom = 4.dp),
+                    )
                 }
                 item {
                     PickerRow(
@@ -1751,7 +1756,13 @@ private fun PickerRow(
                 )
                 .then(
                     if (onLongClick == null) Modifier.clickable(onClick = onClick)
-                    else Modifier.pointerInput(label, multi) { holdOrTap(onLongClick, onClick) }
+                    else Modifier
+                        // `pointerInput` is invisible to the focus system, so a
+                        // remote could not enter this list at all; `tvPress`
+                        // adds the focus target and the centre press the pointer
+                        // gesture never had (see the report in its own doc).
+                        .tvPress(onClick = onClick)
+                        .pointerInput(label, multi) { holdOrTap(onLongClick, onClick) }
                 )
                 .padding(horizontal = 10.dp, vertical = 13.dp),
             verticalAlignment = Alignment.CenterVertically
