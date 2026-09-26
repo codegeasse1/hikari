@@ -9,6 +9,7 @@ import com.hikari.app.data.ProviderConfig
 import com.hikari.app.data.StreamSource
 import com.hikari.app.data.SubtitleSource
 import com.hikari.app.net.Http
+import com.hikari.app.net.NetTuning
 import com.hikari.app.providers.ContentProvider
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -56,10 +57,39 @@ class VegaProvider(override val config: ProviderConfig) : ContentProvider {
         private const val MAX_EPISODES = 2000
         private const val MAX_STREAMS = 60
         private const val MAX_SEASONS = 24
+        /** How many of a movie's own linkList entries are resolved at once. A
+         *  post has a handful (one per quality), so this only bounds a page
+         *  that lists something pathological. */
+        private const val MAX_MOVIE_LINKS = 8
+        /** How long a movie's whole candidate set may take, and the point at
+         *  which it answers with what has landed instead of waiting for the
+         *  slowest entry (see [lookupStreams]). */
+        private const val LOOKUP_BUDGET_BASE_MS = 35_000L
+        private const val LOOKUP_SETTLE_BASE_MS = 25_000L
+        /** Ceilings for the two above, AFTER Slow connection mode's ×3. The app
+         *  gives each provider 45 s for a stream lookup (50 s in slow mode), and
+         *  a lookup that overruns it is reported as a timeout instead of as the
+         *  servers it found — so the engine's own deadline always fires first,
+         *  with room for the boot that precedes it. */
+        private const val LOOKUP_BUDGET_CAP_MS = 42_000L
+        private const val LOOKUP_SETTLE_CAP_MS = 30_000L
+        private val LOOKUP_BUDGET_MS get() =
+            minOf(NetTuning.timeout(LOOKUP_BUDGET_BASE_MS), LOOKUP_BUDGET_CAP_MS)
+        private val LOOKUP_SETTLE_MS get() =
+            minOf(NetTuning.timeout(LOOKUP_SETTLE_BASE_MS), LOOKUP_SETTLE_CAP_MS)
         private const val CATALOG_TTL_MS = 30 * 60 * 1000L
         /** Detail jobs kept per provider — an LRU, because a session opens
-         *  hundreds of titles and each job holds one season list's raw JSON. */
+         *  hundreds of titles and each job holds one episode array's raw JSON. */
         private const val DETAIL_JOBS_MAX = 8
+        /** A candidate whose link is one of these is a picture, not a page —
+         *  used only to ORDER a movie's candidates, never to drop one. */
+        private val IMAGE_EXTENSIONS = listOf(
+            ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".svg", ".avif",
+        )
+        private val IMAGE_HOSTS = listOf(
+            "postimages.org", "postlmg.cc", "imgbb.com", "ibb.co", "imgur.com",
+            "pixhost.to", "imagebam.com", "imagevenue.com",
+        )
     }
 
     /** `vega|<value>` → the provider's manifest value (its dist folder name). */
@@ -81,8 +111,8 @@ class VegaProvider(override val config: ProviderConfig) : ContentProvider {
     /** The episodes of an item, and the episode links they resolve to. */
     private val episodeCache = ConcurrentHashMap<String, List<Episode>>()
 
-    /** The stream link a movie's own meta resolved to. */
-    private val movieLinkCache = ConcurrentHashMap<String, String>()
+    /** A movie's own playable candidates — its meta's `linkList`, read once. */
+    private val movieLinksCache = ConcurrentHashMap<String, List<VegaLink>>()
 
     /**
      * One detail job per item link — the work [getMeta] and [getEpisodes] share.
@@ -97,7 +127,13 @@ class VegaProvider(override val config: ProviderConfig) : ContentProvider {
      */
     private class DetailJob {
         val info = CompletableDeferred<JSONObject?>()
-        val episodes = CompletableDeferred<Map<Int, JSONArray>>()
+
+        /** The runtime's own `episodes` array — one entry per `linkList` entry
+         *  with an `episodesLink`, in the order it issued them. Kept raw
+         *  (rather than pre-matched to a season) because two rows of one season
+         *  carry the same number and different episode lists: the only stable
+         *  identity is the position (see [seasonEpisodeArrays]). */
+        val episodes = CompletableDeferred<JSONArray?>()
     }
 
     private val detailJobs = object : LinkedHashMap<String, DetailJob>(8, 0.75f, true) {
@@ -280,7 +316,7 @@ class VegaProvider(override val config: ProviderConfig) : ContentProvider {
      * and seasons in a single engine.
      *
      * Nothing here waits: the caller awaits whichever half it needs. A job whose
-     * engine dies completes both halves (null / empty) rather than leaving a
+     * engine dies completes both halves (null / null) rather than leaving a
      * caller hanging, and the job stays in [detailJobs] afterwards so the other
      * caller — which is a separate call from the same screen — gets the same
      * answer instead of starting a fresh engine.
@@ -319,10 +355,10 @@ class VegaProvider(override val config: ProviderConfig) : ContentProvider {
                         ?.also { infoCache[item.id] = it }
                 }
                 if (!job.info.isCompleted) job.info.complete(info)
-                job.episodes.complete(seasonEpisodesFrom(data, info))
+                job.episodes.complete(seasonEpisodesFrom(data))
             } catch (e: Throwable) {
                 if (!job.info.isCompleted) job.info.complete(null)
-                if (!job.episodes.isCompleted) job.episodes.complete(emptyMap())
+                if (!job.episodes.isCompleted) job.episodes.complete(null)
             }
         }
         return job
@@ -338,10 +374,11 @@ class VegaProvider(override val config: ProviderConfig) : ContentProvider {
         for (i in 0 until list.length()) {
             val e = list.optJSONObject(i) ?: continue
             val no = seasonNumberOf(e.optString("title"), i + 1)
+            val quality = e.optString("quality").trim()
             val direct = e.optJSONArray("directLinks")
             val epLink = e.optString("episodesLink").trim()
             if ((direct != null && direct.length() > 0) || epLink.isNotBlank()) {
-                seasons += VegaSeason(no, direct, epLink)
+                seasons += VegaSeason(no, direct, epLink, quality)
             } else {
                 val single = e.optString("link").trim()
                 if (single.isNotBlank()) {
@@ -349,6 +386,7 @@ class VegaProvider(override val config: ProviderConfig) : ContentProvider {
                         no,
                         JSONArray().put(JSONObject().put("link", single).put("title", e.optString("title"))),
                         "",
+                        quality,
                     )
                 }
             }
@@ -356,53 +394,34 @@ class VegaProvider(override val config: ProviderConfig) : ContentProvider {
         return seasons
     }
 
-    /** The detail payload's season arrays, keyed by season number, by walking
-     *  the same `linkList` order the runtime walked. */
-    private fun seasonEpisodesFrom(data: Any?, info: JSONObject?): Map<Int, JSONArray> {
-        val obj = data as? JSONObject ?: return emptyMap()
-        val arr = obj.optJSONArray("episodes") ?: return emptyMap()
-        val source = info ?: obj.optJSONObject("info") ?: return emptyMap()
-        val withLinks = seasonsOf(source)
-            .filter { it.episodesLink.isNotBlank() }
-            .take(MAX_SEASONS)
-        val map = HashMap<Int, JSONArray>()
-        withLinks.forEachIndexed { idx, season ->
-            if (idx < arr.length()) {
-                (arr.opt(idx) as? JSONArray)?.let { a -> map[season.no] = a }
-            }
-        }
-        return map
-    }
+    /** The detail payload's `episodes` array exactly as the runtime built it:
+     *  one entry per `linkList` entry with an `episodesLink`, in list order
+     *  (null where that season's fetch failed). Read BY INDEX — see
+     *  [seasonEpisodeArrays] for why the season number cannot be the key. */
+    private fun seasonEpisodesFrom(data: Any?): JSONArray? =
+        (data as? JSONObject)?.optJSONArray("episodes")
 
     /**
-     * The seasons' episode arrays, fetched by the detail job when there is one
-     * and by an engine of its own when there is not.
+     * The runtime's episode array, from the detail job when there is one and by
+     * an engine of its own when there is not.
      *
      * The job is the fast path and the one the detail page takes. The fallback
      * is for a caller that asks a title for its episodes WITHOUT ever asking for
      * its meta (a background re-ask, a "next episode" prefetch): it pays for its
      * own engine, exactly as it always did.
      */
-    private suspend fun fetchedSeasonEpisodes(
+    private suspend fun seasonEpisodeArrays(
         item: MediaItem,
         seasons: List<VegaSeason>,
-    ): Map<Int, JSONArray> {
+    ): JSONArray? {
         val withLinks = seasons.filter { it.episodesLink.isNotBlank() }.take(MAX_SEASONS)
-        if (withLinks.isEmpty() || !File(dir, "episodes.js").exists()) return emptyMap()
+        if (withLinks.isEmpty() || !File(dir, "episodes.js").exists()) return null
         synchronized(detailJobs) { detailJobs[item.id] }?.let { job -> return job.episodes.await() }
         val args = JSONArray()
         withLinks.forEach { args.put(JSONObject().put("url", it.episodesLink)) }
-        val payload = VegaRuntime.callMany(dir, value, value, "episodes", "getEpisodes", args.toString())
-        val data = dataOf(payload)
-        val map = HashMap<Int, JSONArray>()
-        if (data is JSONArray) {
-            withLinks.forEachIndexed { idx, season ->
-                if (idx < data.length()) {
-                    (data.opt(idx) as? JSONArray)?.let { arr -> map[season.no] = arr }
-                }
-            }
-        }
-        return map
+        return dataOf(
+            VegaRuntime.callMany(dir, value, value, "episodes", "getEpisodes", args.toString())
+        ) as? JSONArray
     }
 
     override suspend fun getEpisodes(item: MediaItem): List<Episode>? = withContext(Dispatchers.IO) {
@@ -423,26 +442,47 @@ class VegaProvider(override val config: ProviderConfig) : ContentProvider {
         if (!isSeries) return@withContext null
 
         val out = ArrayList<Episode>()
-        val fetched = fetchedSeasonEpisodes(item, seasons)
-
+        val arrays = seasonEpisodeArrays(item, seasons)
+        // Two rows of one season — a 480p pack and a 1080p pack, say — carry the
+        // same season number and DIFFERENT episode lists, so the answers are
+        // matched by the position of the `episodesLink` in the list (the order
+        // the runtime issued them in, which is the order [seasonEpisodeArrays]
+        // asked in). A row's pack then names its episodes, or two packs of one
+        // season read as the same episode listed twice.
+        val repeated = seasons.groupingBy { it.no }.eachCount().filterValues { it > 1 }.keys
+        val seenLinks = HashSet<String>()
+        var linkIndex = 0
         for (season in seasons) {
             if (out.size >= MAX_EPISODES) break
+            val direct = season.direct
+            val arr: JSONArray?
+            if (direct != null && direct.length() > 0) {
+                arr = direct
+            } else if (season.episodesLink.isNotBlank()) {
+                val idx = linkIndex++
+                // The very same episodes page under two labels is one list, not
+                // two: keep the first and drop the repeat (its index is still
+                // consumed, so the alignment above is unaffected).
+                if (!seenLinks.add(season.episodesLink)) continue
+                arr = arrays?.optJSONArray(idx)
+            } else {
+                continue
+            }
+            if (arr == null) continue
+            val label = if (season.no in repeated) season.label else ""
             var number = 0
-            val arr = when {
-                season.direct != null && season.direct.length() > 0 -> season.direct
-                season.episodesLink.isNotBlank() -> fetched[season.no]
-                else -> null
-            } ?: continue
             for (i in 0 until arr.length()) {
                 if (out.size >= MAX_EPISODES) break
                 val o = arr.optJSONObject(i) ?: continue
                 val link = o.optString("link").trim()
                 if (link.isBlank()) continue
                 number++
+                val title = o.optString("title").trim()
                 out += Episode(
                     number = number,
                     id = link,
-                    name = o.optString("title").trim().ifBlank { null },
+                    name = listOf(label, title).filter { it.isNotBlank() }
+                        .joinToString(" · ").ifBlank { null },
                     season = season.no,
                 )
             }
@@ -463,20 +503,18 @@ class VegaProvider(override val config: ProviderConfig) : ContentProvider {
             val type = runCatching { infoFor(item)?.optString("type") }.getOrNull()
                 ?.trim()?.lowercase()?.ifBlank { null }
                 ?: item.rawType.ifBlank { "movie" }
-            val link = episode?.id?.takeIf { it.isNotBlank() }
-                ?: movieLink(item)
-                ?: return@withContext fail("✗ No playable link for this title.")
-            val args = JSONObject()
-                .put("link", link)
-                .put("type", type)
-                .put("isDownload", false)
-            val payload = VegaRuntime.call(dir, value, value, "stream", "getStream", args.toString())
-            val data = dataOf(payload) ?: run {
-                val err = runCatching { JSONObject(payload).optString("error") }.getOrNull()
-                return@withContext fail("✗ " + (err?.takeIf { it.isNotBlank() } ?: "no sources found"))
+            // An episode IS one link. A movie is not: its `linkList` holds one
+            // entry per quality row and every entry is its own `getStream` call
+            // (see [movieLinks]).
+            val chosen = episode?.id?.takeIf { it.isNotBlank() }
+                ?.let { listOf(VegaLink(it, "")) }
+                ?: movieLinks(item)
+            if (chosen.isEmpty()) return@withContext fail("✗ No playable link for this title.")
+            val lookup = lookupStreams(chosen, type)
+            val out = lookup.sources
+            if (out.isEmpty()) {
+                return@withContext fail("✗ " + (lookup.error ?: "No playable sources for this title."))
             }
-            val out = mapStreams(data)
-            if (out.isEmpty()) return@withContext fail("✗ No playable sources for this title.")
             streamErrors.remove(config.id)
             lastOutcome[config.id] = "✓ ${out.size} source${if (out.size == 1) "" else "s"} in " +
                 "${(System.currentTimeMillis() - started) / 1000}s"
@@ -485,30 +523,158 @@ class VegaProvider(override val config: ProviderConfig) : ContentProvider {
             distinct
         }
 
-    /** A movie has no episode, so its playable link comes from its own meta's
-     *  `linkList` (a `directLinks[0]`, a season's own `link`, or the page URL). */
-    private suspend fun movieLink(item: MediaItem): String? {
-        movieLinkCache[item.id]?.let { return it }
-        val info = infoFor(item) ?: return item.id.takeIf { it.isNotBlank() }
-        val list = info.optJSONArray("linkList")
-        if (list != null) {
-            for (i in 0 until list.length()) {
-                val e = list.optJSONObject(i) ?: continue
-                val direct = e.optJSONArray("directLinks")
-                if (direct != null && direct.length() > 0) {
-                    val l = direct.optJSONObject(0)?.optString("link").orEmpty().trim()
-                    if (l.isNotBlank()) return l.also { movieLinkCache[item.id] = it }
-                }
-                val l = e.optString("link").trim()
-                if (l.isNotBlank()) return l.also { movieLinkCache[item.id] = it }
-            }
+    /** What a lookup answered: the servers it built, and — when it built none —
+     *  the reason the provider gave (null when there was nothing to say). */
+    private class StreamLookup(val sources: List<StreamSource>, val error: String?)
+
+    /** One slot of a settled `getStream` run: the provider's data, or its error. */
+    private class StreamCall(val data: Any?, val error: String?)
+
+    /**
+     * Runs `stream.js`'s `getStream` for every candidate link, TOGETHER, and
+     * merges the servers they answer with.
+     *
+     * Every call is independent — different quality rows of the same post, and
+     * sometimes a link the provider attached to a row that is not a download at
+     * all — so one entry failing (or answering nothing) must not cost the
+     * others. That is why the slots come back settled (`__vegaCallManySettled`)
+     * rather than flattened to null, and why a deadline bounds the set: a dead
+     * host that walks several requests in turn can outlive the app's own
+     * per-provider lookup budget, and the whole point of asking every entry is
+     * that the entries which DO work are not held hostage by it.
+     */
+    private suspend fun lookupStreams(candidates: List<VegaLink>, type: String): StreamLookup {
+        val args = JSONArray()
+        candidates.forEach { c ->
+            args.put(
+                JSONObject()
+                    .put("link", c.link)
+                    .put("type", type)
+                    .put("isDownload", false)
+            )
         }
-        val web = info.optString("webUrl").trim()
-        if (web.isNotBlank()) return web.also { movieLinkCache[item.id] = it }
-        return item.id.takeIf { it.isNotBlank() }
+        val many = candidates.size > 1
+        val payload = VegaRuntime.callManySettled(
+            providerDir = dir,
+            providerId = value,
+            value = value,
+            fileName = "stream",
+            fnName = "getStream",
+            argsArrayJson = args.toString(),
+            settleAfterMs = if (many) LOOKUP_SETTLE_MS else 0L,
+            budgetMs = LOOKUP_BUDGET_MS,
+        )
+        val calls = settledCalls(payload)
+        if (calls.isEmpty()) {
+            val err = runCatching { JSONObject(payload).optString("error") }.getOrNull()
+            return StreamLookup(emptyList(), err?.takeIf { it.isNotBlank() } ?: "no sources found")
+        }
+        val out = ArrayList<StreamSource>()
+        var firstError: String? = null
+        calls.forEachIndexed { i, call ->
+            if (call.error != null) {
+                if (firstError == null) firstError = call.error
+                return@forEachIndexed
+            }
+            out += mapStreams(call.data, candidates.getOrNull(i)?.quality.orEmpty())
+        }
+        return StreamLookup(out.take(MAX_STREAMS), firstError)
     }
 
-    private fun mapStreams(data: Any?): List<StreamSource> {
+    /** The per-slot outcomes of a settled run: `{"ok":true,"data":…}` /
+     *  `{"ok":false,"error":…}` per slot, in the order the candidates were
+     *  given. A slot that is neither (a run that timed out mid-flight) is
+     *  "answered nothing", never an error. */
+    private fun settledCalls(payload: String): List<StreamCall> {
+        val arr = dataOf(payload) as? JSONArray ?: return emptyList()
+        val out = ArrayList<StreamCall>(arr.length())
+        for (i in 0 until arr.length()) {
+            val raw = arr.opt(i)
+            val o = when (raw) {
+                is String -> runCatching { JSONObject(raw) }.getOrNull()
+                is JSONObject -> raw
+                else -> null
+            }
+            if (o == null) {
+                out += StreamCall(null, null)
+                continue
+            }
+            if (o.optBoolean("ok", false)) {
+                out += StreamCall(o.opt("data"), null)
+            } else {
+                out += StreamCall(null, o.optString("error").takeIf { it.isNotBlank() })
+            }
+        }
+        return out
+    }
+
+    /**
+     * Every playable candidate behind a movie's own meta, in the provider's own
+     * order.
+     *
+     * A Vega provider builds `linkList` as one entry per download/quality row —
+     * `directLinks[0]` is the page that entry resolves through — and the real
+     * Vega app puts those entries in front of the user (a season/quality
+     * dropdown plus a row per entry) and resolves the one that is tapped. So a
+     * movie is not one link, it is all of them, and Hikari has to ask for all of
+     * them (see [lookupStreams]) or the entries the user would have picked are
+     * simply never resolved.
+     *
+     * The entry TEXT is not always a quality row. These posts are laid out as
+     * prose, and the scan takes any `h3/h4/p` whose text contains `\d+p` — which
+     * includes the synopsis paragraph ("…available in 480p & 720p & 1080p") —
+     * with whatever anchor follows it in the page as that entry's link. On the
+     * posts seen in the field that anchor is a screenshot host, and the old code
+     * spent the movie's ONE call on it (it took the FIRST entry), which is how a
+     * title with four working qualities reported "no playable sources". Such an
+     * entry is still asked — it costs one slot and is occasionally the only link
+     * a post has — but it is ordered LAST, so the cap can never cut a real
+     * quality row in its favour.
+     */
+    private suspend fun movieLinks(item: MediaItem): List<VegaLink> {
+        movieLinksCache[item.id]?.let { return it }
+        val info = infoFor(item)
+        val out = ArrayList<VegaLink>()
+        val seen = HashSet<String>()
+        fun add(link: String, quality: String) {
+            val l = link.trim()
+            if (l.isBlank() || !seen.add(l)) return
+            out += VegaLink(l, quality)
+        }
+        info?.optJSONArray("linkList")?.let { list ->
+            for (i in 0 until list.length()) {
+                val e = list.optJSONObject(i) ?: continue
+                val quality = e.optString("quality").trim()
+                val direct = e.optJSONArray("directLinks")
+                if (direct != null) {
+                    for (j in 0 until direct.length()) {
+                        val d = direct.optJSONObject(j) ?: continue
+                        add(d.optString("link"), quality)
+                    }
+                }
+                add(e.optString("link"), quality)
+            }
+        }
+        info?.optString("webUrl")?.let { add(it, "") }
+        if (out.isEmpty()) add(item.id, "")
+        val ordered = out.sortedBy { if (isImageLink(it.link)) 1 else 0 }
+        val capped = ordered.take(MAX_MOVIE_LINKS)
+        movieLinksCache[item.id] = capped
+        return capped
+    }
+
+    /** True for a link that cannot be a video page: an image file, or a
+     *  screenshot host. Used only to ORDER a movie's candidates — never to drop
+     *  one, because a provider is free to put a real stream anywhere. */
+    private fun isImageLink(link: String): Boolean {
+        val l = link.lowercase()
+        val path = l.substringBefore('?').substringBefore('#')
+        if (IMAGE_EXTENSIONS.any { path.endsWith(it) }) return true
+        val host = runCatching { java.net.URI(l).host }.getOrNull()?.lowercase() ?: return false
+        return IMAGE_HOSTS.any { host == it || host.endsWith(".$it") }
+    }
+
+    private fun mapStreams(data: Any?, qualityHint: String = ""): List<StreamSource> {
         val arr = data as? JSONArray ?: return emptyList()
         val out = ArrayList<StreamSource>()
         for (i in 0 until minOf(arr.length(), MAX_STREAMS)) {
@@ -516,7 +682,11 @@ class VegaProvider(override val config: ProviderConfig) : ContentProvider {
             val raw = o.optString("link").trim()
             if (raw.isBlank()) continue
             val kind = o.optString("type").trim().lowercase()
-            val quality = o.optString("quality").trim()
+            // The provider's own per-stream quality wins; a movie's rows carry
+            // theirs on the linkList ENTRY instead, and that is the only thing
+            // that tells four otherwise identically-named servers apart in the
+            // player's list (see [movieLinks]).
+            val quality = o.optString("quality").trim().ifBlank { qualityHint }
             val server = o.optString("server").trim().ifBlank { o.optString("name").trim() }
             val base = server.ifBlank { config.name }
             val name = if (quality.isNotBlank() && !base.contains(quality, true)) "$base $quality" else base
@@ -604,9 +774,17 @@ class VegaProvider(override val config: ProviderConfig) : ContentProvider {
 }
 
 /** One `linkList` entry of a Vega `Info`: either a list of direct links or the
- *  `episodesLink` a separate episodes.js request resolves. */
+ *  `episodesLink` a separate episodes.js request resolves. [label] is the
+ *  provider's own quality label for the entry ("1080p", "720p HEVC"), which is
+ *  what tells two rows of the same season apart in the episode list. */
 private class VegaSeason(
     val no: Int,
     val direct: JSONArray?,
     val episodesLink: String,
+    val label: String,
 )
+
+/** One playable link out of a Vega `Info` — a movie's `directLinks` entry, or an
+ *  episode — together with the quality the provider labeled its `linkList` entry
+ *  with, so the servers a batch lookup produces can be named by it. */
+private class VegaLink(val link: String, val quality: String)
