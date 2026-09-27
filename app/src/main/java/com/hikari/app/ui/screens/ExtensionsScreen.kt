@@ -5961,7 +5961,9 @@ private fun RepoCard(
             // what the card's own highlight already says.
             IconButton(onClick = {
                 clipboard.setText(AnnotatedString(repo.url))
-                Toast.makeText(context, tr("Repo link copied"), Toast.LENGTH_SHORT).show()
+                // I18n.t, not tr: tr is @Composable, and a click handler is not
+                // a composable scope (the same reason the toasts at ~5094 use it).
+                Toast.makeText(context, I18n.t("Repo link copied"), Toast.LENGTH_SHORT).show()
             }) {
                 Icon(
                     Icons.Filled.ContentCopy,
