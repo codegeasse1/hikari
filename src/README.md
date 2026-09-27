@@ -68,6 +68,84 @@ see the session log below, which is where their design notes live.)
 
 ## Session log (newest first)
 
+- **0.10.54** (versionCode 225) — the owner's ninth round, in two halves: **revert the Vega work of 0.10.53**
+  ("even series is not loading any episode, just showing play button like movie … revert back to 0.10.52 code,
+  just remove what you did extra in 0.10.53, don't remove or make anything worse") and **add per-engine filter
+  chips to the Search tab** ("if I search black clover I can click cloudstream to see only CloudStream search,
+  or hikari to see search from all Hikari extensions"). Push once, and **`continuous` only — no main release**.
+  - **The revert is byte-exact, not re-derived.** The 0.10.52 contents were fetched from the repo itself (the
+    tree of `80d385211a7fd63021cc80ad89539eb1fcdcffb8`, the 0.10.53 code commit's parent) by git blob sha:
+    `vega/harness.js` `0e41a45e465334e47fdcc8cab450a62905852efd` (25,091 B),
+    `VegaProvider.kt` `3259085817e7f2951bed402cd07e239532f6cb31` (28,626 B),
+    `VegaRuntime.kt` `493867cc3a49b859d16e3c43e2a79d7d789402fd` (36,938 B),
+    `CHANGELOG.md` `f8dedfe2c6b4328c4570a04fe7b6984a033c4600` (437,786 B). All four were written into the working
+    copy byte for byte (byte counts verified after the write), then the version was bumped to 0.10.54/225 and the
+    new CHANGELOG section added. `app/build.gradle.kts` differs from 0.10.52 ONLY in `versionCode`/`versionName`.
+    The three restored code files hash to exactly those blob shas inside the new commit (verified by hashing the
+    local files as git blobs and comparing against the pushed tree), so "reverted to 0.10.52" is a provable
+    equality, not a reconstruction — and a local-vs-remote hash sweep of every file in the working copy confirmed
+    NOTHING else changed (no stray edits, and the repository's large binary blobs under `app/libs/` hashed
+    byte-identical to the repo's own, so nothing bulky was rewritten by accident).
+  - **What was removed with it (recorded so nobody has to re-derive it).** Everything 0.10.53 added:
+    `__vegaCallManySettled` + its comment in `vega/harness.js`, `VegaRuntime.callManySettled` and the corrected
+    `callMany` KDoc, and in `VegaProvider`: `NetTuning` import, `MAX_MOVIE_LINKS`, `LOOKUP_*` budgets,
+    `IMAGE_EXTENSIONS`/`IMAGE_HOSTS`, `movieLinksCache`+`VegaLink`+`movieLinks`+`isImageLink`,
+    `StreamLookup`/`StreamCall`/`lookupStreams`/`settledCalls`, `mapStreams(data, qualityHint)`, and the
+    position-matched episode arrays (`DetailJob.episodes: CompletableDeferred<JSONArray?>`,
+    `seasonEpisodesFrom(data): JSONArray?`, `seasonEpisodeArrays`, per-index `linkIndex`/`seenLinks`/`label`).
+    The **movie multi-quality half goes with it** — the movie fix was not left half-applied. It was built as a
+    self-contained change (its own harness function + runtime wrapper + `lookupStreams`), so re-applying ONLY
+    that half later is a clean, separable job if the owner wants it back; that is the recommended next step if
+    movies on Vega providers go back to "No playable sources".
+  - **Why it broke series (analysis, with the honest limit).** The whole 0.10.53 diff was re-read line by line:
+    in the SERIES path the only behavioural difference between 0.10.52 and 0.10.53 is how the runtime's
+    `episodes` array (one entry per `linkList` entry carrying an `episodesLink`, in list order) is matched to
+    the season rows — 0.10.52 keyed it by SEASON NUMBER (`Map<Int, JSONArray>`, so two packs of one season
+    overwrite each other: the duplicate-rows screenshot), 0.10.53 read it BY POSITION (`arrays?.optJSONArray(idx)`,
+    with `linkIndex++` consumed only for a season whose `directLinks` is empty, and a `seenLinks` skip for a
+    repeated `episodesLink`). For the Movies4u shape (series entries carry `directLinks: []` — see
+    `scratch/analysis/movies4u/meta.pretty.js`) those two index walks agree, which is why a narrower fix was not
+    attempted blind: reproducing the owner's exact provider needs the real site + a live QuickJS engine, which is
+    not available off-device, and guessing in this path is what produced the regression. The owner's instruction
+    is the tie-breaker: restore the matcher that is known to list episodes (0.10.52's), duplicates and all.
+    Also noted for the record: 0.10.53 capped a single-link lookup's engine budget at 35 s/42 s (`LOOKUP_BUDGET_MS`)
+    where 0.10.52 gave it `CALL_TIMEOUT_MS` = 60 s — another difference in the episode PLAYBACK path that comes
+    back to 60 s with the revert.
+  - **Search-tab engine chips (`SearchScreen.kt`).** New state: `engineOf` (`providerId → type.groupLabel`,
+    remembered off `providers`), `engineKey` (`rememberSaveable`, `""` = every engine) and `engineCounts`
+    (hits per engine over `filtered`, i.e. AFTER the kind/year/genre strips, most hits first). A `visible`
+    list (`filtered`, or `filtered` restricted to `engineOf[item.providerId] == engineKey`) is what the grid
+    now renders (`rememberVisibleItems(visible)`) and what the "N shown · M found" line counts, and the line's
+    gate is now `(filterOn || engineKey.isNotBlank())`. The strip itself is a `LazyRow` of `EngineChip`s
+    (a copy of the screen's `YearChip` style) drawn at the top of the results column, `All · <total>` first,
+    then one chip per engine by hit count — rendered ONLY when `engineCounts.size >= 2`, so a single-source
+    search never sees a strip that can do nothing, and the counts come from the pre-engine list so picking a
+    chip can never change the row (the way back is always in the same place). Tapping the chip in force clears
+    it, like the provider picker's own engine chips. The user's screenshot
+    (`scratch/message-attachments/Screenshot_20260927-141553.jpg`) is the Search tab this changes.
+  - **Pushed as TWO code commits** on `main`, both green, then this `src/README.md`-only commit (which
+    `paths-ignore: '**.md'` does not build):
+    - **`9f8e319873e3e038b9204724e5aced55402578ab`** (parent `04b67d9d09f7601e9473f489d8da7379fe48da29`, the
+      0.10.53 docs commit) — the revert (harness.js, VegaProvider.kt, VegaRuntime.kt, version), the Search engine
+      strip (SearchScreen.kt), CHANGELOG 0.10.54, and the `docs/SEARCH.md` + `docs/VEGA.md` notes. CI run
+      **36307990488** — **success** at 09:16:37Z. This run is the compile validation of the whole revert + the
+      first cut of the strip.
+    - **`962fca4d30f323be97bbaf24b294c2fbd9c6fb06`** — the strip's own dead-end fix (below). CI run
+      **36308870977** — **success** at 09:32:03Z.
+    - `continuous` re-uploaded its 3 APKs at **2026-09-27T09:32:00Z** (arm64 41,335,869 B; armeabi-v7a
+      39,562,891 B; signed 61,684,668 B); `build` branch = `a8f3045eda` "build: update test APK 202609270931";
+      **NO new main release** (the newest real release is still **v0.10.42**) — the workflow's
+      "Refuse unconfirmed main release" / "Publish main release (manual only)" steps are the guard, and neither
+      was dispatched.
+  - **A dead-end in the strip was found and fixed between the two pushes** (worth remembering: the strip is a
+    filter over an ALREADY-FILTERED list, so its own chip can be narrowed off it). The strip is drawn only when
+    `engineCounts.size >= 2`, but a pick could survive that becoming false — e.g. pick "CloudStream", then a year
+    filter removes every CloudStream hit while Hikari hits remain: the grid filters to an engine with no chip left
+    to clear it, and no way back to "All". The fix: `activeEngine = engineKey.takeIf { engineCounts.containsKey(it) }`
+    is what the filter and the chips obey (a vanished pick stops filtering), a `LaunchedEffect` drops it from the
+    saved state so it cannot silently re-apply when the strips change back, and the strip is drawn while a pick is
+    in force at ANY count (`engineCounts.size >= 2 || activeEngine.isNotBlank()`) so the pick always has an undo.
+
 - **0.10.53** (versionCode 224) — the owner's eighth round: **"make the Vega provider play like the Vega app
   does"** for a movie whose post carries several quality rows (the report: Movies4u in Hikari shows only a Play
   button and then "No playable sources for this title", while the Vega app shows FOUR options to play for the
