@@ -3441,7 +3441,9 @@ class ContentRepository(private val manager: ProviderManager) {
                 // other source at all (no cross targets, because that is what
                 // "only this extension" leaves), only when it found nothing, and
                 // never for a repo that really answered "no servers" — that IS an
-                // answer, and re-asking its family for it is not a failure. The
+                // answer, and an answer is not the failure this recovers from
+                // (going around a repo that said "nothing here" would be second-
+                // guessing the user's own switch for no reason). The
                 // line below says this happened, because a switch the user set
                 // being overridden has to be visible in the log.
                 val originRepo = origin
