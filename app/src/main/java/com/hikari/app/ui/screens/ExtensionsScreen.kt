@@ -5766,7 +5766,7 @@ private fun schemaValuesJson(
 }
 
 /** A nuvio scraper's own settings layout (its `onSettings()` export). */
-private fun nuvioSchemaLoad(context: Context, provider: ContentProvider): SchemaLoad {
+private suspend fun nuvioSchemaLoad(context: Context, provider: ContentProvider): SchemaLoad {
     val source = runCatching { File(provider.config.url).readText() }.getOrNull()
     if (source.isNullOrBlank()) {
         return SchemaLoad.Failed(I18n.t("Provider file missing — reinstall this extension"))
