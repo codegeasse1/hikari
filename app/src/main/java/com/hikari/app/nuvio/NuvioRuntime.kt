@@ -81,6 +81,19 @@ object NuvioRuntime {
      *  Performance): half as many engines at once, for a device that cannot
      *  afford twelve QuickJS VMs while it also draws the UI. */
     private const val PERF_CONCURRENT = 5
+    /**
+     * [MAX_CONCURRENT] on a TELEVISION (see
+     * [com.hikari.app.data.PerfMode.tvDevice]): four engines at once.
+     *
+     * Twelve native VMs is right on a phone, which the app expects to be waiting
+     * on a search pass, and wrong on the 1-1.5GB boxes this is for: a detail page
+     * asks every matched extension for its meta and its episode list at once, so
+     * the engines arrive in a burst exactly while the page is also decoding its
+     * hero image. Four still means four providers answered in parallel, and the
+     * rest queue on the same 60s budget they always had — and unlike the booster
+     * below, this cannot be switched off, because it is the hardware talking.
+     */
+    private const val TV_CONCURRENT = 4
     private const val FETCH_TIMEOUT_MS = 30_000L
     // CALL_TIMEOUT_MS bounds a provider's whole JS execution. It is nuvio's own
     // per-plugin ceiling (PluginRuntime.PLUGIN_TIMEOUT_MS = 60s): a provider
@@ -106,6 +119,17 @@ object NuvioRuntime {
      */
     private const val ENGINE_MEMORY_LIMIT = 256L * 1024 * 1024
 
+    /**
+     * [ENGINE_MEMORY_LIMIT] as it applies on THIS device: the television value
+     * from [com.hikari.app.data.PerfMode.tvEngineMemoryLimit] when there is one
+     * — a 1-1.5GB box, where opening a detail page boots several engines at once
+     * and native QuickJS memory is what the low-memory killer acts on, so the app
+     * is killed mid-load — otherwise the flat ceiling above. Read once per engine
+     * creation, so it is a field read and a comparison per call.
+     */
+    private val engineMemoryLimit: Long
+        get() = com.hikari.app.data.PerfMode.tvEngineMemoryLimit ?: ENGINE_MEMORY_LIMIT
+
     // Hikari's full desktop Chrome UA as the default for nuvio bridge fetches.
     // Providers that set their own UA header still override this.
     private const val NUVIO_DEFAULT_UA = com.hikari.app.net.Http.UA
@@ -124,8 +148,17 @@ object NuvioRuntime {
      */
     private val perfConcurrency = Semaphore(PERF_CONCURRENT)
 
+    /** [TV_CONCURRENT]'s pool — see the note on the constant, and on [gate]. */
+    private val tvConcurrency = Semaphore(TV_CONCURRENT)
+
     private val gate: Semaphore
-        get() = if (com.hikari.app.data.PerfMode.active) perfConcurrency else concurrency
+        get() = when {
+            // The television's own pool comes FIRST: the booster below is a
+            // switch the user can turn off, and a 1GB box is not.
+            com.hikari.app.data.PerfMode.tvDevice -> tvConcurrency
+            com.hikari.app.data.PerfMode.active -> perfConcurrency
+            else -> concurrency
+        }
 
     // A second, much smaller pool of slots for the engines a BACKGROUND sweep
     // asks (see [withBackgroundSlot]).
@@ -403,7 +436,7 @@ object NuvioRuntime {
     ): QuickJs {
         val qjs = QuickJs.create(jobDispatcher = Dispatchers.Default)
         qjs.evaluationTimeoutMillis = CALL_TIMEOUT_MS
-        qjs.memoryLimit = ENGINE_MEMORY_LIMIT
+        qjs.memoryLimit = engineMemoryLimit
 
         // Native bridges. The FETCH one is asynchronous — registered through
         // [asyncFunction], so JS gets a real promise and the provider's
@@ -598,7 +631,7 @@ object NuvioRuntime {
         withContext(Dispatchers.Default) {
             val qjs = QuickJs.create(jobDispatcher = Dispatchers.Default)
             qjs.evaluationTimeoutMillis = VALIDATE_TIMEOUT_MS
-            qjs.memoryLimit = ENGINE_MEMORY_LIMIT
+            qjs.memoryLimit = engineMemoryLimit
             try {
                 NuvioCryptoBridge.bindAll(qjs)
                 qjs.function("__hikariFetch") { args ->

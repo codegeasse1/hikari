@@ -63,6 +63,16 @@ object SkyStreamRuntime {
     // Same reasoning as NuvioRuntime: each engine is a native VM plus a ~450KB
     // cheerio parse, so bound how many run at once and let the rest queue.
     private const val MAX_CONCURRENT = 6
+    /**
+     * [MAX_CONCURRENT] on a TELEVISION (see
+     * [com.hikari.app.data.PerfMode.tvDevice]): three engines at once.
+     *
+     * A SkyStream plugin boots a native VM and parses its cheerio bundle exactly
+     * like a nuvio one, so the 1-1.5GB boxes this is for cannot afford six of
+     * them arriving at once while a detail page is also loading. Three is half,
+     * and the rest queue as they always did.
+     */
+    private const val TV_CONCURRENT = 3
     private const val FETCH_TIMEOUT_MS = 30_000L
     private const val CALL_TIMEOUT_MS = 45_000L
     private const val VALIDATE_TIMEOUT_MS = 20_000L
@@ -99,6 +109,18 @@ object SkyStreamRuntime {
     private const val DEFAULT_UA = com.hikari.app.net.Http.UA
 
     private val concurrency = Semaphore(MAX_CONCURRENT)
+
+    /** [TV_CONCURRENT]'s pool — see the note on the constant, and on [gate]. */
+    private val tvConcurrency = Semaphore(TV_CONCURRENT)
+
+    /**
+     * Which pool a plugin call draws from. A television gets its own, narrowest
+     * pool — and that answer comes before the booster's, because the booster is a
+     * switch the user can turn off and a 1GB box is not. See [TV_CONCURRENT] and
+     * [com.hikari.app.data.PerfMode.tvDevice].
+     */
+    private val gate: Semaphore
+        get() = if (com.hikari.app.data.PerfMode.tvDevice) tvConcurrency else concurrency
 
     /** Ring buffer of every bridge fetch outcome, for the sources sheet's
      *  diagnostics (mirrors NuvioRuntime's fetch log). */
@@ -261,6 +283,13 @@ object SkyStreamRuntime {
     ): QuickJs {
         val qjs = QuickJs.create(jobDispatcher = Dispatchers.Default)
         qjs.evaluationTimeoutMillis = budgetMs
+        // Only on a television: a native engine's memory is invisible to the Java
+        // heap and is what the low-memory killer acts on, so a 1-1.5GB box needs
+        // the ceiling even when its own booster setting is off. See
+        // [com.hikari.app.data.PerfMode.tvEngineMemoryLimit]. A phone keeps the
+        // runtime's own, uncapped behaviour — this line is the whole of the
+        // difference.
+        com.hikari.app.data.PerfMode.tvEngineMemoryLimit?.let { qjs.memoryLimit = it }
 
         qjs.function("__hikariFetch") { args ->
             val url = args.getOrNull(0)?.toString() ?: ""
@@ -377,7 +406,7 @@ object SkyStreamRuntime {
         if (source.isNullOrBlank()) return failure("plugin file missing — reinstall this extension")
         val manifestJson = readManifest(scriptFile)
         val budget = budgetFor(fnName)
-        return concurrency.withPermit {
+        return gate.withPermit {
             withTimeoutOrNull(budget + CALL_GRACE_MS) {
                 withContext(Dispatchers.Default) {
                     val deferred = CompletableDeferred<String>()

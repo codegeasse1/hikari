@@ -112,6 +112,31 @@ sources. They are edited in the source sheet's **Advanced filters** section
 `Routes.collectionGrid(id)` is "Show all": every folder's every catalog as one
 flat grid (`CollectionsRepository.allRows`).
 
+### The folder tile's surface
+
+`FolderTile` is the one widget all of the above draw (the creator's grid, a
+horizontal row, and Home's `CollectionFoldersOnHome`), and it is made of exactly
+ONE glass panel:
+
+* The panel's radius is `min(GlassCornerRadius, width × 0.16f)` — a fraction of
+  the tile's OWN width, because a folder tile is 102-150dp wide and the app's flat
+  26dp corner is a quarter of a tile that size (the panel read as a pill, and the
+  arc swept through the artwork's bottom corners, which is where a wordmark cover
+  keeps its letters — "glasy corner is cutting some name"). The cap is reached at
+  ~163dp, so a television's larger grid cells keep the full glass rounding.
+* The cover inside it draws NO surface of its own (`CoverArt(ownGlass = false)`)
+  and takes `panelRadius - TILE_PADDING`, the concentric-corner rule, so the two
+  arcs run parallel instead of fighting. Before this the cover ALSO drew the
+  poster style's own glass hairline, inset inside the panel's: a glass box inside
+  a glass box on every tile.
+* The panel is painted (fill + border), never `clip`ped, so nothing inside can be
+  sliced, and the corner is small enough relative to the name's inset that it
+  cannot reach the text.
+
+A television with its performance mode on draws an animated cover as its FIRST
+FRAME — the same rule, and the same switch, as the poster effects in
+`rememberPosterStyle`; a folder whose own `gifAlways` is set keeps animating.
+
 ---
 
 ## 4. Ordering
@@ -181,12 +206,21 @@ does not have.
 `FolderTile`:
 
 ```
-animateGif = folder.gifAlways || AppStore.gifAnimFlow()   // device setting, default true
+animateGif = folder.gifAlways || (AppStore.gifAnimFlow() && !tvQuiet)
+                            // folder's own switch wins; device setting default true
+                            // tvQuiet = PerfMode.tvDevice && PerfMode.tvOn
 ```
 
 so the folder's own switch ("Always animate", shown only when the cover is a
 GIF) wins over the device's, and the device's (`Settings → App Layout → Animate
 covers`) is what a TV stick can turn off without editing what it imported.
+
+A television with its performance mode on reads as `tvQuiet` and holds every
+cover still: a gif is a decode plus a full-size texture upload on every frame,
+and it is the one thing on a folder row that never stops working — the same
+reasoning, and the same switch, as the poster effects `rememberPosterStyle`
+drops on a television. It is read from the synchronous `PerfMode` mirror rather
+than from the store, so a tile does not open a DataStore collection of its own.
 
 Held still, the frame comes from `PosterLoader.stillModel(url)`, which fetches the
 URL and decodes the **first frame** with `BitmapFactory.decodeByteArray` (Coil

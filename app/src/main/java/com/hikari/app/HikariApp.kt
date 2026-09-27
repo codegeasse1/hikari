@@ -215,6 +215,26 @@ class HikariApp : Application() {
      * [com.hikari.app.data.AppStore.tvPerfChosen] is set and this never touches
      * the setting again — an explicit answer always beats an automatic one.
      */
+    /**
+     * Mirrors the DEVICE's television answer into
+     * [com.hikari.app.data.PerfMode] (`tvDevice`), which is what the engine
+     * budgets, the search fan-out and the poster cache size read — all of them
+     * synchronously, on hot paths that cannot await a flow.
+     *
+     * Called from `onCreate` and again from
+     * [com.hikari.app.MainActivity] next to every
+     * [com.hikari.app.tv.TvMode.detect], because a few boxes only settle their UI
+     * mode once an Activity exists — and the budgets are chosen the first time a
+     * screen asks for content, which is after that. [com.hikari.app.tv.TvMode.deviceIsTelevision]
+     * (the HARDWARE's answer) rather than `isTv`, deliberately: a phone whose user
+     * turns the television LAYOUT on to look at it must not be handed a
+     * low-memory device's search width or engine ceiling. See
+     * [com.hikari.app.data.PerfMode.tvDevice].
+     */
+    fun syncTvDeviceFlag() {
+        com.hikari.app.data.PerfMode.setTvDevice(com.hikari.app.tv.TvMode.deviceIsTelevision)
+    }
+
     private suspend fun syncTvPerformance(store: com.hikari.app.data.AppStore) {
         if (runCatching { store.tvPerfChosen() }.getOrDefault(false)) return
         val want = com.hikari.app.tv.TvMode.isTv
@@ -280,6 +300,7 @@ class HikariApp : Application() {
         // again in MainActivity, because a few boxes only settle their UI mode
         // after the application object exists.
         runCatching { com.hikari.app.tv.TvMode.detect(this) }
+        syncTvDeviceFlag()
         // Aniyomi extensions are Mihon/Aniyomi extension APKs: the extension
         // loader builds a class loader over the .ext and instantiates a source,
         // and the source immediately resolves its own dependencies out of
@@ -760,11 +781,14 @@ class HikariApp : Application() {
      * — the level it chose goes in the log, with what the process held at that
      * moment (see [com.hikari.app.data.MemoryReport]).
      *
-     * There is deliberately no cache to drop here: the poster cache is already
-     * bounded (see the Coil memory cache in onCreate), the QuickJS engines are
-     * per-call and closed in a `finally`, and a search pass holds nothing but
-     * the server list — so the useful thing this callback can do is produce the
-     * evidence for "it nearly crashed while the servers loaded".
+     * Off a television there is deliberately no cache to drop here: the poster
+     * cache is already bounded (see the Coil memory cache in onCreate), the
+     * QuickJS engines are per-call and closed in a `finally`, and a search pass
+     * holds nothing but the server list — so the useful thing this callback can
+     * do is produce the evidence for "it nearly crashed while the servers
+     * loaded". On a TELEVISION that changes (see the body): the poster cache is
+     * the one large, re-creatable thing the app holds, and a box asking a
+     * foreground app for memory back is a box about to kill it.
      */
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
@@ -773,11 +797,29 @@ class HikariApp : Application() {
         // (UI_HIDDEN and friends), which every app gets and which says nothing
         // about the user's problem.
         if (level < android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) return
+        // Read BEFORE anything is dropped: the number that matters is what the
+        // process held when the device decided it was tight.
+        val held = com.hikari.app.data.MemoryReport.short()
+        // On a TELEVISION the caches ARE worth dropping — see
+        // [com.hikari.app.data.PerfMode.tvDevice]. An evicted poster costs a
+        // decode on the next scroll; a killed process costs the user the page
+        // they were on, and the native QuickJS engines a detail load is waiting
+        // on are exactly what a 1-1.5GB box runs out of room for.
+        //
+        // Handing back the poster cache is the largest thing the app can give
+        // away WITHOUT touching work in flight, so on a television it goes. Off
+        // one this stays a pure log line: the cache there is bounded, the device
+        // has the memory, and re-decoding a screenful of posters after every
+        // trim would be its own bug.
+        val onTv = com.hikari.app.data.PerfMode.tvDevice
+        if (onTv) {
+            runCatching { coil.Coil.imageLoader(this).memoryCache?.clear() }
+        }
         runCatching {
             Logs.log(
                 "Memory",
-                "onTrimMemory(" + trimLevelName(level) + ") · " +
-                    com.hikari.app.data.MemoryReport.short(),
+                "onTrimMemory(" + trimLevelName(level) + ") · " + held +
+                    (if (onTv) " → poster cache cleared" else ""),
             )
         }
     }
@@ -1239,8 +1281,21 @@ class HikariApp : Application() {
                     // floored at 24 MB (a screenful or two of thumbnails) and
                     // capped at 96 MB so a huge-heap device doesn't hoard memory
                     // it doesn't need.
-                    val cap = (Runtime.getRuntime().maxMemory() / 8)
-                        .coerceIn(24L * 1024 * 1024, 96L * 1024 * 1024)
+                    //
+                    // A TELEVISION gets less of the same heap — see the note on
+                    // [com.hikari.app.data.PerfMode.tvDevice]. Between this
+                    // cache, the native QuickJS engines and the decoder buffers,
+                    // a 1-1.5GB box has to leave room for the engines: they are
+                    // the work that cannot be redone cheaply, while a poster that
+                    // has to be decoded again is a frame of a scroll. The floor is
+                    // lower too (16MB), because on a box this small a 24MB floor
+                    // is a fifth of what the process was given.
+                    val heap = Runtime.getRuntime().maxMemory()
+                    val cap = if (com.hikari.app.data.PerfMode.tvDevice) {
+                        (heap / 12).coerceIn(16L * 1024 * 1024, 64L * 1024 * 1024)
+                    } else {
+                        (heap / 8).coerceIn(24L * 1024 * 1024, 96L * 1024 * 1024)
+                    }
                     coil.memory.MemoryCache.Builder(this@HikariApp)
                         .maxSizeBytes(cap.toInt())
                         .build()

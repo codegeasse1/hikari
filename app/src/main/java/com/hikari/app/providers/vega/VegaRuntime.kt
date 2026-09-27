@@ -64,6 +64,17 @@ object VegaRuntime {
     private const val MAX_CONCURRENT = 8
     /** [MAX_CONCURRENT] with the performance booster on (Settings → Performance). */
     private const val PERF_CONCURRENT = 4
+    /**
+     * [MAX_CONCURRENT] on a TELEVISION (see
+     * [com.hikari.app.data.PerfMode.tvDevice]): two engines at once.
+     *
+     * A Vega call is the heaviest single thing the app runs in-process — a native
+     * VM plus the cheerio bundle plus, for a detail view, a whole meta document
+     * AND the season requests it asks for — so on the 1-1.5GB boxes this is for it
+     * is the first pool to narrow. There are usually only a handful of Vega
+     * extensions installed, so two at a time still walks through them all.
+     */
+    private const val TV_CONCURRENT = 2
     private const val FETCH_TIMEOUT_MS = 30_000L
     /** One provider call. Same ceiling nuvio uses: a cold engine plus a slow
      *  site fetch plus extraction is normal. */
@@ -81,10 +92,29 @@ object VegaRuntime {
     private const val TIMER_MAX_WAIT_MS = 1_500L
     private const val ENGINE_MEMORY_LIMIT = 256L * 1024 * 1024
 
+    /**
+     * [ENGINE_MEMORY_LIMIT] as it applies on THIS device — the television value
+     * from [com.hikari.app.data.PerfMode.tvEngineMemoryLimit] when there is one,
+     * else the flat ceiling above. See the constant's own note in
+     * [com.hikari.app.nuvio.NuvioRuntime] for why a television is different.
+     */
+    private val engineMemoryLimit: Long
+        get() = com.hikari.app.data.PerfMode.tvEngineMemoryLimit ?: ENGINE_MEMORY_LIMIT
+
     private val concurrency = Semaphore(MAX_CONCURRENT)
     private val perfConcurrency = Semaphore(PERF_CONCURRENT)
+
+    /** [TV_CONCURRENT]'s pool — see the note on the constant, and on [gate]. */
+    private val tvConcurrency = Semaphore(TV_CONCURRENT)
+
     private val gate: Semaphore
-        get() = if (com.hikari.app.data.PerfMode.active) perfConcurrency else concurrency
+        get() = when {
+            // The television's own pool comes FIRST: the booster is a switch the
+            // user can turn off, and a 1GB box is not.
+            com.hikari.app.data.PerfMode.tvDevice -> tvConcurrency
+            com.hikari.app.data.PerfMode.active -> perfConcurrency
+            else -> concurrency
+        }
 
     private val bootJs: String by lazy { readAsset("nuvio/boot.js") }
     private val cheerioJs: String by lazy { readAsset("nuvio/cheerio.js") }
@@ -210,7 +240,7 @@ object VegaRuntime {
     ): QuickJs {
         val qjs = QuickJs.create(jobDispatcher = Dispatchers.Default)
         qjs.evaluationTimeoutMillis = CALL_TIMEOUT_MS
-        qjs.memoryLimit = ENGINE_MEMORY_LIMIT
+        qjs.memoryLimit = engineMemoryLimit
 
         qjs.asyncFunction("__hikariFetch") { args ->
             val url = args.getOrNull(0)?.toString() ?: ""

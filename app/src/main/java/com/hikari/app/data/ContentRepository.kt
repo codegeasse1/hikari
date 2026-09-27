@@ -1514,13 +1514,31 @@ class ContentRepository(private val manager: ProviderManager) {
      *  the budget and never ran at all; with ~50 installed repos the searches
      *  alone used to take the better part of a minute, which is why the one
      *  repo that DOES carry the title (MovieBox) only landed its servers after
-     *  playback had already started. */
-    private val CROSS_EXT_EXTRACT_CONCURRENCY = 20
+     *  playback had already started.
+     *
+     *  Halved on a TELEVISION (see [com.hikari.app.data.PerfMode.tvDevice]), the
+     *  same hardware-not-a-switch rule as [CROSS_EXT_DETAIL_CONCURRENCY]: an
+     *  extraction is a full provider call that can boot an engine, and twenty of
+     *  them at once is more than a 1-1.5GB box has memory to hold. */
+    private val CROSS_EXT_EXTRACT_CONCURRENCY =
+        if (com.hikari.app.data.PerfMode.tvDevice) 10 else 20
     /** How many matched extensions may fetch their meta / episode list at once.
      *  A SEPARATE cap from the search semaphore: fetching one repo's episode
      *  list must never take a slot that another repo still needs just to be
-     *  SEARCHED (that sharing is what starved the tail of the queue). */
-    private val CROSS_EXT_DETAIL_CONCURRENCY = 32
+     *  SEARCHED (that sharing is what starved the tail of the queue).
+     *
+     *  Halved on a TELEVISION (see [com.hikari.app.data.PerfMode.tvDevice]): this
+     *  is the cap that a detail page's episode load runs through, it is the one
+     *  place the app asks a whole pile of extensions for real work at the same
+     *  time, and each of those calls can boot an engine. Thirty-two of them at
+     *  once is what made a 1-1.5GB box freeze and then die while the episode list
+     *  loaded (\"loading detail screen data and episode its start freezing and
+     *  crashed\"). Twelve still fills the list in, just in a narrower stream.
+     *
+     *  Read once, at class init — [com.hikari.app.HikariApp] sets the flag during
+     *  `onCreate`, before any screen can touch this class. */
+    private val CROSS_EXT_DETAIL_CONCURRENCY =
+        if (com.hikari.app.data.PerfMode.tvDevice) 12 else 32
     // Refundable gates rather than plain semaphores: a plugin that never comes
     // back holds its slot for good, and a plain semaphore would then hand out
     // fewer slots on every lookup for the rest of the session (see
@@ -1581,6 +1599,15 @@ class ContentRepository(private val manager: ProviderManager) {
      */
     private fun deviceFanOut(): Int {
         val cores = Runtime.getRuntime().availableProcessors()
+        // A television gets the narrowest fan-out of all, and this is decided by
+        // the HARDWARE (see [com.hikari.app.data.PerfMode.tvDevice]), not by a
+        // switch the user can turn off: a 1-1.5GB box has that much RAM whatever
+        // the settings say. `cores * 2` is 8 on the four-core SoC in every
+        // Android TV stick and most TV boards — still "everything at once" next
+        // to the fixed 6 this used to be, and it is the difference between a
+        // detail screen that fills in and one that takes the app down with it.
+        // A phone is untouched: this branch is never taken there.
+        if (com.hikari.app.data.PerfMode.tvDevice) return (cores * 2).coerceIn(6, 16)
         if (com.hikari.app.data.PerfMode.active) return (cores * 3).coerceIn(12, 36)
         return (cores * 6).coerceIn(24, 96)
     }

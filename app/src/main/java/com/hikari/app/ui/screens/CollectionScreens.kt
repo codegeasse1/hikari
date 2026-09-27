@@ -29,6 +29,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -178,6 +179,7 @@ import com.hikari.app.ui.PosterLoader
 import com.hikari.app.ui.PosterStyle
 import com.hikari.app.ui.components.EmptyState
 import com.hikari.app.ui.components.GlassCard
+import com.hikari.app.ui.components.GlassCornerRadius
 import com.hikari.app.ui.components.GlassSearchField
 import com.hikari.app.ui.components.MediaRow
 import com.hikari.app.ui.components.GlassShape
@@ -3422,6 +3424,16 @@ private fun CoverArt(
      *  [CoverKinds.GIF] cover is affected, and only when its folder (or this
      *  device) asked for it — see [PosterLoader.stillModel]. */
     animateGif: Boolean = true,
+    /** Round the artwork to THIS radius instead of the poster style's own. A
+     *  caller that draws its own panel (see [FolderTile]) passes the panel's
+     *  radius minus its padding, so the two corners are CONCENTRIC. Null keeps
+     *  the poster style's setting, which is what a poster in a normal grid gets. */
+    cornerRadius: Dp? = null,
+    /** False to draw NO surface of its own — no fill and no glass hairline — so
+     *  the artwork sits ON the caller's panel instead of inside a second box.
+     *  True (the default) is the standalone card: a poster in a grid, a list-row
+     *  thumb. See [FolderTile] for the one-surface rule. */
+    ownGlass: Boolean = true,
 ) {
     val tokens = rememberGlassTokens()
     val k = CoverKinds.normalize(kind)
@@ -3433,6 +3445,22 @@ private fun CoverArt(
     // own catalog was the report. The effect is drawn by [PosterArt], the one
     // place poster styling lives.
     val posterStyle = rememberPosterStyle()
+    // What THIS artwork is drawn with. A caller that already draws the tile's
+    // glass panel (see [FolderTile]) asks for no surface of its own and for the
+    // panel's concentric corner, so the tile is one box rather than two; every
+    // other caller gets the user's poster style untouched. `.copy` keeps the
+    // rest of the style — the badges, the halo, the effects — in place, and the
+    // corner is never allowed ABOVE the user's own setting, so a user who asked
+    // for square posters still gets square covers inside a tile.
+    val coverStyle = if (ownGlass && cornerRadius == null) {
+        posterStyle
+    } else {
+        posterStyle.copy(
+            corner = cornerRadius?.value?.roundToInt()?.coerceIn(0, posterStyle.corner)
+                ?: posterStyle.corner,
+            glass = ownGlass,
+        )
+    }
     val sized = if (shaped) Modifier.aspectRatio(TileShapes.aspect(shape)) else Modifier
     if ((k == CoverKinds.URL || k == CoverKinds.GIF) && value.isNotBlank()) {
         PosterArt(
@@ -3447,18 +3475,31 @@ private fun CoverArt(
                 value
             },
             contentDescription = name.ifBlank { null },
-            style = posterStyle,
+            style = coverStyle,
             modifier = modifier.then(sized),
             imageAlignment = Alignment.TopCenter,
         )
         return
     }
+    // The glyph tile (an emoji cover, or a folder with none): the same
+    // one-surface rule as the artwork above. With [ownGlass] false the caller's
+    // panel already provides the fill, and drawing another here would be the
+    // second box again — and a visibly darker one, since the panel's fill is
+    // semi-transparent.
+    val glyphShape = cornerRadius?.let { RoundedCornerShape(it) } ?: GlassShape
     Box(
         modifier
             .then(sized)
-            .clip(GlassShape)
-            .background(tokens.fillTop)
-            .border(1.dp, tokens.border, GlassShape),
+            .then(
+                if (ownGlass) {
+                    Modifier
+                        .clip(glyphShape)
+                        .background(tokens.fillTop)
+                        .border(1.dp, tokens.border, glyphShape)
+                } else {
+                    Modifier
+                },
+            ),
         contentAlignment = Alignment.Center,
     ) {
         if (k == CoverKinds.EMOJI && value.isNotBlank()) {
@@ -4240,6 +4281,23 @@ private fun CollectionFoldersPage(nav: NavHostController, collection: Collection
     }
 }
 
+/** A folder tile's own inset: the panel's padding, and the amount the cover's
+ *  corner radius is reduced by so the two arcs stay concentric. See
+ *  [FolderTile]. */
+private val TILE_PADDING = 7.dp
+
+/** How much of a folder tile's width its panel's corner may take.
+ *
+ *  [GlassCornerRadius] is 26dp, which is right for a full-width card and wrong
+ *  for a 102dp tile: at that size a quarter of the tile is corner, the panel
+ *  reads as a pill, and the arc sweeps through the artwork's own bottom corners
+ *  — which is where a category cover (a wordmark image, i.e. every cover
+ *  imported from the reference app) keeps its letters. A fraction of the tile's
+ *  own width keeps a small tile's corner small, and the cap is reached at about
+ *  163dp, so a television's larger grid cells keep the app's full glass
+ *  rounding. */
+private const val TILE_CORNER_FRACTION = 0.16f
+
 /** One folder tile: its cover (or the collection's, when the folder has none of
  *  its own), name and catalog count. Public because Home draws the same tile
  *  for a personal catalog's folders (see
@@ -4266,61 +4324,95 @@ fun FolderTile(
     val app = LocalContext.current.applicationContext as HikariApp
     val gifAnimFlow = remember { app.store.gifAnimFlow() }
     val animateGif by gifAnimFlow.collectAsState(initial = true)
-    // The tile's rounded panel is DRAWN (fill + border in [GlassShape]) rather
-    // than CLIPPED.
+    // A television with its performance mode on draws the FIRST FRAME of an
+    // animated cover: a gif is a decode plus a full-size texture upload on every
+    // frame, and it is the one thing on this screen that never stops working.
+    // The same rule, and the same switch, as the poster effects that
+    // [rememberPosterStyle] drops on a television. A folder that asks for its
+    // own animation ([CollectionFolder.gifAlways], "Show GIF when configured")
+    // keeps it — this only overrides the device-level default. Read from the
+    // synchronous mirror rather than the store, so a tile does not open a
+    // second DataStore collection on every row.
+    val tvQuiet = com.hikari.app.data.PerfMode.tvDevice && com.hikari.app.data.PerfMode.tvOn
+    // The tile's rounded panel is DRAWN (fill + border in [panelShape]) rather
+    // than CLIPPED — a `.clip` here is what used to slice the first and last
+    // letters off a small tile's name, because the curve reached further in from
+    // the edge than the text's 10dp inset.
     //
-    // A `.clip(GlassShape)` on this Column is what cut the name in half. At the
-    // app's 26dp radius a small tile is mostly corner: the curve reaches ~26dp in
-    // from the edge near the bottom, further than the text's own 10dp inset, so
-    // the outer letters of the last line — and of "Empty folder" under it — came
-    // out with their bottoms sliced off, and a long name read as if it had lost
-    // characters ("in nuvio it's cutting some alphabet of name because of round
-    // corner around it"). Nothing inside the tile needs clipping: the artwork
-    // rounds itself (see [CoverArt], and the same note on [PosterCard] and
-    // [LibraryCard]), so the shape only has to be painted, not enforced. The
-    // click ripple loses the rounded corners it used to borrow from the clip,
-    // which is the whole price of the fix.
-    Column(
-        Modifier
-            .then(if (width != null) Modifier.width(width) else Modifier.fillMaxWidth())
-            .background(tokens.fillTop, GlassShape)
-            .border(1.dp, tokens.border, GlassShape)
-            .clickable(onClick = onClick)
-            .padding(7.dp),
+    // Two things were still wrong with the drawn shape, and both are fixed here:
+    //
+    //  - The radius was the app's flat [GlassCornerRadius] (26dp) whatever the
+    //    tile's width. A folder tile is 102-150dp wide, so on a small one the
+    //    corner was a quarter of the whole tile: the panel read as a pill, and
+    //    the arc swept through the artwork's own bottom corners. Where the cover
+    //    is a wordmark image — every category cover imported from the reference
+    //    app — that is the reported "glasy corner is cutting some name". The
+    //    radius is now a FRACTION of the tile's own width (capped at
+    //    [GlassCornerRadius]), so a small tile gets a small corner.
+    //  - The cover drew a SECOND glass hairline of its own (the poster style's
+    //    `glass`, see [CoverArt]), inset inside this panel's — the "glass box
+    //    inside the glass box". The cover now draws no surface at all, and takes
+    //    the panel's radius MINUS this panel's padding, so the two arcs are
+    //    concentric instead of fighting. One box per tile.
+    BoxWithConstraints(
+        modifier = Modifier.then(
+            if (width != null) Modifier.width(width) else Modifier.fillMaxWidth(),
+        ),
     ) {
-        CoverArt(
-            kind = if (ownCover) folder.coverKind else inheritedKind,
-            value = if (ownCover) folder.coverValue else inheritedValue,
-            shape = if (ownCover) folder.tileShape else inheritedShape,
-            name = folder.name,
-            animateGif = folder.gifAlways || animateGif,
-            modifier = Modifier.fillMaxWidth(),
-        )
-        Spacer(Modifier.height(6.dp))
-        if (!folder.hideTitle) {
-            Text(
-                folder.name,
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(horizontal = 3.dp),
+        // `maxWidth` is Dp.Infinity for a tile with no width of its own at all,
+        // and minOf then keeps the plain glass radius — the cap can never be the
+        // reason a tile has no rounding.
+        val panelRadius = minOf(GlassCornerRadius, maxWidth * TILE_CORNER_FRACTION)
+        val panelShape = RoundedCornerShape(panelRadius)
+        // The classic concentric-corner rule: a surface inset by `p` inside an
+        // outer corner of `r` looks right when its own radius is `r - p`. Here
+        // that is the cover inside [TILE_PADDING] of the panel's edge, which is
+        // what makes the two curves run parallel rather than meet at an angle.
+        val coverRadius = (panelRadius - TILE_PADDING).coerceAtLeast(0.dp)
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .background(tokens.fillTop, panelShape)
+                .border(1.dp, tokens.border, panelShape)
+                .clickable(onClick = onClick)
+                .padding(TILE_PADDING),
+        ) {
+            CoverArt(
+                kind = if (ownCover) folder.coverKind else inheritedKind,
+                value = if (ownCover) folder.coverValue else inheritedValue,
+                shape = if (ownCover) folder.tileShape else inheritedShape,
+                name = folder.name,
+                animateGif = folder.gifAlways || (animateGif && !tvQuiet),
+                cornerRadius = coverRadius,
+                ownGlass = false,
+                modifier = Modifier.fillMaxWidth(),
             )
-        }
-        // The small grey line under the name used to name the folder's FIRST
-        // catalog and count the rest — "Recent +2", "الاحداث +2" — which told the
-        // user nothing they could act on and read as a stray label on every tile
-        // ("show remove the text that showing"). What is left is the one case
-        // that IS information: a folder that has nothing in it.
-        if (folder.sources.isEmpty()) {
-            Text(
-                tr("Empty folder"),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(horizontal = 3.dp),
-            )
+            Spacer(Modifier.height(6.dp))
+            if (!folder.hideTitle) {
+                Text(
+                    folder.name,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(horizontal = 3.dp),
+                )
+            }
+            // The small grey line under the name used to name the folder's FIRST
+            // catalog and count the rest — "Recent +2", "الاحداث +2" — which told
+            // the user nothing they could act on and read as a stray label on
+            // every tile ("show remove the text that showing"). What is left is
+            // the one case that IS information: a folder that has nothing in it.
+            if (folder.sources.isEmpty()) {
+                Text(
+                    tr("Empty folder"),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(horizontal = 3.dp),
+                )
+            }
         }
     }
 }

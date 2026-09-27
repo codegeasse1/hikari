@@ -93,6 +93,67 @@ the same way `NetTuning` and `SearchScope` mirror theirs. `PerfMode.tvOn` is set
 performance mode on is honoured everywhere at once. Nothing the booster turns off
 changes what can be played.
 
+The booster is a SETTING, and it is the only thing `PerfMode.tvOn` means. A
+television's own hardware budgets are keyed on `PerfMode.tvDevice` instead, and
+they cannot be switched off — see the next section.
+
+## A television is a memory profile, not a preference
+
+The report: *"when the app loading detail screen data and episode its start
+freezing and crashed"* — on television boxes that "come with 1-1.5GB RAM".
+
+`data/PerfMode.tvDevice` is the flag that answers it, and it is deliberately NOT
+`PerfMode.tvOn` (the user's television performance SETTING). A box with 1GB of
+RAM has 1GB of RAM with every switch off, so the budgets below are sized from
+what the HARDWARE says it is — `TvMode.deviceIsTelevision`, mirrored into
+`PerfMode` by `HikariApp.syncTvDeviceFlag()` (called beside every `TvMode.detect`,
+at process start and again from `MainActivity`). It is false on every phone and
+tablet, so none of this is reachable from an Android phone build — not even on a
+phone whose user turned the television layout on to look at it.
+
+Why memory, and why the engines: opening a detail page asks every matched
+extension for its meta and its episode list AT ONCE, and each of those asks can
+boot a whole native QuickJS VM. QuickJS allocates native memory, which the Java
+heap cap does not cover and the low-memory killer counts as the process's own, so
+a burst of engines is what freezes the UI (GC thrashing) and then kills the app.
+Every number that bounds that burst:
+
+| Budget | Phone / tablet | Television |
+| --- | --- | --- |
+| One engine's JS heap | `ENGINE_MEMORY_LIMIT`, 256MB | `PerfMode.tvEngineMemoryLimit` = `min(64MB, process heap / 4)` |
+| Nuvio engines at once | 12, or 5 with the booster | 4 (`NuvioRuntime.TV_CONCURRENT`) |
+| Vega engines at once | 8, or 4 with the booster | 2 (`VegaRuntime.TV_CONCURRENT`) |
+| SkyStream engines at once | 6 (uncapped heap) | 3 (`SkyStreamRuntime.TV_CONCURRENT`) |
+| `deviceFanOut()` | `cores×6` (24..96), or `cores×3` (12..36) | `cores×2` (6..16) |
+| `CROSS_EXT_EXTRACT_CONCURRENCY` | 20 | 10 |
+| `CROSS_EXT_DETAIL_CONCURRENCY` | 32 | 12 |
+| Coil poster cache | `heap/8` (24..96MB) | `heap/12` (16..64MB) |
+
+Four rules the table does not show:
+
+- **The television's engine pool is chosen BEFORE the booster's.** The booster is
+  a switch the user can turn off; a 1GB box is not. `NuvioRuntime.gate`,
+  `VegaRuntime.gate` and `SkyStreamRuntime.gate` all test `PerfMode.tvDevice`
+  first, so turning the performance setting off on a television cannot restore the
+  phone's twelve engines.
+- **SkyStream's engines are capped only on a television.**
+  `SkyStreamRuntime.createEngine` sets `qjs.memoryLimit` from
+  `PerfMode.tvEngineMemoryLimit` when there is one, and leaves a phone's engine
+  uncapped exactly as it always was, so that runtime's phone behaviour is
+  untouched.
+- **The two caps that are read once are class-init values**
+  (`CROSS_EXT_EXTRACT_CONCURRENCY`, `CROSS_EXT_DETAIL_CONCURRENCY`).
+  `HikariApp.onCreate` sets the flag before any screen can touch
+  `ContentRepository`, so the first screen to ask for content already gets the
+  television's numbers. The engine pools and `deviceFanOut()` are read per call
+  instead, so they follow a device whose UI mode settles later.
+- **`onTrimMemory` is part of the profile.** On a television it now CLEARS Coil's
+  memory cache (rather than only logging) at `TRIM_MEMORY_RUNNING_LOW` and above:
+  a foreground app being asked for memory back is an app about to be killed, and
+  the poster cache is the largest thing it can give away without touching the
+  engines a load is waiting on. Off a television nothing is dropped; see the note
+  on `HikariApp.onTrimMemory`.
+
 ## Layout passes are bounded and never nested
 
 * `player/PlayerActivity.presentGlass` re-measures a panel's height cap a bounded
@@ -138,7 +199,9 @@ changes what can be played.
 
 * One loader for the whole app (`HikariApp`), memory cache sized to the real heap
   (`1/8`, floored at 24 MB, capped at 96 MB) instead of Coil's 25% default, which
-  on a poster grid can fill a small heap by itself.
+  on a poster grid can fill a small heap by itself. A TELEVISION gets a twelfth of
+  the same heap (floored 16 MB, capped 64 MB) — see "A television is a memory
+  profile, not a preference" below.
 * `respectCacheHeaders(false)`, so a poster whose CDN sends no cache headers still
   lands in the disk cache instead of being re-fetched on every recomposition.
 * Stored posters are requested with `diskCachePolicy(DISABLED)`: their bytes are
@@ -202,7 +265,9 @@ Three rules came out of the "it is slow AND it freezes while the servers load"
 report (a 390-target pass on a 4-core phone):
 
 - **The fan-out scales with the device.** `ContentRepository.deviceFanOut()`
-  (`cores × 6`, clamped to 24..96) sizes both `CROSS_EXT_SEARCH_CONCURRENCY`
+  (`cores × 6`, clamped to 24..96; `cores × 3`, 12..36 with the booster on;
+  `cores × 2`, 6..16 on a television — see "A television is a memory profile,
+  not a preference" above) sizes both `CROSS_EXT_SEARCH_CONCURRENCY`
   and the wave ceiling `CROSS_EXT_WAVE_MAX`. The old fixed 96 was chosen on a
   desktop-class assumption: searches, the HTML/JSON parsing they do on return,
   ~12 QuickJS engines booting beside them and the UI's own drawing all compete
@@ -217,8 +282,9 @@ report (a 390-target pass on a 4-core phone):
   `NuvioRuntime.CALL_TIMEOUT_MS` (60s) is the real bound. This is the reported
   "some extensions show servers in the nuvio app and are just cut off here".
 - **Every engine has a memory budget** (`NuvioRuntime.ENGINE_MEMORY_LIMIT`,
-  256MB). QuickJS allocates NATIVE memory, which the Java heap cap does not
-  cover — before this, one runaway provider could allocate until the low-memory
+  256MB on a phone, `PerfMode.tvEngineMemoryLimit` on a television — see
+  "A television is a memory profile, not a preference" above). QuickJS allocates
+  NATIVE memory, which the Java heap cap does not cover — before this, one runaway provider could allocate until the low-memory
   killer took the process ("it almost crashes while the sources load").
 - **Cheerio is loaded only when the provider asks for it.** `cheerio.js` is
   ~440KB of JavaScript that every fresh engine used to execute before the

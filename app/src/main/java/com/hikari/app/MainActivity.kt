@@ -137,6 +137,7 @@ class MainActivity : AppCompatActivity() {
         // same reason the fullscreen flag below is: the very first frame has to
         // already be the right layout, and Compose cannot await DataStore.
         TvMode.detect(this)
+        (application as HikariApp).syncTvDeviceFlag()
         TvMode.setOverride(
             runCatching {
                 kotlinx.coroutines.runBlocking {
