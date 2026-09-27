@@ -921,10 +921,11 @@ fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
     // the user has already watched, and the taskbar is for getting somewhere.
     val statsTabFlow = remember { app.store.statsTabFlow() }
     val statsTabOn by statsTabFlow.collectAsState(initial = false)
-    // The Telegram tab is off by default for the same reason (its own flow, not
-    // the hidden-tabs list — see AppStore.telegramTabFlow).
+    // Telegram is ON by default like Manga (its own flow, not the hidden-tabs
+    // list — see AppStore.telegramTabFlow), so the bar seeds it as shown: a
+    // user who wants the tab gone turns it off in Settings → Taskbar buttons.
     val telegramTabFlow = remember { app.store.telegramTabFlow() }
-    val telegramTabOn by telegramTabFlow.collectAsState(initial = false)
+    val telegramTabOn by telegramTabFlow.collectAsState(initial = true)
     val visibleTabs: Set<String> = buildSet {
         addAll(hiddenTabs)
         if (!iptvTabOn) add(Routes.IPTV)

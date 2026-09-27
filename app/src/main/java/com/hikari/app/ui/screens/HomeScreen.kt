@@ -120,6 +120,7 @@ import com.hikari.app.ui.components.HeroConfig
 import com.hikari.app.ui.components.HeroStyles
 import com.hikari.app.ui.components.MediaRow
 import com.hikari.app.ui.components.ShimmerRow
+import com.hikari.app.ui.theme.pageBackground
 import com.hikari.app.ui.theme.rememberGlassTokens
 import com.hikari.app.ui.navigation.LocalTaskbarInset
 import com.hikari.app.ui.navigation.Routes
@@ -618,7 +619,15 @@ fun HomeScreen(nav: NavHostController) {
     var showTranslate by remember { mutableStateOf(false) }
     var showSearchDialog by remember { mutableStateOf(false) }
     // The in-place search overlay for a PICKED extension (see [openSearch]).
-    var showHomeSearch by remember { mutableStateOf(false) }
+    //
+    // SAVEABLE, and deliberately left TRUE while a result is opened: the overlay
+    // is a place the user went to (they typed a query and picked from its
+    // results), so coming back from a title has to land on the search they left,
+    // not on the feed. As a plain `remember` the flag was destroyed with the
+    // composable the moment the detail page was pushed, so Back returned to
+    // Home and the query was gone — and it is not cleared when a result opens,
+    // for the same reason.
+    var showHomeSearch by rememberSaveable { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
     // Cloudflare verification: when the selected extension's site is blocked
@@ -982,14 +991,26 @@ fun HomeScreen(nav: NavHostController) {
                             )
                         },
                         onShowAll = {
-                            // "Show all" while browsing a collection shows the
-                            // WHOLE collection: every folder and every catalog
-                            // in it, as one scrollable grid (a folder row used
-                            // to open just that folder, which left the user
-                            // unable to see the rest of the collection).
-                            val collection = selectedCollection
-                            if (collection != null) {
-                                Routes.safeNavigate(nav, Routes.collectionGrid(collection.id))
+                            // A row of the picked collection's OWN shelves shows
+                            // the WHOLE collection (every folder and every
+                            // catalog in it, as one scrollable grid) — a folder
+                            // row used to open just that folder, which left the
+                            // user unable to see the rest of the collection.
+                            // An EXTENSION row keeps its own catalog, even with
+                            // a collection picked: it used to be sent to the
+                            // collection grid as well, so "Show all" on an
+                            // extension's shelf opened an unrelated page (and,
+                            // for a collection holding nothing, a page that only
+                            // said so). The row's key is what tells them apart —
+                            // the collection's rows are keyed "coll|…" by
+                            // CollectionsRepository.
+                            val collectionId = if (row.key.startsWith("coll|")) {
+                                selectedCollection?.id ?: row.key.split('|').getOrNull(1)
+                            } else {
+                                null
+                            }
+                            if (collectionId != null) {
+                                Routes.safeNavigate(nav, Routes.collectionGrid(collectionId))
                             } else {
                                 Routes.safeNavigate(
                                     nav,
@@ -1171,7 +1192,10 @@ fun HomeScreen(nav: NavHostController) {
                 providerName = selectedName,
                 onClose = { showHomeSearch = false },
                 onOpen = { item ->
-                    showHomeSearch = false
+                    // The overlay is NOT closed here: it stays open so that Back
+                    // from the title returns to the search the user was reading
+                    // (see the note on `showHomeSearch`). The overlay's own ✕ and
+                    // BackHandler are what close it.
                     Routes.safeNavigate(
                         nav,
                         if (item.rawType == "manga") {
@@ -2230,7 +2254,7 @@ private fun HomeSearchOverlay(
     val repo = remember { ContentRepository(app.providers) }
     val label = providerName?.takeIf { it.isNotBlank() } ?: tr("this extension")
     var typed by rememberSaveable { mutableStateOf("") }
-    var applied by remember { mutableStateOf("") }
+    var applied by rememberSaveable { mutableStateOf("") }
     var results by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
     var searching by remember { mutableStateOf(false) }
     val focusRequester = remember { FocusRequester() }
@@ -2272,7 +2296,14 @@ private fun HomeSearchOverlay(
 
     BackHandler { onClose() }
 
-    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+    // A full-screen overlay has to actually COVER what is behind it, and the
+    // theme cannot be trusted to hand it a colour that does: the Dark Glass
+    // theme's `background` is TRANSPARENT by design (that theme's page colour is
+    // a gradient drawn behind the whole app), so a Surface painting the scheme's
+    // background painted nothing and the feed — hero banner and all — showed
+    // straight through this overlay. [pageBackground] is the scheme's own
+    // background when it has one, and the solid page colour when it does not.
+    Surface(Modifier.fillMaxSize(), color = pageBackground()) {
         Column(Modifier.fillMaxSize()) {
             Row(
                 Modifier

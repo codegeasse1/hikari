@@ -5,6 +5,17 @@ automatic pass behind **Subtitles → Find subtitles automatically** both ask th
 sites in `app/src/main/java/com/hikari/app/subtitles/SubtitleSites.kt`, plus every
 installed Stremio-style subtitle addon.
 
+A fresh install ships ONE addon already installed — SubDL's own Stremio subtitle
+addon, `StremioAddon.DEFAULT_ADDON_URL` (`https://api3.subdl.com/manifest.json`),
+added by `HikariApp` on first run under a one-way `stremioAddonSeeded` flag
+(0.10.56). The in-app `subdl` site above and the addon are separate routes to the
+same host; the addon exists so **Load from internet** has something to ask on an
+install where the user has configured nothing. Its provider id is derived from
+the addon's BASE url (`StremioAddon.providerIdFor`), so `https://api3.subdl.com`,
+`…/manifest.json` and `…/` are ONE row rather than three — and the add-an-addon
+flow derives its id the same way, so re-pasting the URL cannot create a second
+row.
+
 Everything here is a plain HTTP request to a **public, key-less** endpoint. No
 account, no API key, no addon install. Each endpoint below was verified live
 before it was wired in (status + content + a real download), which is why the

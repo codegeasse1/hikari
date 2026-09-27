@@ -11,21 +11,41 @@
 >    in dp. `showGlassMenu` derives it from its rows (~34dp each, +10dp for a
 >    row with a second line, 3dp apart); the server chooser passes 700dp, the
 >    subtitle sheets 620dp.
-> 2. That height is clamped to the window and becomes the panel's height:
->    `preferredHeightDp` → `min(fitsScreen, 0.66|0.76 of the window)`, floor
->    110dp.
+> 2. That height is clamped to the room the window actually has and becomes the
+>    panel's height: `preferredHeightDp` → `coerceIn(minPanel, roomFor(win, w))`,
+>    where `roomFor()` is the window's own height MINUS the measured height of
+>    the hint line above the panel and MINUS the halo around it, floored at
+>    `minPanel` (110dp). Up to 0.10.55 the cap was
+>    `min(fitsScreen, 0.66|0.76 of the window)` — a fixed fraction that, in the
+>    landscape player, left ~233dp for a ~291dp subtitle sheet and simply cut
+>    its last row, with no scrollbar to say anything was missing. The fraction
+>    is gone (0.10.56); the header is measured (`headerRow.measure(...)`) rather
+>    than estimated, because it is a wrapped multi-line hint whose height is not
+>    a constant. This is NOT the forbidden cap-on-the-scroller — the panel still
+>    gets a definite height and the scroller still fills it with weight 1; only
+>    the ceiling the PANEL is given moved up to the room.
 > 3. The panel is added to the root at that height and holds ONE plain
 >    `ScrollView` with `layoutParams = (MATCH_PARENT, 0, weight 1)`. A definite
 >    panel height plus a weighted scroller is what makes the list scroll: the
 >    scroller is never taller than the panel, so whenever the rows are taller
 >    than it there IS somewhere to scroll to.
 > 4. `fitToContent()` then measures the content at the panel's inner width and
->    shrinks the panel onto it (between `minPanel` and the same cap), so a sheet
->    with two rows is two rows tall rather than a wall of glass.
+>    shrinks the panel onto it (between `minPanel` and the same `roomFor(...)`
+>    room), so a sheet with two rows is two rows tall rather than a wall of
+>    glass.
 > 5. The dialog window is `WRAP_CONTENT` tall, `panelW + 2*halo` wide, centred.
 >    Only the width is ever explicit; `MATCH_PARENT` height, or a height read
 >    from `windowSize()`, is what used to ask for a window taller than the screen
 >    and draw the panel's last rows below the display.
+> 6. The panel re-measures itself when its WINDOW changes size (0.10.56). The
+>    player is not orientation-locked and handles its own rotation, and it is
+>    fullscreen, so the system bars come and go underneath it — but a dialog
+>    window keeps the layout it was SHOWN with, so every size above could refer
+>    to a window that no longer exists. That is the panel which showed only as
+>    far as the old edge "sometimes, and reopening the player fixes it". A
+>    layout listener on the activity's decor calls `refitToWindow()`, which
+>    re-runs the width and `fitToContent()` for the window the panel is really
+>    in.
 >
 > **Do not reintroduce a height CAP on the scroll view.** 0.10.6–0.10.17 replaced
 > this with a `MaxHeightScrollView` whose ceiling was computed from the dialog

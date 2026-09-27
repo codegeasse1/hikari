@@ -76,6 +76,42 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
         val streamErrors = ConcurrentHashMap<String, String>()
 
         /**
+         * The one Stremio addon Hikari installs for the user on a fresh install:
+         * SubDL's subtitle addon.
+         *
+         * It is the addon that needs nothing configured — no key, no account, no
+         * debrid — and it is the one the player's "Load from internet" can use
+         * immediately, so subtitles are reachable in a language the stream does
+         * not carry on an install the user has not set anything up on yet. It is
+         * installed once and never re-added (see [com.hikari.app.HikariApp]),
+         * so removing it is permanent.
+         */
+        const val DEFAULT_ADDON_URL = "https://api3.subdl.com/manifest.json"
+
+        /**
+         * The provider id for the addon at [url].
+         *
+         * Derived from the addon's BASE URL rather than from the text the user
+         * pasted, so one addon pasted three ways — `https://host`,
+         * `https://host/`, `https://host/manifest.json` — is ONE row instead of
+         * three. [config.url] itself keeps the user's own spelling; the addon
+         * tolerates it (see [baseAndQuery]).
+         */
+        fun providerIdFor(url: String): String {
+            var u = url.trim()
+            if (!u.startsWith("http://") && !u.startsWith("https://")) u = "https://$u"
+            val qi = u.indexOf('?')
+            val path = (if (qi >= 0) u.substring(0, qi) else u).trimEnd('/')
+            val base = if (path.lowercase().endsWith("/manifest.json")) {
+                path.dropLast("/manifest.json".length).trimEnd('/')
+            } else {
+                path
+            }
+            val n = base.hashCode().toLong()
+            return "stremio|" + (if (n < 0) -n else n)
+        }
+
+        /**
          * The words a `streams[]` row uses when it is a message rather than a
          * video — see [isPlaceholderRow]. Deliberately about *refusals* ("you
          * must sign in", "subscription required", "no sources") and not about

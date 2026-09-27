@@ -1920,10 +1920,11 @@ private fun TaskbarCard(app: HikariApp) {
     // Stats is the third off-by-default button (see AppStore.statsTabFlow).
     val statsFlow = remember { app.store.statsTabFlow() }
     val statsTab by statsFlow.collectAsState(initial = false)
-    // Telegram is the fourth off-by-default button (AppStore.telegramTabFlow):
-    // the videos on the public Telegram channels the user added.
+    // Telegram is ON by default (AppStore.telegramTabFlow), like Manga: the
+    // videos on the public Telegram channels the user added are a page of their
+    // own, one tap from a fresh install.
     val telegramFlow = remember { app.store.telegramTabFlow() }
-    val telegramTab by telegramFlow.collectAsState(initial = false)
+    val telegramTab by telegramFlow.collectAsState(initial = true)
     fun shown(tab: BottomTab): Boolean = when (tab.route) {
         Routes.IPTV -> iptvTab
         Routes.MANGA -> mangaTab

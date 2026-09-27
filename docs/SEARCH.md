@@ -733,3 +733,29 @@ appear only while the search box is EMPTY: with results on screen the results ar
 the page, and a strip of old queries above them is chrome. Each chip carries its
 own ✕ — a separate clickable, so forgetting one search cannot also run it — and
 the row carries "Clear all".
+
+---
+
+## The Home search box: the overlay outlives the result it opens
+
+Tapping Home's search bar opens `HomeSearchOverlay` — a full-screen search of the
+SELECTED extension, drawn over the feed (see `HomeScreen`). It has two
+report-shaped rules of its own.
+
+- **Back from a result returns to the SEARCH, not to the feed.** The overlay
+  stays open while a result's detail page is pushed, and the flag that says so is
+  `rememberSaveable`, not `remember`. Pushing a destination takes `HomeScreen`
+  out of composition, so a plain `remember` was destroyed with it and Back landed
+  on the feed with the query gone — "instead of just back it leading full back to
+  home". The overlay's own ✕ and its `BackHandler` are the only things that close
+  it; opening a result deliberately does not. The typed and applied queries are
+  `rememberSaveable` too, so they survive the same round trip and the search
+  re-runs on return.
+- **The overlay must actually COVER the feed** — `Surface(…, color =
+  pageBackground())`, never `MaterialTheme.colorScheme.background`. The Dark
+  Glass theme's `background` is TRANSPARENT by design (the page colour is a
+  gradient drawn behind the whole app), so the overlay painted nothing and the
+  feed's hero banner and its "View Details" pill showed straight through the
+  search box. `pageBackground()` is the scheme's own background when it has one
+  and the solid page colour when it does not; the app-lock screen's covers use it
+  for the same reason (see `docs/APP_LOCK.md`).

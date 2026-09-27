@@ -39,6 +39,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.ExpandLess
@@ -86,6 +87,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
@@ -701,7 +704,12 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             clean.removePrefix("https://").removePrefix("http://")
         }
         val iconUrl = manifest.optString("icon").ifBlank { null }
-        val id = "stremio|" + (clean.hashCode().toLong().let { if (it < 0) -it else it })
+        // The id is derived from the addon's BASE url (see
+        // StremioAddon.providerIdFor), so the same addon pasted as
+        // "https://host", "https://host/" or "https://host/manifest.json" — or
+        // already installed by Hikari's first-run seeding — is ONE row rather
+        // than three.
+        val id = com.hikari.app.providers.StremioAddon.providerIdFor(clean)
         store.addProvider(ProviderConfig(id, name, ProviderType.STREMIO, clean, iconUrl = iconUrl))
         manager.refresh()
         Result.success(name)
@@ -5862,6 +5870,8 @@ private fun RepoCard(
     onRefresh: () -> Unit,
     onRemoveRepo: () -> Unit,
 ) {
+    val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
     GlassCard(
         onClick = onClick,
         modifier = Modifier
@@ -5943,11 +5953,22 @@ private fun RepoCard(
                 )
             }
             Spacer(Modifier.width(8.dp))
-            Icon(
-                Icons.Filled.ChevronRight,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            // Copy / Refresh / Remove. The decorative chevron that used to sit
+            // here is gone: the row already ends in three real actions, and four
+            // items in a fixed-width trailing cluster squeeze the repo's own
+            // name to a few characters on a phone (worse with the in-app UI
+            // scale up) — the title is worth more than an arrow that repeats
+            // what the card's own highlight already says.
+            IconButton(onClick = {
+                clipboard.setText(AnnotatedString(repo.url))
+                Toast.makeText(context, tr("Repo link copied"), Toast.LENGTH_SHORT).show()
+            }) {
+                Icon(
+                    Icons.Filled.ContentCopy,
+                    contentDescription = tr("Copy repo link"),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
             IconButton(onClick = onRefresh) {
                 Icon(
                     Icons.Filled.Refresh,

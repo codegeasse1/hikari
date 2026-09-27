@@ -196,6 +196,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.lastOrNull
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -4975,23 +4976,69 @@ private fun TmdbGridCard(item: MediaItem, style: PosterStyle, onClick: () -> Uni
 fun CollectionGridScreen(nav: NavHostController, collectionId: String) {
     val app = LocalContext.current.applicationContext as HikariApp
     val style = rememberPosterStyle()
+    val repo = remember { CollectionsRepository(app.providers) }
     var collection by remember(collectionId) { mutableStateOf<Collection?>(null) }
     var rows by remember(collectionId) { mutableStateOf<List<CatalogRow>?>(null) }
+    /** True when this page has nothing of its own to draw and hands over to the
+     *  collection's folder tiles (see the LaunchedEffect below). */
+    var folderHandover by remember(collectionId) { mutableStateOf(false) }
+    /** True when the id names no collection at all. */
+    var missing by remember(collectionId) { mutableStateOf(false) }
+
+    suspend fun decorate(list: List<CatalogRow>): List<CatalogRow> = withContext(Dispatchers.IO) {
+        list.map { row -> row.copy(items = row.items.map { it.tokenized() }) }
+    }
 
     LaunchedEffect(collectionId) {
         val c = withContext(Dispatchers.IO) { app.store.collection(collectionId) }
         collection = c
         if (c == null) {
+            // The id names no collection (it was deleted, or the link is older
+            // than the collection). Say THAT — this page used to fall through to
+            // "0 titles · 0 catalogs" above "this collection's catalogs returned
+            // no content", which blames the extensions for a page that has
+            // nothing to do with them. The header alone, exactly as
+            // [CollectionViewScreen] answers the same question.
+            missing = true
             rows = emptyList()
             return@LaunchedEffect
         }
+        var landed = false
         runCatching {
-            CollectionsRepository(app.providers).allRows(c).collect { r ->
-                rows = withContext(Dispatchers.IO) {
-                    r.map { row -> row.copy(items = row.items.map { it.tokenized() }) }
+            repo.allRows(c).collect { r ->
+                if (r.isNotEmpty()) {
+                    landed = true
+                    rows = decorate(r)
                 }
             }
         }
+        if (landed) return@LaunchedEffect
+        // The "All" pass came back with nothing. Before telling the user the
+        // catalogs are empty, show what HOME shows for this collection — its own
+        // shelf rows ([CollectionsRepository.pickRows] is exactly "what Home
+        // shows"). An extension row's "Show all" inside a personal catalog lands
+        // on this page, so Home and this page disagreeing about whether there is
+        // anything to show was the report.
+        val picked = runCatching { repo.pickRows(c).lastOrNull() }.getOrNull().orEmpty()
+        if (picked.isNotEmpty()) {
+            rows = decorate(picked)
+            return@LaunchedEffect
+        }
+        // Neither pass found anything. Hand over to the folder tiles: they are
+        // the way in (each one opens that folder's own catalogs), and a page
+        // that only ever said "nothing here right now" left the user with no
+        // route to them at all. A collection with no folders gets that page's
+        // own empty state, which points at the Personal Catalog creator.
+        rows = emptyList()
+        folderHandover = true
+    }
+
+    // A page with nothing to show IS the folder page — it carries the
+    // collection's own header and summary, so there is no second header here.
+    val handoverTo = collection
+    if (folderHandover && handoverTo != null) {
+        CollectionFoldersPage(nav = nav, collection = handoverTo)
+        return
     }
 
     val loaded = rows
@@ -4999,8 +5046,11 @@ fun CollectionGridScreen(nav: NavHostController, collectionId: String) {
         val titleCount = loaded?.sumOf { it.items.size } ?: 0
         val catalogCount = loaded?.size ?: 0
         PageHeader(
-            title = collection?.name ?: tr("Loading…"),
-            subtitle = if (loaded == null) "" else
+            title = when {
+                missing -> tr("Collection not found")
+                else -> collection?.name ?: tr("Loading…")
+            },
+            subtitle = if (missing || loaded == null) "" else
                 "$titleCount " + (if (titleCount == 1) "title" else "titles") + " · " +
                     "$catalogCount " + (if (catalogCount == 1) "catalog" else "catalogs"),
             onBack = { nav.popBackStack() },
@@ -5015,6 +5065,10 @@ fun CollectionGridScreen(nav: NavHostController, collectionId: String) {
                 }
             },
         )
+        // A missing collection gets the header and nothing else, exactly as
+        // [CollectionViewScreen] answers the same question: the "no content"
+        // empty state blames the catalogs, and there are no catalogs here.
+        if (missing) return@Column
         if (loaded == null) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()

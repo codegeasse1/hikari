@@ -57,11 +57,27 @@ object PlayerSkins {
      */
     val ALL = listOf(DEFAULT, MINIMAL, CINEMA, NEON)
 
-    /** What an unset/unknown value resolves to — Hikari's own look. */
-    const val FALLBACK = DEFAULT
+    /**
+     * What an install that has never chosen a skin gets: Minimal.
+     *
+     * Hikari still ships Default, and it is still what the picker lists first —
+     * but a fresh install (and any stored value that is not one of [ALL]) now
+     * wears Minimal: no bar backgrounds, no glow, nothing over the picture
+     * except the controls themselves. That is the look a first run should have
+     * on a phone and on a television alike, and it is the cheapest to draw.
+     *
+     * An explicit choice ALWAYS wins: a stored `minimal`/`cinema`/`neon`/
+     * `default` is returned as-is, and the pre-picker key [GLASS] still
+     * resolves to [DEFAULT] so the people who chose it in the older build keep
+     * the look they picked rather than being moved to Minimal behind their back.
+     */
+    const val FALLBACK = MINIMAL
 
-    fun normalize(key: String?): String =
-        if (key != null && ALL.contains(key)) key else FALLBACK
+    fun normalize(key: String?): String = when {
+        key == GLASS -> DEFAULT
+        key != null && ALL.contains(key) -> key
+        else -> FALLBACK
+    }
 
     /** True when this skin's dialogs are the FLAT slab rather than the curved
      *  pane (see [CurvedGlassPanel.applySkin]). Default is the curve; the three

@@ -656,6 +656,36 @@ class HikariApp : Application() {
                     store.markReposSeeded()
                 }
             }
+            // First run only: install the one Stremio addon that needs nothing
+            // configured — SubDL's subtitle addon — so the player's "Load from
+            // internet" has somewhere to look on an install the user has not set
+            // anything up on yet. Guarded by its own one-way flag (a user who
+            // removes it keeps it removed), and skipped entirely when the addon
+            // is already installed under ANY spelling: the id is derived from
+            // the addon's base URL, so "https://api3.subdl.com",
+            // "…/manifest.json" and "…/" are one row (see
+            // StremioAddon.providerIdFor).
+            runCatching {
+                if (!store.stremioAddonSeeded()) {
+                    val url = com.hikari.app.providers.StremioAddon.DEFAULT_ADDON_URL
+                    val id = com.hikari.app.providers.StremioAddon.providerIdFor(url)
+                    val present = store.providers().any { p ->
+                        p.type == com.hikari.app.data.ProviderType.STREMIO &&
+                            com.hikari.app.providers.StremioAddon.providerIdFor(p.url) == id
+                    }
+                    if (!present) {
+                        store.addProvider(
+                            com.hikari.app.data.ProviderConfig(
+                                id = id,
+                                name = "SubDL",
+                                type = com.hikari.app.data.ProviderType.STREMIO,
+                                url = url,
+                            )
+                        )
+                    }
+                    store.markStremioAddonSeeded()
+                }
+            }
             // Collapse any duplicate repo entries an older build stored (the same
             // repository added twice — two branches or two URL spellings), so the
             // repo list shows one folder per repo from the first launch after the

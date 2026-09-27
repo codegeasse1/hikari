@@ -31,6 +31,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import com.hikari.app.ui.theme.pageBackground
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -311,7 +312,7 @@ fun AppLockGate(activity: android.app.Activity, content: @Composable () -> Unit)
         // blank card rather than the app. One frame, and the app's content is
         // never composed with the lock possibly on (see the note on
         // [enabledState]).
-        Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background))
+        Box(Modifier.fillMaxSize().background(pageBackground()))
         return
     }
     if (enabledState != true || unlocked) {
@@ -512,7 +513,10 @@ private fun AppLockScreen(
         }
     }
 
-    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+    // The lock screen has to hide the app, and the Dark Glass theme's
+    // `background` is TRANSPARENT (see [pageBackground]) — so this painted
+    // nothing there and the locked content stayed readable behind it.
+    Surface(Modifier.fillMaxSize(), color = pageBackground()) {
         Column(
             Modifier
                 .fillMaxSize()
@@ -729,7 +733,7 @@ private const val MAX_PIN = 16
 @Composable
 private fun BrokenLockScreen(onTurnOff: () -> Unit) {
     var ask by remember { mutableStateOf(false) }
-    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+    Surface(Modifier.fillMaxSize(), color = pageBackground()) {
         Column(
             Modifier
                 .fillMaxSize()

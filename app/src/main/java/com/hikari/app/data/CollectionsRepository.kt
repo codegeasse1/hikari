@@ -62,17 +62,20 @@ class CollectionsRepository(private val manager: ProviderManager) {
             val placed = HashMap<Int, CatalogRow>()
             val work = com.hikari.app.work.BackgroundWork.begin("Loading " + folder.name)
             try {
-                sources.forEachIndexed { i, source ->
-                    launch {
-                        val row = withContext(Dispatchers.IO) {
-                            gate.withPermit { runCatching { sourceRow(collection, folder, source) }.getOrNull() }
+                coroutineScope {
+                    sources.forEachIndexed { i, source ->
+                        launch {
+                            val row = withContext(Dispatchers.IO) {
+                                gate.withPermit { runCatching { sourceRow(collection, folder, source) }.getOrNull() }
+                            }
+                            synchronized(placed) {
+                                if (row != null && row.items.isNotEmpty()) placed[i] = row
+                            }
+                            publish(this@flow, placed, sources.size)
                         }
-                        synchronized(placed) {
-                            if (row != null && row.items.isNotEmpty()) placed[i] = row
-                        }
-                        publish(this@flow, placed, sources.size)
                     }
                 }
+                publish(this@flow, placed, sources.size, force = true)
             } finally {
                 com.hikari.app.work.BackgroundWork.end(work)
             }
@@ -87,17 +90,20 @@ class CollectionsRepository(private val manager: ProviderManager) {
         val placed = HashMap<Int, CatalogRow>()
         val work = com.hikari.app.work.BackgroundWork.begin("Loading " + collection.name)
         try {
-            collection.folders.forEachIndexed { i, folder ->
-                launch {
-                    val row = withContext(Dispatchers.IO) {
-                        runCatching { folderRow(collection, folder) }.getOrNull()
+            coroutineScope {
+                collection.folders.forEachIndexed { i, folder ->
+                    launch {
+                        val row = withContext(Dispatchers.IO) {
+                            runCatching { folderRow(collection, folder) }.getOrNull()
+                        }
+                        synchronized(placed) {
+                            if (row != null && row.items.isNotEmpty()) placed[i] = row
+                        }
+                        publish(this@flow, placed, collection.folders.size)
                     }
-                    synchronized(placed) {
-                        if (row != null && row.items.isNotEmpty()) placed[i] = row
-                    }
-                    publish(this@flow, placed, collection.folders.size)
                 }
             }
+            publish(this@flow, placed, collection.folders.size, force = true)
         } finally {
             com.hikari.app.work.BackgroundWork.end(work)
         }
@@ -150,32 +156,44 @@ class CollectionsRepository(private val manager: ProviderManager) {
         val placed = HashMap<Int, CatalogRow>()
         val work = com.hikari.app.work.BackgroundWork.begin("Loading " + collection.name)
         try {
-            slots.forEachIndexed { i, (folder, source) ->
-                launch {
-                    val loaded = withContext(Dispatchers.IO) {
-                        gate.withPermit { runCatching { sourceRow(collection, folder, source) }.getOrNull() }
+            coroutineScope {
+                slots.forEachIndexed { i, (folder, source) ->
+                    launch {
+                        val loaded = withContext(Dispatchers.IO) {
+                            gate.withPermit { runCatching { sourceRow(collection, folder, source) }.getOrNull() }
+                        }
+                        val row = loaded?.takeIf { it.items.isNotEmpty() }?.let { r ->
+                            if (collection.folders.size > 1) r.copy(title = folder.name + " · " + r.title) else r
+                        }
+                        synchronized(placed) { if (row != null) placed[i] = row }
+                        publish(this@flow, placed, slots.size)
                     }
-                    val row = loaded?.takeIf { it.items.isNotEmpty() }?.let { r ->
-                        if (collection.folders.size > 1) r.copy(title = folder.name + " · " + r.title) else r
-                    }
-                    synchronized(placed) { if (row != null) placed[i] = row }
-                    publish(this@flow, placed, slots.size)
                 }
             }
+            publish(this@flow, placed, slots.size, force = true)
         } finally {
             com.hikari.app.work.BackgroundWork.end(work)
         }
     }
 
     /** Publish what has arrived so far, in slot order, so late rows slot in
-     *  where they belong instead of jumping to the end of the list. */
+     *  where they belong instead of jumping to the end of the list.
+     *
+     *  [force] publishes even an EMPTY list. The three flows above end with a
+     *  forced publish once every slot has answered, because a flow that never
+     *  emits at all is invisible progress: the screen's "loading" state is a
+     *  null list, so a collection whose catalogs all answered nothing used to
+     *  wait for ever rather than say so. Intermediate publishes stay
+     *  non-forced — an early empty list would read as "loaded and empty" while
+     *  the first source is still working. */
     private suspend fun publish(
         scope: ProducerScope<List<CatalogRow>>,
         placed: Map<Int, CatalogRow>,
         size: Int,
+        force: Boolean = false,
     ) {
         val ordered = synchronized(placed) { (0 until size).mapNotNull { placed[it] } }
-        if (ordered.isNotEmpty()) scope.send(ordered)
+        if (ordered.isNotEmpty() || force) scope.send(ordered)
     }
 
     private suspend fun sourceRow(

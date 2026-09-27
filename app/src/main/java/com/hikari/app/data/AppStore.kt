@@ -153,6 +153,11 @@ class AppStore(private val ctx: Context) {
         val TRANSLATE_PROVIDERS = stringPreferencesKey("translateProviders")
         val TRANSLATE_CACHE = stringPreferencesKey("translateCache")
         val SEEDED_REPOS = booleanPreferencesKey("seededRepos")
+        /** True once the bundled default Stremio addon (SubDL's subtitle addon —
+         *  see [com.hikari.app.providers.StremioAddon.DEFAULT_ADDON_URL]) has
+         *  been installed. One-way, for the same reason as [SEEDED_REPOS]: a
+         *  user who removes it keeps it removed. */
+        val STREMIO_SEEDED = booleanPreferencesKey("stremioAddonSeeded")
         /** True once the providers earlier builds pre-installed (the Nuvio
          *  "starter" scrapers) have been removed from an install that already
          *  seeded them. See [com.hikari.app.nuvio.NuvioPluginManager]. */
@@ -206,10 +211,13 @@ class AppStore(private val ctx: Context) {
          */
         val STATS_TAB = booleanPreferencesKey("showStatsTab")
         /**
-         * Whether the Telegram tab's button is drawn in the taskbar. Off by
-         * default like IPTV/Stats: the tab is for the user who keeps their
-         * videos in Telegram channels, and an install that has none should not
-         * carry a button for it (Settings → Taskbar buttons switches it on).
+         * Whether the Telegram tab's button is drawn in the taskbar. ON by
+         * default (like Manga's, unlike IPTV/Stats'): the tab is the user's own
+         * video library, so a fresh install gets a button for it — and it is a
+         * preference of its own rather than an entry in [HIDDEN_TABS] so that a
+         * user who switches it OFF has that `false` recorded here and keeps it
+         * (an entry in the hidden list can only ever be written by the user, so
+         * a default-on tab could not be expressed there).
          */
         val TELEGRAM_TAB = booleanPreferencesKey("showTelegramTab")
         /** The Telegram channels the Telegram tab browses, as JSON. */
@@ -945,8 +953,9 @@ class AppStore(private val ctx: Context) {
      *  screens can be sized apart. See [DEFAULT_DETAIL_LOGO_SIZE] for the scale. */
     const val DEFAULT_LOADING_LOGO_SIZE = 100
 
-        /** The player's control shell ([PlayerSkins]). */
-        const val DEFAULT_PLAYER_SKIN = com.hikari.app.player.PlayerSkins.NEON
+        /** The player's control shell ([PlayerSkins]). Minimal — see
+         *  [com.hikari.app.player.PlayerSkins.FALLBACK] for why. */
+        const val DEFAULT_PLAYER_SKIN = com.hikari.app.player.PlayerSkins.MINIMAL
 
         /** The look of the "finding your server" card ([LoadingStyles]). Poster
          *  card: the title's own poster on a glass card, so the first thing a
@@ -1937,12 +1946,19 @@ class AppStore(private val ctx: Context) {
         write("STATS_TAB") { it[K.STATS_TAB] = shown }
     }
 
-    // ---- The Telegram tab (off by default; Settings → Taskbar buttons) ----
+    // ---- The Telegram tab (ON by default; Settings → Taskbar buttons) ----
 
-    /** True when the Telegram button has been switched on in the taskbar
-     *  settings (see [setTelegramTab]). */
+    /**
+     * True when the Telegram button is drawn in the taskbar — on by default,
+     * like Manga's and unlike IPTV/Stats: the tab is a viewer's own video
+     * library (channels to browse, links to play, a player for both), which is
+     * the same kind of thing the other tabs offer, and a fresh install should
+     * not have to find a switch to reach it. A switch in Settings → Taskbar
+     * buttons turns it off, and because [K.TELEGRAM_TAB] is its own key an
+     * install that has deliberately turned it off still reads `false` here.
+     */
     fun telegramTabFlow(): Flow<Boolean> =
-        store.data.map { it[K.TELEGRAM_TAB] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
+        store.data.map { it[K.TELEGRAM_TAB] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun telegramTab(): Boolean = telegramTabFlow().first()
 
@@ -3351,6 +3367,16 @@ class AppStore(private val ctx: Context) {
 
     suspend fun markReposSeeded() {
         write("SEEDED_REPOS") { it[K.SEEDED_REPOS] = true }
+    }
+
+    /** True once the bundled default Stremio addon has been installed (see
+     *  [com.hikari.app.providers.StremioAddon.DEFAULT_ADDON_URL]). One-way, like
+     *  [seededRepos]: a user who removes the addon keeps it removed. */
+    suspend fun stremioAddonSeeded(): Boolean =
+        store.data.map { it[K.STREMIO_SEEDED] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default).first()
+
+    suspend fun markStremioAddonSeeded() {
+        write("STREMIO_SEEDED") { it[K.STREMIO_SEEDED] = true }
     }
 
     /** True once the providers earlier builds bundled as pre-installed scrapers

@@ -39,6 +39,15 @@ when the screen turns off keeps playing (background audio is a real use of the
 player), and the system's own lock screen stands between the phone and the player
 anyway. The gate covers the app's browser/library/settings screens.
 
+Every full-screen cover the gate draws — the one-frame blank card before the
+stored state arrives, the unlock `Surface`, and `BrokenLockScreen` — paints
+`pageBackground()` rather than `MaterialTheme.colorScheme.background` (0.10.56).
+The Dark Glass theme's `background` is TRANSPARENT by design (its page colour is
+a gradient drawn behind the whole app), so the lock screen painted nothing and
+the locked content was readable straight through it. `pageBackground()` is the
+scheme's own background when it has one, and the solid page colour when it does
+not.
+
 ## How a lock trigger is detected
 
 One `ProcessLifecycleOwner` observer, plus (since 0.10.39) a `BroadcastReceiver`

@@ -110,7 +110,32 @@ sources. They are edited in the source sheet's **Advanced filters** section
    `CollectionFoldersPage` (the folder tile grid).
 
 `Routes.collectionGrid(id)` is "Show all": every folder's every catalog as one
-flat grid (`CollectionsRepository.allRows`).
+flat grid. It is drawn by `CollectionGridScreen`, whose row source is, in order
+(0.10.56):
+
+1. `CollectionsRepository.allRows(id)` — the every-catalog flat pass. It now
+   ends with a FORCED publish once every source has answered, so a collection
+   whose catalogs all answer nothing emits an empty list and reaches a real
+   screen state instead of waiting on the spinner for ever.
+2. `CollectionsRepository.pickRows(id)` — exactly what HOME shows for this
+   collection (one folder ⇒ that folder's catalogs, several ⇒ one shelf per
+   folder). An extension row's "Show all" **inside a personal catalog** lands on
+   this page, so Home and this page disagreeing about whether there is anything
+   to show was the report: the page now says what Home says before it says
+   "nothing".
+3. Neither pass found anything ⇒ hand over to `CollectionFoldersPage` (the
+   collection's folder tiles), which is the way in to its catalogs; a
+   folder-less collection gets that page's own empty state.
+
+An id that names no collection shows the header `Collection not found` and
+nothing else — not "0 titles · 0 catalogs" above a sentence blaming extensions.
+
+The Home side of the same report: an extension row's home-screen "Show all" is
+about the CATALOG the row belongs to, but the handler routed to a collection's
+grid whenever the row's key carried a `coll|<id>|…` prefix — which a plain
+extension row inside a personal catalog does. It now routes to the collection
+grid only when the collection really is the row's owner, and to the row's own
+catalog grid otherwise.
 
 ### The folder tile's surface
 

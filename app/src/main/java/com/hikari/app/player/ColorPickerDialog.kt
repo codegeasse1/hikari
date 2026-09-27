@@ -12,15 +12,21 @@ import android.graphics.RectF
 import android.graphics.Shader
 import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
+import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.InsetDrawable
+import android.graphics.drawable.StateListDrawable
 import android.view.Gravity
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import com.hikari.app.i18n.I18n
+import com.hikari.app.tv.TvMode
 
 /**
  * A full HSV colour picker drawn on a glass panel, for the subtitle style
@@ -38,6 +44,17 @@ import com.hikari.app.i18n.I18n
  * The panel matches the player's other dialogs (dark glass, accent stroke);
  * it is deliberately self-contained — the player's glass helpers are private
  * to [PlayerActivity], so the pieces this needs are local to this file.
+ *
+ * EVERY CHANGE IS APPLIED AS IT IS MADE. This picker holds no draft: a drag on
+ * the square, a new hue, a preset tap all publish their colour to the caller
+ * immediately, so the real captions on the video turn green as the finger moves
+ * — the same contract the caption panel itself keeps. The ✕ and Apply simply
+ * put the picker away (the colour is already applied), and Cancel hands back
+ * the colour the picker was opened with. An earlier version kept the pick in a
+ * local draft and only applied it on an Apply button, so choosing a colour and
+ * closing with the ✕ discarded it — which is the "I move it to green but when I
+ * click the cross it stays white" report, true of the text, the edge and the
+ * background colour alike.
  */
 class ColorPickerDialog(
     private val host: Activity,
@@ -119,10 +136,39 @@ class ColorPickerDialog(
             setPadding(0, dp(6f), 0, 0)
         }
 
+        /** The last colour handed to [onPick], so a drag does not republish a
+         *  value the caller already holds. */
+        var published = initial
+        /** Whether the user has changed anything — what tells Cancel's "put it
+         *  back" apart from "this was opened and closed again". */
+        var touched = false
+
+        /**
+         * Repaints the picker's own preview and read-out, AND publishes the
+         * colour to the caller.
+         *
+         * Every change is published the moment it is made — the same contract
+         * the caption panel itself keeps ("every change is applied to the
+         * player's SubtitleView the moment it is made, so the captions on the
+         * video ARE the preview"). Drag the square to green and the real
+         * subtitles turn green as the finger moves.
+         *
+         * That is also what makes the ✕ honest. This picker used to hold the
+         * colour in a local draft and hand it over only when the user found the
+         * Apply button, so choosing green and closing with the ✕ — the obvious
+         * "I'm done", and on a remote the only way out at all — threw the colour
+         * away and the swatch behind still read white. Reported exactly that way
+         * for the text, the edge and the background colour alike.
+         */
         fun publish() {
             val c = current()
             preview.previewColor = c
             readout.text = hexOf(c)
+            if (c != published) {
+                published = c
+                touched = true
+                onPick(c)
+            }
         }
 
         // ---- colour controls ------------------------------------------------
@@ -211,14 +257,20 @@ class ColorPickerDialog(
         ))
 
         // ---- actions --------------------------------------------------------
+        // The colour is ALREADY applied (see [publish]): the ✕ and Apply just
+        // put the picker away, and Cancel is a real undo — it hands back the
+        // colour the picker was opened with. A Cancel that dismissed without
+        // restoring would leave the video wearing a colour the user just told
+        // the app to forget, which is the one thing a live picker must not do.
         panel.addView(LinearLayout(host).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(0, dp(10f), 0, 0)
-            addView(button(I18n.t("Cancel"), filled = false) { dialog.dismiss() },
-                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            addView(button(I18n.t("Cancel"), filled = false) {
+                if (touched) onPick(initial)
+                dialog.dismiss()
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             addView(button(I18n.t("Apply"), filled = true) {
-                onPick(current())
                 dialog.dismiss()
             }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
                 marginStart = dp(8f)
@@ -229,17 +281,105 @@ class ColorPickerDialog(
 
         publish()
 
-        dialog.setContentView(panel)
+        // The picker is a TALL dialog — a preview, the saturation/value square,
+        // two strips, the preset chips and two buttons come to roughly 390dp —
+        // and the landscape player's window is only ~393dp tall (a 1080p phone
+        // in landscape). On a window marginally shorter than that, the dialog's
+        // bottom (the buttons) sat past the screen edge with no way to reach it:
+        // nothing scrolled, and the window cannot be bigger than the screen. The
+        // panel is measured first and its window is capped against the window it
+        // is in, with a scroller around it, so every part of the picker is
+        // reachable however short the screen is.
+        val scroller = ScrollView(host).apply {
+            isVerticalScrollBarEnabled = true
+            isScrollbarFadingEnabled = false
+            overScrollMode = View.OVER_SCROLL_NEVER
+            addView(panel, ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ))
+        }
+        dialog.setContentView(scroller, ViewGroup.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
+        ))
+        val decor = host.window?.decorView
+        val winW = (decor?.width ?: 0).takeIf { it > 0 } ?: dp(400f)
+        val winH = (decor?.height ?: 0).takeIf { it > 0 } ?: dp(720f)
+        val w = minOf((winW * 0.86f).toInt(), dp(360f))
+        panel.measure(
+            View.MeasureSpec.makeMeasureSpec((w - dp(28f)).coerceAtLeast(dp(120f)), View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
+        )
+        val h = panel.measuredHeight.coerceAtMost(winH - dp(24f))
         dialog.window?.apply {
             setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-            val win = host.window?.decorView
-            val maxW = ((win?.width ?: 0).takeIf { it > 0 } ?: dp(400f))
-            val w = minOf((maxW * 0.86f).toInt(), dp(360f))
-            setLayout(w, ViewGroup.LayoutParams.WRAP_CONTENT)
+            setLayout(w, h)
             setGravity(Gravity.CENTER)
             setDimAmount(0.55f)
         }
-        dialog.show()
+        if (runCatching { dialog.show() }.isFailure) return
+        if (TvMode.isTv) {
+            makeTvReachable(panel)
+            findFirstFocusable(panel)?.requestFocus()
+        }
+    }
+
+    /**
+     * Makes every clickable-but-not-focusable view under [root] reachable with a
+     * D-pad, and gives each of them a focus ring.
+     *
+     * The same treatment the player's own panels get (see
+     * `PlayerActivity.View.tvFocusableTree`): `setOnClickListener` makes a view
+     * clickable and leaves it unfocusable, and a D-pad can only land on a
+     * focusable view — so without this the picker's preset chips, its ✕ and its
+     * two buttons could not be reached by a remote at all. The three custom
+     * surfaces (the square, the hue strip, the alpha strip) are not clickable —
+     * a tap on them is a drag — so they are focused explicitly instead.
+     */
+    private fun makeTvReachable(root: View) {
+        val custom = root is SvSquare || root is HueStrip || root is AlphaStrip
+        if ((custom || root.isClickable) && !root.isFocusable && root.visibility == View.VISIBLE) {
+            root.isFocusable = true
+            root.isFocusableInTouchMode = true
+            if (root.foreground == null) root.foreground = focusRing()
+        }
+        if (root is ViewGroup) {
+            for (i in 0 until root.childCount) makeTvReachable(root.getChildAt(i))
+        }
+    }
+
+    /** The ring a focused control wears on a television, as a focus-state-only
+     *  foreground (see [makeTvReachable]). */
+    private fun focusRing(): Drawable {
+        val ring = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = dp(9f).toFloat()
+            setColor(Color.TRANSPARENT)
+            setStroke(dp(2f).coerceAtLeast(1), accent)
+        }
+        // Inset by the stroke's own outer half so all of it lands inside the
+        // control: an un-inset stroke is centred on the edge and its outer half
+        // is painted away by whatever clips the view.
+        return StateListDrawable().apply {
+            addState(
+                intArrayOf(android.R.attr.state_focused),
+                InsetDrawable(ring, dp(1f).coerceAtLeast(1)),
+            )
+            addState(intArrayOf(), ColorDrawable(Color.TRANSPARENT))
+        }
+    }
+
+    /** The first control a D-pad would land on inside [root], so a picker that
+     *  opens on a television is already usable (and already shows where the
+     *  cursor is) before the first key press. */
+    private fun findFirstFocusable(root: View?): View? {
+        if (root == null) return null
+        if (root.isShown && root.visibility == View.VISIBLE && root.isFocusable) return root
+        if (root is ViewGroup) {
+            for (i in 0 until root.childCount) {
+                findFirstFocusable(root.getChildAt(i))?.let { return it }
+            }
+        }
+        return null
     }
 
     /** "#RRGGBB" / "#AARRGGBB" — the picker's honest readout of what was picked. */
@@ -416,6 +556,28 @@ private class SvSquare(context: android.content.Context) : View(context) {
         super.performClick()
         return true
     }
+
+    /**
+     * The D-pad drives the cursor too: left/right move saturation, up/down move
+     * value. Without this the picker's two custom surfaces were touch-only, so
+     * on a television the only colour a remote could reach was one of the preset
+     * chips — the square, the hue strip and the alpha strip were unreachable
+     * (and invisible, since nothing drew a focus).
+     */
+    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+        val step = 0.04f
+        when (keyCode) {
+            KeyEvent.KEYCODE_DPAD_LEFT -> sat = (sat - step).coerceIn(0f, 1f)
+            KeyEvent.KEYCODE_DPAD_RIGHT -> sat = (sat + step).coerceIn(0f, 1f)
+            KeyEvent.KEYCODE_DPAD_UP -> value = (value + step).coerceIn(0f, 1f)
+            KeyEvent.KEYCODE_DPAD_DOWN -> value = (value - step).coerceIn(0f, 1f)
+            else -> return super.onKeyDown(keyCode, event)
+        }
+        invalidate()
+        onChange?.invoke(sat, value)
+        onChanged?.invoke()
+        return true
+    }
 }
 
 /** The hue strip. */
@@ -477,6 +639,18 @@ private class HueStrip(context: android.content.Context) : View(context) {
 
     override fun performClick(): Boolean {
         super.performClick()
+        return true
+    }
+
+    /** The D-pad walks the hue (see [SvSquare.onKeyDown]). */
+    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+        when (keyCode) {
+            KeyEvent.KEYCODE_DPAD_LEFT -> markerHue = (markerHue - 3f + 360f) % 360f
+            KeyEvent.KEYCODE_DPAD_RIGHT -> markerHue = (markerHue + 3f) % 360f
+            else -> return super.onKeyDown(keyCode, event)
+        }
+        onChange?.invoke(markerHue)
+        onChanged?.invoke()
         return true
     }
 }
@@ -545,6 +719,18 @@ private class AlphaStrip(context: android.content.Context) : View(context) {
 
     override fun performClick(): Boolean {
         super.performClick()
+        return true
+    }
+
+    /** The D-pad walks the transparency (see [SvSquare.onKeyDown]). */
+    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+        when (keyCode) {
+            KeyEvent.KEYCODE_DPAD_LEFT -> markerAlpha = (markerAlpha - 8).coerceIn(0, 255)
+            KeyEvent.KEYCODE_DPAD_RIGHT -> markerAlpha = (markerAlpha + 8).coerceIn(0, 255)
+            else -> return super.onKeyDown(keyCode, event)
+        }
+        invalidate()
+        onChange?.invoke(markerAlpha)
         return true
     }
 }

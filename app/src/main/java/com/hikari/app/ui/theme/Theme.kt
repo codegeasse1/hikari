@@ -108,6 +108,28 @@ private fun amoledColors(accent: HikariAccent) = darkColorScheme(
     scrim = Color.Black,
 )
 
+/**
+ * The colour a full-screen surface has to paint when its job is to COVER what is
+ * behind it.
+ *
+ * [androidx.compose.material3.ColorScheme.background] is [GlassBackground] —
+ * `Color.Transparent` — in the Dark Glass theme: that theme's page colour is a
+ * gradient drawn behind the whole app (see `AppRoot`), so anything that paints
+ * the scheme's background paints nothing at all. A full-screen overlay therefore
+ * let the screen it was covering show straight through it — the Home search box
+ * carried the feed's hero banner and its "View Details" pill behind it, and the
+ * app-lock screen carried the app behind it (a lock screen you can read the
+ * locked content through is not a lock screen). Everything that has to hide
+ * what is underneath asks for this instead: the scheme's own background when it
+ * has one (dark, light and AMOLED all do), and the solid page colour when it
+ * does not.
+ */
+@Composable
+fun pageBackground(): Color {
+    val bg = MaterialTheme.colorScheme.background
+    return if (bg.alpha >= 0.99f) bg else HikariBg
+}
+
 @Composable
 fun HikariTheme(
     mode: HikariThemeMode = HikariThemeMode.DARK,

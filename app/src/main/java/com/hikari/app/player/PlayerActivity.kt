@@ -4362,7 +4362,7 @@ class PlayerActivity : ComponentActivity() {
                     setTextColor(0xFF9AA5B5.toInt())
                 }
             }
-        root.addView(LinearLayout(this).apply {
+        val headerRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             // Start the line in from the panel's own left edge (the halo is
@@ -4417,7 +4417,8 @@ class PlayerActivity : ComponentActivity() {
                     setOnClickListener { dialog.dismiss() }
                 }, LinearLayout.LayoutParams((24 * density).toInt(), (24 * density).toInt()))
             }
-        }, LinearLayout.LayoutParams(
+        }
+        root.addView(headerRow, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
         ))
 
@@ -4485,8 +4486,13 @@ class PlayerActivity : ComponentActivity() {
         // screen is exactly the "too small" the user reported. A fill panel is
         // as wide as it asked to be, still short of the window so its rounded
         // sides stay visible.
-        val panelW = (if (fillFractionX > 0f) {
-            (win.x * fillFractionX).toInt()
+        /**
+         * The panel's own silhouette width for the window [w] — a function, not
+         * a value, because a panel can outlive the window it was measured in
+         * (see [refitToWindow] below).
+         */
+        fun panelWidthFor(w: Point): Int = (if (fillFractionX > 0f) {
+            (w.x * fillFractionX).toInt()
         } else {
             minOf(
                 // Wider than it used to be, for both the pane and the flat slabs:
@@ -4500,50 +4506,58 @@ class PlayerActivity : ComponentActivity() {
                 // fit on one row, and the panel is the only place that width can
                 // come from. Still short of the window so the panel keeps floating
                 // with both its rounded sides visible.
-                (win.x * if (flatPanel) 0.97f else 0.95f).toInt(),
+                (w.x * if (flatPanel) 0.97f else 0.95f).toInt(),
                 // The height axis is only a "do not become a wall" guard, and in
                 // the LANDSCAPE player it is the binding one (the window is three
                 // times wider than it is tall), which is what kept the engine chips
                 // — five of them — wider than the panel on a phone. Raised so the
                 // chips and the longer server names fit on one line.
-                (win.y * if (flatPanel) 0.97f else 0.93f).toInt(),
+                (w.y * if (flatPanel) 0.97f else 0.93f).toInt(),
                 (560 * density).toInt(),
             )
-        }).coerceAtMost(win.x - 2 * halo - (8 * density).toInt())
+        }).coerceAtMost(w.x - 2 * halo - (8 * density).toInt())
             .coerceAtLeast((140 * density).toInt())
-        // The panel must FLOAT on the video with all four rounded corners (and
-        // the light sweeping around them) visible: it is capped against the hint
-        // line plus the halo's own room above it, and against a fraction of the
-        // window, so it never runs off the top/bottom edge — which used to clip
-        // its bottom curve and hide the last rows. Anything longer scrolls.
-        val chrome = (96 * density).toInt()
-        val fitsScreen = (win.y - chrome).coerceAtLeast((110 * density).toInt())
-        // Taller too: a server list scrolled four rows at a time is the other
-        // half of "there isn't room" — the panel's own rounded bottom stays on
-        // screen, and anything longer still scrolls.
-        val maxFraction = (win.y * if (flatPanel) 0.76f else 0.66f).toInt()
+        val panelW = panelWidthFor(win)
+
+        /** The height of the hint line for a window of [width] px, measured (see
+         *  [roomFor] for why it is measured rather than guessed). */
+        fun headerHeightFor(width: Int): Int {
+            if (root.childCount == 0) return 0
+            val spec = View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY)
+            headerRow.measure(spec, View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED))
+            return headerRow.measuredHeight
+        }
+
+        /**
+         * The height the window actually leaves for the panel's silhouette.
+         *
+         * This is what keeps a panel on screen — and it has to be the ROOM the
+         * window has, not a fraction of it. It used to be a fraction: 0.66 of the
+         * window for the curved pane, 0.76 for a flat one. In the LANDSCAPE
+         * player the window is only ~393dp tall, so 0.66 of it is 259dp — and the
+         * subtitle settings sheet (five rows, and the panel's own padding around
+         * them) needs about 291dp. The panel was therefore cut off mid-row: the
+         * last row ("Position") was sliced by the panel's own bottom edge with the
+         * rest of the sheet below it, which is exactly the "the subtitle box shows
+         * only up to the cut part" report, and the one row that was half visible
+         * was the row the mark was drawn on. The room is now the window minus the
+         * hint line that shares the window with it, minus the halo the panel view
+         * carries around its silhouette, minus a small breathing margin — so a
+         * settings sheet of any sensible size fits whole, and only a genuinely
+         * long list (thirty subtitle tracks) has to scroll.
+         */
+        fun roomFor(winNow: Point, width: Int): Int =
+            (winNow.y - headerHeightFor(width + 2 * halo) - 2 * halo - (8 * density).toInt())
+                .coerceAtLeast((110 * density).toInt())
+
+        val room = roomFor(win, panelW)
         val minPanel = (110 * density).toInt()
         val panelH = if (fillFractionY > 0f) {
-            // A FILL panel is the requested fraction of the window, and the caps
-            // that apply to it are the ones that keep the whole thing on screen:
-            // the window's height minus the hint line's room (the hint is a
-            // sibling of the panel in the same WRAP_CONTENT window, so it is
-            // exactly as much of the window as the panel cannot have — four
-            // lines of 10sp text is what it can grow to, see the maxLines in
-            // the hint view) minus the halo the panel view carries around its
-            // silhouette. Deliberately NOT capped by [maxFraction]: that cap is
-            // 0.66 of the window, i.e. it would undo the requested size in the
-            // landscape player, which is the one place the complaint comes from.
-            val hintRoom = (44 * density).toInt()
-            val room = (win.y - hintRoom - 2 * halo).coerceAtLeast((40 * density).toInt())
-            (win.y * fillFractionY).toInt()
-                .coerceAtLeast(minPanel)
-                .coerceAtMost(room)
+            // A FILL panel is the requested fraction of the window, still capped
+            // by the room above so the whole thing stays on screen.
+            (win.y * fillFractionY).toInt().coerceIn(minPanel, room)
         } else {
-            (preferredHeightDp * density).toInt()
-                .coerceAtMost(fitsScreen)
-                .coerceAtMost(maxFraction)
-                .coerceAtLeast(minPanel)
+            (preferredHeightDp * density).toInt().coerceIn(minPanel, room)
         }
         // The panel view carries its own halo, so its silhouette comes out
         // exactly panelW x panelH in the middle of it.
@@ -4636,7 +4650,10 @@ class PlayerActivity : ComponentActivity() {
             // halo is added AROUND the silhouette, not inside it.
             val wanted = contentH + scroll.paddingTop + scroll.paddingBottom +
                 panel.paddingTop + panel.paddingBottom
-            val sil = wanted.coerceIn(minPanel, minOf(fitsScreen, maxFraction))
+            val sil = wanted.coerceIn(
+                minPanel,
+                roomFor(windowSize(), (panel.width - 2 * halo).coerceAtLeast(0)),
+            )
             if (sil == appliedSil) return
             appliedSil = sil
             panelLp.height = sil + 2 * halo
@@ -4647,6 +4664,36 @@ class PlayerActivity : ComponentActivity() {
         // again on every content layout change.
         scroll.post { fitToContent() }
         content.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> fitToContent() }
+
+        // A panel can OUTLIVE the window it was measured in. The player is not
+        // orientation-locked and handles its own rotation, and it is fullscreen,
+        // so the system bars come and go underneath it — and a dialog window
+        // keeps the layout it was given when it was shown. Every size above was
+        // then measured against a window that no longer exists, which is the
+        // panel that showed only as far as the old edge (its own bottom, or a
+        // row's pills) until the player was closed and opened again — the
+        // "sometimes, and reopening the player fixes it" report. Watching the
+        // window's own decor closes that hole: whenever it changes size, the
+        // panel is re-measured and re-sized for the window it is really in.
+        var lastWinW = win.x
+        var lastWinH = win.y
+        fun refitToWindow() {
+            val now = windowSize()
+            if (now.x == lastWinW && now.y == lastWinH) return
+            lastWinW = now.x
+            lastWinH = now.y
+            val w = panelWidthFor(now)
+            runCatching {
+                dialog.window?.setLayout(
+                    w + 2 * halo, WindowManager.LayoutParams.WRAP_CONTENT
+                )
+            }
+            appliedSil = -1
+            scroll.post { fitToContent() }
+        }
+        window?.decorView?.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+            refitToWindow()
+        }
         return hintView
     }
 
