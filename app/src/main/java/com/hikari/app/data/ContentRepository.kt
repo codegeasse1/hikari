@@ -3417,7 +3417,57 @@ class ContentRepository(private val manager: ProviderManager) {
                 } else {
                     emptyList()
                 }
-                val sweepTargets = (tail + reAsk).distinctBy { it.config.id }
+                // ---- The one case a scope switch must not STRAND a title ----
+                //
+                // With "search all installed extensions" off, no exception repos
+                // and the origin's engine family off, a title opened inside one
+                // repo is searched in THAT repo and nothing else. That is the
+                // switch's promise, and the right thing while the repo answers —
+                // but when it does not, the promise is the whole problem: the
+                // pass has exactly ONE target, that target is the one that never
+                // came back, and no other extension is ever asked, so no server
+                // can arrive at all. The user's own log is full of it: an anime
+                // opened from a `.hiki` repo, "primary=1 nuvio=0 cross=0 same=0
+                // late=0", "family(Hikari) switch is off — 180 sibling repo(s)
+                // … are not asked", the extension's own call never returning —
+                // and the detail page sitting on "Searching your extension for
+                // servers…" while every other repo of that engine sat idle.
+                //
+                // So a scoped pass that comes back with NOTHING, whose origin is
+                // the one that never answered, asks the origin's engine family
+                // after all — by title, exactly as it would have been asked with
+                // the family switch on. Deliberately narrow, so the switch still
+                // means something everywhere else: only when the pass has no
+                // other source at all (no cross targets, because that is what
+                // "only this extension" leaves), only when it found nothing, and
+                // never for a repo that really answered "no servers" — that IS an
+                // answer, and re-asking its family for it is not a failure. The
+                // line below says this happened, because a switch the user set
+                // being overridden has to be visible in the log.
+                val originRepo = origin
+                val soleTargetDead = originRepo != null && !scopeAll &&
+                    crossTargets.isEmpty() && passFound.isEmpty() &&
+                    providerOutcome[originRepo.config.id] != "no servers" &&
+                    !isHung(originRepo.config.id)
+                val familyFallback = when {
+                    originRepo == null -> emptyList()
+                    !soleTargetDead -> emptyList()
+                    else -> all.filter { p ->
+                        p.config.enabled && p.config.id != originRepo.config.id &&
+                            p.config.type == originRepo.config.type &&
+                            !isHung(p.config.id) && !isCfSkipped(p.config.id)
+                    }
+                }
+                if (familyFallback.isNotEmpty()) {
+                    com.hikari.app.data.Logs.log(
+                        "Search",
+                        "familyFallback \"" + item.title + "\": the extension this title " +
+                            "came from never answered and the scope left no other " +
+                            "target — asking ${familyFallback.size} sibling repo(s) of " +
+                            "its ${originRepo?.config?.type?.groupLabel} engine by title",
+                    )
+                }
+                val sweepTargets = (tail + reAsk + familyFallback).distinctBy { it.config.id }
                 // ---- NOTHING IS EVER DROPPED: the PRIMARY targets too ----
                 //
                 // Everything above is about the OTHER repos. The pass's primary

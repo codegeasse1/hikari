@@ -467,6 +467,33 @@ private class Swatch(
     }
 }
 
+/**
+ * Keeps a drag that STARTED on a picker surface with that surface for as long
+ * as the finger is down.
+ *
+ * The square and the two strips are not click targets — the drag IS the
+ * control: a finger on the square sets the saturation and value directly, and a
+ * finger on a strip slides its marker. They sit inside the dialog's own
+ * vertical [ScrollView] (the picker is ~390dp tall and a landscape player's
+ * window is shorter than that), and each strip additionally sits in a
+ * horizontal one. A scrolling ancestor takes a drag over as soon as it passes
+ * the touch slop, so a drag on the square scrolled the whole box and moved the
+ * colour only as far as the slop, and a drag along a strip scrolled the row
+ * instead of sliding the marker.
+ *
+ * `requestDisallowInterceptTouchEvent` walks UP the ancestor chain, so one call
+ * here freezes every scroller above the surface at once; it is given back when
+ * the gesture ends (a lifted finger, or a cancelled gesture — a scroller must
+ * not stay locked after that).
+ */
+private fun View.claimDragFor(event: MotionEvent) {
+    when (event.actionMasked) {
+        MotionEvent.ACTION_DOWN -> parent?.requestDisallowInterceptTouchEvent(true)
+        MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
+            parent?.requestDisallowInterceptTouchEvent(false)
+    }
+}
+
 /** The saturation (x) / value (y) square for the current hue. */
 private class SvSquare(context: android.content.Context) : View(context) {
     var onChange: ((Float, Float) -> Unit)? = null
@@ -539,6 +566,7 @@ private class SvSquare(context: android.content.Context) : View(context) {
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        claimDragFor(event)
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
                 sat = (event.x / width.coerceAtLeast(1)).coerceIn(0f, 1f)
@@ -625,6 +653,7 @@ private class HueStrip(context: android.content.Context) : View(context) {
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        claimDragFor(event)
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
                 val f = (event.x / width.coerceAtLeast(1)).coerceIn(0f, 1f)
@@ -705,6 +734,7 @@ private class AlphaStrip(context: android.content.Context) : View(context) {
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        claimDragFor(event)
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
                 val f = (event.x / width.coerceAtLeast(1)).coerceIn(0f, 1f)

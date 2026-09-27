@@ -602,6 +602,25 @@ others."*
   installed, the pass logs `family(<Engine>) switch is off — N sibling repo(s) of
   the origin's engine are not asked for this title`, so "my other CloudStream repo
   never showed servers" is answerable from the log.
+- **The one case the family switch must not strand a title (0.10.57).** The
+  switch's promise — "only the extension the title was opened from" — has an
+  unavoidable failure mode: that extension may simply not answer. With the scope
+  switch off too, the pass then has exactly ONE target, that target is the one
+  that never came back, and nothing else is ever asked, so no server can arrive
+  at all (the reported anime sitting on "Searching your extension for servers…"
+  while 180 sibling repos of the same engine sat idle — the log line above, and
+  `primary=1 nuvio=0 cross=0 same=0 late=0`, name the mechanism exactly). So the
+  pass's teardown, which is where every unfinished repo is already handed to the
+  background sweep, adds the origin's engine family to that sweep in this case
+  only: `crossTargets.isEmpty()`, `passFound.isEmpty()`, `!scopeAll`,
+  `providerOutcome[origin] != "no servers"` (a real "no servers" IS an answer) and
+  the origin is not `isHung`. It logs
+  `familyFallback "<title>": the extension this title came from never answered
+  and the scope left no other target — asking N sibling repo(s) of its <Engine>
+  engine by title`, because a switch the user set being overridden has to be
+  visible. Everything else about the switch is unchanged: a healthy origin, or
+  one that answered "no servers", is asked exactly as before and its family is
+  left alone.
 
 ### 18. The cover describes the PLAYBACK once a server is committed — and nothing in front of it may hold the first picture
 

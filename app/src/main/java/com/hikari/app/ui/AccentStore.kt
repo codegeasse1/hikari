@@ -30,7 +30,7 @@ object AccentStore {
     @Volatile private var appKey = HikariAccent.DEFAULT_APP.key
     @Volatile private var playerKey = HikariAccent.DEFAULT_PLAYER.key
     @Volatile private var linked = false
-    @Volatile private var themeKey = "dark"
+    @Volatile private var themeKey = com.hikari.app.data.AppStore.DEFAULT_THEME
 
     /** Persist + cache the current preferences. Called from the store setters
      *  and from MainActivity whenever the DataStore flows emit, so the mirror
@@ -60,7 +60,8 @@ object AccentStore {
             appKey = p.getString(KEY_APP, null) ?: HikariAccent.DEFAULT_APP.key
             playerKey = p.getString(KEY_PLAYER, null) ?: HikariAccent.DEFAULT_PLAYER.key
             linked = p.getBoolean(KEY_LINKED, false)
-            themeKey = p.getString(KEY_THEME, null) ?: "dark"
+            themeKey = p.getString(KEY_THEME, null)
+                ?: com.hikari.app.data.AppStore.DEFAULT_THEME
         }
         loaded = true
     }

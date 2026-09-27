@@ -21,8 +21,32 @@ enum class HikariThemeMode(val key: String, val label: String) {
     LIGHT("light", "Hikari Light");
 
     companion object {
+        /**
+         * The key of the theme a fresh install opens in: AMOLED Black, not the
+         * near-black Hikari Dark. Every device Hikari runs on is a phone, a
+         * tablet or a television, and on an OLED panel the difference between
+         * #0A0A0F and #000000 is the difference between a screen lit edge to
+         * edge and one that is off everywhere but the content. The theme paints
+         * nothing behind the UI at all (see `AppRoot`), so choosing it costs
+         * nothing and darkens everything.
+         *
+         * Written down ONCE, here: [DEFAULT] decodes it,
+         * [com.hikari.app.data.AppStore.DEFAULT_THEME] is a const alias of it,
+         * and the player-side synchronous mirror
+         * ([com.hikari.app.ui.AccentStore]) reads that — so the stored value,
+         * the Compose first frame (which reads the mirror before DataStore has
+         * emitted anything) and the settings sheet cannot disagree.
+         *
+         * A saved choice always wins; this is only the answer for an absent
+         * one.
+         */
+        const val DEFAULT_KEY = "amoled"
+
+        /** [DEFAULT_KEY] as the enum value. */
+        val DEFAULT: HikariThemeMode = entries.first { it.key == DEFAULT_KEY }
+
         fun fromKey(key: String?): HikariThemeMode =
-            entries.firstOrNull { it.key == key } ?: DARK
+            entries.firstOrNull { it.key == key } ?: DEFAULT
     }
 }
 
@@ -132,7 +156,7 @@ fun pageBackground(): Color {
 
 @Composable
 fun HikariTheme(
-    mode: HikariThemeMode = HikariThemeMode.DARK,
+    mode: HikariThemeMode = HikariThemeMode.DEFAULT,
     accent: HikariAccent = HikariAccent.DEFAULT_APP,
     uiScaleEnabled: Boolean = false,
     uiScale: Float = 1f,

@@ -32,7 +32,22 @@
 > 4. `fitToContent()` then measures the content at the panel's inner width and
 >    shrinks the panel onto it (between `minPanel` and the same `roomFor(...)`
 >    room), so a sheet with two rows is two rows tall rather than a wall of
->    glass.
+>    glass. The height it asks for is the content plus the gap the rows keep
+>    INSIDE the silhouette — `contentH + (panel.paddingTop − halo) +
+>    (panel.paddingBottom − halo)` — and the `− halo` matters: the panel's
+>    padding is measured from the VIEW's edge and already contains the halo it
+>    carries around its silhouette, so counting it whole (up to 0.10.56) gave
+>    every panel a band of 2×halo of empty glass below its last row — 20dp flat,
+>    52dp on the pane — and made a sheet that did not fit the window spend that
+>    52dp of the room before the clamp. Which is how the subtitle SETTINGS sheet
+>    (five label+controls rows, ~325dp with its gaps, against ~324dp of room on a
+>    1080p phone in landscape) opened with its last row's pill sliced off
+>    (0.10.57). That sheet's own rows are also tighter now (4dp of row padding, a
+>    4dp label-to-control gap, 4dp between rows, no font leading on the labels —
+>    ~280dp in all), so it fits whole rather than exactly missing. `halo` is
+>    subtracted with `.coerceAtLeast(0)` because a fit that runs before the panel
+>    has been laid out once still sees zero padding; asking for the rows alone is
+>    then the safe answer, since the halo it does not count leaves room for them.
 > 5. The dialog window is `WRAP_CONTENT` tall, `panelW + 2*halo` wide, centred.
 >    Only the width is ever explicit; `MATCH_PARENT` height, or a height read
 >    from `windowSize()`, is what used to ask for a window taller than the screen

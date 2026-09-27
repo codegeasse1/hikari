@@ -882,7 +882,7 @@ val BottomTabs = listOf(
 )
 
 @Composable
-fun AppRoot(themeKey: String = HikariThemeMode.DARK.key) {
+fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
     val nav = rememberNavController()
     val backStack by nav.currentBackStackEntryAsState()
     val currentRoute = backStack?.destination?.route

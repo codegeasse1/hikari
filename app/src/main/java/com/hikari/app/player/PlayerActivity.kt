@@ -4645,11 +4645,24 @@ class PlayerActivity : ComponentActivity() {
             )
             val contentH = content.measuredHeight
             if (contentH <= 0) return
-            // The panel's own padding (halo + row gap, top and bottom) is part
-            // of the silhouette, so the wanted height is the rows plus it — the
-            // halo is added AROUND the silhouette, not inside it.
+            // The panel's own padding (halo + row gap, top and bottom) is what
+            // the rows are laid out inside, so the wanted height is the rows
+            // plus it — MINUS the halo again. The padding is measured from the
+            // VIEW's edge, and the panel view carries the halo around its
+            // silhouette, so `panel.paddingTop` is `halo + gap`: counting it
+            // whole added a band of 2*halo (20dp on a flat skin, 52dp on the
+            // pane) of empty glass below the last row of EVERY panel, and on a
+            // window too short for the rows it spent that 2*halo of the room
+            // before the clamp — which is the last row of the subtitle
+            // settings sheet arriving sliced off the bottom of the pane.
+            // Subtracting the halo leaves exactly the gap the rows are meant to
+            // keep inside the silhouette (see CurvedGlassPanel.onSizeChanged).
+            // (`.coerceAtLeast(0)` because a fit that runs before the panel has
+            // been laid out once still sees zero padding: it then asks for the
+            // rows alone, which the halo it does not count leaves room for.)
             val wanted = contentH + scroll.paddingTop + scroll.paddingBottom +
-                panel.paddingTop + panel.paddingBottom
+                (panel.paddingTop - halo).coerceAtLeast(0) +
+                (panel.paddingBottom - halo).coerceAtLeast(0)
             val sil = wanted.coerceIn(
                 minPanel,
                 roomFor(windowSize(), (panel.width - 2 * halo).coerceAtLeast(0)),
@@ -6061,6 +6074,10 @@ class PlayerActivity : ComponentActivity() {
             // wrap to two lines and still never push a control off the panel.
             maxLines = 2
             ellipsize = TextUtils.TruncateAt.END
+            // …and it carries no leading of its own: the default extra
+            // ascender/descender padding is ~4dp per label, 20dp across the
+            // sheet, and this sheet's whole problem is height (see [controlRow]).
+            includeFontPadding = false
         }
         fun valueLabel(text: String): TextView = TextView(this).apply {
             this.text = text
@@ -6092,13 +6109,21 @@ class PlayerActivity : ComponentActivity() {
          * The controls are weighted, so they also stay aligned with each other
          * from one setting to the next — the steppers of "Text size" line up
          * with the steppers of "Sync" instead of drifting with the words.
+         *
+         * The paddings are as tight as the glass allows on purpose. Five of
+         * these rows plus the gaps between them is the whole sheet, and the
+         * pane paints a 26dp gap of its own above and below them, so the sheet
+         * has to come in under the ~324dp a 1080p phone's landscape window
+         * leaves it. At the old 7dp/6dp/7dp it came to ~325dp of rows and was
+         * clamped to the room — the last row ("Find subtitles automatically")
+         * opened with its pill sliced off the bottom of the pane.
          */
         fun controlRow(label: String, vararg controls: Pair<View, Float>): LinearLayout =
             LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(
-                    (10 * density).toInt(), (7 * density).toInt(),
-                    (10 * density).toInt(), (7 * density).toInt()
+                    (10 * density).toInt(), (4 * density).toInt(),
+                    (10 * density).toInt(), (4 * density).toInt()
                 )
                 background = GradientDrawable().apply {
                     shape = GradientDrawable.RECTANGLE
@@ -6128,7 +6153,7 @@ class PlayerActivity : ComponentActivity() {
                 addView(cluster, LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT,
-                ).apply { topMargin = (6 * density).toInt() })
+                ).apply { topMargin = (4 * density).toInt() })
             }
 
         val sizeValue = valueLabel("${(subtitleScale * 100).toInt()}%")
@@ -6160,7 +6185,7 @@ class PlayerActivity : ComponentActivity() {
             list.addView(row, LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
             ).apply {
-                setMargins((10 * density).toInt(), (7 * density).toInt(), (10 * density).toInt(), 0)
+                setMargins((10 * density).toInt(), (4 * density).toInt(), (10 * density).toInt(), 0)
             })
         }
         addRow(controlRow(

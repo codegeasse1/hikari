@@ -968,6 +968,13 @@ class AppStore(private val ctx: Context) {
          *  and the glow are each one switch in Settings → App Layout → Loading
          *  screen → Effect. */
         val DEFAULT_LOADING_EFFECTS: Set<String> = emptySet()
+
+        /** The app theme a fresh install opens in. AMOLED Black — see
+         *  [com.hikari.app.ui.theme.HikariThemeMode.DEFAULT_KEY], which is the
+         *  one place this value is decided (the Compose side, the player's
+         *  synchronous mirror and this flow must not be able to disagree, and
+         *  on the first frame the Compose side has not read DataStore yet). */
+        const val DEFAULT_THEME = HikariThemeMode.DEFAULT_KEY
     }
 
     // ---- Poster & icon styling ----
@@ -2643,7 +2650,7 @@ class AppStore(private val ctx: Context) {
     }
 
     fun themeFlow(): Flow<String> =
-        store.data.map { it[K.THEME] ?: HikariThemeMode.DARK.key }.distinctUntilChanged().flowOn(Dispatchers.Default)
+        store.data.map { it[K.THEME] ?: DEFAULT_THEME }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun theme(): String = themeFlow().first()
 

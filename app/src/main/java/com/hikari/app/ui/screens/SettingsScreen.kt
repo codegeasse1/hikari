@@ -577,7 +577,7 @@ fun SettingsScreen(nav: NavHostController) {
     // starting from DARK made a saved AMOLED/Dark Glass/Light show as
     // "Hikari Dark" until the user re-picked it in the same session.
     val themeFlow = remember { app.store.themeFlow() }
-    val storedThemeKey by themeFlow.collectAsState(initial = HikariThemeMode.DARK.key)
+    val storedThemeKey by themeFlow.collectAsState(initial = HikariThemeMode.DEFAULT.key)
     var themeKey by remember { mutableStateOf(storedThemeKey) }
     LaunchedEffect(storedThemeKey) { themeKey = storedThemeKey }
     val playerAccentFlow = remember { app.store.playerAccentFlow() }
