@@ -68,6 +68,121 @@ see the session log below, which is where their design notes live.)
 
 ## Session log (newest first)
 
+- **0.10.56** (versionCode 227) — the owner's eleventh round: a batch of small
+  reported bugs (the player's look on a new install, the subtitle colour picker discarding a choice, the
+  subtitle panel's last rows sliced in the landscape player, the colour picker too tall for it, the Home
+  search box showing the feed through it, the app-lock screen doing the same, an extension row's "Show all"
+  opening a personal catalog's folder grid, and a collection's Show-all page saying "0 titles · 0 catalogs"
+  while Home showed plenty) plus, verbatim, **"also fix when search by clicking search bar at home, and click
+  any search result and come back it directly leading to home instead of show the search, like instead of just
+  back it leading full back to home. so fix this too."** Push once, and **`continuous` only — no main release**.
+  - **A new install wears the Minimal player UI and shows the Telegram tab.** Two defaults were wrong for a
+    fresh install, not two bugs: `PlayerSkins.FALLBACK` is now `MINIMAL` (was `DEFAULT`) and
+    `AppStore.DEFAULT_PLAYER_SKIN` is `PlayerSkins.MINIMAL` (was `NEON`). `normalize()` still maps the
+    pre-picker `glass` value to `DEFAULT` and passes every `ALL` entry through, so an explicit choice always
+    wins and an install that picked the curved glass in the older build keeps exactly that — only "never
+    chose" changed. `AppStore.telegramTabFlow()` and the two `collectAsState(initial = …)` call sites
+    (`AppNav`, `SettingsScreen`) flipped from false to true; the switch still sticks when turned off.
+  - **The subtitle colour picker now applies live, and Cancel is a real undo.** Root cause: the picker held a
+    local draft (`hue/sat/value/alpha`) and only handed it to the caller on the Apply button, so the ✕ — the
+    obvious way to close a picker that already showed the colour in a live caption preview — discarded the
+    choice and the captions came back in the old colour. `ColorPickerDialog.publish()` now calls `onPick(c)`
+    the moment the colour changes (`published` de-dupes, `touched` records that the user changed anything);
+    ✕ and Apply just dismiss, Cancel calls `onPick(initial)` when `touched`. The dialog also got TV support
+    (`makeTvReachable` / `focusRing` / `findFirstFocusable`, mirroring `PlayerActivity.View.tvFocusableTree`):
+    `setOnClickListener` makes a view clickable but NOT focusable, so a remote could not reach the chips, the
+    ✕ or the two buttons, and the three custom surfaces (square/hue/alpha) got D-pad `onKeyDown` handlers.
+  - **The panel geometry rule changed from a fraction of the window to the ROOM the window has, and the panel
+    re-measures when its window changes.** `PlayerActivity.presentGlass`: the height cap was
+    `min(fitsScreen, 0.66|0.76 of the window)` — a fixed fraction that in the landscape player leaves ~233dp
+    for a ~291dp subtitle sheet, so its last row was cut with no scrollbar to say anything was missing.
+    `chrome`/`fitsScreen`/`maxFraction` are deleted; the cap is `roomFor(win, w)` = the window's height minus
+    the MEASURED height of the hint line (`headerRow.measure(...)` — it is a wrapped 4-line cap, not a
+    constant) minus the halo, floored at 110dp. `panelWidthFor(w)`/`headerHeightFor(w)`/`roomFor(...)` are
+    local functions of the window now, `fitToContent()` coerces into the same room, and a layout listener on
+    the activity decor calls `refitToWindow()` so a panel that outlives the window it was measured in (the
+    player rotates itself and is fullscreen, and a dialog window keeps the layout it was SHOWN with) is
+    re-measured — the "sometimes, and reopening the player fixes it" report. The 0.9.8 structure is
+    untouched: definite panel height + a weighted scroller; do NOT reintroduce a cap on the scroller.
+  - **The colour picker itself fits a landscape window now.** It is ~390dp tall and the landscape player's
+    window is ~393dp, so on a slightly shorter window its buttons sat past the screen edge, unreachable. In
+    `ColorPickerDialog.show()` the panel is measured first, wrapped in a `ScrollView`, and the window is
+    `panel.measuredHeight.coerceAtMost(winH - dp(24f))`.
+  - **Full-screen covers paint `pageBackground()`, not `MaterialTheme.colorScheme.background`.** The Dark
+    Glass theme's `background` is TRANSPARENT by design (its page colour is a gradient drawn behind the whole
+    app), so the Home search overlay showed the feed's hero banner and "View Details" pill through it, and
+    the app-lock screen let the locked content be read through it. New `@Composable fun pageBackground()` in
+    `ui/theme/Theme.kt` returns the scheme's own background when its alpha >= 0.99f, else the solid `HikariBg`;
+    `HomeSearchOverlay` and all three covers in `AppLockGate` use it.
+  - **Back from a Home search result returns to the search.** `showHomeSearch` was a plain `remember`, and
+    pushing a result's detail page takes `HomeScreen` out of composition, so it was destroyed and Back landed
+    on the feed with the query gone. It is `rememberSaveable` now and is deliberately NOT cleared by the
+    overlay's `onOpen`; the overlay's own ✕ / `BackHandler` are what close it. `HomeSearchOverlay`'s `typed`
+    and `applied` were already saveable (so the query survives and the search re-runs on return). This is the
+    owner's verbatim ask above.
+  - **"Show all" routes by OWNERSHIP, not by the presence of a key prefix.** `HomeScreen`'s unique-rows
+    `onShowAll` sent any row whose key started with `coll|` to the collection grid — but a plain EXTENSION row
+    inside a picked personal catalog carries that prefix too (see `CollectionsRepository`, which keys a
+    collection's rows `coll|<collectionId>|…`). It computes `collectionId` from the row's key and uses
+    `Routes.collectionGrid(id)` only when it resolves, else `Routes.catalog(row.providerId, row.catalogId, …)`.
+  - **`CollectionGridScreen` says what Home says before it says "nothing", and hands over to the folders when
+    there is truly nothing.** It only ever ran `allRows` (every catalog of every folder), so a collection whose
+    sources are structured for Home's shelf view reported "0 titles · 0 catalogs" above "this collection's
+    catalogs returned no content" while Home — same collection — showed plenty. It now falls back to
+    `CollectionsRepository.pickRows` (exactly "what Home shows"), then to `CollectionFoldersPage` (the folder
+    tiles, which are the way in); a missing id shows only the `Collection not found` header, like
+    `CollectionViewScreen`. `lastOrNull` on a Flow needed `kotlinx.coroutines.flow.lastOrNull` imported here.
+  - **A collection flow always emits, even when everything answered nothing.** The three
+    `CollectionsRepository` flows published only non-empty lists, so a collection whose sources all returned
+    nothing never emitted at all — and the screen's "loading" state is a null list, so it sat on the spinner
+    for ever. Each flow now wraps its launches in `coroutineScope { }` and ends with
+    `publish(..., force = true)`; intermediate publishes stay non-forced, because an early empty list would
+    read as "loaded and empty" while the first source is still working.
+  - **A repo row can be copied, and a fresh install ships SubDL's Stremio addon.** `ExtensionsScreen.RepoCard`
+    gained a copy button (`ContentCopy` + `LocalClipboardManager`, toast `Repo link copied`) where the
+    decorative `ChevronRight` used to be — the trailing cluster is three real actions, which also stops four
+    items squeezing the repo name to a few characters. `StremioAddon` gained `DEFAULT_ADDON_URL`
+    (`https://api3.subdl.com/manifest.json`) and `providerIdFor(url)` (id from the BASE url, so
+    `https://host`, `…/` and `…/manifest.json` are ONE provider row); `HikariApp` seeds it on first run under
+    a one-way `stremioAddonSeeded` flag (new `K.STREMIO_SEEDED` key + `AppStore.stremioAddonSeeded()` /
+    `markStremioAddonSeeded()`), skipping an install that already has it under any spelling, and
+    `ExtensionsScreen.addStremio` uses the same `providerIdFor`.
+  - **Files**: TWO code commits. The first (21 paths) is `app/build.gradle.kts` + 14 Kotlin sources
+    (`HikariApp.kt`, `player/{PlayerActivity, ColorPickerDialog, PlayerSkins}.kt`, `ui/theme/Theme.kt`,
+    `ui/AppLockGate.kt`, `ui/navigation/AppNav.kt`, `ui/screens/{HomeScreen, CollectionScreens,
+    ExtensionsScreen, SettingsScreen}.kt`, `data/{AppStore, CollectionsRepository}.kt`,
+    `providers/StremioAddon.kt`), `CHANGELOG.md`, and `docs/{PLAYER_PANELS, PERSONAL_CATALOG, APP_LOCK,
+    SEARCH, SUBTITLE_SITES}.md` — then a docs-only commit carrying this `src/README.md`. The change set was
+    proved by comparing every local file's git blob SHA-1 against main's recursive tree (all 578 files): only
+    those paths differ.
+  - **The 0.10.55 warning about stale local docs is RESOLVED.** `docs/SEARCH.md` and `docs/VEGA.md` were
+    re-fetched at main's HEAD. `VEGA.md` came back byte-identical to main's (so it stayed out of the commit)
+    and the new Home-search section was added on top of main's current `SEARCH.md` (not on top of the stale
+    copy), so nothing main-side was reverted. A future session can edit either file freely again.
+  - **Not built this round, and why (do not pretend otherwise):** automatic extension update checks
+    (`ExtensionsViewModel.checkUpdates()` + the Update buttons + the "updates available" card already exist and
+    run when the Extensions screen opens — a launch-time background check would need the repo listings, which
+    only that screen fetches); the reported television player lag on Play (no concrete cause identified); and
+    D-pad focus beyond the colour picker (the infrastructure is extensive — `tv/TvFocus.kt`,
+    `MainActivity.applyTvFocus`, `View.tvFocusableTree` in the player, `Modifier.tvPress` — and no specific gap
+    was found).  - **Pushed as TWO code commits**, because CI caught exactly one compile error on the first try and the fix
+    could not be folded in (the commit was already public): the feature commit
+    `ac66b4aac1d7509e407221e5a1f508d4ceb4c6b2` (parent `effc5cf52ff8`, 21 paths) and the one-line fix
+    `85900d8ac1421c45983a3b7bcc3f64fe38b25599`. Every pushed file was verified by git blob SHA-1 against
+    main's recursive tree (all 578 files), which is what proves the change set is exactly those 21 paths and
+    that `docs/VEGA.md` is back in sync.
+  - **The one compile error, for the record**: `ExtensionsScreen.kt:5964:41 — @Composable invocations can only
+    happen from the context of a @Composable function`. `tr(...)` is `@Composable` (it reads a
+    `CompositionLocal`), so the new copy-button's `Toast.makeText(context, tr("Repo link copied"), …)` INSIDE
+    an `onClick` lambda was illegal; a click handler is not a composable scope. It now uses `I18n.t(...)` — the
+    non-composable translate the file's other toasts already use (see the note at `CollectionScreens.kt:3558`,
+    where a `tr` is hoisted into a `val` for the same reason). Rule of thumb for this repo: `tr` in composable
+    content and composable arguments, `I18n.t` inside event handlers.
+  - **CI**: run `36319894753` on `85900d8a` — **success**; the feature commit's run `36319538554` was the one
+    that failed on the error above. `continuous` re-uploaded its 3 APKs (41,345,697 / 39,572,723 / 61,694,500 B
+    at 12:58:09Z), the `build` branch went to `fb9ec66dd934fb3599f4cc2278a3b77c175bd863` ("build: update test
+    APK 202609271257"), and the newest STABLE release is still **v0.10.42** — no main release, as asked.
+
 - **0.10.55** (versionCode 226) — the owner's tenth round, one message with four screenshots and two asks:
   **make the personal catalog look like the reference client** ("can we make our imported personal catalog from
   nuvio, and own personal catalog creator to look like nuvio, see our is showing glasy corner, which cutting
