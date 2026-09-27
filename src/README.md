@@ -68,6 +68,64 @@ see the session log below, which is where their design notes live.)
 
 ## Session log (newest first)
 
+- **0.10.55** (versionCode 226) — the owner's tenth round, one message with four screenshots and two asks:
+  **make the personal catalog look like the reference client** ("can we make our imported personal catalog from
+  nuvio, and own personal catalog creator to look like nuvio, see our is showing glasy corner, which cutting
+  some name, so fix this or the glass box inside the glads box remove it so it look goods") and **fix the
+  television freezes/crashes while a detail screen loads its data and episodes** ("most tv come with 1-1.5gb
+  ram, so do this only for tv make sure this setting doesnt affect android apk … do all lag fix, freeze fix").
+  Push once, and **`continuous` only — no main release**.
+  - **The screenshots were identified by their nav bar, not assumed.** `…150557`/`…150600` are the reference
+    client (4 tabs, "0.5.3-beta"); `…150625` is Hikari (7 tabs); `…150630` is a THIRD app (8 tabs, "v2.0.0").
+    Vision on a 1080×2460 screenshot downscales it to 450×1024 and gave contradictory answers about the tiles
+    ("no inner border" then "a distinct lighter rounded glass border"), so the bands were cropped and upscaled
+    1.6×/2.6× with `OffscreenCanvas` and re-read: what is actually there is a thin light hairline around each
+    cover, INSET from the tile panel's own hairline — the nested box — plus wordmark covers whose lettering is
+    cut at the artwork's bottom corners. Both are the tile's own doing, not the assets'.
+  - **The tile fix is `CollectionScreens.kt` only** (`FolderTile` + `CoverArt`), so the SAME widget fixes all
+    three places a folder is drawn (the creator's grid, the horizontal row, and Home's
+    `CollectionFoldersOnHome`). Two faults, two fixes: the cover drew `PosterArt`'s own `style.glass` hairline
+    inside the panel's (`CoverArt(ownGlass = false)`, and the non-image fallback branch loses its border too),
+    and the panel used the flat `GlassCornerRadius` (26dp) whatever the tile's width, which on a 102dp tile is
+    a quarter of it. The panel's radius is now `min(GlassCornerRadius, width × 0.16f)` — read from a new
+    `BoxWithConstraints`, the only new import besides `GlassCornerRadius` — and the cover's radius is
+    `panelRadius - TILE_PADDING` (the concentric-corner rule), so the two arcs run parallel. The cap is reached
+    at ~163dp, so a TV's larger cells are unchanged, and 0.10.54's "painted, never clipped" is still in force.
+  - **The TV work is memory, and it is keyed on HARDWARE, not on a switch.** `PerfMode.tvDevice` is a NEW flag
+    mirrored from `TvMode.deviceIsTelevision` by a new `HikariApp.syncTvDeviceFlag()` (called beside every
+    `TvMode.detect` — `onCreate` and `MainActivity`), which is what makes all of it television-only: every
+    phone/tablet branch is untouched. It is deliberately NOT `PerfMode.tvOn`, because a 1GB box has 1GB of RAM
+    with every setting off — so each runtime's new TV pool is tested BEFORE the booster's. Numbers:
+    `PerfMode.tvEngineMemoryLimit` = `min(64MB, maxMemory/4)` replaces 256MB in `NuvioRuntime` and
+    `VegaRuntime` (read per engine creation) and is applied to `SkyStreamRuntime` ONLY on a TV (that runtime
+    had no cap at all, so a phone stays exactly as it was); engine pools 4/2/3 (Nuvio/Vega/SkyStream) replace
+    12/8/6; `deviceFanOut()` gains a `cores×2` (6..16) branch ahead of the booster's; and
+    `CROSS_EXT_EXTRACT_CONCURRENCY` 20→10 / `CROSS_EXT_DETAIL_CONCURRENCY` 32→12 — the latter is the cap the
+    detail page's episode load actually runs through, and the reported freeze is that burst. Those two are
+    class-init `val`s, so the flag must be set before `ContentRepository` loads; `HikariApp.onCreate` does
+    that a few lines after `TvMode.detect`.
+  - **`onTrimMemory` now actually frees memory on a TV.** Its own doc comment said there was deliberately
+    nothing to drop, which is true on a phone and useless on a box about to be killed: at
+    `TRIM_MEMORY_RUNNING_LOW`+ on `tvDevice` it now clears Coil's memory cache (and says so in the log) — the
+    largest thing the app can hand back without touching the engines a load is waiting on. Coil's cache is
+    also a twelfth of the heap (16..64MB) instead of an eighth (24..96MB) on a TV, in the same builder.
+  - **One bonus lag fix, same gate**: `FolderTile` draws an animated cover as its first frame when
+    `tvDevice && tvOn` — the same switch, and the same reasoning, as the poster effects `rememberPosterStyle`
+    already drops on a TV. A folder's own `gifAlways` still wins, so nothing the user configured is ignored.
+  - **Pushed as ONE code commit, `f921de84a10d9f30f05100f68f235f53d61643c0`** (parent `395ef54fe47b`), 12 files
+    (9 Kotlin/gradle + `CHANGELOG.md` + `docs/PERFORMANCE.md` + `docs/PERSONAL_CATALOG.md`). Every pushed file
+    was verified by git blob SHA-1, and a full local-vs-remote sweep of all 578 files confirmed the ONLY
+    changed paths are those 12 — nothing else drifted. ⚠️ `scratch/repo/docs/SEARCH.md` and `docs/VEGA.md` are
+    STALE locally (missing 33 and 11 lines of 0.10.54's content); they were deliberately NOT pushed, and a
+    future session must re-fetch them from the repo before editing them.
+  - **CI**: run `36312027921` on `f921de84` — **success** (~14 min), first try. `continuous` re-uploaded its 3
+    APKs (41,337,305 / 39,564,331 / 61,686,108 B), `build` branch → `14e7b1a48477` ("build: update test APK
+    202609271031"), and the newest STABLE release is still **v0.10.42** — no main release, as asked.
+  - **GitHub API gotcha worth remembering**: `GET /git/refs/heads/main` (the singular endpoint) returned the
+    OLD sha for minutes after a successful `PATCH` — twice this session, once making a push look like it had
+    failed and the verification look like it had failed with it. `GET /commits/main` and `GET /git/refs` (the
+    list) were correct immediately; verify against those.
+
 - **0.10.54** (versionCode 225) — the owner's ninth round, in two halves: **revert the Vega work of 0.10.53**
   ("even series is not loading any episode, just showing play button like movie … revert back to 0.10.52 code,
   just remove what you did extra in 0.10.53, don't remove or make anything worse") and **add per-engine filter
