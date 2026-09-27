@@ -32,10 +32,12 @@ enum class HikariThemeMode(val key: String, val label: String) {
          *
          * Written down ONCE, here: [DEFAULT] decodes it,
          * [com.hikari.app.data.AppStore.DEFAULT_THEME] is a const alias of it,
-         * and the player-side synchronous mirror
-         * ([com.hikari.app.ui.AccentStore]) reads that — so the stored value,
-         * the Compose first frame (which reads the mirror before DataStore has
-         * emitted anything) and the settings sheet cannot disagree.
+         * and the players' synchronous mirror
+         * ([com.hikari.app.ui.AccentStore]) reads this constant directly — so
+         * the stored value, the Compose first frame (which reads the mirror
+         * before DataStore has emitted anything) and the settings sheet cannot
+         * disagree. (The mirror reads the constant rather than the `AppStore`
+         * alias because that alias lives in `AppStore`'s PRIVATE companion.)
          *
          * A saved choice always wins; this is only the answer for an absent
          * one.
