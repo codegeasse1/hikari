@@ -68,6 +68,15 @@ see the session log below, which is where their design notes live.)
 
 ## Session log (newest first)
 
+- **v0.10.57 RELEASED to `main`** (2026-09-13) — the owner asked in writing for the accumulated build
+  (0.10.43–0.10.57, i.e. everything since v0.10.42) to become the live release. Before dispatching, the
+  `## 0.10.57` CHANGELOG section was rewritten from engineering notes into user-facing release notes: what was
+  added and what was fixed **since v0.10.42**, in the style of the 0.10.42 section. Bugs that existed only in
+  intermediate continuous builds are deliberately NOT listed — the owner is the only one who ever ran those
+  builds, so from a user's point of view they never happened, and release notes that "fixed" them would be
+  describing the owner's own test cycle. Dispatched `.github/workflows/build.yml` by hand with
+  `release=true`, `confirm_release=CONFIRM-RELEASE`, `version=0.10.57`; the release carries the three APKs and
+  the body is that CHANGELOG section.
 - **0.10.57** (versionCode 228) — the owner's twelfth round: four reported items (the app opening in the
   near-black theme instead of AMOLED on a fresh install, the subtitle settings sheet clipped in the landscape
   player, a drag on the colour picker's square scrolling the box instead of moving the colour, and anime titles
