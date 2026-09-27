@@ -188,6 +188,7 @@ class CatalogViewModel(
             ProviderType.STREMIO -> com.hikari.app.providers.StremioAddon.catalogErrors[p.config.id]
             ProviderType.CS3 -> com.hikari.app.cs3.Cs3MainApiProvider.catalogErrors[p.config.id]
             ProviderType.VEGA -> com.hikari.app.providers.vega.VegaProvider.catalogErrors[p.config.id]
+            ProviderType.HIKARI -> com.hikari.app.providers.HikariProviderAdapter.catalogErrors[p.config.id]
             else -> null
         }
         return raw?.takeIf { it.isNotBlank() && !it.startsWith("✓") && !it.startsWith("✔") }

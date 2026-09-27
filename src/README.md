@@ -68,6 +68,59 @@ see the session log below, which is where their design notes live.)
 
 ## Session log (newest first)
 
+- **0.10.58** (versionCode 229) — the owner's thirteenth round: **CNC Verse and Phisher `.hiki` extensions showed no
+  catalogue** on Home (screenshots: `Couldn't load Donghuasteam · Donghuasteam (Phisher)`, `MovieBoxProvider
+  (Phisher)`, `BanglaPlex (Phisher)`, `AnimeDekhoProvider · Onepace (Phisher)`, each with the generic "Nothing came
+  back from this extension. Retry, or open its site in the WebView …" subtitle). The owner was explicit that this
+  is **not** a verification/Cloudflare problem and asked for the real cause. Two faults, one on each side of the
+  repo boundary — which is why the round touched **both** `codegeasse1/hikari` and `codegeasse1/hikari-extensions`:
+  - **The bridge's catalogue protocol was wrong for every plugin, and every local failure was silent.** Root cause
+    read out of the bridge source and the CloudStream base classes, not guessed: a CloudStream plugin answers
+    `getMainPage` against the **page and row it was asked for** (`MainPageRequest(page.name, row.data, false)`),
+    but `Cs3BridgeProvider.catalogs()` flattened everything into ONE `HikariCatalog("Home", "Home")` (id `"Home"`,
+    requested page literally `"Home"`), so `getMainPage` matched no real page and every plugin returned nothing.
+    Every local failure the bridge could have (no bundled plugin in the archive, `plugin.load()` threw, the plugin
+    registered no provider, the page parsed to nothing) was also converted to the same silent `emptyList()`. The
+    bridge now emits one catalogue **per home row** (`row:<page>:<row>`, fallback `page:<index>`, id never empty),
+    passes each row's own page name + `data` through, and throws an `IllegalStateException("<name>: <reason>")` for
+    local failures; the load is bounded (45s budget on a shared daemon executor, 60s failure cooldown, 12s host
+    activity wait, 3s registration poll, `APIHolder.allProviders` before/after diff); `extract()` names its cached
+    payload `<sha256-prefix8>-<basename>` so a stale payload is impossible. **A full external-class audit of all
+    112 bundled `.cs3` files against `cloudstream3.jar` + the app source came back CLEAN** (the only unresolved
+    family, `com/lagradost/nicehttp/**`, is a declared dependency) — i.e. the cause was the protocol/silent-empty
+    pair, NOT a `NoClassDefFoundError`. (Audit caveat for a future session: a DEX header's `type_ids_size` is at
+    **0x40** and `type_ids_off` at **0x44**; reading them at 0x48 gives nonsense.) It was also confirmed that no
+    plugin references `MainActivity$Companion` or the consts `ANIMATED_OUTLINE`/`API_NAME_EXTRA_KEY`/
+    `FILE_DELETE_KEY`/`nextSearchQuery`/`filesToDelete`/`activityResultLauncher`, so shadowing them was
+    deliberately skipped.
+  - **The app had no HIKARI entry in Home's failure chain at all.** `HomeScreen.engineFailureReason()` is a `?:`
+    chain over each engine's `catalogErrors` map, and `.hiki` was missing from it and from `CatalogScreen`'s
+    `providerReason()` — so an empty `.hiki` catalogue fell through to that "open its site …" line. New
+    `HikariProviderAdapter.catalogErrors` (companion `ConcurrentHashMap`, cleared on success) is recorded from
+    `catalogs()`/`getCatalog()`, read back in `HomeScreen.engineFailureReason()` (first in the chain) and in
+    `CatalogScreen.providerReason()`; `ContentRepository.noteCatalogTimeout` now routes a HIKARI/Vega timeout into
+    the right map. The adapter's doc comment explains that the old generic line sent users chasing a Cloudflare
+    check that a bundled-plugin extension never performs.
+  - **An already-installed `.hiki` could never have received the fix.** `repo.json` carried no `fileHash`, and the
+    app's update check is `val hash = plugin.fileHash ?: continue; if (!hash.startsWith("sha256-")) continue` —
+    so no entry in the Hikari repository could ever be offered as an update. `hikari-extensions/build.sh` now
+    emits `"fileHash": "sha256-<sha256sum>"` for every `.hiki`, `.jar` and native `.cs3` in both `repo.json` and
+    `repo-desktop.json`. This is the half that makes the bridge fix reachable; without it the extensions repo
+    change is invisible to devices that already had the extensions.
+  - Files: **hikari-extensions** — `cncverse|phisher|anime/src/com/hikari/ext/providers/Cs3BridgeProvider.kt`
+    (all three byte-identical rewrites, 42885 B), `build.sh`, the three `manifest.json` version bumps
+    (`anime` 1→2, `cncverse` 2→3, `phisher` 2→3); pushed as
+    **`e2189ec1b660f7533a2027e14e196bf30ce9fc2c`** (parent `677449b2…`, tree `57886340…`). **hikari** —
+    `providers/HikariProviderAdapter.kt`, `ui/screens/HomeScreen.kt`, `ui/screens/CatalogScreen.kt`,
+    `data/ContentRepository.kt`, `app/build.gradle.kts`, `docs/HIKARI_EXTENSIONS.md` (new "CloudStream plugins
+    inside a Hikari extension (the bridge)" + "Publishing the repository (`fileHash`)" sections, which is now the
+    written-down description of the row-catalogue protocol), `CHANGELOG.md`, this file.
+  - The `sdk/HikariProvider.kt` interface and `HikariCatalog` were deliberately **not** changed, so an old
+    installed `.hiki` still loads; only its catalogue contents change.
+  - **`continuous` only — no main release.** (The owner's round-13 message initially read as "do continuous build
+    and not to release the apk to main" and was confirmed to be the standing rule, with a typo in the earlier
+    wording.)
+
 - **v0.10.57 RELEASED to `main`** (2026-09-13) — the owner asked in writing for the accumulated build
   (0.10.43–0.10.57, i.e. everything since v0.10.42) to become the live release. Before dispatching, the
   `## 0.10.57` CHANGELOG section was rewritten from engineering notes into user-facing release notes: what was

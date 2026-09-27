@@ -1972,6 +1972,10 @@ class ContentRepository(private val manager: ProviderManager) {
             is Cs3MainApiProvider -> Cs3MainApiProvider.catalogErrors[p.config.id] = msg
             is com.hikari.app.aniyomi.AniyomiProvider ->
                 com.hikari.app.aniyomi.AniyomiProvider.catalogErrors[p.config.id] = msg
+            is com.hikari.app.providers.HikariProviderAdapter ->
+                com.hikari.app.providers.HikariProviderAdapter.catalogErrors[p.config.id] = msg
+            is com.hikari.app.providers.vega.VegaProvider ->
+                com.hikari.app.providers.vega.VegaProvider.catalogErrors[p.config.id] = msg
         }
     }
 

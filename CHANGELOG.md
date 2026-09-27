@@ -1,3 +1,10 @@
+## 0.10.58
+
+### Fixed
+
+- **A CNC Verse, Phisher or Anime Hikari extension lists its catalogue again — and when one really cannot be read, Home says why, in the extension's own words, instead of pointing at a verification page that was never involved.** Two separate faults were behind the empty rows. First, the `.hiki` bridge asked every extension for one flattened shelf — a single catalogue literally named "Home" whose id and requested page were the hard-coded string "Home" rather than the extension's own home page — and a CloudStream/Hikari provider matches `getMainPage` against the page and row it was asked for, so a request for a page that does not exist came back with nothing. On top of that the bridge turned every local failure it had (the archive carries no plugin, the plugin's `load()` threw, it registered no provider, the page parsed to nothing) into the same silent empty list, and the `.hiki` engine had no entry in Home's failure chain at all — so the reader got the generic "Nothing came back from this extension. Retry, or open its site in the WebView to check whether it is up", which sent them hunting a Cloudflare check for a bundled-plugin extension that never performs one. The bridge now publishes one catalogue per home row, passes each row's own page name and data through (`row:<page>:<row>`), and throws a specific reason when it fails; that reason is recorded per provider and Home and the catalogue screen show it verbatim.
+- **An extension already installed can receive this fix.** The repository index never carried a `fileHash`, and the update check skips any entry without one — so no `.hiki` in the Hikari repository could ever be offered an update, and a fix could never reach a device that already had it. The build now writes a `sha256-…` hash for every `.hiki`, `.jar` and native `.cs3` entry it publishes.
+
 ## 0.10.57
 
 Everything added and fixed since 0.10.42.

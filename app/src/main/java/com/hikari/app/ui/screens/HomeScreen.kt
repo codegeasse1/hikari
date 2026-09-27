@@ -2217,9 +2217,19 @@ private fun MediaItem.shrinkPoster(): MediaItem {
  * `MangaProvider.lastOutcome`, and the SUCCESS lines in that map ("✓ 40 titles")
  * are filtered out so only a real failure shows — an empty result has to be told
  * apart from a failed one.
+ *
+ * `.hiki` extensions were the last engine missing here, and the omission hurt
+ * them most: the bridge answered an empty catalog list for every LOCAL failure
+ * it had (the archive has no bundled plugin, the plugin's load() threw, it
+ * registered nothing, its home page came back empty), so with no entry in this
+ * chain the user was told to open the extension's WEBSITE and check it for a
+ * Cloudflare verification page that was never involved. The extension now names
+ * its own reason and the adapter records it in
+ * [com.hikari.app.providers.HikariProviderAdapter.catalogErrors].
  */
 private fun engineFailureReason(providerId: String): String? =
-    com.hikari.app.cs3.Cs3MainApiProvider.catalogErrors[providerId]
+    com.hikari.app.providers.HikariProviderAdapter.catalogErrors[providerId]
+        ?: com.hikari.app.cs3.Cs3MainApiProvider.catalogErrors[providerId]
         ?: com.hikari.app.providers.StremioAddon.catalogErrors[providerId]
         ?: com.hikari.app.nuvio.NuvioScraper.catalogErrors[providerId]
         ?: com.hikari.app.skystream.SkyStreamProvider.catalogErrors[providerId]

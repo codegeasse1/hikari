@@ -33,6 +33,24 @@ class HikariProviderAdapter(override val config: ProviderConfig) : ContentProvid
          *  app-wide extraction passes) - shown in the Detail screen's "no
          *  sources" panel so HIKARI providers aren't a silent wall of mystery. */
         val streamErrors = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+        /**
+         * Per-provider reason a `.hiki` extension could not serve its catalog.
+         *
+         * Home's empty state used to have no HIKARI entry in its failure chain
+         * at all, so ANY `.hiki` catalog that came back empty fell through to
+         * "Nothing came back from this extension. Retry, or open its site in
+         * the WebView …" — a message that points at the extension's website and
+         * at a Cloudflare verification page, neither of which is ever the
+         * reason for a bundled-plugin extension. The real reasons are local
+         * (the extension archive is missing its plugin, the plugin's load()
+         * threw, it registered nothing, its home page is empty) and the
+         * extension itself now says which one it is (see the bridge's
+         * IllegalStateException), so they are recorded here and shown instead.
+         *
+         * Cleared as soon as the same call succeeds.
+         */
+        val catalogErrors = java.util.concurrent.ConcurrentHashMap<String, String>()
     }
 
     /** The extension's provider, resolved on first access. Only a SUCCESS is
@@ -79,14 +97,84 @@ class HikariProviderAdapter(override val config: ProviderConfig) : ContentProvid
         }
     }.getOrNull()
 
-    override suspend fun catalogs(): List<CatalogRef> =
-        provider?.catalogs()?.map { CatalogRef(config.id, it.type.toApp(), it.id, it.name, it.rawType) }
-            ?: emptyList()
+    override suspend fun catalogs(): List<CatalogRef> {
+        val p = provider
+        if (p == null) {
+            catalogErrors[config.id] = loadFailureNote()
+            return emptyList()
+        }
+        return try {
+            // `HikariProvider.catalogs()` is blocking by contract (the app's
+            // extension ABI declares it non-suspend, and a CloudStream bridge
+            // fetches the plugin's home rows inside it), so it is never called
+            // on whatever dispatcher the caller happens to be on. Home already
+            // runs on Dispatchers.IO; this makes every other call site safe too.
+            val raw = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                p.catalogs()
+            }
+            val list = raw
+                .map { CatalogRef(config.id, it.type.toApp(), it.id, it.name, it.rawType) }
+            if (list.isEmpty()) {
+                catalogErrors[config.id] =
+                    "the extension's plugin loaded but returned no home page"
+                emptyList()
+            } else {
+                catalogErrors.remove(config.id)
+                list
+            }
+        } catch (e: Throwable) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            catalogErrors[config.id] = reasonOf(e)
+            emptyList()
+        }
+    }
 
-    override suspend fun getCatalog(ref: CatalogRef, page: Int): List<MediaItem> =
-        provider?.getCatalog(HikariCatalog(ref.id, ref.name, ref.type.toExt(), ref.rawType), page)
-            ?.map { it.toApp(config.id) }
-            ?: emptyList()
+    override suspend fun getCatalog(ref: CatalogRef, page: Int): List<MediaItem> {
+        val p = provider
+        if (p == null) {
+            catalogErrors[config.id] = loadFailureNote()
+            return emptyList()
+        }
+        return try {
+            val items = p.getCatalog(HikariCatalog(ref.id, ref.name, ref.type.toExt(), ref.rawType), page)
+                .map { it.toApp(config.id) }
+            if (items.isEmpty()) {
+                // Keep a reason already recorded by catalogs()/an earlier
+                // catalog (a provider with one dead shelf and one live one is
+                // not "broken"), but never leave the empty state unexplained.
+                catalogErrors.putIfAbsent(
+                    config.id,
+                    "\"${ref.name}\" came back empty from this extension"
+                )
+            } else {
+                catalogErrors.remove(config.id)
+            }
+            items
+        } catch (e: Throwable) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            catalogErrors[config.id] = reasonOf(e)
+            emptyList()
+        }
+    }
+
+    /** Why the extension itself could not be resolved at all. */
+    private fun loadFailureNote(): String {
+        val detail = HikariPluginManager.lastError
+            ?.lineSequence()
+            ?.firstOrNull { it.isNotBlank() }
+            ?.trim()
+            ?.take(200)
+        return if (detail.isNullOrBlank()) {
+            "the extension's provider could not be loaded — reinstall the extension from its repo"
+        } else {
+            "the extension failed to load — $detail"
+        }
+    }
+
+    private fun reasonOf(e: Throwable): String {
+        val m = e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName
+        return m.take(280)
+    }
 
     override suspend fun search(query: String, page: Int): List<MediaItem> {
         val p = provider

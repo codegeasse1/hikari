@@ -46,6 +46,53 @@ provider look permanently empty (this exact off-by-one made every installed
 SkyStream extension report "Couldn't load …" on Home and answer every search in
 5ms with "no matching title").
 
+## CloudStream plugins inside a Hikari extension (the bridge)
+
+The extensions in the Hikari repository (Anime, CNC Verse, Phisher) do not
+reimplement their sources — they ship the original CloudStream `.cs3` plugins
+and load them through a bridge (`Cs3BridgeProvider`) that presents each plugin
+as an ordinary `HikariProvider`. Two rules make that work, and both used to be
+broken:
+
+- **A catalogue is a home ROW, not a page.** `HomePageList` rows are what a
+  CloudStream plugin publishes; each row belongs to a named page and carries
+  its own `data` (the request's URL/args). The bridge therefore emits one
+  catalogue per row, with an id of `row:<page>:<row>` (falling back to
+  `page:<index>` when the row has no name), and calls the plugin's
+  `getMainPage(MainPageRequest(row name, row data, false))`. Asking instead for
+  a single flattened catalogue named "Home" — with the string `"Home"` used as
+  both the id and the requested page — matches no page in the plugin, so every
+  plugin answered with nothing.
+- **A local failure is never an empty result.** "The archive has no bundled
+  plugin", "the plugin's `load()` threw", "it registered no provider", "the page
+  parsed to nothing" and "the site genuinely returned no items" all used to
+  collapse into the same silent empty list, which the app could only render as
+  "Nothing came back from this extension". The bridge now throws an
+  `IllegalStateException` naming the extension and the specific reason for every
+  local failure, and its load is bounded (45s budget, a 60s retry cooldown, a
+  12s window to find the host activity and a 3s poll for plugin registration).
+
+The app records those reasons per provider in
+`HikariProviderAdapter.catalogErrors` and Home (and the catalogue screen) show
+them under the empty state, so an extension that cannot load says *why* rather
+than pointing at a Cloudflare verification page it never touches. Stream
+failures stay silent on catalogues and are reported through `streamErrors`.
+
+## Publishing the repository (`fileHash`)
+
+The repository index (`repo.json`) **must carry a `fileHash` per entry**
+(`"sha256-<hex>"`) for `.hiki`, `.jar` and native `.cs3` files. The update check
+reads it as
+
+```kotlin
+val hash = plugin.fileHash ?: continue     // ← an entry without one is skipped
+if (!hash.startsWith("sha256-")) continue
+```
+
+so a repository that omits it can never offer an update to anything already
+installed on a device, and a fix published later can never reach it. `build.sh`
+in the extensions repo computes the digest for every published artifact.
+
 ## Extensions behind a verification wall are skipped silently
 
 If an extension answers with a browser-verification wall (its own error text is
