@@ -728,6 +728,20 @@ private fun TelegramMyChats(
     onQuery: (String) -> Unit,
     onOpenChat: (Long, String) -> Unit,
 ) {
+    // ---- main vs archived ------------------------------------------------
+    //
+    // Telegram keeps two lists and the archive is a real one: a chat the user
+    // filed away, or one Telegram archived for them when they muted it, lives
+    // there and its videos are just as playable. Only chats with a MAIN-list
+    // position used to survive the filter (see Td.publishChats), which is what
+    // made archived channels vanish. The scope pill is how they are reached,
+    // and it carries the count so the user can see there is something in the
+    // archive before tapping it.
+    var archivedScope by rememberSaveable { mutableStateOf(false) }
+    val archivedCount = remember(chatList) { chatList.count { it.archived } }
+    val scopedChats = remember(visibleChats, archivedScope) {
+        visibleChats.filter { it.archived == archivedScope }
+    }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(
@@ -752,20 +766,41 @@ private fun TelegramMyChats(
                             modifier = Modifier.fillMaxWidth().tvTextFieldKeys(query),
                         )
                     }
-                    if (visibleChats.isEmpty()) {
+                    // The two scopes, as pills — the same control the video
+                    // pages use. The archive pill only appears when there is
+                    // something in the archive, so a user with nothing archived
+                    // sees exactly the list they saw before.
+                    if (archivedCount > 0) {
+                        item(key = "telegram-chats-scope") {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                TgPill(tr("Chats"), !archivedScope) { archivedScope = false }
+                                TgPill(
+                                    tr("Archived") + " · " + archivedCount,
+                                    archivedScope,
+                                ) { archivedScope = true }
+                            }
+                        }
+                    }
+                    if (scopedChats.isEmpty()) {
                         item(key = "telegram-chats-none") {
                             Text(
-                                tr("No chat matches that name."),
+                                if (archivedScope) tr("No archived chat matches that name.")
+                                else tr("No chat matches that name."),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                     }
-                    items(visibleChats, key = { "chat-" + it.id }) { chat ->
+                    items(scopedChats, key = { "chat-" + it.id }) { chat ->
                         TelegramChatRow(
                             title = chat.title,
                             kind = chat.kind,
                             unread = chat.unread,
+                            archived = chat.archived,
                             onOpen = { onOpenChat(chat.id, chat.title) },
                         )
                     }
@@ -1433,6 +1468,7 @@ private fun TelegramChatRow(
     title: String,
     kind: Td.Chat.Kind,
     unread: Int,
+    archived: Boolean = false,
     onOpen: () -> Unit,
 ) {
     val icon = when (kind) {
@@ -1440,13 +1476,16 @@ private fun TelegramChatRow(
         Td.Chat.Kind.CHANNEL -> Icons.Filled.Tag
         else -> Icons.Filled.Send
     }
-    val kindLabel = when (kind) {
+    val baseLabel = when (kind) {
         Td.Chat.Kind.SAVED -> tr("Saved Messages")
         Td.Chat.Kind.CHANNEL -> tr("Channel")
         Td.Chat.Kind.GROUP -> tr("Group")
         Td.Chat.Kind.PRIVATE -> tr("Chat")
         Td.Chat.Kind.SECRET -> tr("Secret chat")
     }
+    // Archived chats are the same chats, filed in the other list, so the row
+    // says which one it came from instead of quietly looking identical.
+    val kindLabel = if (archived) baseLabel + " · " + tr("Archived") else baseLabel
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1504,12 +1543,63 @@ private fun TelegramChatVideos(
     val context = LocalContext.current
     val app = LocalContext.current.applicationContext as HikariApp
     var videos by remember(chatId) { mutableStateOf<List<Td.ChatVideo>?>(null) }
+    var note by remember(chatId) { mutableStateOf<String?>(null) }
     var loadingMore by remember(chatId) { mutableStateOf(false) }
     var reachedEnd by remember(chatId) { mutableStateOf(false) }
+    // Where the next "older" page starts. 0 means there is nothing more to ask
+    // for, which is what disables the button — this is the cursor TDLib's own
+    // answer handed back, not a guess at the last row on screen.
+    var cursor by remember(chatId) { mutableStateOf(0L) }
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(chatId) {
-        videos = withContext(Dispatchers.IO) { Td.chatVideos(chatId, 0, 60) }
+        val page = withContext(Dispatchers.IO) { Td.chatVideosPage(chatId, 0, 60) }
+        note = page.note
+        cursor = page.nextCursor
+        reachedEnd = !page.more
+        videos = page.videos
+    }
+
+    /**
+     * Walks this chat's videos one page further back.
+     *
+     * A page can legitimately hold nothing NEW (the two readers that make up a
+     * page — Telegram's video index and the raw history walk — overlap, and the
+     * index skips the text a history page is mostly made of), so this keeps
+     * asking while the cursor keeps moving back instead of giving up on the
+     * first empty diff and claiming the chat has no more videos.
+     */
+    fun loadOlder() {
+        if (loadingMore || cursor == 0L || videos == null) return
+        loadingMore = true
+        scope.launch {
+            var before = cursor
+            val added = ArrayList<Td.ChatVideo>()
+            var more = true
+            var rounds = 0
+            while (more && added.isEmpty() && rounds < 6) {
+                rounds++
+                val page = withContext(Dispatchers.IO) { Td.chatVideosPage(chatId, before, 60) }
+                val known = videos.orEmpty() + added
+                page.videos.forEach { v ->
+                    if (known.none { it.messageId == v.messageId } && added.none { it.messageId == v.messageId }) {
+                        added += v
+                    }
+                }
+                if (page.note != null && added.isEmpty()) note = page.note
+                // The cursor must move strictly back, or the walk would ask for
+                // the same page forever (a page with nothing new in it).
+                more = page.nextCursor in 1 until before
+                before = if (more) page.nextCursor else 0L
+            }
+            loadingMore = false
+            cursor = before
+            if (before == 0L) reachedEnd = true
+            if (added.isNotEmpty()) {
+                note = null
+                videos = videos.orEmpty() + added
+            }
+        }
     }
 
     // ---- search inside this chat (see the search button below) -------------
@@ -1657,10 +1747,43 @@ private fun TelegramChatVideos(
             return@Column
         }
         if (loaded.isEmpty()) {
-            EmptyState(
-                title = tr("No videos in this chat"),
-                subtitle = tr("Posts here carry no video file Telegram can hand to the player."),
-            )
+            Column(
+                modifier = Modifier.fillMaxSize(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+            ) {
+                EmptyState(
+                    title = tr("No videos in this chat"),
+                    // When Telegram REFUSED the read (or the media index could
+                    // not be asked) the reason is printed as it came back: an
+                    // empty list is not the same answer as a refusal, and only
+                    // one of them means "this chat has no videos".
+                    subtitle = note
+                        ?: tr("Posts here carry no video file Telegram can hand to the player."),
+                )
+                // Always offered, even on an empty page: a channel that mostly
+                // posts links reaches its first video a few pages back, and this
+                // button is the only way to walk there. It used to be drawn only
+                // once a video had already been found, which is what made those
+                // channels look like they had no videos at all.
+                if (loadingMore) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(8.dp))
+                        Text(tr("Looking further back…"), style = MaterialTheme.typography.labelSmall)
+                    }
+                } else if (!reachedEnd) {
+                    TextButton(onClick = { loadOlder() }) {
+                        Text(tr("Search further back"))
+                    }
+                } else {
+                    Text(
+                        tr("That is the oldest post in this chat."),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
             return@Column
         }
         ChatVideoCollection(
@@ -1679,17 +1802,10 @@ private fun TelegramChatVideos(
                 } else {
                     TextButton(
                         enabled = !loadingMore,
-                        onClick = {
-                            val last = loaded.lastOrNull() ?: return@TextButton
-                            loadingMore = true
-                            scope.launch {
-                                val older = withContext(Dispatchers.IO) {
-                                    Td.chatVideos(chatId, last.messageId, 60)
-                                }.filterNot { v -> loaded.any { it.messageId == v.messageId } }
-                                loadingMore = false
-                                if (older.isEmpty()) reachedEnd = true else videos = loaded + older
-                            }
-                        },
+                        // The same walk as the empty-page button above: keep
+                        // asking while the cursor moves back, so a page that
+                        // happens to hold only text does not end the list.
+                        onClick = { loadOlder() },
                     ) {
                         Text(if (loadingMore) tr("Loading…") else tr("Load older"))
                     }

@@ -132,6 +132,42 @@
 -dontwarn org.drinkless.tdlib.**
 
 # ---------------------------------------------------------------------------
+# 3d. HikariApp's companion object — the one app class a `.hiki` reads
+#
+# A `.hiki` extension is compiled against a stub of `com.hikari.app.HikariApp`
+# (the extensions repo's `stubs/HikariAppStub.kt`) so it can hand CloudStream
+# plugins a live Activity: `HikariApp.mainActivity` / `HikariApp.instance`. That
+# compiles to exactly three references, read out of the built extension's dex:
+#
+#   field   Lcom/hikari/app/HikariApp;->Companion:Lcom/hikari/app/HikariApp$Companion;
+#   method  Lcom/hikari/app/HikariApp$Companion;->getMainActivity()
+#   method  Lcom/hikari/app/HikariApp$Companion;->getInstance()
+#
+# R8's full mode rewrites every access THIS APP makes to those properties into
+# static fields on HikariApp (`instance`, `mainActivity`) and then deletes the
+# companion class and the `Companion` field with it. Nothing inside the app
+# breaks — every call site was rewritten — but the extension's three references
+# are strings R8 cannot see, so it dies on every plugin load with
+#
+#   NoSuchFieldError: No field Companion of type
+#   Lcom/hikari/app/HikariApp$Companion; in class Lcom/hikari/app/HikariApp
+#
+# and every bridged extension (.hiki → bundled .cs3) answered an empty catalogue.
+# Verified in the shipped dex: HikariApp had `static HikariApp instance` and
+# `static MainActivity mainActivity` and NO companion at all.
+#
+# The whole class is kept (it is a HOST class the same way `com.hikari.ext.**`
+# and `com.lagradost.**` are), and the field is pinned explicitly, because
+# `-keep class com.hikari.app.HikariApp` alone does not match the nested
+# `HikariApp$Companion` class name.
+# ---------------------------------------------------------------------------
+-keep class com.hikari.app.HikariApp { *; }
+-keep class com.hikari.app.HikariApp$Companion { *; }
+-keepclassmembers class com.hikari.app.HikariApp {
+    public static ** Companion;
+}
+
+# ---------------------------------------------------------------------------
 # 4. Libraries third-party code links against by name
 #
 # Not one of these is referenced by Hikari's own source — they are here so

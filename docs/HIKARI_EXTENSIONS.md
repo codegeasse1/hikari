@@ -78,6 +78,29 @@ them under the empty state, so an extension that cannot load says *why* rather
 than pointing at a Cloudflare verification page it never touches. Stream
 failures stay silent on catalogues and are reported through `streamErrors`.
 
+### The host class the bridge talks to must survive R8
+
+A `.hiki` extension is compiled against a **stub** of `com.hikari.app.HikariApp`
+(the extensions repo's `stubs/HikariAppStub.kt`) so its bundled CloudStream
+plugins can reach a live Activity through `HikariApp.mainActivity` /
+`HikariApp.instance`. Those are Kotlin companion members on the real class, and
+release builds run R8 in full mode, which *staticises* a companion object: the
+methods move to the host class, the `Companion` field is removed and the
+companion class is deleted. The app's own call sites are rewritten by R8 so
+nothing notices — but the extension's plugin is already-compiled bytecode that
+names the field and class directly, so it dies with
+
+```
+NoSuchFieldError: No field Companion of type Lcom/hikari/app/HikariApp$Companion;
+in class Lcom/hikari/app/HikariApp; ... (declaration of 'com.hikari.app.HikariApp'
+appears in base.apk! classes2.dex)
+```
+
+`app/proguard-rules.pro` therefore keeps the class, its companion and the
+`Companion` field (see section 3d of that file). **Any future refactor that
+moves the Activity/instance accessors off `HikariApp`'s companion silently
+breaks every installed extension**, so change the stubs and this rule together.
+
 ## Publishing the repository (`fileHash`)
 
 The repository index (`repo.json`) **must carry a `fileHash` per entry**

@@ -322,6 +322,15 @@ class AppStore(private val ctx: Context) {
         /** Brightness/volume swipes on the player's video surface (ON by
          *  default; Settings → Player → Player controls). */
         val PLAYER_SWIPES = booleanPreferencesKey("playerSwipes")
+        /**
+         * The player's volume BOOSTER: +6 dB (2× the amplitude) applied to the
+         * audio session by an `android.media.audiofx.LoudnessEnhancer`, so a
+         * film whose dialogue was mixed quiet can be turned up past the device's
+         * own 100% without touching the video's own volume key. OFF by default
+         * — it is a change to the sound, and the honest default is "as
+         * mastered". See [volumeBoostFlow] and PlayerActivity.attachVolumeBoost.
+         */
+        val VOLUME_BOOST = booleanPreferencesKey("volumeBoost")
         /** Reading mode of the manga reader ([com.hikari.app.manga.MangaReadMode]:
          *  paged left-to-right, paged right-to-left, or vertical webtoon). */
         val MANGA_READ_MODE = stringPreferencesKey("mangaReadMode")
@@ -2739,6 +2748,27 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setPlayerSwipes(on: Boolean) {
         write("PLAYER_SWIPES") { it[K.PLAYER_SWIPES] = on }
+    }
+
+    /**
+     * The volume booster (Settings → Player). ON means the player attaches an
+     * `android.media.audiofx.LoudnessEnhancer` set to +6 dB to the audio session
+     * it is playing through — 2× the amplitude the file carries, which is the
+     * "make the quiet dialogue audible" case at the top of the scale. The
+     * platform's volume keys are not involved (they are already at their
+     * ceiling), so this is the only way to exceed 100%; it is OFF by default
+     * because a boosted track is a changed track.
+     *
+     * Stored as a preference rather than per-video state: a user who needs the
+     * boost needs it for the film they are watching and the next one too.
+     */
+    fun volumeBoostFlow(): Flow<Boolean> =
+        store.data.map { it[K.VOLUME_BOOST] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun volumeBoost(): Boolean = volumeBoostFlow().first()
+
+    suspend fun setVolumeBoost(on: Boolean) {
+        write("VOLUME_BOOST") { it[K.VOLUME_BOOST] = on }
     }
 
     /** Video enhance preset key (see [com.hikari.app.player.EnhancePreset]). */

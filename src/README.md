@@ -68,6 +68,79 @@ see the session log below, which is where their design notes live.)
 
 ## Session log (newest first)
 
+- **0.10.59** (versionCode 230) — the owner's fourteenth round, four asks in one push. The owner was emphatic that
+  the extension problem is **an app bug, not an extension bug** ("i told you thats bug in app instead you wasted
+  time to edit hikari extension repos … dont in any extension sources"), so this round touched **only**
+  `codegeasse1/hikari` — no file under `hikari-extensions` was changed.
+  - **Extensions' catalogues: the real cause was R8, and it had never worked on a release build.** The 9 screenshots
+    all show the same Home subtitle: `its plugin failed to load: NoSuchFieldError: No field Companion of type
+    Lcom/hikari/app/HikariApp$Companion; in class Lcom/hikari/app/HikariApp; … (declaration of 'com.hikari.app.HikariApp'
+    appears in base.apk! classes2.dex)` — AllWish/Animesalt/Animexin (Phisher), AnimeSuge (CNC Verse). Proven by
+    **DEX-dumping both sides**: the shipped `hikari-arm64-v8a.apk` has `Lcom/hikari/app/HikariApp;` with
+    `static HikariApp instance` + `static MainActivity mainActivity`, **no `Companion` field, and no
+    `Lcom/hikari/app/HikariApp$Companion;` class at all** (class-by-class walk of the dex); the published
+    `phisher.hiki`'s plugin bytecode references exactly `HikariApp->Companion`, `HikariApp$Companion.getMainActivity()`
+    and `getInstance()`. Cause: R8 full mode **staticises the Kotlin companion** (methods move to the host class,
+    field and class deleted); the app's own call sites are rewritten so it never breaks the app, but the extension's
+    already-compiled plugin names the field by string. Fix is app-side only: `app/proguard-rules.pro` section
+    **3d** keeps `com.hikari.app.HikariApp`, `com.hikari.app.HikariApp$Companion` and `public static ** Companion`
+    (`-keep class X` alone does NOT match the nested `$Companion` name). Documented in
+    `docs/HIKARI_EXTENSIONS.md` ("The host class the bridge talks to must survive R8") with the error text and a
+    warning to change the stubs and the rule together. **Verified after the build by re-DEX-dumping the new APK**
+    (companion class + field + accessors must exist) — the only verification possible without a device.
+  - **IPTV live channels: a 20-second timeout was being treated as a dead server, and the "fix" the owner rejected
+    (raising the timeout) is not the fix.** An IPTV channel is ONE `StreamSource` (`IptvProvider.getStreams`
+    returns `listOf(...)` for a normal playlist channel), so the player's normal answer to a timeout — blacklist the
+    host, walk to the next server, and while `!liveSearchDone` wait up to 180s for the search to hand over a
+    replacement (`awaitReplacementForStalledServer`) — can only walk off a one-item list and then wait for a server
+    no playlist can produce: the reported "keep searching instead of playing". Fixed with a live-source concept:
+    new `PlayerActivity.isLiveSource()` (provider id starts with `IptvMark.ID_PREFIX` = `iptv|`, or media3's own
+    `Player.isCurrentMediaItemLive` for any other provider's live HLS). Both watchdogs now route a live source to
+    new `retryLiveStart()` (own budget `liveStartBudgetMs` = 30s, up to `maxLiveStartRetries` = 6 full re-opens —
+    `playSource(currentIndex)` rebuilds the player, so each is a fresh connection, the actual cure for a live feed
+    whose first segment never arrived); the error path routes to new `scheduleLiveReconnect()` (3s delay, then the
+    same bounded re-open) instead of the search dance; `promptSlowServer` has a defensive live guard; the
+    `startedWhileSearching` relink branch in `onPlayerError` is skipped for live; the retry counter resets in
+    `onRenderedFirstFrame`; the pending reconnect task is removed in `onDestroy`. Live hosts are never added to
+    `deadHosts` and the cross-extension search is never consulted for `iptv|`. Only after the retries does the
+    honest "This live channel is not responding. It may be offline right now." appear.
+  - **Telegram: videos showed only in Saved Messages and bot chats, never in channels; archived and some joined
+    chats were missing entirely.** Root cause of the video half: the reader listed the chat's *newest 60 messages*
+    (`GetChatHistory`) and kept the ones that were videos — for a channel that mostly posts text/links the newest 60
+    contain no video at all, so the page read "No videos in this chat", while Saved Messages / a bot chat (where the
+    owner posts videos) looked fine. Fixed by rewriting `Td.chatVideosPage` to merge **Telegram's own media index**
+    (`SearchChatMessages(chatId, null, query="", null, fromMessageId=before, 0, limit, SearchMessagesFilterVideo())`
+    → `FoundChatMessages` — the server-side Shared Media → Videos list the official clients show; the vendored
+    `TdApi.java` documents empty-query + filter as valid) with the history walk, deduped by message id, cursor =
+    oldest id either reader saw; history is kept as the second reader because it is the only one that sees a video
+    posted as a FILE (MessageDocument with a video mime) or an animation, and it still works when the index refuses.
+    `ChatHistoryVideos` gained `note` (a TDLib refusal is no longer printed as "no videos"); `query()` gained an
+    `onError` hook + `errorText()`; `TelegramScreen`'s state block gained `note`/`cursor`/`reachedEnd` with a
+    `loadOlder()` that walks up to 6 pages while the cursor moves back (a page can legitimately hold nothing NEW),
+    the empty state offers "Search further back" always, and the footer button uses the same walk. Root cause of the
+    list half: `loadChats()` did a single `LoadChats(ChatListMain(), 100)` — `LoadChats` is PAGED and signals
+    "fully loaded" with error **404**, not an empty batch — and `publishChats()` filtered on `mainOrder != 0`, so
+    every chat TDLib had not positioned yet and every archived chat vanished. Now: paged `loadChatPage()` over
+    `ChatListMain` **and** `ChatListArchive` (`CHAT_LOAD_PAGE` 100, `CHAT_LOAD_MAX` 2000); `mainOrder`/
+    `archiveOrder`/`leftBehind` maps; `absorbPosition`/`absorbPositions`/`forgetInList`; positions are read from
+    `UpdateNewChat`, `UpdateChatPosition` **and** `UpdateChatLastMessage` (TDLib docs: the last is sent *instead of*
+    `updateChatPosition`, which is why some joined channels never appeared); membership fallback via `chat.chatLists`
+    with explicit removal winning, Saved Messages always shown; `Chat.archived` + sort Saved → main → archived.
+    UI: a "Chats / Archived · N" pill row in `TelegramMyChats` (archive pill only when the count > 0) and a
+    " · Archived" suffix on the row's kind label.
+  - **Volume booster (new feature, Settings → Player).** A switch (default OFF) that attaches
+    `android.media.audiofx.LoudnessEnhancer` to the player's audio session with `setTargetGain(600)` mB = +6 dB
+    (10^(6/20) ≈ 2.0× amplitude = "200%"), applied after the decoder so it stacks on top of the device's own volume
+    — the only way past the keys' 100% ceiling. `AppStore.VOLUME_BOOST` + `volumeBoostFlow()/volumeBoost()/
+    setVolumeBoost()`; new `VolumeBoostCard` in `SettingsScreen` (PLAYER folder, next to Player UI);
+    `PlayerActivity` reads it with the other player preferences, `applyVolumeBoost()` attaches/re-attaches/releases
+    (called from `onTracksChanged`, a new `onAudioSessionIdChanged` override, and after the pref lands), release in
+    `onDestroy`; a device whose HAL refuses the effect fails soft (unboosted playback, logged).
+  - Also in this round: `versionCode` 230 / `versionName` `0.10.59`, this CHANGELOG section, and the
+    `docs/HIKARI_EXTENSIONS.md` R8 note. Pushed as ONE commit to `codegeasse1/hikari` `main`; **continuous build
+    only — no release was dispatched** (the owner's standing rule, restated this round as "do continuous build and
+    not to release the APK to main").
+
 - **0.10.58** (versionCode 229) — the owner's thirteenth round: **CNC Verse and Phisher `.hiki` extensions showed no
   catalogue** on Home (screenshots: `Couldn't load Donghuasteam · Donghuasteam (Phisher)`, `MovieBoxProvider
   (Phisher)`, `BanglaPlex (Phisher)`, `AnimeDekhoProvider · Onepace (Phisher)`, each with the generic "Nothing came

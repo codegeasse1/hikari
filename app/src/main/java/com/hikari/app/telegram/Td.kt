@@ -73,6 +73,16 @@ object Td {
         val kind: Kind,
         val order: Long,
         val unread: Int,
+        /**
+         * True when this chat sits in the account's ARCHIVE list rather than the
+         * main one. Archived chats are still the user's chats — a channel added
+         * long ago ends up here on its own (Telegram archives a channel whose
+         * notifications the user muted, and every chat the user archived by
+         * hand), and TDLib keeps them in `ChatListArchive`, which is why
+         * `LoadChats(ChatListMain())` alone never mentions them and the list
+         * ended up missing chats the user is plainly a member of.
+         */
+        val archived: Boolean = false,
     ) {
         enum class Kind { SAVED, PRIVATE, GROUP, CHANNEL, SECRET }
     }
@@ -142,6 +152,16 @@ object Td {
         /** Whether the page carried any messages at all: false is history's end
          *  (an exhausted walk is answered with an empty batch). */
         val more: Boolean,
+        /**
+         * Why the page came back with nothing, when TDLib said something useful
+         * — an error string, or the note that the media index is unavailable.
+         *
+         * An empty video list used to be printed as "No videos in this chat"
+         * however it came about, so a refusal from Telegram (a channel whose
+         * messages TDLib could not read, a rate limit) looked exactly like a
+         * chat that genuinely has no video. The UI now shows this instead.
+         */
+        val note: String? = null,
     )
 
     /**
@@ -244,7 +264,23 @@ object Td {
     val sentTo: StateFlow<String> = _sentTo.asStateFlow()
 
     private val chatValues = ConcurrentHashMap<Long, TdApi.Chat>()
+    /** Position order in the MAIN chat list; 0/absent means "not in it". */
     private val mainOrder = ConcurrentHashMap<Long, Long>()
+    /**
+     * Position order in the ARCHIVE list. Kept apart from [mainOrder] because
+     * the two are different lists with different orders, and because absence
+     * from the main list is exactly what an archived chat looks like — the list
+     * used to be filtered on `mainOrder != 0`, which is why archived chats (and
+     * every channel the user is in that Telegram archived) never appeared.
+     */
+    private val archiveOrder = ConcurrentHashMap<Long, Long>()
+    /**
+     * Chats TDLib has explicitly removed from a list (left a group, archived a
+     * chat away and then removed it, joined-and-left). Membership is only used
+     * as a fallback for a chat we have no position for, so this is what keeps a
+     * chat the user has actually left from reappearing through that fallback.
+     */
+    private val leftBehind = java.util.Collections.newSetFromMap(ConcurrentHashMap<Long, Boolean>())
     private val fileValues = ConcurrentHashMap<Int, TdApi.File>()
 
     /**
@@ -469,6 +505,8 @@ object Td {
         runCatching { client?.send(TdApi.LogOut(), null, null) }
         chatValues.clear()
         mainOrder.clear()
+        archiveOrder.clear()
+        leftBehind.clear()
         fileValues.clear()
         fetchedFiles.clear()
         _chats.value = emptyList()
@@ -624,18 +662,24 @@ object Td {
     fun loadChats() {
         val c = client ?: return
         scope.launch { refreshMe() }
-        loadChatPage(c, 0)
+        loadChatPage(c, TdApi.ChatListMain(), 0)
+        // The archive is a SECOND list, and `LoadChats(ChatListMain())` never
+        // mentions it: an archived chat has no main-list position, so the tab
+        // only ever showed the chats that were not archived. Every archived chat
+        // — including a channel Telegram archived for the user when they muted it
+        // — was absent from the list with no way to reach it.
+        loadChatPage(c, TdApi.ChatListArchive(), 0)
     }
 
-    private fun loadChatPage(c: Client, loaded: Int) {
+    private fun loadChatPage(c: Client, list: TdApi.ChatList, loaded: Int) {
         if (loaded >= CHAT_LOAD_MAX) return
         runCatching {
             c.send(
-                TdApi.LoadChats(TdApi.ChatListMain(), CHAT_LOAD_PAGE),
+                TdApi.LoadChats(list, CHAT_LOAD_PAGE),
                 Client.ResultHandler { result ->
                     // Error 404 is TDLib's "the chat list is fully loaded";
                     // anything else is a refusal and asking again would not help.
-                    if (result !is TdApi.Error) loadChatPage(c, loaded + CHAT_LOAD_PAGE)
+                    if (result !is TdApi.Error) loadChatPage(c, list, loaded + CHAT_LOAD_PAGE)
                 },
                 null,
             )
@@ -680,10 +724,23 @@ object Td {
             is TdApi.UpdateAuthorizationState -> onAuthState(update.authorizationState)
             is TdApi.UpdateNewChat -> {
                 chatValues[update.chat.id] = update.chat
+                absorbPositions(update.chat.id, update.chat.positions)
                 publishChats()
             }
-            is TdApi.UpdateChatPosition -> if (update.position.list is TdApi.ChatListMain) {
-                mainOrder[update.chatId] = update.position.order
+            is TdApi.UpdateChatPosition -> {
+                absorbPosition(update.chatId, update.position)
+                publishChats()
+            }
+            is TdApi.UpdateChatLastMessage -> {
+                // TDLib hands the chat's CURRENT positions over with this update,
+                // and its own documentation says it "might be sent INSTEAD of the
+                // updateChatPosition" update. Only the standalone position update
+                // used to be read, so when a chat's position arrived this way it
+                // was never recorded as being in a list and was dropped from the
+                // list entirely — the reported "some channel which I am joined is
+                // not even showing in Hikari" (it is also what kept chats TDLib
+                // had not yet positioned at all from ever appearing).
+                absorbPositions(update.chatId, update.positions)
                 publishChats()
             }
             is TdApi.UpdateChatTitle -> {
@@ -692,10 +749,15 @@ object Td {
                     publishChats()
                 }
             }
-            is TdApi.UpdateChatLastMessage,
-            is TdApi.UpdateChatReadInbox,
-            is TdApi.UpdateChatRemovedFromList,
-            is TdApi.UpdateChatAddedToList -> publishChats()
+            is TdApi.UpdateChatReadInbox -> publishChats()
+            is TdApi.UpdateChatRemovedFromList -> {
+                forgetInList(update.chatId, update.chatList)
+                publishChats()
+            }
+            is TdApi.UpdateChatAddedToList -> {
+                leftBehind.remove(update.chatId)
+                publishChats()
+            }
             is TdApi.UpdateFile -> {
                 fileValues[update.file.id] = update.file
                 _revision.value = _revision.value + 1
@@ -703,6 +765,34 @@ object Td {
             is TdApi.UpdateConnectionState ->
                 _online.value = update.state is TdApi.ConnectionStateReady
         }
+    }
+
+    /** Records one chat position. Order 0 means the chat LEFT that list. */
+    private fun absorbPosition(chatId: Long, position: TdApi.ChatPosition) {
+        when (position.list) {
+            is TdApi.ChatListMain ->
+                if (position.order == 0L) mainOrder.remove(chatId) else mainOrder[chatId] = position.order
+            is TdApi.ChatListArchive ->
+                if (position.order == 0L) archiveOrder.remove(chatId) else archiveOrder[chatId] = position.order
+            // Folder lists are views over the two above: a chat in a folder is
+            // in the main list (or in the archive) as well, so there is nothing
+            // extra to record.
+            else -> Unit
+        }
+        if (position.order != 0L) leftBehind.remove(chatId)
+    }
+
+    private fun absorbPositions(chatId: Long, positions: Array<TdApi.ChatPosition>?) {
+        positions?.forEach { absorbPosition(chatId, it) }
+    }
+
+    private fun forgetInList(chatId: Long, list: TdApi.ChatList?) {
+        when (list) {
+            is TdApi.ChatListMain -> mainOrder.remove(chatId)
+            is TdApi.ChatListArchive -> archiveOrder.remove(chatId)
+            else -> Unit
+        }
+        leftBehind.add(chatId)
     }
 
     private fun onAuthState(state: TdApi.AuthorizationState) {
@@ -746,6 +836,8 @@ object Td {
                 started.set(false)
                 chatValues.clear()
                 mainOrder.clear()
+                archiveOrder.clear()
+                leftBehind.clear()
                 fileValues.clear()
                 fetchedFiles.clear()
                 _chats.value = emptyList()
@@ -817,16 +909,34 @@ object Td {
     }
 
     /** One query as a suspend function. Null on error (and when there is no client). */
-    private suspend fun <T : TdApi.Object> query(function: TdApi.Function<T>): TdApi.Object? {
+    private suspend fun <T : TdApi.Object> query(
+        function: TdApi.Function<T>,
+        onError: ((TdApi.Error) -> Unit)? = null,
+    ): TdApi.Object? {
         val c = client ?: return null
         return suspendCancellableCoroutine { cont ->
             runCatching {
                 c.send(function) { result ->
-                    if (result is TdApi.Error) cont.resume(null) else cont.resume(result)
+                    if (result is TdApi.Error) {
+                        // A refusal used to be indistinguishable from an empty
+                        // answer — every caller turned null into "there is
+                        // nothing here", so a channel Telegram refused to read
+                        // looked exactly like a chat with no videos. Callers
+                        // that can say something useful about the refusal now
+                        // get the error itself.
+                        onError?.invoke(result)
+                        cont.resume(null)
+                    } else {
+                        cont.resume(result)
+                    }
                 }
             }.onFailure { if (cont.isActive) cont.resume(null) }
         }
     }
+
+    /** A TDLib refusal as one line the tab can print under an empty list. */
+    private fun errorText(e: TdApi.Error): String =
+        "Telegram said ${e.code}: ${e.message.ifBlank { "refused" }}"
 
     /** Synchronous TDLib call — safe from any thread, never touches the network. */
     private fun <T : TdApi.Object> execute(function: TdApi.Function<T>): TdApi.Object? =
@@ -839,6 +949,7 @@ object Td {
         val saved = savedChatId
         val list = chatValues.values.mapNotNull { chat ->
             val order = mainOrder[chat.id] ?: 0L
+            val archive = archiveOrder[chat.id] ?: 0L
             val kind = when (val type = chat.type) {
                 is TdApi.ChatTypePrivate ->
                     // The chat whose other end is us. [ensureSavedChat]'s id is
@@ -854,27 +965,46 @@ object Td {
                     if (type.isChannel) Chat.Kind.CHANNEL else Chat.Kind.GROUP
                 else -> Chat.Kind.GROUP
             }
-            // order 0 means "not in the main list" — archived chats, and chats
-            // TDLib has not placed yet. Saved Messages is the one chat that is
-            // always shown, even when nothing has ordered it yet.
-            if (order == 0L && kind != Chat.Kind.SAVED) return@mapNotNull null
+            // Which lists is this chat in?
+            //
+            // The positions are the authority (order 0 = not in that list), and
+            // the ARCHIVE is checked as well as the main list — that is the
+            // whole point of [archiveOrder]. When TDLib has told us about a chat
+            // but has not positioned it yet, the chat's OWN list membership is
+            // the fallback, so a chat the user is a member of can never be
+            // silently missing; an explicit removal from a list always wins over
+            // that fallback (see [leftBehind]). Saved Messages is the one chat
+            // that is always shown, even when nothing has ordered it yet.
+            val membership = if (mainOrder.containsKey(chat.id) || archiveOrder.containsKey(chat.id)) {
+                false
+            } else {
+                (chat.chatLists?.size ?: 0) > 0 && !leftBehind.contains(chat.id)
+            }
+            if (order == 0L && archive == 0L && !membership && kind != Chat.Kind.SAVED) {
+                return@mapNotNull null
+            }
             Chat(
                 id = chat.id,
                 title = if (kind == Chat.Kind.SAVED) "Saved Messages"
                 else chat.title.ifBlank { "Chat" },
                 kind = kind,
-                order = order,
+                order = if (order != 0L) order else archive,
                 unread = chat.unreadCount,
+                archived = order == 0L && archive != 0L,
             )
         }.sortedWith(
             // Saved Messages is not "ordered by activity" like a chat is: it is
-            // the user's own corner, so it sits at the top of the list.
-            compareBy({ if (it.kind == Chat.Kind.SAVED) 0 else 1 }, { -it.order })
+            // the user's own corner, so it sits at the top of the list. Archived
+            // chats follow the main list, and are sorted by their own list's
+            // order (the two lists' order scales are not comparable).
+            compareBy(
+                { if (it.kind == Chat.Kind.SAVED) 0 else if (it.archived) 2 else 1 },
+                { -it.order },
+            )
         )
         _chats.value = list
     }
 
-    /** The videos of a chat, newest first; [before] walks back through history. */
     /** True when a query can be answered right now — the account is signed in
      *  and the client is running. */
     fun isSignedIn(): Boolean = _auth.value is Auth.Ready
@@ -922,23 +1052,82 @@ object Td {
     }
 
     /**
-     * One page of a chat's history as videos, plus the cursor for the page older
-     * than it.
+     * One page of a chat's videos — the list the Telegram tab opens on.
      *
-     * The cursor and the "was there anything" flag are the two things a walk
-     * needs and [chatVideos] threw away: a page of 60 messages can easily hold no
-     * video at all (a busy group posts far more text than film), and without the
-     * oldest message id there is no way to ask for the next 60 — so a chat whose
-     * videos are a few hundred messages back used to read as a chat with none.
+     * TWO readers, because either one alone is wrong for the chats people
+     * actually have:
+     *
+     *  * **Telegram's own media index** — `SearchChatMessages` with a video
+     *    filter and an EMPTY query, which TDLib documents as "may be empty to
+     *    search for sender or filter only", and which is the server-side
+     *    "shared media → videos" list the official clients show. One page of it
+     *    is the newest N videos in the chat, whatever else the chat has been
+     *    posting. Without it the list was built from raw history pages, so a
+     *    channel that mostly posts links and text (i.e. every big channel) had
+     *    all 60 newest messages free of a single video: the page came back with
+     *    nothing, the tab said "No videos in this chat", and because "Load
+     *    older" only drew once a video had been found there was no way to walk
+     *    deeper and reach the videos that were plainly there.
+     *  * **History**, which is the only reader that sees a video posted as a
+     *    FILE (`MessageDocument` with a video mime type, which the media index
+     *    does not cover) or as an animation, and the one that still works when
+     *    the index refuses.
+     *
+     * The two are merged (deduped by message id), and the page's cursor is the
+     * OLDEST message either of them saw, so "Load older" walks both readers back
+     * together and cannot loop.
      */
     suspend fun chatVideosPage(chatId: Long, before: Long = 0, limit: Int = 60): ChatHistoryVideos {
-        val result = query(TdApi.GetChatHistory(chatId, before, 0, limit, false)) as? TdApi.Messages
-            ?: return ChatHistoryVideos(emptyList(), 0, false)
-        val messages = result.messages
+        val videos = LinkedHashMap<Long, ChatVideo>()
+        var cursor = Long.MAX_VALUE
+        var sawMessages = false
+        var note: String? = null
+
+        var indexError: String? = null
+        val indexed = query(
+            TdApi.SearchChatMessages(
+                chatId,
+                /* topicId = */ null,
+                /* query = */ "",
+                /* senderId = */ null,
+                before,
+                /* offset = */ 0,
+                limit.coerceIn(1, SEARCH_HITS_PER_CALL),
+                TdApi.SearchMessagesFilterVideo(),
+            ),
+        ) { indexError = errorText(it) } as? TdApi.FoundChatMessages
+        if (indexed != null) {
+            for (m in indexed.messages) {
+                sawMessages = true
+                cursor = minOf(cursor, m.id)
+                videoOf(chatId, m)?.let { videos.putIfAbsent(it.messageId, it) }
+            }
+        } else if (indexError != null) {
+            note = indexError
+        }
+
+        var historyError: String? = null
+        val history = query(TdApi.GetChatHistory(chatId, before, 0, limit, false)) {
+            historyError = errorText(it)
+        } as? TdApi.Messages
+        if (history != null) {
+            for (m in history.messages) {
+                sawMessages = true
+                cursor = minOf(cursor, m.id)
+                videoOf(chatId, m)?.let { videos.putIfAbsent(it.messageId, it) }
+            }
+        } else if (historyError != null) {
+            note = note ?: historyError
+        }
+
+        val page = videos.values.sortedByDescending { it.messageId }
         return ChatHistoryVideos(
-            videos = messages.mapNotNull { videoOf(chatId, it) },
-            nextCursor = messages.minOfOrNull { it.id } ?: 0L,
-            more = messages.isNotEmpty(),
+            videos = page,
+            nextCursor = if (cursor == Long.MAX_VALUE) 0L else cursor,
+            more = sawMessages,
+            // Only worth printing when the page really is empty — one dead
+            // reader beside a working one is not a reason to say anything.
+            note = if (page.isEmpty()) note else null,
         )
     }
 

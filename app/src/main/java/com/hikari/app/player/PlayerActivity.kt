@@ -21,6 +21,7 @@ import android.graphics.drawable.LayerDrawable
 import android.graphics.drawable.RippleDrawable
 import android.graphics.drawable.StateListDrawable
 import android.media.AudioManager
+import android.media.audiofx.LoudnessEnhancer
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -671,6 +672,66 @@ class PlayerActivity : ComponentActivity() {
     /** Brightness/volume swipes (Settings → Player → Player controls). Read when
      *  the player opens; ON unless the user turned them off. */
     private var swipesEnabled = true
+
+    // ---- Volume booster (Settings → Player) ------------------------------
+    //
+    // A film whose dialogue was mixed quiet has a ceiling the phone's volume
+    // keys cannot lift: they are already at 100%, and the level that is too low
+    // is the file's own. The one lever left is to amplify the audio AFTER the
+    // decoder — the platform's own `LoudnessEnhancer` on the player's audio
+    // session — which is what this switch arms. It is a setting rather than a
+    // per-video state (a user who needs it needs it for the next film too) and
+    // OFF by default, because a boosted track is a changed track.
+
+    /** Whether the booster should be on. Read with the other player
+     *  preferences; OFF until the answer lands. */
+    private var volumeBoostOn = false
+
+    /** The live booster, when one is attached to the current audio session. */
+    private var volumeGain: LoudnessEnhancer? = null
+
+    /** The audio session [volumeGain] was built for. The id is only known once
+     *  the track exists (and changes when the player rebuilds its audio sink),
+     *  so this is what lets [applyVolumeBoost] re-attach instead of no-op. */
+    private var volumeGainSession = -1
+
+    /** +6 dB, in millibels (100 mB = 1 dB) — 10^(6/20) ≈ 2.0× the amplitude,
+     *  i.e. the "200%" the setting promises. Fixed rather than a slider: a gain
+     *  above the file's own level is a change to the sound, and one
+     *  understandable step beats a number nobody can interpret. */
+    private val volumeBoostMillibels = 600
+
+    /**
+     * Attaches, re-attaches or removes the booster. Idempotent and safe to call
+     * from `onTracksChanged`/`onAudioSessionIdChanged`: it only rebuilds the
+     * effect when the on/off state or the audio session really changed, and it
+     * never touches the device's own volume (the user keeps that control).
+     */
+    private fun applyVolumeBoost() {
+        val p = player
+        if (!volumeBoostOn || p == null) {
+            volumeGain?.let { runCatching { it.release() } }
+            volumeGain = null
+            volumeGainSession = -1
+            return
+        }
+        val session = p.audioSessionId
+        // 0/negative means there is no audio sink yet — the next tracks/session
+        // change calls back here.
+        if (session <= 0 || session == volumeGainSession) return
+        volumeGain?.let { runCatching { it.release() } }
+        volumeGain = runCatching {
+            LoudnessEnhancer(session).apply {
+                setTargetGain(volumeBoostMillibels)
+                setEnabled(true)
+            }
+        }.onFailure {
+            // Some devices refuse the effect (no `loudness_enhancer` in their
+            // audio HAL). Fail soft: no boost, but the film still plays.
+            com.hikari.app.data.Logs.logError("Player", "volume boost unavailable", it)
+        }.getOrNull()
+        volumeGainSession = if (volumeGain != null) session else -1
+    }
 
     // ---- The codec details overlay ("stats for nerds") --------------------
     //
@@ -1412,6 +1473,15 @@ class PlayerActivity : ComponentActivity() {
             swipesEnabled = runCatching {
                 (applicationContext as HikariApp).store.playerSwipes()
             }.getOrDefault(true)
+        }
+        // The volume booster (Settings → Player). Read like the preferences
+        // above; if the player already exists by the time the answer lands, the
+        // boost goes on immediately, otherwise the first tracks change does it.
+        lifecycleScope.launch {
+            volumeBoostOn = runCatching {
+                (applicationContext as HikariApp).store.volumeBoost()
+            }.getOrDefault(false)
+            applyVolumeBoost()
         }
         // The Stats page's stopwatch: it counts wall-clock seconds of actual
         // playback and hands them to the store every minute (see
@@ -8319,6 +8389,115 @@ class PlayerActivity : ComponentActivity() {
     }
 
     /**
+     * True when the source on screen is a LIVE stream rather than a file.
+     *
+     * Two answers, because either one alone misses a case: an IPTV channel is
+     * live by construction (its provider id is minted as `iptv|…` — see
+     * [com.hikari.app.data.IptvMark]), and a plain HLS link from any other
+     * provider can be a live channel too, which media3 knows from the timeline
+     * ([Player.isCurrentMediaItemLive]) once the source is prepared. No playlist
+     * sniffing, no URL guessing beyond the id the app itself minted.
+     */
+    private fun isLiveSource(src: PlayerSource?): Boolean {
+        if (src == null) return false
+        if (src.providerId.startsWith(com.hikari.app.data.IptvMark.ID_PREFIX)) return true
+        return runCatching { player?.isCurrentMediaItemLive == true }.getOrDefault(false)
+    }
+
+    /** Which server index [liveStartRetries] counts re-opens for. */
+    private var liveStartRetryIndex = -1
+
+    /** How many times the live stream at [liveStartRetryIndex] has been
+     *  re-opened (see [retryLiveStart]). Reset when a frame finally renders. */
+    private var liveStartRetries = 0
+
+    /**
+     * A LIVE stream that produced no picture within its budget.
+     *
+     * Deliberately NOT [promptSlowServer]: a live channel has exactly one link
+     * (an IPTV channel is a single URL in a playlist), so "switch to the next
+     * server" walks off the end of the list, and "wait for the search to find
+     * another" waits for a server no playlist can ever produce — which is the
+     * reported "it keeps searching instead of playing". And the condition the
+     * timeout is naming is usually not a dead server at all: a live HLS/TS
+     * connection that has not handed over its first segment yet is fixed by
+     * re-opening it, which is exactly what this does. The host is never
+     * blacklisted and the search is never consulted; only after
+     * [maxLiveStartRetries] re-opens does the honest error appear.
+     */
+    private fun retryLiveStart(budgetMs: Long) {
+        val src = sources.getOrNull(currentIndex) ?: return
+        if (liveStartRetryIndex != currentIndex) {
+            liveStartRetryIndex = currentIndex
+            liveStartRetries = 0
+        }
+        liveStartRetries++
+        if (liveStartRetries > maxLiveStartRetries) {
+            com.hikari.app.data.Logs.log(
+                "Player",
+                "live stream \"${src.name}\" did not start after " +
+                    "$liveStartRetries re-opens (${budgetMs / 1000}s each) — giving up",
+            )
+            showError(
+                I18n.t("This live channel is not responding. It may be offline right now."),
+                false,
+            )
+            return
+        }
+        com.hikari.app.data.Logs.log(
+            "Player",
+            "live stream \"${src.name}\" has not started — re-opening " +
+                "($liveStartRetries/$maxLiveStartRetries)",
+        )
+        Toast.makeText(this, I18n.t("Reconnecting to the live stream…"), Toast.LENGTH_SHORT).show()
+        // A full re-open: a fresh connection, a fresh playlist read. For live
+        // HLS that is the cure for a stalled segment fetch, and it never costs
+        // the user their place in anything (a live channel has no position to
+        // lose).
+        playSource(currentIndex)
+        // playSource's own cover line says "Starting <server>…"; the reconnect is
+        // the honest description of what this attempt is.
+        val line = I18n.t("Reconnecting to the live stream…")
+        coverPlaybackLine = line
+        loadingStatus?.text = line
+        loadingSpinnerStatus?.text = line
+    }
+
+    /**
+     * Re-opens the live stream after a playback ERROR, on a short delay.
+     *
+     * This is the error-path twin of [retryLiveStart] and exists for the same
+     * reason: the failover chain's answer to "this server died" is to ask the
+     * detail screen for MORE servers, which for an IPTV channel can only ever
+     * wait — a playlist has one link per channel, so nothing new can arrive. A
+     * live feed that dropped is fixed by a fresh connection, which is what this
+     * schedules.
+     */
+    private fun scheduleLiveReconnect(reason: String) {
+        val src = sources.getOrNull(currentIndex)
+        com.hikari.app.data.Logs.log(
+            "Player",
+            "live stream \"${src?.name ?: "?"}\" $reason — re-opening, not re-searching",
+        )
+        val line = I18n.t("Reconnecting to the live stream…")
+        coverPlaybackLine = line
+        loadingStatus?.text = line
+        loadingSpinnerStatus?.text = line
+        if (loadingBanner?.visibility != View.VISIBLE &&
+            loadingSpinner?.visibility != View.VISIBLE
+        ) {
+            showLoadingCover()
+        }
+        liveReconnectTask?.let { bufferingWatchdog.removeCallbacks(it) }
+        val task = Runnable {
+            liveReconnectTask = null
+            retryLiveStart(liveStartBudgetMs)
+        }
+        liveReconnectTask = task
+        bufferingWatchdog.postDelayed(task, liveReconnectDelayMs)
+    }
+
+    /**
      * Asks every installed subtitle addon (OpenSubtitles v3, SubDL, …) — and,
      * when the user has switched "Find subtitles automatically" on, the subtitle
      * SITES ([autoSiteTracks]) — for this title's subtitles and, when any come
@@ -8507,7 +8686,11 @@ class PlayerActivity : ComponentActivity() {
         // Server is not responding (still buffering after 20s)".
         val telegram = currentIndex in sources.indices &&
             sources[currentIndex].url.startsWith(com.hikari.app.telegram.TdFileDataSource.SCHEME + "://")
+        // A live channel gets the live budget, not the file budget — and, more
+        // importantly, a different ANSWER when it runs out (see the task below).
+        val liveHint = isLiveSource(sources.getOrNull(currentIndex))
         val budget = waitBudget ?: when {
+            liveHint -> liveStartBudgetMs
             torrent -> 50_000L
             telegram -> com.hikari.app.telegram.TdFileDataSource.PLAYER_START_BUDGET_MS
             else -> 20_000L
@@ -8517,6 +8700,14 @@ class PlayerActivity : ComponentActivity() {
             val p = player ?: return@Runnable
             if (p.playbackState == Player.STATE_BUFFERING || p.playbackState == Player.STATE_IDLE) {
                 if (p.currentPosition > 0) return@Runnable
+                val src = sources.getOrNull(currentIndex)
+                // A live stream is re-opened, never "switched away from": an
+                // IPTV channel has no next server, and going to look for one is
+                // the "keeps searching instead of playing" report.
+                if (isLiveSource(src)) {
+                    retryLiveStart(budget)
+                    return@Runnable
+                }
                 promptSlowServer(torrent, budget / 1000)
             }
         }
@@ -8539,6 +8730,21 @@ class PlayerActivity : ComponentActivity() {
      */
     private fun recoverNoPicture(index: Int) {
         val src = sources.getOrNull(index)
+        // A LIVE stream is not a dud server to walk past. An IPTV channel is one
+        // link, so there is no "next server" and nothing for the search to find;
+        // a live feed that has not drawn a frame yet is re-opened instead (see
+        // [retryLiveStart]). Without this the failsafe blacklisted the channel's
+        // host, walked off the end of the one-item list and then waited three
+        // minutes for a replacement an IPTV playlist cannot produce.
+        if (isLiveSource(src)) {
+            com.hikari.app.data.Logs.log(
+                "Player",
+                "FAILSAFE: live stream \"${src?.name ?: "?"}\" drew no picture after " +
+                    "${firstFrameMs / 1000}s — re-opening instead of walking the list",
+            )
+            retryLiveStart(firstFrameMs)
+            return
+        }
         com.hikari.app.data.Logs.log(
             "Player",
             "FAILSAFE: no picture from server ${index + 1}/${sources.size} " +
@@ -8584,6 +8790,14 @@ class PlayerActivity : ComponentActivity() {
      *  3-second countdown after which it switches automatically if the user
      *  doesn't answer. Switching instantly moves to the next source. */
     private fun promptSlowServer(torrent: Boolean, waitedSeconds: Long = 20L) {
+        // Defensive: both watchdogs now route a live stream to [retryLiveStart]
+        // before reaching here. If one ever gets through anyway, a live channel
+        // must still not be blacklisted or walked past — it is one link with
+        // nothing behind it, and re-opening it is the only move there is.
+        if (isLiveSource(sources.getOrNull(currentIndex))) {
+            retryLiveStart(liveStartBudgetMs)
+            return
+        }
         // This server is a dud: nothing has played after its whole budget. Mark
         // it — the URL as tried (so no failover hands it back) and its HOST as
         // failed for the session (the same mirror serves every quality of the
@@ -8738,6 +8952,31 @@ class PlayerActivity : ComponentActivity() {
     /** How many "nothing has played yet" servers may be skipped without asking
      *  the user (see [promptSlowServer]). */
     private val maxSilentSkips: Int = 6
+
+    /**
+     * How long a LIVE stream may take to draw its first frame before it is
+     * re-opened (see [retryLiveStart]). Longer than a file's 20s because the
+     * wait is not a dead-server verdict at all: a live channel that has not
+     * started is retried, and an IPTV server's first segment routinely takes
+     * longer than a VOD file's first byte — but it is still a bounded wait, so
+     * a genuinely offline channel does not spin forever.
+     */
+    private val liveStartBudgetMs: Long = 30_000L
+
+    /** How many times a live stream is re-opened before the player admits the
+     *  channel is not coming up (see [retryLiveStart]). Long enough to ride out
+     *  a flaky IPTV mirror, short enough not to lie to the user about a channel
+     *  that is simply offline. */
+    private val maxLiveStartRetries: Int = 6
+
+    /** The pending "re-open the live stream" task (see [scheduleLiveReconnect]). */
+    private var liveReconnectTask: Runnable? = null
+
+    /** How long to wait before a live stream that ERRORED is re-opened. A
+     *  deliberate pause rather than a busy loop: a live mirror that just dropped
+     *  usually comes back on a fresh connection, but re-opening it the instant
+     *  every error lands would spin against a server that needs a moment. */
+    private val liveReconnectDelayMs: Long = 3_000L
 
     /** True while the current server has stalled and playback is waiting for the
      *  search to hand over a replacement (see
@@ -9480,11 +9719,21 @@ class PlayerActivity : ComponentActivity() {
             onKnownVideoSize(videoSize.width, videoSize.height)
         }
 
+        // The player builds a fresh audio sink whenever the audio track changes,
+        // which gives it a NEW session id — the booster has to be re-attached to
+        // that one, or it would keep amplifying a session nothing plays into.
+        override fun onAudioSessionIdChanged(audioSessionId: Int) {
+            applyVolumeBoost()
+        }
+
         override fun onTracksChanged(tracks: Tracks) {
             // A source rendered through the video-effects pipeline never gets an
             // onVideoSizeChanged, so take the size from the video track itself.
             videoFormatSize(tracks)?.let { (w, h) -> onKnownVideoSize(w, h) }
             applyVideoEnhance()
+            // The audio session id is only real once the track exists; this is
+            // the point at which the booster can be attached to it.
+            applyVolumeBoost()
             applyStickyPicks(C.TRACK_TYPE_AUDIO)
             if (noSubsRetry) return
             val textApplied = applyStickyPicks(C.TRACK_TYPE_TEXT)
@@ -9502,6 +9751,10 @@ class PlayerActivity : ComponentActivity() {
             liveSessionId?.let { StreamsLive.releaseSweep(it) }
             firstFrameTask?.let { bufferingWatchdog.removeCallbacks(it) }
             firstFrameTask = null
+            // A picture rendered: whatever re-opens this live stream has taken
+            // is done, so the retry budget starts fresh for the next channel.
+            liveStartRetries = 0
+            liveStartRetryIndex = -1
             hideLoadingBanner()
             // Playback actually started — persist this server + the header
             // variant that got us here, so the next replay of this video jumps
@@ -9708,7 +9961,7 @@ class PlayerActivity : ComponentActivity() {
                     sources[i].url !in triedUrls
             }
             if (startedWhileSearching && !liveSearchDone && !sameServerRelinkUsed &&
-                !hasOtherUntried && !terminalHostFailure &&
+                !hasOtherUntried && !terminalHostFailure && !isLiveSource(sources.getOrNull(currentIndex)) &&
                 refreshAttempts < MAX_REFRESH_ATTEMPTS && isIoFailure(code, headerIssue) &&
                 currentIndex < sources.size
             ) {
@@ -9832,7 +10085,17 @@ class PlayerActivity : ComponentActivity() {
             }
             return
         }
-        // No server left. If this looks like the servers simply died — expired
+        // No server left. A LIVE channel is not re-searched: an IPTV playlist
+        // has one link per channel, so asking the detail screen for "more
+        // servers" can only ever wait — which is the reported "it keeps
+        // searching instead of playing". A live feed that dropped is fixed by a
+        // fresh connection and nothing else, so re-open it (bounded, and with
+        // its own honest failure — see [retryLiveStart]).
+        if (isLiveSource(sources.getOrNull(currentIndex))) {
+            scheduleLiveReconnect("failed (code $code)")
+            return
+        }
+        // If this looks like the servers simply died — expired
         // signed links (HTTP 403) or a DNS/connect failure at the CDN — rather
         // than a genuinely unplayable file, ask the detail screen for a fresh
         // extraction before giving up: replaying a signed 4KHDHub/hubcloud URL
@@ -11054,6 +11317,8 @@ class PlayerActivity : ComponentActivity() {
         SlowNetTip.onPlaybackEnd()
         watchdogTask?.let { bufferingWatchdog.removeCallbacks(it) }
         watchdogTask = null
+        liveReconnectTask?.let { bufferingWatchdog.removeCallbacks(it) }
+        liveReconnectTask = null
         firstFrameTask?.let { bufferingWatchdog.removeCallbacks(it) }
         firstFrameTask = null
         torrentDialog?.let { runCatching { it.dismiss() } }
@@ -11065,6 +11330,11 @@ class PlayerActivity : ComponentActivity() {
             p.release()
         }
         player = null
+        // The booster holds a platform audio effect; it must be released by
+        // hand, and before the player is torn down.
+        volumeGain?.let { runCatching { it.release() } }
+        volumeGain = null
+        volumeGainSession = -1
         super.onDestroy()
     }
 

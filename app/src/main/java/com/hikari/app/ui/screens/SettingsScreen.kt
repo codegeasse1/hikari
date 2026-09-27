@@ -108,6 +108,7 @@ import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.Wallpaper
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -721,6 +722,7 @@ fun SettingsScreen(nav: NavHostController) {
                     }
                     item { SettingsCard { VideoEnhanceCard(app) } }
                     item { SettingsCard { PlayerUiCard(app) } }
+                    item { SettingsCard { VolumeBoostCard(app) } }
                     // "When playback starts" lives in Playback & Servers, once:
                     // the same card in two folders only made the user wonder
                     // which one was in charge. The player folder is the controls.
@@ -3168,6 +3170,43 @@ private fun PlayerUiCard(app: HikariApp) {
                 scope.launch { runCatching { app.store.setPlayerSkin(pick) } }
             },
             onDismiss = { pickerOpen = false },
+        )
+    }
+}
+
+/**
+ * The player's volume booster (Settings → Player).
+ *
+ * A film mixed with quiet dialogue has a ceiling the phone's volume keys cannot
+ * raise: they are already at 100% and the file itself is just low. This switch
+ * is the one lever left — it has the player attach an
+ * `android.media.audiofx.LoudnessEnhancer` to the audio session and set it to
+ * +6 dB, i.e. twice the amplitude, which is the boost a viewer means by "turn
+ * it up more than 100%".
+ *
+ * It is a switch and not a slider on purpose: gain above the file's own level
+ * is a change to the sound, and a fixed, understandable step ("200%", about
+ * +6 dB) beats a number nobody can interpret. Off by default; the player reads
+ * it each time it opens, so the next video obeys it.
+ */
+@Composable
+private fun VolumeBoostCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    val flow = remember { app.store.volumeBoostFlow() }
+    val on by flow.collectAsState(initial = false)
+
+    Column(Modifier.padding(16.dp)) {
+        SettingsCardHeading(Icons.Filled.VolumeUp, tr("Volume booster"))
+        SettingsToggle(
+            label = tr("Boost quiet audio"),
+            supporting = tr(
+                "Turns the volume up to 200% for films with quiet dialogue. " +
+                    "Applies to the next video you open."
+            ),
+            checked = on,
+            onCheckedChange = { value ->
+                scope.launch { runCatching { app.store.setVolumeBoost(value) } }
+            },
         )
     }
 }
