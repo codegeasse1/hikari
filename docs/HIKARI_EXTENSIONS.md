@@ -78,6 +78,33 @@ them under the empty state, so an extension that cannot load says *why* rather
 than pointing at a Cloudflare verification page it never touches. Stream
 failures stay silent on catalogues and are reported through `streamErrors`.
 
+### The row-id parser: the page index is not the row index
+
+A catalogue id is `row:<page>:<row>`, and `getCatalog` has to turn it back into
+two numbers — which page of the plugin's `mainPage` list, and which
+`HomePageList` inside it. The bridge parsed BOTH with one helper that read the
+first number of the id, so the "row index" it matched against was really the
+page index: every Home row was sliced out of its page at position 0, so a row
+that was not the first one came back as some other tray's items (and, when
+names were missing, as an empty list). That is the shape of the report "this
+extension loads its catalogue in CloudStream, but shows nothing in Hikari".
+`pageIndexOf` and `rowIndexOf` now parse the two numbers separately, names are
+matched first with the row index only breaking ties (plugins like CNC Verse
+re-read their whole home page on every call, so a mirror's tray order is not
+stable between reads), and a row that still looks empty is re-read once before
+the provider reports it.
+
+### A catalogue item with no title is still an item
+
+CloudStream's `newAnimeSearchResponse(name, url)` is happy to be handed an
+**empty name** — and some plugins build their whole home page that way, because
+they mean "draw this as a poster card" (CNC Verse's NetflixMirror does exactly
+this; its own `search()` passes the real title, which is why search worked while
+the catalogue did not). Both CS3 hosts used to drop any item whose name was
+blank, so a catalogue that WAS loading correctly arrived at the UI as zero rows.
+Only a blank **url** is dropped now: without a link there is nothing to open,
+but a poster-only card is content the plugin deliberately published.
+
 ### The host class the bridge talks to must survive R8
 
 A `.hiki` extension is compiled against a **stub** of `com.hikari.app.HikariApp`

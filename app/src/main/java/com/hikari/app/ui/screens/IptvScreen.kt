@@ -32,6 +32,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.LiveTv
@@ -72,6 +73,7 @@ import com.hikari.app.data.IptvPlaylist
 import com.hikari.app.data.MediaItem
 import com.hikari.app.data.MediaType
 import com.hikari.app.data.NetworkStream
+import com.hikari.app.data.Profiles
 import com.hikari.app.data.ProviderConfig
 import com.hikari.app.data.ProviderType
 import com.hikari.app.data.TileShapes
@@ -195,8 +197,41 @@ fun IptvScreen(nav: NavHostController) {
         }
     }
 
+    // Removes one playlist from the tab. The provider is dropped first, so the
+    // tile goes away immediately (the grid is keyed on the provider list), and
+    // then the app's own copy of the file is deleted — but only when it really
+    // is the app's copy (a playlist picked from storage, under filesDir/iptv/)
+    // and nothing else still lists it: a linked playlist has nothing local, and
+    // a file another profile (or another provider) still uses must stay (the
+    // same rule the Extensions screen's remove follows).
+    fun removePlaylist(card: IptvCard) {
+        scope.launch {
+            val target = app.store.providers().firstOrNull { it.id == card.id }
+            app.store.removeProvider(card.id)
+            app.providers.refresh()
+            // Forget the cached read: this playlist's channel count and any
+            // error belong to a row that no longer exists. Adding the same link
+            // again reuses its id (see addIptvPlaylist), and must not inherit a
+            // stale count or a stale "didn't load" badge.
+            IptvProvider.forget(card.id)
+            val path = target?.url.orEmpty()
+            val base = app.filesDir.absolutePath + "/iptv/"
+            if (path.startsWith(base) &&
+                app.store.providers().none { it.url == path } &&
+                !Profiles.otherProfilesReference(app, path)
+            ) {
+                withContext(Dispatchers.IO) { runCatching { File(path).delete() } }
+            }
+        }
+    }
+
     var cards by remember { mutableStateOf<List<IptvCard>>(emptyList()) }
     var reading by remember { mutableStateOf(false) }
+    // The playlist whose tile was tapped on its trash button. Removal is
+    // confirmed in a dialog first: it takes the playlist's channels out of
+    // Home, search and the player's server list, and deletes the app's own
+    // copy when the playlist was imported from storage.
+    var removeTarget by remember { mutableStateOf<IptvCard?>(null) }
     // One re-read of every playlist, keyed on which playlists exist: adding or
     // removing one is what has to re-run this, not a recomposition.
     val ids = remember(playlists) { playlists.map { it.config.id } }
@@ -301,6 +336,7 @@ fun IptvScreen(nav: NavHostController) {
                         },
                         shape = shape,
                         badge = if (card.error != null) tr("Didn't load") else null,
+                        onRemove = { removeTarget = card },
                     ) {
                         Routes.safeNavigate(nav, Routes.iptvPlaylist(card.id))
                     }
@@ -428,6 +464,46 @@ fun IptvScreen(nav: NavHostController) {
                     addFileLabel = ""
                     addFilePath = ""
                 }) { Text(tr("Cancel")) }
+            },
+        )
+    }
+
+    // Removing a playlist is destructive in two ways (its channels leave Home
+    // and search, and a stored copy is deleted), so it is confirmed here rather
+    // than done on the tap.
+    removeTarget?.let { target ->
+        AlertDialog(
+            onDismissRequest = { removeTarget = null },
+            title = { Text(I18n.t("Remove %s?").replace("%s", target.name)) },
+            text = {
+                Column {
+                    Text(
+                        tr(
+                            "Its channels disappear from Home, search and the player's " +
+                                "server list."
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    if (target.local) {
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            tr("The playlist file stored in the app is deleted too."),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    removePlaylist(target)
+                    removeTarget = null
+                }) {
+                    Text(tr("Remove"), color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { removeTarget = null }) { Text(tr("Cancel")) }
             },
         )
     }
@@ -693,6 +769,10 @@ private data class IptvCard(
     /** True for a link the user added as a single NETWORK STREAM rather than a
      *  playlist: one channel, and no groups to count. */
     val stream: Boolean = false,
+    /** True when the playlist is the app's own copy of a file the user picked
+     *  from storage (under `filesDir/iptv/`) rather than a pasted link — the one
+     *  case where removing the tile also deletes something. */
+    val local: Boolean = false,
 )
 
 /** One group inside a playlist. */
@@ -718,6 +798,7 @@ private suspend fun readCard(p: IptvProvider): IptvCard {
         cover = list.firstOrNull { !it.logo.isNullOrBlank() }?.logo,
         error = IptvProvider.iptvErrors[p.config.id],
         stream = NetworkStream.isStream(p.config),
+        local = !p.config.url.startsWith("http"),
     )
 }
 
@@ -838,6 +919,10 @@ private fun IptvTile(
      *  is no real artwork at all, which is the common case for a group. */
     art: String? = null,
     badge: String? = null,
+    /** Shown as a trash button on the cover's top-left when non-null (the
+     *  badge already owns the top-right). Only the tab's own tiles pass it —
+     *  a group inside a playlist has nothing to delete. */
+    onRemove: (() -> Unit)? = null,
     onClick: () -> Unit,
 ) {
     val tokens = rememberGlassTokens()
@@ -884,6 +969,23 @@ private fun IptvTile(
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onError,
                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp),
+                    )
+                }
+            }
+            if (onRemove != null) {
+                Surface(
+                    onClick = onRemove,
+                    color = MaterialTheme.colorScheme.scrim.copy(alpha = 0.62f),
+                    shape = RoundedCornerShape(50),
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(4.dp),
+                ) {
+                    Icon(
+                        Icons.Filled.Delete,
+                        contentDescription = I18n.t("Remove %s").replace("%s", name),
+                        tint = MaterialTheme.colorScheme.onError,
+                        modifier = Modifier.padding(4.dp).size(15.dp),
                     )
                 }
             }

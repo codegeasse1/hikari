@@ -76,6 +76,54 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
         val streamErrors = ConcurrentHashMap<String, String>()
 
         /**
+         * The addon's own configuration page, once its manifest has been read —
+         * `behaviorHints.configurationURL` (or `<base>/configure` for a manifest
+         * that says `configurable: true` without naming one).
+         *
+         * This is the page the Stremio app itself opens from an addon's gear
+         * (OpenSubtitles v3 asks which languages you want, AIOMetadata asks for
+         * TMDB/RPDB keys and which catalogs to publish). Hikari used to answer
+         * "addons have no settings of their own" over exactly those addons,
+         * which is not true of them: an addon that ships a config page has the
+         * real settings, and the manifest is where it says so.
+         */
+        val configPages = ConcurrentHashMap<String, String>()
+
+        /** Addons whose manifest declares NO config page — remembered so the
+         *  gear does not re-fetch the manifest on every tap (and can be hidden
+         *  for an addon that really has nothing to configure). */
+        val noConfigPage = ConcurrentHashMap<String, Boolean>()
+
+        /**
+         * Records what a manifest says about its OWN configuration page.
+         *
+         * Called wherever a manifest is read — the install path has one in hand
+         * before the addon is even stored, and [StremioAddon.loadManifest] reads
+         * one per session — so the gear can answer from the cache instead of
+         * fetching. [baseUrl] is the addon's base (the manifest URL without
+         * `/manifest.json`), which is what a relative `configurationURL` has to
+         * be resolved against.
+         */
+        fun noteConfiguration(providerId: String, manifest: JSONObject, baseUrl: String) {
+            val hints = manifest.optJSONObject("behaviorHints")
+            val declared = hints?.optString("configurationURL").orEmpty().trim()
+            val configurable = hints?.optBoolean("configurable", false) == true
+            val resolved = when {
+                declared.startsWith("http") -> declared
+                declared.isNotBlank() -> baseUrl.trimEnd('/') + "/" + declared.trimStart('/')
+                configurable -> baseUrl.trimEnd('/') + "/configure"
+                else -> ""
+            }
+            if (resolved.isBlank()) {
+                noConfigPage[providerId] = true
+                configPages.remove(providerId)
+            } else {
+                configPages[providerId] = resolved
+                noConfigPage.remove(providerId)
+            }
+        }
+
+        /**
          * The one Stremio addon Hikari installs for the user on a fresh install:
          * SubDL's subtitle addon.
          *
@@ -289,13 +337,44 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
         val flight = manifestFetch?.takeIf { it.isActive } ?: CoroutineScope(SupervisorJob() + Dispatchers.IO)
             .async {
                 runCatching { getJson("$base/manifest.json") }.getOrNull().also {
-                    if (it != null) manifest = it
+                    if (it != null) {
+                        manifest = it
+                        // What the manifest says about its own config page is
+                        // remembered here, so the gear never has to fetch again.
+                        noteConfiguration(config.id, it, base)
+                    }
                 }
             }
             .also { manifestFetch = it }
         val m = withTimeoutOrNull(MANIFEST_TIMEOUT_MS) { flight.await() }
         if (m == null) manifestFailedAt = System.currentTimeMillis()
         return m
+    }
+
+    /**
+     * The addon's own configuration page, if its manifest declares one.
+     *
+     * This is the page the Stremio app itself opens from an addon's gear: some
+     * addons NEED configuring before they work at all (OpenSubtitles v3 asks
+     * which languages to fetch, AIOMetadata asks for a TMDB/RPDB key and which
+     * catalogs to publish, a debrid addon asks for its API key), and the addon
+     * says where that page lives in its manifest — `behaviorHints.
+     * configurationURL`, or `<base>/configure` when it only sets the
+     * `configurable` flag. Answers null for an addon that declares neither (a
+     * plain stream addon such as Torrentio), and for one whose manifest cannot
+     * be read — the caller then shows what the addon IS instead.
+     *
+     * Cached per provider once known (see [configPages]/[noConfigPage]), so a
+     * second tap on the gear costs nothing.
+     */
+    suspend fun configurationPage(): String? {
+        configPages[config.id]?.let { return it }
+        if (noConfigPage[config.id] == true) return null
+        // Nothing known yet this session (the addon has not been browsed since
+        // the app started): read the manifest, which also records the answer.
+        val m = loadManifest() ?: return null
+        noteConfiguration(config.id, m, base)
+        return configPages[config.id]
     }
 
     /** Normalizes any addon type string to a MediaType. The Stremio client

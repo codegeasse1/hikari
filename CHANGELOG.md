@@ -1,3 +1,21 @@
+## 0.10.60
+
+### Added
+
+- **The gear on an extension now opens that extension's REAL settings — whatever kind of extension it is.** Every engine Hikari supports declares its settings its own way, so the button asks the extension itself instead of guessing:
+  - a **Stremio addon** whose manifest declares a configuration page (`behaviorHints.configurationURL`, or `configurable: true`) opens that page — the exact page the Stremio app opens for the same addon. OpenSubtitles v3 has one (which subtitle languages to fetch), AIOMetadata has one (your TMDB/RPDB keys and which catalogues it publishes), and so do the debrid addons. When that page hands back the configured addon, the addon is installed in its place, so the choices just made are the ones Hikari then uses. An addon whose manifest declares no such page says so in those terms, and an addon already known to have none no longer shows a gear at all.
+  - a **Vega provider** opens the settings screen its own `settings.js` declares (`getSettingsSchema`) — quick download, preferred server, skip timings, and whatever else that provider offers. The values are written into the provider's own `kv.json`, the store its own modules read, so the screen and the provider always agree.
+  - an **Aniyomi or Manga extension** opens the preference screen that extension declares itself (`ConfigurableSource.setupPreferenceScreen`): domain overrides, logins, image quality, preferred dub language — the same fields the Aniyomi app shows. Every value is written back **through the extension's own preference objects**, so an extension whose text field is really a number, or whose one switch rewrites another, still behaves exactly as its author intended.
+  - a **CloudStream plugin** keeps its own settings screen, as before.
+  - extensions whose format has no settings screen at all (a `.hiki` bundle, a universal scraper, a SkyStream extension) get an honest line naming the extension, its kind and its source — and no gear, rather than a button that answers with nothing.
+- **A delete button on every IPTV playlist in the IPTV tab.** A tile's trash button asks first, then removes the playlist — its channels disappear from Home, from search and from the player's server list — and deletes the app's own stored copy of a playlist file when nothing else still uses it. A playlist added as a link has nothing local and leaves no trace.
+
+### Fixed
+
+- **A CloudStream extension that lists its catalogue in CloudStream shows it in Hikari too.** The catalogue identifier the `.hiki` bridge hands the app is `row:<page>:<row>`, and the bridge parsed both numbers with one helper that read the first — so the "row" it then looked for was really the page, and every Home row was taken from position 0 of its page. A row that was not the first one therefore returned another tray's items, or an empty list, which is why the very same extension worked perfectly in CloudStream. The two numbers are parsed separately now, rows are matched by their own name (these plugins re-read their whole home page on every request, so a mirror's tray order is not stable between reads) with the stored position only breaking ties, and a row that still looks empty is re-read once — past the cache — before Hikari says anything about it.
+- **Extensions whose catalogue cards carry no title are no longer emptied out.** Some plugins build their entire home page with an empty title on purpose — they mean "draw this as a poster card", and nothing else (CNC Verse's NetflixMirror does exactly this; its search passes the real title, which is why search worked while the catalogue did not). Both CloudStream hosts dropped every item whose name was blank, so a catalogue that HAD loaded correctly reached the screen as zero rows. Only a blank **link** is dropped now: without one there is nothing to open, but a poster-only card is content the extension deliberately published.
+- **When a row really is empty, the message now says which of the two things happened** — `No items in <row>` (the row exists on the page and returned nothing), `"<row>" is no longer on its home page — refresh Home` (the tray is gone from the page — the page is re-read before either is said), or, for a Hikari extension, `"<row>" came back empty — refresh Home`.
+
 ## 0.10.59
 
 ### Fixed

@@ -68,6 +68,73 @@ see the session log below, which is where their design notes live.)
 
 ## Session log (newest first)
 
+- **0.10.60** (versionCode 231) — the owner's fifteenth round, four asks in one push ("do this all changes and fix in one go
+  with full deep research and then push", "make sure to do continuous build and not to release the apk to main"). This round
+  touched **both** repos: `hikari` (the app) and `hikari-extensions` (the `.hiki` bridge lives there, and the bridge had a real
+  bug of its own). Read `docs/EXTENSION_SETTINGS.md` for the settings design — it is the map for the new gear.
+  - **"Some provider still not loading home page" / "netflix m extension loading catalog in cloudstream but not hikari" —
+    the bridge parsed the catalogue id wrong.** The catalogue id the bridge publishes is `row:<page>:<row>` (built by
+    `rowRefId`), and `getCatalog` turned it back into numbers with ONE helper: `indexAfter(id, "row:")` =
+    `id.removePrefix("row:").substringBefore(':')` — the FIRST number, i.e. the **page** index. It was used for BOTH the page
+    and the row, so `wanted` (the row index) was really the page index: every Home row was sliced out of its page at position
+    0 (or the row nearest the page index), which is why a row such as the owner's `CricifyProvider · LiveEvents` came back
+    empty or carrying another tray's items while the same extension was perfect in CloudStream. Fixed with `pageIndexOf` and
+    `rowIndexOf` (the second number after `row:`), in all three bundles (`anime`, `cncverse`, `phisher` — they carry byte-identical
+    copies of `Cs3BridgeProvider.kt`). This is the root cause of the round's first ask; the row-slicing fix from 0.10.58 had
+    the right idea (one catalogue per row) but the index it sliced by was wrong.
+  - **A catalogue that loads can still arrive empty: items with no title.** Read upstream: CNC Verse's `NetflixMirrorProvider`
+    (`Sushan64/NetMirror-Extension@master`, `Netmirror/src/main/kotlin/com/horis/cncverse/NetflixMirrorProvider.kt`) builds its
+    ENTIRE home page with `newAnimeSearchResponse("", Id(id).toJson()) { posterUrl = … }` — a blank name, poster-only card — and
+    `MainAPI.kt`'s `newAnimeSearchResponse(name, url)` really does copy that empty name through, while its `search()` path passes
+    the real title (which is exactly the observed "search works, catalogue doesn't"). Both CS3 hosts (`Cs3MainApiProvider` and the
+    bridge's own `toMedia`) dropped **every** item whose name was blank, so a correctly loaded catalogue reached the UI as zero
+    rows. Both now drop only a blank **url** — nothing to open without a link — and keep a poster-only card.
+  - **A row that looks empty is re-read once before anything is claimed, and the reason names the row.** These mirror plugins
+    re-fetch their whole home page on every call (CNC Verse's `getMainPage` ignores the request and re-reads `/mobile/home`), so
+    a tray list is not stable between reads: the row is now matched **by name** (`rowFor`), the stored index only breaking ties
+    (three trays literally named "Recently added" are not hypothetical), and when the matched row is still empty the page is
+    re-read once — `Cs3MainApiProvider` deliberately past its cache (`fetchHomeRows(..., force = true)`, gated on `STALE_ROWS_MS`
+    = 12s so a burst of row loads does not re-fetch per row) — and the row matched again. The verdicts are now specific:
+    `No items in <row>` (the row exists and returned nothing), `"<row>" is no longer on its home page — refresh Home` (the tray is
+    gone from the page), and `"<row>" came back empty — refresh Home` for a Hikari extension. The bridge's old early
+    `throw failed("… came back empty")` on an empty fetch is gone too: an empty READ is not a verdict, and it was short-circuiting
+    the re-read.
+  - **The settings gear now opens the extension's REAL settings.** The owner's report was that the gear "just writes some idiot
+    words" — over OpenSubtitles/SubDL and AIOMetadata, which both have a real configuration page that the Stremio app opens. The
+    dispatcher (`ExtensionsScreen.openProviderSettings`) now asks each engine for its own screen: a **Stremio addon** opens its
+    manifest's `behaviorHints.configurationURL` (or `<base>/configure` for `configurable: true`) in `WebViewActivity` with the new
+    `stremioConfig` extra, which captures the `stremio://…/manifest.json` (or plain manifest link) the page ends on and hands it
+    back as an activity result — the Extensions screen then installs that manifest through the existing `addStremio` path, so the
+    configured addon REPLACES the row (same id, same one-row-per-addon rule). `StremioAddon.noteConfiguration` records what a
+    manifest says about its own config page wherever a manifest is read (`loadManifest()`, and the install path), so the gear
+    answers from cache and an addon known to declare no page shows no gear. A **Vega provider** opens the screen its own
+    `settings.js` declares (`VegaRuntime.settingsSchema` → `getSettingsSchema`), with values read/written in the provider's own
+    `kv.json` (`savedSettings`/`saveSettings`) — the store `providerContext.kvStore` persists to. An **Aniyomi/Manga extension**
+    opens its own `setupPreferenceScreen` tree (new `data/ExtensionPreferences.kt`): `TwoStatePreference`→toggle,
+    `ListPreference`→select, `MultiSelectListPreference`→multi, `SeekBarPreference`→numeric text, `EditTextPreference`→text
+    (password from its `inputType`), `PreferenceCategory`→header. Reads use the preference's OWN getter (a `getString` on an
+    Int-stored key throws) and writes go through `callChangeListener(value)` + the setter — the same order the preference's own
+    dialog uses — so extension listeners (text→Int, one switch rewriting another) still run. The engines with no settings
+    format (`.hiki` bundle, universal scraper, SkyStream) get an honest, specific info dialog and no gear. `hasSettingsScreen`
+    gates the gear and is deliberately cheap: CS3 from the `settingsReady` cache (never `settingsAvailable`, which dex-loads on
+    the tap's thread), Vega from a directory listing, Stremio from the manifest note, Aniyomi/Manga always (only loading the
+    extension can tell). The nuvio-only dialog was generalised into `SchemaSettingsDialog` (+ a `multi` field type and a numeric
+    text field in `SettingsElementRow`), and every place that draws a gear (`InstalledExtensionsView`, `extensionsSearchItems`,
+    the folder view, `repoPluginSettingsTarget`) now goes through the one gate and the one dispatcher — `InstalledExtensionsView`
+    gained an `onOpenSettings` param instead of its own duplicated dialog state.
+  - **IPTV playlists can be deleted from the IPTV tab.** Each tile's cover has a trash button (the `badge` already owns the
+    top-right corner, so it sits top-left), which confirms first ("Its channels disappear from Home, search and the player's
+    server list", plus a line about the stored file when there is one), then removes the provider
+    (`store.removeProvider` + `providers.refresh()`), forgets its cached read (`IptvProvider.forget` — a new companion entry
+    dropping `iptvErrors`, `channelCounts` and the private `loadedAt`, so re-adding the same link cannot inherit a stale count or
+    a stale "Didn't load" badge) and deletes the app's own copy of the file only when it really is the app's copy
+    (`filesDir/iptv/`), nothing else references it, and no other profile does (`Profiles.otherProfilesReference`) — the same rule
+    `ExtensionsScreen.remove` follows.
+  - **The extensions repo's manifests were version-bumped** (`anime` 2→3, `cncverse` 3→4, `phisher` 3→4) because the update
+    check keys on the published version/hash: without a bump the bridge fix would be built and published but never offered to a
+    device that already had the extension.
+  - **No release was dispatched** — continuous build only, as instructed.
+
 - **0.10.59** (versionCode 230) — the owner's fourteenth round, four asks in one push. The owner was emphatic that
   the extension problem is **an app bug, not an extension bug** ("i told you thats bug in app instead you wasted
   time to edit hikari extension repos … dont in any extension sources"), so this round touched **only**

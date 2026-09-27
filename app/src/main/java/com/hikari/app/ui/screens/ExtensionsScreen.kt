@@ -55,6 +55,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -710,6 +711,10 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         // already installed by Hikari's first-run seeding — is ONE row rather
         // than three.
         val id = com.hikari.app.providers.StremioAddon.providerIdFor(clean)
+        // The manifest is in hand here, so whether this addon has a
+        // configuration page is known from the moment it is added — the gear
+        // then opens it (or is hidden) without a second fetch.
+        com.hikari.app.providers.StremioAddon.noteConfiguration(id, manifest, clean)
         store.addProvider(ProviderConfig(id, name, ProviderType.STREMIO, clean, iconUrl = iconUrl))
         manager.refresh()
         Result.success(name)
@@ -2836,19 +2841,109 @@ fun ExtensionsScreen() {
     var siteUrl by remember { mutableStateOf("") }
     var settingsProvider by remember { mutableStateOf<ContentProvider?>(null) }
     var addonInfoProvider by remember { mutableStateOf<ContentProvider?>(null) }
+    // A provider whose settings screen is a SCHEMA the extension itself
+    // declares (a nuvio scraper's `onSettings()`, a Vega provider's
+    // settings.js, an Aniyomi/Manga extension's `setupPreferenceScreen`), and
+    // the honest "what this extension is" dialog for a provider whose engine
+    // has no settings screen to open at all.
+    var schemaProvider by remember { mutableStateOf<ContentProvider?>(null) }
+    var infoProvider by remember { mutableStateOf<ContentProvider?>(null) }
 
+    // The addon config page's install link arrives as an activity result: that
+    // page is the addon's own, and the manifest it hands back carries the
+    // choices the user just made — so it is installed exactly as a pasted addon
+    // URL would be (same fetch, same id, same one-row-per-addon rule), which
+    // also replaces an already-installed addon with the configured copy.
+    val addonConfigLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val url = result.data?.getStringExtra("manifestUrl").orEmpty()
+        if (result.resultCode == android.app.Activity.RESULT_OK && url.isNotBlank()) {
+            vm.runTask(
+                "Installing configured addon…",
+                { vm.addStremio(url) },
+                successMsg = I18n.t("Addon installed"),
+            )
+        }
+    }
+
+    /**
+     * Opens a provider's settings — whatever the settings for that engine
+     * actually ARE.
+     *
+     * Every engine Hikari supports declares its settings differently, and the
+     * gear used to answer a single generic thing for all of them ("addons have
+     * no settings of their own", a nuvio file dialog over a Stremio addon) —
+     * which was wrong for exactly the extensions that DO have settings. So the
+     * gear now asks the extension, per engine:
+     *
+     *  * a Stremio addon: its manifest says whether it has a config page
+     *    (`behaviorHints.configurationURL` / `configurable`) — OpenSubtitles v3,
+     *    AIOMetadata, the debrid addons. That page IS its settings screen (it is
+     *    the same page the Stremio app opens), and the addon it hands back on
+     *    "Install" replaces this row;
+     *  * a CloudStream plugin (.cs3): the plugin's OWN settings screen, through
+     *    the provider contract ([openProviderSettingsSafely]);
+     *  * a nuvio scraper, a Vega provider, an Aniyomi/Manga extension: the
+     *    settings schema the extension itself declares, drawn by the app's
+     *    schema dialog;
+     *  * an IPTV playlist: what the playlist IS (source, channel count, refresh);
+     *  * anything else (a `.hiki` bundle, a universal scraper, a SkyStream
+     *    extension): there is no settings screen to open, so the dialog says
+     *    what the extension is and that it has none — instead of pretending.
+     */
     fun openProviderSettings(p: ContentProvider) {
         when (p.config.type) {
-            // An addon is a remote manifest, not a file: the nuvio settings
-            // dialog (which reads the provider FILE) answered "Provider file
-            // missing" over a healthy addon. Show what the addon is instead.
-            ProviderType.STREMIO -> addonInfoProvider = p
-            ProviderType.NUVIO -> settingsProvider = p
+            ProviderType.STREMIO -> {
+                Toast.makeText(
+                    context,
+                    I18n.t("Loading %s…").replace("%s", p.config.name),
+                    Toast.LENGTH_SHORT,
+                ).show()
+                scope.launch {
+                    val page = withContext(Dispatchers.IO) {
+                        runCatching {
+                            com.hikari.app.providers.StremioAddon(p.config).configurationPage()
+                        }.getOrNull()
+                    }
+                    if (page == null) {
+                        addonInfoProvider = p
+                        return@launch
+                    }
+                    addonConfigLauncher.launch(
+                        Intent(context, WebViewActivity::class.java).apply {
+                            putExtra("url", page)
+                            putExtra("title", p.config.name.ifBlank { "Stremio addon" })
+                            // The link this page ends on IS the install: the
+                            // view captures it and hands it back (see
+                            // WebViewActivity.finishWithManifest).
+                            putExtra("stremioConfig", true)
+                            putExtra("providerId", p.config.id)
+                        }
+                    )
+                }
+            }
+            ProviderType.NUVIO -> schemaProvider = p
+            ProviderType.VEGA ->
+                if (com.hikari.app.providers.vega.VegaPluginManager.hasSettings(p.config)) {
+                    schemaProvider = p
+                } else {
+                    // No settings.js: this provider has nothing to configure,
+                    // and a settings dialog would be an empty lie.
+                    infoProvider = p
+                }
+            ProviderType.ANIYOMI, ProviderType.MANGA -> schemaProvider = p
             // A playlist has no settings either — what it has is a source and a
             // channel count, plus a way to re-read it.
             ProviderType.IPTV -> iptvInfoId = p.config.id
-            // CS3 plugins have their own settings screen; nothing else has one.
-            else -> openProviderSettingsSafely(p, context, scope) {}
+            // A CloudStream plugin exposes its OWN settings screen through the
+            // provider contract; everything else in this branch has no settings
+            // mechanism at all, so it gets the honest info dialog. The question
+            // is deliberately NOT `settingsAvailable` here: reading it can load
+            // the plugin's dex, and this runs on the tap's thread (see
+            // [openProviderSettingsSafely], which loads off the main thread and
+            // reports the real reason when a plugin's screen cannot open).
+            else -> openProviderSettingsSafely(p, context, scope) { infoProvider = p }
         }
     }
 
@@ -3103,6 +3198,7 @@ fun ExtensionsScreen() {
             onBack = { installedOpen = false; vm.clearStatus() },
             onToggleProvider = { id, enabled -> scope.launch { vm.toggle(id, enabled) } },
             onDeleteProvider = { id -> scope.launch { vm.remove(id) } },
+            onOpenSettings = { prov -> openProviderSettings(prov) },
         )
         sourcesOpen -> SourcesOverviewView(
             repos = repos,
@@ -3869,17 +3965,31 @@ fun ExtensionsScreen() {
         )
     }
 
-    settingsProvider?.takeIf { it.config.type == ProviderType.NUVIO }?.let { provider ->
-        NuvioSettingsDialog(
-            provider = provider,
-            onDismiss = { settingsProvider = null },
-        )
-    }
-
     addonInfoProvider?.let { provider ->
         StremioAddonInfoDialog(
             provider = provider,
             onDismiss = { addonInfoProvider = null },
+        )
+    }
+
+    // A schema-driven screen: nuvio's own `onSettings()`, a Vega provider's
+    // settings.js, an Aniyomi/Manga extension's own preference tree.
+    schemaProvider?.let { provider ->
+        val close = { schemaProvider = null }
+        when (provider.config.type) {
+            ProviderType.VEGA -> VegaSettingsDialog(provider = provider, onDismiss = close)
+            ProviderType.ANIYOMI, ProviderType.MANGA ->
+                AniyomiSettingsDialog(provider = provider, onDismiss = close)
+            else -> NuvioSettingsDialog(provider = provider, onDismiss = close)
+        }
+    }
+
+    // An engine whose format has no settings screen at all: say what the
+    // extension is, instead of an empty settings dialog.
+    infoProvider?.let { provider ->
+        ProviderInfoDialog(
+            provider = provider,
+            onDismiss = { infoProvider = null },
         )
     }
 }
@@ -4433,11 +4543,7 @@ private fun LazyListScope.extensionsSearchItems(
                 onToggleProvider = onToggleProvider,
                 onDeleteProvider = onDeleteProvider,
                 settingsFor = { p ->
-                    when {
-                        p.config.type == ProviderType.NUVIO -> { { onOpenSettings(p) } }
-                        p.config.id in cs3SettingsIds -> { { onOpenSettings(p) } }
-                        else -> null
-                    }
+                    if (hasSettingsScreen(p, cs3SettingsIds)) { { onOpenSettings(p) } } else null
                 },
             )
         }
@@ -5476,69 +5582,72 @@ private fun ProviderRecordRow(
     }
 }
 
-/** Settings editor for a Nuvio provider, driven by the provider's own
- *  `onSettings()` layout (header/info/toggle/text/select elements). Values are
- *  merged from each element's defaultValue and the saved settings file. */
+/**
+ * What a schema-driven settings screen produced.
+ *
+ * Three engines describe their settings as DATA for the app to draw — a nuvio
+ * scraper's `onSettings()`, a Vega provider's `settings.js`, an Aniyomi/Manga
+ * extension's own `setupPreferenceScreen` — so the dialog below takes a loader
+ * instead of reaching for one engine's runtime itself.
+ */
+private sealed interface SchemaLoad {
+    class Ok(
+        val elements: JSONArray,
+        val values: Map<String, String>,
+        val toggles: Map<String, Boolean>,
+    ) : SchemaLoad
+
+    /** The extension really declares no settings — say so, naming it. */
+    data object None : SchemaLoad
+
+    /** Reading the screen failed; [message] is the reason to show instead. */
+    class Failed(val message: String) : SchemaLoad
+}
+
+/**
+ * A settings screen the APP draws from a schema the extension itself declares.
+ *
+ * [load] runs once when the dialog opens (off the main thread — it can boot a
+ * JS engine or instantiate an extension), [save] when the user confirms. The
+ * elements keep the shape the older nuvio-only dialog established —
+ * `{type, key, label, description, defaultValue, options, isPassword}` with
+ * types header/info/toggle/select/multi/number/text — because that is what
+ * [SettingsElementRow] draws, and it now draws every engine's schema.
+ */
 @Composable
-private fun NuvioSettingsDialog(
-    provider: ContentProvider,
+private fun SchemaSettingsDialog(
+    title: String,
+    load: suspend () -> SchemaLoad,
+    save: suspend (JSONArray, Map<String, String>, Map<String, Boolean>) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val context = LocalContext.current
-    var loading by remember(provider.config.id) { mutableStateOf(true) }
-    var loadError by remember(provider.config.id) { mutableStateOf<String?>(null) }
-    var layout by remember(provider.config.id) { mutableStateOf<JSONArray?>(null) }
-    var values by remember(provider.config.id) { mutableStateOf<Map<String, String>>(emptyMap()) }
-    var toggles by remember(provider.config.id) { mutableStateOf<Map<String, Boolean>>(emptyMap()) }
+    val scope = rememberCoroutineScope()
+    var loading by remember { mutableStateOf(true) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var none by remember { mutableStateOf(false) }
+    var elements by remember { mutableStateOf<JSONArray?>(null) }
+    var values by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    var toggles by remember { mutableStateOf<Map<String, Boolean>>(emptyMap()) }
+    var saving by remember { mutableStateOf(false) }
 
-    LaunchedEffect(provider.config.id) {
-        val source = runCatching { File(provider.config.url).readText() }.getOrNull()
-        if (source.isNullOrBlank()) {
-            loadError = I18n.t("Provider file missing — reinstall this extension")
-            loading = false
-            return@LaunchedEffect
-        }
-        val payload = com.hikari.app.nuvio.NuvioRuntime.getSettingsLayout(
-            context, source, provider.config.id,
-        )
-        val parsed = runCatching { JSONObject(payload) }.getOrNull()
-        val data = parsed?.takeIf { it.optBoolean("ok", false) }?.opt("data")
-        val elements = when (data) {
-            is JSONArray -> data
-            is JSONObject -> data.optJSONArray("items") ?: data.optJSONArray("elements")
-            else -> null
-        }
-        if (elements == null) {
-            loadError = parsed?.optString("error")?.takeIf { it.isNotBlank() }
-                ?: "This provider exposes no settings"
-            loading = false
-            return@LaunchedEffect
-        }
-        val saved = runCatching {
-            JSONObject(com.hikari.app.nuvio.NuvioRuntime.loadSettings(provider.config.id))
-        }.getOrNull()
-        val v = LinkedHashMap<String, String>()
-        val t = LinkedHashMap<String, Boolean>()
-        for (i in 0 until elements.length()) {
-            val el = elements.optJSONObject(i) ?: continue
-            val key = el.optString("key").ifBlank { continue }
-            if (el.optString("type") == "toggle") {
-                val def = el.optBoolean("defaultValue", false)
-                t[key] = saved?.optBoolean(key, def) ?: def
-            } else {
-                val def = el.optString("defaultValue")
-                v[key] = saved?.optString(key, def) ?: def
+    LaunchedEffect(Unit) {
+        val result = runCatching { load() }
+            .getOrElse { SchemaLoad.Failed(it.message ?: I18n.t("Could not read the settings")) }
+        when (result) {
+            is SchemaLoad.Ok -> {
+                elements = result.elements
+                values = result.values
+                toggles = result.toggles
             }
+            is SchemaLoad.Failed -> error = result.message
+            SchemaLoad.None -> none = true
         }
-        values = v
-        toggles = t
-        layout = elements
         loading = false
     }
 
     AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(I18n.t("%s settings").replace("%s", provider.config.name)) },
+        onDismissRequest = { if (!saving) onDismiss() },
+        title = { Text(title) },
         text = {
             when {
                 loading -> Row(verticalAlignment = Alignment.CenterVertically) {
@@ -5546,16 +5655,20 @@ private fun NuvioSettingsDialog(
                     Spacer(Modifier.width(12.dp))
                     Text(tr("Loading settings…"))
                 }
-                loadError != null -> Text(
-                    loadError!!,
+                error != null -> Text(
+                    error!!,
                     color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.bodySmall
+                    style = MaterialTheme.typography.bodySmall,
                 )
-                layout != null -> Column(
-                    Modifier.verticalScroll(rememberScrollState())
-                ) {
-                    for (i in 0 until layout!!.length()) {
-                        val el = layout!!.optJSONObject(i) ?: continue
+                none -> Text(
+                    tr("This extension declares no settings of its own."),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                else -> Column(Modifier.verticalScroll(rememberScrollState())) {
+                    val arr = elements ?: JSONArray()
+                    for (i in 0 until arr.length()) {
+                        val el = arr.optJSONObject(i) ?: continue
                         SettingsElementRow(
                             el = el,
                             values = values,
@@ -5565,45 +5678,319 @@ private fun NuvioSettingsDialog(
                         )
                     }
                 }
-                else -> Text(tr("No settings available"))
             }
         },
         confirmButton = {
             TextButton(
-                enabled = !loading && layout != null,
+                enabled = !loading && !saving && elements != null,
                 onClick = {
-                    val out = JSONObject()
-                    layout?.let { arr ->
-                        for (i in 0 until arr.length()) {
-                            val el = arr.optJSONObject(i) ?: continue
-                            val key = el.optString("key").ifBlank { continue }
-                            if (el.optString("type") == "toggle") {
-                                out.put(key, toggles[key] ?: el.optBoolean("defaultValue", false))
-                            } else {
-                                out.put(key, values[key] ?: el.optString("defaultValue"))
+                    val arr = elements
+                    if (arr != null && !saving) {
+                        saving = true
+                        // Saved off the main thread: a save writes a settings
+                        // file (nuvio), a provider's own kv.json (Vega) or the
+                        // extension's SharedPreferences through its OWN
+                        // preference listeners (Aniyomi/Manga) — none of which
+                        // belongs on the UI thread.
+                        scope.launch {
+                            runCatching {
+                                withContext(Dispatchers.IO) { save(arr, values, toggles) }
                             }
+                            saving = false
+                            onDismiss()
                         }
                     }
-                    com.hikari.app.nuvio.NuvioRuntime.saveSettings(provider.config.id, out.toString())
-                    onDismiss()
                 }
             ) { Text(tr("Save")) }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text(tr("Cancel")) }
-        }
+            TextButton(onClick = { if (!saving) onDismiss() }) { Text(tr("Cancel")) }
+        },
     )
 }
 
 /**
- * What a Stremio addon IS.
+ * The values a schema dialog starts with: every element's own `defaultValue`,
+ * with anything already saved merged over it. [saved] is the store the engine
+ * keeps its values in (a nuvio settings file, a Vega provider's kv.json) — the
+ * only thing that differs between the engines.
+ */
+private fun schemaDefaults(
+    elements: JSONArray,
+    saved: JSONObject?,
+): Pair<Map<String, String>, Map<String, Boolean>> {
+    val values = LinkedHashMap<String, String>()
+    val toggles = LinkedHashMap<String, Boolean>()
+    for (i in 0 until elements.length()) {
+        val el = elements.optJSONObject(i) ?: continue
+        val key = el.optString("key").ifBlank { continue }
+        when (el.optString("type")) {
+            "toggle" -> {
+                val def = el.optBoolean("defaultValue", false)
+                toggles[key] = saved?.optBoolean(key, def) ?: def
+            }
+            "multi" -> {
+                val arr = saved?.optJSONArray(key)
+                values[key] = if (arr != null) {
+                    (0 until arr.length()).joinToString(",") { arr.optString(it) }
+                } else {
+                    el.optString("defaultValue")
+                }
+            }
+            else -> {
+                val def = el.optString("defaultValue")
+                values[key] = saved?.optString(key, def) ?: def
+            }
+        }
+    }
+    return values to toggles
+}
+
+/** A schema's key→value object (booleans for toggles, strings otherwise). */
+private fun schemaValuesJson(
+    elements: JSONArray,
+    values: Map<String, String>,
+    toggles: Map<String, Boolean>,
+): JSONObject {
+    val out = JSONObject()
+    for (i in 0 until elements.length()) {
+        val el = elements.optJSONObject(i) ?: continue
+        val key = el.optString("key").ifBlank { continue }
+        if (el.optString("type") == "toggle") {
+            out.put(key, toggles[key] ?: el.optBoolean("defaultValue", false))
+        } else {
+            out.put(key, values[key] ?: el.optString("defaultValue"))
+        }
+    }
+    return out
+}
+
+/** A nuvio scraper's own settings layout (its `onSettings()` export). */
+private fun nuvioSchemaLoad(context: Context, provider: ContentProvider): SchemaLoad {
+    val source = runCatching { File(provider.config.url).readText() }.getOrNull()
+    if (source.isNullOrBlank()) {
+        return SchemaLoad.Failed(I18n.t("Provider file missing — reinstall this extension"))
+    }
+    val payload = com.hikari.app.nuvio.NuvioRuntime.getSettingsLayout(
+        context, source, provider.config.id,
+    )
+    val parsed = runCatching { JSONObject(payload) }.getOrNull()
+    val data = parsed?.takeIf { it.optBoolean("ok", false) }?.opt("data")
+    val elements = when (data) {
+        is JSONArray -> data
+        is JSONObject -> data.optJSONArray("items") ?: data.optJSONArray("elements")
+        else -> null
+    }
+    if (elements == null) {
+        return SchemaLoad.Failed(
+            parsed?.optString("error")?.takeIf { it.isNotBlank() }
+                ?: I18n.t("This provider exposes no settings")
+        )
+    }
+    val saved = runCatching {
+        JSONObject(com.hikari.app.nuvio.NuvioRuntime.loadSettings(provider.config.id))
+    }.getOrNull()
+    val (values, toggles) = schemaDefaults(elements, saved)
+    return SchemaLoad.Ok(elements, values, toggles)
+}
+
+/** A Vega provider's own `settings.js` schema, with its saved kv values. */
+private suspend fun vegaSchemaLoad(provider: ContentProvider): SchemaLoad {
+    val dir = com.hikari.app.providers.vega.VegaPluginManager.dirOf(provider.config)
+    val value = provider.config.id.removePrefix("vega|")
+    val payload = com.hikari.app.providers.vega.VegaRuntime.settingsSchema(
+        dir, provider.config.id, value,
+    )
+    val parsed = runCatching { JSONObject(payload) }.getOrNull()
+    if (parsed == null || !parsed.optBoolean("ok", false)) {
+        return SchemaLoad.Failed(
+            parsed?.optString("error")?.takeIf { it.isNotBlank() }
+                ?: I18n.t("Could not read this provider's settings")
+        )
+    }
+    val data = parsed.opt("data")
+    val elements = when (data) {
+        is JSONArray -> data
+        is JSONObject -> data.optJSONArray("items") ?: data.optJSONArray("elements")
+        else -> null
+    }
+    if (elements == null || elements.length() == 0) return SchemaLoad.None
+    val (values, toggles) = schemaDefaults(
+        elements,
+        com.hikari.app.providers.vega.VegaRuntime.savedSettings(dir),
+    )
+    return SchemaLoad.Ok(elements, values, toggles)
+}
+
+/** An Aniyomi/Manga extension's own `setupPreferenceScreen` tree. */
+private suspend fun aniyomiSchemaLoad(context: Context, provider: ContentProvider): SchemaLoad {
+    val screen = withContext(Dispatchers.IO) {
+        com.hikari.app.data.ExtensionPreferences.load(context, provider.config)
+    } ?: return SchemaLoad.None
+    return SchemaLoad.Ok(screen.fields, screen.strings, screen.bools)
+}
+
+/** Settings editor for a NUVIO provider, driven by the provider's own
+ *  `onSettings()` layout (header/info/toggle/text/select elements). */
+@Composable
+private fun NuvioSettingsDialog(
+    provider: ContentProvider,
+    onDismiss: () -> Unit,
+) {
+    val context = LocalContext.current
+    SchemaSettingsDialog(
+        title = I18n.t("%s settings").replace("%s", provider.config.name),
+        load = { nuvioSchemaLoad(context, provider) },
+        save = { elements, values, toggles ->
+            com.hikari.app.nuvio.NuvioRuntime.saveSettings(
+                provider.config.id,
+                schemaValuesJson(elements, values, toggles).toString(),
+            )
+        },
+        onDismiss = onDismiss,
+    )
+}
+
+/** Settings editor for a VEGA provider, driven by its own `settings.js`
+ *  (`getSettingsSchema`); the values land in the provider's own kv.json — the
+ *  store its modules read — so what the screen shows is what the provider
+ *  actually uses. */
+@Composable
+private fun VegaSettingsDialog(
+    provider: ContentProvider,
+    onDismiss: () -> Unit,
+) {
+    SchemaSettingsDialog(
+        title = I18n.t("%s settings").replace("%s", provider.config.name),
+        load = { vegaSchemaLoad(provider) },
+        save = { elements, values, toggles ->
+            val dir = com.hikari.app.providers.vega.VegaPluginManager.dirOf(provider.config)
+            com.hikari.app.providers.vega.VegaRuntime.saveSettings(
+                dir,
+                schemaValuesJson(elements, values, toggles),
+            )
+        },
+        onDismiss = onDismiss,
+    )
+}
+
+/** Settings editor for an ANIYOMI/MANGA extension, built from the preference
+ *  tree the extension itself declares — and written back through those same
+ *  `Preference` objects, so an extension's own change listeners (which is how a
+ *  text field becomes an Int, or one switch rewrites another) still run. */
+@Composable
+private fun AniyomiSettingsDialog(
+    provider: ContentProvider,
+    onDismiss: () -> Unit,
+) {
+    val context = LocalContext.current
+    SchemaSettingsDialog(
+        title = I18n.t("%s settings").replace("%s", provider.config.name),
+        load = { aniyomiSchemaLoad(context, provider) },
+        save = { _, values, toggles ->
+            val ok = com.hikari.app.data.ExtensionPreferences.save(
+                context, provider.config, values, toggles,
+            )
+            if (!ok) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(
+                        context,
+                        I18n.t("Could not save these settings"),
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
+            }
+        },
+        onDismiss = onDismiss,
+    )
+}
+
+/**
+ * What an extension IS, for the engines whose format has no settings screen to
+ * open at all (a `.hiki` bundle, a universal scraper, a SkyStream extension), or
+ * for one whose own screen could not be read.
+ *
+ * The gear has to answer something for every row; saying WHICH KIND of extension
+ * this is, where it came from, and that its format carries no settings, is the
+ * honest answer — the old generic line read as if Hikari had lost them.
+ */
+@Composable
+private fun ProviderInfoDialog(provider: ContentProvider, onDismiss: () -> Unit) {
+    val kind = when (provider.config.type) {
+        ProviderType.CS3 -> tr("CloudStream plugin")
+        ProviderType.HIKARI -> tr("Hikari extension")
+        ProviderType.NUVIO -> tr("Nuvio scraper")
+        ProviderType.VEGA -> tr("Vega provider")
+        ProviderType.SKYSTREAM -> tr("SkyStream extension")
+        ProviderType.UNIVERSAL -> tr("Universal scraper")
+        ProviderType.ANIYOMI -> tr("Aniyomi extension")
+        ProviderType.MANGA -> tr("Manga extension")
+        ProviderType.STREMIO -> tr("Stremio addon")
+        ProviderType.IPTV -> tr("IPTV playlist")
+        else -> tr("Extension")
+    }
+    val why = when (provider.config.type) {
+        ProviderType.VEGA ->
+            tr("This provider's folder has no settings.js, so it declares nothing to configure.")
+        ProviderType.UNIVERSAL ->
+            tr("A universal scraper is configured by the JSON it was added with — remove it and add it again to change that.")
+        ProviderType.HIKARI ->
+            tr("The .hiki extension format has no settings screen of its own.")
+        ProviderType.SKYSTREAM ->
+            tr("This extension declares no settings.")
+        ProviderType.ANIYOMI, ProviderType.MANGA ->
+            tr("Its own settings screen could not be read — the extension may be broken or need reinstalling.")
+        ProviderType.NUVIO ->
+            tr("Its onSettings() declares nothing to configure.")
+        ProviderType.STREMIO ->
+            tr("Its manifest declares no configuration page, so it has nothing to configure.")
+        else ->
+            tr("This extension declares no settings of its own.")
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(provider.config.name.ifBlank { kind }) },
+        text = {
+            Column {
+                Text(
+                    kind,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(6.dp))
+                if (provider.config.url.isNotBlank()) {
+                    Text(
+                        provider.config.url,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                }
+                Text(
+                    why,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text(tr("Close")) }
+        },
+    )
+}
+
+/**
+ * What a Stremio addon IS, for an addon whose manifest declares NO
+ * configuration page.
  *
  * The gear on an addon used to open [NuvioSettingsDialog], which reads the
  * provider's FILE (`File(provider.config.url)`) — an addon is a remote manifest
  * URL, so it read nothing and answered "Provider file missing — reinstall this
- * extension" over a perfectly healthy addon (the reported gear-on-HdHub error).
- * A Stremio addon has no settings to edit; it has a manifest URL and a list of
- * what it can serve, so that is what this shows.
+ * extension" over a perfectly healthy addon. An addon WITH a config page now
+ * opens that page instead (see [openProviderSettings]); this dialog is what
+ * remains for the ones that genuinely have nothing to configure, and it says so
+ * in those terms rather than claiming no addon ever has settings.
  */
 @Composable
 private fun StremioAddonInfoDialog(provider: ContentProvider, onDismiss: () -> Unit) {
@@ -5643,8 +6030,9 @@ private fun StremioAddonInfoDialog(provider: ContentProvider, onDismiss: () -> U
                 if (!LocalHideHelp.current) {
                 Text(
                     tr(
-                        "Addons have no settings of their own — use the switch to turn this one off " +
-                            "without uninstalling it."
+                        "Its manifest declares no configuration page, so there is nothing " +
+                            "to set up here. Use the switch to turn it off without " +
+                            "uninstalling it."
                     ),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -5832,9 +6220,58 @@ private fun SettingsElementRow(
                 }
             }
         }
+        "multi" -> {
+            val key = el.optString("key")
+            val options = runCatching { el.getJSONArray("options") }.getOrNull()
+                ?: return
+            // Carried as a comma-joined string (see ExtensionPreferences): a
+            // multi-select is a Set<String> in the extension's own preferences,
+            // and this keeps the dialog's two plain value maps enough for every
+            // engine's schema.
+            val selected = (values[key] ?: el.optString("defaultValue"))
+                .split(',')
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+                .toSet()
+            Column(Modifier.padding(vertical = 4.dp)) {
+                Text(label, style = MaterialTheme.typography.bodyMedium)
+                description?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                for (i in 0 until options.length()) {
+                    val opt = options.optJSONObject(i) ?: continue
+                    val optValue = opt.optString("value")
+                    val optLabel = opt.optString("label").ifBlank { optValue }
+                    val on = optValue in selected
+                    val toggle = {
+                        val next = if (on) selected - optValue else selected + optValue
+                        onValue(key, next.joinToString(","))
+                    }
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable { toggle() }
+                            .padding(vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Checkbox(checked = on, onCheckedChange = { toggle() })
+                        Spacer(Modifier.width(8.dp))
+                        Text(optLabel, style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+            }
+        }
         else -> {
             val key = el.optString("key")
             val isPassword = el.optBoolean("isPassword", false)
+            // A numeric field (an Aniyomi `SeekBarPreference`, a port setting):
+            // non-digits are dropped as they are typed, so the value that gets
+            // saved is always a number the extension can parse.
+            val isNumber = el.optBoolean("isNumber", false)
             val value = values[key] ?: el.optString("defaultValue")
             Column(Modifier.padding(vertical = 4.dp)) {
                 Text(label, style = MaterialTheme.typography.bodyMedium)
@@ -5847,13 +6284,15 @@ private fun SettingsElementRow(
                 }
                 OutlinedTextField(
                     value = value,
-                    onValueChange = { onValue(key, it) },
+                    onValueChange = { raw -> onValue(key, if (isNumber) raw.filter { c -> c.isDigit() } else raw) },
                     placeholder = { Text(el.optString("placeholder")) },
                     singleLine = true,
                     visualTransformation = if (isPassword) PasswordVisualTransformation() else VisualTransformation.None,
-                    keyboardOptions = if (isPassword)
-                        KeyboardOptions(keyboardType = KeyboardType.Password)
-                    else KeyboardOptions.Default,
+                    keyboardOptions = when {
+                        isPassword -> KeyboardOptions(keyboardType = KeyboardType.Password)
+                        isNumber -> KeyboardOptions(keyboardType = KeyboardType.Number)
+                        else -> KeyboardOptions.Default
+                    },
                     modifier = Modifier.fillMaxWidth().tvTextFieldKeys(value)
                 )
             }
@@ -6116,11 +6555,12 @@ private fun PluginRow(
 
 /**
  * The installed provider behind a repo listing, when it exposes its own
- * settings screen (CloudStream's tune button). CS3 plugins are matched by the
- * source URL stored in [ProviderConfig.extra] — the same key uninstall uses —
- * and gated on [cs3SettingsIds]; Nuvio providers always offer their
- * permissions/settings screen; Hikari extensions append a "|index" suffix to
- * their source URL.
+ * settings screen — any engine's: a CloudStream plugin's own screen, a nuvio
+ * scraper's `onSettings()`, a Vega provider's `settings.js`, an Aniyomi/Manga
+ * extension's preference tree, a Stremio addon's config page (see
+ * [hasSettingsScreen]). CS3/Aniyomi/… are matched by the source URL stored in
+ * [ProviderConfig.extra] — the same key uninstall uses — and Hikari extensions
+ * append a "|index" suffix to their source URL.
  */
 /** The repo URL an installed provider was installed from — the key both
  *  uninstall and the update check use. Hikari extensions append a "|index"
@@ -6130,6 +6570,39 @@ private fun providerSource(p: ContentProvider): String? {
     val extra = p.config.extra ?: return null
     if (!extra.startsWith("http")) return null
     return if (p.config.type == ProviderType.HIKARI) extra.substringBeforeLast('|') else extra
+}
+
+/**
+ * Whether an installed provider should show a settings gear — i.e. whether
+ * there is something REAL behind it.
+ *
+ * The answer has to be cheap, because these rows are drawn from stored data and
+ * the provider's runtime may not be loaded at all: a CloudStream plugin's
+ * settings screen is asked of the CACHE ([ContentProvider.settingsReady], which
+ * never dex-loads), a Vega provider's of its own folder (does it publish
+ * `settings.js`?), a Stremio addon's of the manifest already read for it (an
+ * addon known to declare no config page gets no gear). Aniyomi/Manga extensions
+ * always offer it: whether one declares a preference screen is only knowable by
+ * loading it, and an extension that HAS settings must not lose its gear to save
+ * that lookup.
+ *
+ * Everything else (a `.hiki` bundle, a universal scraper, a SkyStream
+ * extension, an IPTV playlist) has no settings screen in its format, so it gets
+ * no gear rather than a button that says it has none.
+ */
+private fun hasSettingsScreen(
+    p: ContentProvider,
+    cs3SettingsIds: Set<String>,
+): Boolean = when (p.config.type) {
+    ProviderType.CS3 -> p.config.id in cs3SettingsIds
+    ProviderType.NUVIO -> true
+    ProviderType.VEGA -> com.hikari.app.providers.vega.VegaPluginManager.hasSettings(p.config)
+    ProviderType.ANIYOMI, ProviderType.MANGA -> true
+    // Optimistic: until the manifest has been read for this addon, whether it
+    // has a config page is unknown, and offering the gear is what lets the user
+    // reach it (the tap loads the manifest and opens the page it declares).
+    ProviderType.STREMIO -> com.hikari.app.providers.StremioAddon.noConfigPage[p.config.id] != true
+    else -> false
 }
 
 private fun repoPluginSettingsTarget(
@@ -6142,7 +6615,7 @@ private fun repoPluginSettingsTarget(
         val extra = p.config.extra ?: return@firstOrNull false
         val source = if (p.config.type == ProviderType.HIKARI) extra.substringBeforeLast('|') else extra
         if (SourceUrls.matchKeys(source).none { it in wanted }) return@firstOrNull false
-        p.config.type == ProviderType.NUVIO || p.config.id in cs3SettingsIds
+        hasSettingsScreen(p, cs3SettingsIds)
     }
 }
 
@@ -6862,12 +7335,11 @@ private fun SourcesOverviewView(
                     onDeleteProvider = onDeleteProvider,
                     settingsFor = { p ->
                         when {
-                            p.config.type == ProviderType.NUVIO -> { { onOpenSettings(p) } }
                             // A playlist has no settings screen — the gear opens what
                             // it IS instead: where it was read from, how many channels
                             // it holds, and a way to read it again.
                             p.config.type == ProviderType.IPTV -> { { onOpenSettings(p) } }
-                            p.config.id in cs3SettingsIds -> { { onOpenSettings(p) } }
+                            hasSettingsScreen(p, cs3SettingsIds) -> { { onOpenSettings(p) } }
                             else -> null
                         }
                     },
@@ -7083,15 +7555,12 @@ private fun InstalledExtensionsView(
     onBack: () -> Unit,
     onToggleProvider: (String, Boolean) -> Unit,
     onDeleteProvider: (String) -> Unit,
+    /** The gear. Resolved by the screen that owns the dialogs (see the main
+     *  Extensions screen's `openProviderSettings`), so one place decides what
+     *  "settings" means for every engine. */
+    onOpenSettings: (ContentProvider) -> Unit = {},
 ) {
     var extFilter by remember { mutableStateOf("") }
-    var settingsProvider by remember { mutableStateOf<ContentProvider?>(null) }
-    val cs3SettingsIds = rememberCs3SettingsIds(providers)
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    fun openCs3Settings(p: ContentProvider) {
-        openProviderSettingsSafely(p, context, scope) {}
-    }
     // The drawable rows, grouped into one per extension (see [ProviderPacks]).
     // Built ONCE per filter/provider change rather than inside the LazyColumn's
     // item list: the lambda there is re-invoked on every recomposition of this
@@ -7202,13 +7671,7 @@ private fun InstalledExtensionsView(
                     statusFor = { p -> pluginStatus(p) },
                     onToggleProvider = onToggleProvider,
                     onDeleteProvider = onDeleteProvider,
-                    settingsFor = { p ->
-                        when {
-                            p.config.type == ProviderType.NUVIO -> { { settingsProvider = p } }
-                            p.config.id in cs3SettingsIds -> { { openCs3Settings(p) } }
-                            else -> null
-                        }
-                    },
+                    settingsFor = { p -> { onOpenSettings(p) } },
                     updateFlag = { p ->
                         providerSource(p)?.let { SourceUrls.anyKeyIn(it, outdatedUrls) } == true
                     },
@@ -7216,12 +7679,5 @@ private fun InstalledExtensionsView(
                 )
             }
         }
-    }
-
-    settingsProvider?.takeIf { it.config.type == ProviderType.NUVIO }?.let { provider ->
-        NuvioSettingsDialog(
-            provider = provider,
-            onDismiss = { settingsProvider = null },
-        )
     }
 }

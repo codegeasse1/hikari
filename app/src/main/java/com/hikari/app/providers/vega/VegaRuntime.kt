@@ -657,6 +657,60 @@ object VegaRuntime {
             }
         }
 
+    // ---- settings ----
+
+    /**
+     * A Vega provider's OWN settings screen, read from its `settings.js`.
+     *
+     * A Vega provider declares its settings the way the rest of it is written:
+     * a module exporting `getSettingsSchema({providerContext})` that answers an
+     * array of fields (`{key, type, label, description, defaultValue, options}`
+     * — toggle / select / text / number). This runs that module exactly like any
+     * other provider call, so the screen is the provider's own rather than a
+     * list Hikari made up. Answers the raw `{"ok":…}` payload.
+     *
+     * The values those fields edit live in the provider's own `kv.json` — the
+     * store its modules read through `providerContext.kvStore` (see
+     * [savedSettings] and [saveSettings]).
+     */
+    suspend fun settingsSchema(
+        providerDir: File,
+        providerId: String,
+        value: String,
+    ): String = run(
+        providerDir = providerDir,
+        providerId = providerId,
+        value = value,
+        fileName = "settings",
+        withCheerio = false,
+        budgetMs = 20_000L,
+        callScript = "__vegaCall(\"getSettingsSchema\", \"{}\");",
+    )
+
+    /** The values already saved for a Vega provider (its own `kv.json`). */
+    fun savedSettings(providerDir: File): JSONObject =
+        runCatching { Kv(File(providerDir, "kv.json")).obj }.getOrDefault(JSONObject())
+
+    /**
+     * Writes the user's choices into that same store.
+     *
+     * Deliberately not a second store of Hikari's own: a Vega provider reads its
+     * settings from `providerContext.kvStore`, which IS this file, so anything
+     * else would show settings the provider never sees. The keys are the
+     * provider's own (`4khdhub_quickDownload`, …), taken from its schema.
+     */
+    suspend fun saveSettings(providerDir: File, values: JSONObject) = withContext(Dispatchers.IO) {
+        if (values.length() == 0) return@withContext
+        val kv = Kv(File(providerDir, "kv.json"))
+        val keys = values.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            kv.obj.put(key, values.opt(key) ?: JSONObject.NULL)
+            kv.changed = true
+        }
+        kv.save()
+    }
+
     // ---- fetch bridge ----
 
     private sealed class Fetched {

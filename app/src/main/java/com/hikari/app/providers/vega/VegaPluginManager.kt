@@ -238,6 +238,19 @@ object VegaPluginManager {
         return dir.listFiles()?.none { it.isFile && it.name.endsWith(".js") } ?: true
     }
 
+    /**
+     * True when an installed Vega provider publishes its own `settings.js` —
+     * the module that declares its settings screen (`getSettingsSchema`, see
+     * [VegaRuntime.settingsSchema]). A directory listing, not an engine boot,
+     * which is what lets the Extensions screen's gear show a real settings
+     * screen for exactly the providers that have one.
+     */
+    fun hasSettings(config: ProviderConfig): Boolean {
+        if (config.type != ProviderType.VEGA) return false
+        return File(dirOf(config), "settings.js").isFile
+    }
+
+
     private fun valueOf(distUrl: String): String =
         distUrl.trimEnd('/').substringAfterLast('/').trim()
 }

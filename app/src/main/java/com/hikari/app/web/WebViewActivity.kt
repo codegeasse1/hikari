@@ -130,6 +130,13 @@ class WebViewActivity : ComponentActivity() {
     // spiral into ad sites.
     @Volatile
     private var verifyAllowRedirects = false
+    // Set when this view is an addon's OWN configuration page (the page a
+    // Stremio addon publishes, see StremioAddon.configurationPage): the link
+    // that page hands back to install the configured addon is captured and
+    // returned to the caller instead of being loaded. Nothing else about the
+    // page is special-cased.
+    @Volatile
+    private var addonConfig = false
     private val verifyHandler = Handler(Looper.getMainLooper())
     private var verifyRunnable: Runnable? = null
 
@@ -259,6 +266,7 @@ class WebViewActivity : ComponentActivity() {
         autoCloseWhenCloudflarePassed = intent.getBooleanExtra("autoCloseWhenCloudflarePassed", false)
         verifyHost = intent.getStringExtra("verifyHost")
         verifyAllowRedirects = intent.getBooleanExtra("verifyAllowRedirects", false)
+        addonConfig = intent.getBooleanExtra("stremioConfig", false)
         providerId = intent.getStringExtra("providerId")
         renderRestarts = intent.getIntExtra("renderRestarts", 0)
         val forceTranslate = intent.getBooleanExtra("translate", false)
@@ -267,7 +275,8 @@ class WebViewActivity : ComponentActivity() {
         com.hikari.app.data.Logs.log(
             "WebView",
             "open \"$startUrl\" (title=\"$pageTitle\", verifyHost=${verifyHost ?: "-"}, " +
-                "autoClose=$autoCloseWhenCloudflarePassed, provider=${providerId ?: "-"})"
+                "autoClose=$autoCloseWhenCloudflarePassed, provider=${providerId ?: "-"}, " +
+                "addonConfig=$addonConfig)"
         )
 
         // An extension's "support us" link is never opened: it is a funding
@@ -542,12 +551,24 @@ class WebViewActivity : ComponentActivity() {
                     showBlockedToast("Blocked a donation page")
                     return true
                 }
+                // An addon's configuration page ENDS by navigating to the
+                // configured addon's own manifest — a stremio:// link the
+                // WebView cannot follow, or a manifest URL. That navigation IS
+                // the user pressing "Install", so it is taken here and handed
+                // back to the caller, which installs/replaces the addon.
+                if (addonConfig) {
+                    val install = addonInstallUrl(request.url.toString())
+                    if (install != null) {
+                        finishWithManifest(install)
+                        return true
+                    }
+                }
                 // Video-verification mode (verifyAllowRedirects): the streaming
                 // site's redirect to the real video page is the whole point —
                 // skip ALL main-frame redirect blocking here. Ad hosts are
                 // still blocked below and popups are still dropped, so it
                 // can't spiral into ad sites.
-                if (!verifyAllowRedirects) {
+                if (!verifyAllowRedirects && !addonConfig) {
                     // Cloudflare-verification mode: ONLY the CF challenge may ever
                     // load (the site + Cloudflare's challenge infra). Any other
                     // redirect target is cancelled before it loads — the view is
@@ -813,6 +834,13 @@ class WebViewActivity : ComponentActivity() {
                         private fun relay(url: String?) {
                             if (relayed || url.isNullOrBlank()) return
                             relayed = true
+                            // A config page's "install" popup is the install
+                            // signal, exactly like a main-frame navigation to it
+                            // (see addonInstallUrl).
+                            if (addonConfig) {
+                                addonInstallUrl(url)?.let { finishWithManifest(it) }
+                                return
+                            }
                             // A popup to a donation page is an ad-style popup
                             // with a cause: never relayed into the main view.
                             if (PromoGuard.isDonationUrl(url)) {
@@ -1195,6 +1223,51 @@ class WebViewActivity : ComponentActivity() {
         if (blockedToastShown) return
         blockedToastShown = true
         verifyHandler.post { Toast.makeText(this, msg, Toast.LENGTH_SHORT).show() }
+    }
+
+    /**
+     * The manifest URL inside a link an addon's configuration page hands back,
+     * or null when the link is not one.
+     *
+     * A Stremio addon's config page installs the configured addon by navigating
+     * to `stremio://<host>/<path>/manifest.json` (an older spelling is
+     * `stremio://<percent-encoded absolute URL>`), and a few pages simply link
+     * the manifest itself. Both are normalised to the https manifest URL the
+     * addon-install path expects — the path that config produced is the whole
+     * point, so it is never discarded.
+     */
+    private fun addonInstallUrl(raw: String): String? {
+        val url = raw.trim()
+        if (url.isEmpty()) return null
+        val lower = url.lowercase()
+        if (lower.startsWith("stremio://")) {
+            val rest = url.substring("stremio://".length)
+            val decoded = runCatching { java.net.URLDecoder.decode(rest, "UTF-8") }
+                .getOrDefault(rest)
+            val absolute =
+                if (decoded.startsWith("http://") || decoded.startsWith("https://")) decoded
+                else "https://" + decoded
+            return manifestUrlOf(absolute)
+        }
+        if ((lower.startsWith("http://") || lower.startsWith("https://")) &&
+            lower.substringBefore('?').endsWith("/manifest.json")
+        ) {
+            return url
+        }
+        return null
+    }
+
+    /** A manifest URL for [url], adding `/manifest.json` when it names a base. */
+    private fun manifestUrlOf(url: String): String =
+        if (url.substringBefore('?').endsWith("/manifest.json")) url
+        else url.substringBefore('?').trimEnd('/') + "/manifest.json"
+
+    /** The addon's config page handed back an install URL: give it to the caller
+     *  (the Extensions screen installs/replaces the addon) and close. */
+    private fun finishWithManifest(url: String) {
+        com.hikari.app.data.Logs.log("WebView", "addon config page returned $url")
+        setResult(RESULT_OK, Intent().putExtra("manifestUrl", url))
+        finish()
     }
 
     /**

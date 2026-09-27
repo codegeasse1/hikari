@@ -82,6 +82,18 @@ class IptvProvider(override val config: ProviderConfig) : ContentProvider {
         /** The catalog id of one group's shelf. */
         fun catalogIdForGroup(group: String): String = GROUP_PREFIX + group
 
+        /**
+         * Drops everything remembered about a removed playlist — its last
+         * failure, its channel count and the "read at" stamp. The provider row
+         * itself is gone, so nothing may keep reporting a playlist that is no
+         * longer installed (see the IPTV tab's remove button).
+         */
+        fun forget(providerId: String) {
+            iptvErrors.remove(providerId)
+            channelCounts.remove(providerId)
+            loadedAt.remove(providerId)
+        }
+
         /** The group name inside a [catalogIdForGroup] id (null for anything
          *  else, including [CATALOG_ALL]). */
         fun groupOfCatalogId(id: String): String? =

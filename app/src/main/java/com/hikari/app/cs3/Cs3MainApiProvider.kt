@@ -63,6 +63,13 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
          *  network call, short enough that a pull-to-refresh refetches it. */
         private const val HOME_ROWS_TTL_MS = 60_000L
 
+        /** How old a cached CloudStream home page must be before an EMPTY row
+         *  is worth re-reading (see getCatalog). A row that comes back empty
+         *  from a page fetched moments ago is genuinely empty; one that is empty
+         *  on a page fetched a while back is often a lazy/rotated tray that the
+         *  next request fills. */
+        private const val STALE_ROWS_MS = 12_000L
+
         /** Budget for the universal extraction engine (StreamHG sign-dance
          *  needs several requests, so it's deliberately roomy). */
         private const val FALLBACK_CAP_MS = 20_000L
@@ -339,14 +346,50 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
         return pageIndex to rowIndex
     }
 
+    /** The cache key a home page's rows are held under (see [homePageCache]). */
+    private fun homePageKey(page: MainPageData, pageNumber: Int): String =
+        "${page.data}\u0000$pageNumber"
+
+    /** How long ago the rows for [key] were fetched, or -1 when not cached. */
+    private fun cachedHomeRowsAge(key: String): Long =
+        homePageCache[key]?.let { System.currentTimeMillis() - it.first } ?: -1L
+
+    /**
+     * The HomePageList a Home tile stands for.
+     *
+     * BY NAME first, with the stored index only breaking ties — because these
+     * plugins re-fetch their whole home page on every single call (CNC Verse's
+     * `getMainPage` ignores the request it is given and always re-reads
+     * `/mobile/home`), and a mirror's tray list is not stable between requests:
+     * trays come and go with the session, and their order rotates. Slicing the
+     * second read by an index taken from the first is what put a different
+     * tray's (often empty) contents under a row's name, which read as "No items
+     * in <row>" for a row that is full in CloudStream. The index is still used
+     * when the row cannot be found by name (an older plugin that returns no row
+     * names at all), and among rows that share a name it picks the one nearest
+     * the recorded position — three trays literally named "Recently added" are
+     * not a hypothetical.
+     */
+    private fun rowFor(rows: List<HomePageList>, name: String, index: Int): HomePageList? {
+        val wanted = name.trim()
+        if (wanted.isNotEmpty()) {
+            val matches = rows.withIndex().filter { it.value.name.trim() == wanted }
+            if (matches.isNotEmpty()) {
+                return matches.minByOrNull { kotlin.math.abs(it.index - index) }?.value
+            }
+        }
+        return rows.getOrNull(index)
+    }
+
     /** Fetches one mainPage's HomePageList rows (page 1 is briefly cached). */
     private suspend fun fetchHomeRows(
         a: MainAPI,
         page: MainPageData,
         pageNumber: Int,
+        force: Boolean = false,
     ): List<HomePageList> {
-        val key = "${page.data}\u0000$pageNumber"
-        if (pageNumber == 1) {
+        val key = homePageKey(page, pageNumber)
+        if (pageNumber == 1 && !force) {
             homePageCache[key]?.let { (at, rows) ->
                 if (System.currentTimeMillis() - at < HOME_ROWS_TTL_MS) return rows
             }
@@ -408,17 +451,40 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                     catalogErrors[config.id] = "Home page ${ref.name} is no longer available — refresh Home"
                     return@withContext emptyList()
                 }
-                val rows = try {
+                val key = homePageKey(mainPage, page)
+                var rows = try {
                     fetchHomeRows(a, mainPage, page)
                 } catch (e: Throwable) {
                     if (e is CancellationException) throw e
                     catalogErrors[config.id] = fullCause(e)
                     return@withContext emptyList()
                 }
-                val row = rows.getOrNull(rowIndex) ?: rows.firstOrNull()
-                val rowItems = row?.list.orEmpty().mapNotNull { it.toMediaItem() }
+                var row = rowFor(rows, ref.name, rowIndex)
+                var rowItems = row?.list.orEmpty().mapNotNull { it.toMediaItem() }
+                if (rowItems.isEmpty() && (row == null || cachedHomeRowsAge(key) > STALE_ROWS_MS)) {
+                    // The tray is empty (or gone) on the page we have. Two
+                    // things produce that, and a second request fixes both: the
+                    // home page the app cached was fetched for the rows ABOVE
+                    // this one and these mirror sites fill trays lazily/rotate
+                    // them, and a row is often matched by index against a page
+                    // whose tray list has since changed. Re-read the page once,
+                    // deliberately past the cache, and match the row again
+                    // before saying it is empty.
+                    rows = try {
+                        fetchHomeRows(a, mainPage, page, force = true)
+                    } catch (e: Throwable) {
+                        if (e is CancellationException) throw e
+                        rows
+                    }
+                    row = rowFor(rows, ref.name, rowIndex)
+                    rowItems = row?.list.orEmpty().mapNotNull { it.toMediaItem() }
+                }
                 if (rowItems.isEmpty()) {
-                    catalogErrors[config.id] = "No items in ${ref.name}"
+                    catalogErrors[config.id] = if (row == null) {
+                        "\"${ref.name}\" is no longer on its home page — refresh Home"
+                    } else {
+                        "No items in ${ref.name}"
+                    }
                 } else {
                     catalogErrors.remove(config.id)
                 }
@@ -1133,7 +1199,23 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
     }
 
     private fun SearchResponse.toMediaItem(): MediaItem? {
-        if (url.isBlank() || name.isBlank()) return null
+        // `url` is what the item is opened by, so an item without one is not
+        // openable — but the NAME is NOT required. A lot of CloudStream plugins
+        // deliberately post a poster-only card: they build every search response
+        // with an empty name and let the poster carry the title, e.g. CNC
+        // Verse's NetflixMirrorProvider, whose whole home page is
+        //
+        //     newAnimeSearchResponse("", Id(id).toJson()) { posterUrl = … }
+        //
+        // (its search() path passes a real `it.t`, which is why SEARCH works while
+        // the catalogue looked empty). CloudStream renders those cards fine, and
+        // this converter used to drop every one of them for the blank name — so
+        // every row of such an extension came back empty and the extension looked
+        // like it had no catalogue at all, while the same extension in CloudStream
+        // listed it. The real title arrives from the plugin's own load() when the
+        // item is opened; until then the card is the poster, exactly as it is in
+        // CloudStream.
+        if (url.isBlank()) return null
         val mt = when (type) {
             // NSFW providers (LeakPorner, KanAV, …) label their single-video
             // results NSFW — treat as movies; getMeta later corrects actor
