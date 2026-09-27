@@ -383,9 +383,19 @@ object ExtensionPreferences {
         return raw.replace("%s", current)
     }
 
-    /** True for an `EditTextPreference` the extension marked as a secret. */
+    /**
+     * True for an `EditTextPreference` the extension marked as a secret.
+     *
+     * The `EditText` is read reflectively rather than through the synthetic
+     * `editText` property: `getEditText()` is only present in some
+     * `androidx.preference` artifacts, so the property does not resolve in
+     * every build (it failed to compile with `Unresolved reference 'editText'`).
+     * Reflection keeps the value visible when the method is there and just
+     * treats the preference as a plain text row when it is not.
+     */
     private fun isPassword(pref: EditTextPreference): Boolean = runCatching {
-        val input = pref.editText?.inputType ?: return@runCatching false
+        val editText = pref.javaClass.getMethod("getEditText").invoke(pref) as? android.widget.EditText
+        val input = editText?.inputType ?: return@runCatching false
         val variant = input and 0xff
         variant == InputType.TYPE_TEXT_VARIATION_PASSWORD ||
             variant == InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD
