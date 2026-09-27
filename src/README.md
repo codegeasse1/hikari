@@ -68,6 +68,94 @@ see the session log below, which is where their design notes live.)
 
 ## Session log (newest first)
 
+- **0.10.53** (versionCode 224) — the owner's eighth round: **"make the Vega provider play like the Vega app
+  does"** for a movie whose post carries several quality rows (the report: Movies4u in Hikari shows only a Play
+  button and then "No playable sources for this title", while the Vega app shows FOUR options to play for the
+  same title), **"fix all the issues in one go"**, and an explicit instruction to **NOT** touch the Lulustream /
+  network-stream playback 403 this round (that analysis was done and deliberately deferred — see the last bullet).
+  Built and pushed as one commit (`6939782f5fc2fab586be5e69fa85f7b514c766e0`; parent
+  `80d385211a7fd63021cc80ad89539eb1fcdcffb8`, the 0.10.52 docs commit; CI run **36280879424** — **success on
+  the first try**; `continuous` re-uploaded its 3 APKs at 00:08:55Z, `build` branch =
+  `build: update test APK 202609270008` (`475e23e734`); **NO new main release** — the newest real release is
+  still v0.10.42), followed by this `src/README.md`-only commit, which `paths-ignore: '**.md'` does not build.
+  - **The diagnosis (why the Vega app had four options and we had none).** Both apps run the same provider code;
+    what differs is what each does with the provider's `Info.linkList`. A Vega post's `linkList` has ONE ENTRY
+    PER QUALITY ROW (`480p [650MB]`, `720p HEVC`, `1080p HEVC`, `1080p`) and each entry carries its own
+    `directLinks[0]`; the Vega app's detail screen renders those entries (its `SeasonList` draws a dropdown over
+    the whole `LinkList` plus a row per entry, and `providerDiagnostics.getPlayableLink` picks one `directLink`),
+    so ONE entry = ONE `getStream` call and the user chooses. `VegaProvider.getStreams` took the FIRST entry
+    (`movieLink`) and made ONE call — so entries 2..4 were never resolved and had no UI at all. Worse, the first
+    entry is not reliably a download: these providers build `linkList` by scanning `h3/h4/p` whose text matches
+    `\d+p` and pairing it with the first anchor that follows it in the page (see `scratch/analysis/movies4u/`
+    `meta.pretty.js`), which also catches the synopsis paragraph ("…available in 480p & 720p & 1080p") — and the
+    anchor that follows THAT is a screenshot host. That is exactly the link the old code extracted, and the
+    earlier session's log line (`HubCloud extract https://postimages.org/ failed`) is the proof. Hence: 0.10.52
+    removed the crash, and this round removed the WRONG LINK plus the one-link limit.
+  - **`__vegaCallManySettled` (new, `vega/harness.js`).** `__vegaCallMany` flattens every failure to `null`, so a
+    caller cannot tell "answered nothing" from "its extraction threw, and the provider said why". The new variant
+    answers each slot as the JSON TEXT of `{"ok":true,"data":…}` / `{"ok":false,"error":…}` (per-slot
+    serialization also keeps one unserializable result from taking the whole run down), and takes a third
+    argument `settleAfterMs`: > 0 races `Promise.all` against `g.setTimeout(finish, ms)` and answers with what has
+    LANDED, so one dead host (whose extraction walks several requests in turn) cannot outlive the caller's whole
+    budget and take the servers the other entries found with it. Still-running slots are `null`, never an error.
+  - **`VegaRuntime.callManySettled(…, settleAfterMs, budgetMs)`** wraps it, and the stale "sequentially" KDoc on
+    `callMany` (concurrent since 0.10.52) was corrected.
+  - **`VegaProvider` movie path.** `movieLinks(item)` collects EVERY candidate (`directLinks[*].link` per entry,
+    then the entry's own `link`, then `webUrl`, then the item id as the last resort — deduped, capped at
+    `MAX_MOVIE_LINKS = 8`), sorted so entries whose link is an image file or a screenshot host (`isImageLink`:
+    extensions + a small host list, incl. `postimages.org`) go LAST — never dropped, only ordered, so the cap can
+    never cut a real quality row in their favour. `lookupStreams` runs them all in ONE engine through
+    `callManySettled`, merges the servers, de-duplicates by URL, and names each with the quality of the entry it
+    came from (a `mapStreams(data, qualityHint)` parameter: the provider's own per-stream quality still wins),
+    so four otherwise identically-named servers are distinguishable in the player's list. When nothing comes
+    back, the provider's OWN error is surfaced (the card used to say the generic line). Budgets: settle
+    25 s → cap 30 s, engine 35 s → cap 42 s, both scaled by `NetTuning.timeout` (×3 in Slow connection mode) and
+    capped UNDER the app's own per-provider lookup budget (`CROSS_EXT_STREAMS_TIMEOUT_MS` = 45 s, 50 s in slow
+    mode), because a lookup that overruns that is reported as a timeout instead of as the servers it found.
+  - **Vega series: the packs no longer overwrite each other.** The runtime answers `getEpisodes` once per
+    `linkList` entry with an `episodesLink`, in list order, but the host matched those answers to seasons by
+    SEASON NUMBER (`Map<Int, JSONArray>`), and two rows of one season share their number (a 1080p pack and a
+    720p pack of "Season 1" are both 1) — so the second answer overwrote the first and BOTH rows rendered the
+    same pack's episodes, twice (the owner's screenshot: "1 NEX DRIVE", "1 NEX DRIVE", "2 Episode 1", "2
+    Episode 1" — `DetailScreen` shows a season selector only when 2+ DISTINCT season numbers exist, so a
+    same-numbered pair renders as one flat list, sorted by `(season, number)`). The `DetailJob.episodes`
+    deferred now carries the RAW array and the host reads it BY INDEX (`seasonEpisodeArrays`), which is what the
+    runtime's own `seasonRequests` order means; a season whose `episodesLink` is literally the same page as one
+    already used is dropped (its index still consumed), and when several packs share a season number the episode
+    rows carry the pack's quality ("1080p · NEX DRIVE") so the sets read as the different things they are.
+  - **Verification done (scratch is ephemeral — the METHOD is what to keep).** (1) `esbuild-wasm` parses both
+    harnesses (`execute_js` → `esm.sh/esbuild-wasm@0.21.5`, loader `js`). (2) The harness boots in a plain V8
+    worker: evaluate `nuvio/boot.js`, register a stub `__nuvioCheerio`, evaluate `nuvio/harness.js`, then the
+    register glue `VegaRuntime.buildRegisterScript` performs (cheerio registration, `__nuvioFetchImpl`,
+    `__nuvioBridgeStub`, `__vegaLoadIsolated`, `__vegaCommonHeadersJson` from `vega/commonHeaders.js`,
+    `__vegaProviderValue`, `__vegaKvJson`), then `vega/harness.js` — plus stubs for `__vegDone`/`__vegaKv*`/
+    `__vegaLog`/`__vegProgress`/`__hikariFetch` and a fake `stream` module loaded exactly as
+    `VegaRuntime.loadModule` wraps a provider file. That proved the payload shape the Kotlin parser expects
+    (array of JSON strings + `null` holes), per-slot error propagation, the circular-result isolation, the
+    deadline returning partial results, and index alignment with a slow first entry. (3) The QuickJS-only half:
+    shadow `globalThis.setTimeout`/`clearTimeout` with own properties (QuickJS has NO timers — the harness then
+    installs its shim), call `__vegaCallManySettled('getStream', […], 150)` and drive it the way the host's pump
+    loop does (`__vegaFireTimer()` in a loop). Result: right after the call `__vegaFireTimer()` reported a
+    parked timer due in **150 ms**, the pump fired it (`…9, 0` = "a timer just fired"), and the payload landed at
+    **151 ms** carrying the working entry's server plus `null` for the hung one — i.e. the deadline really does
+    fire on-device, and the fallback (`Promise.all` finishing first) is untouched.
+  - **Deliberately NOT done, and what is known about it** (the owner said not to touch it this round): the
+    Lulustream / pasted-network-stream `403` that the player reports as "Server failed". Established so far —
+    the source IS resolved (the sheet lists `LuluStream`/`Luluvdo 640p`), and the CDN (`*.tnmr.org/hls2/…`)
+    refuses the PLAYER's request. Hikari's extraction stack has the session handling (the jar's `app` client is
+    wired with `CloudflareVerifier.intercept`, which re-uses the WebView's `cf_clearance` + WebView UA), while
+    `PlayerHttp.client` is a plain OkHttp with **no cookie jar and no Cloudflare interceptor**, and the
+    `OkHttpDataSource` it feeds does not handle Set-Cookie either. CloudStream's own player is built from
+    `app.baseClient` (`.setHandleSetCookieRequests(true)` on its Cronet path), i.e. the SAME client that earned
+    the cookies — which is the difference. `M3u8Helper` having fetched the master playlist successfully during
+    extraction (that is where the 640p variant came from) is evidence the CDN wants that session. The agreed-safe
+    shape for a future round: carry the extraction session as a `StreamSource` header (the player already drops
+    headers one step at a time on rejection, `PlayerActivity.headerVariant 0→1→2`) and add `cf_clearance` only
+    as a LATER rung of that ladder — never blanket-attaching a WebView cookie jar to the first attempt, because
+    there are hosts that 403 any request carrying a cookie. One unknown remains: whether the tnmr.org 403 is
+    cookie/clearance-gated or token/IP-locked (which cookies would not fix) — one device log of that failing URL
+    settles it.
+
 - **0.10.52** (versionCode 223) — the owner's seventh round; four asks (a network stream
   pasted out of a playing site must play; Movies4u from the Vega provider must work the way
   it does in the Vega app; a Vega series must SHOW that its episode list is loading, and load
