@@ -706,6 +706,12 @@ without paying for the sweep again.
   first with the same number beside it, so the way back is always where it was.
 - **It is drawn only when it can do something** (`engineCounts.size >= 2`): one
   selected extension is one engine, so a scoped search never sees a strip.
+- **An active pick always has a way out.** A pick whose engine loses its last hit
+  under the kind/year/genre strips filters nothing, so it is ignored
+  (`activeEngine`) and dropped from the saved state by a `LaunchedEffect`; and
+  while a chip is in force the strip is drawn at ANY count, so the pick can
+  always be cleared. Without both, the grid could be left empty by a filter whose
+  chip had been narrowed off the strip.
 - **A result with no engine is never counted** — `providerId` not in the
   installed providers (a stale id, or a collection hit, which belongs to no
   engine) — so it never hides under a chip; it shows under "All".

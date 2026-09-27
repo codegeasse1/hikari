@@ -427,9 +427,18 @@ fun SearchScreen(
         // Most hits first, so the strip leads with where the results are.
         counts.entries.sortedByDescending { it.value }.associate { it.key to it.value }
     }
-    val visible = remember(filtered, engineKey, engineOf) {
-        if (engineKey.isBlank()) filtered
-        else filtered.filter { engineOf[it.providerId] == engineKey }
+    // A pick whose engine has no hits left under the current kind/year/genre
+    // strips filters nothing, and would leave the grid empty with a chip that is
+    // no longer on the strip to undo it: such a pick is ignored here, and the
+    // effect below drops it from the saved state so it cannot come back on its
+    // own when the strips change again.
+    val activeEngine = engineKey.takeIf { engineCounts.containsKey(it) }.orEmpty()
+    val visible = remember(filtered, activeEngine, engineOf) {
+        if (activeEngine.isBlank()) filtered
+        else filtered.filter { engineOf[it.providerId] == activeEngine }
+    }
+    LaunchedEffect(engineCounts, engineKey) {
+        if (engineKey.isNotBlank() && !engineCounts.containsKey(engineKey)) engineKey = ""
     }
 
     // The name of the one selected source, when exactly one is picked — an
@@ -845,7 +854,7 @@ fun SearchScreen(
                     }
                 }
             }
-            if ((filterOn || engineKey.isNotBlank()) && results.isNotEmpty()) {
+            if ((filterOn || activeEngine.isNotBlank()) && results.isNotEmpty()) {
                 Column(Modifier.padding(horizontal = 16.dp, vertical = 2.dp)) {
                     Text(
                         if (visible.isEmpty()) {
@@ -917,8 +926,11 @@ fun SearchScreen(
                 // One chip per engine that answered, plus "All" — see the
                 // engine-filter state at the top. Drawn only when there are two
                 // or more engines to choose between, so a scoped search (one
-                // source, one engine) never sees a strip that can do nothing.
-                if (engineCounts.size >= 2) {
+                // source, one engine) never sees a strip that can do nothing —
+                // or, at any count, while one engine's chip is in force: that is
+                // the only way to undo a pick whose competitors the other strips
+                // have narrowed away.
+                if (engineCounts.size >= 2 || activeEngine.isNotBlank()) {
                     LazyRow(
                         contentPadding = PaddingValues(horizontal = 10.dp),
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -927,18 +939,18 @@ fun SearchScreen(
                         item {
                             EngineChip(
                                 label = tr("All") + " · " + filtered.size,
-                                selected = engineKey.isBlank(),
+                                selected = activeEngine.isBlank(),
                                 onClick = { engineKey = "" },
                             )
                         }
                         items(engineCounts.entries.toList(), key = { it.key }) { entry ->
                             EngineChip(
                                 label = entry.key + " · " + entry.value,
-                                selected = engineKey == entry.key,
+                                selected = activeEngine == entry.key,
                                 // Tapping the one in force clears it, like the
                                 // picker's own engine chips.
                                 onClick = {
-                                    engineKey = if (engineKey == entry.key) "" else entry.key
+                                    engineKey = if (activeEngine == entry.key) "" else entry.key
                                 },
                             )
                         }
