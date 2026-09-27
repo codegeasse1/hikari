@@ -115,6 +115,19 @@ see the session log below, which is where their design notes live.)
     `data/ContentRepository.kt`, `app/build.gradle.kts`, `docs/HIKARI_EXTENSIONS.md` (new "CloudStream plugins
     inside a Hikari extension (the bridge)" + "Publishing the repository (`fileHash`)" sections, which is now the
     written-down description of the row-catalogue protocol), `CHANGELOG.md`, this file.
+  - **The phisher bundle could not be rebuilt at all** — which is why the first two pushes of this round came back
+    red. `CloudPlay.cs3` and `MovieBlast.cs3` had been removed from
+    `phisher98/cloudstream-extensions-phisher@builds`, and `build.sh` treated a failed fetch as fatal, so the whole
+    extensions CI run died on a 404 and **nothing** in that repo was published — the bridge fix could not reach a
+    single device. Both files are gone from `phisher/bridge-sources.txt` (every one of the 76 remaining phisher
+    paths, cncverse's 34 and anime's 5 was verified to return 200), their `PhiCloudPlay`/`PhiMovieBlast` wrapper
+    classes and manifest entries are removed so no provider is registered that can never load, and `build.sh` now
+    SKIPS a missing upstream `.cs3` with a `::warning::` (listed again at the end of the build) instead of aborting:
+    one stale upstream path must not stop every other extension in the repo from shipping. The rebuilt
+    `builds/repo.json` now carries a `sha256-…` `fileHash` on all 142 entries, so the app's update check can finally
+    see updates at all. Verified after the green run by downloading the three published `.hiki` files from the
+    `continuous` release: sha256 identical to `repo.json`, `classes.dex` contains the new row-catalogue code (and
+    none of the old), and phisher bundles 76 `.cs3` with no CloudPlay/MovieBlast.
   - The `sdk/HikariProvider.kt` interface and `HikariCatalog` were deliberately **not** changed, so an old
     installed `.hiki` still loads; only its catalogue contents change.
   - **`continuous` only — no main release.** (The owner's round-13 message initially read as "do continuous build
