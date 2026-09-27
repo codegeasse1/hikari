@@ -524,7 +524,7 @@ object VegaRuntime {
         callScript = "__vegaCall(${quote(fnName)}, ${quote(argsJson)});",
     )
 
-    /** Calls [fnName] once per object in [argsArrayJson], concurrently. */
+    /** Calls [fnName] once per object in [argsArrayJson], sequentially. */
     suspend fun callMany(
         providerDir: File,
         providerId: String,
@@ -540,44 +540,6 @@ object VegaRuntime {
         withCheerio = true,
         budgetMs = CATALOG_TIMEOUT_MS,
         callScript = "__vegaCallMany(${quote(fnName)}, ${quote(argsArrayJson)});",
-    )
-
-    /**
-     * [callMany], but each slot reports its own OUTCOME rather than a bare
-     * result with failures flattened to null: the payload's `data` is an array
-     * of `{"ok":true,"data":…}` / `{"ok":false,"error":…}` JSON strings (see
-     * `__vegaCallManySettled` in assets/vega/harness.js).
-     *
-     * This is what the Vega stream lookup uses. A Vega movie's `linkList` is one
-     * entry per quality row and every entry is its own `getStream` call, so the
-     * caller has to be able to tell "this link answered nothing" from "this
-     * link's extraction failed, and the provider said why" — and to report that
-     * reason when not one of them produced a server.
-     *
-     * [settleAfterMs] > 0 answers with whatever has landed by then instead of
-     * waiting for the slowest entry (a slot still running is null, i.e. "said
-     * nothing"), so one dead link cannot spend the caller's whole budget and
-     * take the servers the other links found down with it. [budgetMs] is the
-     * engine's own ceiling and must sit above it.
-     */
-    suspend fun callManySettled(
-        providerDir: File,
-        providerId: String,
-        value: String,
-        fileName: String,
-        fnName: String,
-        argsArrayJson: String,
-        settleAfterMs: Long = 0L,
-        budgetMs: Long = CATALOG_TIMEOUT_MS,
-    ): String = run(
-        providerDir = providerDir,
-        providerId = providerId,
-        value = value,
-        fileName = fileName,
-        withCheerio = true,
-        budgetMs = budgetMs,
-        callScript = "__vegaCallManySettled(${quote(fnName)}, ${quote(argsArrayJson)}, " +
-            "${settleAfterMs.coerceAtLeast(0L)});",
     )
 
     /**

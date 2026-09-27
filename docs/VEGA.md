@@ -132,6 +132,17 @@ UTF-8 — the same fix the nuvio bridge needed).
 Detail screen, the catalogue's empty state and the sources log read, exactly as
 the other engines expose them.
 
+A 0.10.53 experiment — reverted in 0.10.54, so **not** what this file describes —
+resolved EVERY `linkList` entry of a movie in one engine
+(`__vegaCallManySettled` in the harness, `VegaRuntime.callManySettled`,
+`VegaProvider.lookupStreams`) and matched a series' episode answers to its packs
+by list POSITION instead of by season number. The series half regressed on real
+providers (a series came back with no episode list at all), and the movie half
+was reverted with it rather than left half-applied: a movie is again resolved
+from its own first link, as above. The analysis and the exact blobs of the
+reverted state are in `CHANGELOG.md` (0.10.54) and `src/README.md`; re-applying
+only the movie half later is a separable job.
+
 ## Files
 
 - `app/src/main/java/com/hikari/app/providers/vega/VegaRuntime.kt` — engine,

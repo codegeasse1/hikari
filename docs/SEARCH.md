@@ -689,6 +689,33 @@ search — "search moana, pick the year, keep only the movie" has to be instant.
   activity being recreated while the player runs does not lose them — the same
   reason the query lives in the view model's `SavedStateHandle`.
 
+### The engine strip narrows the RESULTS to one engine's sources — and never a second search
+
+When more than one source is in play (All providers, or any multi-select), the
+results carry a strip of chips above the grid: `All · <n>` first, then one per
+ENGINE that actually has hits (`ProviderType.groupLabel` — "CloudStream",
+"Hikari", "Nuvio", "Vega", …), most hits first. Tapping one keeps only that
+engine's items, so a wide search can be read as "just the CloudStream plugins'
+hits" or as every Hikari extension's, without opening the provider picker and
+without paying for the sweep again.
+
+- **It filters what landed, exactly like kind/year/genre.** The counts are taken
+  from the results AFTER those three strips (`engineCounts`), and the grid
+  renders `visible` rather than `filtered`. Because the counts come from the
+  pre-engine list, picking a chip can never change the strip itself: "All" stays
+  first with the same number beside it, so the way back is always where it was.
+- **It is drawn only when it can do something** (`engineCounts.size >= 2`): one
+  selected extension is one engine, so a scoped search never sees a strip.
+- **A result with no engine is never counted** — `providerId` not in the
+  installed providers (a stale id, or a collection hit, which belongs to no
+  engine) — so it never hides under a chip; it shows under "All".
+- **The engine state is `rememberSaveable`** (`engineKey`: a label, or `""` for
+  every engine), like the three filter states, so the player recreating the
+  activity does not lose it.
+- **The strip is a LazyRow of `EngineChip`s** (the screen's own chip style), and
+  tapping the chip in force clears it — the same gesture the provider picker's
+  engine categories use.
+
 ### The history records queries that RAN, not keystrokes
 
 `AppStore.searchHistory` (preference `SEARCH_HISTORY`, capped at

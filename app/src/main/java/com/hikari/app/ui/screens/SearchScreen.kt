@@ -400,6 +400,38 @@ fun SearchScreen(
         }
     }
 
+    // ---- Engine filter (which of the searched engines' hits to show) -----
+    //
+    // This only means something when more than one source is in play, so the
+    // strip is drawn only when the current results actually carry hits from two
+    // or more ENGINES (CloudStream plugins, Hikari extensions, Nuvio providers,
+    // Vega providers, …). It narrows the grid to one of them — "search black
+    // clover everywhere, then read just the Hikari extensions' hits" — and it
+    // does that WITHOUT re-running the scan, because it filters what has already
+    // landed. The counts are taken from the results as the kind/year/genre
+    // strips left them, so picking a chip can never change the chip row itself:
+    // the way back ("All") stays put, first, with the same number next to it.
+    // An item whose provider is not installed any more (or a collection hit) has
+    // no engine, so it is simply never counted and never shows under a chip.
+    val engineOf = remember(providers) {
+        providers.associate { it.config.id to it.config.type.groupLabel }
+    }
+    // The engine picked, by its label; empty = every engine.
+    var engineKey by rememberSaveable { mutableStateOf("") }
+    val engineCounts = remember(filtered, engineOf) {
+        val counts = HashMap<String, Int>()
+        for (item in filtered) {
+            val label = engineOf[item.providerId] ?: continue
+            counts[label] = (counts[label] ?: 0) + 1
+        }
+        // Most hits first, so the strip leads with where the results are.
+        counts.entries.sortedByDescending { it.value }.associate { it.key to it.value }
+    }
+    val visible = remember(filtered, engineKey, engineOf) {
+        if (engineKey.isBlank()) filtered
+        else filtered.filter { engineOf[it.providerId] == engineKey }
+    }
+
     // The name of the one selected source, when exactly one is picked — an
     // extension, or one of the user's catalogs. It is what makes the search box
     // say "Search in abc…" instead of "Search in 1 selected provider", so a
@@ -813,24 +845,24 @@ fun SearchScreen(
                     }
                 }
             }
-            if (filterOn && results.isNotEmpty()) {
+            if ((filterOn || engineKey.isNotBlank()) && results.isNotEmpty()) {
                 Column(Modifier.padding(horizontal = 16.dp, vertical = 2.dp)) {
                     Text(
-                        if (filtered.isEmpty()) {
+                        if (visible.isEmpty()) {
                             tr("Nothing in these results matches the filter.")
                         } else {
                             // Two single-placeholder phrases joined the way the
                             // rest of the app joins counted labels (see
                             // ExtensionsScreen's "N repos · M enabled"), so each
                             // half is a key the dictionaries can hold.
-                            tr("%s shown").replace("%s", filtered.size.toString()) +
+                            tr("%s shown").replace("%s", visible.size.toString()) +
                                 " · " +
                                 tr("%s found").replace("%s", results.size.toString())
                         },
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    if (filtered.isNotEmpty() && keptUnknownKind > 0) {
+                    if (visible.isNotEmpty() && keptUnknownKind > 0) {
                         Text(
                             tr("%s have no year or kind, so they are kept")
                                 .replace("%s", keptUnknownKind.toString()),
@@ -882,6 +914,36 @@ fun SearchScreen(
                 providers.associateBy({ it.config.id }, { it.config.name })
             }
             Column(Modifier.fillMaxSize()) {
+                // One chip per engine that answered, plus "All" — see the
+                // engine-filter state at the top. Drawn only when there are two
+                // or more engines to choose between, so a scoped search (one
+                // source, one engine) never sees a strip that can do nothing.
+                if (engineCounts.size >= 2) {
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = 10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.padding(bottom = 4.dp),
+                    ) {
+                        item {
+                            EngineChip(
+                                label = tr("All") + " · " + filtered.size,
+                                selected = engineKey.isBlank(),
+                                onClick = { engineKey = "" },
+                            )
+                        }
+                        items(engineCounts.entries.toList(), key = { it.key }) { entry ->
+                            EngineChip(
+                                label = entry.key + " · " + entry.value,
+                                selected = engineKey == entry.key,
+                                // Tapping the one in force clears it, like the
+                                // picker's own engine chips.
+                                onClick = {
+                                    engineKey = if (engineKey == entry.key) "" else entry.key
+                                },
+                            )
+                        }
+                    }
+                }
                 // The user's own collections first: an imported list or a
                 // hand-built TMDB source belongs to them, and no extension
                 // would ever hand it back.
@@ -917,7 +979,7 @@ fun SearchScreen(
                 // recomposition and opened a DataStore collection per poster on
                 // screen, which is a lot of subscriptions for one grid (see
                 // [com.hikari.app.ui.components.MediaRow]).
-                val gridItems = rememberVisibleItems(filtered)
+                val gridItems = rememberVisibleItems(visible)
                 val style = rememberPosterStyle()
                 LazyVerticalGrid(
                     columns = GridCells.Fixed(TvUi.gridColumns(4)),
@@ -1163,6 +1225,29 @@ private fun YearChip(label: String, selected: Boolean, onClick: () -> Unit) {
  *  already read). */
 @Composable
 private fun GenreChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(50),
+        color = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
+        else MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
+        border = if (selected) BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.75f))
+        else null,
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            color = if (selected) MaterialTheme.colorScheme.primary
+            else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+        )
+    }
+}
+
+/** One engine in the result strip: the same chip as [YearChip], so the strip
+ *  reads as part of the same control family as the filters above it. */
+@Composable
+private fun EngineChip(label: String, selected: Boolean, onClick: () -> Unit) {
     Surface(
         onClick = onClick,
         shape = RoundedCornerShape(50),
