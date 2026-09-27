@@ -68,6 +68,65 @@ see the session log below, which is where their design notes live.)
 
 ## Session log (newest first)
 
+- **0.10.57** (versionCode 228) — the owner's twelfth round: four reported items (the app opening in the
+  near-black theme instead of AMOLED on a fresh install, the subtitle settings sheet clipped in the landscape
+  player, a drag on the colour picker's square scrolling the box instead of moving the colour, and anime titles
+  from a `.hiki` repo sitting on "Searching your extension for servers…" for minutes). Push once, and
+  **`continuous` only — no main release**. Files touched: `app/build.gradle.kts`, `ui/theme/Theme.kt`,
+  `data/AppStore.kt`, `ui/AccentStore.kt`, `ui/navigation/AppNav.kt`, `ui/screens/SettingsScreen.kt`,
+  `player/PlayerActivity.kt`, `player/ColorPickerDialog.kt`, `data/ContentRepository.kt`, `CHANGELOG.md`,
+  `docs/{PLAYER_PANELS,SEARCH}.md`.
+  - **AMOLED Black is the default theme.** DARK was the default in three places that must agree:
+    `HikariThemeMode.fromKey`'s fallback, `AppStore.themeFlow()`, and `AccentStore`'s synchronous mirror
+    (`AccentStore.theme()` is `MainActivity`'s `collectAsState(initial = …)`, i.e. the first frame, before
+    DataStore has emitted anything — leaving it at "dark" would paint one dark frame then switch). The default
+    is now written down ONCE, as `HikariThemeMode.DEFAULT_KEY = "amoled"` with `HikariThemeMode.DEFAULT =
+    entries.first { it.key == DEFAULT_KEY }`; `AppStore.DEFAULT_THEME` is a `const` alias (const so it is inlined
+    at compile time and `AccentStore`'s property initialiser cannot depend on another object's init order),
+    `themeFlow()`/`AccentStore`/`AppRoot`'s default parameter/`SettingsScreen`'s `collectAsState(initial)`
+    all read it. `fromKey`'s fallback is `DEFAULT` now, so an unknown stored key lands on AMOLED too. An
+    explicit stored choice still wins; `HikariTheme(DEFAULT)`, `AppRoot(themeKey = DEFAULT.key)` and
+    `pageBackground()` (AMOLED's `background` is opaque black, so it returns the scheme colour, not `HikariBg`)
+    all behave unchanged. `AppRoot`'s `when` already draws NOTHING behind an AMOLED page.
+  - **`fitToContent()` was asking for 2×halo of empty glass on every panel.** `wanted = contentH +
+    scroll.padding + panel.paddingTop + panel.paddingBottom` counted the panel's padding whole, but that
+    padding is measured from the VIEW's edge and already includes the halo around the silhouette
+    (`CurvedGlassPanel.onSizeChanged`: `padV = haloPx + rowGapPx`, or `haloPx + flatTopGapPx` flat). The `- halo`
+    (with `.coerceAtLeast(0)` for a fit that runs before the first layout, when padding is still 0) is what makes
+    the fit exact; before it, each panel carried 20dp (flat) / 52dp (pane) of glass under its last row, and a
+    sheet that did not fit the window spent that 52dp of the room before the clamp.
+  - **The subtitle SETTINGS sheet's own rows were taller than the room.** Five `controlRow`s (label line + a
+    weighted control row each, `addRow` with a 7dp top margin) came to ~325dp; a 1080p phone in landscape leaves
+    the pane ~324dp once `roomFor()` has paid the hint line and 2×halo. So the last row ("Find subtitles
+    automatically") opened with its pill sliced by the pane's bottom edge — the fix for a fit that misses by a
+    hair is to stop missing by a hair: `controlRow` padding 7→4dp, its label-to-control gap 6→4dp, `addRow`'s top
+    margin 7→4dp, and `rowLabel` gets `includeFontPadding = false` (~4dp of leading per label). ~280dp in all.
+    Same sheet, same five settings. Do not "restore" the old spacing without redoing this arithmetic.
+  - **The colour picker's three custom surfaces now claim the drag.** `SvSquare`/`HueStrip`/`AlphaStrip` set
+    saturation/value/hue/alpha from the finger's `event.x`/`event.y`, but they live inside the dialog's own
+    vertical scroller (added in 0.10.56 — the picker is ~390dp and a landscape window is shorter) and each strip
+    inside a horizontal one, and a scrolling ancestor takes a drag over at the touch slop. New file-level
+    `View.claimDragFor(event)` calls `parent?.requestDisallowInterceptTouchEvent(true)` on ACTION_DOWN and
+    `false` on UP/CANCEL (the call walks the whole ancestor chain, so one call locks every scroller above the
+    surface), and each of the three `onTouchEvent`s calls it first. ACTION_CANCEL releases too — a scroller left
+    locked would freeze the box.
+  - **A scoped pass whose ONLY target never answered now asks its engine family.** Root cause proven from the
+    owner's log: with "search all installed extensions" off (the 0.10.39 default), no exception repos and the
+    Hikari family switch off, an anime opened from `Anime4i` logs `primary=1 nuvio=0 cross=0 same=0 late=0` plus
+    `family(Hikari) switch is off — 180 sibling repo(s) … are not asked`, so the pass has ONE target, that target
+    is the one whose call never came back (`✗ the call never came back`, `no answer within 45s`), and no other
+    extension is ever asked — no server can arrive. Fix in `streamsForInner`'s teardown, beside the existing
+    sweep hand-off: when `crossTargets.isEmpty() && passFound.isEmpty() && !scopeAll &&
+    providerOutcome[origin] != "no servers" && !isHung(origin)`, the origin's enabled same-`ProviderType` siblings
+    are added to `sweepTargets` (title search, the same machinery as any cross repo — these are separate
+    catalogues, unlike the id-resolving Nuvio/Stremio families) and the pass logs a `familyFallback "<title>": …`
+    line. Deliberately narrow: a real "no servers" is an answer and is left alone, and a healthy origin is
+    untouched, so invariant 17's promise still holds everywhere else. Note the OTHER half of that latency is
+    unchanged and is not a bug this round fixed: a `.hiki` extension serialises its calls behind
+    `ProviderGate`, so an abandoned first attempt plus the retry can queue behind the first call (the log's
+    `BACKGROUND call started after waiting 26.436s — this extension was still finishing an earlier call`) — the
+    retry eventually answers, which is why two of the three reported titles did resolve.
+
 - **0.10.56** (versionCode 227) — the owner's eleventh round: a batch of small
   reported bugs (the player's look on a new install, the subtitle colour picker discarding a choice, the
   subtitle panel's last rows sliced in the landscape player, the colour picker too tall for it, the Home
