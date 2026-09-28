@@ -1,8 +1,10 @@
 package com.hikari.app.ui.screens
+import com.hikari.app.tv.TvMode
 import com.hikari.app.tv.TvUi
 import com.hikari.app.i18n.tr
 import com.hikari.app.i18n.trTag
 import com.hikari.app.i18n.I18n
+import com.hikari.app.ui.components.GlassSearchField
 
 import android.app.Application
 import androidx.compose.foundation.BorderStroke
@@ -27,6 +29,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
@@ -797,6 +800,29 @@ fun SearchScreen(
             // genre, tapped to toggle, multi-select ("action, comedy" keeps both).
             // A small caption says what it is and how many are picked, since
             // unlike a year a genre cannot be recognised from the chip alone.
+            //
+            // The strip is also searchable now, the way Home's "Browse by genre"
+            // row is: the vocabulary is TMDB's film and television names plus
+            // every anime/manga tag, so "Isekai" or "Comedy" sits far along a
+            // row that has to be dragged to reach it. The field beside the
+            // caption filters the chips as they are typed and matches both the
+            // name a chip prints and the English name it is filed under, so a
+            // translated chip is still found by its English word.
+            var genreQuery by rememberSaveable { mutableStateOf("") }
+            val genreChips = remember(genreQuery) {
+                val q = genreQuery.trim().lowercase()
+                if (q.isEmpty()) SEARCH_GENRES
+                else SEARCH_GENRES.filter { g ->
+                    g.lowercase().contains(q) || I18n.t(g).lowercase().contains(q)
+                }
+            }
+            // A new filter starts at the top of the strip: a match that happens
+            // to sort late would otherwise be filtered in BEHIND the scrolled-away
+            // chips and the strip would look like it had found nothing.
+            val genreStripState = rememberLazyListState()
+            LaunchedEffect(genreQuery) {
+                if (genreChips.isNotEmpty()) genreStripState.scrollToItem(0)
+            }
             Row(
                 Modifier
                     .fillMaxWidth()
@@ -816,7 +842,24 @@ fun SearchScreen(
                     color = if (genreFilter.isEmpty()) MaterialTheme.colorScheme.onSurfaceVariant
                     else MaterialTheme.colorScheme.primary,
                 )
+                Spacer(Modifier.weight(1f))
+                GlassSearchField(
+                    value = genreQuery,
+                    onValueChange = { genreQuery = it },
+                    placeholder = tr("Search genres"),
+                    height = 36.dp,
+                    modifier = Modifier.width(150.dp),
+                )
             }
+            if (genreChips.isEmpty()) {
+                Text(
+                    tr("No genre matches") + " \u201c${genreQuery.trim()}\u201d",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 6.dp),
+                )
+            } else {
             Surface(
                 shape = RoundedCornerShape(10.dp),
                 color = MaterialTheme.colorScheme.surface.copy(alpha = 0.35f),
@@ -830,6 +873,7 @@ fun SearchScreen(
                     .height(34.dp),
             ) {
                 LazyRow(
+                    state = genreStripState,
                     contentPadding = PaddingValues(horizontal = 6.dp),
                     horizontalArrangement = Arrangement.spacedBy(5.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -841,7 +885,7 @@ fun SearchScreen(
                             onClick = { setGenres(emptySet()) },
                         )
                     }
-                    items(SEARCH_GENRES) { genre ->
+                    items(genreChips) { genre ->
                         GenreChip(
                             // `trTag`, not `tr`: a genre is CONTENT (it comes
                             // from TMDB's own vocabulary and from extension
@@ -853,6 +897,7 @@ fun SearchScreen(
                         )
                     }
                 }
+            }
             }
             if ((filterOn || activeEngine.isNotBlank()) && results.isNotEmpty()) {
                 Column(Modifier.padding(horizontal = 16.dp, vertical = 2.dp)) {
@@ -994,7 +1039,7 @@ fun SearchScreen(
                 val gridItems = rememberVisibleItems(visible)
                 val style = rememberPosterStyle()
                 LazyVerticalGrid(
-                    columns = GridCells.Fixed(TvUi.gridColumns(4)),
+                    columns = GridCells.Fixed(TvUi.resultsColumns()),
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f),
@@ -1003,7 +1048,7 @@ fun SearchScreen(
                     end = 10.dp,
                     top = 8.dp,
                     // Clear of the floating taskbar (0 when there is no bar).
-                    bottom = LocalTaskbarInset.current + 12.dp,
+                    bottom = LocalTaskbarInset.current + 12.dp + if (TvMode.current()) 28.dp else 0.dp,
                 ),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -1060,11 +1105,11 @@ fun SearchScreen(
                         Text(
                             item.title,
                             style = MaterialTheme.typography.bodySmall,
-                            maxLines = 2,
+                            maxLines = if (TvMode.current()) 1 else 2,
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.padding(top = 4.dp)
                         )
-                        namesById[item.providerId]?.let { name ->
+                        if (!TvMode.current()) namesById[item.providerId]?.let { name ->
                             Text(
                                 name,
                                 style = MaterialTheme.typography.labelSmall,
@@ -1183,8 +1228,13 @@ private val SEARCH_GENRES: List<String> = com.hikari.app.data.Genres.ALL
  * TMDB has no anime genre of its own — an anime title is an animated Japanese
  * show). An extension that tags its results "Anime" is matched by the first
  * genre test.
+ *
+ * Lives here, with the model, because more than one screen draws an "Anime"
+ * filter over a mixed list: the Search tab's kind chips and a TMDB catalog
+ * page's kind chips (see `TmdbGridScreen`), and two copies of this rule would
+ * eventually disagree about what anime is.
  */
-private fun MediaItem.looksAnime(): Boolean {
+fun MediaItem.looksAnime(): Boolean {
     if (rawType.equals("anime", true)) return true
     return genres.any { g ->
         val t = g.trim().lowercase()

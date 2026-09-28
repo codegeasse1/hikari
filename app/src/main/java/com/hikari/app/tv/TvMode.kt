@@ -254,4 +254,8 @@ object TvUi {
         val avail = (w - RAIL_WIDTH.value).coerceAtLeast(200f)
         return (avail / posterWidth().value).toInt().coerceIn(4, 8)
     }
+
+    @Composable
+    fun resultsColumns(): Int =
+        if (TvMode.current()) (gridColumns(4) + 2).coerceIn(4, 9) else 4
 }

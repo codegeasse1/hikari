@@ -109,7 +109,13 @@ fun DownloadsScreen(nav: NavHostController, embedded: Boolean = false) {
                         modifier = Modifier.padding(bottom = 4.dp)
                     )
                 }
-                items(active, key = { it.id }) { t ->
+                // Keys are namespaced, and each list is de-duplicated by id: this
+                // ONE lazy list holds both sections, and a task that appeared in
+                // both (a state race, or a store that kept a stale copy) would
+                // hand Compose the same key twice — which it refuses to draw, and
+                // the whole screen goes down with it. Same rule as the Extensions
+                // list that produced the reported crash.
+                items(active.distinctBy { it.id }, key = { "active-" + it.id }) { t ->
                     DownloadRow(t, onDelete = { DownloadsRepository.remove(context, t.id) })
                 }
             }
@@ -125,7 +131,7 @@ fun DownloadsScreen(nav: NavHostController, embedded: Boolean = false) {
                         )
                     )
                 }
-                items(done, key = { it.id }) { t ->
+                items(done.distinctBy { it.id }, key = { "done-" + it.id }) { t ->
                     DownloadRow(t, onDelete = { DownloadsRepository.remove(context, t.id) })
                 }
             }

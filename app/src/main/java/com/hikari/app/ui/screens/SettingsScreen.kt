@@ -614,11 +614,28 @@ fun SettingsScreen(nav: NavHostController) {
     val profileList by Profiles.all.collectAsState()
     val profileActive by Profiles.activeId.collectAsState()
 
-    // System back steps out of the open settings folder (Player, Sources…) —
-    // and out of a sub-folder before that — instead of popping the whole
-    // Settings destination and landing on Home.
-    BackHandler(enabled = openSub != null || openFolder != null) {
-        if (openSub != null) openSub = null else openFolder = null
+    // System back steps out of whatever this screen has opened ON TOP of itself
+    // — a folder, a sub-folder, or one of the full pages (Player controls, Logs,
+    // Stats, Pair & sync, Profiles) — instead of popping the whole Settings
+    // destination and landing on Home. The order below is the order those pages
+    // are drawn in, below, so back always undoes the LAST step: the reported
+    // "Settings → Stats, back, and I am on Home" was this handler covering only
+    // the folders, which left every page to fall through to the navigation
+    // stack. A page opened from here is not a tab switch, so back must not treat
+    // it as one.
+    BackHandler(
+        enabled = openSub != null || openFolder != null || showStats || showLogs ||
+            showPair || showProfiles || showPlayerControls,
+    ) {
+        when {
+            showPlayerControls -> showPlayerControls = false
+            showLogs -> showLogs = false
+            showStats -> showStats = false
+            showPair -> showPair = false
+            showProfiles -> showProfiles = false
+            openSub != null -> openSub = null
+            else -> openFolder = null
+        }
     }
 
     // The Player controls editor is its own full screen (fifteen controls × a

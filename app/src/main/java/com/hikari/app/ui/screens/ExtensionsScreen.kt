@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -79,6 +80,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -3086,6 +3088,27 @@ fun ExtensionsScreen() {
     }
 
     CompositionLocalProvider(LocalRepoNameByProvider provides repoNameByProvider) {
+    // ONE saved-state slot per PAGE this screen can draw — the landing list, a
+    // repo's plugin list, a source folder, All repos, Installed, Sources — so
+    // coming BACK to a page puts it back exactly as it was left: its scroll
+    // position, its search box, its expanded rows. It has to live up here, above
+    // the swap, because the state a page remembers for itself is disposed the
+    // moment another page replaces it — which is what made back land at the top
+    // of the page you returned to (reported as "going to an extension folder and
+    // navigating back, it scrolls up instead of coming at the same position").
+    // This is the same per-page rule SettingsScreen follows for its index /
+    // folder / sub-folder pages, and the key is the page's IDENTITY, so a repo
+    // or folder you open again is also where you left it.
+    val pageStates = rememberSaveableStateHolder()
+    val pageKey = when {
+        openRepo != null -> "repo|" + openRepo.url
+        folder != null -> "folder|" + folder.name
+        allReposOpen -> "allrepos"
+        installedOpen -> "installed"
+        sourcesOpen -> "sources"
+        else -> "root"
+    }
+    pageStates.SaveableStateProvider(pageKey) {
     when {
         openRepo != null -> RepoPluginsView(
             repo = openRepo,
@@ -3301,7 +3324,9 @@ fun ExtensionsScreen() {
             },
             installedUrls = installed,
             outdatedUrls = outdated,
+            outdatedItems = outdatedItems,
             onUpdateAll = { vm.updatePlugins(outdatedItems.map { (kind, p) -> p to kind }) },
+            onUpdateSelected = { items -> vm.updatePlugins(items) },
             onInstallPlugin = { p, kind -> installPlugin(p, kind) },
             onUninstallPlugin = { p, kind -> uninstallPlugin(p, kind) },
             onUpdatePlugin = { p, kind -> vm.updatePlugins(listOf(p to kind)) },
@@ -3309,6 +3334,7 @@ fun ExtensionsScreen() {
             onToggleProvider = { id, enabled -> scope.launch { vm.toggle(id, enabled) } },
             onOpenSettings = { openProviderSettings(it) },
         )
+    }
     }
     }
 
@@ -4093,7 +4119,14 @@ private fun RepoBrowserView(
     onEnsureReposLoaded: () -> Unit,
     installedUrls: Set<String>,
     outdatedUrls: Set<String> = emptySet(),
+    /** Every extension the update check found behind, with the kind of repo it
+     *  came from (see [ExtensionsViewModel.checkUpdates] for how they are
+     *  found). The row's "Update all" needs only the count, but the Update
+     *  chooser that the row opens needs the entries themselves. */
+    outdatedItems: List<Pair<RepoKind, Cs3RepoPlugin>> = emptyList(),
     onUpdateAll: () -> Unit = {},
+    /** Re-installs just the extensions ticked in the Update chooser. */
+    onUpdateSelected: (List<Pair<Cs3RepoPlugin, RepoKind>>) -> Unit = {},
     /** True while a bulk install/update runs, and true again while it is
      *  finishing the extension it is on (see [ExtensionsViewModel.stopBulkInstall]). */
     installRunning: Boolean = false,
@@ -4136,6 +4169,113 @@ private fun RepoBrowserView(
     LaunchedEffect(query) {
         if (query.isNotBlank()) onEnsureReposLoaded()
     }
+
+    // --- The Update chooser ------------------------------------------------
+    // "Update all" is the right answer when everything is behind and the wrong
+    // one when the user wants exactly one of them re-installed, and until now
+    // the card offered only the first: a row that said N extensions could be
+    // updated, and one button that took all N. The card is still one tap — it
+    // just opens the list now, where each extension that has an update carries
+    // a tick of its own, Select all is a tick too, and Update selected runs
+    // only what was ticked (the same install path a row's own Update uses, see
+    // [ExtensionsViewModel.updatePlugins]).
+    var showUpdatePicker by rememberSaveable { mutableStateOf(false) }
+    // One entry per extension: a plugin can be listed by two repos (a bundle
+    // and its source), and two identical rows would be both confusing to tick
+    // and a repeated key to draw.
+    val updatable = remember(outdatedItems) { outdatedItems.distinctBy { it.second.url } }
+    var picked by remember { mutableStateOf(emptySet<String>()) }
+    if (showUpdatePicker) {
+        val allPicked = updatable.isNotEmpty() && updatable.all { it.second.url in picked }
+        AlertDialog(
+            onDismissRequest = { showUpdatePicker = false },
+            title = { Text(tr("Extension updates available")) },
+            text = {
+                Column {
+                    Text(
+                        I18n.t(
+                            if (updatable.size == 1) "%s installed extension can be updated"
+                            else "%s installed extensions can be updated"
+                        ).replace("%s", updatable.size.toString()),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                picked = if (allPicked) emptySet()
+                                else updatable.map { it.second.url }.toSet()
+                            },
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        // A real Checkbox on a clickable row: on a television the
+                        // row is the D-pad target and the box is only the state.
+                        Checkbox(checked = allPicked, onCheckedChange = null)
+                        Text(tr("Select all"), style = MaterialTheme.typography.bodyMedium)
+                    }
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 320.dp)
+                            .verticalScroll(rememberScrollState()),
+                    ) {
+                        for ((kind, plugin) in updatable) {
+                            val url = plugin.url
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clickable { picked = if (url in picked) picked - url else picked + url }
+                                    .padding(vertical = 1.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Checkbox(checked = url in picked, onCheckedChange = null)
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        plugin.name,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        tr(
+                                            when (kind) {
+                                                RepoKind.CS3 -> "CloudStream extension"
+                                                RepoKind.HIKARI -> "Hikari extension"
+                                                RepoKind.NUVIO -> "Nuvio provider"
+                                                RepoKind.SKYSTREAM -> "SkyStream extension"
+                                                RepoKind.ANIYOMI -> "Aniyomi extension"
+                                                RepoKind.VEGA -> "Vega provider"
+                                            }
+                                        ) + " · v" + plugin.version,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                val chosen = updatable.filter { it.second.url in picked }
+                Button(
+                    enabled = chosen.isNotEmpty() && !busy,
+                    onClick = {
+                        showUpdatePicker = false
+                        onUpdateSelected(chosen.map { (kind, p) -> p to kind })
+                    }
+                ) { Text(tr("Update selected")) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showUpdatePicker = false }) { Text(tr("Cancel")) }
+            }
+        )
+    }
+
     LazyColumn(
         Modifier.fillMaxSize(),
         contentPadding = PaddingValues(
@@ -4171,7 +4311,18 @@ private fun RepoBrowserView(
         // repo's published fileHash (see ExtensionsViewModel.checkUpdates).
         if (query.isBlank() && outdatedUrls.isNotEmpty()) {
             item {
+                // The count is the number of EXTENSIONS, not of URL spellings:
+                // one installed file answers to several (branch / jsDelivr /
+                // github.com blob), and the check records every spelling so a
+                // row's Update lights up whichever way it was installed — which
+                // used to make "58 installed extensions can be updated" out of
+                // 20. Until the repos have listed their plugins there is
+                // nothing to pick between, so the card falls back to the raw
+                // count and its one-tap Update all.
+                val updateCount = if (updatable.isNotEmpty()) updatable.size else outdatedUrls.size
                 GlassCard(
+                    onClick = if (updatable.isEmpty()) null
+                    else ({ picked = emptySet(); showUpdatePicker = true }),
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 16.dp, vertical = 4.dp)
@@ -4195,12 +4346,22 @@ private fun RepoBrowserView(
                             )
                             Text(
                                 I18n.t(
-                                        if (outdatedUrls.size == 1) "%s installed extension can be updated"
+                                        if (updateCount == 1) "%s installed extension can be updated"
                                         else "%s installed extensions can be updated"
-                                    ).replace("%s", outdatedUrls.size.toString()),
+                                    ).replace("%s", updateCount.toString()),
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
+                            // The card opens the chooser (see showUpdatePicker
+                            // above); "Update all" on the right stays the
+                            // one-tap path for updating everything.
+                            if (updatable.isNotEmpty()) {
+                                Text(
+                                    tr("Tap to update one at a time"),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
                         }
                         Button(onClick = onUpdateAll, enabled = !busy) {
                             Text(tr("Update all"))
@@ -7007,7 +7168,7 @@ private fun SourceFolderView(
                         )
                     }
                 }
-                items(folderRepos, key = { it.url }) { repo ->
+                items(folderRepos, key = { "repo-" + it.url }) { repo ->
                     RepoCard(
                         repo = repo,
                         pluginCount = (pluginsByRepo[repo.url] ?: emptyList()).size,
@@ -7033,7 +7194,7 @@ private fun SourceFolderView(
                         )
                     }
                 }
-                items(iptvProviders.distinctBy { it.config.id }, key = { it.config.id }) { p ->
+                items(iptvProviders.distinctBy { it.config.id }, key = { "iptv-" + it.config.id }) { p ->
                     ProviderCard(
                         p = p,
                         onVerify = rememberVerifyAction(p),
@@ -7056,7 +7217,7 @@ private fun SourceFolderView(
                 }
         // The same repo can be installed twice, and two identical Lazy keys are a
         // crash in Compose rather than a warning.
-        items(stremioProviders.distinctBy { it.config.id }, key = { it.config.id }) { p ->
+        items(stremioProviders.distinctBy { it.config.id }, key = { "addon-" + it.config.id }) { p ->
                     ProviderCard(
                         p = p,
                         onVerify = rememberVerifyAction(p),
@@ -7289,7 +7450,16 @@ private fun SourcesOverviewView(
                     )
                 }
             }
-            items(stremioProviders.distinctBy { it.config.id }, key = { it.config.id }) { p ->
+            // Keys are namespaced per block ("addon-", "inst-", "repo-", …), not
+            // the bare provider id: ONE lazy list here holds the Stremio addons
+            // section AND the installed-extensions section, and a Stremio addon
+            // legitimately appears in both — so a bare id as a key was used
+            // twice in the same list, which Compose refuses to draw ("Key
+            // \"stremio|1930041237\" was already used", the crash in the log,
+            // thrown from a row's own Button while measuring). Two blocks in one
+            // LazyColumn must never share a key space; the search list has
+            // always prefixed its keys this way ("inst-", "plug-", "pending-").
+            items(stremioProviders.distinctBy { it.config.id }, key = { "addon-" + it.config.id }) { p ->
                 ProviderCard(
                     p = p,
                     onVerify = rememberVerifyAction(p),
@@ -7327,7 +7497,7 @@ private fun SourcesOverviewView(
                     )
                 }
             }
-            items(installedPacks, key = { it.key }) { pack ->
+            items(installedPacks, key = { "inst-" + it.key }) { pack ->
                 ProviderRecordRow(
                     pack = pack,
                     statusFor = { p -> pluginStatus(p) },
@@ -7391,7 +7561,7 @@ private fun LazyListScope.repoGroup(
             )
         }
     }
-    items(groupRepos, key = { it.url }) { repo ->
+    items(groupRepos, key = { "repo-" + it.url }) { repo ->
         RepoCard(
             repo = repo,
             pluginCount = (pluginsByRepo[repo.url] ?: emptyList()).size,
@@ -7523,7 +7693,7 @@ private fun AllReposView(
                     )
                 }
             }
-            items(repos, key = { it.url }) { repo ->
+            items(repos, key = { "repo-" + it.url }) { repo ->
                 RepoCard(
                     repo = repo,
                     pluginCount = (pluginsByRepo[repo.url] ?: emptyList()).size,
@@ -7665,7 +7835,7 @@ private fun InstalledExtensionsView(
                     )
                 }
             }
-            items(packs, key = { it.key }) { pack ->
+            items(packs, key = { "inst-" + it.key }) { pack ->
                 ProviderRecordRow(
                     pack = pack,
                     statusFor = { p -> pluginStatus(p) },

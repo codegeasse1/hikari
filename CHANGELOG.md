@@ -1,3 +1,26 @@
+## 0.10.61
+
+### Added
+
+- **Updating extensions one at a time is possible now.** The Extensions tab's update card opens a picker listing every extension with an update available: tick one, two, or all of them. The card itself is the button, and its count now counts distinct extensions instead of repository listings.
+- **Personal provider folders.** The provider picker (Home and Search) has a "Save as folder" action: tick the extensions used daily and save them under a short name. The folder then sits in the provider list — one tap ticks everything in it — and a folder can be deleted from the same place.
+- **A search box for the Search tab's genre row**, matching the one on Home: typing narrows the genre chips, and an empty match says so instead of showing a blank strip.
+- **Kind chips under the search bar of a genre page.** Opening Action (or any genre) from Home now offers All, Movies, Series, Anime and Movies & series, so a mixed catalog can be narrowed to one kind without leaving the page.
+
+### Fixed
+
+- **Back navigation returns to the same position.** Extension folders, the all-repos/installed/sources pages and Telegram chats keep their own saved scroll state, so going back lands where the user was instead of at the top. Settings unwinds one page at a time (Player controls, Logs, Stats, Pair, Profiles) and the Stats page's back button returns to Settings instead of the Home tab.
+- **TV search results fit the screen.** The results grid on television uses two extra columns of compact cells (single-line titles, no per-cell provider line) with additional bottom clearance, so a full row of posters is visible instead of one oversized row cut off at the bottom edge. Phone layout is untouched.
+- **D-pad focus is visible in the player.** Every controller button and pill is focusable, draws a deliberate accent ring (circle for the round buttons, stadium for the pills) when focused, and the framework's own default highlight — the stray oval drawn over the focused control that never went away — is switched off for these controls. The pill row no longer blocks its own children from receiving focus on television.
+- **Unticking a provider in multi-select works.** A partially ticked extension row (the normal state after picking one source out of a pack) used to re-tick everything on the first tap; the first tap now unticks the whole row.
+- **The duplicate-key crash is gone.** The Stremio source-folder list held addons and installed extensions in one list keyed by bare provider id, so an addon that is also an installed extension crashed with `Key "stremio|…​" was already used` — repeatedly, until the restart loop exhausted the heap. Keys are namespaced per section now, and the Downloads lists dedupe defensively for the same reason.
+- **Out-of-memory hardening.** The Home feed cache is now bounded (eldest rows evicted past 80), and a critical memory warning clears the poster cache on every device, not just televisions — previously only televisions dropped anything, so a phone in a crash loop had nothing to give back.
+- **The TV Home hero stands still.** Auto-advance was already disabled on television, but the banner still rebuilt every time another provider's rows arrived, visibly jumping sideways while Home loaded. On television the hero now freezes the first non-empty set; phones behave exactly as before.
+
+### Notes
+
+- Subtitles from subtitle addons (OpenSubtitles v3, SubDL): the player already asks every enabled subtitle addon for the title automatically once servers are listed, merges the tracks into the subtitle menu, and re-lists them if the menu is open — and the bundled SubDL addon needs no account. An OpenSubtitles addon installed as a bare URL with no choices made answers empty for every title; opening its gear in the Extensions tab and completing its own configuration page (which reinstalls the configured copy) is what makes it answer. No app change was needed here beyond verifying the whole path.
+
 ## 0.10.60
 
 ### Added

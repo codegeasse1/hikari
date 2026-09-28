@@ -41,8 +41,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.PushPin
@@ -102,10 +104,12 @@ import com.hikari.app.data.CoverKinds
 import androidx.compose.ui.text.style.TextOverflow
 import com.hikari.app.data.MediaItem
 import com.hikari.app.data.ProviderType
+import com.hikari.app.data.ProviderFolder
 import com.hikari.app.data.RepoProvenance
 import com.hikari.app.data.TmdbGenres
 import com.hikari.app.data.TmdbSourceType
 import com.hikari.app.data.TmdbSpec
+import com.hikari.app.tv.TvMode
 import com.hikari.app.tv.TvUi
 import com.hikari.app.ui.Artwork
 import com.hikari.app.ui.PosterLoader
@@ -754,10 +758,17 @@ fun HomeScreen(nav: NavHostController) {
     }
     // Featured hero: the first catalog's title-artful entries (falling back to
     // its first entries when nothing carries a backdrop).
-    val featured = remember(rows) {
+    val featuredLive = remember(rows) {
         val first = rows.firstOrNull()?.items.orEmpty()
         (first.filter { !it.backdropUrl.isNullOrBlank() }.ifEmpty { first }).take(8)
     }
+    var tvHero by remember { mutableStateOf(emptyList<MediaItem>()) }
+    if (TvMode.current()) {
+        if (tvHero.isEmpty() && featuredLive.isNotEmpty()) tvHero = featuredLive
+    } else if (tvHero.isNotEmpty()) {
+        tvHero = emptyList()
+    }
+    val featured = if (TvMode.current()) tvHero.ifEmpty { featuredLive } else featuredLive
     val openGlobalSearch: () -> Unit = {
         Routes.navigateTab(nav, Routes.SEARCH)
     }
@@ -1428,6 +1439,19 @@ internal fun ProviderPickerSheet(
     val scope = rememberCoroutineScope()
     val pinned by remember { app.store.pinnedProvidersFlow() }
         .collectAsState(initial = emptyList<String>())
+    // The user's own provider FOLDERS — a saved multi-pick, one tap to apply
+    // (see AppStore.providerFoldersFlow). Read HERE, like the pins, so both of
+    // the sheet's callers get them without threading two more arguments through.
+    val folders by remember { app.store.providerFoldersFlow() }
+        .collectAsState(initial = emptyList<ProviderFolder>())
+    var showFolderDialog by remember { mutableStateOf(false) }
+    var folderName by remember { mutableStateOf("") }
+    var folderToDelete by remember { mutableStateOf<ProviderFolder?>(null) }
+    // What "Save as folder" would save: the ticked rows that ARE extensions —
+    // a collection key is not a provider and has no place in a provider folder.
+    val saveable = remember(working) {
+        working.filter { !it.startsWith(COLLECTION_PREFIX) }
+    }
     // Engine filter: every kind that has at least one installed extension, in a
     // stable order, so a user with dozens of installs can narrow the list to
     // just their CloudStream plugins, just their Nuvio providers, and so on.
@@ -1477,6 +1501,75 @@ internal fun ProviderPickerSheet(
         if (query.isBlank()) collections
         else collections.filter { it.name.contains(query, ignoreCase = true) }
     }
+    // ---- Save as folder / delete a folder --------------------------------
+    // Both dialogs sit OUTSIDE the sheet's own content: a folder is a thing the
+    // user keeps, not a mode of the picker. Saving does NOT dismiss the sheet —
+    // the user asked for a folder, not to leave the picker.
+    if (showFolderDialog) {
+        AlertDialog(
+            onDismissRequest = { showFolderDialog = false },
+            title = { Text(tr("Save as folder")) },
+            text = {
+                Column {
+                    Text(
+                        I18n.t(
+                            if (saveable.size == 1) "%s extension will be saved in this folder"
+                            else "%s extensions will be saved in this folder"
+                        ).replace("%s", saveable.size.toString()),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = folderName,
+                        onValueChange = { folderName = it },
+                        placeholder = { Text(tr("e.g. Daily")) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    enabled = folderName.isNotBlank(),
+                    onClick = {
+                        val name = folderName.trim()
+                        showFolderDialog = false
+                        if (name.isNotBlank()) {
+                            scope.launch {
+                                runCatching { app.store.saveProviderFolder(name, saveable) }
+                            }
+                        }
+                    },
+                ) { Text(tr("Save")) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showFolderDialog = false }) { Text(tr("Cancel")) }
+            },
+        )
+    }
+    folderToDelete?.let { victim ->
+        AlertDialog(
+            onDismissRequest = { folderToDelete = null },
+            title = { Text(tr("Delete this folder?")) },
+            text = {
+                Text(
+                    I18n.t("%s is only a shortcut — its extensions stay installed.")
+                        .replace("%s", victim.name)
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    folderToDelete = null
+                    scope.launch { runCatching { app.store.removeProviderFolder(victim.name) } }
+                }) { Text(tr("Delete")) }
+            },
+            dismissButton = {
+                TextButton(onClick = { folderToDelete = null }) { Text(tr("Cancel")) }
+            },
+        )
+    }
+
     // Minimal, list-first: a heading, a flat search field, the chip row, then
     // plain rows separated by hairlines (the glass cards are gone — a long list
     // of nearly identical names read as a wall of glass). Opens fully expanded
@@ -1498,7 +1591,15 @@ internal fun ProviderPickerSheet(
                 )
                 // The Done button sits ABOVE the list ("add done button above
                 // in provider selection box"), which is where a thumb expects it
-                // and the only place a long list cannot hide it.
+                // and the only place a long list cannot hide it. "Save as folder"
+                // sits beside it: a multi pick the user reaches for daily becomes
+                // a folder they can apply in one tap next time (see the folders
+                // section below).
+                if (multi && saveable.isNotEmpty()) {
+                    TextButton(onClick = { folderName = ""; showFolderDialog = true }) {
+                        Text(tr("Save as folder"))
+                    }
+                }
                 if (multi) {
                     Button(
                         onClick = { onDone(working) },
@@ -1624,6 +1725,45 @@ internal fun ProviderPickerSheet(
                         )
                     }
                 }
+                if (folders.isNotEmpty()) {
+                    item {
+                        PickerSectionLabel(tr("Your folders"))
+                    }
+                    items(folders, key = { "pfolder|${it.name}" }) { folder ->
+                        val ids = folder.ids
+                        val allOn = ids.isNotEmpty() && ids.all { it in working }
+                        val anyOn = ids.any { it in working }
+                        PickerRow(
+                            label = folder.name,
+                            isSelected = if (multi) allOn
+                            else ids.isNotEmpty() && selection.containsAll(ids),
+                            multi = multi,
+                            leadingIcon = Icons.Filled.Folder,
+                            supporting = I18n.t(
+                                if (ids.size == 1) "%s extension — tap to show it on Home"
+                                else "%s extensions — tap to show them all on Home"
+                            ).replace("%s", ids.size.toString()),
+                            onDelete = { folderToDelete = folder },
+                            onClick = {
+                                if (multi) {
+                                    // A folder is a saved pick: tapping it ticks
+                                    // its extensions, so the Done button saves
+                                    // them with anything else that is ticked.
+                                    working = if (anyOn) (working - ids.toSet()).distinct()
+                                    else (working + ids).distinct()
+                                } else {
+                                    // One tap is the whole point of a folder: Home
+                                    // switches to exactly these extensions, with no
+                                    // multi-select round trip — and Search, the
+                                    // player's server list and everything else that
+                                    // reads the current pick follow, because the
+                                    // pick IS these provider ids.
+                                    onDone(ids)
+                                }
+                            },
+                        )
+                    }
+                }
                 item {
                     PickerSectionLabel(tr("Providers"))
                 }
@@ -1713,7 +1853,21 @@ internal fun ProviderPickerSheet(
                                 // Ticking a COLLAPSED extension row ticks every
                                 // source it publishes — that is what the row is.
                                 // Its sources are one caret away for picking one.
-                                working = if (allTicked) working - ids.toSet()
+                                //
+                                // ...and UNticking it takes back every source,
+                                // which is the half that was broken: the test
+                                // used to be "are ALL of them on?", so a row that
+                                // was only PARTLY on — the normal state of the
+                                // extension you are already watching, since the
+                                // stored selection is one of its sources — went
+                                // to "all on" on the first tap instead of off.
+                                // The tick is a tick: a tap on a row that has any
+                                // of its sources on turns them all off, and a tap
+                                // on a row with none of them on turns them all on
+                                // (reported as "unselecting a provider ... it not
+                                // unticking"). A row left partly on stays pickable
+                                // that way: untick, tick, or use the caret.
+                                working = if (ticked) working - ids.toSet()
                                 else (working + ids).distinct()
                             } else {
                                 // A plain pick still means the ONE source the row
@@ -1859,6 +2013,9 @@ private fun PickerRow(
     expanded: Boolean = false,
     onToggleExpand: (() -> Unit)? = null,
     onTogglePin: (() -> Unit)? = null,
+    /** A folder's own delete, drawn like the pin: its own tap target, so
+     *  removing a folder can never be mistaken for choosing it. */
+    onDelete: (() -> Unit)? = null,
     onLongClick: (() -> Unit)? = null,
     onClick: () -> Unit,
 ) {
@@ -1966,6 +2123,25 @@ private fun PickerRow(
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.onPrimary,
                         modifier = Modifier.size(13.dp),
+                    )
+                }
+            }
+            // A folder's delete, in the same place the pin sits on a provider
+            // row: a control on the row, not part of what the row is.
+            if (onDelete != null) {
+                Spacer(Modifier.width(4.dp))
+                Box(
+                    Modifier
+                        .size(34.dp)
+                        .clip(CircleShape)
+                        .clickable(onClick = onDelete),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Filled.DeleteOutline,
+                        contentDescription = tr("Delete this folder"),
+                        tint = MaterialTheme.colorScheme.error.copy(alpha = 0.85f),
+                        modifier = Modifier.size(17.dp),
                     )
                 }
             }
@@ -2187,7 +2363,9 @@ private fun HomeHeader(
  * dispatcher), so it needs no locking.
  */
 private object HomeFeedCache {
-    val rows = LinkedHashMap<String, List<CatalogRow>>()
+    val rows = object : LinkedHashMap<String, List<CatalogRow>>() {
+        override fun removeEldestEntry(eldest: Map.Entry<String, List<CatalogRow>>): Boolean = size > 80
+    }
 }
 
 

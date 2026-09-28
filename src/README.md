@@ -1881,3 +1881,16 @@ see the session log below, which is where their design notes live.)
     present). The extension's own repo rewrote that source on 2026-08-31, so an
     older installed build is the thing to check. Recorded in the 0.10.34
     `### Notes` section of the repo's CHANGELOG.
+
+- **0.10.61** (wip branch `wip-0.10.61` green, then single commit to main, published to `continuous`) — thirteen user reports in one push:
+  - Extensions update picker (T1): `outdatedItems` + `onUpdateSelected` on `RepoBrowserView`, dialog with per-row checkboxes + select-all; count fixed to distinct extensions. In `ExtensionsScreen`.
+  - Back/scroll (T2/T3): `SaveableStateProvider(pageKey)` around the page swap in `ExtensionsScreen` + `TelegramScreen` (private string-object `TgSection` needed `section` not `section.name`); `SettingsScreen` BackHandler covers all nested pages; `StatsScreen` BackHandler panel-first then `onBack`.
+  - TV search fit (T4): `TvUi.resultsColumns()` (+2 over `gridColumns(4)`, 4..9), single-line titles + hidden provider line + 28dp extra bottom clearance, all gated on `TvMode.current()`. Phone grid untouched.
+  - Player D-pad (T5/T6): `installPlayerFocusRings`/`applyFocusRings` in `PlayerActivity.onCreate` — every ImageButton + click-listened TextView becomes focusable (not touch-focusable), framework default highlight OFF via `setDefaultFocusHighlightEnabled(false)` (Kotlin property syntax does NOT resolve in this project's kotlinc — use the setter form), deliberate `foreground` ring (`focus_ring_circle.xml` oval / `focus_ring_pill.xml` 999dp-radius rect, accent stroke, transparent default). Pill scroll: `FOCUS_AFTER_DESCENDANTS` on TV. Hierarchy listener re-applies to late panels.
+  - Provider toggle (T7): pack row toggles on `ticked` not `allTicked` in `HomeScreen` picker.
+  - Provider folders (T8): `AppStore.PROVIDER_FOLDERS` + `ProviderFolder` model, save/remove/parse, picker "Save as folder" + folder rows + delete confirm. (Compile trap: `String.replace(String, Char)` does not exist — use the String overload.)
+  - Genre search (T9) in `SearchScreen`; kind chips (T10) in `CollectionScreens.TmdbGridScreen` with public `looksAnime()`.
+  - Crash A (T11): namespaced Lazy keys per block in `ExtensionsScreen` (`addon-`/`inst-`/`iptv-`/`repo-`), `distinctBy{id}` + prefixes in `DownloadsScreen`. OOM half: `HomeFeedCache.rows` bounded at 80 via `removeEldestEntry`; `onTrimMemory` clears Coil on RUNNING_CRITICAL everywhere (was TV-only).
+  - Subtitles (T12): verified, no defect found — `startAddonSubtitleFetch` asks all enabled addons + merges into `buildSubtitleConfigs`; gear→`configurationPage()`→reinstall flow intact. Unconfigured OpenSubtitles URL is the user-side cause; recorded in CHANGELOG Notes.
+  - TV hero jitter (T13): `featuredLive` + frozen `tvHero` snapshot on TV in `HomeScreen` (auto-advance was already TV-gated; the jumps came from `rows` streaming in).
+  - Version 232 / 0.10.61. Scratch branch deleted after the main push; release workflow never dispatched.

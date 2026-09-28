@@ -75,6 +75,11 @@ object MyStuffSection {
     val ALL = listOf(LIBRARY, HISTORY, DOWNLOADS)
 }
 
+/** Unit separator: joins a provider folder's name to its ids inside the one
+ *  stored string (see [AppStore.providerFoldersFlow]). It cannot appear in a
+ *  typed name, and [AppStore.saveProviderFolder] strips it regardless. */
+private const val FOLDER_SEP = "\u001F"
+
 class AppStore(private val ctx: Context) {
 
     private val store get() = ctx.hkDataStore
@@ -377,6 +382,13 @@ class AppStore(private val ctx: Context) {
      * land above the ones pinned last week, which a set cannot express.
      */
     val PINNED_PROVIDERS = stringPreferencesKey("pinnedProviders")
+    /**
+     * The user's own provider folders — a JSON array of
+     * `name<unit separator>id<unit separator>id…` strings (see
+     * [AppStore.providerFoldersFlow]). A folder is a saved PICK, not a new kind
+     * of key: choosing one selects the provider ids it holds.
+     */
+    val PROVIDER_FOLDERS = stringPreferencesKey("providerFolders")
         /**
          * May adult material be shown (Settings → Content → NSFW)?
          *
@@ -2522,6 +2534,77 @@ class AppStore(private val ctx: Context) {
             val next = if (current.contains(id)) current - id else listOf(id) + current
             prefs[K.PINNED_PROVIDERS] = encodeStringList(next)
         }
+    }
+
+    // ---- Provider folders (Home → Choose an extension → Save as folder) ----
+
+    /**
+     * The user's own provider FOLDERS: a name, and the provider ids it holds.
+     *
+     * The ask was a shortcut for the handful of extensions someone uses every day
+     * ("if user use 5 extension daily he can select those 5 extension and can add
+     * it into folder"). So a folder is stored as the PICK ITSELF — the ids — and
+     * not as a new kind of selection key: choosing one ticks exactly those ids,
+     * and nothing downstream changes. Home then loads from all of them and Search
+     * (and the player's server list, and every other consumer of the current
+     * pick) asks all of them, because as far as all of it is concerned the user
+     * multi-selected those five extensions by hand. That is what makes "the
+     * catalog on Home loads from all, and search results and everything shows
+     * from them" true without teaching every screen a new key type.
+     *
+     * Ids, not names, for the same reason a pin uses ids: a name is display text
+     * an extension update can change. A folder whose ids are all gone from the
+     * installed list is simply never matched.
+     */
+    fun providerFoldersFlow(): Flow<List<ProviderFolder>> =
+        store.data.map { parseProviderFolders(it[K.PROVIDER_FOLDERS]) }
+            .distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun providerFolders(): List<ProviderFolder> = providerFoldersFlow().first()
+
+    /**
+     * Creates [name] holding [ids] — or re-saves a folder under a name it already
+     * has, which is an edit rather than a second folder with the same name.
+     *
+     * Read-modify-write inside the store's edit transaction, like the pins, so
+     * two saves in quick succession cannot lose one.
+     */
+    suspend fun saveProviderFolder(name: String, ids: List<String>) {
+        val clean = name.trim().replace(FOLDER_SEP, " ").take(48)
+        val members = ids.map { it.trim() }.filter { it.isNotBlank() }.distinct()
+        if (clean.isBlank() || members.isEmpty()) return
+        write("PROVIDER_FOLDERS") { prefs ->
+            val current = parseProviderFolders(prefs[K.PROVIDER_FOLDERS])
+            val next = current.filterNot { it.name.equals(clean, ignoreCase = true) } +
+                ProviderFolder(clean, members)
+            prefs[K.PROVIDER_FOLDERS] = encodeProviderFolders(next)
+        }
+    }
+
+    suspend fun removeProviderFolder(name: String) {
+        write("PROVIDER_FOLDERS") { prefs ->
+            val current = parseProviderFolders(prefs[K.PROVIDER_FOLDERS])
+            prefs[K.PROVIDER_FOLDERS] = encodeProviderFolders(current.filterNot { it.name == name })
+        }
+    }
+
+    private fun encodeProviderFolders(list: List<ProviderFolder>): String {
+        val arr = JSONArray()
+        // One string per folder: the name, then its ids, joined by a unit
+        // separator — a character a typed name cannot contain (and [saveProviderFolder]
+        // strips it anyway), while the JSON array keeps it safe on disk.
+        for (f in list) arr.put((listOf(f.name) + f.ids).joinToString(FOLDER_SEP))
+        return arr.toString()
+    }
+
+    private fun parseProviderFolders(s: String?): List<ProviderFolder> {
+        val out = ArrayList<ProviderFolder>()
+        for (raw in parseStringList(s)) {
+            val parts = raw.split(FOLDER_SEP).filter { it.isNotBlank() }
+            if (parts.size < 2) continue
+            out += ProviderFolder(parts.first(), parts.drop(1))
+        }
+        return out
     }
 
     // ---- Adult content (Settings → Content) ----

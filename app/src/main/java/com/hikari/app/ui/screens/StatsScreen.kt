@@ -36,6 +36,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -119,6 +120,17 @@ fun StatsScreen(
     }
 
     val rank = remember(snapshot) { WatchStats.rankFor(snapshot.totalSeconds) }
+
+    // System back leaves this page the way its header's arrow does: an open
+    // drill-down panel closes first, and then the page itself steps back.
+    // [onBack] is non-null only where this page was OPENED over another screen
+    // (Settings → Stats); the Stats TAB passes none, and there back belongs to
+    // the navigation stack, which is what this leaves alone. Until this existed,
+    // back from Settings → Stats had nothing to catch it and popped the whole
+    // Settings destination — landing on Home.
+    BackHandler(enabled = openPanel != null || onBack != null) {
+        if (openPanel != null) openPanel = null else onBack?.invoke()
+    }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),

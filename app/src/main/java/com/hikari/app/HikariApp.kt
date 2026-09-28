@@ -842,14 +842,15 @@ class HikariApp : Application() {
         // has the memory, and re-decoding a screenful of posters after every
         // trim would be its own bug.
         val onTv = com.hikari.app.data.PerfMode.tvDevice
-        if (onTv) {
+        val critical = level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL
+        if (onTv || critical) {
             runCatching { coil.Coil.imageLoader(this).memoryCache?.clear() }
         }
         runCatching {
             Logs.log(
                 "Memory",
                 "onTrimMemory(" + trimLevelName(level) + ") · " + held +
-                    (if (onTv) " → poster cache cleared" else ""),
+                    (if (onTv || critical) " → poster cache cleared" else ""),
             )
         }
     }

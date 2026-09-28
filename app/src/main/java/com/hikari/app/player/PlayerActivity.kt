@@ -1160,6 +1160,7 @@ class PlayerActivity : ComponentActivity() {
                 if (!controllerVisible && !codecOverlayPinned) hideCodecOverlay()
             }
         })
+        installPlayerFocusRings()
         speedChip = findViewById(R.id.speed_btn)
         favBtn = findViewById(R.id.fav_btn)
         playHint = findViewById(R.id.play_hint)
@@ -8517,6 +8518,47 @@ class PlayerActivity : ComponentActivity() {
      * track is downloaded and rewritten to a local file when the source is
      * prepared, and nobody wants twenty of them for a film they are watching.
      */
+    private fun installPlayerFocusRings() {
+        val root = playerView ?: return
+        val tv = com.hikari.app.data.PerfMode.tvDevice
+        try {
+            (findViewById<android.view.View>(R.id.player_pill_scroll) as? android.view.ViewGroup)
+                ?.descendantFocusability = if (tv) android.view.ViewGroup.FOCUS_AFTER_DESCENDANTS
+                else android.view.ViewGroup.FOCUS_BEFORE_DESCENDANTS
+        } catch (_: Throwable) {}
+        applyFocusRings(root)
+        try {
+            root.setOnHierarchyChangeListener(object : android.view.ViewGroup.OnHierarchyChangeListener {
+                override fun onChildViewAdded(parent: android.view.View, child: android.view.View) {
+                    (parent as? android.view.ViewGroup)?.let { applyFocusRings(it) }
+                }
+                override fun onChildViewRemoved(parent: android.view.View, child: android.view.View) {}
+            })
+        } catch (_: Throwable) {}
+    }
+
+    private fun applyFocusRings(root: android.view.ViewGroup) {
+        for (i in 0 until root.childCount) {
+            val v = root.getChildAt(i) ?: continue
+            if (v is android.view.ViewGroup) {
+                applyFocusRings(v)
+                continue
+            }
+            val pill = v is android.widget.TextView && v.hasOnClickListeners()
+            if (v is android.widget.ImageButton || pill) {
+                try {
+                    v.isFocusable = true
+                    v.isFocusableInTouchMode = false
+                    v.setDefaultFocusHighlightEnabled(false)
+                    v.foreground = getDrawable(
+                        if (v is android.widget.ImageButton) R.drawable.focus_ring_circle
+                        else R.drawable.focus_ring_pill
+                    )
+                } catch (_: Throwable) {}
+            }
+        }
+    }
+
     private fun startAddonSubtitleFetch(force: Boolean = false) {
         // The item this lookup runs for. [favouriteItem] is only built when the
         // launch intent carries a media id, so a title opened without one (a

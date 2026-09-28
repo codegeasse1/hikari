@@ -4772,6 +4772,24 @@ class TmdbGridViewModel(
     }
 }
 
+/** The kind chips under a TMDB catalog's own search box — All first, so the
+ *  default is "everything this catalog holds" and one tap narrows it (see
+ *  [TmdbGridScreen]). "Movies & series" is the pair TMDB's own genre pages
+ *  answer with, so it is the one everything non-anime falls into. */
+private const val KIND_ALL = "all"
+private const val KIND_MOVIE = "movie"
+private const val KIND_SERIES = "series"
+private const val KIND_ANIME = "anime"
+private const val KIND_MOVIE_SERIES = "movie_series"
+
+private val KIND_CHIPS: List<Pair<String, String>> = listOf(
+    KIND_ALL to "All",
+    KIND_MOVIE to "Movies",
+    KIND_SERIES to "Series",
+    KIND_ANIME to "Anime",
+    KIND_MOVIE_SERIES to "Movies & series",
+)
+
 @Composable
 fun TmdbGridScreen(
     nav: NavHostController,
@@ -4817,14 +4835,42 @@ fun TmdbGridScreen(
                 (it.originalTitle?.contains(needle, ignoreCase = true) == true)
         }
     }
+    // ---- What KIND of title to show ------------------------------------
+    //
+    // The genre a reader taps on Home ("Action") is ONE TMDB query that answers
+    // films and series mixed together — and, for a genre like Animation, the
+    // anime those films and series carry as a genre tag with them. A page headed
+    // "Action" therefore opened on a wall of everything at once, and the only
+    // way to ask for one kind was to leave the page and search (reported as
+    // "it showing all mix like movie, series, anime"). The chips cut the SAME
+    // already-loaded pages, so picking one is instant and refetches nothing —
+    // and the walk below keeps pulling more pages while the CHOICE is empty, so
+    // asking for a kind this catalog has not reached yet still finds it instead
+    // of dead-ending on "nothing here".
+    var kindKey by rememberSaveable(specJson, presetKey) { mutableStateOf(KIND_ALL) }
+    val shown = remember(matched, kindKey) {
+        when (kindKey) {
+            KIND_MOVIE -> matched.filter { it.type == MediaType.MOVIE }
+            KIND_SERIES -> matched.filter { it.type == MediaType.SERIES }
+            KIND_ANIME -> matched.filter { it.looksAnime() }
+            KIND_MOVIE_SERIES -> matched.filter {
+                (it.type == MediaType.MOVIE || it.type == MediaType.SERIES) && !it.looksAnime()
+            }
+            else -> matched
+        }
+    }
     // The walk. Eight pages (160 titles) is the bound: far enough that a studio's
     // catalogue is genuinely searched for a name, bounded enough that a typo does
     // not sit there pulling the whole catalogue over the network. The counter
     // resets whenever the query changes, so a second search gets its own budget.
     var deepened by remember { mutableIntStateOf(0) }
-    LaunchedEffect(needle) { deepened = 0 }
-    LaunchedEffect(needle, matched.isEmpty(), loading, done) {
-        if (needle.isNotBlank() && matched.isEmpty() && !loading && !done && deepened < 8) {
+    LaunchedEffect(needle, kindKey) { deepened = 0 }
+    // "The reader has narrowed this catalog" — by a name, by a kind, or both.
+    // Only then is an empty list worth walking the catalog for; a catalog that
+    // is simply still loading its first page is not.
+    val narrowed = needle.isNotBlank() || kindKey != KIND_ALL
+    LaunchedEffect(needle, kindKey, shown.isEmpty(), loading, done) {
+        if (narrowed && shown.isEmpty() && !loading && !done && deepened < 8) {
             deepened++
             vm.loadNext()
         }
@@ -4860,11 +4906,45 @@ fun TmdbGridScreen(
                 .fillMaxWidth()
                 .padding(start = 12.dp, end = 12.dp, bottom = 8.dp),
         )
+        // All · Movies · Series · Anime · Movies & series — the same split the
+        // Search tab's kind chips offer, applied to what this page has already
+        // loaded (see [kindKey]). It is a plain strip, so a television's D-pad
+        // steps through it like any other row.
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(start = 12.dp, end = 12.dp, bottom = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            for ((key, label) in KIND_CHIPS) {
+                FilterChip(
+                    selected = kindKey == key,
+                    onClick = { kindKey = key },
+                    label = { Text(tr(label)) },
+                    shape = RoundedCornerShape(24.dp),
+                    colors = FilterChipDefaults.filterChipColors(
+                        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
+                        selectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f),
+                        labelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        selectedLabelColor = MaterialTheme.colorScheme.primary,
+                    ),
+                )
+            }
+            if (shown.isNotEmpty()) {
+                Text(
+                    tr("%s shown").replace("%s", shown.size.toString()),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
         if (items.isEmpty() && loading) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
             }
-        } else if (matched.isEmpty() && needle.isNotBlank()) {
+        } else if (shown.isEmpty() && narrowed) {
             // The filter is still walking the catalog: the spinner is what says
             // so, because "nothing matched" and "still looking" are different
             // answers and this grid must not give the wrong one while it works.
@@ -4879,7 +4959,7 @@ fun TmdbGridScreen(
                     )
                 }
             }
-        } else if (matched.isEmpty()) {
+        } else if (shown.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 EmptyState(
                     title = tr("Nothing here right now"),
@@ -4895,7 +4975,7 @@ fun TmdbGridScreen(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                items(matched, key = { it.uniqueId }) { item ->
+                items(shown, key = { it.uniqueId }) { item ->
                     TmdbGridCard(item, style) {
                         Routes.safeNavigate(
                             nav,

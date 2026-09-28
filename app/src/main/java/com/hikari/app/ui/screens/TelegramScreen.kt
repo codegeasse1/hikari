@@ -56,6 +56,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -247,6 +248,19 @@ fun TelegramScreen(nav: NavHostController) {
 
     val openChannel = channels.firstOrNull { it.first == openName }
 
+    // One saved-state slot per Telegram PAGE — the home lists, the open chat, the
+    // open channel — so coming back from a chat or a channel lands on the list
+    // exactly where it was left rather than at its top (the same rule as
+    // ExtensionsScreen: a page's own remembered state is disposed the moment
+    // another page replaces it, so the state has to live above the swap). The
+    // home key carries the section, so each section remembers its own position.
+    val pageStates = rememberSaveableStateHolder()
+    val pageKey = when {
+        openChat != 0L -> "chat|" + openChat
+        openChannel != null -> "channel|" + openChannel.first
+        else -> "home|" + section
+    }
+    pageStates.SaveableStateProvider(pageKey) {
     if (openChat != 0L) {
         TelegramChatVideos(
             chatId = openChat,
@@ -291,6 +305,7 @@ fun TelegramScreen(nav: NavHostController) {
             },
             hint = hint,
         )
+    }
     }
 
     // The + button's chooser: what is being added, before the field that takes

@@ -70,6 +70,20 @@ data class ProviderConfig(
 /** A CloudStream-style plugin repository (repo.json → pluginLists → plugin list). */
 enum class RepoKind { CS3, HIKARI, NUVIO, SKYSTREAM, ANIYOMI, VEGA }
 
+/**
+ * A user-made PROVIDER FOLDER: a name, and the provider ids it holds (see
+ * [com.hikari.app.data.AppStore.providerFoldersFlow]).
+ *
+ * It exists so the handful of extensions someone uses daily can be picked in one
+ * tap. It is deliberately a saved PICK rather than a new kind of selection key —
+ * choosing a folder selects exactly these ids, and every screen downstream
+ * carries on resolving a plain set of provider ids.
+ */
+data class ProviderFolder(
+    val name: String,
+    val ids: List<String>,
+)
+
 /** A plugin repository, either CloudStream (.cs3) or Hikari (.hiki) style. */
 data class Cs3Repo(
     val url: String,
