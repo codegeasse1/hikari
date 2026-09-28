@@ -1,3 +1,23 @@
+## 0.10.62
+
+### Added
+
+- **Test button on every extension + Test all per repo.** Each repo row has Test: on a listing it downloads the file and verifies it (size + declared sha256), on an installed extension it runs the full path — catalogues, then the first page — and prints Working with the title count or the stage that broke. The repo page has Test all, which probes every installed extension from that repo with a live Testing…/n-m count.
+- **Kind chips in the Home search overlay (All, Movies, Series, Anime, Movies & series).** The Home magnifier now searches in place for one extension, several, a saved folder, or All — no more detour to the Search tab — and picking a kind with an empty query browses the already-loaded rows instead of the network.
+
+### Fixed
+
+- **Anime filters actually find anime.** TMDB catalogue items carried no genres at all, so the Anime chip filtered on empty lists and could never match (the endless Looking further spinner); items now carry their TMDB genre names, Movies/Series chips exclude anime everywhere (no more Doraemon in Movies), Anime covers anime, animation and cartoon, and extension results fall back to the provider itself (Aniyomi = anime sources, anime plugin paths) since scrapers tag nothing per item. The grid also stops spinning once the catalogue is exhausted and says Nothing matches this filter.
+- **Provider tick/untick works every time.** The picker's gesture handler kept calling the first composition's tap handler, which closed over a dead selection snapshot — taps 3+ computed from stale state (deselect a no-op, reselect silently lost). It now always calls the current handler.
+- **Catalogues that fail first paint retry once by themselves** (cold plugin, DNS, late host) instead of parking on Retry; the empty state also covers multi-picks now, and the single/multi null-map crash guard is in.
+- **Personal catalogues live under one collapsed parent row** instead of scattered among providers.
+- **Uninstall flips the button back to Install.** Uninstall paths never rebuilt the provider list, so the installed-URL set stayed stale until anything else refreshed the screen.
+- **Backup carries every profile** (all snapshots + registry), not just the active setup; restore writes them back and reports the count.
+- **App icon option shows on TV too.** Safe because the TV launcher entry is a separate always-enabled alias the icon switcher never touches.
+- **Torrent dialog only appears when resolving actually takes time** (1.2s grace, cancellable) instead of flashing on every torrent source.
+- **Subtitle addons are asked in parallel and a failed-to-reach pass no longer latches** as the title's final word — the menu and newly listed sources retry it — so OpenSubtitles/SubDL tracks land in the subtitle box instead of a permanent silent empty.
+- **Search genre row never truncates** (caption column + wider field that fits its placeholder).
+
 ## 0.10.61
 
 ### Added

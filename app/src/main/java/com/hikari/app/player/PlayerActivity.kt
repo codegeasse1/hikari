@@ -127,6 +127,7 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -7710,18 +7711,29 @@ class PlayerActivity : ComponentActivity() {
         errorPanel?.visibility = View.GONE
 
         torrentDialog?.let { runCatching { it.dismiss() } }
-        torrentDialog = showGlassProgress(
-            "Torrent stream",
-            "Starting torrent engine…\nFirst play can take a few seconds.",
-            cancelable = false,
-        )
+        torrentDialog = null
 
         lifecycleScope.launch {
+            // Shown only if the resolve is still running after a beat: a warm
+            // engine answers fast and the user never sees a dialog at all, while
+            // a cold start still explains the wait. Cancellable — backing out
+            // abandons the resolve with it instead of parking the player.
+            val slowJob = launch {
+                kotlinx.coroutines.delay(1200)
+                if (isActive && torrentDialog == null) {
+                    torrentDialog = showGlassProgress(
+                        "Torrent stream",
+                        "Starting torrent engine…\nFirst play can take a few seconds.",
+                        cancelable = true,
+                    )
+                }
+            }
             val res = try {
                 Result.success(withContext(Dispatchers.IO) { transformTorrent(src) })
             } catch (t: Throwable) {
                 Result.failure(t)
             }
+            slowJob.cancel()
             torrentDialog?.let { runCatching { it.dismiss() } }
             torrentDialog = null
 
@@ -8596,11 +8608,34 @@ class PlayerActivity : ComponentActivity() {
                     .filter { it.config.enabled }
             }.getOrDefault(emptyList())
             val wanted = com.hikari.app.i18n.I18n.currentTag.substringBefore('-').lowercase()
+            var definitive = true
             val tracks = withContext(Dispatchers.IO) {
-                val fromAddons = addons.flatMap { addon ->
-                    runCatching {
-                        withTimeoutOrNull(ADDON_SUBTITLE_MS) { addon.subtitlesFor(item, episode) }
-                    }.getOrNull().orEmpty()
+                val lookups = kotlinx.coroutines.coroutineScope {
+                    addons.map { addon ->
+                        async {
+                            runCatching {
+                                withTimeoutOrNull(ADDON_SUBTITLE_MS) {
+                                    addon.subtitlesForDetailed(item, episode)
+                                }
+                            }.getOrNull()
+                        }
+                    }.awaitAll()
+                }
+                val fromAddons = lookups.flatMapIndexed { i, lookup ->
+                    if (lookup == null) {
+                        // Timed out or threw: not an answer, so this pass must
+                        // not latch as the title's final word.
+                        definitive = false
+                        return@flatMapIndexed emptyList()
+                    }
+                    if (lookup.tracks.isEmpty() && lookup.note.isNotBlank() &&
+                        (lookup.note.contains("manifest") || lookup.note.contains("resource"))
+                    ) {
+                        // The addon itself was unreachable, not title-less — a
+                        // later trigger (menu open, more sources listed) retries.
+                        definitive = false
+                    }
+                    lookup.tracks
                 }
                 // The subtitle SITES, when the user has asked for subtitles to
                 // be found automatically (Subtitles panel → "Find subtitles
@@ -8624,7 +8659,12 @@ class PlayerActivity : ComponentActivity() {
                     .take(MAX_ADDON_SUBS)
             }
             addonSubsRunning = false
-            addonSubsFetched = true
+            // Latch only a definitive pass: every enabled subtitle addon gave a
+            // real answer (tracks, or an honest empty with the addon readable).
+            // A pass that failed to even reach an addon stays unlached, so the
+            // subtitle menu and newly listed sources — which both re-trigger
+            // this fetch — get another chance instead of a permanent empty.
+            if (definitive) addonSubsFetched = true
             if (isFinishing || isDestroyed) return@launch
             if (tracks.isEmpty()) return@launch
             addonSubs = tracks

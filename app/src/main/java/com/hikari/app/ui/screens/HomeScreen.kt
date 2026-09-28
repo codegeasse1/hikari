@@ -11,6 +11,8 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.border
@@ -57,6 +59,8 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
@@ -72,6 +76,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -103,6 +108,7 @@ import com.hikari.app.data.ContentRepository
 import com.hikari.app.data.CoverKinds
 import androidx.compose.ui.text.style.TextOverflow
 import com.hikari.app.data.MediaItem
+import com.hikari.app.data.MediaType
 import com.hikari.app.data.ProviderType
 import com.hikari.app.data.ProviderFolder
 import com.hikari.app.data.RepoProvenance
@@ -778,6 +784,9 @@ fun HomeScreen(nav: NavHostController) {
     // there's only one sensible answer, so it goes straight to global search.
     // A COLLECTION counts as a scope too: browsing "abc" and tapping the
     // magnifier must be able to search inside abc and not only everywhere.
+    // The in-place overlay's scope: the picked extensions' ids, or every enabled
+    // extension when the pick is All. Set on the same tap that opens it.
+    var overlayIds by remember { mutableStateOf(emptySet<String>()) }
     val openSearch: () -> Unit = {
         // With ONE extension picked, the magnifier searches that extension IN
         // PLACE, here on Home: the button sits inside the picked extension's own
@@ -789,9 +798,15 @@ fun HomeScreen(nav: NavHostController) {
         // it), and "All" goes straight to the Search tab, where the provider row
         // is the only thing that can narrow a search that has no pick.
         when {
-            headerSelection != null -> showHomeSearch = true
             selectedCollection != null -> showSearchDialog = true
-            else -> openGlobalSearch()
+            else -> {
+                val ext = selection.filter { !it.startsWith(COLLECTION_PREFIX) }.toSet()
+                overlayIds = ext.ifEmpty {
+                    activeProviders.map { it.config.id }.toSet()
+                }
+                if (overlayIds.isEmpty()) openGlobalSearch()
+                else showHomeSearch = true
+            }
         }
     }
     val openVerify: () -> Unit = {
@@ -1054,11 +1069,27 @@ fun HomeScreen(nav: NavHostController) {
                             actionLabel = tr("Collections"),
                             action = { Routes.safeNavigate(nav, Routes.COLLECTIONS) },
                         )
-                    } else if (selected != null) {
+                    } else if (selected != null || selection.any { !it.startsWith(COLLECTION_PREFIX) }) {
                         // A `by remember` property cannot be smart-cast, so the
-                        // non-null answer is taken once into a local.
-                        val selectedKey = selected ?: ""
-                        val reason = engineFailureReason(selectedKey)
+                        // non-null answer is taken once into a local. A multi
+                        // pick has no single id: the first extension stands in.
+                        val single = selected != null
+                        val selectedKey = selected
+                            ?: selection.firstOrNull { !it.startsWith(COLLECTION_PREFIX) } ?: ""
+                        val reason = if (single) engineFailureReason(selectedKey) else null
+                        // First paint failed (a cold plugin, DNS, a host that
+                        // woke up late): retry once by itself after a beat
+                        // instead of parking the user on Retry for a transient.
+                        // Once per pick — a genuinely empty extension keeps its
+                        // message after the one extra attempt.
+                        var autoRetried by remember(selectedKey, selection.size) { mutableStateOf(false) }
+                        LaunchedEffect(selectedKey, selection.size) {
+                            if (!autoRetried) {
+                                autoRetried = true
+                                delay(1500)
+                                vm.refresh()
+                            }
+                        }
                         // An extension whose site answers with a wall (403/503/429,
                         // a Cloudflare body, a "One moment, please" interstitial)
                         // is the one failure the user can actually do something
@@ -1072,8 +1103,11 @@ fun HomeScreen(nav: NavHostController) {
                             r.contains("403") || r.contains("503") || r.contains("429") ||
                                 com.hikari.app.net.CloudflareVerifier.isVerificationMessage(r)
                         } == true
-                        val streamOnly =
-                            com.hikari.app.providers.StremioAddon.streamOnlyAddons[selected] == true
+                        // Null-safe by construction: a multi pick has selected ==
+                        // null, and a ConcurrentHashMap.get(null) throws — the
+                        // old branch could never see null, this one can.
+                        val streamOnly = single &&
+                            com.hikari.app.providers.StremioAddon.streamOnlyAddons[selectedKey] == true
                         if (streamOnly) {
                             EmptyState(
                                 title = I18n.t("No catalog from %s").replace("%s", selectedName ?: "this addon"),
@@ -1198,9 +1232,18 @@ fun HomeScreen(nav: NavHostController) {
         // own because it answers a question about the feed that is already
         // loaded: "which of this extension's titles did you mean?".
         if (showHomeSearch) {
+            // One name for one extension, the counted label for several, All
+            // for everything — the same rule the header pill itself uses.
+            val overlayName = when {
+                overlayIds.size == 1 -> providers.firstOrNull { it.config.id == overlayIds.first() }
+                    ?.config?.name ?: selectedName
+                selection.isNotEmpty() -> selectedName
+                else -> tr("All providers")
+            }
             HomeSearchOverlay(
-                provider = providers.firstOrNull { it.config.id == headerSelection },
-                providerName = selectedName,
+                providerIds = overlayIds,
+                providerName = overlayName,
+                feedItems = remember(rows) { rows.flatMap { it.items } },
                 onClose = { showHomeSearch = false },
                 onOpen = { item ->
                     // The overlay is NOT closed here: it stays open so that Back
@@ -1497,6 +1540,10 @@ internal fun ProviderPickerSheet(
     // Which extension rows are opened to show their sources. Keyed by the row's
     // own key, so the state survives the list re-sorting under it.
     var expanded by remember { mutableStateOf(emptySet<String>()) }
+    // The personal catalogues sit under ONE parent row (collapsed by default),
+    // not scattered among the providers: every catalogue the user builds lands
+    // in the same place, and the provider list stays a provider list.
+    var cataloguesOpen by remember { mutableStateOf(false) }
     val shownCollections = remember(collections, query) {
         if (query.isBlank()) collections
         else collections.filter { it.name.contains(query, ignoreCase = true) }
@@ -1688,8 +1735,24 @@ internal fun ProviderPickerSheet(
             ) {
                 if (shownCollections.isNotEmpty()) {
                     item {
-                        PickerSectionLabel(tr("Collections"))
+                        PickerSectionLabel(tr("Personal catalogues"))
                     }
+                    item(key = "personal-catalogues") {
+                        PickerRow(
+                            label = tr("Personal catalogues"),
+                            isSelected = false,
+                            multi = false,
+                            leadingIcon = Icons.Filled.Folder,
+                            supporting = I18n.t("%s catalogues").replace(
+                                "%s", shownCollections.size.toString()
+                            ),
+                            expandable = true,
+                            expanded = cataloguesOpen,
+                            onToggleExpand = { cataloguesOpen = !cataloguesOpen },
+                            onClick = { cataloguesOpen = !cataloguesOpen },
+                        )
+                    }
+                    if (cataloguesOpen) {
                     items(shownCollections, key = { "collection|${it.id}" }) { c ->
                         val key = "$COLLECTION_PREFIX${c.id}"
                         val ticked = key in working
@@ -1724,6 +1787,7 @@ internal fun ProviderPickerSheet(
                             onClick = onManageCollections,
                         )
                     }
+                    } // cataloguesOpen
                 }
                 if (folders.isNotEmpty()) {
                     item {
@@ -2019,6 +2083,15 @@ private fun PickerRow(
     onLongClick: (() -> Unit)? = null,
     onClick: () -> Unit,
 ) {
+    // The gesture handler below is a `pointerInput` keyed on (label, multi), so
+    // it does NOT restart when the tick state changes — and the lambdas it was
+    // given would then be the FIRST composition's, closing over a stale
+    // `working` list. Every tap after the first recomposition computed from
+    // that dead snapshot: deselecting removed an already-removed key (a no-op)
+    // and reselecting re-added into the old list (silently lost). These refs
+    // always point at the CURRENT lambdas, so the gesture can never go stale.
+    val latestClick by rememberUpdatedState(onClick)
+    val latestHold by rememberUpdatedState(onLongClick)
     Column(Modifier.fillMaxWidth()) {
         Row(
             Modifier
@@ -2040,8 +2113,10 @@ private fun PickerRow(
                         // at its right end — and a press aimed at one of those
                         // must be theirs, not the row's (the row would otherwise
                         // pick the provider while the user was pressing Pin).
-                        .tvPress(previewPass = false, onClick = onClick)
-                        .pointerInput(label, multi) { holdOrTap(onLongClick, onClick) }
+                        .tvPress(previewPass = false, onClick = { latestClick() })
+                        .pointerInput(label, multi) {
+                            holdOrTap({ latestHold?.invoke() }, { latestClick() })
+                        }
                 )
                 .padding(horizontal = 10.dp, vertical = 13.dp),
             verticalAlignment = Alignment.CenterVertically
@@ -2430,17 +2505,76 @@ private fun engineFailureReason(providerId: String): String? =
  * The scan belongs to this composable's own effect, so searching on Home can
  * never disturb what the Search tab is showing.
  */
+/** The kind chips inside the Home search overlay — the same split the Search
+ *  tab and the TMDB catalog page offer, over the overlay's own results (and
+ *  over the loaded feed when the query is empty). Movies and Series exclude
+ *  anime, so an animation never leaks into the film wall again. */
+private const val HOME_KIND_ALL = "all"
+private const val HOME_KIND_MOVIE = "movie"
+private const val HOME_KIND_SERIES = "series"
+private const val HOME_KIND_ANIME = "anime"
+private const val HOME_KIND_MOVIE_SERIES = "movie_series"
+
+private val HOME_KIND_CHIPS: List<Pair<String, String>> = listOf(
+    HOME_KIND_ALL to "All",
+    HOME_KIND_MOVIE to "Movies",
+    HOME_KIND_SERIES to "Series",
+    HOME_KIND_ANIME to "Anime",
+    HOME_KIND_MOVIE_SERIES to "Movies & series",
+)
+
+private fun homeKindKeep(item: MediaItem, kind: String): Boolean = when (kind) {
+    HOME_KIND_MOVIE -> item.type == MediaType.MOVIE && !item.looksAnime()
+    HOME_KIND_SERIES -> item.type == MediaType.SERIES && !item.looksAnime()
+    HOME_KIND_ANIME -> item.looksAnime()
+    HOME_KIND_MOVIE_SERIES ->
+        (item.type == MediaType.MOVIE || item.type == MediaType.SERIES) && !item.looksAnime()
+    else -> true
+}
+
+@Composable
+private fun HomeSearchKindRow(kindKey: String, onPick: (String) -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(start = 12.dp, end = 12.dp, bottom = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        for ((key, label) in HOME_KIND_CHIPS) {
+            FilterChip(
+                selected = kindKey == key,
+                onClick = { onPick(key) },
+                label = { Text(tr(label)) },
+                shape = RoundedCornerShape(24.dp),
+                colors = FilterChipDefaults.filterChipColors(
+                    containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
+                    selectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f),
+                    labelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    selectedLabelColor = MaterialTheme.colorScheme.primary,
+                ),
+            )
+        }
+    }
+}
+
 @Composable
 private fun HomeSearchOverlay(
-    provider: ContentProvider?,
+    providerIds: Set<String>,
     providerName: String?,
+    /** The titles Home already has loaded: picking a kind with an empty query
+     *  browses THESE instead of the network, so Anime/Movies/... show what the
+     *  picked extensions actually hold. */
+    feedItems: List<MediaItem>,
     onClose: () -> Unit,
     onOpen: (MediaItem) -> Unit,
 ) {
     val context = LocalContext.current
     val app = context.applicationContext as HikariApp
     val repo = remember { ContentRepository(app.providers) }
-    val label = providerName?.takeIf { it.isNotBlank() } ?: tr("this extension")
+    val label = providerName?.takeIf { it.isNotBlank() } ?: tr("these extensions")
+    var kindKey by remember { mutableStateOf(HOME_KIND_ALL) }
     var typed by rememberSaveable { mutableStateOf("") }
     var applied by rememberSaveable { mutableStateOf("") }
     var results by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
@@ -2456,15 +2590,14 @@ private fun HomeSearchOverlay(
     // cancels the old scan with it — so a stale page can never land under a newer
     // query.
     LaunchedEffect(applied) {
-        val id = provider?.config?.id
-        if (applied.isBlank() || id == null) {
+        if (applied.isBlank() || providerIds.isEmpty()) {
             results = emptyList()
             searching = false
             return@LaunchedEffect
         }
         searching = true
         try {
-            repo.searchStreaming(applied, providerIds = setOf(id)).collect { raw ->
+            repo.searchStreaming(applied, providerIds = providerIds).collect { raw ->
                 results = withContext(Dispatchers.IO) { raw.map { it.shrinkPoster() } }
             }
         } catch (e: kotlinx.coroutines.CancellationException) {
@@ -2532,6 +2665,18 @@ private fun HomeSearchOverlay(
                         .tvTextFieldKeys(typed),
                 )
             }
+            HomeSearchKindRow(kindKey) { kindKey = it }
+            // One tap narrows what is already here: the typed results AND the
+            // loaded feed behind them are cut by the same rule, so the chips
+            // never disagree with the grid below them.
+            val shownResults = remember(results, kindKey) {
+                results.filter { homeKindKeep(it, kindKey) }.distinctBy { it.uniqueId }
+            }
+            val blankShown = remember(feedItems, kindKey) {
+                if (kindKey == HOME_KIND_ALL) emptyList()
+                else feedItems.filter { homeKindKeep(it, kindKey) }
+                    .distinctBy { it.uniqueId }.take(80)
+            }
             if (!LocalHideHelp.current) {
                 Text(
                     I18n.t("Searching %s only — a result opens straight from here.")
@@ -2542,23 +2687,58 @@ private fun HomeSearchOverlay(
                 )
             }
             when {
-                applied.isBlank() -> EmptyState(
+                applied.isBlank() && kindKey == HOME_KIND_ALL -> EmptyState(
                     title = I18n.t("Search %s").replace("%s", label),
-                    subtitle = tr("Type a title — only this extension is searched."),
+                    subtitle = tr("Type a title — or pick a kind above to browse what is already loaded."),
                     actionLabel = null,
                     action = null,
                 )
+                applied.isBlank() -> {
+                    if (blankShown.isEmpty()) {
+                        EmptyState(
+                            title = tr("Nothing of that kind here"),
+                            subtitle = tr("The loaded rows hold no such titles — try a search instead."),
+                            actionLabel = null,
+                            action = null,
+                        )
+                    } else {
+                        Column(Modifier.fillMaxSize()) {
+                            Text(
+                                I18n.t("%s from the loaded rows").replace("%s", blankShown.size.toString()),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
+                            )
+                            LazyVerticalGrid(
+                                columns = GridCells.Adaptive(minSize = TvUi.gridMinFor(96)),
+                                modifier = Modifier.fillMaxSize(),
+                                contentPadding = PaddingValues(
+                                    start = 10.dp,
+                                    end = 10.dp,
+                                    top = 8.dp,
+                                    bottom = LocalTaskbarInset.current + 16.dp,
+                                ),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                items(blankShown, key = { it.uniqueId }) { item ->
+                                    HomeResultCard(item) { onOpen(item) }
+                                }
+                            }
+                        }
+                    }
+                }
                 results.isEmpty() && searching -> Box(
                     Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center,
                 ) { CircularProgressIndicator() }
-                results.isEmpty() -> EmptyState(
+                shownResults.isEmpty() && !searching -> EmptyState(
                     title = tr("No matches"),
-                    subtitle = I18n.t("This extension has no \"%s\" — or its site is not answering.")
-                        .replace("%s", applied),
+                    subtitle = I18n.t("%s has no \"%s\" of that kind — or its site is not answering.")
+                        .replace("%s", label).replace("%s", applied),
                     actionLabel = null,
                     action = null,
-                    detail = provider?.config?.id?.let { engineFailureReason(it) },
+                    detail = providerIds.firstOrNull()?.let { engineFailureReason(it) },
                 )
                 else -> {
                     // The engine can answer the same title twice (and one engine
@@ -2566,7 +2746,7 @@ private fun HomeSearchOverlay(
                     // crash in Compose, so repeats are dropped before the grid is
                     // built — the same treatment the feed and the catalog page
                     // give their own lists.
-                    val unique = rememberVisibleItems(results)
+                    val unique = rememberVisibleItems(shownResults)
                     LazyVerticalGrid(
                         columns = GridCells.Adaptive(minSize = TvUi.gridMinFor(96)),
                         modifier = Modifier.fillMaxSize(),

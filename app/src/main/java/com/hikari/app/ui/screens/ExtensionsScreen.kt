@@ -156,6 +156,12 @@ import com.hikari.app.tv.tvPress
 import com.hikari.app.tv.tvToggle
 import com.hikari.app.tv.tvTextFieldKeys
 
+/**
+ * One probe outcome for the Test buttons: [testing] while the probe runs,
+ * then the line the row shows ([ok] picks its colour).
+ */
+data class ProviderTest(val testing: Boolean, val text: String, val ok: Boolean)
+
 class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     private val store = (app as HikariApp).store
     private val manager = (app as HikariApp).providers
@@ -428,7 +434,13 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             clearStatus()
             try {
                 cancellableCatching { action() }
-                    .onSuccess { setSuccess(successMsg) }
+                    .onSuccess {
+                        setSuccess(successMsg)
+                        // Rebuild + re-read the installed set: without this the
+                        // row kept its Uninstall button after the files were
+                        // already gone (installs did this, uninstalls did not).
+                        requestRefresh()
+                    }
                     .onFailure { setError(it.message ?: "Failed") }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
@@ -451,7 +463,10 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 cancellableCatching { action() }
                     .onSuccess { n ->
-                        if (n > 0) setSuccess(successMsg(n))
+                        if (n > 0) {
+                            setSuccess(successMsg(n))
+                            requestRefresh()
+                        }
                         else setError("Nothing to uninstall — that extension isn't installed any more.")
                     }
                     .onFailure { setError(it.message ?: "Failed") }
@@ -459,6 +474,123 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 throw e
             }
         }
+    }
+
+    // ------------------------------------------------------------- testing --
+    //
+    // One probe outcome per tested extension, shown on the row that was tested.
+    // Keyed "inst::<provider id>" for an installed provider and "repo::<plugin
+    // url>" for a listing that is not installed yet (the two never collide, so
+    // installing an extension keeps no stale download-check beside its probe).
+    val testStatus = MutableStateFlow<Map<String, ProviderTest>>(emptyMap())
+    private val testGate = Semaphore(3)
+    private fun setTest(key: String, v: ProviderTest) {
+        testStatus.value = testStatus.value + (key to v)
+    }
+
+    /**
+     * Full end-to-end probe of an INSTALLED provider: its catalogues, then the
+     * first page of the first one. That is the whole installed path — plugin
+     * load, manifest, network, parse — so "Working" means it will open, and the
+     * failure names the stage that broke. Bounded (15s + 20s) so a dead host
+     * cannot hold the button forever.
+     */
+    fun testInstalled(providerId: String) {
+        val key = "inst::$providerId"
+        if (testStatus.value[key]?.testing == true) return
+        setTest(key, ProviderTest(testing = true, text = "Testing…", ok = false))
+        viewModelScope.launch(Dispatchers.IO) {
+            val p = manager.providers.value.firstOrNull { it.config.id == providerId }
+            if (p == null) {
+                setTest(key, ProviderTest(false, "Not installed any more.", false))
+                return@launch
+            }
+            testGate.acquire()
+            try {
+                setTest(key, probeProvider(p))
+            } finally {
+                testGate.release()
+            }
+        }
+    }
+
+    private suspend fun probeProvider(p: ContentProvider): ProviderTest {
+        return try {
+            val cats = withTimeoutOrNull(15_000) { p.catalogs() }.orEmpty()
+            if (cats.isEmpty()) {
+                val subOnly = p.config.type == ProviderType.STREMIO &&
+                    runCatching { (p as com.hikari.app.providers.StremioAddon).isSubtitleOnly() }
+                        .getOrDefault(false)
+                if (subOnly) return ProviderTest(
+                    false, "Subtitle addon — it answers inside the player, not here.", true
+                )
+                return ProviderTest(false, "No catalogues to read — check its site.", false)
+            }
+            val first = cats.first()
+            val items = withTimeoutOrNull(20_000) { p.getCatalog(first, 1) }.orEmpty()
+            if (items.isNotEmpty()) ProviderTest(
+                false, "Working — " + items.size + " titles in \u201c" + first.name + "\u201d.", true
+            )
+            else ProviderTest(
+                false, "Opened \u201c" + first.name + "\u201d but it came back empty.", false
+            )
+        } catch (t: Throwable) {
+            if (t is kotlinx.coroutines.CancellationException) throw t
+            ProviderTest(false, (t.message ?: "Failed").take(160), false)
+        }
+    }
+
+    /**
+     * Pre-install check of a repo LISTING: downloads the file and verifies it
+     * (size + the sha256 the listing declares, when it declares one). That is
+     * all a listing CAN prove without installing — the repo host is reachable
+     * and the file is intact — so the row says exactly that and nothing more.
+     */
+    fun testDownload(p: Cs3RepoPlugin) {
+        val key = "repo::" + p.url
+        if (testStatus.value[key]?.testing == true) return
+        setTest(key, ProviderTest(testing = true, text = "Downloading…", ok = false))
+        viewModelScope.launch(Dispatchers.IO) {
+            testGate.acquire()
+            try {
+                val bytes = withTimeoutOrNull(30_000) {
+                    Http.fetchBytesCancellable(p.url, mapOf("User-Agent" to Http.NUVIO_UA))
+                }
+                if (bytes == null || bytes.isEmpty()) {
+                    setTest(key, ProviderTest(false, "Download failed — host not answering.", false))
+                    return@launch
+                }
+                val hash = p.fileHash
+                if (hash != null && hash.startsWith("sha256-")) {
+                    val expected = hash.removePrefix("sha256-").lowercase()
+                    val actual = sha256Hex(bytes)
+                    if (actual != expected) {
+                        setTest(key, ProviderTest(false, "Checksum mismatch — file corrupted.", false))
+                        return@launch
+                    }
+                }
+                val mb = bytes.size / 1048576.0
+                val size = if (mb >= 1) "%.1f MB".format(mb) else (bytes.size / 1024).toString() + " KB"
+                setTest(key, ProviderTest(false, "Download OK (" + size + ") — host reachable.", true))
+            } catch (t: Throwable) {
+                if (t is kotlinx.coroutines.CancellationException) throw t
+                setTest(key, ProviderTest(false, (t.message ?: "Failed").take(160), false))
+            } finally {
+                testGate.release()
+            }
+        }
+    }
+
+    /** Probes every installed provider whose source belongs to this repo's listings. */
+    fun testRepoInstalled(repoPlugins: List<Cs3RepoPlugin>) {
+        val wanted = repoPlugins.flatMap { SourceUrls.matchKeys(it.url) }.toSet()
+        if (wanted.isEmpty()) return
+        val ids = manager.providers.value.mapNotNull { p ->
+            val extra = p.config.extra ?: return@mapNotNull null
+            val source = if (p.config.type == ProviderType.HIKARI) extra.substringBeforeLast('|') else extra
+            if (SourceUrls.matchKeys(source).any { it in wanted }) p.config.id else null
+        }.distinct()
+        ids.forEach { testInstalled(it) }
     }
 
     /** Refreshes a repo's plugin list in the VM scope (survives tab switches —
@@ -2821,6 +2953,7 @@ fun ExtensionsScreen() {
         else everyPlugin.mapValues { (_, list) -> list.filterNot { it.nsfw } }
     }
     val installed by vm.installedUrls.collectAsState()
+    val tests by vm.testStatus.collectAsState()
     val outdated by vm.outdatedUrls.collectAsState()
     // Bumped when a playlist has been read (or re-read): the IPTV rows show their
     // channel count from it, and collecting it here is what makes them repaint.
@@ -3138,6 +3271,10 @@ fun ExtensionsScreen() {
                     installed,
                 )
             },
+            testStatus = tests,
+            onTestInstalled = { vm.testInstalled(it) },
+            onTestDownload = { vm.testDownload(it) },
+            onTestAll = { vm.testRepoInstalled(pluginsByRepo[openRepo.url] ?: emptyList()) },
         )
         folder != null -> SourceFolderView(
             folder = folder,
@@ -3209,6 +3346,8 @@ fun ExtensionsScreen() {
         )
         installedOpen -> InstalledExtensionsView(
             providers = providers,
+            testStatus = tests,
+            onTest = { vm.testInstalled(it) },
             outdatedUrls = outdated,
             onUpdateProvider = { prov -> updateProvider(prov) },
             busy = busy,
@@ -3260,6 +3399,9 @@ fun ExtensionsScreen() {
         )
         else -> RepoBrowserView(
             repos = repos,
+            testStatus = tests,
+            onTestInstalled = { vm.testInstalled(it) },
+            onTestDownload = { vm.testDownload(it) },
             pluginsByRepo = pluginsByRepo,
             repoState = repoState,
             providers = providers,
@@ -4157,6 +4299,9 @@ private fun RepoBrowserView(
     onDeleteProvider: (String) -> Unit,
     onToggleProvider: (String, Boolean) -> Unit,
     onOpenSettings: (ContentProvider) -> Unit,
+    testStatus: Map<String, ProviderTest> = emptyMap(),
+    onTestInstalled: (String) -> Unit = {},
+    onTestDownload: (Cs3RepoPlugin) -> Unit = {},
 ) {
     // Search across EVERYTHING on this screen: installed extensions (with
     // uninstall/toggle) and every added repo's plugin list (with instant
@@ -4432,6 +4577,9 @@ private fun RepoBrowserView(
                 onToggleProvider = onToggleProvider,
                 cs3SettingsIds = cs3SettingsIds,
                 onOpenSettings = onOpenSettings,
+                testStatus = testStatus,
+                onTestInstalled = onTestInstalled,
+                onTestDownload = onTestDownload,
             )
             return@LazyColumn
         }
@@ -4652,6 +4800,9 @@ private fun LazyListScope.extensionsSearchItems(
     onToggleProvider: (String, Boolean) -> Unit,
     cs3SettingsIds: Set<String>,
     onOpenSettings: (ContentProvider) -> Unit,
+    testStatus: Map<String, ProviderTest> = emptyMap(),
+    onTestInstalled: (String) -> Unit = {},
+    onTestDownload: (Cs3RepoPlugin) -> Unit = {},
 ) {
     val q = query.trim()
     val installedMatches = providers.filter { it.config.name.contains(q, ignoreCase = true) }
@@ -4701,6 +4852,8 @@ private fun LazyListScope.extensionsSearchItems(
             ProviderRecordRow(
                 pack = pack,
                 statusFor = { p -> pluginStatus(p) },
+                testFor = { p -> testStatus["inst::" + p.config.id] },
+                onTest = { p -> onTestInstalled(p.config.id) },
                 onToggleProvider = onToggleProvider,
                 onDeleteProvider = onDeleteProvider,
                 settingsFor = { p ->
@@ -4737,6 +4890,26 @@ private fun LazyListScope.extensionsSearchItems(
                     installed = SourceUrls.anyKeyIn(p.url, installedUrls),
                     onInstall = { onInstallPlugin(p, repo.kind) },
                     onUninstall = { onUninstallPlugin(p, repo.kind) },
+                    testText = run {
+                        val target = installedProviderFor(p, providers)
+                        val key = if (target != null) "inst::" + target.config.id else "repo::" + p.url
+                        testStatus[key]?.text
+                    },
+                    testOk = run {
+                        val target = installedProviderFor(p, providers)
+                        val key = if (target != null) "inst::" + target.config.id else "repo::" + p.url
+                        testStatus[key]?.ok == true
+                    },
+                    testing = run {
+                        val target = installedProviderFor(p, providers)
+                        val key = if (target != null) "inst::" + target.config.id else "repo::" + p.url
+                        testStatus[key]?.testing == true
+                    },
+                    onTest = {
+                        val target = installedProviderFor(p, providers)
+                        if (target != null) onTestInstalled(target.config.id)
+                        else onTestDownload(p)
+                    },
                     onSettings = repoPluginSettingsTarget(p, providers, cs3SettingsIds)
                         ?.let { target -> { onOpenSettings(target) } },
                     updateAvailable = SourceUrls.anyKeyIn(p.url, outdatedUrls),
@@ -4889,6 +5062,11 @@ private fun RepoPluginsView(
     onStopInstall: () -> Unit = {},
     onOpenSettings: (ContentProvider) -> Unit,
     onInstallAll: () -> Unit,
+    testStatus: Map<String, ProviderTest> = emptyMap(),
+    onTestInstalled: (String) -> Unit = {},
+    onTestDownload: (Cs3RepoPlugin) -> Unit = {},
+    /** Probes every installed provider from this repo at once. */
+    onTestAll: () -> Unit = {},
 ) {
     val cs3SettingsIds = rememberCs3SettingsIds(providers)
     // The repo's own search box. keiyoushi is 1396 entries: finding one by
@@ -5098,6 +5276,38 @@ private fun RepoPluginsView(
             )
         ) {
             val uninstalled = plugins.count { !SourceUrls.anyKeyIn(it.url, installedUrls) }
+            val installedHere = plugins.count { SourceUrls.anyKeyIn(it.url, installedUrls) }
+            val testingHere = plugins.count { p ->
+                val target = installedProviderFor(p, providers)
+                val key = if (target != null) "inst::" + target.config.id else "repo::" + p.url
+                testStatus[key]?.testing == true
+            }
+            val okHere = plugins.count { p ->
+                val target = installedProviderFor(p, providers)
+                val key = if (target != null) "inst::" + target.config.id else "repo::" + p.url
+                testStatus[key]?.ok == true
+            }
+            if (installedHere > 0 && filter.isBlank() && kindFilter.isBlank()) {
+                item {
+                    OutlinedButton(
+                        onClick = onTestAll,
+                        enabled = testingHere == 0,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 4.dp, bottom = 4.dp)
+                            .height(48.dp),
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Text(
+                            when {
+                                testingHere > 0 -> tr("Testing…") + " " + testingHere
+                                okHere > 0 -> tr("Test all") + " (" + okHere + "/" + installedHere + ")"
+                                else -> tr("Test all") + " (" + installedHere + ")"
+                            }
+                        )
+                    }
+                }
+            }
             // Hidden while a filter is on: this button installs the WHOLE repo,
             // and offering it under a narrowed list would install 1396
             // extensions to a user who typed a name.
@@ -5179,6 +5389,26 @@ private fun RepoPluginsView(
                                 installed = SourceUrls.anyKeyIn(p.url, installedUrls),
                                 onInstall = { onInstall(p) },
                                 onUninstall = { onUninstall(p) },
+                                testText = run {
+                                    val target = installedProviderFor(p, providers)
+                                    val key = if (target != null) "inst::" + target.config.id else "repo::" + p.url
+                                    testStatus[key]?.text
+                                },
+                                testOk = run {
+                                    val target = installedProviderFor(p, providers)
+                                    val key = if (target != null) "inst::" + target.config.id else "repo::" + p.url
+                                    testStatus[key]?.ok == true
+                                },
+                                testing = run {
+                                    val target = installedProviderFor(p, providers)
+                                    val key = if (target != null) "inst::" + target.config.id else "repo::" + p.url
+                                    testStatus[key]?.testing == true
+                                },
+                                onTest = {
+                                    val target = installedProviderFor(p, providers)
+                                    if (target != null) onTestInstalled(target.config.id)
+                                    else onTestDownload(p)
+                                },
                                 onSettings = repoPluginSettingsTarget(p, providers, cs3SettingsIds)
                                     ?.let { target -> { onOpenSettings(target) } },
                                 updateAvailable = SourceUrls.anyKeyIn(p.url, outdatedUrls),
@@ -5529,6 +5759,11 @@ private fun ProviderCard(
     expandable: Boolean = false,
     expanded: Boolean = false,
     onToggleExpand: (() -> Unit)? = null,
+    /** Probe this provider end-to-end (catalogues + first page). Null hides it. */
+    onTest: (() -> Unit)? = null,
+    testing: Boolean = false,
+    testText: String? = null,
+    testOk: Boolean = false,
 ) {
     val glass = rememberGlassTokens()
     val tileShape = RoundedCornerShape(12.dp)
@@ -5613,6 +5848,17 @@ private fun ProviderCard(
                         modifier = Modifier.padding(top = 2.dp)
                     )
                 }
+                if (testText != null) {
+                    Text(
+                        testText,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (testOk) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.error,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(top = 2.dp)
+                    )
+                }
             }
             Switch(
                 checked = p.config.enabled,
@@ -5639,6 +5885,16 @@ private fun ProviderCard(
                         Icons.Filled.Refresh,
                         contentDescription = tr("Update"),
                         tint = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+            if (onTest != null) {
+                IconButton(onClick = onTest, enabled = !testing) {
+                    Icon(
+                        Icons.Filled.PlayArrow,
+                        contentDescription = tr("Test provider"),
+                        tint = if (testing) MaterialTheme.colorScheme.onSurfaceVariant
+                        else MaterialTheme.colorScheme.primary
                     )
                 }
             }
@@ -5693,6 +5949,8 @@ private fun ProviderRecordRow(
     /** Non-null on the lists that offer "Update available". */
     updateFlag: ((ContentProvider) -> Boolean)? = null,
     onUpdateProvider: ((ContentProvider) -> Unit)? = null,
+    testFor: ((ContentProvider) -> ProviderTest?)? = null,
+    onTest: ((ContentProvider) -> Unit)? = null,
 ) {
     // Opened state is remembered per extension, so a list that re-sorts under
     // the row (a search being typed, a provider being installed) does not fold
@@ -5713,6 +5971,10 @@ private fun ProviderRecordRow(
     ProviderCard(
         p = pack.primary,
         status = pack.members.firstNotNullOfOrNull { statusFor(it) },
+        onTest = if (onTest == null) null else ({ onTest(pack.primary) }),
+        testing = testFor?.invoke(pack.primary)?.testing == true,
+        testText = testFor?.invoke(pack.primary)?.text,
+        testOk = testFor?.invoke(pack.primary)?.ok == true,
         onToggle = { on -> ids.forEach { id -> onToggleProvider(id, on) } },
         onDelete = { ids.forEach { id -> onDeleteProvider(id) } },
         onSettings = settingsFor?.invoke(pack.primary),
@@ -5730,6 +5992,10 @@ private fun ProviderRecordRow(
             ProviderCard(
                 p = member,
                 status = statusFor(member),
+                onTest = if (onTest == null) null else ({ onTest(member) }),
+                testing = testFor?.invoke(member)?.testing == true,
+                testText = testFor?.invoke(member)?.text,
+                testOk = testFor?.invoke(member)?.ok == true,
                 onToggle = { on -> onToggleProvider(member.config.id, on) },
                 onDelete = { onDeleteProvider(member.config.id) },
                 onSettings = settingsFor?.invoke(member),
@@ -6600,6 +6866,11 @@ private fun PluginRow(
     onUpdate: (() -> Unit)? = null,
     kind: RepoKind = RepoKind.CS3,
     repoUrl: String = "",
+    /** Probe line for the Test button (download check / full probe). Null hides Test. */
+    testText: String? = null,
+    testOk: Boolean = false,
+    testing: Boolean = false,
+    onTest: (() -> Unit)? = null,
     /** The NAME of the repository this listing came from, drawn as the first
      *  item of the row's meta line. A repo can list the same extension name
      *  several times over — four "AniKoto" rows whose only label used to be the
@@ -6671,6 +6942,16 @@ private fun PluginRow(
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis
             )
+            if (testText != null) {
+                Text(
+                    testText,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (testOk) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.error,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
         }
         if (installed && onSettings != null) {
             IconButton(onClick = onSettings) {
@@ -6679,6 +6960,11 @@ private fun PluginRow(
                     contentDescription = tr("Plugin settings"),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+            }
+        }
+        if (onTest != null) {
+            TextButton(onClick = onTest, enabled = !testing) {
+                Text(if (testing) tr("Testing…") else tr("Test"))
             }
         }
         Spacer(Modifier.width(8.dp))
@@ -6727,6 +7013,19 @@ private fun PluginRow(
  *  uninstall and the update check use. Hikari extensions append a "|index"
  *  suffix (one file can hold several providers); a provider installed from a
  *  local file has no repo URL at all. */
+/**
+ * The installed provider behind a repo listing, matched the way install
+ * state is (URL spellings, not literals) — the Test button's target.
+ */
+private fun installedProviderFor(plugin: Cs3RepoPlugin, providers: List<ContentProvider>): ContentProvider? {
+    val wanted = SourceUrls.matchKeys(plugin.url)
+    return providers.firstOrNull { p ->
+        val extra = p.config.extra ?: return@firstOrNull false
+        val source = if (p.config.type == ProviderType.HIKARI) extra.substringBeforeLast('|') else extra
+        SourceUrls.matchKeys(source).any { it in wanted }
+    }
+}
+
 private fun providerSource(p: ContentProvider): String? {
     val extra = p.config.extra ?: return null
     if (!extra.startsWith("http")) return null
@@ -7729,6 +8028,8 @@ private fun InstalledExtensionsView(
      *  Extensions screen's `openProviderSettings`), so one place decides what
      *  "settings" means for every engine. */
     onOpenSettings: (ContentProvider) -> Unit = {},
+    testStatus: Map<String, ProviderTest> = emptyMap(),
+    onTest: (String) -> Unit = {},
 ) {
     var extFilter by remember { mutableStateOf("") }
     // The drawable rows, grouped into one per extension (see [ProviderPacks]).
@@ -7846,6 +8147,8 @@ private fun InstalledExtensionsView(
                         providerSource(p)?.let { SourceUrls.anyKeyIn(it, outdatedUrls) } == true
                     },
                     onUpdateProvider = { p -> onUpdateProvider(p) },
+                    testFor = { p -> testStatus["inst::" + p.config.id] },
+                    onTest = { p -> onTest(p.config.id) },
                 )
             }
         }

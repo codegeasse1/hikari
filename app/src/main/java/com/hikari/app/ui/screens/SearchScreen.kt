@@ -829,26 +829,31 @@ fun SearchScreen(
                     .padding(start = 16.dp, end = 16.dp, top = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    tr("Genre"),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        tr("Genre"),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        if (genreFilter.isEmpty()) tr("Any genre")
+                        else I18n.t("%s picked").replace("%s", genreFilter.size.toString()),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (genreFilter.isEmpty()) MaterialTheme.colorScheme.onSurfaceVariant
+                        else MaterialTheme.colorScheme.primary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
                 Spacer(Modifier.width(8.dp))
-                Text(
-                    if (genreFilter.isEmpty()) tr("Any genre")
-                    else I18n.t("%s picked").replace("%s", genreFilter.size.toString()),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (genreFilter.isEmpty()) MaterialTheme.colorScheme.onSurfaceVariant
-                    else MaterialTheme.colorScheme.primary,
-                )
-                Spacer(Modifier.weight(1f))
                 GlassSearchField(
                     value = genreQuery,
                     onValueChange = { genreQuery = it },
                     placeholder = tr("Search genres"),
                     height = 36.dp,
-                    modifier = Modifier.width(150.dp),
+                    modifier = Modifier.width(172.dp),
                 )
             }
             if (genreChips.isEmpty()) {
@@ -1236,10 +1241,19 @@ private val SEARCH_GENRES: List<String> = com.hikari.app.data.Genres.ALL
  */
 fun MediaItem.looksAnime(): Boolean {
     if (rawType.equals("anime", true)) return true
-    return genres.any { g ->
+    if (genres.any { g ->
         val t = g.trim().lowercase()
-        t == "anime" || t == "animation" || t == "animated" || t.contains("anime")
-    }
+        t == "anime" || t == "animation" || t == "animated" || t == "cartoon" ||
+            t.contains("anime") || t.contains("cartoon")
+    }) return true
+    // Provider-level signal: anime-only engines carry no per-item genres at
+    // all (a site scraper returns titles, not tags), so the provider itself is
+    // the answer — Aniyomi streaming IS the AnimeSource API, and CloudStream
+    // anime plugins live under an anime path segment.
+    val p = providerId.trim().lowercase()
+    if (p.startsWith("aniyomi|")) return true
+    if (p.contains("anime")) return true
+    return p.contains("/anime/") || p.contains("|anime|") || p.endsWith("|anime")
 }
 
 /**
@@ -1472,8 +1486,8 @@ private fun MediaItem.passesSearchFilter(
     if (genres.isNotEmpty() && this.genres.none { it.trim().lowercase() in genres }) return false
     return when (kind) {
         SearchKindFilter.ALL -> true
-        SearchKindFilter.MOVIES -> type != MediaType.SERIES
-        SearchKindFilter.SERIES -> type != MediaType.MOVIE
+        SearchKindFilter.MOVIES -> type != MediaType.SERIES && !looksAnime()
+        SearchKindFilter.SERIES -> type != MediaType.MOVIE && !looksAnime()
         SearchKindFilter.ANIME -> looksAnime()
     }
 }

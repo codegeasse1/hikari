@@ -121,6 +121,7 @@ object BackupManager {
             )
         }
         root.put("files", files)
+        root.put("profiles", exportProfiles(app.filesDir))
         root.toString().toByteArray(Charsets.UTF_8)
     }
 
@@ -156,6 +157,55 @@ object BackupManager {
         }
         return out
     }
+
+    /**
+     * Every profile snapshot plus the registry, as raw JSON text keyed by file
+     * name. The live store export above is only ever the ACTIVE profile's
+     * setup, so without this a backup carried one profile and restoring it
+     * orphaned (or lost) all the others.
+     */
+    private fun exportProfiles(filesDir: File): JSONObject {
+        val out = JSONObject()
+        val dir = File(filesDir, "profiles")
+        if (!dir.isDirectory) return out
+        val kids = runCatching { dir.listFiles() }.getOrNull() ?: return out
+        for (f in kids) {
+            if (!f.isFile || f.length() <= 0L || f.length() > 4L * 1024L * 1024L) continue
+            val name = f.name
+            if (name != "registry.json" && !PROF_SNAP_RE.matches(name)) continue
+            val text = runCatching { f.readText() }.getOrNull() ?: continue
+            // Must still be JSON — a half-written snapshot must not poison a backup.
+            if (runCatching { JSONObject(text) }.getOrNull() == null) continue
+            out.put(name, text)
+        }
+        return out
+    }
+
+    private val PROF_SNAP_RE = Regex("^[A-Za-z0-9_-]{1,64}\\.json$")
+
+    /**
+     * Writes the backed-up profiles back, returning "N profile(s)". Runs after
+     * the live preferences so [Profiles.load] — which reconciles the registry
+     * with the store on the next start — finds both halves agreeing.
+     */
+    private fun restoreProfiles(filesDir: File, obj: JSONObject?): String {
+        if (obj == null) return ""
+        val dir = File(filesDir, "profiles").apply { mkdirs() }
+        var n = 0
+        for (raw in obj.keys()) {
+            val name = raw as? String ?: continue
+            if (name != "registry.json" && !PROF_SNAP_RE.matches(name)) continue
+            val text = obj.optString(name).takeIf { it.isNotBlank() } ?: continue
+            if (runCatching { JSONObject(text) }.getOrNull() == null) continue
+            if (runCatching { File(dir, name).writeText(text) }.isFailure) continue
+            if (name != "registry.json") n++
+        }
+        // The registry names every profile the snapshots hold: without it the
+        // snapshots are unreachable, so it travels or nothing does.
+        if (!File(dir, "registry.json").isFile) return ""
+        return if (n == 1) "1 profile" else n.toString() + " profiles"
+    }
+
 
     // ------------------------------------------------------------ restore --
 
@@ -235,9 +285,12 @@ object BackupManager {
             if (runCatching { target.writeBytes(data) }.isSuccess) written++ else skipped++
         }
 
+        val profilesLine = restoreProfiles(app.filesDir, root.optJSONObject("profiles"))
+
         refreshLiveState(app)
 
         val detail = "settings: $applied" +
+            (if (profilesLine.isNotBlank()) " · " + profilesLine else "") +
             (if (deviceLocal > 0) " · device-local kept: $deviceLocal" else "") +
             " · files: $written" +
             (if (skipped > 0) " · skipped: $skipped" else "") +

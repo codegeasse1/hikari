@@ -408,9 +408,10 @@ private enum class SettingsFolder(
         "Your home-screen icon",
         Icons.Filled.Android,
         parent = "appearance",
-        // A television launcher does not show an icon: it shows the app's
-        // banner, and the aliases below are the phone launcher's.
-        phoneOnly = true,
+        // Offered on television too: the TV launcher entry is its own
+        // always-enabled alias (com.hikari.app.tv.Launcher, with the banner)
+        // that the icon switcher never touches, so picking a phone icon can
+        // neither hide Hikari from the TV home screen nor change its banner.
     ),
     LAYOUT_POSTER(
         "layout.poster",

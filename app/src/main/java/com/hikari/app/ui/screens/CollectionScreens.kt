@@ -4850,8 +4850,8 @@ fun TmdbGridScreen(
     var kindKey by rememberSaveable(specJson, presetKey) { mutableStateOf(KIND_ALL) }
     val shown = remember(matched, kindKey) {
         when (kindKey) {
-            KIND_MOVIE -> matched.filter { it.type == MediaType.MOVIE }
-            KIND_SERIES -> matched.filter { it.type == MediaType.SERIES }
+            KIND_MOVIE -> matched.filter { it.type == MediaType.MOVIE && !it.looksAnime() }
+            KIND_SERIES -> matched.filter { it.type == MediaType.SERIES && !it.looksAnime() }
             KIND_ANIME -> matched.filter { it.looksAnime() }
             KIND_MOVIE_SERIES -> matched.filter {
                 (it.type == MediaType.MOVIE || it.type == MediaType.SERIES) && !it.looksAnime()
@@ -4944,10 +4944,13 @@ fun TmdbGridScreen(
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
             }
-        } else if (shown.isEmpty() && narrowed) {
+        } else if (shown.isEmpty() && narrowed && !done) {
             // The filter is still walking the catalog: the spinner is what says
             // so, because "nothing matched" and "still looking" are different
             // answers and this grid must not give the wrong one while it works.
+            // Gated on !done: once the catalog is exhausted the walk below stops
+            // firing, and without the gate this branch spun forever on a filter
+            // the catalog genuinely has nothing for.
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     CircularProgressIndicator(Modifier.size(28.dp))
@@ -4958,6 +4961,13 @@ fun TmdbGridScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+            }
+        } else if (shown.isEmpty() && narrowed) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                EmptyState(
+                    title = tr("Nothing matches this filter"),
+                    subtitle = tr("This catalog has no titles of that kind — try All."),
+                )
             }
         } else if (shown.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {

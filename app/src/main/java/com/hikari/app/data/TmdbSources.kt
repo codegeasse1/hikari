@@ -775,6 +775,7 @@ object TmdbSources {
             type = type,
             posterUrl = poster,
             year = year(o),
+            genres = genreNames(o, type),
             overview = o.optString("overview").takeIf { it.isNotBlank() && it != "null" },
             backdropUrl = backdrop,
             rawType = "tmdb",
@@ -787,6 +788,32 @@ object TmdbSources {
             // user has turned adult material off.
             nsfw = o.optBoolean("adult", false),
         )
+    }
+
+    /**
+     * The genre names for [item], from the response's `genre_ids` (what every
+     * discover/list/credit response carries) via [TmdbGenres], falling back to
+     * an inline `genres` array when the endpoint embeds objects instead.
+     *
+     * Discover items used to drop this entirely, so a genre page's Anime chip
+     * filtered on empty genre lists and could never match anything.
+     */
+    private fun genreNames(o: JSONObject, type: MediaType): List<String> {
+        val media = if (type == MediaType.SERIES) "tv" else "movie"
+        val ids = o.optJSONArray("genre_ids")
+        if (ids != null && ids.length() > 0) {
+            val out = ArrayList<String>(ids.length())
+            for (i in 0 until ids.length()) {
+                TmdbGenres.nameOf(media, ids.optInt(i, -1))?.let { out += it }
+            }
+            if (out.isNotEmpty()) return out
+        }
+        val objs = o.optJSONArray("genres") ?: return emptyList()
+        val out = ArrayList<String>(objs.length())
+        for (i in 0 until objs.length()) {
+            objs.optJSONObject(i)?.optString("name")?.takeIf { it.isNotBlank() }?.let { out += it }
+        }
+        return out
     }
 
     /** TMDB's own `original_title` / `original_name` — present in every
