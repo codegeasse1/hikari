@@ -303,6 +303,16 @@ class AppStore(private val ctx: Context) {
          * it is measured from `leftAt` inside a live one.
          */
         val APP_LOCK_SESSION_AT = longPreferencesKey("appLockSessionAt")
+        /** My Stuff lock — the switch itself (Settings → Privacy & Browsing).
+         *  A second, independent password guarding only the My Stuff tab
+         *  (library, history, downloads), so the app can stay open while that
+         *  section stays shut. */
+        val MYSTUFF_LOCK = booleanPreferencesKey("myStuffLock")
+        /** The My Stuff lock's secret as `algo:salt:hash` (PBKDF2); blank =
+         *  never set. A DIFFERENT secret from the app lock's, and — like it —
+         *  device-local (see [DeviceLocal]): it must never travel in a backup
+         *  file or a pairing payload. */
+        val MYSTUFF_LOCK_SECRET = stringPreferencesKey("myStuffLockSecret")
         /**
          * The trackers the user signed in to (Settings → Trackers), as JSON —
          * one row per service, with that service's token. See
@@ -328,6 +338,11 @@ class AppStore(private val ctx: Context) {
         /** Brightness/volume swipes on the player's video surface (ON by
          *  default; Settings → Player → Player controls). */
         val PLAYER_SWIPES = booleanPreferencesKey("playerSwipes")
+        /** Horizontal slide-to-seek on the player's video surface (ON by
+         *  default; Settings → Player → Player controls → Gestures). Off means
+         *  a sideways drag does nothing — the surface only plays — while the
+         *  up/down brightness & volume swipes keep their own switch. */
+        val PLAYER_SLIDE_SEEK = booleanPreferencesKey("playerSlideSeek")
         /**
          * The player's volume BOOSTER: +6 dB (2× the amplitude) applied to the
          * audio session by an `android.media.audiofx.LoudnessEnhancer`, so a
@@ -676,6 +691,8 @@ class AppStore(private val ctx: Context) {
             K.APP_LOCK_LEAVE.name,
             K.APP_LOCK_SESSION_OPEN.name,
             K.APP_LOCK_SESSION_AT.name,
+            K.MYSTUFF_LOCK.name,
+            K.MYSTUFF_LOCK_SECRET.name,
             K.TV_MODE.name,
             K.TV_OVERSCAN.name,
             K.TV_PERF.name,
@@ -2069,6 +2086,44 @@ class AppStore(private val ctx: Context) {
         write("APP_LOCK_SECRET") { it[K.APP_LOCK_SECRET] = value }
     }
 
+    // ---- My Stuff lock (Settings → Privacy & Browsing) ----------------------
+    //
+    // A second, independent password guarding only the My Stuff tab. It reuses
+    // the app lock's storage shape (`algo:salt:hash` via [com.hikari.app.lock.AppLock])
+    // but nothing else: a different password, no biometrics, and an unlock that
+    // lives only in process memory (see MyStuffUnlock), so opening My Stuff
+    // asks once per app launch. The keys are device-local (see [DeviceLocal]):
+    // a backup file or a pairing payload must never carry another device's
+    // password or lock state.
+
+    /** True when opening the My Stuff tab asks for its password first. */
+    fun myStuffLockFlow(): Flow<Boolean> =
+        store.data.map { it[K.MYSTUFF_LOCK] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun myStuffLock(): Boolean = myStuffLockFlow().first()
+
+    suspend fun setMyStuffLock(on: Boolean) {
+        write("MYSTUFF_LOCK") { it[K.MYSTUFF_LOCK] = on }
+        // Keep the in-memory unlock in step with the switch: enabling locks
+        // immediately (the very next entry asks), disabling opens it, so the
+        // gate below can read one flag instead of two.
+        com.hikari.app.ui.screens.MyStuffUnlock.unlocked = !on
+    }
+
+    /**
+     * The My Stuff lock's secret as `algo:salt:hash`, or blank when no
+     * password was ever set. The password itself is never stored — see
+     * [com.hikari.app.lock.AppLock].
+     */
+    fun myStuffLockSecretFlow(): Flow<String> =
+        store.data.map { it[K.MYSTUFF_LOCK_SECRET] ?: "" }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun myStuffLockSecret(): String = myStuffLockSecretFlow().first()
+
+    suspend fun setMyStuffLockSecret(value: String) {
+        write("MYSTUFF_LOCK_SECRET") { it[K.MYSTUFF_LOCK_SECRET] = value }
+    }
+
     /**
      * How many characters the lock's password has (0 = not known — a lock set
      * before this was recorded). See [K.APP_LOCK_LEN]: the unlock screen uses it
@@ -2844,13 +2899,37 @@ class AppStore(private val ctx: Context) {
     }
 
     /**
-     * The volume booster (Settings → Player). ON means the player attaches an
-     * `android.media.audiofx.LoudnessEnhancer` set to +6 dB to the audio session
-     * it is playing through — 2× the amplitude the file carries, which is the
-     * "make the quiet dialogue audible" case at the top of the scale. The
-     * platform's volume keys are not involved (they are already at their
-     * ceiling), so this is the only way to exceed 100%; it is OFF by default
-     * because a boosted track is a changed track.
+     * Whether a horizontal drag on the video surface scrubs the timeline (see
+     * [PLAYER_SLIDE_SEEK]). ON by default, switched off in Settings → Player →
+     * Player controls → Gestures. Independent of [playerSwipesFlow]: turning
+     * slide-to-seek off leaves the brightness/volume swipes exactly as they
+     * were. The player reads it when it opens, like the rest of its own
+     * preferences.
+     */
+    fun playerSlideSeekFlow(): Flow<Boolean> =
+        store.data.map { it[K.PLAYER_SLIDE_SEEK] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun playerSlideSeek(): Boolean = playerSlideSeekFlow().first()
+
+    suspend fun setPlayerSlideSeek(on: Boolean) {
+        write("PLAYER_SLIDE_SEEK") { it[K.PLAYER_SLIDE_SEEK] = on }
+    }
+
+    /**
+     * The volume booster (Settings → Player). ON means the player's audio
+     * pipeline multiplies every PCM sample by 2× (a fixed software gain stage
+     * inside the ExoPlayer audio sink — see
+     * [com.hikari.app.player.VolumeBoostProcessor]), which is the "make the
+     * quiet dialogue audible" case at the top of the scale. Software-side on
+     * purpose: the old answer (a platform `LoudnessEnhancer` on the audio
+     * session) is refused by devices whose audio HAL has no such effect, and
+     * on those the switch only ever relabelled the volume number while the
+     * sound stayed exactly as loud — the reported "200% feels the same as
+     * 100%". A gain in the decoder path cannot be refused: it is audible on
+     * every device, with hard clipping at full scale so a loud film cannot
+     * distort past 0 dBFS. The platform's volume keys are not involved (they
+     * are already at their ceiling), so this is the only way to exceed 100%;
+     * it is OFF by default because a boosted track is a changed track.
      *
      * Stored as a preference rather than per-video state: a user who needs the
      * boost needs it for the film they are watching and the next one too.

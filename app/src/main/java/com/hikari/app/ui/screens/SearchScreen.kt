@@ -55,6 +55,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -325,6 +326,19 @@ fun SearchScreen(
     var langMenu by remember { mutableStateOf(false) }
     var translating by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+
+    // Television overscan: sets that crop the frame (~5-10% on every edge)
+    // cut whatever the results grid draws against it — the "posters are cut
+    // ~10% and scrolling only trades one cut row for the next" report. The
+    // grid keeps this clear of every edge on TV only (see [TvUi] overscan);
+    // phones are untouched, and a set that shows the full frame keeps the
+    // user's 0.
+    val context = LocalContext.current
+    val overscanFlow = remember(context) {
+        (context.applicationContext as HikariApp).store.tvOverscanFlow()
+    }
+    val overscanDp by overscanFlow.collectAsState(initial = TvUi.DEFAULT_OVERSCAN_DP)
+    val tvEdge = if (TvMode.current()) overscanDp.dp else 0.dp
 
     // ---- Result filters (kind + year) -------------------------------------
     //
@@ -1049,11 +1063,14 @@ fun SearchScreen(
                         .fillMaxWidth()
                         .weight(1f),
                 contentPadding = PaddingValues(
-                    start = 10.dp,
-                    end = 10.dp,
-                    top = 8.dp,
-                    // Clear of the floating taskbar (0 when there is no bar).
-                    bottom = LocalTaskbarInset.current + 12.dp + if (TvMode.current()) 28.dp else 0.dp,
+                    start = 10.dp + tvEdge,
+                    end = 10.dp + tvEdge,
+                    top = 8.dp + tvEdge,
+                    // Clear of the floating taskbar (0 when there is no bar),
+                    // plus the overscan edge on TV so the last row can scroll
+                    // fully into view instead of parking cut off.
+                    bottom = LocalTaskbarInset.current + 12.dp + tvEdge +
+                        if (TvMode.current()) 28.dp else 0.dp,
                 ),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)

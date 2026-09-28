@@ -949,6 +949,7 @@ fun SettingsScreen(nav: NavHostController) {
                 }
                 SettingsFolder.PRIVACY -> {
                     item { SettingsCard(top = 2.dp) { AppLockCard(app) } }
+                    item { SettingsCard { MyStuffLockCard(app) } }
                     item { SettingsCard { AdBlockingCard(app) } }
                     item { SettingsCard { WebViewSafetyCard(app) } }
                     item { SettingsCard { WebViewUserAgentCard(app) } }
@@ -3256,14 +3257,14 @@ private fun PlayerUiCard(app: HikariApp) {
  *
  * A film mixed with quiet dialogue has a ceiling the phone's volume keys cannot
  * raise: they are already at 100% and the file itself is just low. This switch
- * is the one lever left — it has the player attach an
- * `android.media.audiofx.LoudnessEnhancer` to the audio session and set it to
- * +6 dB, i.e. twice the amplitude, which is the boost a viewer means by "turn
- * it up more than 100%".
+ * is the one lever left — it has the player multiply every decoded PCM sample
+ * by 2× inside its own audio pipeline, which is the boost a viewer means by
+ * "turn it up more than 100%". Software-side on purpose, so it is audible on
+ * every device instead of depending on a platform effect some of them refuse.
  *
  * It is a switch and not a slider on purpose: gain above the file's own level
- * is a change to the sound, and a fixed, understandable step ("200%", about
- * +6 dB) beats a number nobody can interpret. Off by default; the player reads
+ * is a change to the sound, and a fixed, understandable step ("200%") beats a
+ * number nobody can interpret. Off by default; the player reads
  * it each time it opens, so the next video obeys it.
  */
 @Composable
@@ -5010,6 +5011,220 @@ private fun AppLockCard(app: HikariApp) {
                                     app.store.setAppLockLen(wanted.length)
                                     app.store.setAppLock(true)
                                     app.store.setAppLockBio(biometrics)
+                                }
+                                setDialog = false
+                            }
+                        }
+                    },
+                ) {
+                    Text(if (removing) tr("Remove") else tr("Save"))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { setDialog = false }) { Text(tr("Cancel")) }
+            },
+        )
+    }
+}
+
+/**
+ * The My Stuff lock (Settings → Privacy & Browsing → My Stuff lock).
+ *
+ * A second, independent password guarding only the My Stuff tab (library,
+ * history, downloads), so the app can stay open — handed to someone else,
+ * even — while that section stays shut. It mirrors the app lock's proof rules
+ * (the current password is verified before anything is changed or removed,
+ * and only ever a verification) but nothing else: no biometrics, no grace
+ * period, and the unlock lives only in process memory (see MyStuffUnlock), so
+ * opening My Stuff asks once per app launch.
+ *
+ * The secret is stored exactly like the app lock's (`algo:salt:hash` via
+ * [AppLock]) and is device-local with it (see AppStore.DeviceLocal): a backup
+ * file or a pairing payload never carries it, and restoring one never changes
+ * this device's lock.
+ */
+@Composable
+private fun MyStuffLockCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    val lockFlow = remember { app.store.myStuffLockFlow() }
+    val on by lockFlow.collectAsState(initial = false)
+    val secretFlow = remember { app.store.myStuffLockSecretFlow() }
+    val secret by secretFlow.collectAsState(initial = "")
+    val hasSecret = AppLock.isSet(secret)
+    var setDialog by remember { mutableStateOf(false) }
+    var first by remember { mutableStateOf("") }
+    var second by remember { mutableStateOf("") }
+    var current by remember { mutableStateOf("") }
+    var oldWrong by remember { mutableStateOf(false) }
+    var removing by remember { mutableStateOf(false) }
+    val tooShort = first.isNotEmpty() && first.length < 4
+    val mismatch = second.isNotEmpty() && first != second
+    val canSave = first.length >= 4 && first == second &&
+        (!hasSecret || current.isNotBlank())
+
+    Column(Modifier.padding(16.dp)) {
+        SettingsCardHeading(Icons.Filled.Lock, tr("My Stuff lock"))
+        SettingsToggle(
+            label = tr("Ask for a password when opening My Stuff"),
+            supporting = if (on) tr("On — the tab opens locked") else tr("Off"),
+            checked = on,
+            onCheckedChange = { want ->
+                // Like the app lock: switching on with no password yet must
+                // not leave a lock that cannot be opened — the password comes
+                // first, and the switch is turned on when it is saved.
+                if (want && !hasSecret) {
+                    first = ""
+                    second = ""
+                    current = ""
+                    oldWrong = false
+                    removing = false
+                    setDialog = true
+                } else {
+                    scope.launch { runCatching { app.store.setMyStuffLock(want) } }
+                }
+            },
+        )
+        if (hasSecret) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+            ) {
+                TextButton(onClick = {
+                    first = ""
+                    second = ""
+                    current = ""
+                    oldWrong = false
+                    removing = false
+                    setDialog = true
+                }) { Text(tr("Change password")) }
+                TextButton(onClick = {
+                    first = ""
+                    second = ""
+                    current = ""
+                    oldWrong = false
+                    removing = true
+                    setDialog = true
+                }) { Text(tr("Remove")) }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        if (!LocalHideHelp.current) {
+        Text(
+            tr(
+                "A different password from the app lock, for the library, history " +
+                    "and downloads only. It is asked once per app launch, it cannot " +
+                    "be read back, and it never leaves this device in a backup or " +
+                    "a pairing."
+            ),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        }
+    }
+
+    if (setDialog) {
+        AlertDialog(
+            onDismissRequest = { setDialog = false },
+            title = {
+                Text(
+                    when {
+                        removing -> tr("Remove the My Stuff lock")
+                        hasSecret -> tr("Change password")
+                        else -> tr("Set a password")
+                    }
+                )
+            },
+            text = {
+                Column {
+                    if (hasSecret) {
+                        OutlinedTextField(
+                            value = current,
+                            onValueChange = {
+                                current = it
+                                oldWrong = false
+                            },
+                            label = { Text(tr("Current password")) },
+                            singleLine = true,
+                            isError = oldWrong,
+                            visualTransformation = PasswordVisualTransformation(),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                            modifier = Modifier.fillMaxWidth().tvTextFieldKeys(current),
+                        )
+                        if (oldWrong) {
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                tr("That is not the current password"),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                        if (!removing) Spacer(Modifier.height(10.dp))
+                    }
+                    if (!removing) {
+                        OutlinedTextField(
+                            value = first,
+                            onValueChange = { first = it },
+                            label = { Text(tr("New password")) },
+                            singleLine = true,
+                            isError = tooShort,
+                            visualTransformation = PasswordVisualTransformation(),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                            modifier = Modifier.fillMaxWidth().tvTextFieldKeys(first),
+                        )
+                        Spacer(Modifier.height(10.dp))
+                        OutlinedTextField(
+                            value = second,
+                            onValueChange = { second = it },
+                            label = { Text(tr("Repeat password")) },
+                            singleLine = true,
+                            isError = mismatch,
+                            visualTransformation = PasswordVisualTransformation(),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                            modifier = Modifier.fillMaxWidth().tvTextFieldKeys(second),
+                        )
+                        if (tooShort) {
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                tr("Use at least 4 characters"),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                        if (mismatch) {
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                tr("The two passwords are not the same"),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                    } else {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            tr("The password is removed and My Stuff stops asking for it."),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = if (removing) current.isNotBlank() else canSave,
+                    onClick = {
+                        val wanted = first
+                        scope.launch {
+                            withContext(Dispatchers.Default) {
+                                if (hasSecret && !AppLock.verify(current, secret)) {
+                                    oldWrong = true
+                                    return@withContext
+                                }
+                                if (removing) {
+                                    app.store.setMyStuffLock(false)
+                                    app.store.setMyStuffLockSecret("")
+                                } else {
+                                    app.store.setMyStuffLockSecret(AppLock.encode(wanted))
+                                    app.store.setMyStuffLock(true)
                                 }
                                 setDialog = false
                             }

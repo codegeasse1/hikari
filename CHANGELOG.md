@@ -1,3 +1,18 @@
+## 0.10.64
+
+### Added
+
+- **Slide-to-seek switch (Settings → Player → Player controls → Gestures).** The horizontal scrub drag has its own toggle, on by default; turning it off leaves the brightness/volume swipes exactly as they were.
+- **My Stuff lock (Settings → Privacy & Browsing).** A second, independent password guarding only the My Stuff tab (library, history, downloads): the app can stay open while that section asks for its password once per launch. The secret is stored exactly like the app lock's and is device-local with it — a backup file or a pairing payload never carries it, and restoring one never changes this device's lock.
+- **Scrub shows the timeline.** The bottom time bar stays up for the whole slide-to-seek drag and follows the finger, with its clock label, so the landing point is visible next to the centre preview before the lift commits it.
+
+### Fixed
+
+- **The ±10s buttons sit centred again.** The rewind/forward buttons kept their platform Button minimum size (48dp) inside a 34dp slot, so the visible circle overflowed and parked above the play button's line. They now measure the slot they are drawn in.
+- **The volume booster is a real boost.** The old platform effect is refused by devices whose audio HAL has none, so on exactly the phones that needed it the switch only relabelled the number (200% at the same loudness). The gain is now a software stage inside the player's own audio pipeline — 2× on every decoded sample, clippable at full scale — which no device can refuse.
+- **Kind browse pages to the true end.** Picking Series/Anime/Movies with an empty query filled only page 1 of each catalogue (the "6 series", the empty anime wall) and stopped. The overlay now pages every catalogue as the grid is scrolled — a few catalogues per round, retiring each when it answers empty — with the "N titles…" count keeping its ellipsis until all of them do.
+- **TV search posters clear the cropped edge.** Sets that overscan cut whatever the results grid drew against the frame. The grid now keeps the overscan setting clear of every edge on TV only (phones unchanged).
+
 ## 0.10.63
 
 ### Added

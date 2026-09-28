@@ -37,6 +37,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.shape.CircleShape
@@ -102,6 +103,7 @@ import androidx.navigation.NavHostController
 import coil.compose.AsyncImage
 import com.hikari.app.HikariApp
 import com.hikari.app.data.CatalogRow
+import com.hikari.app.data.CatalogRef
 import com.hikari.app.data.Collection
 import com.hikari.app.data.CollectionFolder
 import com.hikari.app.data.ContentRepository
@@ -2704,6 +2706,19 @@ private data class GenreScopePick(
     val extensionIds: Set<String>,
 )
 
+/**
+ * One catalogue the overlay's kind browser is paging through: which provider,
+ * which catalogue, whether that catalogue reads as anime (see the scan), the
+ * next page to ask for, and whether it has answered empty (its end).
+ */
+private class BrowseCursor(
+    val providerId: String,
+    val ref: CatalogRef,
+    val isAnimeCat: Boolean,
+    var nextPage: Int = 2,
+    var exhausted: Boolean = false,
+)
+
 /** True when [item] belongs to the genre [name]: a genre tag containing the
  *  name (either direction — "Science Fiction" matches a "Sci-Fi" ask poorly,
  *  but a tag match in either direction covers the common spellings), or a
@@ -2893,16 +2908,29 @@ private fun HomeSearchOverlay(
             // just the rows Home already loaded: the feed only holds the first
             // screenful (7 series, 0 anime in the report), while the catalogue
             // holds everything. The loaded rows paint instantly; the catalogue
-            // scan below merges in as it lands. Items from a catalogue whose
-            // id/name/rawType says anime count as anime even when the item
-            // itself carries no genre tag (site scrapers tag nothing per item).
+            // scan below merges in as it lands — page 1 first, then further
+            // pages as the grid is scrolled (see [loadMoreBrowse]), until every
+            // catalogue answers empty. Items from a catalogue whose id/name/
+            // rawType says anime count as anime even when the item itself
+            // carries no genre tag (site scrapers tag nothing per item).
             var browseItems by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
             var browseAnimeIds by remember { mutableStateOf<Set<String>>(emptySet()) }
             var browseLoading by remember { mutableStateOf(false) }
+            // The catalogues the scan below actually read, with the next page
+            // each still owes: scrolled to the end, the grid asks for more
+            // (see [loadMoreBrowse]) until every one answers empty. That is
+            // what turns "Series shows 6, Anime shows nothing" into the whole
+            // catalogue — page 1 alone is only ever its head.
+            var browseCursors by remember { mutableStateOf<List<BrowseCursor>>(emptyList()) }
+            var browseMoreLoading by remember { mutableStateOf(false) }
+            var browseDone by remember { mutableStateOf(false) }
+            val browseScope = rememberCoroutineScope()
             LaunchedEffect(kindKey, providerIds) {
                 if (kindKey == HOME_KIND_ALL || providerIds.isEmpty()) {
                     browseItems = emptyList()
                     browseAnimeIds = emptySet()
+                    browseCursors = emptyList()
+                    browseDone = false
                     browseLoading = false
                     return@LaunchedEffect
                 }
@@ -2915,6 +2943,7 @@ private fun HomeSearchOverlay(
                             .take(8)
                         val acc = ArrayList<MediaItem>()
                         val animeIds = HashSet<String>()
+                        val cursors = ArrayList<BrowseCursor>()
                         for (p in targets) {
                             val cats = runCatching { p.homeCatalogs() }.getOrDefault(emptyList()).take(8)
                             for (ref in cats) {
@@ -2930,19 +2959,82 @@ private fun HomeSearchOverlay(
                                     if (isAnimeCat) animeIds.add(small.uniqueId)
                                     if (acc.size >= 400) break
                                 }
+                                // Page 1 landed (or answered empty): either way
+                                // this catalogue's cursor starts at page 2 — an
+                                // empty first page still gets its cursor, and the
+                                // first load-more round retires it.
+                                cursors.add(BrowseCursor(p.config.id, ref, isAnimeCat))
                                 if (acc.size >= 400) break
                             }
                             if (acc.size >= 400) break
                         }
-                        acc.toList() to animeIds.toSet()
+                        Triple(acc.toList(), animeIds.toSet(), cursors.toList())
                     }
                     browseItems = loaded.first
                     browseAnimeIds = loaded.second
+                    browseCursors = loaded.third
+                    browseDone = false
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
                 } catch (_: Throwable) {
                 } finally {
                     browseLoading = false
+                }
+            }
+            /**
+             * The next pages of the kind browser: a few catalogues per round,
+             * appended under what is already on screen. A catalogue that
+             * answers empty is retired; when every cursor is retired the list
+             * is genuinely finished ([browseDone]) and the grid stops asking.
+             * Guarded, so scroll events cannot stack rounds.
+             */
+            fun loadMoreBrowse() {
+                if (browseMoreLoading || browseDone) return
+                if (kindKey == HOME_KIND_ALL || providerIds.isEmpty()) return
+                val pending = browseCursors.filterNot { it.exhausted }
+                if (pending.isEmpty()) {
+                    browseDone = true
+                    return
+                }
+                browseMoreLoading = true
+                val current = browseItems
+                val currentAnime = browseAnimeIds
+                browseScope.launch(Dispatchers.IO) {
+                    try {
+                        val byId = app.providers.providers.value
+                            .filter { it.config.enabled && it.config.id in providerIds }
+                            .associateBy { it.config.id }
+                        val fresh = ArrayList<MediaItem>()
+                        val freshAnime = HashSet<String>()
+                        for (c in pending.take(4)) {
+                            val p = byId[c.providerId]
+                            if (p == null) {
+                                c.exhausted = true
+                                continue
+                            }
+                            val page = runCatching {
+                                ContentRepository.loadCatalogPage(p, c.ref, c.nextPage)
+                            }.getOrDefault(emptyList())
+                            if (page.isEmpty()) {
+                                c.exhausted = true
+                                continue
+                            }
+                            c.nextPage++
+                            for (m in page) {
+                                val small = m.shrinkPoster()
+                                fresh.add(small)
+                                if (c.isAnimeCat) freshAnime.add(small.uniqueId)
+                            }
+                        }
+                        val seen = current.map { it.uniqueId }.toHashSet()
+                        val add = fresh.filter { seen.add(it.uniqueId) }
+                        if (add.isNotEmpty()) browseItems = current + add
+                        if (freshAnime.isNotEmpty()) browseAnimeIds = currentAnime + freshAnime
+                        if (browseCursors.all { it.exhausted }) browseDone = true
+                    } catch (_: Throwable) {
+                    } finally {
+                        browseMoreLoading = false
+                    }
                 }
             }
             val blankShown = remember(feedItems, browseItems, browseAnimeIds, kindKey, genre) {
@@ -2954,7 +3046,7 @@ private fun HomeSearchOverlay(
                         else -> homeKindKeep(item, kindKey)
                     }
                     kindOk && homeGenreKeep(item, genre)
-                }.distinctBy { it.uniqueId }.take(200)
+                }.distinctBy { it.uniqueId }
             }
             if (!LocalHideHelp.current) {
                 Text(
@@ -2993,12 +3085,26 @@ private fun HomeSearchOverlay(
                         Column(Modifier.fillMaxSize()) {
                             Text(
                                 I18n.t("%s titles").replace("%s", blankShown.size.toString()) +
-                                    if (browseLoading) "…" else "",
+                                    if (browseLoading || browseMoreLoading || !browseDone) "…" else "",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
                             )
+                            // Scrolling to the tail pages the catalogues further
+                            // (see [loadMoreBrowse]): the count above keeps its
+                            // "…" until every catalogue has answered empty, so
+                            // "keep scroll and keep loading until all really
+                            // ends" is what the list actually does.
+                            val browseGridState = rememberLazyGridState()
+                            val tailIndex = browseGridState.layoutInfo.visibleItemsInfo
+                                .lastOrNull()?.index ?: 0
+                            LaunchedEffect(tailIndex, blankShown.size, browseDone, browseMoreLoading) {
+                                if (blankShown.isNotEmpty() && tailIndex >= blankShown.size - 12) {
+                                    loadMoreBrowse()
+                                }
+                            }
                             LazyVerticalGrid(
+                                state = browseGridState,
                                 columns = GridCells.Adaptive(minSize = TvUi.gridMinFor(96)),
                                 modifier = Modifier.fillMaxSize(),
                                 contentPadding = PaddingValues(

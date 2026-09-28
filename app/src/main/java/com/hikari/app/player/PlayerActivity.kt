@@ -21,7 +21,6 @@ import android.graphics.drawable.LayerDrawable
 import android.graphics.drawable.RippleDrawable
 import android.graphics.drawable.StateListDrawable
 import android.media.AudioManager
-import android.media.audiofx.LoudnessEnhancer
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -701,64 +700,39 @@ class PlayerActivity : ComponentActivity() {
      *  the player opens; ON unless the user turned them off. */
     private var swipesEnabled = true
 
+    /** Horizontal slide-to-seek (see the gesture below); ON until the stored
+     *  answer lands. Independent of [swipesEnabled]. */
+    private var slideSeekEnabled = true
+
     // ---- Volume booster (Settings → Player) ------------------------------
     //
     // A film whose dialogue was mixed quiet has a ceiling the phone's volume
     // keys cannot lift: they are already at 100%, and the level that is too low
     // is the file's own. The one lever left is to amplify the audio AFTER the
-    // decoder — the platform's own `LoudnessEnhancer` on the player's audio
-    // session — which is what this switch arms. It is a setting rather than a
-    // per-video state (a user who needs it needs it for the next film too) and
-    // OFF by default, because a boosted track is a changed track.
+    // decoder — a fixed 2× software gain stage inside the ExoPlayer audio sink
+    // (see [VolumeBoostProcessor]) — which is what this switch arms. It is a
+    // setting rather than a per-video state (a user who needs it needs it for
+    // the next film too) and OFF by default, because a boosted track is a
+    // changed track.
 
     /** Whether the booster should be on. Read with the other player
      *  preferences; OFF until the answer lands. */
     private var volumeBoostOn = false
 
-    /** The live booster, when one is attached to the current audio session. */
-    private var volumeGain: LoudnessEnhancer? = null
-
-    /** The audio session [volumeGain] was built for. The id is only known once
-     *  the track exists (and changes when the player rebuilds its audio sink),
-     *  so this is what lets [applyVolumeBoost] re-attach instead of no-op. */
-    private var volumeGainSession = -1
-
-    /** +6 dB, in millibels (100 mB = 1 dB) — 10^(6/20) ≈ 2.0× the amplitude,
-     *  i.e. the "200%" the setting promises. Fixed rather than a slider: a gain
-     *  above the file's own level is a change to the sound, and one
-     *  understandable step beats a number nobody can interpret. */
-    private val volumeBoostMillibels = 600
+    /** The live gain stage of the current player, or null before the player is
+     *  built. Toggling the booster only ever sets its [gain]: the stage rides
+     *  in the audio sink, so there is no session to attach to, no HAL effect
+     *  that can refuse it, and nothing to re-attach when the track changes. */
+    private var volumeBoostProcessor: VolumeBoostProcessor? = null
 
     /**
-     * Attaches, re-attaches or removes the booster. Idempotent and safe to call
-     * from `onTracksChanged`/`onAudioSessionIdChanged`: it only rebuilds the
-     * effect when the on/off state or the audio session really changed, and it
-     * never touches the device's own volume (the user keeps that control).
+     * Applies the booster state to the live player. Idempotent and safe to call
+     * from `onTracksChanged`/`onAudioSessionIdChanged`: it only writes a float,
+     * and it never touches the device's own volume (the user keeps that
+     * control).
      */
     private fun applyVolumeBoost() {
-        val p = player
-        if (!volumeBoostOn || p == null) {
-            volumeGain?.let { runCatching { it.release() } }
-            volumeGain = null
-            volumeGainSession = -1
-            return
-        }
-        val session = p.audioSessionId
-        // 0/negative means there is no audio sink yet — the next tracks/session
-        // change calls back here.
-        if (session <= 0 || session == volumeGainSession) return
-        volumeGain?.let { runCatching { it.release() } }
-        volumeGain = runCatching {
-            LoudnessEnhancer(session).apply {
-                setTargetGain(volumeBoostMillibels)
-                setEnabled(true)
-            }
-        }.onFailure {
-            // Some devices refuse the effect (no `loudness_enhancer` in their
-            // audio HAL). Fail soft: no boost, but the film still plays.
-            com.hikari.app.data.Logs.logError("Player", "volume boost unavailable", it)
-        }.getOrNull()
-        volumeGainSession = if (volumeGain != null) session else -1
+        volumeBoostProcessor?.gain = if (volumeBoostOn) 2f else 1f
     }
 
     // ---- The codec details overlay ("stats for nerds") --------------------
@@ -1507,9 +1481,16 @@ class PlayerActivity : ComponentActivity() {
                 (applicationContext as HikariApp).store.playerSwipes()
             }.getOrDefault(true)
         }
+        // Slide-to-seek (the horizontal scrub drag). Its own switch, ON until
+        // the answer lands — see [playerSlideSeekFlow].
+        lifecycleScope.launch {
+            slideSeekEnabled = runCatching {
+                (applicationContext as HikariApp).store.playerSlideSeek()
+            }.getOrDefault(true)
+        }
         // The volume booster (Settings → Player). Read like the preferences
         // above; if the player already exists by the time the answer lands, the
-        // boost goes on immediately, otherwise the first tracks change does it.
+        // gain goes on immediately, otherwise the player is built with it.
         lifecycleScope.launch {
             volumeBoostOn = runCatching {
                 (applicationContext as HikariApp).store.volumeBoost()
@@ -1600,7 +1581,7 @@ class PlayerActivity : ComponentActivity() {
                         // the user switched swipes off. Not on live streams
                         // (no duration to scrub).
                         val dur = player?.duration ?: 0L
-                        if (swipesEnabled && !controlsLocked && abs(dx) > slop && abs(dx) > abs(dy) && dur > 0L) {
+                        if (swipesEnabled && slideSeekEnabled && !controlsLocked && abs(dx) > slop && abs(dx) > abs(dy) && dur > 0L) {
                             holdSpeedTimer?.let { speedHandler.removeCallbacks(it) }
                             holdSpeedTimer = null
                             if (holdingFast) {
@@ -1608,11 +1589,18 @@ class PlayerActivity : ComponentActivity() {
                                 applySpeed(SPEEDS[speedIndex])
                             }
                             suppressNextTap = true
-                            playerView?.hideController()
+                            // The controller STAYS up for the whole scrub (it
+                            // used to hide here): the bottom time bar is what
+                            // shows where the lift will land, and it can only
+                            // do that while it is drawn. The bar and the clock
+                            // are driven to the preview target on every move
+                            // below; the player itself seeks once, on lift.
+                            playerView?.showController()
                             horizontalMode = true
                             scrubBaseMs = player?.currentPosition ?: 0L
                             scrubTargetMs = scrubBaseMs
                             showScrubFeedback(scrubTargetMs, 0L, flash = false)
+                            updateScrubTimeBar(scrubTargetMs)
                         } else if (swipesEnabled && !controlsLocked && abs(dy) > slop && abs(dy) > abs(dx)) {
                             holdSpeedTimer?.let { speedHandler.removeCallbacks(it) }
                             holdSpeedTimer = null
@@ -1637,6 +1625,7 @@ class PlayerActivity : ComponentActivity() {
                             scrubTargetMs = (scrubBaseMs + (event.x - downX) / width * dur * 2f)
                                 .toLong().coerceIn(0L, dur)
                             showScrubFeedback(scrubTargetMs, scrubTargetMs - scrubBaseMs, flash = false)
+                            updateScrubTimeBar(scrubTargetMs)
                         }
                     }
                     if (verticalMode != 0) {
@@ -3080,6 +3069,29 @@ class PlayerActivity : ComponentActivity() {
                 v.visibility = View.GONE
             }.start()
         }, 450)
+    }
+
+    /**
+     * Drives the bottom time bar (and its clock label) to the scrub preview
+     * target while a horizontal drag is in flight — the bar is what shows the
+     * user where the lift will land, next to the centre readout. The player
+     * itself is untouched until the lift commits the seek, and its regular
+     * progress ticks take the bar back over the moment the drag ends, so no
+     * reset is needed here.
+     */
+    private fun updateScrubTimeBar(targetMs: Long) {
+        runCatching {
+            val bar = exoView("exo_progress") as? androidx.media3.ui.DefaultTimeBar
+            bar?.setPosition(targetMs)
+        }
+        runCatching {
+            val label = exoView("exo_position") as? TextView
+            if (label != null) {
+                label.text = androidx.media3.common.util.Util.getStringForTime(
+                    StringBuilder(), java.util.Formatter(), targetMs,
+                ).toString()
+            }
+        }
     }
 
     /** Starts the brightness/volume HUD for a vertical drag. Which slider shows
@@ -8383,6 +8395,13 @@ class PlayerActivity : ComponentActivity() {
             mediaSourceFactory.setDrmSessionManagerProvider { manager }
         }
 
+        // The volume booster's software gain stage is created with the player
+        // (it lives in the audio sink — see [VolumeBoostProcessor]); toggling
+        // the booster later only sets its gain, so no rebuild and no session
+        // juggling is ever needed.
+        val boostProcessor = VolumeBoostProcessor()
+        boostProcessor.gain = if (volumeBoostOn) 2f else 1f
+        volumeBoostProcessor = boostProcessor
         val player = ExoPlayer.Builder(this)
             .setRenderersFactory(
                 // nextlib's NextRenderersFactory is a drop-in for
@@ -8396,7 +8415,7 @@ class PlayerActivity : ComponentActivity() {
                 // H.264/HEVC video is still preferred (avoids software-decoding
                 // 4K), and decoder fallback degrades a choking hardware codec to
                 // a software one instead of freezing into a black screen.
-                NextRenderersFactory(this)
+                BoostRenderersFactory(this, boostProcessor)
                     .setEnableDecoderFallback(true)
                     .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
             )
@@ -9971,8 +9990,9 @@ class PlayerActivity : ComponentActivity() {
         }
 
         // The player builds a fresh audio sink whenever the audio track changes,
-        // which gives it a NEW session id — the booster has to be re-attached to
-        // that one, or it would keep amplifying a session nothing plays into.
+        // which gives it a NEW session id — the gain write below is
+        // session-independent (the stage rides in the sink), so it stays
+        // correct across the change for free.
         override fun onAudioSessionIdChanged(audioSessionId: Int) {
             applyVolumeBoost()
         }
@@ -9982,8 +10002,8 @@ class PlayerActivity : ComponentActivity() {
             // onVideoSizeChanged, so take the size from the video track itself.
             videoFormatSize(tracks)?.let { (w, h) -> onKnownVideoSize(w, h) }
             applyVideoEnhance()
-            // The audio session id is only real once the track exists; this is
-            // the point at which the booster can be attached to it.
+            // Re-assert the booster gain after a track change (cheap and
+            // idempotent — the stage itself survives in the sink).
             applyVolumeBoost()
             applyStickyPicks(C.TRACK_TYPE_AUDIO)
             if (noSubsRetry) return
@@ -11594,11 +11614,9 @@ class PlayerActivity : ComponentActivity() {
             p.release()
         }
         player = null
-        // The booster holds a platform audio effect; it must be released by
-        // hand, and before the player is torn down.
-        volumeGain?.let { runCatching { it.release() } }
-        volumeGain = null
-        volumeGainSession = -1
+        // The booster's gain stage dies with the player's audio sink — nothing
+        // platform-side to release by hand. Drop the reference with the player.
+        volumeBoostProcessor = null
         super.onDestroy()
     }
 

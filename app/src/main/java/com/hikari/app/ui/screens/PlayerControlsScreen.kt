@@ -94,9 +94,12 @@ fun PlayerControlsPage(app: HikariApp, onBack: () -> Unit) {
     var iconsPreview by remember { mutableStateOf(true) }
     val listState = rememberLazyListState()
 
-    // Brightness/volume swipes (AppStore.playerSwipesFlow, ON by default).
+    // Brightness/volume swipes (AppStore.playerSwipesFlow, ON by default),
+    // plus slide-to-seek (AppStore.playerSlideSeekFlow, ON by default).
     val swipesFlow = remember { app.store.playerSwipesFlow() }
     val swipesOn by swipesFlow.collectAsState(initial = true)
+    val slideSeekFlow = remember { app.store.playerSlideSeekFlow() }
+    val slideSeekOn by slideSeekFlow.collectAsState(initial = true)
 
     LaunchedEffect(json) { layout = PlayerControlsConfig.decode(json) }
 
@@ -212,6 +215,37 @@ fun PlayerControlsPage(app: HikariApp, onBack: () -> Unit) {
                             modifier = Modifier.tvToggle(swipesOn) { on ->
                                 scope.launch {
                                     runCatching { app.store.setPlayerSwipes(on) }
+                                }
+                            },
+                        )
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                tr("Slide to seek"),
+                                style = MaterialTheme.typography.titleSmall,
+                            )
+                            if (!LocalHideHelp.current) {
+                            Text(
+                                tr("Drag left or right on the video to scrub the timeline, with the landing time previewed. Off means sideways drags do nothing."),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            }
+                        }
+                        Spacer(Modifier.width(10.dp))
+                        Switch(
+                            checked = slideSeekOn,
+                            onCheckedChange = { on ->
+                                scope.launch {
+                                    runCatching { app.store.setPlayerSlideSeek(on) }
+                                }
+                            },
+                            // See [Modifier.tvToggle].
+                            modifier = Modifier.tvToggle(slideSeekOn) { on ->
+                                scope.launch {
+                                    runCatching { app.store.setPlayerSlideSeek(on) }
                                 }
                             },
                         )
