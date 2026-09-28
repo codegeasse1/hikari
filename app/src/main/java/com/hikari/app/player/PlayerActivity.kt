@@ -627,6 +627,33 @@ class PlayerActivity : ComponentActivity() {
      *  onRenderedFirstFrame. */
     private var firstFrameTask: Runnable? = null
 
+    /** Deferred background-sweep release on constrained devices (see
+     *  [releaseSweepThrottled]). Cancelled when the player goes away. */
+    private var sweepReleaseTask: Runnable? = null
+
+    /**
+     * Lets the detail screen's held background sweep run — throttled on
+     * television hardware. A 1–1.5GB stick cannot render its first seconds of
+     * video AND cold-start a dozen plugin runtimes at once: releasing the
+     * sweep the instant the first frame lands is what stalls playback into a
+     * loading spin (and, at its worst, an OOM freeze/crash) on TV boxes,
+     * exactly the "lags while the server is starting" report. Phones release
+     * immediately as before; televisions hold the sweep 20s so playback
+     * stabilises and buffers fill, then release it — the server box lists what
+     * has landed in the meantime, and failover ([onPlayerError]) still
+     * releases immediately so a dying server never waits out the delay.
+     */
+    private fun releaseSweepThrottled() {
+        val id = liveSessionId ?: return
+        if (!com.hikari.app.data.PerfMode.tvDevice) {
+            StreamsLive.releaseSweep(id)
+            return
+        }
+        sweepReleaseTask?.let { bufferingWatchdog.removeCallbacks(it) }
+        sweepReleaseTask = Runnable { StreamsLive.releaseSweep(liveSessionId) }
+        bufferingWatchdog.postDelayed(sweepReleaseTask!!, 20_000L)
+    }
+
     /** True while the activity is in picture-in-picture mode — every overlay
      *  is stripped so only the video shows in the small window. */
     private var inPip = false
@@ -1101,6 +1128,10 @@ class PlayerActivity : ComponentActivity() {
     private var hudHideTask: Runnable? = null
     /** 0 = no vertical gesture in progress, 1 = brightness, 2 = volume. */
     private var verticalMode = 0
+    /** True while a horizontal drag is scrubbing the timeline (see below). */
+    private var horizontalMode = false
+    private var scrubBaseMs = 0L
+    private var scrubTargetMs = 0L
     private var downX = 0f
     private var downY = 0f
     private var startBrightness = -1f
@@ -1538,6 +1569,7 @@ class PlayerActivity : ComponentActivity() {
                 MotionEvent.ACTION_DOWN -> {
                     holdingFast = false
                     verticalMode = 0
+                    horizontalMode = false
                     downX = event.x
                     downY = event.y
                     holdSpeedTimer?.let { speedHandler.removeCallbacks(it) }
@@ -1554,21 +1586,34 @@ class PlayerActivity : ComponentActivity() {
                     speedHandler.postDelayed(task, 2000)
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    if (verticalMode == 0) {
+                    if (verticalMode == 0 && !horizontalMode) {
                         val dx = event.x - downX
                         val dy = event.y - downY
                         val slop = 18 * resources.displayMetrics.density
-                        // A mostly-vertical drag takes over from the tap/hold
-                        // gestures: cancel the pending speed-up, drop the
-                        // controls and bring up the brightness/volume HUD.
-                        // NOT while locked: the lock is "watch only", so a
-                        // stray drag must not change the brightness or the
-                        // volume either (only the small unlock button reacts).
-                        // ...and not at all when the user has switched the
-                        // swipes off (Settings → Player → Player controls):
-                        // then a vertical drag is simply not a gesture, so the
-                        // pending speed-up is left alone and no HUD appears.
-                        if (swipesEnabled && !controlsLocked && abs(dy) > slop && abs(dy) > abs(dx)) {
+                        // A mostly-HORIZONTAL drag scrubs the timeline: the
+                        // longer the drag, the further the jump, with the
+                        // target clock time previewed live (see
+                        // [showScrubFeedback]) and the single seek applied when
+                        // the finger lifts — seeking on every move event would
+                        // re-buffer continuously and stutter. Same gates as the
+                        // vertical gestures: never while locked, and never when
+                        // the user switched swipes off. Not on live streams
+                        // (no duration to scrub).
+                        val dur = player?.duration ?: 0L
+                        if (swipesEnabled && !controlsLocked && abs(dx) > slop && abs(dx) > abs(dy) && dur > 0L) {
+                            holdSpeedTimer?.let { speedHandler.removeCallbacks(it) }
+                            holdSpeedTimer = null
+                            if (holdingFast) {
+                                holdingFast = false
+                                applySpeed(SPEEDS[speedIndex])
+                            }
+                            suppressNextTap = true
+                            playerView?.hideController()
+                            horizontalMode = true
+                            scrubBaseMs = player?.currentPosition ?: 0L
+                            scrubTargetMs = scrubBaseMs
+                            showScrubFeedback(scrubTargetMs, 0L, flash = false)
+                        } else if (swipesEnabled && !controlsLocked && abs(dy) > slop && abs(dy) > abs(dx)) {
                             holdSpeedTimer?.let { speedHandler.removeCallbacks(it) }
                             holdSpeedTimer = null
                             if (holdingFast) {
@@ -1578,6 +1623,20 @@ class PlayerActivity : ComponentActivity() {
                             suppressNextTap = true
                             playerView?.hideController()
                             beginVerticalGesture()
+                        }
+                    }
+                    if (horizontalMode) {
+                        // Half a screen width spans the whole video: a full
+                        // swipe reaches either end, a short flick nudges
+                        // seconds — the preview above shows exactly where the
+                        // lift will land.
+                        val width = playerView?.width?.toFloat()?.takeIf { it > 0f }
+                            ?: resources.displayMetrics.widthPixels.toFloat()
+                        val dur = player?.duration ?: 0L
+                        if (dur > 0L) {
+                            scrubTargetMs = (scrubBaseMs + (event.x - downX) / width * dur * 2f)
+                                .toLong().coerceIn(0L, dur)
+                            showScrubFeedback(scrubTargetMs, scrubTargetMs - scrubBaseMs, flash = false)
                         }
                     }
                     if (verticalMode != 0) {
@@ -1604,6 +1663,20 @@ class PlayerActivity : ComponentActivity() {
                         holdingFast = false
                         suppressNextTap = true
                         applySpeed(SPEEDS[speedIndex])
+                    }
+                    if (horizontalMode) {
+                        horizontalMode = false
+                        // Commit the previewed jump exactly once — and only on
+                        // a real lift (CANCEL means the gesture was taken over,
+                        // e.g. by the notification shade, so the preview just
+                        // goes away).
+                        if (event.actionMasked == MotionEvent.ACTION_UP && !controlsLocked) {
+                            player?.let { p ->
+                                val dur = p.duration.takeIf { it > 0L }
+                                if (dur != null) p.seekTo(scrubTargetMs.coerceIn(0L, dur))
+                            }
+                        }
+                        hideScrubFeedback()
                     }
                     if (verticalMode != 0) endVerticalGesture()
                 }
@@ -2959,11 +3032,35 @@ class PlayerActivity : ComponentActivity() {
 
     /** Flash the double-tap seek indicator (arrow + +10s/−10s) like YouTube. */
     private fun showSeekFeedback(deltaMs: Long) {
+        showScrubFeedback(
+            (player?.currentPosition ?: 0L),
+            deltaMs,
+            flash = true,
+        )
+    }
+
+    /**
+     * The scrub preview for a horizontal drag: the double-tap indicator reused
+     * as a "where you will land" readout — direction arrows, the target clock
+     * time, and the signed offset from where the drag started. With
+     * [flash] the indicator fades by itself (tap seeks); a drag drives the
+     * visibility itself and passes false so the preview stays up until the
+     * finger lifts.
+     */
+    private fun showScrubFeedback(targetMs: Long, deltaMs: Long, flash: Boolean) {
         val v = seekFeedback ?: return
-        seekIcon?.text = if (deltaMs >= 0) "\u25B6\u25B6" else "\u25C0\u25C0"
-        seekText?.text = (if (deltaMs >= 0) "+" else "-") + (kotlin.math.abs(deltaMs) / 1000) + "s"
+        seekIcon?.text = if (deltaMs >= 0) "▶▶" else "◀◀"
+        val absS = kotlin.math.abs(deltaMs) / 1000
+        val sign = if (deltaMs >= 0) "+" else "−"
+        val target = formatDurationBadge(targetMs)
+        seekText?.text = if (target.isNotBlank()) "$target  ($sign${absS}s)"
+        else "$sign${absS}s"
         v.visibility = View.VISIBLE
         v.animate().cancel()
+        if (!flash) {
+            v.alpha = 1f
+            return
+        }
         v.alpha = 0f
         v.animate().alpha(1f).setDuration(120).withEndAction {
             v.postDelayed({
@@ -2972,6 +3069,17 @@ class PlayerActivity : ComponentActivity() {
                 }.start()
             }, 450)
         }.start()
+    }
+
+    /** Parks the scrub preview (see [showScrubFeedback]) after the finger lifts. */
+    private fun hideScrubFeedback() {
+        val v = seekFeedback ?: return
+        v.animate().cancel()
+        v.postDelayed({
+            v.animate().alpha(0f).setDuration(250).withEndAction {
+                v.visibility = View.GONE
+            }.start()
+        }, 450)
     }
 
     /** Starts the brightness/volume HUD for a vertical drag. Which slider shows
@@ -3025,7 +3133,13 @@ class PlayerActivity : ComponentActivity() {
         runCatching { audioManager?.setStreamVolume(AudioManager.STREAM_MUSIC, v, 0) }
         val fraction = if (maxVolume > 0) v.toFloat() / maxVolume else 0f
         setHudFraction(hudVolFill, hudVolThumb, hudVolTrack, fraction)
-        hudVolValue?.text = "${(fraction * 100).roundToInt()}%"
+        // The booster is a fixed +6dB (≈2× amplitude) on top of the device
+        // level: at full device volume with the booster on, the ear gets
+        // "200%" — but the readout used to stop at 100%, so users reported
+        // the booster as working yet invisible. Scale the number, not the
+        // slider (the track is still the device level).
+        hudVolValue?.text = if (volumeBoostOn) "${(fraction * 200).roundToInt()}%"
+        else "${(fraction * 100).roundToInt()}%"
     }
 
     /** Sizes the slider's gradient fill and parks the white thumb on its top
@@ -3574,29 +3688,37 @@ class PlayerActivity : ComponentActivity() {
      * The ring a focused control wears on a television, drawn as a
      * focus-state-only foreground (see [View.tvFocusableTree]).
      *
-     * It has to be visible on a dark glass pill that is *already* lit (the
-     * accent-filled Source/Quality pills), which is why it is the accent colour
-     * and two density pixels wide, and it has to be drawn entirely inside the
-     * control's own bounds — an un-inset stroke is centred on the edge and its
-     * outer half is painted away by whatever clips the control.
+     * WHITE outside, accent inside: the old accent-only ring vanished on the
+     * controls that are themselves accent-filled when selected (Source,
+     * Quality, a chosen row) — accent on accent — which is the "highlight
+     * shows up top but not on the bottom row" report. White reads on dark
+     * glass and on accent fill alike; the thin accent inner keeps the app's
+     * own colour in the ring.
      */
     private fun tvFocusRing(): Drawable {
         val d = resources.displayMetrics.density
-        val stroke = GradientDrawable().apply {
+        val outer = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
-            // Every row and pill in the player is a stadium, so the ring is one
-            // too; the radius is clamped to half the height when it is drawn.
             cornerRadius = 999f
             setColor(android.graphics.Color.TRANSPARENT)
-            setStroke((2f * d).roundToInt().coerceAtLeast(1), accentMidColor)
+            setStroke((3f * d).roundToInt().coerceAtLeast(2), android.graphics.Color.WHITE)
         }
-        // Inset by the stroke's own outer half so all of it lands inside.
-        val inset = (1f * d).roundToInt().coerceAtLeast(1)
-        return StateListDrawable().apply {
-            addState(
-                intArrayOf(android.R.attr.state_focused),
-                InsetDrawable(stroke, inset),
+        val inner = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = 999f
+            setColor(android.graphics.Color.TRANSPARENT)
+            setStroke((1.5f * d).roundToInt().coerceAtLeast(1), accentMidColor)
+        }
+        val insetOuter = (1f * d).roundToInt().coerceAtLeast(1)
+        val insetInner = (3f * d).roundToInt().coerceAtLeast(2)
+        val layered = android.graphics.drawable.LayerDrawable(
+            arrayOf(
+                InsetDrawable(outer, insetOuter),
+                InsetDrawable(inner, insetInner),
             )
+        )
+        return StateListDrawable().apply {
+            addState(intArrayOf(android.R.attr.state_focused), layered)
             addState(intArrayOf(), ColorDrawable(android.graphics.Color.TRANSPARENT))
         }
     }
@@ -4145,6 +4267,13 @@ class PlayerActivity : ComponentActivity() {
             gravity = Gravity.CENTER_VERTICAL
             isClickable = onClick != null
             isFocusable = onClick != null
+            if (onClick != null && com.hikari.app.tv.TvMode.isTv) {
+                // Ringed at BIRTH, not by the dialog's one-time focus pass:
+                // rows appended later (servers landing in the chooser) would
+                // otherwise be reachable but draw no highlight at all.
+                isFocusableInTouchMode = true
+                if (foreground == null) foreground = tvFocusRing()
+            }
             setPadding(
                 (10 * density).toInt(), (6 * density).toInt(),
                 (10 * density).toInt(), (6 * density).toInt()
@@ -4474,6 +4603,32 @@ class PlayerActivity : ComponentActivity() {
                     setOnClickListener { onClick() }
                 }, LinearLayout.LayoutParams((24 * density).toInt(), (24 * density).toInt())
                     .apply { marginEnd = (4 * density).toInt() })
+            }
+            // Television: an explicit Back affordance on EVERY panel. The ✕ is
+            // a 24dp glyph a remote can overshoot, and Back-key behaviour
+            // varies by box — this pill dismisses from the focus walk itself,
+            // and it is focusable at birth so late focus passes cannot miss it.
+            if (com.hikari.app.tv.TvMode.isTv && cancelable) {
+                addView(TextView(this@PlayerActivity).apply {
+                    text = "‹ " + I18n.t("Back")
+                    dpText(10f)
+                    includeFontPadding = false
+                    gravity = Gravity.CENTER
+                    isSingleLine = true
+                    setTextColor(0xE6FFFFFF.toInt())
+                    background = ContextCompat.getDrawable(
+                        this@PlayerActivity, R.drawable.circle_glass_ripple
+                    )
+                    val pad = (7 * density).toInt()
+                    setPadding(pad, (4 * density).toInt(), pad, (4 * density).toInt())
+                    isClickable = true
+                    isFocusable = true
+                    isFocusableInTouchMode = true
+                    if (foreground == null) foreground = tvFocusRing()
+                    setOnClickListener { dialog.dismiss() }
+                }, LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT, (24 * density).toInt()
+                ).apply { marginEnd = (4 * density).toInt() })
             }
             if (cancelable) {
                 addView(TextView(this@PlayerActivity).apply {
@@ -5299,7 +5454,13 @@ class PlayerActivity : ComponentActivity() {
                 setTextColor(if (selected) 0xFFFFFFFF.toInt() else 0xFFC9D2E0.toInt())
                 background = RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), bg, null)
                 isClickable = true
-                isFocusable = false
+                // Reachable AND ringed on a television: the chooser's rows are
+                // rebuilt live while servers land (see the watcher below), long
+                // after the dialog's one-time focus pass — and an engine chip
+                // left unfocusable strands the remote above the list entirely.
+                isFocusable = true
+                isFocusableInTouchMode = true
+                if (com.hikari.app.tv.TvMode.isTv && foreground == null) foreground = tvFocusRing()
                 setOnClickListener { onClick() }
                 layoutParams = LinearLayout.LayoutParams(w, h).apply {
                     marginEnd = (5 * density).roundToInt()
@@ -5501,6 +5662,14 @@ class PlayerActivity : ComponentActivity() {
             val keepX = chipScroll.scrollX
             rebuildChips()
             rebuildList()
+            // Television: rows/chips appended AFTER the dialog's one-time focus
+            // pass are reachable but ringless without this (see [glassRow]'s
+            // birth ring — this is the belt and braces for rows built before
+            // that change and for every other late view). Cheap: only views
+            // missing a ring are touched.
+            if (com.hikari.app.tv.TvMode.isTv) {
+                runCatching { dialog.window?.decorView?.tvFocusableTree() }
+            }
             sv?.post { sv.scrollTo(0, keepY) }
             chipScroll.post { chipScroll.scrollTo(keepX, 0) }
         }
@@ -9828,9 +9997,10 @@ class PlayerActivity : ComponentActivity() {
             // verdict, measured or not.
             SlowNetTip.onFirstFrame()
             // Playback really started: let the background extension sweep that the
-            // detail screen held back run now. Its finds are only ever ADDED to
+            // detail screen held back run now — throttled on TV hardware (see
+            // [releaseSweepThrottled]). Its finds are only ever ADDED to
             // this playing server list, so the wait costs nothing.
-            liveSessionId?.let { StreamsLive.releaseSweep(it) }
+            releaseSweepThrottled()
             firstFrameTask?.let { bufferingWatchdog.removeCallbacks(it) }
             firstFrameTask = null
             // A picture rendered: whatever re-opens this live stream has taken
@@ -9879,7 +10049,7 @@ class PlayerActivity : ComponentActivity() {
                 // Audio-only streams never fire onRenderedFirstFrame, so the same
                 // "playback really did start" signal applies here.
                 SlowNetTip.onFirstFrame()
-                liveSessionId?.let { StreamsLive.releaseSweep(it) }
+                releaseSweepThrottled()
                 // Fallback: audio-only streams never fire onRenderedFirstFrame,
                 // so drop the title card shortly after playback is ready.
                 bufferingWatchdog.postDelayed({ hideLoadingBanner() }, 1200L)
@@ -11092,18 +11262,28 @@ class PlayerActivity : ComponentActivity() {
         if (type == C.TRACK_TYPE_TEXT && textOff) return false
         val groups = p.currentTracks.groups.filter { it.type == type }
         if (groups.isEmpty()) return false
-        for (group in groups) {
-            val mediaGroup = group.mediaTrackGroup
-            for (i in 0 until mediaGroup.length) {
-                if (!pick.matches(mediaGroup.getFormat(i), i)) continue
-                val params = p.trackSelectionParameters
-                if (params.overrides[mediaGroup]?.trackIndices?.contains(i) == true) return true
-                p.trackSelectionParameters = params.buildUpon()
-                    .setTrackTypeDisabled(type, false)
-                    .clearOverridesOfType(type)
-                    .setOverrideForType(TrackSelectionOverride(mediaGroup, ImmutableList.of(i)))
-                    .build()
-                return true
+        // Strict first (name + position), then LOOSE: attaching provider
+        // subtitles — or pressing Sync — rebuilds the media item and the new
+        // manifest can renumber its renditions, so the position the pick was
+        // taken at no longer names the same track. Strict-only matching then
+        // found nothing, the player fell back to its own default (English),
+        // and reopening the sheet showed the choice had "reverted" — the
+        // reported Hindi→English flip. Loose matches the same name/language
+        // wherever it now sits instead of losing the choice.
+        for (loose in listOf(false, true)) {
+            for (group in groups) {
+                val mediaGroup = group.mediaTrackGroup
+                for (i in 0 until mediaGroup.length) {
+                    if (!pick.matches(mediaGroup.getFormat(i), i, loose)) continue
+                    val params = p.trackSelectionParameters
+                    if (params.overrides[mediaGroup]?.trackIndices?.contains(i) == true) return true
+                    p.trackSelectionParameters = params.buildUpon()
+                        .setTrackTypeDisabled(type, false)
+                        .clearOverridesOfType(type)
+                        .setOverrideForType(TrackSelectionOverride(mediaGroup, ImmutableList.of(i)))
+                        .build()
+                    return true
+                }
             }
         }
         return false
@@ -11401,6 +11581,8 @@ class PlayerActivity : ComponentActivity() {
         watchdogTask = null
         liveReconnectTask?.let { bufferingWatchdog.removeCallbacks(it) }
         liveReconnectTask = null
+        sweepReleaseTask?.let { bufferingWatchdog.removeCallbacks(it) }
+        sweepReleaseTask = null
         firstFrameTask?.let { bufferingWatchdog.removeCallbacks(it) }
         firstFrameTask = null
         torrentDialog?.let { runCatching { it.dismiss() } }

@@ -35,7 +35,7 @@ object RepoProvenance {
         val raw = when (c.type) {
             ProviderType.HIKARI -> c.extra?.substringBeforeLast('|')
             ProviderType.CS3, ProviderType.NUVIO, ProviderType.SKYSTREAM,
-            ProviderType.ANIYOMI, ProviderType.MANGA, ProviderType.VEGA -> c.extra
+            ProviderType.ANIYOMI, ProviderType.MANGA, ProviderType.VEGA -> c.extra?.substringBefore('|')
             else -> null
         }?.trim()
         return raw?.takeIf { it.startsWith("http://", true) || it.startsWith("https://", true) }
@@ -87,6 +87,22 @@ object RepoProvenance {
     /** The NAME of the repository [c] came from, or null. */
     fun nameOf(c: ProviderConfig, repos: List<Cs3Repo>): String? =
         repoFor(c, repos)?.name?.takeIf { it.isNotBlank() }
+            ?: fallbackLabel(c)
+
+    /**
+     * When no added repo matches — the repo was removed, or the extension came
+     * from a bundle that imported it from elsewhere — the row still says WHERE
+     * the file came from (`owner/repo`, else the host) instead of showing a
+     * bare engine. Hand-added rows (no URL at all) still get no label.
+     */
+    fun fallbackLabel(c: ProviderConfig): String? {
+        val origin = originOf(c) ?: return null
+        SourceUrls.githubRoot(origin)?.let { return it }
+        return runCatching {
+            val host = origin.substringAfter("://").substringBefore('/').lowercase()
+            host.removePrefix("www.").removePrefix("raw.")
+        }.getOrNull()?.takeIf { it.isNotBlank() && it.contains('.') }
+    }
 
     /**
      * One entry per provider id, for the rows that only have the config: the map
@@ -95,11 +111,12 @@ object RepoProvenance {
      * costs one pass over the repos plus one pass over the providers.
      */
     fun nameMap(providers: List<ProviderConfig>, repos: List<Cs3Repo>): Map<String, String> {
-        if (providers.isEmpty() || repos.isEmpty()) return emptyMap()
-        val index = Index(repos)
+        if (providers.isEmpty()) return emptyMap()
+        val index = if (repos.isEmpty()) null else Index(repos)
         val out = HashMap<String, String>(providers.size)
         for (c in providers) {
-            val name = index.repoFor(c)?.name?.takeIf { it.isNotBlank() } ?: continue
+            val name = (index?.repoFor(c)?.name?.takeIf { it.isNotBlank() }
+                ?: fallbackLabel(c)) ?: continue
             out[c.id] = name
         }
         return out

@@ -3,7 +3,7 @@
   <item android:state_focused="true">
     <shape android:shape="oval">
       <solid android:color="@android:color/transparent" />
-      <stroke android:width="3dp" android:color="@color/hikari_accent_mid" />
+      <stroke android:width="3dp" android:color="@android:color/white" />
     </shape>
   </item>
   <item android:drawable="@android:color/transparent" />

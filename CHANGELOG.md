@@ -1,3 +1,24 @@
+## 0.10.63
+
+### Added
+
+- **Community links: Telegram, Reddit and Discord.** The first-run dialog returns once per update with three joins — Join Telegram, Join Reddit (`r/HikariApp`), Join Discord — each opening the matching app or the browser, never Hikari's WebView. The same three joins live in Settings → About & Updates (link rows + About card).
+- **TV provider strip, CloudStream-style.** Television Home now shows every enabled extension as a chip row under the header: one OK press watches that extension alone, holding OK half a second adds it to a multi pick, All resets, and ▦ opens the full sheet. Holding OK inside the picker sheet also multi-picks on TV now (the press used to fire on key-down, so a hold was just a tap).
+- **Swipe to seek.** A horizontal drag scrubs the timeline — the longer the drag, the further the jump — with the target clock time and ±seconds previewed live; the single seek commits on lift. Same gates as the vertical gestures (never locked, never with swipes off, never on live streams).
+- **Genre tap asks where.** Tapping a Home genre chip with extensions picked asks "Only this extension" (in-place overlay of that extension's catalogues narrowed to the genre, removable chip) or "Everything" (the TMDB grid as before).
+- **Back button on every player panel (TV).** Every glass sheet (servers, subtitles, audio, quality, episodes, search…) carries an explicit ‹ Back pill beside the ✕, reachable from the focus walk.
+
+### Fixed
+
+- **Empty-query kind browse shows the whole catalogue.** Picking Series/Anime/Movies with no query used to filter only the rows Home had already loaded (7 series, 0 anime in the report). It now scans the picked providers' catalogues (fed instantly from loaded rows, merged from the network as it lands), and items from anime catalogues count as anime even when the item itself carries no genre tag.
+- **TV focus highlight everywhere.** The ring is now white-outside/accent-inside so it reads on accent-filled selected pills (accent-on-accent was invisible — "shows up top, not on the bottom row"), phone HUD rings went white for the same reason, engine chips and late-landing server rows are focusable and ringed at birth, and every dialog rebuild re-runs the focus pass.
+- **Audio pick no longer reverts (Hindi→English).** The sticky re-assert matched name+position strictly, so after a track-list rebuild (provider subtitles attaching) it found nothing and ExoPlayer fell back to English. It now retries loosely (same name/language wherever it sits).
+- **Volume readout reflects the booster.** With the 200% booster on, the HUD scales to 200% at full device volume instead of stopping at 100%.
+- **Repo names read in full.** The kind chip moved to the subtitle line and the action buttons went compact, so the name owns its own full-width (two-line) row in every repo list.
+- **Provenance for every URL-installed provider.** `extra` index suffixes are stripped for all engines, and when no added repo matches, the row falls back to the file's `owner/repo` (else its host) instead of a bare engine name — covering bundle-imported providers and removed repos.
+- **TV playback no longer fights the background sweep.** On television hardware the held extension sweep releases 20s after the first frame (phones: immediately) so a 1GB stick renders video first and cold-starts plugin runtimes after; failover still releases instantly.
+- **Duplicate-key hardening.** Repo listing keys are namespaced and deduped; the reported `stremio|… was already used` crash is from 0.10.57 and was already namespaced in 0.10.61 — updating clears it.
+
 ## 0.10.62
 
 ### Added

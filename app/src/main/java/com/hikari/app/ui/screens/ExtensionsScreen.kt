@@ -4989,7 +4989,11 @@ private sealed interface RepoListEntry {
     }
 
     data class Row(val plugin: Cs3RepoPlugin) : RepoListEntry {
-        override val key: String get() = plugin.url
+        // Namespaced AND position-stable: the same file can be listed twice
+        // (mirrors), and a bare URL as a key is then a hard Compose crash
+        // ("Key … was already used"). The URL still leads so re-listings keep
+        // stable keys; duplicates are dropped where the list is drawn.
+        override val key: String get() = "plug|" + plugin.url
     }
 }
 
@@ -5379,7 +5383,7 @@ private fun RepoPluginsView(
                         modifier = Modifier.padding(vertical = 16.dp)
                     )
                 }
-                else -> items(entries, key = { it.key }) { entry ->
+                else -> items(entries.distinctBy { it.key }, key = { it.key }) { entry ->
                     when (entry) {
                         is RepoListEntry.Head -> RepoGroupHeader(entry.title, entry.count)
                         is RepoListEntry.Row -> {
@@ -6766,15 +6770,17 @@ private fun RepoCard(
             }
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        repo.name,
-                        style = MaterialTheme.typography.titleSmall,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false)
-                    )
-                    Spacer(Modifier.width(8.dp))
+                Text(
+                    repo.name,
+                    style = MaterialTheme.typography.titleSmall,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(top = 2.dp)
+                ) {
                     Text(
                         when (repo.kind) {
                             RepoKind.CS3 -> "CloudStream"
@@ -6786,65 +6792,70 @@ private fun RepoCard(
                         },
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.primary,
+                        maxLines = 1,
                         modifier = Modifier
                             .clip(RoundedCornerShape(6.dp))
                             .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f))
                             .padding(horizontal = 6.dp, vertical = 2.dp)
                     )
-                }
-                Text(
-                    when {
-                        state == null -> repo.description.ifBlank { "Not loaded yet — tap to open" }
-                        state?.loading == true -> "Loading plugins…"
-                        state?.error != null -> "Load failed — tap refresh to retry"
-                        pluginCount > 0 -> {
-                            val unit = when (repo.kind) {
-                                RepoKind.NUVIO -> "provider"
-                                RepoKind.SKYSTREAM -> "extension"
-                                RepoKind.ANIYOMI -> "extension"
-                                RepoKind.VEGA -> "provider"
-                                else -> "plugin"
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        when {
+                            state == null -> repo.description.ifBlank { "Not loaded yet — tap to open" }
+                            state?.loading == true -> "Loading plugins…"
+                            state?.error != null -> "Load failed — tap refresh to retry"
+                            pluginCount > 0 -> {
+                                val unit = when (repo.kind) {
+                                    RepoKind.NUVIO -> "provider"
+                                    RepoKind.SKYSTREAM -> "extension"
+                                    RepoKind.ANIYOMI -> "extension"
+                                    RepoKind.VEGA -> "provider"
+                                    else -> "plugin"
+                                }
+                                "$pluginCount $unit${if (pluginCount == 1) "" else "s"}"
                             }
-                            "$pluginCount $unit${if (pluginCount == 1) "" else "s"}"
-                        }
-                        else -> repo.description.ifBlank { "No plugins found" }
-                    },
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (state?.error != null)
-                        MaterialTheme.colorScheme.error
-                    else
-                        MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                            else -> repo.description.ifBlank { "No plugins found" }
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (state?.error != null)
+                            MaterialTheme.colorScheme.error
+                        else
+                            MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                }
             }
-            Spacer(Modifier.width(8.dp))
-            // Copy / Refresh / Remove. The decorative chevron that used to sit
-            // here is gone: the row already ends in three real actions, and four
-            // items in a fixed-width trailing cluster squeeze the repo's own
-            // name to a few characters on a phone (worse with the in-app UI
-            // scale up) — the title is worth more than an arrow that repeats
-            // what the card's own highlight already says.
-            IconButton(onClick = {
-                clipboard.setText(AnnotatedString(repo.url))
-                // I18n.t, not tr: tr is @Composable, and a click handler is not
-                // a composable scope (the same reason the toasts at ~5094 use it).
-                Toast.makeText(context, I18n.t("Repo link copied"), Toast.LENGTH_SHORT).show()
-            }) {
+            Spacer(Modifier.width(4.dp))
+            // Copy / Refresh / Remove. Compact (40dp) and icon-only: the
+            // default 48dp targets plus the kind chip on the name line used
+            // to squeeze the repo's own name to 2–3 characters on a phone.
+            // The name now has its own full-width line (chip moved to the
+            // subtitle) so it always reads in full.
+            IconButton(
+                onClick = {
+                    clipboard.setText(AnnotatedString(repo.url))
+                    // I18n.t, not tr: tr is @Composable, and a click handler is not
+                    // a composable scope (the same reason the toasts at ~5094 use it).
+                    Toast.makeText(context, I18n.t("Repo link copied"), Toast.LENGTH_SHORT).show()
+                },
+                modifier = Modifier.size(40.dp)
+            ) {
                 Icon(
                     Icons.Filled.ContentCopy,
                     contentDescription = tr("Copy repo link"),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            IconButton(onClick = onRefresh) {
+            IconButton(onClick = onRefresh, modifier = Modifier.size(40.dp)) {
                 Icon(
                     Icons.Filled.Refresh,
                     contentDescription = tr("Refresh repo"),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            IconButton(onClick = onRemoveRepo) {
+            IconButton(onClick = onRemoveRepo, modifier = Modifier.size(40.dp)) {
                 Icon(
                     Icons.Filled.Delete,
                     contentDescription = tr("Remove repo"),

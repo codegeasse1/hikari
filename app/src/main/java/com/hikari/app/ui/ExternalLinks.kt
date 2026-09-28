@@ -12,6 +12,12 @@ import com.hikari.app.web.WebViewActivity
  *  news. Single source of truth for every place that links to it. */
 const val TELEGRAM_CHANNEL_URL = "https://t.me/CodegeasseHikari"
 
+/** Hikari's subreddit — help, discussion and release news. */
+const val REDDIT_COMMUNITY_URL = "https://www.reddit.com/r/HikariApp"
+
+/** Hikari's Discord server — help, discussion and release news. */
+const val DISCORD_INVITE_URL = "https://discord.gg/hdwB78Ahq"
+
 /**
  * Opens a YouTube video in the YouTube app rather than Hikari's own WebView.
  *
@@ -89,6 +95,13 @@ private fun telegramHandle(url: String): String? {
     }
     return handle.trim().ifBlank { null }
 }
+
+/**
+ * Opens a community link (Reddit, Discord, …) in the matching app when it is
+ * installed, else in the user's own browser — deliberately NEVER Hikari's own
+ * WebView, which has no logins and mangles app hand-offs (see [openTelegram]).
+ */
+fun openCommunity(context: Context, url: String): Boolean = openUrl(context, url)
 
 /**
  * Opens an ordinary https page in the user's own browser.

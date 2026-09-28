@@ -188,6 +188,7 @@ class AppStore(private val ctx: Context) {
         val SLOW_TIP_DONT_ASK = booleanPreferencesKey("slowTipDontAsk")
         val SLOW_TIP_LAST_DISMISS = longPreferencesKey("slowTipLastDismiss")
         val TELEGRAM_DONT_SHOW = booleanPreferencesKey("telegramDontShow")
+        val COMMUNITY_SEEN_VERSION = stringPreferencesKey("communitySeenVersion")
         /** `list` / `tile` / `poster` — how a Telegram chat's videos are drawn
          *  (see AppStore.telegramView and TgView in the Telegram screen). */
         val TELEGRAM_VIEW = stringPreferencesKey("telegramViewStyle")
@@ -1863,6 +1864,15 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setTelegramDontShow(dontShow: Boolean) {
         write("TELEGRAM_DONT_SHOW") { it[K.TELEGRAM_DONT_SHOW] = dontShow }
+    }
+
+    /** The app version the community dialog was last shown (or dismissed) for,
+     *  so it comes back once after every update — and never nags in between. */
+    suspend fun communitySeenVersion(): String = store.data.map { it[K.COMMUNITY_SEEN_VERSION].orEmpty() }
+        .distinctUntilChanged().flowOn(Dispatchers.Default).first()
+
+    suspend fun setCommunitySeenVersion(version: String) {
+        write("COMMUNITY_SEEN_VERSION") { it[K.COMMUNITY_SEEN_VERSION] = version }
     }
 
     /**

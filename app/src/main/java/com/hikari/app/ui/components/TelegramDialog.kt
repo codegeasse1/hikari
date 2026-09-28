@@ -24,14 +24,17 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.hikari.app.ui.DISCORD_INVITE_URL
+import com.hikari.app.ui.REDDIT_COMMUNITY_URL
 import com.hikari.app.ui.TELEGRAM_CHANNEL_URL
+import com.hikari.app.ui.openCommunity
 import com.hikari.app.ui.openTelegram
 
 /**
- * Shown once on launch (until "Don't show this again" is ticked) to point the
- * user at the support group. Join hands off to the Telegram app / the user's
- * browser — never to Hikari's own WebView, where Telegram's hand-off to the app
- * dies (see [openTelegram]).
+ * Shown once per app version (until "Don't show this again" is ticked) to
+ * point the user at the community: Telegram, Reddit and Discord. Every join
+ * hands off to the matching app / the user's browser — never to Hikari's own
+ * WebView, where the hand-off to the app dies (see [openTelegram]).
  */
 @Composable
 fun TelegramDialog(
@@ -51,12 +54,12 @@ fun TelegramDialog(
                 modifier = Modifier.size(28.dp),
             )
         },
-        title = { Text(tr("Join the Hikari Telegram")) },
+        title = { Text(tr("Join the Hikari community")) },
         text = {
             Column {
                 Text(
-                    tr("For any query, support, bug reports, title requests or feature " + "ideas — or just to keep up with new releases — join the Hikari ") +
-                        I18n.t("group on Telegram. It's the fastest way to reach me.")
+                    tr("For any query, support, bug reports, title requests or feature " + "ideas — or just to keep up with new releases — join us: ") +
+                        I18n.t("Telegram for the fastest reply, Reddit and Discord too.")
                 )
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -70,10 +73,20 @@ fun TelegramDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = {
-                openTelegram(context, TELEGRAM_CHANNEL_URL)
-                if (dontShow) onDontShowAgain() else onDismiss()
-            }) { Text(tr("Join")) }
+            Column(horizontalAlignment = Alignment.End) {
+                TextButton(onClick = {
+                    openTelegram(context, TELEGRAM_CHANNEL_URL)
+                    if (dontShow) onDontShowAgain() else onDismiss()
+                }) { Text(tr("Join Telegram")) }
+                TextButton(onClick = {
+                    openCommunity(context, REDDIT_COMMUNITY_URL)
+                    if (dontShow) onDontShowAgain() else onDismiss()
+                }) { Text(tr("Join Reddit")) }
+                TextButton(onClick = {
+                    openCommunity(context, DISCORD_INVITE_URL)
+                    if (dontShow) onDontShowAgain() else onDismiss()
+                }) { Text(tr("Join Discord")) }
+            }
         },
         dismissButton = {
             TextButton(onClick = {

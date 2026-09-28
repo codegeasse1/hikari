@@ -638,6 +638,11 @@ fun HomeScreen(nav: NavHostController) {
     // Home and the query was gone — and it is not cleared when a result opens,
     // for the same reason.
     var showHomeSearch by rememberSaveable { mutableStateOf(false) }
+    // A genre tap made while extensions are picked: WHERE should it look —
+    // those extensions alone, or everything (see the genre strip call site).
+    var genreScope by remember { mutableStateOf<GenreScopePick?>(null) }
+    // The genre an in-place overlay is narrowed to ("" = no narrowing).
+    var overlayGenre by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
 
     // Cloudflare verification: when the selected extension's site is blocked
@@ -804,13 +809,30 @@ fun HomeScreen(nav: NavHostController) {
                 overlayIds = ext.ifEmpty {
                     activeProviders.map { it.config.id }.toSet()
                 }
+                overlayGenre = ""
                 if (overlayIds.isEmpty()) openGlobalSearch()
                 else showHomeSearch = true
             }
         }
     }
-    val openVerify: () -> Unit = {
-        scope.launch {
+    // One genre page: the TMDB combined film+series grid for it.
+    val openTmdbGenre: (String, String, String) -> Unit = { name, genresText, keywordsText ->
+        Routes.safeNavigate(
+            nav,
+            Routes.tmdbGridSpec(
+                TmdbSpec(
+                    type = TmdbSourceType.DISCOVER,
+                    media = "all",
+                    genresText = genresText,
+                    keywords = keywordsText,
+                    sort = "popularity.desc",
+                    title = name,
+                ).encode(),
+                name,
+            )
+        )
+    }
+    val openVerify: () -> Unit = {        scope.launch {
             // The globe sits in the SELECTED extension's header, so it opens the
             // SELECTED extension's own site. It used to prefer the most recently
             // challenged host in the whole app, which meant picking one
@@ -900,6 +922,25 @@ fun HomeScreen(nav: NavHostController) {
                         overlay = false,
                         onSettings = openSettings,
                     )
+                    // Television: the provider strip sits under the header like
+                    // CloudStream's — every extension one OK-press away, hold
+                    // OK to multi-pick, instead of the phone's floating pill
+                    // and sheet (which stay as the overflow via ▦).
+                    if (TvMode.current()) {
+                        TvProviderStrip(
+                            providers = activeProviders,
+                            selection = selection,
+                            onPickSingle = { vm.selectProvider(it) },
+                            onPickAll = { vm.setSelection(emptyList()) },
+                            onToggleMulti = { id ->
+                                vm.setSelection(
+                                    if (id in selection) selection - id
+                                    else (selection + id).distinct()
+                                )
+                            },
+                            onOpenPicker = { showPicker = true },
+                        )
+                    }
                     if (featured.isNotEmpty()) {
                         Spacer(Modifier.height(6.dp))
                         HeroBanner(
@@ -920,22 +961,16 @@ fun HomeScreen(nav: NavHostController) {
                     // viewer who has not decided what to watch looks next. A
                     // genre pick opens everything tagged with it — films AND
                     // series (see [HomeGenreStrip]) — so nothing has to be
-                    // searched for before something can be watched.
+                    // searched for before something can be watched. With an
+                    // extension picked, the tap first asks WHERE: that
+                    // extension alone, or everything (see [genreScope]).
                     HomeGenreStrip { name, genresText, keywordsText ->
-                        Routes.safeNavigate(
-                            nav,
-                            Routes.tmdbGridSpec(
-                                TmdbSpec(
-                                    type = TmdbSourceType.DISCOVER,
-                                    media = "all",
-                                    genresText = genresText,
-                                    keywords = keywordsText,
-                                    sort = "popularity.desc",
-                                    title = name,
-                                ).encode(),
-                                name,
-                            )
-                        )
+                        val ext = selection.filter { !it.startsWith(COLLECTION_PREFIX) }.toSet()
+                        if (ext.isEmpty()) {
+                            openTmdbGenre(name, genresText, keywordsText)
+                        } else {
+                            genreScope = GenreScopePick(name, genresText, keywordsText, ext)
+                        }
                     }
                 }
             }
@@ -1244,7 +1279,9 @@ fun HomeScreen(nav: NavHostController) {
                 providerIds = overlayIds,
                 providerName = overlayName,
                 feedItems = remember(rows) { rows.flatMap { it.items } },
-                onClose = { showHomeSearch = false },
+                genre = overlayGenre,
+                onClearGenre = { overlayGenre = "" },
+                onClose = { showHomeSearch = false; overlayGenre = "" },
                 onOpen = { item ->
                     // The overlay is NOT closed here: it stays open so that Back
                     // from the title returns to the search the user was reading
@@ -1287,6 +1324,43 @@ fun HomeScreen(nav: NavHostController) {
             },
             onDismiss = { showPicker = false },
             repoNameByProvider = repoNameByProvider,
+        )
+    }
+
+    // A genre tap made while extensions are picked: this extension alone, or
+    // everything. "Only here" browses the picked extensions' own catalogues
+    // narrowed to the genre (see [homeGenreKeep]); "Everything" is the TMDB
+    // genre grid as before.
+    genreScope?.let { pick ->
+        val scopeName = if (pick.extensionIds.size == 1) {
+            providers.firstOrNull { it.config.id == pick.extensionIds.first() }
+                ?.config?.name ?: selectedName ?: tr("this extension")
+        } else {
+            selectedName ?: I18n.t("%s sources").replace("%s", pick.extensionIds.size.toString())
+        }
+        AlertDialog(
+            onDismissRequest = { genreScope = null },
+            title = { Text(pick.name) },
+            text = {
+                Text(
+                    tr("Only this extension's titles, or everything out there?") + " " +
+                        I18n.t("Genre: %s.").replace("%s", pick.name)
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    overlayIds = pick.extensionIds
+                    overlayGenre = pick.name
+                    genreScope = null
+                    showHomeSearch = true
+                }) { Text(I18n.t("Only %s").replace("%s", scopeName)) }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    genreScope = null
+                    openTmdbGenre(pick.name, pick.genresText, pick.keywordsText)
+                }) { Text(tr("Everything")) }
+            },
         )
     }
 
@@ -2035,6 +2109,92 @@ private fun PickerSectionLabel(text: String) {
 }
 
 /**
+ * Television provider strip, CloudStream-style: every enabled extension as a
+ * chip in one sideways row above the feed, so a remote reaches providers
+ * without opening the phone-shaped picker sheet at all. Tap = watch that
+ * extension alone; hold OK half a second = add it to a multi pick (the same
+ * hold the picker sheet uses); "All" = everything; the trailing tile opens
+ * the full sheet for search, pins and folders.
+ */
+@Composable
+private fun TvProviderStrip(
+    providers: List<ContentProvider>,
+    selection: List<String>,
+    onPickSingle: (String) -> Unit,
+    onPickAll: () -> Unit,
+    onToggleMulti: (String) -> Unit,
+    onOpenPicker: () -> Unit,
+) {
+    LazyRow(
+        Modifier
+            .fillMaxWidth()
+            .padding(start = 12.dp, end = 12.dp, top = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        item(key = "tv-prov-all") {
+            TvProviderChip(
+                label = tr("All"),
+                selected = selection.isEmpty(),
+                onClick = onPickAll,
+                onHold = null,
+            )
+        }
+        items(providers, key = { "tv-prov-" + it.config.id }) { p ->
+            val id = p.config.id
+            TvProviderChip(
+                label = p.config.name,
+                selected = id in selection,
+                onClick = { onPickSingle(id) },
+                onHold = { onToggleMulti(id) },
+            )
+        }
+        item(key = "tv-prov-more") {
+            TvProviderChip(
+                label = "▦",
+                selected = false,
+                onClick = onOpenPicker,
+                onHold = null,
+            )
+        }
+    }
+}
+
+@Composable
+private fun TvProviderChip(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    onHold: (() -> Unit)?,
+) {
+    val latestClick by rememberUpdatedState(onClick)
+    val latestHold by rememberUpdatedState(onHold)
+    Box(
+        Modifier
+            .clip(RoundedCornerShape(50))
+            .background(
+                if (selected) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.surface.copy(alpha = 0.5f)
+            )
+            .then(
+                if (latestHold == null) Modifier.clickable(onClick = onClick)
+                else Modifier.tvPress(onClick = { latestClick() }, onHold = { latestHold?.invoke() })
+            )
+            .padding(horizontal = 14.dp, vertical = 7.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            color = if (selected) MaterialTheme.colorScheme.onPrimary
+            else MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+        )
+    }
+}
+
+/**
  * One row of the extension picker. Deliberately FLAT: a plain row with a
  * hairline under it, not a floating glass card. The picker is a long list of
  * nearly identical names, and a card per name turned it into a wall of glass —
@@ -2113,7 +2273,10 @@ private fun PickerRow(
                         // at its right end — and a press aimed at one of those
                         // must be theirs, not the row's (the row would otherwise
                         // pick the provider while the user was pressing Pin).
-                        .tvPress(previewPass = false, onClick = { latestClick() })
+                        // `onHold` is the remote's half-second hold: without it
+                        // a TV user could never multi-pick, because the press
+                        // used to fire on KeyDown and a hold was just a tap.
+                        .tvPress(previewPass = false, onClick = { latestClick() }, onHold = { latestHold?.invoke() })
                         .pointerInput(label, multi) {
                             holdOrTap({ latestHold?.invoke() }, { latestClick() })
                         }
@@ -2532,6 +2695,31 @@ private fun homeKindKeep(item: MediaItem, kind: String): Boolean = when (kind) {
     else -> true
 }
 
+/** A genre tap held for the scope question: what was tapped, and which
+ *  extensions Home had picked when it was tapped. */
+private data class GenreScopePick(
+    val name: String,
+    val genresText: String,
+    val keywordsText: String,
+    val extensionIds: Set<String>,
+)
+
+/** True when [item] belongs to the genre [name]: a genre tag containing the
+ *  name (either direction — "Science Fiction" matches a "Sci-Fi" ask poorly,
+ *  but a tag match in either direction covers the common spellings), or a
+ *  title carrying the word itself. Items with no tags at all never match: a
+ *  site scraper that tags nothing cannot answer a genre question, and saying
+ *  so (the overlay's empty state) beats a wall of unfiltered posters. */
+private fun homeGenreKeep(item: MediaItem, name: String): Boolean {
+    val q = name.trim().lowercase()
+    if (q.isEmpty()) return true
+    if (item.genres.any { g ->
+        val t = g.trim().lowercase()
+        t.isNotEmpty() && (t.contains(q) || q.contains(t))
+    }) return true
+    return false
+}
+
 @Composable
 private fun HomeSearchKindRow(kindKey: String, onPick: (String) -> Unit) {
     Row(
@@ -2567,6 +2755,10 @@ private fun HomeSearchOverlay(
      *  browses THESE instead of the network, so Anime/Movies/... show what the
      *  picked extensions actually hold. */
     feedItems: List<MediaItem>,
+    /** A genre the overlay is narrowed to ("" = no narrowing): set when a Home
+     *  genre chip chose "only this extension" (see [GenreScopePick]). */
+    genre: String = "",
+    onClearGenre: () -> Unit = {},
     onClose: () -> Unit,
     onOpen: (MediaItem) -> Unit,
 ) {
@@ -2666,16 +2858,103 @@ private fun HomeSearchOverlay(
                 )
             }
             HomeSearchKindRow(kindKey) { kindKey = it }
+            // A genre narrowing from the Home strip ("only this extension"):
+            // removable, so one tap returns to the un-narrowed search.
+            if (genre.isNotBlank()) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(start = 12.dp, end = 12.dp, bottom = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    FilterChip(
+                        selected = true,
+                        onClick = onClearGenre,
+                        label = { Text(genre) },
+                        trailingIcon = {
+                            Text(
+                                "✕",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        },
+                        shape = RoundedCornerShape(24.dp),
+                    )
+                }
+            }
             // One tap narrows what is already here: the typed results AND the
             // loaded feed behind them are cut by the same rule, so the chips
             // never disagree with the grid below them.
-            val shownResults = remember(results, kindKey) {
-                results.filter { homeKindKeep(it, kindKey) }.distinctBy { it.uniqueId }
+            val shownResults = remember(results, kindKey, genre) {
+                results.filter { homeKindKeep(it, kindKey) && homeGenreKeep(it, genre) }
+                    .distinctBy { it.uniqueId }
             }
-            val blankShown = remember(feedItems, kindKey) {
-                if (kindKey == HOME_KIND_ALL) emptyList()
-                else feedItems.filter { homeKindKeep(it, kindKey) }
-                    .distinctBy { it.uniqueId }.take(80)
+            // An empty query with a kind browses the provider's CATALOGUES, not
+            // just the rows Home already loaded: the feed only holds the first
+            // screenful (7 series, 0 anime in the report), while the catalogue
+            // holds everything. The loaded rows paint instantly; the catalogue
+            // scan below merges in as it lands. Items from a catalogue whose
+            // id/name/rawType says anime count as anime even when the item
+            // itself carries no genre tag (site scrapers tag nothing per item).
+            var browseItems by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
+            var browseAnimeIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+            var browseLoading by remember { mutableStateOf(false) }
+            LaunchedEffect(kindKey, providerIds) {
+                if (kindKey == HOME_KIND_ALL || providerIds.isEmpty()) {
+                    browseItems = emptyList()
+                    browseAnimeIds = emptySet()
+                    browseLoading = false
+                    return@LaunchedEffect
+                }
+                browseLoading = true
+                try {
+                    val loaded = withContext(Dispatchers.IO) {
+                        val mgr = app.providers
+                        val targets = mgr.providers.value
+                            .filter { it.config.enabled && it.config.id in providerIds }
+                            .take(8)
+                        val acc = ArrayList<MediaItem>()
+                        val animeIds = HashSet<String>()
+                        for (p in targets) {
+                            val cats = runCatching { p.homeCatalogs() }.getOrDefault(emptyList()).take(8)
+                            for (ref in cats) {
+                                val isAnimeCat = ref.id.contains("anime", true) ||
+                                    ref.name.contains("anime", true) ||
+                                    ref.rawType.equals("anime", true)
+                                val page = runCatching {
+                                    ContentRepository.loadCatalogPage(p, ref, 1)
+                                }.getOrDefault(emptyList())
+                                for (m in page) {
+                                    val small = m.shrinkPoster()
+                                    if (acc.none { it.uniqueId == small.uniqueId }) acc.add(small)
+                                    if (isAnimeCat) animeIds.add(small.uniqueId)
+                                    if (acc.size >= 400) break
+                                }
+                                if (acc.size >= 400) break
+                            }
+                            if (acc.size >= 400) break
+                        }
+                        acc.toList() to animeIds.toSet()
+                    }
+                    browseItems = loaded.first
+                    browseAnimeIds = loaded.second
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (_: Throwable) {
+                } finally {
+                    browseLoading = false
+                }
+            }
+            val blankShown = remember(feedItems, browseItems, browseAnimeIds, kindKey, genre) {
+                if (kindKey == HOME_KIND_ALL && genre.isBlank()) emptyList()
+                else (feedItems + browseItems).filter { item ->
+                    val kindOk = when (kindKey) {
+                        HOME_KIND_ALL -> true
+                        HOME_KIND_ANIME -> item.looksAnime() || item.uniqueId in browseAnimeIds
+                        else -> homeKindKeep(item, kindKey)
+                    }
+                    kindOk && homeGenreKeep(item, genre)
+                }.distinctBy { it.uniqueId }.take(200)
             }
             if (!LocalHideHelp.current) {
                 Text(
@@ -2687,24 +2966,34 @@ private fun HomeSearchOverlay(
                 )
             }
             when {
-                applied.isBlank() && kindKey == HOME_KIND_ALL -> EmptyState(
+                applied.isBlank() && kindKey == HOME_KIND_ALL && genre.isBlank() -> EmptyState(
                     title = I18n.t("Search %s").replace("%s", label),
-                    subtitle = tr("Type a title — or pick a kind above to browse what is already loaded."),
+                    subtitle = tr("Type a title — or pick a kind above to browse its catalogue."),
                     actionLabel = null,
                     action = null,
                 )
                 applied.isBlank() -> {
-                    if (blankShown.isEmpty()) {
+                    if (blankShown.isEmpty() && browseLoading) {
+                        Box(
+                            Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center,
+                        ) { CircularProgressIndicator() }
+                    } else if (blankShown.isEmpty()) {
                         EmptyState(
                             title = tr("Nothing of that kind here"),
-                            subtitle = tr("The loaded rows hold no such titles — try a search instead."),
+                            subtitle = if (genre.isNotBlank()) {
+                                tr("This extension tags no titles with this genre — try a search instead.")
+                            } else {
+                                tr("Its catalogue holds no such titles — try a search instead.")
+                            },
                             actionLabel = null,
                             action = null,
                         )
                     } else {
                         Column(Modifier.fillMaxSize()) {
                             Text(
-                                I18n.t("%s from the loaded rows").replace("%s", blankShown.size.toString()),
+                                I18n.t("%s titles").replace("%s", blankShown.size.toString()) +
+                                    if (browseLoading) "…" else "",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),

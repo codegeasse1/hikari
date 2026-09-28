@@ -416,12 +416,17 @@ class MainActivity : AppCompatActivity() {
                 updateChecked = true
             }
 
-            // One-time Telegram invitation. Held back until the update check has
-            // finished so the two dialogs never stack, and skipped wholesale
-            // once "Don't show this again" has been ticked.
+            // One-time community invitation per version. Held back until the update
+            // check has finished so the two dialogs never stack, and skipped
+            // wholesale once "Don't show this again" has been ticked. Coming
+            // back once per update (not just first install) is what surfaces
+            // the Telegram/Reddit/Discord links to existing users too.
             var showTelegramDialog by remember { mutableStateOf(false) }
             LaunchedEffect(Unit) {
-                if (!runCatching { store.telegramDontShow() }.getOrDefault(false)) {
+                val current = runCatching { com.hikari.app.BuildConfig.VERSION_NAME }.getOrDefault("")
+                val dontShow = runCatching { store.telegramDontShow() }.getOrDefault(false)
+                val seen = runCatching { store.communitySeenVersion() }.getOrDefault("")
+                if (!dontShow && seen != current) {
                     showTelegramDialog = true
                 }
             }
@@ -485,7 +490,16 @@ class MainActivity : AppCompatActivity() {
                 if (showTelegramDialog && updateChecked && !showUpdateDialog) {
                     TelegramDialog(
                         context = this@MainActivity,
-                        onDismiss = { showTelegramDialog = false },
+                        onDismiss = {
+                            showTelegramDialog = false
+                            scope.launch {
+                                runCatching {
+                                    store.setCommunitySeenVersion(
+                                        com.hikari.app.BuildConfig.VERSION_NAME
+                                    )
+                                }
+                            }
+                        },
                         onDontShowAgain = {
                             showTelegramDialog = false
                             scope.launch { runCatching { store.setTelegramDontShow(true) } }

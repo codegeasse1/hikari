@@ -15,6 +15,7 @@ import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalFocusManager
+import kotlinx.coroutines.launch
 
 /**
  * The D-pad plumbing every INTERACTIVE control needs on a television.
@@ -151,15 +152,63 @@ fun Modifier.tvPress(
      * only a press nothing else claimed reaches the row.
      */
     previewPass: Boolean = true,
+    /**
+     * Fired when OK is HELD ~0.5s instead of tapped (see [HOLD_MS] for why half
+     * a second). The Home extension picker's hold-to-multi-select never existed
+     * for remotes: the press fired on KeyDown, so a hold was just a tap and TV
+     * users could not multi-pick at all. Null (the default) keeps the old
+     * tap-only behaviour everywhere else.
+     */
+    onHold: (() -> Unit)? = null,
+    /**
+     * The tap handler. Deliberately LAST: a trailing lambda (`.tvPress { … }`)
+     * binds to the final function parameter, so tap-only call sites written
+     * before [onHold] existed keep meaning "on click".
+     */
     onClick: () -> Unit,
 ): Modifier {
     val interactions = remember { MutableInteractionSource() }
     val indication = LocalIndication.current
-    fun handle(event: androidx.compose.ui.input.key.KeyEvent): Boolean {
-        if (!enabled || event.type != KeyEventType.KeyDown) return false
-        if (!isPressKey(event.key)) return false
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val state = remember { HoldState() }
+    fun down(): Boolean {
+        if (!enabled) return false
+        if (onHold == null) {
+            onClick()
+            return true
+        }
+        // Key repeat while held: the first Down owns the gesture.
+        if (state.down) return true
+        state.down = true
+        state.held = false
+        state.job = scope.launch {
+            kotlinx.coroutines.delay(com.hikari.app.ui.screens.HOLD_MS)
+            state.held = true
+            onHold()
+        }
+        return true
+    }
+    fun up(): Boolean {
+        if (!enabled || onHold == null || !state.down) return false
+        state.down = false
+        state.job?.cancel()
+        state.job = null
+        // A hold already fired: swallow the release so it never ALSO taps.
+        if (state.held) {
+            state.held = false
+            return true
+        }
         onClick()
         return true
+    }
+    fun handle(event: androidx.compose.ui.input.key.KeyEvent): Boolean {
+        if (!enabled) return false
+        if (!isPressKey(event.key)) return false
+        return when (event.type) {
+            KeyEventType.KeyDown -> down()
+            KeyEventType.KeyUp -> up()
+            else -> false
+        }
     }
     // The ring, applied the way `clickable` applies it (that is where every
     // other control in the app gets its focus highlight from — see
@@ -177,6 +226,12 @@ fun Modifier.tvPress(
         .indication(interactions, indication)
         .focusable(enabled, interactions)
         .then(press)
+}
+
+private class HoldState {
+    var down = false
+    var held = false
+    var job: kotlinx.coroutines.Job? = null
 }
 
 /**

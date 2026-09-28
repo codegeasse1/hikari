@@ -94,6 +94,8 @@ import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.QrCode2
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.RestorePage
+import androidx.compose.material.icons.filled.Forum
+import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.SaveAlt
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.SettingsBackupRestore
@@ -203,6 +205,9 @@ import com.hikari.app.ui.navigation.LocalTaskbarInset
 import com.hikari.app.ui.navigation.NavStyles
 import com.hikari.app.ui.navigation.Routes
 import com.hikari.app.ui.edgeLight
+import com.hikari.app.ui.DISCORD_INVITE_URL
+import com.hikari.app.ui.REDDIT_COMMUNITY_URL
+import com.hikari.app.ui.openCommunity
 import com.hikari.app.ui.openTelegram
 import com.hikari.app.ui.theme.HikariAccent
 import com.hikari.app.ui.theme.HikariThemeMode
@@ -1092,6 +1097,50 @@ fun SettingsScreen(nav: NavHostController) {
                                         openTelegram(context)
                                     }
                                 )
+                                SettingsDivider()
+                                ListItem(
+                                    leadingContent = {
+                                        Icon(
+                                            Icons.Filled.Forum,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary
+                                        )
+                                    },
+                                    headlineContent = { Text(tr("Reddit")) },
+                                    supportingContent = { Text(tr("r/HikariApp — help, discussion & release news")) },
+                                    trailingContent = {
+                                        Icon(
+                                            Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    },
+                                    modifier = Modifier.clickable {
+                                        openCommunity(context, REDDIT_COMMUNITY_URL)
+                                    }
+                                )
+                                SettingsDivider()
+                                ListItem(
+                                    leadingContent = {
+                                        Icon(
+                                            Icons.Filled.Chat,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary
+                                        )
+                                    },
+                                    headlineContent = { Text(tr("Discord")) },
+                                    supportingContent = { Text(tr("Hikari server — help, discussion & release news")) },
+                                    trailingContent = {
+                                        Icon(
+                                            Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    },
+                                    modifier = Modifier.clickable {
+                                        openCommunity(context, DISCORD_INVITE_URL)
+                                    }
+                                )
                             }
                         }
                     }
@@ -1603,6 +1652,7 @@ private fun RoadmapCard() {
 
 @Composable
 private fun AboutCard() {
+    val context = LocalContext.current
     Column(Modifier.padding(16.dp)) {
         Text(
             tr("About"),
@@ -1615,6 +1665,15 @@ private fun AboutCard() {
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+        Spacer(Modifier.height(10.dp))
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            TextButton(onClick = { openTelegram(context) }) { Text(tr("Join Telegram")) }
+            TextButton(onClick = { openCommunity(context, REDDIT_COMMUNITY_URL) }) { Text(tr("Join Reddit")) }
+            TextButton(onClick = { openCommunity(context, DISCORD_INVITE_URL) }) { Text(tr("Join Discord")) }
+        }
     }
 }
 
