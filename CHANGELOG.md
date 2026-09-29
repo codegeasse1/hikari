@@ -4,22 +4,22 @@ Everything new and fixed since the last release (0.10.57):
 
 ### Added
 
-- we added an app lock just for My Stuff (Settings → Privacy & Browsing), so your library, history and downloads can have their own password while the rest of the app stays open
-- we added our community links — Telegram, Reddit (r/HikariApp) and Discord — in the popup and in Settings → About, the popup comes back once per update even if you ticked don't show again
-- we added swipe-to-seek with its own on/off switch, and the timeline stays on screen while you scrub so you can see where you'll land
-- we added a volume booster that actually boosts (up to 200%, works on every phone) and subtitles on by default
-- we added per-extension updates (pick one, two or all), a Test button on every extension, and personal provider folders you can save and tap once
+- I added an app lock just for My Stuff (Settings → Privacy & Browsing), so your library, history and downloads can have their own password while the rest of the app stays open
+- I added our community links — Telegram, Reddit (r/HikariApp) and Discord — in the popup and in Settings → About, the popup comes back once per update even if you ticked don't show again
+- I added swipe-to-seek with its own on/off switch, and the timeline stays on screen while you scrub so you can see where you'll land
+- I added a volume booster that actually boosts (up to 200%, works on every phone) and subtitles on by default
+- I added per-extension updates (pick one, two or all), a Test button on every extension, and personal provider folders you can save and tap once
 - the gear button on an extension now opens that extension's real settings (Stremio, Vega, Aniyomi, CloudStream), and IPTV playlists got a delete button
 
 ### Fixed
 
-- we fixed Telegram channels showing no videos (videos only showed in Saved Messages and bots) and archived chats now show up too
-- we fixed Vega only showing one audio and one server — all audios and all servers are listed now, and picking a season shows that season's episodes instead of season 1's
-- we fixed deleted extension repos coming back on their own after some time — a repo you delete stays deleted now
-- we fixed going back landing you at the top — back now takes you to where you were
-- we fixed extensions that installed fine but showed nothing, CloudStream rows showing wrong items, and poster-only catalogues coming up empty
-- we fixed the audio choice reverting (Hindi switching back to English), live IPTV channels stuck searching instead of re-opening, and TV playback fighting background loading
-- we fixed repo names getting cut off, installed-extension cards blowing up on small phones, and the ±10s buttons sitting off-centre
+- I fixed Telegram channels showing no videos (videos only showed in Saved Messages and bots) and archived chats now show up too
+- I fixed Vega only showing one audio and one server — all audios and all servers are listed now, and picking a season shows that season's episodes instead of season 1's
+- I fixed deleted extension repos coming back on their own after some time — a repo you delete stays deleted now
+- I fixed going back landing you at the top — back now takes you to where you were
+- I fixed extensions that installed fine but showed nothing, CloudStream rows showing wrong items, and poster-only catalogues coming up empty
+- I fixed the audio choice reverting (Hindi switching back to English), live IPTV channels stuck searching instead of re-opening, and TV playback fighting background loading
+- I fixed repo names getting cut off, installed-extension cards blowing up on small phones, and the ±10s buttons sitting off-centre
 - TV remote focus now shows on every player control, the TV home hero stands still, and TV search results and posters fit the screen properly
 - plus a bunch of crash fixes (duplicate-key crashes) and memory hardening across the lists
 
