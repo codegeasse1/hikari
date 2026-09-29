@@ -172,12 +172,13 @@ class AnymexProvider(override val config: ProviderConfig) : ContentProvider {
                     is JSONObject -> {
                         val u = e.optString("url").ifBlank { e.optString("originalUrl") }
                             .ifBlank { e.optString("streamUrl") }.trim()
-                        if (u.isBlank()) return@when
-                        videoTo(
-                            e.optString("quality").ifBlank { e.optString("title") }.ifBlank { config.name },
-                            u, e.optJSONObject("headers"), subsOf(e),
-                            e.optString("quality").ifBlank { e.optString("size") }.trim().ifBlank { null },
-                        )?.let { out += it }
+                        if (u.isNotBlank()) {
+                            videoTo(
+                                e.optString("quality").ifBlank { e.optString("title") }.ifBlank { config.name },
+                                u, e.optJSONObject("headers"), subsOf(e),
+                                e.optString("quality").ifBlank { e.optString("size") }.trim().ifBlank { null },
+                            )?.let { out += it }
+                        }
                     }
                     is String -> if (e.isNotBlank()) videoTo(config.name, e.trim(), null, null, null)?.let { out += it }
                     else -> {}
@@ -200,7 +201,6 @@ class AnymexProvider(override val config: ProviderConfig) : ContentProvider {
                         lang = e.optString("label").ifBlank { e.optString("language") }.ifBlank { "Sub" },
                         url = u,
                     )
-                    else -> {}
                 }
                 is String -> if (e.isNotBlank()) out += SubtitleSource(lang = "Sub", url = e)
             }

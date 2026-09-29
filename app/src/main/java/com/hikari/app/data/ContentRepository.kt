@@ -5304,7 +5304,7 @@ class ContentRepository(private val manager: ProviderManager) {
             ProviderType.VEGA -> com.hikari.app.providers.vega.VegaProvider.streamErrors
             ProviderType.SORA -> com.hikari.app.sora.SoraProvider.streamErrors
             ProviderType.ANYMEX -> com.hikari.app.anymex.AnymexProvider.streamErrors
-            ProviderType.ANYMEX_MANGA -> com.hikari.app.anymex.AnymexMangaProvider.lastOutcome[p.config.id]
+            ProviderType.ANYMEX_MANGA -> com.hikari.app.anymex.AnymexMangaProvider.lastOutcome
             ProviderType.MANGA -> com.hikari.app.manga.MangaProvider.lastOutcome
             ProviderType.IPTV -> IptvProvider.iptvErrors
         }
