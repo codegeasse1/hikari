@@ -612,6 +612,8 @@ class AppStore(private val ctx: Context) {
         /** Whether the first-run television defaults have been applied to this
          *  install already (they must be applied once, not on every launch). */
         val TV_SEEDED = booleanPreferencesKey("tvSeeded")
+        val TV_POSTER_SCALE = intPreferencesKey("tvPosterScale")
+        val TV_DETAIL_BIG = booleanPreferencesKey("tvDetailBig")
         /** The PERFORMANCE BOOSTER (Settings → Performance): one switch that
          *  drops the heaviest work Hikari does on a slow device — the blurred
          *  poster halo, the animated poster/loading treatments, and the width of
@@ -714,6 +716,8 @@ class AppStore(private val ctx: Context) {
             K.PLAYER_ENHANCE_CHOSEN.name,
             K.PLAYER_ENHANCE_UNSUPPORTED.name,
             K.TV_SEEDED.name,
+            K.TV_POSTER_SCALE.name,
+            K.TV_DETAIL_BIG.name,
             K.UI_SCALE_ENABLED.name,
             K.UI_SCALE_PERCENT.name,
             K.FULLSCREEN_OFF.name,
@@ -907,6 +911,18 @@ class AppStore(private val ctx: Context) {
         saveLibraryCategories(
             libraryCategories().map { if (it.id == id) it.copy(name = name.trim()) else it }
         )
+    }
+
+    /** Moves a category one step up (delta = -1) or down (+1), clamping at the ends. */
+    suspend fun moveLibraryCategory(id: String, delta: Int) {
+        val list = libraryCategories().toMutableList()
+        val from = list.indexOfFirst { it.id == id }
+        if (from < 0) return
+        val to = (from + delta).coerceIn(0, list.size - 1)
+        if (to == from) return
+        val c = list.removeAt(from)
+        list.add(to, c)
+        saveLibraryCategories(list)
     }
 
     /** Deletes a category and unfiles every title that was in it. */
@@ -1680,6 +1696,26 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setTvSeeded(seeded: Boolean) {
         write("TV_SEEDED") { it[K.TV_SEEDED] = seeded }
+    }
+
+    fun tvPosterScaleFlow(): Flow<Int> =
+        store.data.map {
+            (it[K.TV_POSTER_SCALE] ?: 100).coerceIn(70, 150)
+        }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun tvPosterScale(): Int = tvPosterScaleFlow().first()
+
+    suspend fun setTvPosterScale(scale: Int) {
+        write("TV_POSTER_SCALE") { it[K.TV_POSTER_SCALE] = scale.coerceIn(70, 150) }
+    }
+
+    fun tvDetailBigFlow(): Flow<Boolean> =
+        store.data.map { it[K.TV_DETAIL_BIG] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun tvDetailBig(): Boolean = tvDetailBigFlow().first()
+
+    suspend fun setTvDetailBig(big: Boolean) {
+        write("TV_DETAIL_BIG") { it[K.TV_DETAIL_BIG] = big }
     }
 
     // ---- The floating bottom bar: which tab buttons the user keeps ----

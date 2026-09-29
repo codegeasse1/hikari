@@ -191,6 +191,9 @@ class PlayerActivity : ComponentActivity() {
         val providerId: String = "",
         /** That provider's display name (the repo plugin's name). */
         val providerName: String = "",
+        /** One extra details line for the row ("1080p · 1.7 GB") — carried
+         *  from the extracting extension (see StreamSource.details). */
+        val details: String = "",
     ) {
         /**
          * True when a probe has already been to this URL and come back with a
@@ -568,6 +571,7 @@ class PlayerActivity : ComponentActivity() {
         provider = provider,
         providerId = providerId,
         providerName = providerName,
+        details = details,
     )
 
     /** The inverse of [toPlayerSource]: a player source as a data-layer source,
@@ -588,6 +592,7 @@ class PlayerActivity : ComponentActivity() {
         provider = provider,
         providerId = providerId,
         providerName = providerName,
+        details = details,
     )
 
     /** Which header set the CURRENT source is being tried with, when a CDN
@@ -1842,6 +1847,7 @@ class PlayerActivity : ComponentActivity() {
                     provider = o.optString("provider"),
                     providerId = o.optString("providerId"),
                     providerName = o.optString("providerName"),
+                    details = o.optString("details"),
                 )
             }
         }.getOrDefault(emptyList())
@@ -5379,6 +5385,10 @@ class PlayerActivity : ComponentActivity() {
         sub = when {
             source.url.startsWith("hikari-td:") -> "Telegram"
             source.local -> "Saved on this device"
+            source.details.isNotBlank() -> listOfNotNull(
+                hostOf(source.url),
+                source.details.take(140),
+            ).joinToString(" · ").ifBlank { null }
             else -> hostOf(source.url)
         },
         badge = when {

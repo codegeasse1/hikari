@@ -937,6 +937,8 @@ fun SettingsScreen(nav: NavHostController) {
                 }
                 SettingsFolder.TV -> {
                     item { SettingsCard(top = 2.dp) { TvDeviceCard(app) } }
+                    item { SettingsCard { TvPosterSizeCard(app) } }
+                    item { SettingsCard { TvDetailStyleCard(app) } }
                     item { SettingsCard { TvOverscanCard(app) } }
                     item { SettingsCard { TvPerformanceCard(app) } }
                     item { SettingsCard { TvRemoteCard() } }
@@ -1654,7 +1656,6 @@ private fun RoadmapCard() {
 
 @Composable
 private fun AboutCard() {
-    val context = LocalContext.current
     Column(Modifier.padding(16.dp)) {
         Text(
             tr("About"),
@@ -2797,6 +2798,73 @@ private fun TvOverscanCard(app: HikariApp) {
             modifier = Modifier.padding(top = 8.dp),
         )
         }
+    }
+}
+
+/**
+ * Poster size on a television, one percent at a time.
+ *
+ * The TV grid sizes its cells from the screen height, which reads small on a
+ * big set across the room. This scales every TV poster 70–150% in 1-point
+ * steps (101, 102… not jumps of ten) — [TvUi.posterWidth] multiplies the cell
+ * by it, so rows and grids grow together. The slider itself is the same
+ * D-pad-workable [SettingsSlider] the screen-edges card uses.
+ */
+@Composable
+private fun TvPosterSizeCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    val flow = remember { app.store.tvPosterScaleFlow() }
+    val stored by flow.collectAsState(initial = 100)
+    var slider by remember { mutableStateOf(stored.toFloat()) }
+    LaunchedEffect(stored) { slider = stored.toFloat() }
+
+    SettingsSection(
+        id = "tv.posterSize",
+        icon = Icons.Filled.PhotoSizeSelectLarge,
+        title = tr("Poster size"),
+        summary = slider.roundToInt().toString() + "%",
+    ) {
+        SettingsSlider(
+            label = tr("How big posters are drawn"),
+            value = slider,
+            valueText = slider.roundToInt().toString() + "%",
+            valueRange = 70f..150f,
+            steps = 80 - 1,
+            onValueChange = { v -> slider = v.roundToInt().toFloat() },
+            onValueChangeFinished = {
+                scope.launch { runCatching { app.store.setTvPosterScale(slider.roundToInt()) } }
+            },
+        )
+    }
+}
+
+/**
+ * The TV detail screen: full-width backdrop art, or the standard page.
+ *
+ * On shows the Nuvio-style detail page — the title art drawn big above the
+ * buttons and rows — off keeps the page as it is now. A plain switch ([SettingsToggle])
+ * like the performance card, so the remote toggles it with OK.
+ */
+@Composable
+private fun TvDetailStyleCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    val flow = remember { app.store.tvDetailBigFlow() }
+    val on by flow.collectAsState(initial = false)
+
+    SettingsSection(
+        id = "tv.detailStyle",
+        icon = Icons.Filled.Movie,
+        title = tr("TV details screen"),
+        summary = if (on) tr("On — big title art") else tr("Off — standard page"),
+    ) {
+        SettingsToggle(
+            label = tr("Big title art on TV"),
+            supporting = tr("Draw the detail image large above the content"),
+            checked = on,
+            onCheckedChange = { value ->
+                scope.launch { runCatching { app.store.setTvDetailBig(value) } }
+            },
+        )
     }
 }
 

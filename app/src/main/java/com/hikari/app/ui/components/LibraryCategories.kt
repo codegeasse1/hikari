@@ -268,6 +268,7 @@ fun CategoryManagerSheet(
     onRename: (String, String) -> Unit,
     onDelete: (String) -> Unit,
     onCreate: (String) -> Unit,
+    onMove: (String, Int) -> Unit = { _, _ -> },
     onDismiss: () -> Unit,
 ) {
     var newName by remember { mutableStateOf("") }
@@ -356,6 +357,36 @@ fun CategoryManagerSheet(
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.padding(end = 6.dp),
+                                )
+                            }
+                            Icon(
+                                Icons.Filled.DragHandle,
+                                contentDescription = tr("Reorder"),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier
+                                    .size(22.dp)
+                                    .padding(end = 2.dp),
+                            )
+                            IconButton(
+                                enabled = categories.indexOfFirst { it.id == c.id } > 0,
+                                onClick = { onMove(c.id, -1) },
+                            ) {
+                                Icon(
+                                    Icons.Filled.KeyboardArrowUp,
+                                    contentDescription = tr("Move up"),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(20.dp),
+                                )
+                            }
+                            IconButton(
+                                enabled = categories.indexOfFirst { it.id == c.id } < categories.size - 1,
+                                onClick = { onMove(c.id, 1) },
+                            ) {
+                                Icon(
+                                    Icons.Filled.KeyboardArrowDown,
+                                    contentDescription = tr("Move down"),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(20.dp),
                                 )
                             }
                             IconButton(onClick = { onDelete(c.id) }) {

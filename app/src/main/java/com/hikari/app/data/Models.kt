@@ -18,7 +18,26 @@ enum class ProviderType {
      * and the manga detail screen are the screens that open on them (see
      * com.hikari.app.manga).
      */
-    MANGA;
+    MANGA,
+    /**
+     * A SORA module — one self-contained `.js` file speaking the Sora module
+     * interface (`searchResults` / `extractDetails` / `extractEpisodes` /
+     * `extractStreamUrl` over the `fetchv2` bridge), installed from a Sora
+     * manifest (see com.hikari.app.sora).
+     */
+    SORA,
+    /**
+     * An ANYMEX anime source — a Mangayomi-format JavaScript extension
+     * (`MProvider` subclass) installed from an Anymex/Mangayomi index
+     * (see com.hikari.app.anymex).
+     */
+    ANYMEX,
+    /**
+     * An ANYMEX manga source — the same format as [ANYMEX] but a manga
+     * extension, so its catalogues are titles, its "episodes" chapters and its
+     * "streams" page images, and the reader is the screen that opens on them.
+     */
+    ANYMEX_MANGA;
 
     /**
      * Which section of the player's server chooser a source from this engine
@@ -37,6 +56,9 @@ enum class ProviderType {
             SKYSTREAM -> "SkyStream"
             ANIYOMI -> "Aniyomi"
             MANGA -> "Manga"
+            SORA -> "Sora"
+            ANYMEX -> "Anymex"
+            ANYMEX_MANGA -> "Anymex"
             IPTV -> "IPTV"
             HIKARI, UNIVERSAL -> "Hikari"
         }
@@ -68,7 +90,7 @@ data class ProviderConfig(
 )
 
 /** A CloudStream-style plugin repository (repo.json → pluginLists → plugin list). */
-enum class RepoKind { CS3, HIKARI, NUVIO, SKYSTREAM, ANIYOMI, VEGA }
+enum class RepoKind { CS3, HIKARI, NUVIO, SKYSTREAM, ANIYOMI, VEGA, SORA, ANYMEX }
 
 /**
  * A user-made PROVIDER FOLDER: a name, and the provider ids it holds (see
@@ -479,6 +501,14 @@ data class StreamSource(
     /** The installed provider's display name. The player's server chooser uses
      *  it for the heading of that provider's own section. */
     val providerName: String = "",
+    /**
+     * One extra details line for the server rows ("1080p • 1.7 GB", "Dub •
+     * 24 min"), carried from the extracting extension so the server chooser
+     * can show it under the host. Blank when the engine knows nothing beyond
+     * the name — Stremio addons fill it from the stream's description, Nuvio
+     * providers already bake it into the name.
+     */
+    val details: String = "",
     /**
      * For a manga page: the URL of the page ON THE SITE, i.e. the reader's
      * `Page.url` — `url` above is the image. The video player ignores this; the

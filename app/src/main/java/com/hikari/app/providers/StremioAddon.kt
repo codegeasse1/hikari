@@ -1136,6 +1136,7 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
             val ytId = st.optString("ytId").ifBlank { null }
             val externalUrl = st.optString("externalUrl").ifBlank { null }
             val subs = parseSubs(st.optJSONArray("subtitles"))
+            val details = compactDetails(st.optString("description"), name)
             // Headers some addons require the stream to be fetched with
             // (behaviorHints.proxyHeaders.request, e.g. an auth header).
             val proxyHeaders = st.optJSONObject("behaviorHints")
@@ -1156,6 +1157,7 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
                     name = name.ifBlank { "Torrent" },
                     url = "",
                     subtitles = subs,
+                    details = details,
                     isTorrent = true,
                     infoHash = infoHash,
                     fileIdx = if (st.has("fileIdx") && !st.isNull("fileIdx")) st.optInt("fileIdx") else null,
@@ -1165,18 +1167,21 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
                     name = name.ifBlank { "YouTube" },
                     url = "",
                     subtitles = subs,
+                    details = details,
                     ytId = ytId,
                 )
                 externalUrl != null -> out += StreamSource(
                     name = name.ifBlank { "External" },
                     url = externalUrl,
                     subtitles = subs,
+                    details = details,
                     externalUrl = true,
                 )
                 magnet != null -> out += StreamSource(
                     name = name.ifBlank { "Torrent" },
                     url = magnet,
                     subtitles = subs,
+                    details = details,
                     isTorrent = true,
                     infoHash = magnetHash(magnet),
                     fileIdx = magnetIndex(magnet),
@@ -1187,6 +1192,7 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
                     url = streamUrl,
                     headers = proxyHeaders,
                     subtitles = subs,
+                    details = details,
                     isM3u8 = streamUrl.contains(".m3u8", true) || streamUrl.contains("master.txt", true),
                     isMpd = streamUrl.contains(".mpd", true),
                 )
@@ -1210,6 +1216,16 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
             val raw = m.groupValues.getOrNull(1)?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
             runCatching { java.net.URLDecoder.decode(raw, "UTF-8") }.getOrDefault(raw)
         }.distinct().toList()
+
+    private fun compactDetails(description: String, name: String): String {
+        var d = description.replace(Regex("\\s+"), " ").trim()
+        if (d.isEmpty()) return ""
+        val n = name.replace(Regex("\\s+"), " ").trim()
+        if (n.isNotEmpty() && d.startsWith(n, ignoreCase = true)) {
+            d = d.removeRange(0, n.length).trim(' ', '·', '-', '|', ':')
+        }
+        return d.take(140)
+    }
 
     /**
      * True when a `streams[]` row is a MESSAGE rather than a video.

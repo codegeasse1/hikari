@@ -524,6 +524,12 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                         ?: com.hikari.app.aniyomi.AniyomiProvider.streamErrors[item.providerId]
                 ProviderType.VEGA ->
                     com.hikari.app.providers.vega.VegaProvider.streamErrors[item.providerId]
+                ProviderType.SORA ->
+                    com.hikari.app.sora.SoraProvider.streamErrors[item.providerId]
+                ProviderType.ANYMEX ->
+                    com.hikari.app.anymex.AnymexProvider.streamErrors[item.providerId]
+                ProviderType.ANYMEX_MANGA ->
+                    com.hikari.app.anymex.AnymexMangaProvider.lastOutcome[item.providerId]
                 ProviderType.IPTV ->
                     com.hikari.app.providers.IptvProvider.iptvErrors[item.providerId]
                 else -> null
@@ -1261,6 +1267,12 @@ private fun providerOutcomeLine(p: ContentProvider): String? {
                 ?: com.hikari.app.aniyomi.AniyomiProvider.streamErrors[p.config.id]
         ProviderType.VEGA ->
             com.hikari.app.providers.vega.VegaProvider.streamErrors[p.config.id]
+        ProviderType.SORA ->
+            com.hikari.app.sora.SoraProvider.streamErrors[p.config.id]
+        ProviderType.ANYMEX ->
+            com.hikari.app.anymex.AnymexProvider.streamErrors[p.config.id]
+        ProviderType.ANYMEX_MANGA ->
+            com.hikari.app.anymex.AnymexMangaProvider.lastOutcome[p.config.id]
         else -> null
     }
     return msg?.takeIf { !com.hikari.app.net.CloudflareVerifier.isVerificationMessage(it) }
@@ -1541,6 +1553,11 @@ fun DetailScreen(
     // blurred backdrop, or no art at all).
     val detailHeroFlow = remember { detailApp.store.detailHeroStyleFlow() }
     val detailHeroStyle by detailHeroFlow.collectAsState(initial = DetailHeroStyles.WIDE)
+    val tvDetailBigFlow = remember { detailApp.store.tvDetailBigFlow() }
+    val tvDetailBig by tvDetailBigFlow.collectAsState(initial = false)
+    val heroStyle =
+        if (com.hikari.app.tv.TvMode.current() && tvDetailBig) DetailHeroStyles.TALL
+        else detailHeroStyle
     // How big the title LOGO is drawn (Settings → App Layout → Details header →
     // Title logo size), in percent of the size it has always been drawn at.
     val detailLogoFlow = remember { detailApp.store.detailLogoSizeFlow() }
@@ -2956,7 +2973,7 @@ fun DetailScreen(
                 // measured against the real thing.
                 .onSizeChanged { headerPx = it.height }
         ) {
-            Hero(meta, posterUrl, onBack = { nav.popBackStack() }, style = detailHeroStyle)
+            Hero(meta, posterUrl, onBack = { nav.popBackStack() }, style = heroStyle)
         }
     }
 
@@ -4781,6 +4798,7 @@ private fun playerPayload(streams: List<StreamSource>): String? = runCatching {
                     // "Select server", and starts playback on its server.
                     .put("providerId", s.providerId)
                     .put("providerName", s.providerName)
+                    .put("details", s.details)
                     .put("infoHash", s.infoHash ?: "")
                     .put("fileIdx", s.fileIdx ?: -1)
                     .put(

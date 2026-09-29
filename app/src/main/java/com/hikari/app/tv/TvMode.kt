@@ -5,7 +5,10 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.unit.dp
 
 /**
@@ -239,7 +242,11 @@ object TvUi {
     fun posterWidth(): androidx.compose.ui.unit.Dp {
         if (!TvMode.current()) return 120.dp
         val h = androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp
-        return (h * 0.15f).coerceIn(48f, (POSTER_WIDTH_DP / 2).toFloat()).dp
+        val app = remember { runCatching { com.hikari.app.HikariApp.instance }.getOrNull() }
+        val scalePct by (app?.store?.tvPosterScaleFlow()
+            ?: kotlinx.coroutines.flow.flowOf(100)).collectAsState(initial = 100)
+        val scale = (scalePct.coerceIn(70, 150)) / 100f
+        return (h * 0.15f * scale).coerceIn(40f, 150f).dp
     }
 
     /** [gridMin], but sized from the screen rather than a constant — see

@@ -4454,6 +4454,12 @@ class ContentRepository(private val manager: ProviderManager) {
                     // else can still be found by name there and its streams
                     // extracted through the same search → meta → stream path.
                     ProviderType.VEGA -> true
+                    // Sora sources export their own search too
+                    // (`searchResults`), so they are asked exactly like the
+                    // other site-scraper families.
+                    ProviderType.SORA -> true
+            ProviderType.ANYMEX -> true
+            ProviderType.ANYMEX_MANGA -> true
                     // An IPTV playlist carries its whole channel list locally
                     // once read, so "is this title on any of my channels?" costs
                     // a string scan — and a VOD/24-7 playlist genuinely can hold
@@ -4885,6 +4891,9 @@ class ContentRepository(private val manager: ProviderManager) {
         ProviderType.SKYSTREAM -> com.hikari.app.skystream.SkyStreamProvider.streamErrors[p.config.id]
         ProviderType.ANIYOMI -> com.hikari.app.aniyomi.AniyomiProvider.streamErrors[p.config.id]
         ProviderType.VEGA -> com.hikari.app.providers.vega.VegaProvider.streamErrors[p.config.id]
+        ProviderType.SORA -> com.hikari.app.sora.SoraProvider.streamErrors[p.config.id]
+            ProviderType.ANYMEX -> com.hikari.app.anymex.AnymexProvider.streamErrors[p.config.id]
+            ProviderType.ANYMEX_MANGA -> com.hikari.app.anymex.AnymexMangaProvider.lastOutcome
         ProviderType.IPTV -> IptvProvider.iptvErrors[p.config.id]
         ProviderType.MANGA -> com.hikari.app.manga.MangaProvider.lastOutcome[p.config.id]
     }
@@ -5293,6 +5302,9 @@ class ContentRepository(private val manager: ProviderManager) {
             ProviderType.SKYSTREAM -> com.hikari.app.skystream.SkyStreamProvider.streamErrors
             ProviderType.ANIYOMI -> com.hikari.app.aniyomi.AniyomiProvider.streamErrors
             ProviderType.VEGA -> com.hikari.app.providers.vega.VegaProvider.streamErrors
+            ProviderType.SORA -> com.hikari.app.sora.SoraProvider.streamErrors
+            ProviderType.ANYMEX -> com.hikari.app.anymex.AnymexProvider.streamErrors
+            ProviderType.ANYMEX_MANGA -> com.hikari.app.anymex.AnymexMangaProvider.lastOutcome
             ProviderType.MANGA -> com.hikari.app.manga.MangaProvider.lastOutcome
             ProviderType.IPTV -> IptvProvider.iptvErrors
         }
@@ -5575,6 +5587,9 @@ class ContentRepository(private val manager: ProviderManager) {
                         ProviderType.SKYSTREAM,
                         ProviderType.ANIYOMI,
                         ProviderType.VEGA,
+                        ProviderType.SORA,
+                        ProviderType.ANYMEX,
+                        ProviderType.ANYMEX_MANGA,
                         ProviderType.IPTV -> true
                         else -> false
                     }

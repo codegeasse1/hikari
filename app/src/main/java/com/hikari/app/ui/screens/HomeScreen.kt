@@ -929,8 +929,39 @@ fun HomeScreen(nav: NavHostController) {
                     // OK to multi-pick, instead of the phone's floating pill
                     // and sheet (which stay as the overflow via ▦).
                     if (TvMode.current()) {
+                        var tvProvQuery by rememberSaveable { mutableStateOf("") }
+                        val stripProviders = if (tvProvQuery.isBlank()) activeProviders
+                        else activeProviders.filter {
+                            it.config.name.contains(tvProvQuery.trim(), ignoreCase = true)
+                        }
+                        OutlinedTextField(
+                            value = tvProvQuery,
+                            onValueChange = { tvProvQuery = it },
+                            singleLine = true,
+                            textStyle = MaterialTheme.typography.bodyMedium,
+                            placeholder = {
+                                Text(
+                                    tr("Search providers…"),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    Icons.Filled.Search,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                            },
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = 12.dp, end = 12.dp, top = 8.dp)
+                                .tvTextFieldKeys(tvProvQuery),
+                        )
                         TvProviderStrip(
-                            providers = activeProviders,
+                            providers = stripProviders,
                             selection = selection,
                             onPickSingle = { vm.selectProvider(it) },
                             onPickAll = { vm.setSelection(emptyList()) },

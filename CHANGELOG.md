@@ -1,3 +1,18 @@
+## Unreleased
+
+### Added
+
+- I added Anymex/Mangayomi extension repos (anime_index.json, index.json, novel_index.json) with JavaScript anime and manga extensions that install, search and play like every other engine
+- I added a TV poster-size slider (Settings → TV & Remote, 70–150% in 1-point steps, remote-friendly)
+- I added a TV details-screen switch (Settings → TV & Remote) that draws the title art big like the reference TV app
+- I added a provider search box above the TV provider strip so a long extension list narrows as you type
+- Servers now show a details line under the host (quality, size) wherever the extension provides it
+- Library categories can be moved up and down from the category manager
+
+### Fixed
+
+- I fixed Test on uninstalled extensions so it validates the actual source (script entry points, a live search probe for Sora, package checks for APKs) instead of only saying the download worked, and Test all is always shown for the installed ones
+
 ## 0.10.66
 
 Everything new and fixed since the last release (0.10.57):

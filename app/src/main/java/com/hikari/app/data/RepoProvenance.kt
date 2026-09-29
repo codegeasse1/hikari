@@ -35,7 +35,8 @@ object RepoProvenance {
         val raw = when (c.type) {
             ProviderType.HIKARI -> c.extra?.substringBeforeLast('|')
             ProviderType.CS3, ProviderType.NUVIO, ProviderType.SKYSTREAM,
-            ProviderType.ANIYOMI, ProviderType.MANGA, ProviderType.VEGA -> c.extra?.substringBefore('|')
+            ProviderType.ANIYOMI, ProviderType.MANGA, ProviderType.VEGA,
+            ProviderType.SORA, ProviderType.ANYMEX, ProviderType.ANYMEX_MANGA -> c.extra?.substringBefore('|')
             else -> null
         }?.trim()
         return raw?.takeIf { it.startsWith("http://", true) || it.startsWith("https://", true) }

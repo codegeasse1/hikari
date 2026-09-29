@@ -518,6 +518,15 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         return try {
             val cats = withTimeoutOrNull(15_000) { p.catalogs() }.orEmpty()
             if (cats.isEmpty()) {
+                // Catalogue-less engines (Sora sources publish search, not
+                // shelves): prove the source works with a live search instead.
+                if (p.config.type == ProviderType.SORA || p.config.type == ProviderType.ANYMEX || p.config.type == ProviderType.ANYMEX_MANGA) {
+                    val hits = withTimeoutOrNull(30_000) { p.search("One Piece", 1) }.orEmpty()
+                    return if (hits.isNotEmpty()) ProviderTest(
+                        false, "Working — " + hits.size + " titles for \u201cOne Piece\u201d.", true
+                    )
+                    else ProviderTest(false, "Search answered nothing — check the source.", false)
+                }
                 val subOnly = p.config.type == ProviderType.STREMIO &&
                     runCatching { (p as com.hikari.app.providers.StremioAddon).isSubtitleOnly() }
                         .getOrDefault(false)
@@ -571,13 +580,110 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 val mb = bytes.size / 1048576.0
                 val size = if (mb >= 1) "%.1f MB".format(mb) else (bytes.size / 1024).toString() + " KB"
-                setTest(key, ProviderTest(false, "Download OK (" + size + ") — host reachable.", true))
+                val verdict = validateListingBytes(p.url, bytes)
+                if (verdict != null) {
+                    setTest(key, ProviderTest(false, verdict, false))
+                    return@launch
+                }
+                val deep = probeListingSource(p.url, bytes, size)
+                setTest(key, ProviderTest(false, deep.first, deep.second))
             } catch (t: Throwable) {
                 if (t is kotlinx.coroutines.CancellationException) throw t
                 setTest(key, ProviderTest(false, (t.message ?: "Failed").take(160), false))
             } finally {
                 testGate.release()
             }
+        }
+    }
+
+    private suspend fun probeListingSource(url: String, bytes: ByteArray, size: String): Pair<String, Boolean> {
+        val u = url.trim()
+        if (!u.endsWith(".js", true)) {
+            return ("Working — valid source (" + size + ").") to true
+        }
+        val src = runCatching { String(bytes, Charsets.UTF_8) }.getOrNull().orEmpty()
+        if (src.isBlank()) return ("Downloaded file is empty.") to false
+        val ctx = HikariApp.instance
+        val soraVerdict = runCatching {
+            kotlinx.coroutines.withTimeoutOrNull(25_000) {
+                com.hikari.app.sora.SoraRuntime.validate(ctx, src)
+            }
+        }.getOrNull()
+        if (soraVerdict != null && soraVerdict.startsWith("OK")) {
+            val hits = runCatching {
+                val tmp = java.io.File(ctx.cacheDir, "probe-" + (url.hashCode().toString().replace('-', 'n')) + ".js")
+                tmp.writeText(src)
+                val raw = kotlinx.coroutines.withTimeoutOrNull(45_000) {
+                    com.hikari.app.sora.SoraRuntime.search(tmp, "probe", "One Piece")
+                }
+                runCatching { tmp.delete() }
+                raw
+            }.getOrNull()
+            val count = runCatching {
+                val a = org.json.JSONArray(hits ?: "[]")
+                a.length()
+            }.getOrDefault(-1)
+            return if (count > 0) {
+                ("Working — " + count + " titles for \u201cOne Piece\u201d (" + size + ").") to true
+            } else {
+                ("Valid Sora source (" + size + ") — search answered nothing." ) to false
+            }
+        }
+        if (soraVerdict != null && soraVerdict.startsWith("ERR:")) {
+            return ("Script failed to load: " + soraVerdict.removePrefix("ERR:").take(120)) to false
+        }
+        val info = runCatching {
+            kotlinx.coroutines.withTimeoutOrNull(25_000) {
+                com.hikari.app.anymex.AnymexRuntime.inspect(ctx, src)
+            }
+        }.getOrNull()
+        if (info != null && info.ok) {
+            return ("Working — valid Anymex " + (if (info.isManga) "manga" else "anime") +
+                " extension (" + size + ").") to true
+        }
+        return ("File downloaded but it has no source entry points.") to false
+    }
+
+    private fun validateListingBytes(url: String, bytes: ByteArray): String? {
+        val u = url.trim()
+        return try {
+            when {
+                u.endsWith(".js", true) -> {
+                    val src = runCatching { String(bytes, Charsets.UTF_8) }.getOrNull().orEmpty()
+                    if (src.isBlank()) return "Downloaded file is empty."
+                    if (url.contains("anymex", true) || url.contains("mangayomi", true)) {
+                        if (!src.contains("DefaultExtension") || !src.contains("MProvider"))
+                            return "File downloaded but it is not an Anymex extension."
+                    } else if (!src.contains("searchResults") && !src.contains("extractStreamUrl") &&
+                        !src.contains("MProvider") && !src.contains("DefaultExtension")
+                    ) {
+                        return "File downloaded but it has no source entry points."
+                    }
+                    null
+                }
+                u.endsWith(".apk", true) || u.endsWith(".ext", true) -> {
+                    if (bytes.size < 4) return "Downloaded file is empty."
+                    val zipMagic = bytes[0] == 0x50.toByte() && bytes[1] == 0x4B.toByte()
+                    if (!zipMagic) return "File downloaded but it is not a valid extension package."
+                    null
+                }
+                u.endsWith(".zip", true) -> {
+                    if (bytes.size < 4) return "Downloaded file is empty."
+                    val zipMagic = bytes[0] == 0x50.toByte() && bytes[1] == 0x4B.toByte()
+                    if (!zipMagic) return "File downloaded but it is not a valid archive."
+                    null
+                }
+                else -> {
+                    val text = runCatching { String(bytes, Charsets.UTF_8) }.getOrNull().orEmpty()
+                    if (text.isBlank()) return "Downloaded file is empty."
+                    val trimmed = text.trimStart()
+                    if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return "File downloaded but it is not JSON."
+                    null
+                }
+            }
+        } catch (t: Throwable) {
+            if (t is kotlinx.coroutines.CancellationException) throw t
+            "Downloaded but could not verify: " + (t.message ?: "error").take(80)
         }
     }
 
@@ -1152,7 +1258,8 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 val extra = p.extra ?: return@forEach
                 val source = when (p.type) {
                     ProviderType.CS3, ProviderType.NUVIO, ProviderType.SKYSTREAM,
-                    ProviderType.ANIYOMI, ProviderType.MANGA, ProviderType.VEGA -> extra
+                    ProviderType.ANIYOMI, ProviderType.MANGA, ProviderType.VEGA,
+                    ProviderType.SORA, ProviderType.ANYMEX, ProviderType.ANYMEX_MANGA -> extra
                     ProviderType.HIKARI -> extra.substringBeforeLast('|')
                     else -> return@forEach
                 }
@@ -1244,6 +1351,41 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         requestRefresh()
         return removed
     }
+
+    /** Registers a Sora (AnymeX) source URL — one `sourceName` + `scriptUrl`
+     *  descriptor, or a JSON array of them (see
+     *  [com.hikari.app.sora.SoraPluginManager.repoPlugins]). */
+    suspend fun addSoraRepo(rawUrl: String): Result<Cs3Repo> = addRepo(rawUrl, RepoKind.SORA)
+
+    /** Installs one Sora source: its `.js` is downloaded and validated in the
+     *  QuickJS runtime ([com.hikari.app.sora.SoraPluginManager.install]). */
+    suspend fun installSoraPlugin(plugin: Cs3RepoPlugin): Result<Int> =
+        com.hikari.app.sora.SoraPluginManager
+            .install(getApplication<Application>(), plugin)
+            .also { requestRefresh() }
+
+    /** Removes every SORA source installed from [pluginUrl]. Returns how many
+     *  installed sources were actually removed. */
+    suspend fun uninstallSoraPlugin(pluginUrl: String): Int {
+        val removed = com.hikari.app.sora.SoraPluginManager
+            .uninstall(getApplication<Application>(), pluginUrl)
+        requestRefresh()
+        return removed
+    
+
+    suspend fun addAnymexRepo(rawUrl: String): Result<Cs3Repo> = addRepo(rawUrl, RepoKind.ANYMEX)
+
+    suspend fun installAnymexPlugin(plugin: Cs3RepoPlugin): Result<Int> =
+        com.hikari.app.anymex.AnymexPluginManager
+            .install(HikariApp.instance, plugin)
+            .onSuccess { reloadInstalled() }
+
+    suspend fun uninstallAnymexPlugin(pluginUrl: String): Int {
+        val removed = com.hikari.app.anymex.AnymexPluginManager
+            .uninstall(HikariApp.instance, pluginUrl)
+        if (removed > 0) reloadInstalled()
+        return removed
+    }}
 
     /** Registers a SkyStream extension repository (`repo.json`). A bare
      *  shortcode is resolved through [SkyStreamPluginManager.resolveRepoUrl]
@@ -1713,6 +1855,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         // CommonJS modules under `dist/<value>`. Zenda-Cross's repo is the
         // upstream one every Vega front end reads.
         fun vega(url: String) = RepoAlias(url, RepoKind.VEGA)
+        fun anymex(url: String) = RepoAlias(url, RepoKind.ANYMEX)
         val vegaOfficial = vega(
             "https://raw.githubusercontent.com/Zenda-Cross/vega-providers/main/manifest.json"
         )
@@ -1930,6 +2073,87 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 // Hoisted for the bundle check at the tail of this function: a
                 // Vega manifest has no JSONObject at all (see below).
                 var obj: JSONObject? = null
+                if (kind == RepoKind.SORA) {
+                    // A Sora URL names the document itself (one descriptor or
+                    // an array of them) — nothing is appended. The pasted URL
+                    // is tried first, then its jsDelivr mirror.
+                    val soraCandidates = listOfNotNull(url, jsDelivrMirror(url))
+                    var soraText: String? = null
+                    var soraGood = url
+                    for (c in soraCandidates) {
+                        val body = Http.fetchStringRobust(c, emptyMap(), 30L).getOrNull()
+                        if (body != null && !looksLikeHtml(body)) {
+                            soraText = body
+                            soraGood = c
+                            break
+                        }
+                    }
+                    val body = soraText
+                        ?: throw Exception("Could not fetch repo: $url")
+                    val plugins = com.hikari.app.sora.SoraPluginManager
+                        .repoPlugins(body, soraGood)
+                    if (plugins.isEmpty()) {
+                        // Pasted into the wrong flow? A Sora descriptor under
+                        // an Aniyomi dialog (or vice versa) fails with a file
+                        // error that says nothing — name the right flow.
+                        val aniyomiCount = runCatching {
+                            com.hikari.app.aniyomi.AniyomiExtensionManager
+                                .indexEntries(body)?.length() ?: 0
+                        }.getOrDefault(0)
+                        if (aniyomiCount > 0) {
+                            throw Exception("That file is an Aniyomi/Mihon index — add it as an Aniyomi repo instead")
+                        }
+                        throw Exception("That file lists no Sora sources")
+                    }
+                    val repo = Cs3Repo(
+                        url = soraGood,
+                        name = niceRepoName(url, ""),
+                        description = "Sora (AnymeX) source repository",
+                        kind = kind,
+                    )
+                    lastGoodRepoUrl = soraGood
+                    store.addCs3Repo(repo)
+                    val saved = store.repos().firstOrNull {
+                        com.hikari.app.data.SourceUrls.repoKey(it.url) ==
+                            com.hikari.app.data.SourceUrls.repoKey(repo.url)
+                    }
+                    repos.value = store.repos()
+                    return@withContext Result.success(saved ?: repo)
+                }
+                if (kind == RepoKind.ANYMEX) {
+                    val axCandidates = listOfNotNull(url, jsDelivrMirror(url))
+                    var axText: String? = null
+                    var axGood = url
+                    for (c in axCandidates) {
+                        val body = Http.fetchStringRobust(c, emptyMap(), 30L).getOrNull()
+                        if (body != null && !looksLikeHtml(body)) {
+                            axText = body
+                            axGood = c
+                            break
+                        }
+                    }
+                    val axBody = axText
+                        ?: throw Exception("Could not fetch repo: $url")
+                    val axPlugins = com.hikari.app.anymex.AnymexPluginManager
+                        .repoPlugins(axBody, axGood)
+                    if (axPlugins.isEmpty()) {
+                        throw Exception("That file lists no Anymex extensions")
+                    }
+                    val repo = Cs3Repo(
+                        url = axGood,
+                        name = niceRepoName(url, ""),
+                        description = "Anymex (Mangayomi) extension repository",
+                        kind = kind,
+                    )
+                    lastGoodRepoUrl = axGood
+                    store.addCs3Repo(repo)
+                    val saved = store.repos().firstOrNull {
+                        com.hikari.app.data.SourceUrls.repoKey(it.url) ==
+                            com.hikari.app.data.SourceUrls.repoKey(repo.url)
+                    }
+                    repos.value = store.repos()
+                    return@withContext Result.success(saved ?: repo)
+                }
                 if (kind == RepoKind.VEGA) {
                     // A Vega manifest is a BARE JSON ARRAY, so it never parses
                     // as a JSONObject — validating it means asking the Vega
@@ -2168,6 +2392,38 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             com.hikari.app.providers.vega.VegaPluginManager.repoPlugins(text, repo.url)
                 .forEach { out[it.url] = it }
             return out.values.toList() to null
+        }
+        if (repo.kind == RepoKind.ANYMEX) {
+            val candidatesAx = listOfNotNull(repo.url, jsDelivrMirror(repo.url))
+            var lastErrAx: Throwable? = null
+            for (c in candidatesAx) {
+                val text = Http.fetchStringRobust(c, emptyMap(), 30L).getOrNull()
+                if (text == null || looksLikeHtml(text)) {
+                    lastErrAx = Exception("Could not fetch repo")
+                    continue
+                }
+                val plugins = com.hikari.app.anymex.AnymexPluginManager.repoPlugins(text, c)
+                if (plugins.isNotEmpty()) return plugins to null
+                lastErrAx = Exception("That file lists no Anymex extensions")
+            }
+            throw lastErrAx ?: Exception("Could not fetch repo: ${repo.url}")
+        }
+        if (repo.kind == RepoKind.SORA) {
+            // A Sora repo URL names the document itself — fetched as-is (plus
+            // its jsDelivr mirror), never with a file name appended.
+            val candidates = listOfNotNull(repo.url, jsDelivrMirror(repo.url))
+            var lastErr: Throwable? = null
+            for (c in candidates) {
+                val text = Http.fetchStringRobust(c, emptyMap(), 30L).getOrNull()
+                if (text == null || looksLikeHtml(text)) {
+                    lastErr = Exception("Could not fetch repo")
+                    continue
+                }
+                val plugins = com.hikari.app.sora.SoraPluginManager.repoPlugins(text, c)
+                if (plugins.isNotEmpty()) return plugins to null
+                lastErr = Exception("That file lists no Sora sources")
+            }
+            throw lastErr ?: Exception("Could not fetch repo: ${repo.url}")
         }
         val file = when (repo.kind) {
             RepoKind.NUVIO -> "manifest.json"
@@ -2614,6 +2870,8 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             RepoKind.SKYSTREAM -> "extension"
             RepoKind.ANIYOMI -> "extension"
             RepoKind.VEGA -> "provider"
+            RepoKind.SORA -> "source"
+                                    RepoKind.ANYMEX -> "extension"
             RepoKind.CS3 -> "plugin"
         }
         val pending = plugins.filterNot { SourceUrls.anyKeyIn(it.url, installedUrls) }
@@ -2650,6 +2908,10 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                                 RepoKind.SKYSTREAM -> installSkyStreamPlugin(p)
                                 RepoKind.ANIYOMI -> installAniyomiPlugin(p)
                                 RepoKind.VEGA -> installVegaPlugin(p)
+                                RepoKind.SORA -> installSoraPlugin(p)
+                                 RepoKind.ANYMEX -> installAnymexPlugin(p)
+                                RepoKind.SORA -> installSoraPlugin(p)
+                                 RepoKind.ANYMEX -> installAnymexPlugin(p)
                             }
                         }
                     }.getOrNull()
@@ -2805,6 +3067,8 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                                 RepoKind.SKYSTREAM -> installSkyStreamPlugin(p)
                                 RepoKind.ANIYOMI -> installAniyomiPlugin(p)
                                 RepoKind.VEGA -> installVegaPlugin(p)
+                                RepoKind.SORA -> installSoraPlugin(p)
+                                 RepoKind.ANYMEX -> installAnymexPlugin(p)
                             }
                         }
                     }.getOrNull()
@@ -3154,6 +3418,8 @@ fun ExtensionsScreen() {
                 RepoKind.SKYSTREAM -> vm.installSkyStreamPlugin(p)
                 RepoKind.ANIYOMI -> vm.installAniyomiPlugin(p)
                 RepoKind.VEGA -> vm.installVegaPlugin(p)
+                RepoKind.SORA -> vm.installSoraPlugin(p)
+                 RepoKind.ANYMEX -> vm.installAnymexPlugin(p)
             }
             // The listing's own 18+ tag goes onto the rows that were just
             // created, so with the adult-content switch off an adult extension
@@ -3175,6 +3441,8 @@ fun ExtensionsScreen() {
                 RepoKind.SKYSTREAM -> vm.uninstallSkyStreamPlugin(p.url)
                 RepoKind.ANIYOMI -> vm.uninstallAniyomiPlugin(p.url)
                 RepoKind.VEGA -> vm.uninstallVegaPlugin(p.url)
+                RepoKind.SORA -> vm.uninstallSoraPlugin(p.url)
+                 RepoKind.ANYMEX -> vm.uninstallAnymexPlugin(p.url)
             }
         }
     }
@@ -3307,6 +3575,8 @@ fun ExtensionsScreen() {
                     SourceFolder.SKYSTREAM -> RepoKind.SKYSTREAM
                     SourceFolder.ANIYOMI -> RepoKind.ANIYOMI
                     SourceFolder.VEGA -> RepoKind.VEGA
+                    SourceFolder.SORA -> RepoKind.SORA
+                     SourceFolder.ANYMEX -> RepoKind.ANYMEX
                     else -> RepoKind.CS3
                 }
                 showRepoDialog = true
@@ -3389,6 +3659,8 @@ fun ExtensionsScreen() {
             onAddSkyStreamRepo = { vm.clearStatus(); repoDialogKind = RepoKind.SKYSTREAM; showRepoDialog = true },
             onAddAniyomiRepo = { vm.clearStatus(); repoDialogKind = RepoKind.ANIYOMI; showRepoDialog = true },
             onAddVegaRepo = { vm.clearStatus(); repoDialogKind = RepoKind.VEGA; showRepoDialog = true },
+            onAddSoraRepo = { vm.clearStatus(); repoDialogKind = RepoKind.SORA; showRepoDialog = true },
+             onAddAnymexRepo = { vm.clearStatus(); repoDialogKind = RepoKind.ANYMEX; showRepoDialog = true },
             onAddStremio = { vm.clearStatus(); showStremio = true },
             onAddIptv = { vm.clearStatus(); showIptv = true },
             onToggleProvider = { id, enabled -> scope.launch { vm.toggle(id, enabled) } },
@@ -3489,6 +3761,8 @@ fun ExtensionsScreen() {
         val isSky = repoDialogKind == RepoKind.SKYSTREAM
         val isAniyomi = repoDialogKind == RepoKind.ANIYOMI
         val isVega = repoDialogKind == RepoKind.VEGA
+        val isSora = repoDialogKind == RepoKind.SORA
+        val isAnymex = repoDialogKind == RepoKind.ANYMEX
         AlertDialog(
             onDismissRequest = { showRepoDialog = false },
             title = {
@@ -3499,6 +3773,8 @@ fun ExtensionsScreen() {
                         RepoKind.SKYSTREAM -> "Add SkyStream repo"
                         RepoKind.ANIYOMI -> "Add Aniyomi repo"
                         RepoKind.VEGA -> "Add Vega repo"
+                        RepoKind.SORA -> "Add Sora repo"
+                         RepoKind.ANYMEX -> "Add Anymex repo"
                         RepoKind.CS3 -> "Add CloudStream repo"
                     }
                 )
@@ -3526,6 +3802,16 @@ fun ExtensionsScreen() {
                                 "Paste a Vega provider repo URL (a manifest.json — a JSON " +
                                     "array of the repo's providers). For example:\n" +
                                     "https://raw.githubusercontent.com/Zenda-Cross/vega-providers/main/manifest.json"
+                            isSora ->
+                                "Paste a Sora (AnymeX) source URL — one source descriptor " +
+                                    "(a JSON with sourceName + scriptUrl, e.g. streamex.json) " +
+                                    "or a JSON array of them. For example:\n" +
+                                    "https://raw.githubusercontent.com/justbbcr/streamex/main/streamex.json"
+                            isAnymex ->
+                                "Paste an Anymex/Mangayomi repo URL — its index.json " +
+                                    "(manga), anime_index.json (anime) or novel_index.json. " +
+                                    "For example:\n" +
+                                    "https://MiraiEnoki.github.io/anymex_extensions/anime_index.json"
                             else ->
                                 "Paste a CloudStream-style repo URL (a repo.json). For example:\n" +
                                     "https://raw.githubusercontent.com/codegeasse1/codegeasse-cloudstream-repos/builds/repo.json"
@@ -3560,6 +3846,8 @@ fun ExtensionsScreen() {
                                     when {
                                         isAniyomi -> "https://…/index.min.json"
                                         isVega -> "https://…/manifest.json"
+                                        isSora -> "https://…/streamex.json"
+                                        isAnymex -> "https://…/anime_index.json"
                                         else -> "https://…/repo.json"
                                     }
                                 )
@@ -3596,6 +3884,8 @@ fun ExtensionsScreen() {
                                     RepoKind.SKYSTREAM -> vm.addSkyStreamRepo(repoUrl)
                                     RepoKind.ANIYOMI -> vm.addAniyomiRepo(repoUrl)
                                     RepoKind.VEGA -> vm.addVegaRepo(repoUrl)
+                                    RepoKind.SORA -> vm.addSoraRepo(repoUrl)
+                                     RepoKind.ANYMEX -> vm.addAnymexRepo(repoUrl)
                                     RepoKind.CS3 -> vm.addCs3Repo(repoUrl)
                                 }
                             },
@@ -4395,6 +4685,8 @@ private fun RepoBrowserView(
                                                 RepoKind.SKYSTREAM -> "SkyStream extension"
                                                 RepoKind.ANIYOMI -> "Aniyomi extension"
                                                 RepoKind.VEGA -> "Vega provider"
+                                                RepoKind.SORA -> "Sora source"
+                                                 RepoKind.ANYMEX -> "Anymex extension"
                                             }
                                         ) + " · v" + plugin.version,
                                         style = MaterialTheme.typography.labelSmall,
@@ -4684,6 +4976,20 @@ private fun RepoBrowserView(
                         title = tr("Vega repos"),
                         subtitle = tr("manifest.json · Vega providers"),
                         onClick = { onOpenFolder(SourceFolder.VEGA) }
+                    )
+                    SourceDivider()
+                    SourceActionRow(
+                        icon = Icons.Filled.Extension,
+                        title = tr("Sora repos"),
+                        subtitle = tr("AnymeX script index · Sora sources"),
+                        onClick = { onOpenFolder(SourceFolder.SORA) }
+                    )
+                    SourceDivider()
+                    SourceActionRow(
+                        icon = Icons.Filled.Extension,
+                        title = tr("Anymex repos"),
+                        subtitle = tr("index.json · Anymex extensions"),
+                        onClick = { onOpenFolder(SourceFolder.ANYMEX) }
                     )
                     SourceDivider()
                     SourceActionRow(
@@ -5155,6 +5461,8 @@ private fun RepoPluginsView(
             RepoKind.SKYSTREAM -> "extension"
             RepoKind.ANIYOMI -> "extension"
             RepoKind.VEGA -> "provider"
+            RepoKind.SORA -> "source"
+                                    RepoKind.ANYMEX -> "extension"
             RepoKind.CS3 -> "plugin"
         }
         Row(
@@ -5294,7 +5602,7 @@ private fun RepoPluginsView(
                 val key = if (target != null) "inst::" + target.config.id else "repo::" + p.url
                 testStatus[key]?.ok == true
             }
-            if (installedHere > 0 && filter.isBlank() && kindFilter.isBlank()) {
+            if (plugins.isNotEmpty() && filter.isBlank() && kindFilter.isBlank()) {
                 item {
                     OutlinedButton(
                         onClick = onTestAll,
@@ -6365,6 +6673,9 @@ private fun ProviderInfoDialog(provider: ContentProvider, onDismiss: () -> Unit)
         ProviderType.HIKARI -> tr("Hikari extension")
         ProviderType.NUVIO -> tr("Nuvio scraper")
         ProviderType.VEGA -> tr("Vega provider")
+        ProviderType.SORA -> tr("Sora source")
+         ProviderType.ANYMEX -> tr("Anymex extension")
+         ProviderType.ANYMEX_MANGA -> tr("Anymex manga")
         ProviderType.SKYSTREAM -> tr("SkyStream extension")
         ProviderType.UNIVERSAL -> tr("Universal scraper")
         ProviderType.ANIYOMI -> tr("Aniyomi extension")
@@ -6802,6 +7113,8 @@ private fun RepoCard(
                             RepoKind.SKYSTREAM -> "SkyStream"
                             RepoKind.ANIYOMI -> "Aniyomi"
                             RepoKind.VEGA -> "Vega"
+                            RepoKind.SORA -> "Sora"
+                            RepoKind.ANYMEX -> "Anymex"
                         },
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.primary,
@@ -6823,6 +7136,8 @@ private fun RepoCard(
                                     RepoKind.SKYSTREAM -> "extension"
                                     RepoKind.ANIYOMI -> "extension"
                                     RepoKind.VEGA -> "provider"
+                                    RepoKind.SORA -> "source"
+                                    RepoKind.ANYMEX -> "extension"
                                     else -> "plugin"
                                 }
                                 "$pluginCount $unit${if (pluginCount == 1) "" else "s"}"
@@ -7316,7 +7631,7 @@ private fun SiteRow(
     }
 }
 
-enum class SourceFolder { CLOUDSTREAM, HIKARI, NUVIO, SKYSTREAM, ANIYOMI, VEGA, STREMIO, IPTV }
+enum class SourceFolder { CLOUDSTREAM, HIKARI, NUVIO, SKYSTREAM, ANIYOMI, VEGA, SORA, ANYMEX, STREMIO, IPTV }
 
 @Composable
 private fun SourceFolderView(
@@ -7354,6 +7669,8 @@ private fun SourceFolderView(
         SourceFolder.SKYSTREAM -> RepoKind.SKYSTREAM
         SourceFolder.ANIYOMI -> RepoKind.ANIYOMI
         SourceFolder.VEGA -> RepoKind.VEGA
+        SourceFolder.SORA -> RepoKind.SORA
+                     SourceFolder.ANYMEX -> RepoKind.ANYMEX
         SourceFolder.STREMIO, SourceFolder.IPTV -> null
     }
     val (title, subtitle) = when (folder) {
@@ -7363,6 +7680,8 @@ private fun SourceFolderView(
         SourceFolder.SKYSTREAM -> "SkyStream repos" to "repo.json · SkyStream extensions"
         SourceFolder.ANIYOMI -> "Aniyomi repos" to "index.min.json · Aniyomi extensions"
         SourceFolder.VEGA -> "Vega repos" to "manifest.json · Vega providers"
+        SourceFolder.SORA -> "Sora repos" to "AnymeX script index · Sora sources"
+         SourceFolder.ANYMEX -> "Anymex repos" to "index.json · Anymex extensions"
         SourceFolder.STREMIO -> "Stremio addons" to "manifest.json · Stremio addons"
         SourceFolder.IPTV -> "IPTV playlists" to "M3U / M3U8 links and files · your channels"
     }
@@ -7373,6 +7692,8 @@ private fun SourceFolderView(
         SourceFolder.SKYSTREAM -> "SkyStream"
         SourceFolder.ANIYOMI -> "Aniyomi"
         SourceFolder.VEGA -> "Vega"
+        SourceFolder.SORA -> "Sora"
+         SourceFolder.ANYMEX -> "Anymex"
         SourceFolder.STREMIO -> "Stremio"
         SourceFolder.IPTV -> "IPTV"
     }
@@ -7590,6 +7911,8 @@ private fun SourcesOverviewView(
     onAddSkyStreamRepo: () -> Unit,
     onAddAniyomiRepo: () -> Unit,
     onAddVegaRepo: () -> Unit,
+    onAddSoraRepo: () -> Unit,
+    onAddAnymexRepo: () -> Unit,
     onAddStremio: () -> Unit,
     onAddIptv: () -> Unit,
     onToggleProvider: (String, Boolean) -> Unit,
@@ -7614,6 +7937,8 @@ private fun SourcesOverviewView(
     val skyGroupTitle = tr("SkyStream")
     val aniyomiGroupTitle = tr("Aniyomi")
     val vegaGroupTitle = tr("Vega")
+    val soraGroupTitle = tr("Sora")
+    val anymexGroupTitle = tr("Anymex")
     Column(Modifier.fillMaxSize()) {
         Row(
             Modifier
@@ -7736,6 +8061,26 @@ private fun SourcesOverviewView(
                 pluginsByRepo = pluginsByRepo,
                 repoState = repoState,
                 onAdd = onAddVegaRepo,
+                onOpenRepo = onOpenRepo,
+                onRefreshRepo = onRefreshRepo,
+                onRemoveRepo = onRemoveRepo,
+            )
+            repoGroup(
+                title = soraGroupTitle,
+                groupRepos = repos.filter { it.kind == RepoKind.SORA },
+                pluginsByRepo = pluginsByRepo,
+                repoState = repoState,
+                onAdd = onAddSoraRepo,
+                onOpenRepo = onOpenRepo,
+                onRefreshRepo = onRefreshRepo,
+                onRemoveRepo = onRemoveRepo,
+            )
+            repoGroup(
+                title = anymexGroupTitle,
+                groupRepos = repos.filter { it.kind == RepoKind.ANYMEX },
+                pluginsByRepo = pluginsByRepo,
+                repoState = repoState,
+                onAdd = onAddAnymexRepo,
                 onOpenRepo = onOpenRepo,
                 onRefreshRepo = onRefreshRepo,
                 onRemoveRepo = onRemoveRepo,

@@ -279,6 +279,7 @@ fun LibraryScreen(nav: NavHostController, embedded: Boolean = false) {
             onRename = { id, name -> scope.launch { app.store.renameLibraryCategory(id, name) } },
             onDelete = { id -> scope.launch { app.store.removeLibraryCategory(id) } },
             onCreate = { name -> scope.launch { app.store.addLibraryCategory(name) } },
+                onMove = { id, delta -> scope.launch { app.store.moveLibraryCategory(id, delta) } },
             onDismiss = { managing = false },
         )
     }
