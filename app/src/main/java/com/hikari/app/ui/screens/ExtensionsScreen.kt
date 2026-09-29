@@ -2074,37 +2074,22 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 // Vega manifest has no JSONObject at all (see below).
                 var obj: JSONObject? = null
                 if (kind == RepoKind.SORA) {
-                    // A Sora URL names the document itself (one descriptor or
-                    // an array of them) — nothing is appended. The pasted URL
-                    // is tried first, then its jsDelivr mirror.
-                    val soraCandidates = listOfNotNull(url, jsDelivrMirror(url))
-                    var soraText: String? = null
-                    var soraGood = url
-                    for (c in soraCandidates) {
-                        val body = Http.fetchStringRobust(c, emptyMap(), 30L).getOrNull()
-                        if (body != null && !looksLikeHtml(body)) {
-                            soraText = body
-                            soraGood = c
-                            break
+                    val loaded = com.hikari.app.sora.SoraPluginManager
+                        .loadRepoPlugins(url).getOrElse { err ->
+                            if ((err.message ?: "").contains("lists no Sora sources")) {
+                                val body = Http.fetchStringRobust(url, emptyMap(), 15L).getOrNull()
+                                val aniyomiCount = runCatching {
+                                    com.hikari.app.aniyomi.AniyomiExtensionManager
+                                        .indexEntries(body ?: "")?.length() ?: 0
+                                }.getOrDefault(0)
+                                if (aniyomiCount > 0) {
+                                    throw Exception("That file is an Aniyomi/Mihon index — add it as an Aniyomi repo instead")
+                                }
+                            }
+                            throw err
                         }
-                    }
-                    val body = soraText
-                        ?: throw Exception("Could not fetch repo: $url")
-                    val plugins = com.hikari.app.sora.SoraPluginManager
-                        .repoPlugins(body, soraGood)
-                    if (plugins.isEmpty()) {
-                        // Pasted into the wrong flow? A Sora descriptor under
-                        // an Aniyomi dialog (or vice versa) fails with a file
-                        // error that says nothing — name the right flow.
-                        val aniyomiCount = runCatching {
-                            com.hikari.app.aniyomi.AniyomiExtensionManager
-                                .indexEntries(body)?.length() ?: 0
-                        }.getOrDefault(0)
-                        if (aniyomiCount > 0) {
-                            throw Exception("That file is an Aniyomi/Mihon index — add it as an Aniyomi repo instead")
-                        }
-                        throw Exception("That file lists no Sora sources")
-                    }
+                    val plugins = loaded.first
+                    val soraGood = loaded.second
                     val repo = Cs3Repo(
                         url = soraGood,
                         name = niceRepoName(url, ""),
@@ -2409,21 +2394,9 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             throw lastErrAx ?: Exception("Could not fetch repo: ${repo.url}")
         }
         if (repo.kind == RepoKind.SORA) {
-            // A Sora repo URL names the document itself — fetched as-is (plus
-            // its jsDelivr mirror), never with a file name appended.
-            val candidates = listOfNotNull(repo.url, jsDelivrMirror(repo.url))
-            var lastErr: Throwable? = null
-            for (c in candidates) {
-                val text = Http.fetchStringRobust(c, emptyMap(), 30L).getOrNull()
-                if (text == null || looksLikeHtml(text)) {
-                    lastErr = Exception("Could not fetch repo")
-                    continue
-                }
-                val plugins = com.hikari.app.sora.SoraPluginManager.repoPlugins(text, c)
-                if (plugins.isNotEmpty()) return plugins to null
-                lastErr = Exception("That file lists no Sora sources")
-            }
-            throw lastErr ?: Exception("Could not fetch repo: ${repo.url}")
+            val loaded = com.hikari.app.sora.SoraPluginManager
+                .loadRepoPlugins(repo.url).getOrElse { throw it }
+            return loaded.first to null
         }
         val file = when (repo.kind) {
             RepoKind.NUVIO -> "manifest.json"

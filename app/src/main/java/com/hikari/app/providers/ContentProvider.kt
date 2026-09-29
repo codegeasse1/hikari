@@ -72,6 +72,8 @@ interface ContentProvider {
 
     suspend fun catalogs(): List<CatalogRef>
 
+    val searchOnly: Boolean get() = false
+
     /**
      * The catalogues to draw as rows on Home. Defaults to [catalogs] — a
      * provider may hold a few back, e.g. a Stremio catalogue that REQUIRES a

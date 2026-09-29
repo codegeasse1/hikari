@@ -11,6 +11,7 @@ import com.hikari.app.data.AppStore
 import com.hikari.app.net.Http
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 
@@ -19,11 +20,14 @@ import java.io.File
  * module repos so the feature works out of the box.
  *
  * A Sora repo is either ONE module manifest (a `{sourceName, scriptUrl, …}`
- * JSON file like `streamex.json`) or an INDEX (`modules.json`) pointing at
- * many manifests (see [repoPlugins]). Only `anime` (video) modules install:
- * manga/novel modules are listed so the repo reads complete, but installing
- * one fails with the reason — there is no novel reader yet, and manga modules
- * speak a different call shape the manga engine does not run.
+ * JSON file like `streamex.json`), an INDEX (`modules.json`) pointing at
+ * many manifests (see [repoPlugins]), or a `github.com/owner/repo` page,
+ * which is resolved to its manifests through the GitHub API (see
+ * [loadRepoPlugins]) — some repos publish no index at all. Only video
+ * modules install: manga/novel modules are listed so the repo reads complete,
+ * but installing one fails with the reason — there is no novel reader yet,
+ * and manga modules speak a different call shape the manga engine does not
+ * run.
  *
  * Like every other engine, nothing is pre-installed for the user: the repos
  * are seeded so the Extensions screen's Sora folders are never empty, and
@@ -62,6 +66,11 @@ object SoraPluginManager {
             "https://raw.githubusercontent.com/justbbcr/streamex/main/streamex.json",
             "StreameX",
             "French anime/shows/movies Sora module",
+        ),
+        Triple(
+            "https://github.com/CPRmichel/sora-movie2k-module",
+            "Movie2K modules",
+            "German movies & shows Sora modules (Movie2K, Kinoger, Moflix)",
         ),
     )
 
@@ -131,11 +140,165 @@ object SoraPluginManager {
         )
     }
 
-    /** True when the manifest at [manifestUrl] is a video (`anime`) module. */
+    /** True when the manifest at [manifestUrl] is a video module. */
     fun manifestType(manifestText: String): String =
         runCatching { JSONObject(manifestText).optString("type").trim() }.getOrDefault("")
 
-    fun isVideoType(type: String): Boolean = type.contains("anime", ignoreCase = true)
+    private val videoHints = listOf("anime", "movie", "show", "film", "serie", "drama", "tv", "video", "cartoon")
+    private val textHints = listOf("manga", "manhwa", "manhua", "novel", "comic", "book")
+
+    fun isVideoType(type: String): Boolean {
+        val t = type.lowercase()
+        if (t.isBlank()) return false
+        if (textHints.any { t.contains(it) }) return false
+        return videoHints.any { t.contains(it) }
+    }
+
+    private fun looksLikeHtml(text: String): Boolean {
+        val t = text.trimStart().take(64).lowercase()
+        return t.startsWith("<!doctype") || t.startsWith("<html") || t.startsWith("<head")
+    }
+
+    /** A `github.com/owner/repo…` page split into owner + repo, or null. */
+    fun githubRepoOf(url: String): Pair<String, String>? {
+        val m = Regex("^https?://(?:www\\.)?github\\.com/([^/\\s]+)/([^/\\s?#]+)")
+            .find(url.trim()) ?: return null
+        val repo = m.groupValues[2].removeSuffix(".git")
+        if (m.groupValues[1].isBlank() || repo.isBlank()) return null
+        return m.groupValues[1] to repo
+    }
+
+    private fun githubRawFileUrl(url: String): String? {
+        val m = Regex("^https?://(?:www\\.)?github\\.com/([^/\\s]+)/([^/\\s?#]+)/(?:blob|raw)/([^\\s?#]+)")
+            .find(url.trim()) ?: return null
+        return "https://raw.githubusercontent.com/${m.groupValues[1]}/" +
+            "${m.groupValues[2].removeSuffix(".git")}/${m.groupValues[3]}"
+    }
+
+    private const val GITHUB_API = "https://api.github.com"
+    private const val MAX_GITHUB_MANIFESTS = 30
+
+    /**
+     * The installable entries of whatever [url] names — a manifest, an index,
+     * or a `github.com/owner/repo` page — plus the URL to store for refreshes.
+     * The stored URL is the page itself for GitHub repos (their manifests are
+     * re-discovered on every refresh), otherwise the document that served.
+     */
+    suspend fun loadRepoPlugins(url: String): Result<Pair<List<Cs3RepoPlugin>, String>> =
+        withContext(Dispatchers.IO) {
+            val t = url.trim()
+            val direct = Http.fetchStringRobust(t).getOrNull()
+                ?.takeIf { !looksLikeHtml(it) }
+            if (direct != null) {
+                val plugins = repoPlugins(direct, t)
+                if (plugins.isNotEmpty()) return@withContext Result.success(plugins to t)
+                return@withContext Result.failure(Exception("That file lists no Sora sources"))
+            }
+            githubRawFileUrl(t)?.let { raw ->
+                val body = Http.fetchStringRobust(raw).getOrNull()
+                    ?.takeIf { !looksLikeHtml(it) }
+                if (body != null) {
+                    val plugins = repoPlugins(body, raw)
+                    if (plugins.isNotEmpty()) return@withContext Result.success(plugins to raw)
+                }
+            }
+            val gh = githubRepoOf(t)
+                ?: return@withContext Result.failure(Exception("Could not fetch repo: $t"))
+            resolveGithubRepo(gh.first, gh.second).map { it to t }
+        }
+
+    /**
+     * Discovers a GitHub repo's Sora manifests without a published index: a
+     * root `modules.json`/`index.json`/`sora.json` first, then every `*.json`
+     * in the recursive file tree (one API call), then a one-level contents
+     * walk as a fallback.
+     */
+    suspend fun resolveGithubRepo(owner: String, repo: String): Result<List<Cs3RepoPlugin>> {
+        for (branch in listOf("main", "master")) {
+            for (name in listOf("modules.json", "index.json", "sora.json")) {
+                val raw = "https://raw.githubusercontent.com/$owner/$repo/$branch/$name"
+                val body = Http.fetchStringRobust(raw, emptyMap(), 10).getOrNull()
+                    ?.takeIf { !looksLikeHtml(it) } ?: continue
+                val plugins = repoPlugins(body, raw)
+                if (plugins.isNotEmpty()) return Result.success(plugins)
+            }
+            val treeBody = Http.fetchStringRobust(
+                "$GITHUB_API/repos/$owner/$repo/git/trees/$branch?recursive=1",
+                mapOf("Accept" to "application/vnd.github+json"),
+                20,
+            ).getOrNull()?.takeIf { !looksLikeHtml(it) }
+            if (treeBody != null) {
+                val tree = runCatching { JSONObject(treeBody) }.getOrNull()
+                val arr = tree?.optJSONArray("tree")
+                if (arr != null && tree?.optBoolean("truncated", false) != true) {
+                    val skip = setOf("modules.json", "index.json", "sora.json")
+                    val raws = (0 until arr.length())
+                        .mapNotNull { arr.optJSONObject(it)?.optString("path")?.trim() }
+                        .filter { it.endsWith(".json", ignoreCase = true) }
+                        .filter { it.substringAfterLast('/').lowercase() !in skip }
+                        .sortedBy { it.count { c -> c == '/' } }
+                        .take(MAX_GITHUB_MANIFESTS)
+                        .map { "https://raw.githubusercontent.com/$owner/$repo/$branch/$it" }
+                    val found = fetchManifests(raws)
+                    if (found.isNotEmpty()) return Result.success(found)
+                    continue
+                }
+            }
+            val walked = walkGithubContents(owner, repo, branch)
+            if (walked.isNotEmpty()) return Result.success(walked)
+        }
+        return Result.failure(Exception("Could not fetch repo: no Sora manifests in $owner/$repo"))
+    }
+
+    private fun fetchManifests(rawUrls: List<String>): List<Cs3RepoPlugin> {
+        val out = LinkedHashMap<String, Cs3RepoPlugin>()
+        for (raw in rawUrls) {
+            val body = Http.fetchStringRobust(raw, emptyMap(), 10).getOrNull()
+                ?.takeIf { !looksLikeHtml(it) } ?: continue
+            val manifest = runCatching { JSONObject(body) }.getOrNull() ?: continue
+            singlePlugin(manifest, raw)?.let { out[it.url] = it }
+        }
+        return out.values.toList()
+    }
+
+    private fun walkGithubContents(owner: String, repo: String, branch: String): List<Cs3RepoPlugin> {
+        val root = Http.fetchStringRobust(
+            "$GITHUB_API/repos/$owner/$repo/contents?ref=$branch",
+            mapOf("Accept" to "application/vnd.github+json"),
+            20,
+        ).getOrNull()?.takeIf { !looksLikeHtml(it) } ?: return emptyList()
+        val entries = runCatching { JSONArray(root) }.getOrNull() ?: return emptyList()
+        val raws = ArrayList<String>()
+        val dirs = ArrayList<String>()
+        for (i in 0 until entries.length()) {
+            val o = entries.optJSONObject(i) ?: continue
+            val name = o.optString("name")
+            val kind = o.optString("type")
+            if (kind == "file" && name.endsWith(".json", ignoreCase = true)) {
+                raws += "https://raw.githubusercontent.com/$owner/$repo/$branch/$name"
+            } else if (kind == "dir") {
+                dirs += name
+            }
+        }
+        for (dir in dirs.take(30)) {
+            val listing = Http.fetchStringRobust(
+                "$GITHUB_API/repos/$owner/$repo/contents/$dir?ref=$branch",
+                mapOf("Accept" to "application/vnd.github+json"),
+                20,
+            ).getOrNull()?.takeIf { !looksLikeHtml(it) } ?: continue
+            val files = runCatching { JSONArray(listing) }.getOrNull() ?: continue
+            for (i in 0 until files.length()) {
+                val name = files.optJSONObject(i)?.optString("name") ?: continue
+                if (files.optJSONObject(i)?.optString("type") == "file" &&
+                    name.endsWith(".json", ignoreCase = true) &&
+                    raws.size < MAX_GITHUB_MANIFESTS
+                ) {
+                    raws += "https://raw.githubusercontent.com/$owner/$repo/$branch/$dir/$name"
+                }
+            }
+        }
+        return fetchManifests(raws.take(MAX_GITHUB_MANIFESTS))
+    }
 
     /**
      * Downloads a module manifest + script and registers it as a SORA
@@ -157,7 +320,7 @@ object SoraPluginManager {
                 return@withContext Result.failure(
                     Exception(
                         if (type.isBlank()) "Not a Sora module manifest"
-                        else "Only anime (video) modules install — “${plugin.name}” is “$type”"
+                        else "Only video (anime, movies, shows) modules install — “${plugin.name}” is “$type”"
                     )
                 )
             }

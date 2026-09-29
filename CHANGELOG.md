@@ -1,4 +1,6 @@
-## Unreleased
+## 0.10.67
+
+Everything new and fixed since the last release (0.10.66):
 
 ### Added
 
@@ -8,10 +10,12 @@
 - I added a provider search box above the TV provider strip so a long extension list narrows as you type
 - Servers now show a details line under the host (quality, size) wherever the extension provides it
 - Library categories can be moved up and down from the category manager
+- Sora sources now say on Home that they are search-only instead of showing a couldn't-load card, and movie/show Sora modules install — the installer took anime modules only, so Movie2K, Kinoger and Moflix ("shows/movies") were rejected, and a github.com/owner/repo page pastes as a Sora repo directly now (its manifests are discovered through the GitHub API, since repos like Movie2K publish no index file) — Movie2K's repo ships as a default
 
 ### Fixed
 
 - I fixed Test on uninstalled extensions so it validates the actual source (script entry points, a live search probe for Sora, package checks for APKs) instead of only saying the download worked, and Test all is always shown for the installed ones
+- I fixed Home search going permanently blank after opening a result — the overlay's extension scope was dropped when the title screen pushed (only the query text survived), so coming back searched nothing and retyping searched nothing either; the scope survives now and the search re-runs
 
 ## 0.10.66
 

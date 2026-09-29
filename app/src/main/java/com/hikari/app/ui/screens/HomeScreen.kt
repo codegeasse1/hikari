@@ -644,7 +644,7 @@ fun HomeScreen(nav: NavHostController) {
     // those extensions alone, or everything (see the genre strip call site).
     var genreScope by remember { mutableStateOf<GenreScopePick?>(null) }
     // The genre an in-place overlay is narrowed to ("" = no narrowing).
-    var overlayGenre by remember { mutableStateOf("") }
+    var overlayGenre by rememberSaveable { mutableStateOf("") }
     val scope = rememberCoroutineScope()
 
     // Cloudflare verification: when the selected extension's site is blocked
@@ -793,7 +793,7 @@ fun HomeScreen(nav: NavHostController) {
     // magnifier must be able to search inside abc and not only everywhere.
     // The in-place overlay's scope: the picked extensions' ids, or every enabled
     // extension when the pick is All. Set on the same tap that opens it.
-    var overlayIds by remember { mutableStateOf(emptySet<String>()) }
+    var overlayIds by rememberSaveable { mutableStateOf(emptyList<String>()) }
     val openSearch: () -> Unit = {
         // With ONE extension picked, the magnifier searches that extension IN
         // PLACE, here on Home: the button sits inside the picked extension's own
@@ -810,7 +810,7 @@ fun HomeScreen(nav: NavHostController) {
                 val ext = selection.filter { !it.startsWith(COLLECTION_PREFIX) }.toSet()
                 overlayIds = ext.ifEmpty {
                     activeProviders.map { it.config.id }.toSet()
-                }
+                }.toList()
                 overlayGenre = ""
                 if (overlayIds.isEmpty()) openGlobalSearch()
                 else showHomeSearch = true
@@ -1176,7 +1176,18 @@ fun HomeScreen(nav: NavHostController) {
                         // old branch could never see null, this one can.
                         val streamOnly = single &&
                             com.hikari.app.providers.StremioAddon.streamOnlyAddons[selectedKey] == true
-                        if (streamOnly) {
+                        val searchOnlySource = single &&
+                            com.hikari.app.HikariApp.instance.providers.byId(selectedKey)?.searchOnly == true
+                        if (searchOnlySource) {
+                            EmptyState(
+                                title = I18n.t("No catalog from %s")
+                                    .replace("%s", selectedName ?: I18n.t("This extension")),
+                                subtitle = tr(
+                                    "This source is search-only — it publishes no home catalog. " +
+                                        "Search it to find things to watch."
+                                ),
+                            )
+                        } else if (streamOnly) {
                             EmptyState(
                                 title = I18n.t("No catalog from %s").replace("%s", selectedName ?: "this addon"),
                                 subtitle = tr(
@@ -1309,7 +1320,7 @@ fun HomeScreen(nav: NavHostController) {
                 else -> tr("All providers")
             }
             HomeSearchOverlay(
-                providerIds = overlayIds,
+                providerIds = remember(overlayIds) { overlayIds.toSet() },
                 providerName = overlayName,
                 feedItems = remember(rows) { rows.flatMap { it.items } },
                 genre = overlayGenre,
@@ -1382,7 +1393,7 @@ fun HomeScreen(nav: NavHostController) {
             },
             confirmButton = {
                 TextButton(onClick = {
-                    overlayIds = pick.extensionIds
+                    overlayIds = pick.extensionIds.toList()
                     overlayGenre = pick.name
                     genreScope = null
                     showHomeSearch = true
@@ -2827,7 +2838,7 @@ private fun HomeSearchOverlay(
     // One request per typed word. A new query replaces the previous effect, which
     // cancels the old scan with it — so a stale page can never land under a newer
     // query.
-    LaunchedEffect(applied) {
+    LaunchedEffect(applied, providerIds) {
         if (applied.isBlank() || providerIds.isEmpty()) {
             results = emptyList()
             searching = false

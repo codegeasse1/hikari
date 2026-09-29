@@ -47,6 +47,8 @@ class SoraProvider(override val config: ProviderConfig) : ContentProvider {
 
     private val moduleFile: File get() = File(config.url)
 
+    override val searchOnly = true
+
     private val episodeCache = ConcurrentHashMap<String, List<Episode>>()
 
     override suspend fun catalogs(): List<CatalogRef> = emptyList()
