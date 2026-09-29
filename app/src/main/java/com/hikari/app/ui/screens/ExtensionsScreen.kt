@@ -1371,21 +1371,21 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             .uninstall(getApplication<Application>(), pluginUrl)
         requestRefresh()
         return removed
-    
+    }
 
     suspend fun addAnymexRepo(rawUrl: String): Result<Cs3Repo> = addRepo(rawUrl, RepoKind.ANYMEX)
 
     suspend fun installAnymexPlugin(plugin: Cs3RepoPlugin): Result<Int> =
         com.hikari.app.anymex.AnymexPluginManager
-            .install(HikariApp.instance, plugin)
-            .onSuccess { reloadInstalled() }
+            .install(getApplication<Application>(), plugin)
+            .also { requestRefresh() }
 
     suspend fun uninstallAnymexPlugin(pluginUrl: String): Int {
         val removed = com.hikari.app.anymex.AnymexPluginManager
-            .uninstall(HikariApp.instance, pluginUrl)
-        if (removed > 0) reloadInstalled()
+            .uninstall(getApplication<Application>(), pluginUrl)
+        requestRefresh()
         return removed
-    }}
+    }
 
     /** Registers a SkyStream extension repository (`repo.json`). A bare
      *  shortcode is resolved through [SkyStreamPluginManager.resolveRepoUrl]

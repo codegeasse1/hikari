@@ -180,6 +180,7 @@ class AnymexProvider(override val config: ProviderConfig) : ContentProvider {
                         )?.let { out += it }
                     }
                     is String -> if (e.isNotBlank()) videoTo(config.name, e.trim(), null, null, null)?.let { out += it }
+                    else -> {}
                 }
             }
         }
@@ -199,6 +200,7 @@ class AnymexProvider(override val config: ProviderConfig) : ContentProvider {
                         lang = e.optString("label").ifBlank { e.optString("language") }.ifBlank { "Sub" },
                         url = u,
                     )
+                    else -> {}
                 }
                 is String -> if (e.isNotBlank()) out += SubtitleSource(lang = "Sub", url = e)
             }

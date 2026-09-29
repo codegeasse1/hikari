@@ -30,8 +30,8 @@ class AnymexMangaProvider(override val config: ProviderConfig) : ContentProvider
     }
 
     override suspend fun catalogs(): List<CatalogRef> = listOf(
-        CatalogRef(config.id, MediaType.MANGA, CATALOG_POPULAR, "Popular"),
-        CatalogRef(config.id, MediaType.MANGA, CATALOG_LATEST, "Latest"),
+        CatalogRef(config.id, MediaType.SERIES, CATALOG_POPULAR, "Popular"),
+        CatalogRef(config.id, MediaType.SERIES, CATALOG_LATEST, "Latest"),
     )
 
     override suspend fun getCatalog(ref: CatalogRef, page: Int): List<MediaItem> =
@@ -113,6 +113,7 @@ class AnymexMangaProvider(override val config: ProviderConfig) : ContentProvider
                         providerId = config.id,
                         providerName = config.name,
                     )
+                    else -> {}
                 }
             }
             lastOutcome[config.id] = "✓ ${out.size} pages"
@@ -147,7 +148,7 @@ class AnymexMangaProvider(override val config: ProviderConfig) : ContentProvider
                 providerId = config.id,
                 id = link,
                 title = name,
-                type = MediaType.MANGA,
+                type = MediaType.SERIES,
                 posterUrl = o.optString("imageUrl").ifBlank { o.optString("image") }.trim().ifBlank { null },
             )
         }

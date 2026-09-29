@@ -359,34 +359,30 @@ fun CategoryManagerSheet(
                                     modifier = Modifier.padding(end = 6.dp),
                                 )
                             }
-                            Icon(
-                                Icons.Filled.DragHandle,
-                                contentDescription = tr("Reorder"),
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier
-                                    .size(22.dp)
-                                    .padding(end = 2.dp),
+                            Text(
+                                "≡",
+                                style = MaterialTheme.typography.titleLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(end = 4.dp),
                             )
                             IconButton(
                                 enabled = categories.indexOfFirst { it.id == c.id } > 0,
                                 onClick = { onMove(c.id, -1) },
                             ) {
-                                Icon(
-                                    Icons.Filled.KeyboardArrowUp,
-                                    contentDescription = tr("Move up"),
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.size(20.dp),
+                                Text(
+                                    "↑",
+                                    style = MaterialTheme.typography.titleLarge,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
                             IconButton(
                                 enabled = categories.indexOfFirst { it.id == c.id } < categories.size - 1,
                                 onClick = { onMove(c.id, 1) },
                             ) {
-                                Icon(
-                                    Icons.Filled.KeyboardArrowDown,
-                                    contentDescription = tr("Move down"),
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.size(20.dp),
+                                Text(
+                                    "↓",
+                                    style = MaterialTheme.typography.titleLarge,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
                             IconButton(onClick = { onDelete(c.id) }) {

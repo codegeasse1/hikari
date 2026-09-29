@@ -2820,7 +2820,7 @@ private fun TvPosterSizeCard(app: HikariApp) {
 
     SettingsSection(
         id = "tv.posterSize",
-        icon = Icons.Filled.PhotoSizeSelectLarge,
+        icon = Icons.Filled.Tune,
         title = tr("Poster size"),
         summary = slider.roundToInt().toString() + "%",
     ) {
@@ -2853,7 +2853,7 @@ private fun TvDetailStyleCard(app: HikariApp) {
 
     SettingsSection(
         id = "tv.detailStyle",
-        icon = Icons.Filled.Movie,
+        icon = Icons.Filled.SmartDisplay,
         title = tr("TV details screen"),
         summary = if (on) tr("On — big title art") else tr("Off — standard page"),
     ) {
