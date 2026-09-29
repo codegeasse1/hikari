@@ -746,6 +746,7 @@ fun SettingsScreen(nav: NavHostController) {
                     item { SettingsCard { VideoEnhanceCard(app) } }
                     item { SettingsCard { PlayerUiCard(app) } }
                     item { SettingsCard { VolumeBoostCard(app) } }
+                    item { SettingsCard { SubtitlesDefaultCard(app) } }
                     // "When playback starts" lives in Playback & Servers, once:
                     // the same card in two folders only made the user wonder
                     // which one was in charge. The player folder is the controls.
@@ -3284,6 +3285,38 @@ private fun VolumeBoostCard(app: HikariApp) {
             checked = on,
             onCheckedChange = { value ->
                 scope.launch { runCatching { app.store.setVolumeBoost(value) } }
+            },
+        )
+    }
+}
+
+/**
+ * Subtitles on by default (Settings → Player).
+ *
+ * ON is how the player has always behaved: the first (English-preferred)
+ * track is shown without asking. OFF starts every video with captions hidden
+ * instead — for viewers who only ever want subtitles on foreign-language
+ * parts, or never at all. Anything chosen explicitly still shows (a track or
+ * Auto in the player's Subtitles menu, an added file), because an explicit
+ * pick outranks a default; the next video simply starts hidden again.
+ */
+@Composable
+private fun SubtitlesDefaultCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    val flow = remember { app.store.subsDefaultOnFlow() }
+    val on by flow.collectAsState(initial = true)
+
+    Column(Modifier.padding(16.dp)) {
+        SettingsCardHeading(Icons.Filled.TextFields, tr("Subtitles"))
+        SettingsToggle(
+            label = tr("Subtitles on by default"),
+            supporting = tr(
+                "Automatically show subtitles when a video opens. " +
+                    "Off means videos start with captions hidden."
+            ),
+            checked = on,
+            onCheckedChange = { value ->
+                scope.launch { runCatching { app.store.setSubsDefaultOn(value) } }
             },
         )
     }

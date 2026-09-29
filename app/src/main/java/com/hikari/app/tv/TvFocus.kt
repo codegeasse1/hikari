@@ -223,6 +223,10 @@ object TvInput {
         if (event.keyCode in remoteKeys) remoteActive.value = true
     }
 
+    /** Plain read of the remote-driven state for View-based screens (the
+     *  player), which cannot use the composable [ringWanted]. */
+    fun isRemoteActiveNow(): Boolean = remoteActive.value
+
     /** A finger on the screen: back to the platform ripple, on a non-TV device. */
     fun noteTouch() {
         if (!remoteActive.value) return

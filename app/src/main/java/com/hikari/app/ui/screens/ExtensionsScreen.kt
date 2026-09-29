@@ -5779,17 +5779,22 @@ private fun ProviderCard(
             top = if (indent) 2.dp else 6.dp,
             bottom = 6.dp,
         )) {
-        Row(
+        Column(
             Modifier
-                .padding(12.dp)
+                .padding(10.dp)
                 // Whole-row focus target: a remote lands on the ROW (a big,
                 // obvious highlight) instead of only on the switch and the small
                 // icons at its right end, and pressing it flips the switch —
                 // the same thing the switch itself does, just from anywhere on
                 // the line. See [com.hikari.app.tv.tvPress].
                 .tvPress(previewPass = false, onClick = { onToggle(!p.config.enabled) }),
-            verticalAlignment = Alignment.CenterVertically
         ) {
+            // Header: icon, names and the switch. The action icons live in
+            // their own row below: five 48dp targets beside the text squeezed
+            // it to about one letter per line on a 360dp phone, blowing each
+            // card up to a third of the screen (the "brick" that fit two
+            // extensions per page). They never share a row with text now.
+            Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
                 Modifier
                     .size(40.dp)
@@ -5883,6 +5888,10 @@ private fun ProviderCard(
                     )
                 }
             }
+            }
+            // Actions on their own line — update, probe, verify, settings,
+            // remove — so they can never steal the names' width again.
+            Row(verticalAlignment = Alignment.CenterVertically) {
             if (updateAvailable && onUpdate != null) {
                 IconButton(onClick = onUpdate) {
                     Icon(
@@ -5926,6 +5935,7 @@ private fun ProviderCard(
                     contentDescription = tr("Remove"),
                     tint = MaterialTheme.colorScheme.error
                 )
+            }
             }
         }
     }

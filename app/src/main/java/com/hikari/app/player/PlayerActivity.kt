@@ -111,6 +111,8 @@ import com.hikari.app.net.PlayerHttp
 import com.hikari.app.net.SlowNetTip
 import com.hikari.app.net.StreamProbe
 import com.hikari.app.tracker.TrackerSync
+import com.hikari.app.tv.TvInput
+import com.hikari.app.tv.TvMode
 import com.hikari.app.ui.AccentStore
 import com.hikari.app.ui.PosterLoader
 import com.hikari.app.ui.UiScale
@@ -719,6 +721,12 @@ class PlayerActivity : ComponentActivity() {
      *  preferences; OFF until the answer lands. */
     private var volumeBoostOn = false
 
+    /** Whether a subtitle track is selected by itself when a video opens
+     *  (Settings → Player → Subtitles; ON until the stored answer lands).
+     *  OFF starts every video with captions hidden; an explicit pick (a track,
+     *  Auto, an added file) still shows, because it outranks this default. */
+    private var subsDefaultOn = true
+
     /** The live gain stage of the current player, or null before the player is
      *  built. Toggling the booster only ever sets its [gain]: the stage rides
      *  in the audio sink, so there is no session to attach to, no HAL effect
@@ -1164,6 +1172,27 @@ class PlayerActivity : ComponentActivity() {
                 // An UNPINNED codec readout lives and dies with the controls —
                 // pin it and it stays on the picture (see showCodecOverlay).
                 if (!controllerVisible && !codecOverlayPinned) hideCodecOverlay()
+                if (controllerVisible && playerTvRemote()) {
+                    // Late-bound click listeners and GONE pills are only
+                    // focusable after a walk that sees them (see
+                    // [View.tvFocusableTree]); every appearance re-walks, so
+                    // the remote never meets a dead menu.
+                    applyTvFocus()
+                    runCatching {
+                        (playerView as? android.view.ViewGroup)?.let { applyFocusRings(it) }
+                    }
+                    // Showing the controls with nothing focused leaves the
+                    // remote's position invisible until an arrow is pressed —
+                    // park it on the first pill instead, but only when nothing
+                    // else owns it (media3 or a panel may have claimed it).
+                    if (currentFocus == null) {
+                        runCatching {
+                            val pills = findViewById<android.view.ViewGroup>(R.id.player_pills)
+                            (findFirstFocusable(pills)
+                                ?: findFirstFocusable(playerView))?.requestFocus()
+                        }
+                    }
+                }
             }
         })
         installPlayerFocusRings()
@@ -1496,6 +1525,25 @@ class PlayerActivity : ComponentActivity() {
                 (applicationContext as HikariApp).store.volumeBoost()
             }.getOrDefault(false)
             applyVolumeBoost()
+        }
+        // Subtitles on by default (Settings → Player → Subtitles). Read like
+        // the preferences above; if the player already exists and nothing was
+        // picked explicitly, captions go off immediately, otherwise the player
+        // is built with them off.
+        lifecycleScope.launch {
+            subsDefaultOn = runCatching {
+                (applicationContext as HikariApp).store.subsDefaultOn()
+            }.getOrDefault(true)
+            if (!subsDefaultOn && !userPickedSubs) {
+                textOff = true
+                player?.let { p ->
+                    runCatching {
+                        p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+                            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                            .build()
+                    }
+                }
+            }
         }
         // The Stats page's stopwatch: it counts wall-clock seconds of actual
         // playback and hands them to the store every minute (see
@@ -2905,7 +2953,11 @@ class PlayerActivity : ComponentActivity() {
      * differently there.
      */
     override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
-        if (!com.hikari.app.tv.TvMode.isTv) return super.dispatchKeyEvent(event)
+        // Fed on every device, not just televisions: a box that reports
+        // itself as a phone but is driven by a remote gets the player's focus
+        // treatment through [playerTvRemote] below (see [TvInput]).
+        TvInput.noteKey(event)
+        if (!TvMode.isTv) return super.dispatchKeyEvent(event)
         if (event.action == android.view.KeyEvent.ACTION_DOWN && handleTvKey(event.keyCode)) {
             return true
         }
@@ -3621,8 +3673,13 @@ class PlayerActivity : ComponentActivity() {
 
         // …and keep every control the remote is supposed to reach actually
         // reachable, including the pills this method just moved (see
-        // [applyTvFocus]).
+        // [applyTvFocus]). The drawable rings + focus scale ride along: pills
+        // only gain their click listeners during setup, so the onCreate pass
+        // (see [installPlayerFocusRings]) walked past them ringless.
         applyTvFocus()
+        runCatching {
+            (playerView as? android.view.ViewGroup)?.let { applyFocusRings(it) }
+        }
     }
 
     /** Puts the pill row back at its left edge. */
@@ -3653,10 +3710,19 @@ class PlayerActivity : ComponentActivity() {
     // same treatment when it opens, plus the focus itself (see [presentGlass]),
     // so the first arrow press after a menu opens walks the menu rather than
     // doing nothing. None of this runs on a phone: every entry point is behind
-    // [com.hikari.app.tv.TvMode.isTv], so touch behaviour, ripples and layout
+    // [playerTvRemote], so touch behaviour, ripples and layout
     // are untouched everywhere else.
+    /**
+     * Whether the player's remote treatment applies: a television, or a box
+     * that reports itself as a phone but is being driven by a remote right now
+     * (see [TvInput] — those boxes never become [TvMode.isTv], so gating on
+     * the layout alone left their remotes moving a focus nobody could see, in
+     * the player and in every sheet it opens).
+     */
+    private fun playerTvRemote(): Boolean = TvMode.isTv || TvInput.isRemoteActiveNow()
+
     private fun applyTvFocus() {
-        if (!com.hikari.app.tv.TvMode.isTv) return
+        if (!playerTvRemote()) return
         // A scroll view that blocks its descendants is a menu nobody can walk.
         runCatching {
             findViewById<HorizontalScrollView>(R.id.player_pill_scroll)?.descendantFocusability =
@@ -3675,7 +3741,13 @@ class PlayerActivity : ComponentActivity() {
      * why a clickable view is not a focusable one.
      */
     private fun View.tvFocusableTree() {
-        if (isClickable && !isFocusable && visibility == View.VISIBLE) {
+        // No visibility gate on purpose: the controller hides and shows
+        // constantly, and a walk that only touches what is visible right now
+        // permanently misses whatever was hidden that instant (pills GONE by
+        // the control layout, panels not yet opened). Focus can only ever land
+        // on a shown view anyway, so making a hidden one focusable changes
+        // nothing until it is shown — at which point it just works.
+        if (isClickable && !isFocusable) {
             isFocusable = true
             // A living-room box driven by a virtual remote can put its window
             // into touch mode (those remotes send touch events) before the
@@ -4279,7 +4351,7 @@ class PlayerActivity : ComponentActivity() {
             gravity = Gravity.CENTER_VERTICAL
             isClickable = onClick != null
             isFocusable = onClick != null
-            if (onClick != null && com.hikari.app.tv.TvMode.isTv) {
+            if (onClick != null && playerTvRemote()) {
                 // Ringed at BIRTH, not by the dialog's one-time focus pass:
                 // rows appended later (servers landing in the chooser) would
                 // otherwise be reachable but draw no highlight at all.
@@ -4620,7 +4692,7 @@ class PlayerActivity : ComponentActivity() {
             // a 24dp glyph a remote can overshoot, and Back-key behaviour
             // varies by box — this pill dismisses from the focus walk itself,
             // and it is focusable at birth so late focus passes cannot miss it.
-            if (com.hikari.app.tv.TvMode.isTv && cancelable) {
+            if (playerTvRemote() && cancelable) {
                 addView(TextView(this@PlayerActivity).apply {
                     text = "‹ " + I18n.t("Back")
                     dpText(10f)
@@ -4841,11 +4913,27 @@ class PlayerActivity : ComponentActivity() {
         // arrow press moves within the panel; a panel whose rows arrive later
         // (the search results) falls back to the headers, which are still
         // reachable and still lead back out.
-        if (com.hikari.app.tv.TvMode.isTv) {
+        if (playerTvRemote()) {
             dialog.window?.decorView?.post {
                 val decor = dialog.window?.decorView ?: return@post
                 decor.tvFocusableTree()
                 (findFirstFocusable(scroll) ?: findFirstFocusable(decor))?.requestFocus()
+            }
+            // Rows that arrive AFTER the open (subtitle search results, addon
+            // tracks, servers landing in the chooser) join a tree that was
+            // already walked: re-walk just the changed subtree when children
+            // appear, so late rows are focusable and ringed like the rest.
+            val rewalk = object : android.view.ViewGroup.OnHierarchyChangeListener {
+                override fun onChildViewAdded(parent: android.view.View, child: android.view.View) {
+                    runCatching { child.tvFocusableTree() }
+                }
+                override fun onChildViewRemoved(parent: android.view.View, child: android.view.View) {}
+            }
+            runCatching {
+                (scroll as? android.view.ViewGroup)?.setOnHierarchyChangeListener(rewalk)
+                rowHosts.forEach { host ->
+                    runCatching { host.setOnHierarchyChangeListener(rewalk) }
+                }
             }
         }
 
@@ -5472,7 +5560,7 @@ class PlayerActivity : ComponentActivity() {
                 // left unfocusable strands the remote above the list entirely.
                 isFocusable = true
                 isFocusableInTouchMode = true
-                if (com.hikari.app.tv.TvMode.isTv && foreground == null) foreground = tvFocusRing()
+                if (playerTvRemote() && foreground == null) foreground = tvFocusRing()
                 setOnClickListener { onClick() }
                 layoutParams = LinearLayout.LayoutParams(w, h).apply {
                     marginEnd = (5 * density).roundToInt()
@@ -5679,7 +5767,7 @@ class PlayerActivity : ComponentActivity() {
             // birth ring — this is the belt and braces for rows built before
             // that change and for every other late view). Cheap: only views
             // missing a ring are touched.
-            if (com.hikari.app.tv.TvMode.isTv) {
+            if (playerTvRemote()) {
                 runCatching { dialog.window?.decorView?.tvFocusableTree() }
             }
             sv?.post { sv.scrollTo(0, keepY) }
@@ -8457,6 +8545,14 @@ class PlayerActivity : ComponentActivity() {
             player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
                 .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
                 .build()
+        } else if (!subsDefaultOn && !userPickedSubs) {
+            // "Subtitles on by default" is off (see [subsDefaultOn]): the video
+            // opens with captions hidden. media3 would otherwise show a track
+            // by itself; an explicit pick later re-enables the type.
+            textOff = true
+            player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                .build()
         }
         player.addListener(listener)
         playerView?.player = player
@@ -8720,7 +8816,10 @@ class PlayerActivity : ComponentActivity() {
      */
     private fun installPlayerFocusRings() {
         val root = playerView ?: return
-        val tv = com.hikari.app.data.PerfMode.tvDevice
+        // The remote treatment follows the remote, not the hardware verdict:
+        // a box reporting itself as a phone still gets walkable pills the
+        // moment its remote is used (see [playerTvRemote]).
+        val tv = playerTvRemote()
         try {
             (findViewById<android.view.View>(R.id.player_pill_scroll) as? android.view.ViewGroup)
                 ?.descendantFocusability = if (tv) android.view.ViewGroup.FOCUS_AFTER_DESCENDANTS
@@ -8748,12 +8847,25 @@ class PlayerActivity : ComponentActivity() {
             if (v is android.widget.ImageButton || pill) {
                 try {
                     v.isFocusable = true
-                    v.isFocusableInTouchMode = false
+                    // Touch-mode focus only where the remote treatment applies:
+                    // on a touch phone a tap must never leave a pill focused
+                    // (and ringed/scaled) behind.
+                    v.isFocusableInTouchMode = playerTvRemote()
                     v.setDefaultFocusHighlightEnabled(false)
                     v.foreground = getDrawable(
                         if (v is android.widget.ImageButton) R.drawable.focus_ring_circle
                         else R.drawable.focus_ring_pill
                     )
+                    // The ring alone is thin from the sofa: the focused control
+                    // also grows slightly, so the remote's position reads at a
+                    // glance even on a bright scene. Restored on unfocus.
+                    v.onFocusChangeListener = android.view.View.OnFocusChangeListener { view, hasFocus ->
+                        runCatching {
+                            val s = if (hasFocus) 1.14f else 1f
+                            view.scaleX = s
+                            view.scaleY = s
+                        }
+                    }
                 } catch (_: Throwable) {}
             }
         }
@@ -11239,6 +11351,9 @@ class PlayerActivity : ComponentActivity() {
 
     private fun selectFirstTextTrack(player: ExoPlayer, tracks: Tracks, pickApplied: Boolean = false) {
         if (userPickedSubs) return
+        // "Subtitles on by default" is off: nothing selects itself (see
+        // [subsDefaultOn]). An explicit pick returns through the guard above.
+        if (!subsDefaultOn) return
         // A remembered pick that IS present on this source outranks the default
         // — without this, the auto-select re-asserts itself on the rebuilt
         // track list and wipes the subtitle the user just chose. When the pick
@@ -11514,6 +11629,13 @@ class PlayerActivity : ComponentActivity() {
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus) hideSystemUi()
+    }
+
+    override fun dispatchTouchEvent(ev: android.view.MotionEvent): Boolean {
+        // A finger means the platform ripple again — on a device that is not a
+        // television (see [TvInput.noteTouch]). Mirrors MainActivity's feed.
+        if (ev.actionMasked == android.view.MotionEvent.ACTION_DOWN) TvInput.noteTouch()
+        return super.dispatchTouchEvent(ev)
     }
 
     override fun onStart() {

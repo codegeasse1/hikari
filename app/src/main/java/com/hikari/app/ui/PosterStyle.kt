@@ -516,7 +516,7 @@ fun PosterArt(
     }
     val breathe = if (clock != null && ringed) {
         clock.animateFloat(
-            initialValue = 0.42f,
+            initialValue = 0.62f,
             targetValue = 1f,
             animationSpec = infiniteRepeatable(tween(1500, easing = FastOutSlowInEasing), RepeatMode.Reverse),
             label = "breathe",
@@ -792,13 +792,25 @@ fun PosterArt(
                     )
             )
         }
-        if (ringed && breathe != null) {
+        // The aura ring draws on every Android version — plain borders, no
+        // effect API — so a missing ring is never the OS. Two layers, because
+        // a 2dp hairline alone drowns in busy artwork on a small phone (the
+        // "selected Aura ring but no ring on the poster" report): a soft outer
+        // spill that reads on any art, then the crisp breathing ring itself.
+        // The ring no longer depends on the animation clock either — if the
+        // clock is ever absent the ring still draws, simply steady.
+        if (ringed) {
             Box(
                 Modifier
                     .matchParentSize()
-                    .graphicsLayer { alpha = breathe.value }
+                    .border(5.dp, auraStart.copy(alpha = 0.28f), shape)
+            )
+            Box(
+                Modifier
+                    .matchParentSize()
+                    .graphicsLayer { alpha = breathe?.value ?: 1f }
                     .border(
-                        2.dp,
+                        2.5.dp,
                         Brush.linearGradient(listOf(auraStart, auraEnd, auraStart)),
                         shape,
                     )

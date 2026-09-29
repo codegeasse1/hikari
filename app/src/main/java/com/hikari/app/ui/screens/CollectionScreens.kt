@@ -2357,7 +2357,7 @@ private fun TitleSearchSheet(
                         )
                     }
                 }
-                items(hits, key = { it.id + "|" + it.media }) { hit ->
+                items(hits.distinctBy { it.id + "|" + it.media }, key = { it.id + "|" + it.media }) { hit ->
                     val source = sourceFor(hit)
                     val isAdded = addedKeys.contains(source.key)
                     Row(

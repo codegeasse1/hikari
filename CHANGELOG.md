@@ -1,3 +1,17 @@
+## 0.10.65
+
+### Added
+
+- **Subtitles on by default (Settings → Player → Subtitles).** ON is the long-standing behaviour — the first (English-preferred) track shows without asking. OFF starts every video with captions hidden instead; anything chosen explicitly (a track or Auto in the player's Subtitles menu, an added file) still shows, because an explicit pick outranks a default.
+
+### Fixed
+
+- **Installed-extension cards fit again.** Five 48dp action targets beside the names squeezed the text column to about one letter per line on a 360dp phone, blowing each card up to a third of the screen. The card is a header row now (icon, names, switch, caret) with the actions on their own line underneath — five or six extensions per page, on any width.
+- **Remote highlight on every player control, on any box.** Boxes that report themselves as phones never became the TV layout, so every player focus gate skipped them while the app's own ring (remote-driven) worked — the remote moved a focus nobody could see over Source, Subtitles and the sheets. The player now follows the remote, not the hardware verdict: clickables are focusable whenever a remote is in use, late and async rows are re-walked as they land, the controls re-walk every time they appear with focus parked on the first pill, and the focused control grows as well as rings.
+- **The ±10s figure sits in its circle.** The media3 amount style carries its own gravity, font padding and compound drawables, which parked the "10" low in the 34dp slot. The buttons now force centred gravity, no font padding and no side drawables, at a size that fills the circle.
+- **Aura ring reads on any art, any version.** The ring was a lone 2dp hairline breathing down to 0.42 alpha — invisible over busy posters on small phones (it draws with plain borders on every Android version, so the OS was never the cause). A soft outer spill sits under it now, the ring itself is thicker, and it never dips as far; it also draws steady if the animation clock is ever absent.
+- **Three more lists deduped against the duplicate-key crash.** The reported `stremio|… was already used` crash is from 0.10.57 and was already fixed in 0.10.61 — updating clears it. The same class is now closed in the TMDB collection search, the collections shelf and the search-history chips, which keyed raw lists that an extension or a stored duplicate could repeat.
+
 ## 0.10.64
 
 ### Added

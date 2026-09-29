@@ -352,6 +352,11 @@ class AppStore(private val ctx: Context) {
          * mastered". See [volumeBoostFlow] and PlayerActivity.attachVolumeBoost.
          */
         val VOLUME_BOOST = booleanPreferencesKey("volumeBoost")
+        /** Subtitles selected automatically when a video opens (ON by default;
+         *  Settings → Player → Subtitles). Off means every video starts with
+         *  captions hidden — the user still turns them on per video from the
+         *  player's own Subtitles menu, which keeps working exactly as now. */
+        val SUBTITLES_DEFAULT_ON = booleanPreferencesKey("subtitlesDefaultOn")
         /** Reading mode of the manga reader ([com.hikari.app.manga.MangaReadMode]:
          *  paged left-to-right, paged right-to-left, or vertical webtoon). */
         val MANGA_READ_MODE = stringPreferencesKey("mangaReadMode")
@@ -2941,6 +2946,24 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setVolumeBoost(on: Boolean) {
         write("VOLUME_BOOST") { it[K.VOLUME_BOOST] = on }
+    }
+
+    /**
+     * Whether the player selects a subtitle track by itself when a video opens
+     * (see [SUBTITLES_DEFAULT_ON]). ON is the long-standing behaviour — the
+     * first (English-preferred) track is shown without asking. OFF starts
+     * every video with captions hidden; anything the user picks explicitly
+     * (a track, Auto, an added file) still shows, because an explicit pick
+     * outranks a default. The player reads it when it opens, like the rest of
+     * its own preferences.
+     */
+    fun subsDefaultOnFlow(): Flow<Boolean> =
+        store.data.map { it[K.SUBTITLES_DEFAULT_ON] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun subsDefaultOn(): Boolean = subsDefaultOnFlow().first()
+
+    suspend fun setSubsDefaultOn(on: Boolean) {
+        write("SUBTITLES_DEFAULT_ON") { it[K.SUBTITLES_DEFAULT_ON] = on }
     }
 
     /** Video enhance preset key (see [com.hikari.app.player.EnhancePreset]). */

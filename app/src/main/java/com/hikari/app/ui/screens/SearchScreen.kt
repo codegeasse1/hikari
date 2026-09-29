@@ -595,7 +595,7 @@ fun SearchScreen(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.padding(top = 2.dp),
             ) {
-                items(history, key = { it }) { past ->
+                items(history.distinct(), key = { it }) { past ->
                     HistoryChip(
                         text = past,
                         // Picking one is a new search, not a restored one: the
@@ -1171,7 +1171,7 @@ private fun CollectionHitsRow(
             contentPadding = PaddingValues(horizontal = 16.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            items(hits, key = { it.item.uniqueId + "|" + it.label }) { hit ->
+            items(hits.distinctBy { it.item.uniqueId + "|" + it.label }, key = { it.item.uniqueId + "|" + it.label }) { hit ->
                 Column(
                     Modifier
                         .width(104.dp)
