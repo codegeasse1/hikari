@@ -230,12 +230,16 @@ object TvUi {
      * screen, clamped to a range that still reads from a sofa — gives about
      * seven cells across a landscape phone and five across a television, with
      * every row's title visible under it.
+     *
+     * The fraction below is HALF of that sizing (about six rows to a screen):
+     * one shelf row of full-size posters still covered most of the display, so
+     * only a row and a half was ever visible at once.
      */
     @Composable
     fun posterWidth(): androidx.compose.ui.unit.Dp {
         if (!TvMode.current()) return 120.dp
         val h = androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp
-        return (h * 0.30f).coerceIn(96f, POSTER_WIDTH_DP.toFloat()).dp
+        return (h * 0.15f).coerceIn(48f, (POSTER_WIDTH_DP / 2).toFloat()).dp
     }
 
     /** [gridMin], but sized from the screen rather than a constant — see

@@ -417,16 +417,18 @@ class MainActivity : AppCompatActivity() {
             }
 
             // One-time community invitation per version. Held back until the update
-            // check has finished so the two dialogs never stack, and skipped
-            // wholesale once "Don't show this again" has been ticked. Coming
-            // back once per update (not just first install) is what surfaces
-            // the Telegram/Reddit/Discord links to existing users too.
+            // check has finished so the two dialogs never stack. "Don't show
+            // this again" holds for the CURRENT version only: after an update
+            // the dialog comes back once even for a user who ticked it before,
+            // and ticking it again holds the new version. Coming back once per
+            // update (not just first install) is what surfaces the
+            // Telegram/Reddit/Discord links to existing users too.
             var showTelegramDialog by remember { mutableStateOf(false) }
             LaunchedEffect(Unit) {
                 val current = runCatching { com.hikari.app.BuildConfig.VERSION_NAME }.getOrDefault("")
-                val dontShow = runCatching { store.telegramDontShow() }.getOrDefault(false)
+                val dontShowFor = runCatching { store.communityDontShowVersion() }.getOrDefault("")
                 val seen = runCatching { store.communitySeenVersion() }.getOrDefault("")
-                if (!dontShow && seen != current) {
+                if (dontShowFor != current && seen != current) {
                     showTelegramDialog = true
                 }
             }
@@ -502,7 +504,13 @@ class MainActivity : AppCompatActivity() {
                         },
                         onDontShowAgain = {
                             showTelegramDialog = false
-                            scope.launch { runCatching { store.setTelegramDontShow(true) } }
+                            scope.launch {
+                                runCatching {
+                                    val v = com.hikari.app.BuildConfig.VERSION_NAME
+                                    store.setCommunitySeenVersion(v)
+                                    store.setCommunityDontShowVersion(v)
+                                }
+                            }
                         },
                     )
                 }

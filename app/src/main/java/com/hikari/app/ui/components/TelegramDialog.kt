@@ -17,13 +17,17 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.delay
 import com.hikari.app.ui.DISCORD_INVITE_URL
 import com.hikari.app.ui.REDDIT_COMMUNITY_URL
 import com.hikari.app.ui.TELEGRAM_CHANNEL_URL
@@ -31,10 +35,11 @@ import com.hikari.app.ui.openCommunity
 import com.hikari.app.ui.openTelegram
 
 /**
- * Shown once per app version (until "Don't show this again" is ticked) to
- * point the user at the community: Telegram, Reddit and Discord. Every join
- * hands off to the matching app / the user's browser — never to Hikari's own
- * WebView, where the hand-off to the app dies (see [openTelegram]).
+ * Shown once per app version to point the user at the community: Telegram,
+ * Reddit and Discord. "Don't show this again" holds for the current version
+ * only — after an update it comes back once. Every join hands off to the
+ * matching app / the user's browser — never to Hikari's own WebView, where
+ * the hand-off to the app dies (see [openTelegram]).
  */
 @Composable
 fun TelegramDialog(
@@ -43,6 +48,15 @@ fun TelegramDialog(
     onDontShowAgain: () -> Unit,
 ) {
     var dontShow by remember { mutableStateOf(false) }
+    // Television: the D-pad lands on Close the moment the dialog exists, so
+    // Enter dismisses it with the focused ring showing — no hunting with the
+    // remote first. The short delay is one layout pass: the requester cannot
+    // take focus until the button has been placed.
+    val closeFocus = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+        delay(250L)
+        runCatching { closeFocus.requestFocus() }
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -89,9 +103,12 @@ fun TelegramDialog(
             }
         },
         dismissButton = {
-            TextButton(onClick = {
-                if (dontShow) onDontShowAgain() else onDismiss()
-            }) { Text(tr("Close")) }
+            TextButton(
+                onClick = {
+                    if (dontShow) onDontShowAgain() else onDismiss()
+                },
+                modifier = Modifier.focusRequester(closeFocus)
+            ) { Text(tr("Close")) }
         },
     )
 }

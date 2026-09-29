@@ -2027,7 +2027,10 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             // its repo.json is actually fetched, replace that with the real
             // name/description so the list shows "owner/repo" instead of a URL.
             val refreshed = meta ?: repo
-            if (refreshed != repo) store.addCs3Repo(refreshed)
+            // Re-save only when the repo is still there: the user may have
+            // deleted it while this refresh was in flight, and the seed-aware
+            // path keeps that deletion from being undone here either.
+            if (refreshed != repo) store.seedCs3Repo(refreshed)
             pluginsByRepo.value = pluginsByRepo.value + (repo.url to plugins)
             repoState.value = repoState.value + (repo.url to RepoLoadState(loading = false))
             // A Mega-style bundle import may have added repos to the store.

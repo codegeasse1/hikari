@@ -589,7 +589,10 @@ class ContentRepository(private val manager: ProviderManager) {
         const val CROSS_THIN_RESULT = 6
 
         fun streamsRememberedKey(item: MediaItem, episode: Episode?): String =
-            item.uniqueId + "|" + (episode?.id ?: "")
+            streamsRememberedKey(item, episode, "")
+
+        fun streamsRememberedKey(item: MediaItem, episode: Episode?, extra: String): String =
+            item.uniqueId + "|" + (episode?.id ?: "") + extra
 
         /**
          * One background continuation of a cross-extension pass.
@@ -5391,12 +5394,51 @@ class ContentRepository(private val manager: ProviderManager) {
         episodesForInner(item, onPartial)
     }
 
+    /**
+     * A Vega title's packs (audio variants, seasons, quality rows) in provider
+     * order — the detail page's picker. Empty for every other engine.
+     */
+    suspend fun vegaPacksFor(item: MediaItem): List<com.hikari.app.providers.vega.VegaPack> =
+        withContext(Dispatchers.IO) {
+            (manager.byId(item.providerId) as? com.hikari.app.providers.vega.VegaProvider)
+                ?.packsFor(item).orEmpty()
+        }
+
+    /**
+     * A Vega movie's playable quality rows in provider order — the detail
+     * page's quality picker. Empty for every other engine.
+     */
+    suspend fun vegaMovieOptions(item: MediaItem): List<com.hikari.app.providers.vega.VegaMovieOption> =
+        withContext(Dispatchers.IO) {
+            (manager.byId(item.providerId) as? com.hikari.app.providers.vega.VegaProvider)
+                ?.movieOptions(item).orEmpty()
+        }
+
+    /** [com.hikari.app.providers.vega.VegaProvider.selectionKey] for this
+     *  title — "" for every other engine. */
+    private fun vegaSelectionSuffix(item: MediaItem): String =
+        (manager.byId(item.providerId) as? com.hikari.app.providers.vega.VegaProvider)
+            ?.selectionKey(item.id).orEmpty()
+
+    /**
+     * Instance shadow of the companion's [streamsRememberedKey]: every
+     * remembered/sweep key built in instance scope routes through it, so a
+     * Vega quality switch — same title, same null episode, a different link —
+     * can never inherit the previous row's servers (or join its sweep).
+     */
+    private fun streamsRememberedKey(item: MediaItem, episode: Episode?): String =
+        streamsRememberedKey(item, episode, vegaSelectionSuffix(item))
+
     private suspend fun episodesForInner(
         item: MediaItem,
         onPartial: ((List<Episode>) -> Unit)? = null,
     ): List<Episode>? = withContext(Dispatchers.IO) {
         if (item.type == MediaType.UNKNOWN) return@withContext null
-        synchronized(episodeCache) { episodeCache[item.uniqueId] }?.let {
+        // A Vega pack switch is a DIFFERENT list under the same title: scope
+        // every cache on this lookup by the provider's current selection, so
+        // pack 2 never paints (or inherits) pack 1's answers.
+        val selKey = item.uniqueId + vegaSelectionSuffix(item)
+        synchronized(episodeCache) { episodeCache[selKey] }?.let {
             // Re-opening the page is instant: hand the cached list straight to
             // the caller before doing anything else.
             onPartial?.invoke(it)
@@ -5407,7 +5449,7 @@ class ContentRepository(private val manager: ProviderManager) {
         // episodes, so this is a head start and not a verdict. It is also what
         // the page falls back to when every engine comes up empty (see the final
         // return), which is the "it showed episodes yesterday" case.
-        val epsKey = MetaCache.episodesKey(item.uniqueId)
+        val epsKey = MetaCache.episodesKey(selKey)
         val cachedEps = MetaCache.cachedEpisodes(epsKey)
         cachedEps?.let { onPartial?.invoke(it) }
         val others = manager.providers.value.filter {
@@ -5438,7 +5480,7 @@ class ContentRepository(private val manager: ProviderManager) {
                 val translated = translateEpisodes(item.providerId, sorted)
                 if (translated !== sorted) onPartial?.invoke(translated)
                 val named = withRealEpisodeNames(item, translated)
-                synchronized(episodeCache) { episodeCache[item.uniqueId] = named }
+                synchronized(episodeCache) { episodeCache[selKey] = named }
                 MetaCache.putEpisodes(epsKey, named)
                 if (named !== translated) onPartial?.invoke(named)
                 return@withContext named
@@ -5464,7 +5506,7 @@ class ContentRepository(private val manager: ProviderManager) {
                 val translated = translateEpisodes(item.providerId, list)
                 if (translated !== list) onPartial?.invoke(translated)
                 val named = withRealEpisodeNames(item, translated)
-                synchronized(episodeCache) { episodeCache[item.uniqueId] = named }
+                synchronized(episodeCache) { episodeCache[selKey] = named }
                 MetaCache.putEpisodes(epsKey, named)
                 if (named !== translated) onPartial?.invoke(named)
                 return@withContext named

@@ -71,7 +71,7 @@ object SkyStreamPluginManager {
      */
     suspend fun seedDefaults(context: Context, store: AppStore) {
         for ((url, name, desc) in DEFAULT_REPOS) {
-            runCatching { store.addCs3Repo(Cs3Repo(url, name, desc, RepoKind.SKYSTREAM)) }
+            runCatching { store.seedCs3Repo(Cs3Repo(url, name, desc, RepoKind.SKYSTREAM)) }
         }
     }
 

@@ -589,7 +589,7 @@ object AniyomiExtensionManager {
     /** Adds the official Aniyomi repo once. Non-fatal on any failure. */
     suspend fun seedDefaults(context: Context, store: AppStore) {
         for ((url, name, desc) in DEFAULT_REPOS) {
-            runCatching { store.addCs3Repo(Cs3Repo(url, name, desc, RepoKind.ANIYOMI)) }
+            runCatching { store.seedCs3Repo(Cs3Repo(url, name, desc, RepoKind.ANIYOMI)) }
         }
     }
 

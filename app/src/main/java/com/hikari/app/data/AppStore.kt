@@ -88,6 +88,11 @@ class AppStore(private val ctx: Context) {
         val PROVIDERS = stringPreferencesKey("providers")
         val FAVORITES = stringPreferencesKey("favorites")
         val CS3_REPOS = stringPreferencesKey("cs3Repos")
+        val CS3_REMOVED_REPOS = stringPreferencesKey("cs3RemovedRepos")
+        /** Repo identities the user has explicitly removed (see [removedRepoKeys]).
+         *  First-run seeding consults this before re-adding a bundled default,
+         *  so a default repo the user deletes stays deleted instead of coming
+         *  back on the next launch. */
         /** User-made collections (name + folders of catalog sources), stored as
          *  one JSON array. See [Collection]. */
         val COLLECTIONS = stringPreferencesKey("collections")
@@ -189,6 +194,9 @@ class AppStore(private val ctx: Context) {
         val SLOW_TIP_LAST_DISMISS = longPreferencesKey("slowTipLastDismiss")
         val TELEGRAM_DONT_SHOW = booleanPreferencesKey("telegramDontShow")
         val COMMUNITY_SEEN_VERSION = stringPreferencesKey("communitySeenVersion")
+        /** The app version "Don't show this again" was ticked on — the tick
+         *  holds for that version only (see [AppStore.communityDontShowVersion]). */
+        val COMMUNITY_DONT_SHOW_VERSION = stringPreferencesKey("communityDontShowVersion")
         /** `list` / `tile` / `poster` — how a Telegram chat's videos are drawn
          *  (see AppStore.telegramView and TgView in the Telegram screen). */
         val TELEGRAM_VIEW = stringPreferencesKey("telegramViewStyle")
@@ -1897,6 +1905,18 @@ class AppStore(private val ctx: Context) {
         write("COMMUNITY_SEEN_VERSION") { it[K.COMMUNITY_SEEN_VERSION] = version }
     }
 
+    /** The app version "Don't show this again" was ticked on. The tick holds
+     *  only for THAT version: after an update the dialog comes back once even
+     *  for a user who ticked it before, and ticking it again holds the new
+     *  version. (The old permanent TELEGRAM_DONT_SHOW flag is retired — it is
+     *  what kept the dialog away forever after one tick.) */
+    suspend fun communityDontShowVersion(): String = store.data.map { it[K.COMMUNITY_DONT_SHOW_VERSION].orEmpty() }
+        .distinctUntilChanged().flowOn(Dispatchers.Default).first()
+
+    suspend fun setCommunityDontShowVersion(version: String) {
+        write("COMMUNITY_DONT_SHOW_VERSION") { it[K.COMMUNITY_DONT_SHOW_VERSION] = version }
+    }
+
     /**
      * How a Telegram chat's videos are drawn — `list`, `tile` or `poster` (see
      * TgView in the Telegram screen). A stored preference rather than per-screen
@@ -3490,6 +3510,28 @@ class AppStore(private val ctx: Context) {
         SourceUrls.repoKey(url) ?: SourceUrls.canonical(url).ifBlank { url.trim() }
 
     suspend fun addCs3Repo(r: Cs3Repo) {
+        upsertRepo(r)
+        // An explicit add is the user saying they want it: it lifts the
+        // removal mark, so a repo deleted long ago and re-added by hand (or
+        // restored from a backup) is not treated as deleted any more.
+        clearRemovedRepoKey(repoId(r.url))
+    }
+
+    /**
+     * The first-run seed path for the bundled default repos (see the
+     * `seedDefaults` in the Nuvio/SkyStream/Vega/Aniyomi/manga managers).
+     * Same upsert as [addCs3Repo], except a repo the user has explicitly
+     * removed is SKIPPED instead of re-added: those seeders run on every
+     * launch, and without this a deleted default repo came back on its own
+     * after some time. Returns false when the repo was skipped.
+     */
+    suspend fun seedCs3Repo(r: Cs3Repo): Boolean {
+        if (repoId(r.url) in removedRepoKeys()) return false
+        upsertRepo(r)
+        return true
+    }
+
+    private suspend fun upsertRepo(r: Cs3Repo) {
         val key = repoId(r.url)
         val existing = repos().firstOrNull { repoId(it.url) == key }
         // The same REPOSITORY is one entry, however it was spelled and whichever
@@ -3515,6 +3557,48 @@ class AppStore(private val ctx: Context) {
         // as the list is read back.
         val key = repoId(url)
         saveRepos(repos().filter { repoId(it.url) != key })
+        // Remember the removal so the every-launch default seeding (see
+        // [seedCs3Repo]) does not push a deleted default back on the next
+        // start. Keyed by identity, so re-adding under another branch
+        // spelling still counts as the same repository.
+        addRemovedRepoKey(key)
+    }
+
+    /** Identities of every repo the user has explicitly removed. */
+    private suspend fun removedRepoKeys(): Set<String> {
+        val raw = store.data.map { it[K.CS3_REMOVED_REPOS] }.first()
+        if (raw.isNullOrBlank()) return emptySet()
+        return try {
+            val arr = JSONArray(raw)
+            (0 until arr.length()).mapNotNull { arr.optString(it).ifBlank { null } }.toSet()
+        } catch (e: Exception) {
+            emptySet()
+        }
+    }
+
+    private suspend fun addRemovedRepoKey(key: String) {
+        if (key.isBlank()) return
+        val next = removedRepoKeys() + key
+        write("CS3_REMOVED_REPOS") { prefs ->
+            val arr = JSONArray()
+            for (k in next) arr.put(k)
+            prefs[K.CS3_REMOVED_REPOS] = arr.toString()
+        }
+    }
+
+    private suspend fun clearRemovedRepoKey(key: String) {
+        if (key.isBlank()) return
+        val before = removedRepoKeys()
+        val next = before - key
+        if (next.size == before.size) return
+        write("CS3_REMOVED_REPOS") { prefs ->
+            if (next.isEmpty()) prefs.remove(K.CS3_REMOVED_REPOS)
+            else {
+                val arr = JSONArray()
+                for (k in next) arr.put(k)
+                prefs[K.CS3_REMOVED_REPOS] = arr.toString()
+            }
+        }
     }
 
     /**

@@ -317,9 +317,9 @@ fun PosterCard(
     // title and repaints the cell when the answer lands (see
     // rememberPosterScore). Off, it costs nothing at all.
     val badge = rememberPosterScore(item, style)
-    // On a television the same card is drawn at a size that reads from a sofa,
-    // sized from THIS screen's height rather than a constant (see
-    // TvUi.posterWidth) so three or four cells never fill a landscape display.
+    // On a television the same card is drawn half-size, sized from THIS screen's
+    // height rather than a constant (see TvUi.posterWidth) so several rows fit
+    // on one screen instead of one row covering it.
     val cardWidth = if (TvMode.current()) TvUi.posterWidth() else 120.dp
     Column(
         Modifier
@@ -580,6 +580,15 @@ fun HeroBanner(
     config: HeroConfig = HeroConfig(),
 ) {
     if (items.isEmpty()) return
+    // Television: one STILL card, never a pager. A pager re-settles every time
+    // the feed lands more rows (its page count is a lambda over the live
+    // list), and the D-pad pages it by accident while walking focus — which is
+    // the "the header image keeps jittering right and left" report. A single
+    // card cannot move at all.
+    if (TvMode.current()) {
+        HeroStaticCard(item = items.first(), onClick = onClick, modifier = modifier, config = config)
+        return
+    }
     when (HeroStyles.normalize(config.style)) {
         HeroStyles.SPOTLIGHT -> HeroSpotlight(items, onClick, modifier, config)
         HeroStyles.COMPACT -> HeroCompact(items, onClick, modifier, config)
@@ -763,6 +772,125 @@ private fun HeroCarousel(
 @Composable
 private fun rememberHeroScore(item: MediaItem): String? =
     rememberPosterScore(item, PosterStyle(showRatings = true))
+
+/**
+ * The television hero: the carousel's card drawn ONCE, with no pager, no dots
+ * and no timer around it (see [HeroBanner]). Same artwork, scrim, title, meta,
+ * overview, score and "View Details" pill as the carousel's first page — only
+ * the motion is gone, so the header stands perfectly still while the feed
+ * keeps landing rows underneath it. The card itself stays clickable, so the
+ * D-pad still reaches and opens it.
+ */
+@Composable
+private fun HeroStaticCard(
+    item: MediaItem,
+    onClick: (MediaItem) -> Unit,
+    modifier: Modifier = Modifier,
+    config: HeroConfig = HeroConfig(),
+) {
+    val heroScore = if (config.showRating) rememberHeroScore(item) else null
+    Column(modifier.fillMaxWidth()) {
+        Box(
+            Modifier
+                .then(heroFrame(16f / 9f, horizontalInsets = 40f))
+                .clip(RoundedCornerShape(20.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+                .clickable { onClick(item) }
+        ) {
+            val hero = Artwork.heroModel(item)
+            HeroArtwork(
+                model = hero.first,
+                wide = hero.second,
+                contentDescription = item.title,
+                modifier = Modifier.fillMaxSize(),
+            )
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(
+                            0f to Color.Black.copy(alpha = 0.45f),
+                            0.30f to Color.Transparent,
+                            0.55f to Color.Black.copy(alpha = 0.35f),
+                            1f to Color.Black.copy(alpha = 0.92f),
+                        )
+                    )
+            )
+            Column(
+                Modifier
+                    .align(Alignment.BottomStart)
+                    .fillMaxWidth()
+                    .padding(start = 16.dp, end = 16.dp, bottom = 14.dp),
+            ) {
+                Text(
+                    item.title,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Black,
+                    color = Color.White,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                val metaLine = buildList {
+                    when (item.type) {
+                        MediaType.MOVIE -> add("Movie")
+                        MediaType.SERIES -> add("Series")
+                        else -> {}
+                    }
+                    item.genres.take(2).forEach { add(it) }
+                    item.year?.let { add(it.toString()) }
+                }.joinToString("  ·  ")
+                if (config.showMeta && metaLine.isNotBlank()) {
+                    Text(
+                        metaLine,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.White.copy(alpha = 0.85f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(top = 2.dp),
+                    )
+                }
+                if (config.showOverview && !item.overview.isNullOrBlank()) {
+                    Text(
+                        item.overview!!.trim(),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.White.copy(alpha = 0.72f),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(top = 3.dp),
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (heroScore != null) {
+                        HeroScoreChip(heroScore)
+                        Spacer(Modifier.width(8.dp))
+                    }
+                    Button(
+                        onClick = { onClick(item) },
+                        shape = RoundedCornerShape(50),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color.White,
+                            contentColor = Color.Black,
+                        ),
+                    ) {
+                        Icon(
+                            Icons.Filled.PlayArrow,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            tr("View Details"),
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
 
 /** The score chip itself: the poster badge, enlarged for a banner. */
 @Composable

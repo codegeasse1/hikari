@@ -210,6 +210,33 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
     private val _episodesFailed = MutableStateFlow(false)
     val episodesFailed: StateFlow<Boolean> = _episodesFailed.asStateFlow()
 
+    /**
+     * A Vega title's packs (audio variants, seasons, quality rows) in provider
+     * order, for the picker's dropdown. The real Vega app shows exactly this
+     * list and only ever opens the picked entry (`activeSeason`); the episodes
+     * below are that entry's answer, so switching packs actually switches the
+     * list instead of re-filtering one merged blob.
+     */
+    private val _vegaPacks =
+        MutableStateFlow<List<com.hikari.app.providers.vega.VegaPack>>(emptyList())
+    val vegaPacks: StateFlow<List<com.hikari.app.providers.vega.VegaPack>> = _vegaPacks.asStateFlow()
+    private val _vegaPackIndex = MutableStateFlow(0)
+    val vegaPackIndex: StateFlow<Int> = _vegaPackIndex.asStateFlow()
+
+    /**
+     * A Vega movie's playable quality rows in provider order, for the quality
+     * picker under the Play row. Picking one resolves Play through THAT row's
+     * link (see `selectedLink` in the provider) instead of always the first
+     * row — which is why a title whose first row is dead played nowhere while
+     * the Vega app played its other rows fine.
+     */
+    private val _vegaMovieOptions =
+        MutableStateFlow<List<com.hikari.app.providers.vega.VegaMovieOption>>(emptyList())
+    val vegaMovieOptions: StateFlow<List<com.hikari.app.providers.vega.VegaMovieOption>> =
+        _vegaMovieOptions.asStateFlow()
+    private val _vegaMovieIndex = MutableStateFlow(0)
+    val vegaMovieIndex: StateFlow<Int> = _vegaMovieIndex.asStateFlow()
+
     /** The page's own "retry the episode list" tap (see [retryEpisodes]). */
     private var episodeRetryJob: Job? = null
 
@@ -615,6 +642,20 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             )
             _meta.value = base
             _loading.value = false
+            // A fresh page starts on Vega pack 0 / quality row 0 — the provider
+            // default — and it is set SYNCHRONOUSLY here so the episode lookup
+            // starting below can never read a previous visit's pick for the
+            // same title.
+            _vegaPacks.value = emptyList()
+            _vegaMovieOptions.value = emptyList()
+            _vegaPackIndex.value = 0
+            _vegaMovieIndex.value = 0
+            if (activeProvider.startsWith("vega|")) {
+                (manager.byId(activeProvider) as? com.hikari.app.providers.vega.VegaProvider)?.let { p ->
+                    p.setSelectedPack(mediaId, 0)
+                    p.setSelectedLink(mediaId, null)
+                }
+            }
             // Movies: start the multi-provider source search NOW — before the
             // origin's /meta and episode fetches — so the first server is
             // already resolving while the page renders. Previously the search
@@ -684,6 +725,9 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
             val item = _meta.value ?: base
+            // The Vega picker rows (packs / quality rows) arrive on their own —
+            // the page never waits for them, and pack 0 is already showing.
+            viewModelScope.launch { loadVegaPacks(item) }
             // (The shelves — ratings, cast, trailers, Related/Similar — were
             // started above, in parallel with the episode list: they are a bonus
             // that must never gate the page, but they must also never wait for
@@ -775,6 +819,12 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
     /** Re-runs the episode lookup for the page on screen — the page's own
      *  "couldn't load the episode list" tap. */
     fun retryEpisodes() {
+        reloadEpisodes()
+    }
+
+    /** The episode lookup, restarted — used by [retryEpisodes] and by a Vega
+     *  pack switch (which is a different list, not a filter over the old one). */
+    private fun reloadEpisodes() {
         val item = _meta.value ?: return
         episodeRetryJob?.cancel()
         episodeRetryJob = viewModelScope.launch {
@@ -790,6 +840,41 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
         }
+    }
+
+    /**
+     * The Vega packs (and movie quality rows) of the page's title, loaded once
+     * its meta has answered. A fresh page starts on pack 0 / row 0 — the Vega
+     * app's own default (`LinkList[0]`) — so the default view plays exactly
+     * what it always did.
+     */
+    private suspend fun loadVegaPacks(item: MediaItem) {
+        if (!item.providerId.startsWith("vega|")) return
+        _vegaPacks.value = runCatching { repo.vegaPacksFor(item) }.getOrDefault(emptyList())
+        _vegaMovieOptions.value = runCatching { repo.vegaMovieOptions(item) }.getOrDefault(emptyList())
+    }
+
+    /** Picks a Vega series pack and loads ITS episodes (see [reloadEpisodes]). */
+    fun setVegaPack(index: Int) {
+        val item = _meta.value ?: return
+        if (!item.providerId.startsWith("vega|")) return
+        if (index == _vegaPackIndex.value) return
+        _vegaPackIndex.value = index
+        (manager.byId(item.providerId) as? com.hikari.app.providers.vega.VegaProvider)
+            ?.setSelectedPack(item.id, index)
+        reloadEpisodes()
+    }
+
+    /** Picks a Vega movie's quality row — Play resolves through its link. */
+    fun setVegaMovie(index: Int) {
+        val item = _meta.value ?: return
+        if (!item.providerId.startsWith("vega|")) return
+        val options = _vegaMovieOptions.value
+        if (options.isEmpty()) return
+        val at = index.coerceIn(0, options.lastIndex)
+        _vegaMovieIndex.value = at
+        (manager.byId(item.providerId) as? com.hikari.app.providers.vega.VegaProvider)
+            ?.setSelectedLink(item.id, options[at].link)
     }
 
     private suspend fun loadShelves(item: MediaItem) {
@@ -1383,6 +1468,13 @@ fun DetailScreen(
     // empty) — the page then says "couldn't load" and offers a retry instead of
     // claiming the series has no episodes (see DetailViewModel.loadEpisodesFor).
     val episodesFailed by vm.episodesFailed.collectAsState()
+    // A Vega title's packs / movie quality rows for the pickers below (empty
+    // for every other engine). The episodes above are already the picked
+    // pack's answer — the picker only switches which pack that is.
+    val vegaPacks by vm.vegaPacks.collectAsState()
+    val vegaPackIndex by vm.vegaPackIndex.collectAsState()
+    val vegaMovieOptions by vm.vegaMovieOptions.collectAsState()
+    val vegaMovieIndex by vm.vegaMovieIndex.collectAsState()
     val loading by vm.loading.collectAsState()
     val error by vm.error.collectAsState()
     val searchedProviders by vm.searchedProviders.collectAsState()
@@ -1399,6 +1491,7 @@ fun DetailScreen(
     // opened with is precisely the dead one.
     val activeProviderId by vm.activeProviderId.collectAsState()
     val livePid = activeProviderId.ifBlank { providerId }
+    val isVegaPage = livePid.startsWith("vega|")
 
     /**
      * The name the PLAYER's artwork card prints (and the detail page's own
@@ -3200,6 +3293,20 @@ fun DetailScreen(
                         }
                     }
                 }
+                // A Vega movie's quality rows (the provider's own quality list —
+                // "480p [650MB]", "1080p [9.3GB]" — the way the Vega app lists
+                // the picked entry's rows). Play resolves through the picked
+                // row's link, so a dead first row no longer sinks the title
+                // while its other rows play fine.
+                if (isVegaPage && !isSeries && vegaMovieOptions.size > 1) {
+                    item {
+                        VegaOptionPicker(
+                            options = vegaMovieOptions.map { it.label },
+                            selected = vegaMovieIndex.coerceIn(0, vegaMovieOptions.lastIndex),
+                            onPick = { vm.setVegaMovie(it) },
+                        )
+                    }
+                }
                 // ---- The mark state, ON the page --------------------------------
                 //
                 // The reference client's mark button hides its own answer: the only
@@ -3318,6 +3425,28 @@ fun DetailScreen(
                     }
                 }
                 if (isSeries) {
+                    // A Vega series' pack picker (audio variants, seasons,
+                    // season+quality rows — the provider's own titles, verbatim,
+                    // the way the Vega app's dropdown lists its entries). Only
+                    // the picked pack's episodes are below, so switching packs
+                    // switches the list instead of re-filtering one merged blob.
+                    if (isVegaPage && vegaPacks.size > 1) {
+                        item {
+                            // The picker's position is the LIST position; the
+                            // provider's key is the pack's own index (blank
+                            // entries are skipped when the list is built, so
+                            // the two can differ).
+                            val packPos = vegaPacks.indexOfFirst { it.index == vegaPackIndex }
+                                .takeIf { it >= 0 } ?: 0
+                            VegaOptionPicker(
+                                options = vegaPacks.map {
+                                    it.title.ifBlank { tr("Option %s").replace("%s", (it.index + 1).toString()) }
+                                },
+                                selected = packPos,
+                                onPick = { vm.setVegaPack(vegaPacks[it].index) },
+                            )
+                        }
+                    }
                     item {
                         Row(
                             Modifier
@@ -3890,6 +4019,49 @@ fun DetailScreen(
                 }
                 }
                 Spacer(Modifier.height(12.dp))
+            }
+        }
+    }
+}
+
+/**
+ * A Vega pack / quality picker: one outlined button opening the provider's own
+ * option titles, verbatim. The same OutlinedButton+DropdownMenu shape the
+ * season and range pickers use, so the D-pad walks it the same way.
+ */
+@Composable
+private fun VegaOptionPicker(
+    options: List<String>,
+    selected: Int,
+    onPick: (Int) -> Unit,
+) {
+    if (options.size <= 1) return
+    var expanded by remember { mutableStateOf(false) }
+    val at = selected.coerceIn(0, options.lastIndex)
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp),
+    ) {
+        OutlinedButton(
+            onClick = { expanded = true },
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(options[at], maxLines = 1)
+        }
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
+            options.forEachIndexed { i, label ->
+                DropdownMenuItem(
+                    text = { Text(label) },
+                    onClick = {
+                        expanded = false
+                        onPick(i)
+                    }
+                )
             }
         }
     }

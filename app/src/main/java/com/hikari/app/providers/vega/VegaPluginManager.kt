@@ -71,7 +71,7 @@ object VegaPluginManager {
      *  with the sites, so the user picks. Non-fatal on failure. */
     suspend fun seedDefaults(context: Context, store: AppStore) {
         for ((url, name, desc) in DEFAULT_REPOS) {
-            runCatching { store.addCs3Repo(Cs3Repo(url, name, desc, RepoKind.VEGA)) }
+            runCatching { store.seedCs3Repo(Cs3Repo(url, name, desc, RepoKind.VEGA)) }
         }
     }
 

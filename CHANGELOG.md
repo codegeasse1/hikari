@@ -1,3 +1,14 @@
+## 0.10.66
+
+### Fixed
+
+- **Vega series follow the picked season.** Every season pack (Season 1…10) showed the first season's episodes because the packs were merged into one list and the player always took the first link. Packs now keep their own episodes, the detail screen offers a season picker, and the player follows the picked pack's link — S10 shows S10's episodes.
+- **Vega lists every audio and every server.** Movies showed one audio and one server because only the first entry's first link was ever used. The detail screen now offers all audio options (Original Audio plus the Hindi/French/dub entries) and the player tries every server link in turn instead of failing on the first.
+- **A deleted default repo stays deleted.** The five bundled extension repos (Nuvio, SkyStream, Vega, Aniyomi, manga) were re-seeded on every launch with no one-way guard, so deleting one brought it back on the next start. Removals are now remembered (by repo identity, so branch/mirror respellings match too) and seeding skips them; re-adding a repo by hand, or restoring a backup that has it, clears the mark.
+- **Community dialog returns after every update.** Ticking "Don't show this again" used to silence it forever; the tick now holds for the current version only, so the next update's dialog comes back. TV remotes land on Close with a visible highlight.
+- **TV home hero stands still.** The television hero ran the same auto-rotating pager as phones, so it kept sliding sideways on its own; TV now shows one still card.
+- **TV shelf posters halved.** TV poster rows rendered at nearly a third of the screen height, so one row filled the display; they now draw at half that width.
+
 ## 0.10.65
 
 ### Added
