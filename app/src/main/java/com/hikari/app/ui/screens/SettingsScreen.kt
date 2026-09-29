@@ -1667,15 +1667,6 @@ private fun AboutCard() {
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
-        Spacer(Modifier.height(10.dp))
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            TextButton(onClick = { openTelegram(context) }) { Text(tr("Join Telegram")) }
-            TextButton(onClick = { openCommunity(context, REDDIT_COMMUNITY_URL) }) { Text(tr("Join Reddit")) }
-            TextButton(onClick = { openCommunity(context, DISCORD_INVITE_URL) }) { Text(tr("Join Discord")) }
-        }
     }
 }
 

@@ -333,7 +333,12 @@ object AniyomiExtensionManager {
     /** True when [url] points at a repo index FILE rather than at a repo folder. */
     fun isIndexUrl(url: String): Boolean {
         val trimmed = url.trim().trimEnd('/')
-        return ALL_INDEX_FILE_NAMES.any { trimmed.endsWith("/$it", ignoreCase = true) }
+        if (ALL_INDEX_FILE_NAMES.any { trimmed.endsWith("/$it", ignoreCase = true) }) return true
+        // A repo can publish its list under ANY file name - anything ending
+        // in '.json'/'.pb' is already a file, never a folder to append to.
+        val last = trimmed.substringAfterLast('/')
+        return last.endsWith(".json", ignoreCase = true) ||
+            last.endsWith(".pb", ignoreCase = true)
     }
 
     /**
@@ -356,6 +361,16 @@ object AniyomiExtensionManager {
                 break
             }
         }
+        // Same for a custom-named index file: its apk/ + icon/ folders hang
+        // off the parent dir, so the file name is stripped for installs.
+        val last = url.substringAfterLast('/')
+        if (url.contains("/") &&
+            !last.contains("?") && !last.contains("#") &&
+            (last.endsWith(".json", ignoreCase = true) ||
+                last.endsWith(".pb", ignoreCase = true))
+        ) {
+            url = url.substringBeforeLast('/').trimEnd('/')
+        }
         return url
     }
 
@@ -377,6 +392,20 @@ object AniyomiExtensionManager {
             val stem = clean.dropLast(3)
             val min = if (stem.endsWith(".min", ignoreCase = true)) null else "$stem.min.json"
             return listOfNotNull("$stem.json", min, clean)
+        }
+        if (clean.endsWith(".json", ignoreCase = true)) {
+            // A direct index FILE is fetched as-is first - never treated as
+            // a folder. Custom names fall back to the standard files after.
+            val fileDir = indexDirFor(clean)
+            val fileName = clean.substringAfterLast('/')
+            val sibs = ALL_INDEX_FILE_NAMES.filterNot { it.equals(fileName, ignoreCase = true) }
+            val head = when {
+                fileName.equals("index.min.json", ignoreCase = true) -> listOf("$fileDir/index.json")
+                fileName.endsWith(".min.json", ignoreCase = true) ->
+                    listOf("$fileDir/" + fileName.dropLast(".min.json".length) + ".json", clean)
+                else -> listOf(clean)
+            }
+            return (head + sibs.map { "$fileDir/$it" }).distinct()
         }
         if (!isIndexUrl(clean)) return ALL_INDEX_FILE_NAMES.map { "$clean/$it" }
         val dir = indexDirFor(clean)
