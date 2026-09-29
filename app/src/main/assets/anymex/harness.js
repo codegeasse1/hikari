@@ -248,6 +248,103 @@
     } catch (e) { return null; }
   };
 
+  function wrapAll(found) {
+    var out = [];
+    try {
+      if (!found) return out;
+      found.each(function (i, el) { out.push(wrap(cheerio(el))); });
+    } catch (e) {}
+    return out;
+  }
+
+  DomElement.prototype.getElementsByClassName = function (name) {
+    try {
+      if (!this._sel || !cheerio || !this._sel.find) return [];
+      return wrapAll(this._sel.find('.' + String(name)));
+    } catch (e) { return []; }
+  };
+
+  DomElement.prototype.getElementsByTagName = function (name) {
+    try {
+      if (!this._sel || !cheerio || !this._sel.find) return [];
+      return wrapAll(this._sel.find(String(name)));
+    } catch (e) { return []; }
+  };
+
+  Object.defineProperty(DomElement.prototype, 'children', {
+    get: function () {
+      try {
+        if (!this._sel || !cheerio || !this._sel.children) return [];
+        return wrapAll(this._sel.children());
+      } catch (e) { return []; }
+    }
+  });
+
+  Object.defineProperty(DomElement.prototype, 'previousElementSibling', {
+    get: function () {
+      try {
+        if (!this._sel || !cheerio) return null;
+        var p = this._sel.prev();
+        if (!p || !p.length) return null;
+        return wrap(p.first());
+      } catch (e) { return null; }
+    }
+  });
+
+  Object.defineProperty(DomElement.prototype, 'nextElementSibling', {
+    get: function () {
+      try {
+        if (!this._sel || !cheerio) return null;
+        var n = this._sel.next();
+        if (!n || !n.length) return null;
+        return wrap(n.first());
+      } catch (e) { return null; }
+    }
+  });
+
+  DomElement.prototype.hasAttr = function (name) {
+    try {
+      return this.attr(String(name)) !== null;
+    } catch (e) { return false; }
+  };
+
+  Object.defineProperty(DomElement.prototype, 'getImg', {
+    get: function () { return this.attr('src') || this.attr('data-src') || null; }
+  });
+
+  Object.defineProperty(DomElement.prototype, 'getDataSrc', {
+    get: function () { return this.attr('data-src') || null; }
+  });
+
+  Object.defineProperty(DomElement.prototype, 'innerHtml', {
+    get: function () {
+      try { return this._sel ? (this._sel.html() || '') : ''; } catch (e) { return ''; }
+    }
+  });
+
+  Object.defineProperty(DomElement.prototype, 'outerHtml', {
+    get: function () {
+      try {
+        if (!this._sel || !cheerio) return '';
+        if (typeof cheerio.html === 'function') return cheerio.html(this._sel) || '';
+        return this._sel.toString();
+      } catch (e) { return ''; }
+    }
+  });
+
+  Object.defineProperty(DomElement.prototype, 'localName', {
+    get: function () {
+      try {
+        if (!this._sel) return '';
+        if (typeof this._sel.prop === 'function') {
+          var t = this._sel.prop('tagName');
+          if (typeof t === 'string' && t) return t.toLowerCase();
+        }
+        return '';
+      } catch (e) { return ''; }
+    }
+  });
+
   g.Document = function (html) {
     var root;
     try { root = cheerio ? cheerio.load(String(html || '')) : null; }
@@ -270,6 +367,46 @@
         return wrap(found.first());
       } catch (e) { return null; }
     };
+    doc.getElementsByClassName = function (name) {
+      try {
+        if (!root) return [];
+        return wrapAll(root('.' + String(name)));
+      } catch (e) { return []; }
+    };
+    doc.getElementsByTagName = function (name) {
+      try {
+        if (!root) return [];
+        return wrapAll(root(String(name)));
+      } catch (e) { return []; }
+    };
+    doc.getElementById = function (id) {
+      try {
+        if (!root) return null;
+        var found = root('[id="' + String(id).replace(/"/g, '') + '"]');
+        if (!found || !found.length) return null;
+        return wrap(found.first());
+      } catch (e) { return null; }
+    };
+    Object.defineProperty(doc, 'body', {
+      get: function () {
+        try {
+          if (!root) return null;
+          var b = root('body');
+          if (!b || !b.length) return null;
+          return wrap(b.first());
+        } catch (e) { return null; }
+      }
+    });
+    Object.defineProperty(doc, 'head', {
+      get: function () {
+        try {
+          if (!root) return null;
+          var h = root('head');
+          if (!h || !h.length) return null;
+          return wrap(h.first());
+        } catch (e) { return null; }
+      }
+    });
     return doc;
   };
 
@@ -304,7 +441,10 @@
 
   // ---- MProvider base ----
   g.MProvider = function (source) {
-    this.source = source || {};
+    var host = {};
+    try { host = JSON.parse(g.__anymexHostMeta || '{}'); } catch (e) {}
+    if (!host || typeof host !== 'object') host = {};
+    this.source = Object.assign({}, host, source || {});
   };
 
   // ---- extension instance ----
@@ -316,16 +456,24 @@
       try {
         if (Array.isArray(g.mangayomiSources) && g.mangayomiSources.length) src = g.mangayomiSources[0];
       } catch (e) {}
+      if (!src) {
+        try { src = JSON.parse(g.__anymexHostMeta || '{}'); } catch (e2) {}
+      }
       g.__anymexExt = new g.DefaultExtension(src || {});
       return g.__anymexExt;
     } catch (e) { return null; }
   }
+
+  g.__anymexExtGet = extension;
 
   g.__anymexSourceMeta = function () {
     try {
       if (Array.isArray(g.mangayomiSources) && g.mangayomiSources.length) {
         var s = g.mangayomiSources[0] || {};
         return JSON.stringify({ ok: true, isManga: !!s.isManga, name: s.name || '' });
+      }
+      if (typeof g.DefaultExtension === 'function') {
+        return JSON.stringify({ ok: true, isManga: false, name: '' });
       }
     } catch (e) {}
     return JSON.stringify({ ok: false });

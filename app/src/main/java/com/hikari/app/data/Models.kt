@@ -169,6 +169,7 @@ data class Cs3RepoPlugin(
      * manga engine and which as an anime one.
      */
     val pkg: String = "",
+    val sourceMeta: String = "",
     /**
      * Whether the extension itself is tagged 18+ by the repo that publishes it —
      * CloudStream's `tvTypes` containing `NSFW`, a Mihon/Aniyomi index entry's

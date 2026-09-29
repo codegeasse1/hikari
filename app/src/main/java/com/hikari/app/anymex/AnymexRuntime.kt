@@ -22,6 +22,7 @@ import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
@@ -160,6 +161,7 @@ object AnymexRuntime {
         deferred: CompletableDeferred<String>,
         kv: Kv,
         inFlight: AtomicInteger,
+        hostMetaJson: String,
     ): QuickJs {
         val qjs = QuickJs.create(jobDispatcher = Dispatchers.Default)
         qjs.evaluationTimeoutMillis = CALL_TIMEOUT_MS
@@ -213,7 +215,8 @@ object AnymexRuntime {
                 "  fetch: null," +
                 "  log: function (m) { if (typeof globalThis.__anymexLog === 'function') globalThis.__anymexLog(String(m)); }" +
                 "};" +
-                "globalThis.__anymexKvJson = ${quote(kv.json())};",
+                "globalThis.__anymexKvJson = ${quote(kv.json())};" +
+                "globalThis.__anymexHostMeta = ${quote(hostMetaJson)};",
             "anymex-register.js",
             false,
         )
@@ -246,6 +249,7 @@ object AnymexRuntime {
             return "{\"ok\":false,\"error\":${quote("extension script is empty — reinstall it")}}"
         }
         val kv = Kv(File(moduleFile.parentFile, "kv.json"))
+        val hostMetaJson = hostMetaOf(moduleFile)
         val inFlight = AtomicInteger(0)
         return gate.withPermit {
             withTimeoutOrNull(budgetMs + CALL_GRACE_MS) {
@@ -253,11 +257,12 @@ object AnymexRuntime {
                     val deferred = CompletableDeferred<String>()
                     var qjs: QuickJs? = null
                     try {
-                        qjs = createEngine(deferred, kv, inFlight)
+                        qjs = createEngine(deferred, kv, inFlight, hostMetaJson)
                         qjs.evaluateCached(
                             "anymex/v2/$providerId/${source.hashCode()}",
                             source,
                         )
+                        seedPrefs(qjs, kv)
                         qjs.evaluate<Any?>(
                             "__anymexCall(${quote(fnName)}, ${quote(argsJson)});\n;void 0;",
                             "anymex-call.js",
@@ -321,7 +326,7 @@ object AnymexRuntime {
         run(moduleFile, providerId, "getLatestUpdates", "[$page]", CATALOG_TIMEOUT_MS)
 
     suspend fun search(moduleFile: File, providerId: String, query: String, page: Int): String =
-        run(moduleFile, providerId, "search", "[${quote(query)}, $page]", CATALOG_TIMEOUT_MS)
+        run(moduleFile, providerId, "search", "[${quote(query)}, $page, []]", CATALOG_TIMEOUT_MS)
 
     suspend fun detail(moduleFile: File, providerId: String, url: String): String =
         run(moduleFile, providerId, "getDetail", "[${quote(url)}]", CATALOG_TIMEOUT_MS)
@@ -334,20 +339,32 @@ object AnymexRuntime {
 
     data class Inspection(val ok: Boolean, val isManga: Boolean, val name: String)
 
-    /**
-     * Reads a script's own `mangayomiSources[0]` metadata without installing
-     * it: whether it is a manga extension and the name it declares.
-     */
-    suspend fun inspect(context: Context, source: String): Inspection =
+    suspend fun inspect(context: Context, source: String, hostMetaJson: String = "{}"): Inspection =
         withContext(Dispatchers.Default) {
             var qjs: QuickJs? = null
             try {
                 val deferred = CompletableDeferred<String>()
-                qjs = createEngine(deferred, Kv(File(context.cacheDir, "anymex-inspect-kv.json")), AtomicInteger(0))
+                qjs = createEngine(deferred, Kv(File(context.cacheDir, "anymex-inspect-kv.json")), AtomicInteger(0), hostMetaJson)
                 qjs.evaluationTimeoutMillis = VALIDATE_TIMEOUT_MS
                 qjs.evaluate<Any?>(source, "anymex-inspect-src.js", false)
                 val meta = qjs.evaluate<Any?>(
-                    "(function () { try { return globalThis.__anymexSourceMeta(); } catch (e) { return '{\"ok\":false}'; } })();",
+                    "(function () {" +
+                        " try {" +
+                        "  var hasConst = Array.isArray(globalThis.mangayomiSources) && globalThis.mangayomiSources.length > 0;" +
+                        "  if (typeof globalThis.DefaultExtension !== 'function') return '{\"ok\":false}';" +
+                        "  if (hasConst) {" +
+                        "   var s = globalThis.mangayomiSources[0] || {};" +
+                        "   return JSON.stringify({ ok: true, isManga: !!s.isManga, name: s.name || '' });" +
+                        "  }" +
+                        "  var ext = globalThis.__anymexExtGet();" +
+                        "  if (!ext) return '{\"ok\":false}';" +
+                        "  var hasVideo = typeof ext.getVideoList === 'function';" +
+                        "  var hasPages = typeof ext.getPageList === 'function';" +
+                        "  if (!hasVideo && !hasPages) return '{\"ok\":false}';" +
+                        "  var nm = '';" +
+                        "  try { nm = (JSON.parse(globalThis.__anymexHostMeta || '{}').name) || ''; } catch (e) {}" +
+                        "  return JSON.stringify({ ok: true, isManga: (!hasVideo && hasPages), name: nm });" +
+                        " } catch (e) { return '{\"ok\":false}'; } })();",
                     "anymex-inspect.js",
                     false,
                 )?.toString()
@@ -363,6 +380,67 @@ object AnymexRuntime {
                 runCatching { qjs?.close() }
             }
         }
+
+    private fun hostMetaOf(moduleFile: File): String {
+        val meta = runCatching {
+            JSONObject(moduleFile.parentFile?.let { File(it, "meta.json") }?.takeIf { it.exists() }?.readText() ?: "{}")
+        }.getOrNull() ?: JSONObject()
+        val out = JSONObject()
+        out.put("name", meta.optString("name"))
+        out.put("baseUrl", meta.optString("baseUrl"))
+        out.put("lang", meta.optString("lang"))
+        out.put("iconUrl", meta.optString("iconUrl"))
+        return out.toString()
+    }
+
+    private suspend fun seedPrefs(qjs: QuickJs, kv: Kv) {
+        if (kv.obj.has("__prefsSeeded")) return
+        val raw = runCatching {
+            qjs.evaluate<Any?>(
+                "(function () {" +
+                    " try {" +
+                    "  var ext = globalThis.__anymexExtGet();" +
+                    "  if (!ext || typeof ext.getSourcePreferences !== 'function') return '[]';" +
+                    "  var p = ext.getSourcePreferences();" +
+                    "  if (p && typeof p.then === 'function') return '[]';" +
+                    "  return JSON.stringify(p || []);" +
+                    " } catch (e) { return '[]'; } })();",
+                "anymex-prefs.js",
+                false,
+            )?.toString()
+        }.getOrNull() ?: "[]"
+        runCatching {
+            val arr = JSONArray(raw)
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                val key = o.optString("key").trim()
+                if (key.isEmpty() || key == "__prefsSeeded" || kv.obj.has(key)) continue
+                prefDefault(o)?.let { kv.set(key, it) }
+            }
+        }
+        kv.set("__prefsSeeded", "1")
+        kv.save()
+    }
+
+    private fun prefDefault(o: JSONObject): String? {
+        o.optJSONObject("listPreference")?.let { lp ->
+            val values = lp.optJSONArray("entryValues") ?: return@let
+            if (values.length() == 0) return@let
+            val idx = lp.optInt("valueIndex", 0).coerceIn(0, values.length() - 1)
+            return JSONObject.quote(values.optString(idx))
+        }
+        o.optJSONObject("editTextPreference")?.let { ep ->
+            return JSONObject.quote(ep.optString("defaultValue"))
+        }
+        o.optJSONObject("switchPreferenceCompat")?.let { sp ->
+            if (sp.has("default")) return sp.optBoolean("default", false).toString()
+            if (sp.has("value")) return sp.optBoolean("value", false).toString()
+        }
+        o.optJSONObject("checkBoxPreference")?.let { cp ->
+            if (cp.has("default")) return cp.optBoolean("default", false).toString()
+        }
+        return null
+    }
 
     // ---- fetch bridge ----
 

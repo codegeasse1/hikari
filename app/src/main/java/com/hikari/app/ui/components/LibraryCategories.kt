@@ -2,6 +2,8 @@ package com.hikari.app.ui.components
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,6 +17,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -42,6 +45,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -217,6 +226,49 @@ fun CategoryPickerSheet(
 
 /** One category line in the picker: a checkbox, the name, and nothing else. */
 @Composable
+private fun DragGrip() {
+    Column(
+        Modifier.padding(start = 4.dp, end = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(3.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        repeat(3) {
+            Box(
+                Modifier
+                    .width(18.dp)
+                    .height(2.dp)
+                    .clip(RoundedCornerShape(1.dp))
+                    .background(MaterialTheme.colorScheme.onSurfaceVariant),
+            )
+        }
+    }
+}
+
+private fun categoryDragTarget(
+    ids: List<String>,
+    centres: Map<String, Float>,
+    from: Int,
+    pointerY: Float,
+): Int {
+    ids.getOrNull(from + 1)?.let { next ->
+        centres[next]?.let { if (pointerY > it) return from + 1 }
+    }
+    ids.getOrNull(from - 1)?.let { prev ->
+        centres[prev]?.let { if (pointerY < it) return from - 1 }
+    }
+    return from
+}
+
+private fun categoryAutoScrollStep(pointerY: Float, top: Float, bottom: Float, edge: Float): Float =
+    when {
+        bottom <= top -> 0f
+        pointerY < top + edge -> -14f
+        pointerY > bottom - edge -> 14f
+        else -> 0f
+    }
+
+/** One category line in the picker: a checkbox, the name, and nothing else. */
+@Composable
 private fun CategoryToggleRow(name: String, checked: Boolean, onToggle: () -> Unit) {
     Row(
         Modifier
@@ -274,6 +326,14 @@ fun CategoryManagerSheet(
     var newName by remember { mutableStateOf("") }
     var editingId by remember { mutableStateOf<String?>(null) }
     var editingText by remember { mutableStateOf("") }
+    var liftedId by remember { mutableStateOf<String?>(null) }
+    val listState = rememberLazyListState()
+    val dragScope = rememberCoroutineScope()
+    val haptics = LocalHapticFeedback.current
+    val rowCentres = remember { HashMap<String, Float>() }
+    val dragY = remember { floatArrayOf(0f) }
+    val listBounds = remember { floatArrayOf(0f, 0f) }
+    val autoScrollEdge = with(LocalDensity.current) { 72.dp.toPx() }
 
     // Opens fully expanded so the list, the new-category field and every row's
     // actions are on screen together (see CategoryPickerSheet).
@@ -297,7 +357,15 @@ fun CategoryManagerSheet(
                 modifier = Modifier.padding(top = 2.dp, bottom = 8.dp),
             )
             }
-            LazyColumn(Modifier.heightIn(max = 300.dp)) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .heightIn(max = 300.dp)
+                    .onGloballyPositioned { c ->
+                        listBounds[0] = c.boundsInRoot().top
+                        listBounds[1] = c.boundsInRoot().bottom
+                    },
+            ) {
                 items(categories, key = { it.id }) { c ->
                     if (editingId == c.id) {
                         Row(
@@ -337,11 +405,55 @@ fun CategoryManagerSheet(
                         Row(
                             Modifier
                                 .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(
+                                    if (liftedId == c.id) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                                    else Color.Transparent,
+                                )
                                 .clickable {
                                     editingId = c.id
                                     editingText = c.name
                                 }
-                                .padding(vertical = 14.dp),
+                                .onGloballyPositioned { lc -> rowCentres[c.id] = lc.boundsInRoot().center.y }
+                                .pointerInput(c.id) {
+                                    detectDragGesturesAfterLongPress(
+                                        onDragStart = {
+                                            liftedId = c.id
+                                            dragY[0] = rowCentres[c.id] ?: 0f
+                                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        },
+                                        onDrag = { change, amount ->
+                                            change.consume()
+                                            dragY[0] += amount.y
+                                            val from = categories.indexOfFirst { it.id == c.id }
+                                            if (from < 0) {
+                                                return@detectDragGesturesAfterLongPress
+                                            }
+                                            val to = categoryDragTarget(
+                                                categories.map { it.id },
+                                                rowCentres,
+                                                from,
+                                                dragY[0],
+                                            )
+                                            if (to != from && to in categories.indices) {
+                                                onMove(c.id, to - from)
+                                                haptics.performHapticFeedback(
+                                                    HapticFeedbackType.TextHandleMove
+                                                )
+                                            }
+                                            val step = categoryAutoScrollStep(
+                                                dragY[0],
+                                                listBounds[0],
+                                                listBounds[1],
+                                                autoScrollEdge,
+                                            )
+                                            if (step != 0f) dragScope.launch { listState.scrollBy(step) }
+                                        },
+                                        onDragEnd = { liftedId = null },
+                                        onDragCancel = { liftedId = null },
+                                    )
+                                }
+                                .padding(vertical = 14.dp, horizontal = 8.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Text(
@@ -359,32 +471,7 @@ fun CategoryManagerSheet(
                                     modifier = Modifier.padding(end = 6.dp),
                                 )
                             }
-                            Text(
-                                "≡",
-                                style = MaterialTheme.typography.titleLarge,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(end = 4.dp),
-                            )
-                            IconButton(
-                                enabled = categories.indexOfFirst { it.id == c.id } > 0,
-                                onClick = { onMove(c.id, -1) },
-                            ) {
-                                Text(
-                                    "↑",
-                                    style = MaterialTheme.typography.titleLarge,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            IconButton(
-                                enabled = categories.indexOfFirst { it.id == c.id } < categories.size - 1,
-                                onClick = { onMove(c.id, 1) },
-                            ) {
-                                Text(
-                                    "↓",
-                                    style = MaterialTheme.typography.titleLarge,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
+                            DragGrip()
                             IconButton(onClick = { onDelete(c.id) }) {
                                 Icon(
                                     Icons.Filled.Delete,

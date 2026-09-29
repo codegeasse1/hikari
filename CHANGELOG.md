@@ -1,3 +1,17 @@
+## 0.10.68
+
+Everything new and fixed since the last release (0.10.67):
+
+### Added
+
+- Extensions grew an Anymex folder holding the Sora and Anymex subfolders, so both script engines live in one place
+- I added movie & show Sora modules — the installer took anime modules only, so Movie2K, Kinoger and Moflix ("shows/movies") were rejected; video modules of any kind install now, and a github.com/owner/repo page pastes as a Sora repo directly (its manifests are discovered through the GitHub API, since repos like Movie2K publish no index file) — Movie2K's repo ships as a default
+
+### Fixed
+
+- I fixed Anymex extensions failing with "Extension script failed to load" — the inspector demanded a `mangayomiSources` constant, but repos like kegareta-sauces name it differently (AnymeX itself ignores the name and reads the repo listing instead), so validation now accepts any `DefaultExtension`, the repo's own name/baseUrl/language back it, manga-vs-anime falls back to what the script implements, and the host seeds each extension's own settings defaults (123AV's site mirror and language) exactly like AnymeX does — plus the missing page-search methods AnymeX scripts call (`getElementsByClassName`, `getElementsByTagName`, `getElementById`, `children`, siblings, `hasAttr`) so catalogs actually load
+- I fixed the Library category manager's reorder — the arrow buttons drew as garbage glyphs on your font and the grip did nothing, so both arrows are gone and the grip is a real long-press handle that lifts the row and drops it where you drag, like the collection editor
+
 ## 0.10.67
 
 Everything new and fixed since the last release (0.10.66):

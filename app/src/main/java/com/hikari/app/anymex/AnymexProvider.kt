@@ -52,6 +52,7 @@ class AnymexProvider(override val config: ProviderConfig) : ContentProvider {
 
     override suspend fun search(query: String, page: Int): List<MediaItem> =
         withContext(Dispatchers.IO) {
+            if (query.isBlank()) return@withContext emptyList()
             val mod = module() ?: return@withContext emptyList()
             mapItems(AnymexRuntime.search(mod, config.id, query, page.coerceAtLeast(1)))
         }

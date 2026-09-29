@@ -3550,6 +3550,7 @@ fun ExtensionsScreen() {
                     SourceFolder.VEGA -> RepoKind.VEGA
                     SourceFolder.SORA -> RepoKind.SORA
                      SourceFolder.ANYMEX -> RepoKind.ANYMEX
+                    SourceFolder.ANYMEX_HOME -> RepoKind.ANYMEX
                     else -> RepoKind.CS3
                 }
                 showRepoDialog = true
@@ -3565,6 +3566,7 @@ fun ExtensionsScreen() {
                 vm.runUninstall("Removing repo…", "Removed repo") { vm.removeCs3Repo(url) }
             },
             onOpenSettings = { openProviderSettings(it) },
+            onOpenFolder = { openFolder = it; vm.clearStatus() },
         )
         allReposOpen -> AllReposView(
             repos = repos,
@@ -4953,16 +4955,9 @@ private fun RepoBrowserView(
                     SourceDivider()
                     SourceActionRow(
                         icon = Icons.Filled.Extension,
-                        title = tr("Sora repos"),
-                        subtitle = tr("AnymeX script index · Sora sources"),
-                        onClick = { onOpenFolder(SourceFolder.SORA) }
-                    )
-                    SourceDivider()
-                    SourceActionRow(
-                        icon = Icons.Filled.Extension,
-                        title = tr("Anymex repos"),
-                        subtitle = tr("index.json · Anymex extensions"),
-                        onClick = { onOpenFolder(SourceFolder.ANYMEX) }
+                        title = tr("Anymex"),
+                        subtitle = tr("Sora sources · Anymex extensions"),
+                        onClick = { onOpenFolder(SourceFolder.ANYMEX_HOME) }
                     )
                     SourceDivider()
                     SourceActionRow(
@@ -7604,7 +7599,7 @@ private fun SiteRow(
     }
 }
 
-enum class SourceFolder { CLOUDSTREAM, HIKARI, NUVIO, SKYSTREAM, ANIYOMI, VEGA, SORA, ANYMEX, STREMIO, IPTV }
+enum class SourceFolder { CLOUDSTREAM, HIKARI, NUVIO, SKYSTREAM, ANIYOMI, VEGA, SORA, ANYMEX, ANYMEX_HOME, STREMIO, IPTV }
 
 @Composable
 private fun SourceFolderView(
@@ -7634,6 +7629,7 @@ private fun SourceFolderView(
     onRefreshRepo: (Cs3Repo) -> Unit,
     onRemoveRepo: (String) -> Unit,
     onOpenSettings: (ContentProvider) -> Unit,
+    onOpenFolder: (SourceFolder) -> Unit = {},
 ) {
     val kind = when (folder) {
         SourceFolder.CLOUDSTREAM -> RepoKind.CS3
@@ -7644,7 +7640,7 @@ private fun SourceFolderView(
         SourceFolder.VEGA -> RepoKind.VEGA
         SourceFolder.SORA -> RepoKind.SORA
                      SourceFolder.ANYMEX -> RepoKind.ANYMEX
-        SourceFolder.STREMIO, SourceFolder.IPTV -> null
+        SourceFolder.STREMIO, SourceFolder.IPTV, SourceFolder.ANYMEX_HOME -> null
     }
     val (title, subtitle) = when (folder) {
         SourceFolder.CLOUDSTREAM -> "CloudStream repos" to "repo.json · CloudStream extensions"
@@ -7655,6 +7651,7 @@ private fun SourceFolderView(
         SourceFolder.VEGA -> "Vega repos" to "manifest.json · Vega providers"
         SourceFolder.SORA -> "Sora repos" to "AnymeX script index · Sora sources"
          SourceFolder.ANYMEX -> "Anymex repos" to "index.json · Anymex extensions"
+        SourceFolder.ANYMEX_HOME -> "Anymex" to "Sora sources · Anymex extensions"
         SourceFolder.STREMIO -> "Stremio addons" to "manifest.json · Stremio addons"
         SourceFolder.IPTV -> "IPTV playlists" to "M3U / M3U8 links and files · your channels"
     }
@@ -7667,6 +7664,7 @@ private fun SourceFolderView(
         SourceFolder.VEGA -> "Vega"
         SourceFolder.SORA -> "Sora"
          SourceFolder.ANYMEX -> "Anymex"
+        SourceFolder.ANYMEX_HOME -> "Anymex"
         SourceFolder.STREMIO -> "Stremio"
         SourceFolder.IPTV -> "IPTV"
     }
@@ -7719,6 +7717,10 @@ private fun SourceFolderView(
                     SourceFolder.IPTV ->
                         I18n.t(if (iptvProviders.size == 1) "%s playlist" else "%s playlists")
                             .replace("%s", iptvProviders.size.toString())
+                    SourceFolder.ANYMEX_HOME -> {
+                        val n = repos.count { it.kind == RepoKind.SORA || it.kind == RepoKind.ANYMEX }
+                        I18n.t(if (n == 1) "%s repo" else "%s repos").replace("%s", n.toString())
+                    }
                     else ->
                         I18n.t(if (folderRepos.size == 1) "%s repo" else "%s repos")
                             .replace("%s", folderRepos.size.toString())
@@ -7774,7 +7776,35 @@ private fun SourceFolderView(
                 bottom = LocalTaskbarInset.current + 8.dp,
             )
         ) {
-            if (kind != null) {
+            if (folder == SourceFolder.ANYMEX_HOME) {
+                val soraCount = repos.count { it.kind == RepoKind.SORA }
+                val anymexCount = repos.count { it.kind == RepoKind.ANYMEX }
+                item {
+                    GlassCard(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp)
+                    ) {
+                        Column {
+                            SourceActionRow(
+                                icon = Icons.Filled.Extension,
+                                title = tr("Sora"),
+                                subtitle = I18n.t(if (soraCount == 1) "%s repo" else "%s repos")
+                                    .replace("%s", soraCount.toString()) + " · Sora sources",
+                                onClick = { onOpenFolder(SourceFolder.SORA) }
+                            )
+                            SourceDivider()
+                            SourceActionRow(
+                                icon = Icons.Filled.Extension,
+                                title = tr("Anymex"),
+                                subtitle = I18n.t(if (anymexCount == 1) "%s repo" else "%s repos")
+                                    .replace("%s", anymexCount.toString()) + " · Anymex extensions",
+                                onClick = { onOpenFolder(SourceFolder.ANYMEX) }
+                            )
+                        }
+                    }
+                }
+            } else if (kind != null) {
                 if (folderRepos.isEmpty()) {
                     item {
                         EmptyState(
@@ -7846,18 +7876,22 @@ private fun SourceFolderView(
                 }
             }
         }
+        if (folder != SourceFolder.ANYMEX_HOME) {
         AddRepoButton(
             label = when (folder) {
                 SourceFolder.STREMIO -> "Add Stremio addon"
                 SourceFolder.IPTV -> "Add IPTV playlist"
+                SourceFolder.ANYMEX_HOME -> "Add repo"
                 else -> "Add repo"
             },
             onClick = when (folder) {
                 SourceFolder.STREMIO -> onAddStremio
                 SourceFolder.IPTV -> onAddIptv
+                SourceFolder.ANYMEX_HOME -> onAddRepo
                 else -> onAddRepo
             }
         )
+        }
     }
 }
 

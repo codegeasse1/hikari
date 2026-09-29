@@ -111,9 +111,16 @@ object AnymexPluginManager {
         val name = o.optString("name").trim().ifBlank { return null }
         val lang = o.optString("lang").trim()
         val version = o.optString("version").trim()
+        val baseUrl = o.optString("baseUrl").trim()
+        val isMangaEntry = o.optBoolean("isManga", false) || o.optInt("itemType", 1) == 0
+        val meta = JSONObject()
+            .put("baseUrl", baseUrl)
+            .put("lang", lang)
+            .put("isManga", isMangaEntry)
+            .toString()
         val dartOnly = o.optInt("sourceCodeLanguage", 1) == 0 && !url.endsWith(".js", true)
         val kind = when {
-            o.optBoolean("isManga", false) || o.optInt("itemType", 1) == 0 -> "manga"
+            isMangaEntry -> "manga"
             else -> "anime"
         }
         val desc = listOfNotNull(
@@ -130,6 +137,7 @@ object AnymexPluginManager {
             iconUrl = o.optString("iconUrl").ifBlank { null },
             version = 1,
             nsfw = com.hikari.app.data.ExtensionNsfw.repoEntryNsfw(o),
+            sourceMeta = meta,
         )
     }
 
@@ -148,11 +156,29 @@ object AnymexPluginManager {
             if (!source.contains("DefaultExtension") || !source.contains("MProvider")) {
                 return@withContext Result.failure(Exception("Not a Mangayomi/Anymex extension"))
             }
-            val info = runCatching { AnymexRuntime.inspect(context, source) }.getOrNull()
+            val info = runCatching {
+                val entry = runCatching { JSONObject(plugin.sourceMeta) }.getOrNull()
+                val hostMeta = JSONObject()
+                    .put("name", plugin.name)
+                    .put("baseUrl", entry?.optString("baseUrl").orEmpty())
+                    .put("lang", entry?.optString("lang").orEmpty())
+                    .put("iconUrl", plugin.iconUrl.orEmpty())
+                    .toString()
+                AnymexRuntime.inspect(context, source, hostMeta)
+            }.getOrNull()
             if (info == null || !info.ok) {
                 return@withContext Result.failure(Exception("Extension script failed to load"))
             }
-            val isManga = info.isManga
+            val entryManga = runCatching {
+                JSONObject(plugin.sourceMeta).optBoolean("isManga", false)
+            }.getOrDefault(false)
+            val entryBaseUrl = runCatching {
+                JSONObject(plugin.sourceMeta).optString("baseUrl")
+            }.getOrDefault("")
+            val entryLang = runCatching {
+                JSONObject(plugin.sourceMeta).optString("lang")
+            }.getOrDefault("")
+            val isManga = entryManga || info.isManga
             val name = info.name.ifBlank { plugin.name }
             val prefix = if (isManga) "anymexm|" else "anymex|"
             val type = if (isManga) ProviderType.ANYMEX_MANGA else ProviderType.ANYMEX
@@ -163,7 +189,8 @@ object AnymexPluginManager {
                 File(dir, "module.js").writeText(source)
                 File(dir, "meta.json").writeText(
                     JSONObject().put("name", name).put("isManga", isManga)
-                        .put("sourceUrl", plugin.url).toString(),
+                        .put("sourceUrl", plugin.url).put("baseUrl", entryBaseUrl)
+                        .put("lang", entryLang).put("iconUrl", plugin.iconUrl.orEmpty()).toString(),
                 )
                 true
             }.getOrDefault(false)
