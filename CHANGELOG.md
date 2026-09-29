@@ -1,13 +1,27 @@
 ## 0.10.66
 
+Everything new and fixed since the last release (0.10.57):
+
+### Added
+
+- we added an app lock just for My Stuff (Settings → Privacy & Browsing), so your library, history and downloads can have their own password while the rest of the app stays open
+- we added our community links — Telegram, Reddit (r/HikariApp) and Discord — in the popup and in Settings → About, the popup comes back once per update even if you ticked don't show again
+- we added swipe-to-seek with its own on/off switch, and the timeline stays on screen while you scrub so you can see where you'll land
+- we added a volume booster that actually boosts (up to 200%, works on every phone) and subtitles on by default
+- we added per-extension updates (pick one, two or all), a Test button on every extension, and personal provider folders you can save and tap once
+- the gear button on an extension now opens that extension's real settings (Stremio, Vega, Aniyomi, CloudStream), and IPTV playlists got a delete button
+
 ### Fixed
 
-- **Vega series follow the picked season.** Every season pack (Season 1…10) showed the first season's episodes because the packs were merged into one list and the player always took the first link. Packs now keep their own episodes, the detail screen offers a season picker, and the player follows the picked pack's link — S10 shows S10's episodes.
-- **Vega lists every audio and every server.** Movies showed one audio and one server because only the first entry's first link was ever used. The detail screen now offers all audio options (Original Audio plus the Hindi/French/dub entries) and the player tries every server link in turn instead of failing on the first.
-- **A deleted default repo stays deleted.** The five bundled extension repos (Nuvio, SkyStream, Vega, Aniyomi, manga) were re-seeded on every launch with no one-way guard, so deleting one brought it back on the next start. Removals are now remembered (by repo identity, so branch/mirror respellings match too) and seeding skips them; re-adding a repo by hand, or restoring a backup that has it, clears the mark.
-- **Community dialog returns after every update.** Ticking "Don't show this again" used to silence it forever; the tick now holds for the current version only, so the next update's dialog comes back. TV remotes land on Close with a visible highlight.
-- **TV home hero stands still.** The television hero ran the same auto-rotating pager as phones, so it kept sliding sideways on its own; TV now shows one still card.
-- **TV shelf posters halved.** TV poster rows rendered at nearly a third of the screen height, so one row filled the display; they now draw at half that width.
+- we fixed Telegram channels showing no videos (videos only showed in Saved Messages and bots) and archived chats now show up too
+- we fixed Vega only showing one audio and one server — all audios and all servers are listed now, and picking a season shows that season's episodes instead of season 1's
+- we fixed deleted extension repos coming back on their own after some time — a repo you delete stays deleted now
+- we fixed going back landing you at the top — back now takes you to where you were
+- we fixed extensions that installed fine but showed nothing, CloudStream rows showing wrong items, and poster-only catalogues coming up empty
+- we fixed the audio choice reverting (Hindi switching back to English), live IPTV channels stuck searching instead of re-opening, and TV playback fighting background loading
+- we fixed repo names getting cut off, installed-extension cards blowing up on small phones, and the ±10s buttons sitting off-centre
+- TV remote focus now shows on every player control, the TV home hero stands still, and TV search results and posters fit the screen properly
+- plus a bunch of crash fixes (duplicate-key crashes) and memory hardening across the lists
 
 ## 0.10.65
 
