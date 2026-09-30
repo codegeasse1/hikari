@@ -54,6 +54,16 @@ object AnymexPluginManager {
             "Anymex Novel",
             "Anymex/Mangayomi novel extensions (JavaScript)",
         ),
+        Triple(
+            "https://raw.githubusercontent.com/gato404/kegareta-sauces/main/anime_index.json",
+            "Kegareta Anime",
+            "Anymex/Mangayomi JS anime extensions (kegareta-sauces)",
+        ),
+        Triple(
+            "https://raw.githubusercontent.com/gato404/kegareta-sauces/main/index.json",
+            "Kegareta Manga",
+            "Anymex/Mangayomi JS manga extensions (kegareta-sauces)",
+        ),
     )
 
     suspend fun seedDefaults(context: Context, store: AppStore) {
@@ -156,18 +166,31 @@ object AnymexPluginManager {
             if (!source.contains("DefaultExtension") || !source.contains("MProvider")) {
                 return@withContext Result.failure(Exception("Not a Mangayomi/Anymex extension"))
             }
+            val entry = runCatching { JSONObject(plugin.sourceMeta) }.getOrNull()
+            val hostMeta = JSONObject()
+                .put("name", plugin.name)
+                .put("baseUrl", entry?.optString("baseUrl").orEmpty())
+                .put("lang", entry?.optString("lang").orEmpty())
+                .put("iconUrl", plugin.iconUrl.orEmpty())
+                .toString()
             val info = runCatching {
-                val entry = runCatching { JSONObject(plugin.sourceMeta) }.getOrNull()
-                val hostMeta = JSONObject()
-                    .put("name", plugin.name)
-                    .put("baseUrl", entry?.optString("baseUrl").orEmpty())
-                    .put("lang", entry?.optString("lang").orEmpty())
-                    .put("iconUrl", plugin.iconUrl.orEmpty())
-                    .toString()
                 AnymexRuntime.inspect(context, source, hostMeta)
             }.getOrNull()
-            if (info == null || !info.ok) {
-                return@withContext Result.failure(Exception("Extension script failed to load"))
+            // Some scripts throw on first probe (missing optional host APIs) but
+            // still define DefaultExtension and run fine once prefs are seeded.
+            // Accept any script that clearly is a Mangayomi module and let the
+            // first catalog call surface a real error if it cannot run.
+            val looksValid = source.contains("DefaultExtension") &&
+                (source.contains("MProvider") || source.contains("getPopular") ||
+                    source.contains("getVideoList") || source.contains("getPageList"))
+            if ((info == null || !info.ok) && !looksValid) {
+                val detail = info?.name?.takeIf { it.isNotBlank() }
+                return@withContext Result.failure(
+                    Exception(
+                        if (detail != null) "Extension script failed to load: $detail"
+                        else "Extension script failed to load",
+                    ),
+                )
             }
             val entryManga = runCatching {
                 JSONObject(plugin.sourceMeta).optBoolean("isManga", false)
@@ -178,8 +201,8 @@ object AnymexPluginManager {
             val entryLang = runCatching {
                 JSONObject(plugin.sourceMeta).optString("lang")
             }.getOrDefault("")
-            val isManga = entryManga || info.isManga
-            val name = info.name.ifBlank { plugin.name }
+            val isManga = entryManga || (info?.isManga == true)
+            val name = info?.name?.ifBlank { null } ?: plugin.name
             val prefix = if (isManga) "anymexm|" else "anymex|"
             val type = if (isManga) ProviderType.ANYMEX_MANGA else ProviderType.ANYMEX
             val id = prefix + safe(name.ifBlank { plugin.url.substringAfterLast('/').substringBeforeLast('.') })

@@ -26,10 +26,10 @@ import java.util.concurrent.ConcurrentHashMap
  *   getEpisodes()   <- extractEpisodes(url)     -> [{href, number}]
  *   getStreams()    <- extractStreamUrl(url)    -> {streams: [{title, streamUrl, headers?}], subtitles?}
  *
- * Sora modules have no catalogue endpoint, so Home rows come only from
- * search — like a Stremio catalogue that requires a query, this provider
- * simply offers no Home rows. A title with no episodes resolves as a movie
- * and plays through the detail URL itself.
+ * Sora modules have no native catalogue endpoint, so Browse is built by
+ * calling searchResults with an empty keyword (and a few letter seeds).
+ * A title with no episodes resolves as a movie and plays through the
+ * detail URL itself.
  *
  * The item's `id` is the module's own href, carried through verbatim.
  */
@@ -47,15 +47,44 @@ class SoraProvider(override val config: ProviderConfig) : ContentProvider {
 
     private val moduleFile: File get() = File(config.url)
 
-    override val searchOnly = true
+    // Sora modules only export searchResults — no dedicated home endpoint.
+    // We still expose a Browse catalogue that calls search with an empty
+    // keyword (and a couple of letter seeds if empty returns nothing), so
+    // the Home screen is not stuck on "No catalog from …" the way a pure
+    // searchOnly source is. Playback is unchanged.
+    override val searchOnly = false
 
     private val episodeCache = ConcurrentHashMap<String, List<Episode>>()
 
-    override suspend fun catalogs(): List<CatalogRef> = emptyList()
+    private val browseId = "browse"
 
-    override suspend fun homeCatalogs(): List<CatalogRef> = emptyList()
+    override suspend fun catalogs(): List<CatalogRef> = listOf(
+        CatalogRef(config.id, MediaType.SERIES, browseId, "Browse"),
+    )
 
-    override suspend fun getCatalog(ref: CatalogRef, page: Int): List<MediaItem> = emptyList()
+    override suspend fun homeCatalogs(): List<CatalogRef> = catalogs()
+
+    override suspend fun getCatalog(ref: CatalogRef, page: Int): List<MediaItem> =
+        withContext(Dispatchers.IO) {
+            if (!moduleFile.exists()) return@withContext emptyList()
+            // page > 1: Sora search has no page arg — return empty rather than
+            // re-fetching the same first page forever.
+            if (page > 1) return@withContext emptyList()
+            val seeds = listOf("", "a", "the", "1")
+            for (q in seeds) {
+                val payload = SoraRuntime.search(moduleFile, config.id, q)
+                val data = dataOf(payload) ?: continue
+                val items = toItems(data)
+                if (items.isNotEmpty()) {
+                    catalogErrors.remove(config.id)
+                    lastOutcome.remove(config.id)
+                    return@withContext items
+                }
+            }
+            catalogErrors[config.id] =
+                "Browse returned nothing — try Search for this source."
+            emptyList()
+        }
 
     override suspend fun search(query: String, page: Int): List<MediaItem> =
         withContext(Dispatchers.IO) {

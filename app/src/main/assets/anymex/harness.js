@@ -541,12 +541,20 @@
     'voeExtractor', 'vidBomExtractor', 'streamlareExtractor', 'sendVidExtractor',
     'yourUploadExtractor', 'gogoCdnExtractor', 'doodExtractor', 'streamTapeExtractor',
     'mp4UploadExtractor', 'streamWishExtractor', 'filemoonExtractor',
-    'quarkVideosExtractor', 'ucVideosExtractor', 'quarkFilesExtractor', 'ucFilesExtractor'];
+    'quarkVideosExtractor', 'ucVideosExtractor', 'quarkFilesExtractor', 'ucFilesExtractor',
+    'Mp4UploadExtractor', 'MP4UploadExtractor', 'StreamWishExtractor', 'FilemoonExtractor',
+    'DoodExtractor', 'StreamTapeExtractor', 'VoeExtractor', 'OkruExtractor'];
   __anymexExtractorNames.forEach(function (name) {
     if (typeof g[name] !== 'function') {
       g[name] = function (url, quality) { return extractViaHost(url, quality); };
     }
   });
+  // Some scripts call constructors by short name (e.g. new MP4Upload()).
+  if (typeof g.MP4Upload !== 'function') {
+    g.MP4Upload = function () {};
+    g.MP4Upload.prototype.extract = function (url, quality) { return extractViaHost(url, quality); };
+  }
+  if (typeof g.Mp4Upload !== 'function') g.Mp4Upload = g.MP4Upload;
 
   function describeError(e) {
     if (e === undefined || e === null) return 'unknown error';

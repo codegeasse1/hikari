@@ -360,21 +360,35 @@ object AnymexRuntime {
                 val meta = qjs.evaluate<Any?>(
                     "(function () {" +
                         " try {" +
-                        "  var hasConst = Array.isArray(globalThis.mangayomiSources) && globalThis.mangayomiSources.length > 0;" +
-                        "  if (typeof globalThis.DefaultExtension !== 'function') return '{\"ok\":false}';" +
-                        "  if (hasConst) {" +
-                        "   var s = globalThis.mangayomiSources[0] || {};" +
-                        "   return JSON.stringify({ ok: true, isManga: !!s.isManga, name: s.name || '' });" +
+                        "  if (typeof globalThis.DefaultExtension !== 'function') return JSON.stringify({ ok: false, error: 'no DefaultExtension' });" +
+                        "  var s = null;" +
+                        "  try {" +
+                        "    if (Array.isArray(globalThis.mangayomiSources) && globalThis.mangayomiSources.length) s = globalThis.mangayomiSources[0];" +
+                        "  } catch (e) {}" +
+                        "  if (!s) {" +
+                        "    try {" +
+                        "      var keys = Object.getOwnPropertyNames(globalThis);" +
+                        "      for (var i = 0; i < keys.length; i++) {" +
+                        "        var v = globalThis[keys[i]];" +
+                        "        if (Array.isArray(v) && v.length && v[0] && typeof v[0] === 'object' && (v[0].baseUrl || v[0].name)) { s = v[0]; break; }" +
+                        "      }" +
+                        "    } catch (e2) {}" +
                         "  }" +
-                        "  var ext = globalThis.__anymexExtGet();" +
-                        "  if (!ext) return '{\"ok\":false}';" +
-                        "  var hasVideo = typeof ext.getVideoList === 'function';" +
-                        "  var hasPages = typeof ext.getPageList === 'function';" +
-                        "  if (!hasVideo && !hasPages) return '{\"ok\":false}';" +
-                        "  var nm = '';" +
-                        "  try { nm = (JSON.parse(globalThis.__anymexHostMeta || '{}').name) || ''; } catch (e) {}" +
-                        "  return JSON.stringify({ ok: true, isManga: (!hasVideo && hasPages), name: nm });" +
-                        " } catch (e) { return '{\"ok\":false}'; } })();",
+                        "  if (!s) { try { s = JSON.parse(globalThis.__anymexHostMeta || '{}'); } catch (e3) { s = {}; } }" +
+                        "  var hasVideo = false, hasPages = false, hasPopular = false;" +
+                        "  try {" +
+                        "    var ext = globalThis.__anymexExtGet && globalThis.__anymexExtGet();" +
+                        "    if (ext) {" +
+                        "      hasVideo = typeof ext.getVideoList === 'function';" +
+                        "      hasPages = typeof ext.getPageList === 'function';" +
+                        "      hasPopular = typeof ext.getPopular === 'function';" +
+                        "    } else {" +
+                        "      hasPopular = true;" +
+                        "    }" +
+                        "  } catch (e4) { hasPopular = true; }" +
+                        "  if (!hasVideo && !hasPages && !hasPopular) return JSON.stringify({ ok: false, error: 'no catalog/video/pages' });" +
+                        "  return JSON.stringify({ ok: true, isManga: (!hasVideo && hasPages), name: (s && s.name) || '' });" +
+                        " } catch (e) { return JSON.stringify({ ok: false, error: String(e && e.message || e) }); } })();",
                     "anymex-inspect.js",
                     false,
                 )?.toString()

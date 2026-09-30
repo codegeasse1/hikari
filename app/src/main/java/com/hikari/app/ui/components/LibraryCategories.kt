@@ -126,7 +126,7 @@ fun CategoryPickerSheet(
                     // buttons down the way a 300dp box would.
                     .heightIn(max = 300.dp),
             ) {
-                items(categories, key = { it.id }) { c ->
+                items(displayCategories, key = { it.id }) { c ->
                     CategoryToggleRow(
                         name = c.name,
                         checked = c.id in picked,
@@ -344,6 +344,11 @@ fun CategoryManagerSheet(
     var editingId by remember { mutableStateOf<String?>(null) }
     var editingText by remember { mutableStateOf("") }
     var liftedId by remember { mutableStateOf<String?>(null) }
+    // Local order while dragging so moves don't jump the finger to a freshly
+    // recomposed row halfway across the list (store writes used to fire on
+    // every small drag, which made the list reorder too fast).
+    var dragOrder by remember { mutableStateOf<List<LibraryCategory>?>(null) }
+    val displayCategories = dragOrder ?: categories
     val listState = rememberLazyListState()
     val dragScope = rememberCoroutineScope()
     val haptics = LocalHapticFeedback.current
@@ -351,6 +356,7 @@ fun CategoryManagerSheet(
     val rowTops = remember { HashMap<String, Float>() }
     val dragY = remember { floatArrayOf(0f) }
     val lastMoveAt = remember { longArrayOf(0L) }
+    val dragStartIndex = remember { intArrayOf(-1) }
     var categoryScrollJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
     val listBounds = remember { floatArrayOf(0f, 0f) }
     val autoScrollEdge = with(LocalDensity.current) { 72.dp.toPx() }
@@ -386,7 +392,7 @@ fun CategoryManagerSheet(
                         listBounds[1] = c.boundsInRoot().bottom
                     },
             ) {
-                items(categories, key = { it.id }) { c ->
+                items(displayCategories, key = { it.id }) { c ->
                     if (editingId == c.id) {
                         Row(
                             Modifier
@@ -445,25 +451,33 @@ fun CategoryManagerSheet(
                                             liftedId = c.id
                                             dragY[0] = rowCentres[c.id] ?: 0f
                                             lastMoveAt[0] = 0L
+                                            dragOrder = categories.toList()
+                                            dragStartIndex[0] = categories.indexOfFirst { it.id == c.id }
                                             haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                                         },
                                         onDrag = { change, amount ->
                                             change.consume()
                                             dragY[0] += amount.y
-                                            val from = categories.indexOfFirst { it.id == c.id }
+                                            val order = dragOrder ?: return@detectDragGesturesAfterLongPress
+                                            val from = order.indexOfFirst { it.id == c.id }
                                             if (from >= 0) {
                                                 val now = System.currentTimeMillis()
-                                                if (now - lastMoveAt[0] >= 140L) {
+                                                // ~220ms + half-row travel keeps the list
+                                                // from leaping under the finger.
+                                                if (now - lastMoveAt[0] >= 220L) {
                                                     val to = categoryDragTarget(
-                                                        categories.map { it.id },
+                                                        order.map { it.id },
                                                         rowCentres,
                                                         rowTops,
                                                         from,
                                                         dragY[0],
                                                     )
-                                                    if (to != from && to in categories.indices) {
+                                                    if (to != from && to in order.indices) {
                                                         lastMoveAt[0] = now
-                                                        onMove(c.id, to - from)
+                                                        val mutable = order.toMutableList()
+                                                        val item = mutable.removeAt(from)
+                                                        mutable.add(to, item)
+                                                        dragOrder = mutable
                                                         haptics.performHapticFeedback(
                                                             HapticFeedbackType.TextHandleMove
                                                         )
@@ -482,12 +496,22 @@ fun CategoryManagerSheet(
                                             } else null
                                         },
                                         onDragEnd = {
+                                            val order = dragOrder
+                                            val start = dragStartIndex[0]
+                                            val end = order?.indexOfFirst { it.id == c.id } ?: -1
+                                            if (order != null && start >= 0 && end >= 0 && end != start) {
+                                                onMove(c.id, end - start)
+                                            }
                                             liftedId = null
+                                            dragOrder = null
+                                            dragStartIndex[0] = -1
                                             categoryScrollJob?.cancel()
                                             categoryScrollJob = null
                                         },
                                         onDragCancel = {
                                             liftedId = null
+                                            dragOrder = null
+                                            dragStartIndex[0] = -1
                                             categoryScrollJob?.cancel()
                                             categoryScrollJob = null
                                         },

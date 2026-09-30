@@ -134,21 +134,52 @@ class AnymexProvider(override val config: ProviderConfig) : ContentProvider {
         val t = raw.trim()
         if (t.isEmpty()) return null
         runCatching { return JSONArray(t) }.getOrNull()?.let { return it }
-        val o = runCatching { JSONObject(t) }.getOrNull() ?: return null
-        for (k in listOf("list", "results", "data", "videos")) {
-            o.optJSONArray(k)?.let { return it }
-            val single = o.optJSONObject(k)?.let { jo ->
-                JSONArray().apply { put(jo) }
+        var o = runCatching { JSONObject(t) }.getOrNull() ?: return null
+        // Harness wraps every call as { ok, data }. data is often
+        // { list: [...], hasNextPage } (Mangayomi) rather than a bare array.
+        if (o.has("ok")) {
+            if (!o.optBoolean("ok", false)) {
+                noteCatalogError(o.optString("error"))
+                return null
             }
-            if (single != null) return single
+            when (val data = o.opt("data")) {
+                is JSONArray -> return data
+                is JSONObject -> o = data
+                null -> return null
+                else -> return null
+            }
         }
-        return JSONArray().apply { put(o) }
+        for (k in listOf("list", "results", "data", "videos", "items", "medias")) {
+            o.optJSONArray(k)?.let { return it }
+        }
+        // Single media object — rare, but keep the old behaviour.
+        if (o.has("name") || o.has("title") || o.has("link") || o.has("url")) {
+            return JSONArray().apply { put(o) }
+        }
+        return null
+    }
+
+    private fun noteCatalogError(err: String) {
+        if (err.isBlank()) return
+        catalogErrors[config.id] = err.take(200)
+        lastOutcome[config.id] = "✗ ${err.take(72)}"
     }
 
     private fun firstObject(raw: String): JSONObject? {
         val t = raw.trim()
         if (t.isEmpty()) return null
-        runCatching { return JSONObject(t) }.getOrNull()?.let { return it }
+        var o = runCatching { JSONObject(t) }.getOrNull()
+        if (o != null) {
+            if (o.has("ok")) {
+                if (!o.optBoolean("ok", false)) return null
+                when (val data = o.opt("data")) {
+                    is JSONObject -> return data
+                    is JSONArray -> return data.optJSONObject(0)
+                    else -> return null
+                }
+            }
+            return o
+        }
         runCatching {
             val arr = JSONArray(t)
             if (arr.length() > 0) return arr.optJSONObject(0)

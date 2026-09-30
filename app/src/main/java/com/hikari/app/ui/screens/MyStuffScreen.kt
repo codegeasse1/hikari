@@ -182,13 +182,32 @@ fun MyStuffScreen(nav: NavHostController, initial: String = MyStuff.LIBRARY) {
     // rebuilt by filter() on every recomposition, and an effect keyed on the
     // list itself would re-run (and re-animate) on every pass.
     val stripKey = strip.joinToString(",")
+    // Guard against the classic bi-directional race: tapping a pill sets
+    // `section`, which starts animateScrollToPage; mid-animation
+    // pager.currentPage can flicker and the reverse effect would set
+    // `section` back, leaving the pager stuck between two pages. Sliding
+    // worked because only the reverse effect ran. Use settledPage for the
+    // swipe→section direction and suppress it while a programmatic
+    // animation is in flight.
+    var pagingProgrammatically by remember { mutableStateOf(false) }
     LaunchedEffect(section, stripKey) {
         val target = strip.indexOf(section)
-        if (target >= 0 && target != pager.currentPage) pager.animateScrollToPage(target)
+        if (target < 0 || target == pager.settledPage) return@LaunchedEffect
+        if (target == pager.currentPage && !pager.isScrollInProgress) return@LaunchedEffect
+        pagingProgrammatically = true
+        try {
+            pager.animateScrollToPage(target)
+        } finally {
+            pagingProgrammatically = false
+        }
     }
-    LaunchedEffect(pager.currentPage, stripKey) {
-        val shown = strip.getOrNull(pager.currentPage)
-        if (shown != null && shown != section) section = shown
+    LaunchedEffect(pager, stripKey) {
+        androidx.compose.runtime.snapshotFlow { pager.settledPage }
+            .collect { page ->
+                if (pagingProgrammatically) return@collect
+                val shown = strip.getOrNull(page)
+                if (shown != null && shown != section) section = shown
+            }
     }
 
     Column(Modifier.fillMaxSize()) {
