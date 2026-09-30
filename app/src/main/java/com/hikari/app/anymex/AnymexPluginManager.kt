@@ -38,22 +38,9 @@ object AnymexPluginManager {
 
     const val MAX_BYTES = 2 * 1024 * 1024
 
+    // MiraiEnoki.github.io indexes 404'd (HTML error pages) — keep only
+    // indexes that actually serve JSON. Users can still paste any index URL.
     val DEFAULT_REPOS = listOf(
-        Triple(
-            "https://MiraiEnoki.github.io/anymex_extensions/anime_index.json",
-            "Anymex Anime",
-            "Anymex/Mangayomi anime extensions (JavaScript)",
-        ),
-        Triple(
-            "https://MiraiEnoki.github.io/anymex_extensions/index.json",
-            "Anymex Manga",
-            "Anymex/Mangayomi manga extensions (JavaScript)",
-        ),
-        Triple(
-            "https://MiraiEnoki.github.io/anymex_extensions/novel_index.json",
-            "Anymex Novel",
-            "Anymex/Mangayomi novel extensions (JavaScript)",
-        ),
         Triple(
             "https://raw.githubusercontent.com/gato404/kegareta-sauces/main/anime_index.json",
             "Kegareta Anime",
@@ -63,6 +50,11 @@ object AnymexPluginManager {
             "https://raw.githubusercontent.com/gato404/kegareta-sauces/main/index.json",
             "Kegareta Manga",
             "Anymex/Mangayomi JS manga extensions (kegareta-sauces)",
+        ),
+        Triple(
+            "https://raw.githubusercontent.com/kodjodevf/mangayomi-extensions/main/index.json",
+            "Mangayomi Extensions",
+            "Official Mangayomi multi-type extension index",
         ),
     )
 

@@ -627,6 +627,7 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
         val isM3u8 = s.optBoolean("isM3u8", false) || url.contains(".m3u8", true)
         val isMpd = s.optBoolean("isMpd", false) || url.contains(".mpd", true)
 
+        val details = buildStreamDetails(s, quality)
         return StreamSource(
             name = displayName,
             url = if (isTorrent) url else Http.normalizeDriveUrl(url),
@@ -643,7 +644,39 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
             }.getOrDefault(emptyList()),
             ytId = s.optString("ytId").ifBlank { null },
             externalUrl = s.optBoolean("externalUrl", false),
+            details = details,
+            provider = "Nuvio",
+            providerId = config.id,
+            providerName = config.name,
         )
+    }
+
+    /** Size / audio / codec / container line for the server chooser — matches
+     *  the rich cards users expect from Nuvio-style source sheets. */
+    private fun buildStreamDetails(s: JSONObject, quality: String): String {
+        val bits = ArrayList<String>()
+        fun add(v: String?) {
+            val t = v?.trim().orEmpty()
+            if (t.isNotBlank() && bits.none { it.equals(t, true) }) bits += t
+        }
+        add(quality.ifBlank { null })
+        add(s.optString("size").ifBlank { s.optString("filesize") }.ifBlank { null })
+        // description often already packs "2160p • 19.5 GB • HDR • H.265…"
+        val desc = s.optString("description").trim()
+        if (desc.isNotBlank()) {
+            // Prefer the structured description when present; still append unique
+            // quality/size bits that aren't already inside it.
+            val keep = bits.filter { !desc.contains(it, true) }
+            return (listOf(desc) + keep).joinToString(" • ").take(180)
+        }
+        add(s.optString("language").ifBlank { s.optString("lang") }.ifBlank { null })
+        add(s.optString("audio").ifBlank { s.optString("audioCodec") }.ifBlank { null })
+        add(s.optString("codec").ifBlank { s.optString("videoCodec") }.ifBlank { null })
+        add(s.optString("container").ifBlank { s.optString("format") }.ifBlank { null })
+        add(s.optString("source").ifBlank { s.optString("releaseGroup") }.ifBlank { null })
+        if (s.optBoolean("hdr", false) || s.optString("hdr").isNotBlank()) add("HDR")
+        if (s.optBoolean("dv", false) || s.optString("dv").equals("true", true)) add("DV")
+        return bits.joinToString(" • ").take(180)
     }
 
     private fun infoHashOf(url: String): String? {

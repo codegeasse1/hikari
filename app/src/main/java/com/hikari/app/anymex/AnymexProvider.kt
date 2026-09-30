@@ -47,7 +47,12 @@ class AnymexProvider(override val config: ProviderConfig) : ContentProvider {
                 CATALOG_LATEST -> AnymexRuntime.latest(mod, config.id, page.coerceAtLeast(1))
                 else -> AnymexRuntime.popular(mod, config.id, page.coerceAtLeast(1))
             }
-            mapItems(raw)
+            val items = mapItems(raw)
+            if (items.isNotEmpty()) {
+                catalogErrors.remove(config.id)
+                lastOutcome.remove(config.id)
+            }
+            items
         }
 
     override suspend fun search(query: String, page: Int): List<MediaItem> =
@@ -78,16 +83,25 @@ class AnymexProvider(override val config: ProviderConfig) : ContentProvider {
         val mod = module() ?: return@withContext null
         val raw = AnymexRuntime.detail(mod, config.id, item.id) ?: return@withContext null
         val d = firstObject(raw) ?: return@withContext null
-        val arr = d.optJSONArray("episodes") ?: d.optJSONArray("chapters") ?: return@withContext null
+        val arr = d.optJSONArray("episodes")
+            ?: d.optJSONArray("chapters")
+            ?: d.optJSONArray("list")
+            ?: return@withContext null
         val out = ArrayList<Episode>()
         for (i in 0 until minOf(arr.length(), MAX_EPISODES)) {
             val o = arr.optJSONObject(i) ?: continue
-            val url = o.optString("url").ifBlank { o.optString("link") }.trim()
+            val url = o.optString("url").ifBlank { o.optString("link") }
+                .ifBlank { o.optString("href") }.ifBlank { o.optString("id") }.trim()
             if (url.isBlank()) continue
-            val name = o.optString("name").trim().ifBlank { null }
+            val name = o.optString("name").trim()
+                .ifBlank { o.optString("title").trim() }
+                .ifBlank { null }
             val n = o.opt("number")?.toString()?.toIntOrNull()
-                ?: o.opt("episode")?.toString()?.toIntOrNull() ?: (i + 1)
-            out += Episode(number = n, id = url, name = name)
+                ?: o.opt("episode")?.toString()?.toIntOrNull()
+                ?: o.opt("ep")?.toString()?.toIntOrNull()
+                ?: (i + 1)
+            val season = o.opt("season")?.toString()?.toIntOrNull()?.takeIf { it > 0 } ?: 1
+            out += Episode(number = n, id = url, name = name, season = season)
         }
         out.ifEmpty { null }
     }
@@ -205,10 +219,18 @@ class AnymexProvider(override val config: ProviderConfig) : ContentProvider {
                         val u = e.optString("url").ifBlank { e.optString("originalUrl") }
                             .ifBlank { e.optString("streamUrl") }.trim()
                         if (u.isNotBlank()) {
+                            val q = e.optString("quality").trim()
+                            val sz = e.optString("size").trim()
+                            val lang = e.optString("language").ifBlank { e.optString("lang") }.trim()
+                            val detail = listOfNotNull(
+                                q.ifBlank { null },
+                                sz.ifBlank { null },
+                                lang.ifBlank { null },
+                            ).joinToString(" • ").ifBlank { null }
                             videoTo(
-                                e.optString("quality").ifBlank { e.optString("title") }.ifBlank { config.name },
+                                q.ifBlank { e.optString("title") }.ifBlank { e.optString("name") }.ifBlank { config.name },
                                 u, e.optJSONObject("headers"), subsOf(e),
-                                e.optString("quality").ifBlank { e.optString("size") }.trim().ifBlank { null },
+                                detail,
                             )?.let { out += it }
                         }
                     }

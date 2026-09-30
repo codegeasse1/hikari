@@ -7796,11 +7796,10 @@ private fun SourceFolderView(
         ) {
             if (folder == SourceFolder.ANYMEX_HOME) {
                 val scriptRepos = repos.filter { it.kind == RepoKind.SORA || it.kind == RepoKind.ANYMEX }
-                val scriptProviders = providers.filter {
-                    it.config.type == ProviderType.SORA ||
-                        it.config.type == ProviderType.ANYMEX ||
-                        it.config.type == ProviderType.ANYMEX_MANGA
-                }.distinctBy { it.config.id }
+                // Installed Sora/Anymex sources belong under "Installed extensions",
+                // not mixed into this folder's repo list (users were seeing
+                // dessin-anime / KissAsian rows here after install).
+                val scriptProviders = emptyList<ContentProvider>()
                 if (scriptProviders.isNotEmpty() && nav != null) {
                     item {
                         val popularTitle = tr("Popular")

@@ -44,6 +44,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -259,7 +261,7 @@ private fun categoryDragTarget(
         val rowH = (centre - top).coerceAtLeast(1f) * 2f
         if (from + 1 < ids.size) {
             val nextTop = tops[ids[from + 1]] ?: Float.MAX_VALUE
-            if (pointerY > nextTop + rowH * 0.45f) return from + 1
+            if (pointerY > nextTop + rowH * 0.55f) return from + 1
         }
         if (from - 1 >= 0) {
             val prevTop = tops[ids[from - 1]] ?: Float.MIN_VALUE
@@ -431,9 +433,17 @@ fun CategoryManagerSheet(
                         Row(
                             Modifier
                                 .fillMaxWidth()
+                                .zIndex(if (liftedId == c.id) 2f else 0f)
+                                .graphicsLayer {
+                                    if (liftedId == c.id) {
+                                        scaleX = 1.03f
+                                        scaleY = 1.03f
+                                        shadowElevation = 12f
+                                    }
+                                }
                                 .clip(RoundedCornerShape(12.dp))
                                 .background(
-                                    if (liftedId == c.id) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                                    if (liftedId == c.id) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
                                     else Color.Transparent,
                                 )
                                 .clickable {
