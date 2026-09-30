@@ -6,6 +6,8 @@ import com.hikari.app.data.MediaItem
 import com.hikari.app.data.MediaType
 import com.hikari.app.data.ProviderConfig
 import com.hikari.app.data.StreamSource
+import com.hikari.app.manga.MangaChapter
+import com.hikari.app.manga.MangaStore
 import com.hikari.app.net.Http
 import com.hikari.app.providers.ContentProvider
 import kotlinx.coroutines.Dispatchers
@@ -40,7 +42,7 @@ class AnymexMangaProvider(override val config: ProviderConfig) : ContentProvider
             val p = page.coerceAtLeast(1)
             // Known sites: native first (JS harness is unreliable for MangaDex
             // multi-lang + Webtoons HTML changes). JS still tried if native fails.
-            if (isMangaDex() || isWebtoons()) {
+            if (isMangaDex() || isWebtoons() || isComick()) {
                 val native = nativeCatalog(ref.id, p)
                 if (native.isNotEmpty()) {
                     lastOutcome[config.id] = "✓ ${native.size} titles"
@@ -81,31 +83,32 @@ class AnymexMangaProvider(override val config: ProviderConfig) : ContentProvider
         }
 
     private fun isMangaDex(): Boolean {
-        val n = config.name.lowercase()
-        val extra = config.extra.orEmpty().lowercase()
-        val id = config.id.lowercase()
-        val url = config.url.lowercase()
-        return "mangadex" in n || "mangadex" in extra || "mangadex" in id ||
-            "mangadex" in url
+        val blob = (config.name + " " + config.extra.orEmpty() + " " + config.id + " " + config.url).lowercase()
+        return "mangadex" in blob
     }
 
     private fun isWebtoons(): Boolean {
-        val n = config.name.lowercase()
-        val extra = config.extra.orEmpty().lowercase()
-        val id = config.id.lowercase()
-        val url = config.url.lowercase()
-        return "webtoon" in n || "webtoons" in extra || "webtoon" in id ||
-            "webtoon" in url
+        val blob = (config.name + " " + config.extra.orEmpty() + " " + config.id + " " + config.url).lowercase()
+        // Webtoon Hatti is a different (Dart) site — don't claim it
+        if ("webtoonhatti" in blob || "webtoon hatti" in blob) return false
+        return "webtoon" in blob
+    }
+
+    private fun isComick(): Boolean {
+        val blob = (config.name + " " + config.extra.orEmpty() + " " + config.id + " " + config.url).lowercase()
+        return "comick" in blob
     }
 
     private fun nativeCatalog(catalogId: String, page: Int): List<MediaItem> = when {
         isMangaDex() -> nativeMangaDex(catalogId, page)
         isWebtoons() -> nativeWebtoons(catalogId, page)
+        isComick() -> nativeComick(catalogId, page)
         else -> emptyList()
     }
 
     private fun nativeSearch(query: String, page: Int): List<MediaItem> = when {
         isMangaDex() -> nativeMangaDexSearch(query, page)
+        isComick() -> nativeComickSearch(query, page)
         else -> emptyList()
     }
 
@@ -270,25 +273,60 @@ class AnymexMangaProvider(override val config: ProviderConfig) : ContentProvider
     }
 
     override suspend fun getEpisodes(item: MediaItem): List<Episode>? = withContext(Dispatchers.IO) {
-        val mod = module() ?: return@withContext null
-        val raw = AnymexRuntime.detail(mod, config.id, item.id) ?: return@withContext null
-        val d = firstObject(raw) ?: return@withContext null
-        val arr = d.optJSONArray("chapters") ?: d.optJSONArray("episodes") ?: return@withContext null
-        val out = ArrayList<Episode>()
-        for (i in 0 until minOf(arr.length(), MAX_CHAPTERS)) {
-            val o = arr.optJSONObject(i) ?: continue
-            val url = o.optString("url").ifBlank { o.optString("link") }.trim()
-            if (url.isBlank()) continue
-            val name = o.optString("name").trim().ifBlank { null }
-            out += Episode(number = i + 1, id = url, name = name)
+        // Native first for sites we know
+        val native = when {
+            isMangaDex() -> nativeMangaDexChapters(item)
+            isComick() -> nativeComickChapters(item)
+            else -> emptyList()
         }
-        out.ifEmpty { null }
+        val episodes = if (native.isNotEmpty()) native else {
+            val mod = module() ?: return@withContext null
+            val raw = AnymexRuntime.detail(mod, config.id, item.id) ?: return@withContext null
+            val d = firstObject(raw) ?: return@withContext null
+            val arr = d.optJSONArray("chapters") ?: d.optJSONArray("episodes")
+                ?: return@withContext null
+            val out = ArrayList<Episode>()
+            for (i in 0 until minOf(arr.length(), MAX_CHAPTERS)) {
+                val o = arr.optJSONObject(i) ?: continue
+                val url = o.optString("url").ifBlank { o.optString("link") }.trim()
+                if (url.isBlank()) continue
+                val name = o.optString("name").trim().ifBlank { null }
+                out += Episode(number = i + 1, id = url, name = name)
+            }
+            out
+        }
+        if (episodes.isEmpty()) {
+            lastOutcome[config.id] = "✗ no chapters"
+            return@withContext null
+        }
+        // Detail screen only reads MangaStore — always bridge.
+        val key = item.providerId + "|" + item.id
+        MangaStore.putChapters(
+            key,
+            episodes.map { e ->
+                MangaChapter(
+                    url = e.id,
+                    name = e.name ?: "Chapter ${e.number}",
+                    number = e.number.toFloat(),
+                )
+            },
+        )
+        lastOutcome[config.id] = "✓ ${episodes.size} chapters"
+        episodes
     }
 
     override suspend fun getStreams(item: MediaItem, episode: Episode?): List<StreamSource> =
         withContext(Dispatchers.IO) {
-            val mod = module() ?: return@withContext emptyList()
             val chUrl = episode?.id?.takeIf { it.isNotBlank() } ?: return@withContext emptyList()
+            // Native MangaDex at-home server (no JS module required)
+            if (isMangaDex()) {
+                val pages = nativeMangaDexPages(chUrl)
+                if (pages.isNotEmpty()) {
+                    lastOutcome[config.id] = "✓ ${pages.size} pages"
+                    return@withContext pages
+                }
+            }
+            val mod = module() ?: return@withContext emptyList()
             val raw = AnymexRuntime.pages(mod, config.id, chUrl) ?: return@withContext emptyList()
             val arr = pageArray(raw) ?: return@withContext emptyList()
             val out = ArrayList<StreamSource>()
@@ -321,6 +359,169 @@ class AnymexMangaProvider(override val config: ProviderConfig) : ContentProvider
             lastOutcome[config.id] = "✓ ${out.size} pages"
             out
         }
+
+    private fun nativeMangaDexPages(chapterId: String): List<StreamSource> {
+        val id = chapterId.substringAfterLast("/").substringBefore("?").trim()
+        if (id.length < 30) return emptyList()
+        val raw = Http.fetchStringRobust(
+            "https://api.mangadex.org/at-home/server/$id",
+            mapOf("User-Agent" to Http.UA, "Accept" to "application/json"),
+        ).getOrNull().orEmpty()
+        if (raw.isBlank()) return emptyList()
+        val root = runCatching { JSONObject(raw) }.getOrNull() ?: return emptyList()
+        val base = root.optString("baseUrl").trim().trimEnd('/')
+        val chap = root.optJSONObject("chapter") ?: return emptyList()
+        val hash = chap.optString("hash")
+        val data = chap.optJSONArray("data") ?: chap.optJSONArray("dataSaver") ?: return emptyList()
+        if (base.isBlank() || hash.isBlank()) return emptyList()
+        val out = ArrayList<StreamSource>()
+        for (i in 0 until data.length()) {
+            val file = data.optString(i)
+            if (file.isBlank()) continue
+            val u = "$base/data/$hash/$file"
+            out += StreamSource(
+                name = "Page ${i + 1}",
+                url = u,
+                headers = mapOf("User-Agent" to Http.UA, "Referer" to "https://mangadex.org/"),
+                pageUrl = chapterId,
+                provider = "Anymex",
+                providerId = config.id,
+                providerName = config.name,
+            )
+        }
+        return out
+    }
+
+
+    private fun nativeComick(catalogId: String, page: Int): List<MediaItem> {
+        val sort = if (catalogId == CATALOG_LATEST) "uploaded" else "follow"
+        val url = "https://api.comick.fun/v1.0/search?sort=$sort&page=${page.coerceAtLeast(1)}&tachiyomi=true"
+        return parseComickList(url)
+    }
+
+    private fun nativeComickSearch(query: String, page: Int): List<MediaItem> {
+        val q = java.net.URLEncoder.encode(query, "UTF-8")
+        val url = "https://api.comick.fun/v1.0/search?q=$q&page=${page.coerceAtLeast(1)}&tachiyomi=true"
+        return parseComickList(url)
+    }
+
+    private fun parseComickList(url: String): List<MediaItem> {
+        val raw = Http.fetchStringRobust(
+            url,
+            mapOf(
+                "User-Agent" to "Tachiyomi Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:110.0) Gecko/20100101 Firefox/110.0",
+                "Referer" to "https://comick.io/",
+                "Accept" to "application/json",
+            ),
+        ).getOrNull().orEmpty()
+        if (raw.isBlank() || raw.trimStart().startsWith("<")) {
+            lastOutcome[config.id] = "✗ Comick API empty"
+            return emptyList()
+        }
+        val arr = runCatching {
+            val t = raw.trim()
+            if (t.startsWith("[")) JSONArray(t)
+            else {
+                val o = JSONObject(t)
+                o.optJSONArray("data") ?: o.optJSONArray("comics")
+            }
+        }.getOrNull()
+        if (arr == null) {
+            lastOutcome[config.id] = "✗ Comick JSON"
+            return emptyList()
+        }
+        val out = ArrayList<MediaItem>()
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val title = o.optString("title").ifBlank { o.optString("name") }.trim()
+            if (title.isBlank()) continue
+            val slug = o.optString("slug").ifBlank { o.optString("hid") }.trim()
+            val hid = o.optString("hid").ifBlank { slug }
+            if (hid.isBlank()) continue
+            val cover = o.optString("cover_url").ifBlank {
+                o.optJSONArray("md_covers")?.optJSONObject(0)?.optString("b2key").orEmpty()
+            }.ifBlank { o.optString("cover") }
+            val poster = when {
+                cover.isBlank() -> null
+                cover.startsWith("http") -> cover
+                else -> "https://meo.comick.pictures/$cover"
+            }
+            out += MediaItem(
+                providerId = config.id,
+                id = hid,
+                title = title,
+                type = MediaType.SERIES,
+                posterUrl = poster,
+                rawType = "manga",
+            )
+        }
+        if (out.isEmpty()) lastOutcome[config.id] = "✗ Comick parse 0"
+        return out
+    }
+
+    private fun nativeComickChapters(item: MediaItem): List<Episode> {
+        val hid = item.id.trim()
+        if (hid.isBlank()) return emptyList()
+        val url = "https://api.comick.fun/comic/$hid/chapters?lang=en&limit=100&tachiyomi=true"
+        val raw = Http.fetchStringRobust(
+            url,
+            mapOf(
+                "User-Agent" to "Tachiyomi Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:110.0) Gecko/20100101 Firefox/110.0",
+                "Referer" to "https://comick.io/",
+                "Accept" to "application/json",
+            ),
+        ).getOrNull().orEmpty()
+        if (raw.isBlank()) return emptyList()
+        val arr = runCatching {
+            val o = JSONObject(raw)
+            o.optJSONArray("chapters") ?: o.optJSONArray("data")
+        }.getOrNull() ?: return emptyList()
+        val out = ArrayList<Episode>()
+        for (i in 0 until minOf(arr.length(), MAX_CHAPTERS)) {
+            val c = arr.optJSONObject(i) ?: continue
+            val chapHid = c.optString("hid").ifBlank { c.optString("id") }.trim()
+            if (chapHid.isBlank()) continue
+            val chap = c.optString("chap").ifBlank { c.optString("chapter") }
+            val name = c.optString("title").ifBlank {
+                if (chap.isNotBlank()) "Chapter $chap" else "Chapter ${i + 1}"
+            }
+            val num = chap.toFloatOrNull()?.toInt() ?: (i + 1)
+            out += Episode(number = num, id = chapHid, name = name)
+        }
+        return out
+    }
+
+    private fun nativeMangaDexChapters(item: MediaItem): List<Episode> {
+        val uuid = item.id.substringAfterLast("/").substringBefore("?").trim()
+        if (uuid.length < 30) return emptyList()
+        val url = "https://api.mangadex.org/manga/$uuid/feed?" +
+            "limit=100&order%5Bchapter%5D=desc&translatedLanguage%5B%5D=en&" +
+            "contentRating%5B%5D=safe&contentRating%5B%5D=suggestive&contentRating%5B%5D=erotica"
+        val raw = Http.fetchStringRobust(
+            url,
+            mapOf("User-Agent" to Http.UA, "Accept" to "application/json"),
+        ).getOrNull().orEmpty()
+        if (raw.isBlank()) return emptyList()
+        val arr = runCatching { JSONObject(raw).optJSONArray("data") }.getOrNull() ?: return emptyList()
+        val out = ArrayList<Episode>()
+        for (i in 0 until minOf(arr.length(), MAX_CHAPTERS)) {
+            val c = arr.optJSONObject(i) ?: continue
+            val id = c.optString("id").trim()
+            if (id.isBlank()) continue
+            val attrs = c.optJSONObject("attributes") ?: JSONObject()
+            val chap = attrs.optString("chapter")
+            val title = attrs.optString("title")
+            val name = when {
+                title.isNotBlank() && chap.isNotBlank() -> "Ch. $chap — $title"
+                chap.isNotBlank() -> "Chapter $chap"
+                title.isNotBlank() -> title
+                else -> "Chapter ${i + 1}"
+            }
+            val num = chap.toFloatOrNull()?.toInt() ?: (i + 1)
+            out += Episode(number = num, id = id, name = name)
+        }
+        return out
+    }
 
     private fun mapHeaders(h: JSONObject?): Map<String, String> {
         if (h == null) return mapOf("User-Agent" to com.hikari.app.net.Http.UA)

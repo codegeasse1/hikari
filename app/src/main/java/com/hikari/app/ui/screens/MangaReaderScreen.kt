@@ -186,7 +186,7 @@ fun MangaReaderScreen(
     // opened straight from a "continue reading" card it may not be there yet.
     LaunchedEffect(key, chapters.isEmpty()) {
         if (chapters.isNotEmpty()) return@LaunchedEffect
-        val p = app.providers.byId(providerId) as? MangaProvider ?: return@LaunchedEffect
+        val p = app.providers.byId(providerId) ?: return@LaunchedEffect
         withContext(Dispatchers.IO) { runCatching { p.getEpisodes(item) } }
         chapters = MangaStore.chaptersFor(key).orEmpty()
     }
@@ -283,7 +283,7 @@ fun MangaReaderScreen(
         chapters.firstOrNull { it.url == url }?.label.orEmpty()
 
     suspend fun fetchPages(url: String): List<StreamSource> = withContext(Dispatchers.IO) {
-        val p = app.providers.byId(providerId) as? MangaProvider ?: return@withContext emptyList()
+        val p = app.providers.byId(providerId) ?: return@withContext emptyList()
         val idx = chapters.indexOfFirst { it.url == url }
         val ep = Episode(number = idx + 1, id = url, name = null, season = 1)
         val out = runCatching { p.getStreams(item, ep) }.getOrNull().orEmpty()
@@ -306,8 +306,8 @@ fun MangaReaderScreen(
         loading = true
         error = null
         pages = emptyList()
-        if (app.providers.byId(providerId) !is MangaProvider) {
-            error = I18n.t("This manga engine is not installed.")
+        if (app.providers.byId(providerId) == null) {
+            error = I18n.t("This manga engine is not installed.") // any ContentProvider is ok
             loading = false
             return@LaunchedEffect
         }
@@ -333,6 +333,7 @@ fun MangaReaderScreen(
         openPage = restored
         if (out.isEmpty()) {
             error = MangaProvider.lastOutcome[providerId]
+                ?: com.hikari.app.anymex.AnymexMangaProvider.lastOutcome[providerId]
                 ?: I18n.t("This chapter returned no pages. Tap to try again.")
         }
         loading = false

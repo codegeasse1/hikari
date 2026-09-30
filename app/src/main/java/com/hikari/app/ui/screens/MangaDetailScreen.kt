@@ -179,7 +179,11 @@ fun MangaDetailScreen(
     LaunchedEffect(providerId, mangaUrl, reload) {
         loading = true
         error = null
-        val provider = app.providers.byId(providerId) as? MangaProvider
+        // Any ContentProvider that can serve manga (Aniyomi APK MangaProvider
+        // OR Anymex/Mangayomi JS AnymexMangaProvider). Casting only to
+        // MangaProvider was the "This manga engine is not installed" bug when
+        // the catalog came from ANYMEX_MANGA.
+        val provider = app.providers.byId(providerId)
         if (provider == null) {
             error = I18n.t("This manga engine is not installed.")
             loading = false
@@ -197,18 +201,33 @@ fun MangaDetailScreen(
             runCatching { provider.getMeta(base) }.getOrDefault(base)
         }
         meta = fresh
-        // The chapter list: the cache first (a second visit is instant), then the
-        // source. getEpisodes writes whatever it gets into MangaStore itself.
         val cached = MangaStore.chaptersFor(key)
         if (cached.isNullOrEmpty()) {
             withContext(Dispatchers.IO) {
-                runCatching { provider.getEpisodes(fresh) }
+                runCatching {
+                    val eps = provider.getEpisodes(fresh)
+                    // AnymexMangaProvider returns Episode list; bridge into MangaStore
+                    // so the chapter UI (which only reads MangaStore) fills.
+                    if (!eps.isNullOrEmpty() && MangaStore.chaptersFor(key).isNullOrEmpty()) {
+                        MangaStore.putChapters(
+                            key,
+                            eps.map { e ->
+                                MangaChapter(
+                                    url = e.id,
+                                    name = e.name ?: "Chapter ${e.number}",
+                                    number = e.number.toFloat(),
+                                )
+                            },
+                        )
+                    }
+                }
             }
         }
         val list = MangaStore.chaptersFor(key).orEmpty()
         chapters = list
         if (list.isEmpty()) {
             error = MangaProvider.lastOutcome[providerId]
+                ?: com.hikari.app.anymex.AnymexMangaProvider.lastOutcome[providerId]
                 ?: I18n.t("This engine returned no chapters. Pull refresh to try again.")
         }
         loading = false
