@@ -3567,7 +3567,6 @@ fun ExtensionsScreen(nav: NavHostController? = null) {
             installStopping = installStopping,
             onStopInstall = { vm.stopBulkInstall() },
             onBack = { openFolder = null; vm.clearStatus() },
-            onOpenFolder = { openFolder = it },
             onOpenRepo = { repo ->
                 openRepoUrl = repo.url
                 vm.clearStatus()
