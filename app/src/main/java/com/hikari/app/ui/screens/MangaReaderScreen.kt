@@ -293,7 +293,7 @@ fun MangaReaderScreen(
         // imageRequest headers and its own interceptors, which is the whole
         // difference between a page that loads and one that comes back refused or
         // scrambled. Set here, before the viewers ask the cache for anything.
-        pageSource.httpSource = p.httpSource()
+        pageSource.httpSource = (p as? MangaProvider)?.httpSource()
         // Every page's own headers go into the one map the page cache reads, so a
         // page fetched by a viewer bind (not by this screen) still carries them —
         // the fallback path, for a source with no HttpSource behind it.
