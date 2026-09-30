@@ -8389,7 +8389,31 @@ class PlayerActivity : ComponentActivity() {
         }
         dismissSlowDialog()
         currentIndex = index
-        val src = sources[index]
+        var src = sources[index]
+        // Fastream / Pelispedia: refresh signed m3u8 from embed before play so
+        // we match CloudStream (fresh token + cookies in shared jar).
+        if (isFastreamUrl(src.url)) {
+            val fresh = runCatching {
+                kotlinx.coroutines.runBlocking(Dispatchers.IO) { refreshFastreamUrl(src.url) }
+            }.getOrNull()
+            if (!fresh.isNullOrBlank() && fresh != src.url) {
+                val list = sources.toMutableList()
+                list[index] = src.copy(
+                    url = fresh,
+                    headers = ensureHotlinkHeaders(fresh, src.headers),
+                    isM3u8 = true,
+                )
+                sources = list
+                src = sources[index]
+                notifySourcesChanged()
+            } else {
+                // Still apply CS3 headers even if refresh failed
+                val list = sources.toMutableList()
+                list[index] = src.copy(headers = ensureHotlinkHeaders(src.url, src.headers))
+                sources = list
+                src = sources[index]
+            }
+        }
         // Remember what we've actually handed to ExoPlayer this session — a
         // later re-extraction usually repeats most of these URLs, and freshIndex
         // must not pick one we already know dies.
@@ -10355,8 +10379,29 @@ class PlayerActivity : ComponentActivity() {
                 playSource(currentIndex)
                 return
             }
-            // All header variants failed for this URL — mark host so siblings
-            // of the same CDN are deprioritized (not skipped until no alternatives).
+            // Fastream: one more refresh from embed then retry same index once.
+            if (hotlinkHost && isFastreamUrl(curUrl) &&
+                code == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS &&
+                !terminalHostFailure
+            ) {
+                val fresh = runCatching {
+                    kotlinx.coroutines.runBlocking(Dispatchers.IO) { refreshFastreamUrl(curUrl) }
+                }.getOrNull()
+                if (!fresh.isNullOrBlank() && fresh != curUrl && currentIndex in sources.indices) {
+                    val list = sources.toMutableList()
+                    val old = list[currentIndex]
+                    list[currentIndex] = old.copy(
+                        url = fresh,
+                        headers = ensureHotlinkHeaders(fresh, old.headers),
+                        isM3u8 = true,
+                    )
+                    sources = list
+                    headerVariant = 0
+                    noSubsRetry = false
+                    playSource(currentIndex)
+                    return
+                }
+            }
             if (hotlinkHost && code == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS) {
                 val h = mirrorHostOf(curUrl)
                 if (h.isNotBlank()) deadHosts.add(h)
@@ -10559,6 +10604,84 @@ class PlayerActivity : ComponentActivity() {
      * - referer = apex mainUrl (https://fastream.to) when missing
      * - do NOT force Origin or Sec-Fetch-* (CS3 does not; those 403 Fastream)
      */
+
+    /**
+     * Pelispedia (and many Storm plugins) resolve to Fastream embed pages.
+     * CloudStream unpacks the embed at play time so the signed m3u8 + cookies
+     * are fresh. Hikari used to keep the first m3u8 forever → 403 while CS3
+     * played. Re-hit embed-CODE.html, unpack Dean-Edwards packer, return a
+     * fresh master.m3u8 with apex Referer.
+     */
+    private fun fastreamFileCode(url: String): String? {
+        val u = url
+        Regex("""fastream\.to/embed-([a-zA-Z0-9]+)\.html""", RegexOption.IGNORE_CASE)
+            .find(u)?.groupValues?.getOrNull(1)?.let { return it }
+        Regex("""/([a-zA-Z0-9]{8,})_,""", RegexOption.IGNORE_CASE)
+            .find(u)?.groupValues?.getOrNull(1)?.let { return it }
+        Regex("""/([a-zA-Z0-9]{8,})\.urlset""", RegexOption.IGNORE_CASE)
+            .find(u)?.groupValues?.getOrNull(1)?.let { return it }
+        Regex("""/([a-zA-Z0-9]{8,})\.m3u8""", RegexOption.IGNORE_CASE)
+            .find(u)?.groupValues?.getOrNull(1)?.let { return it }
+        return null
+    }
+
+    private fun isFastreamUrl(url: String): Boolean =
+        url.contains("fastream", ignoreCase = true)
+
+    /** Returns fresh m3u8 URL or null if refresh failed. */
+    private fun refreshFastreamUrl(url: String): String? {
+        val code = fastreamFileCode(url) ?: return null
+        val embed = "https://fastream.to/embed-$code.html"
+        return runCatching {
+            val req = okhttp3.Request.Builder()
+                .url(embed)
+                .header(
+                    "User-Agent",
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                )
+                .header("Referer", "https://fastream.to/")
+                .header("Accept", "text/html,application/xhtml+xml")
+                .build()
+            val html = client.newCall(req).execute().use { it.body?.string().orEmpty() }
+            if (html.isBlank()) return@runCatching null
+            val script = unpackDeanEdwards(html) ?: html
+            Regex(
+                """https?://[^"'\\\s]*fastream\.to[^"'\\\s]*\.m3u8[^"'\\\s]*""",
+                RegexOption.IGNORE_CASE,
+            ).find(script)?.value?.replace("\\/", "/")
+                ?: Regex(
+                    """file\s*:\s*"([^"]+\.m3u8[^"]*)"""",
+                    RegexOption.IGNORE_CASE,
+                ).find(script)?.groupValues?.getOrNull(1)?.replace("\\/", "/")
+        }.getOrNull()
+    }
+
+    /** Same P.A.C.K.E.R. unpack as FallbackResolver (Fastream embed pages). */
+    private fun unpackDeanEdwards(html: String): String? {
+        val re = Regex(
+            """eval\s*\(\s*function\s*\(\s*p\s*,\s*a\s*,\s*c\s*,\s*k\s*,\s*e\s*,\s*d\s*\)\s*\{[\s\S]*?return p\}\s*\(\s*'([\s\S]*?)'\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*'([\s\S]*?)'\.split\s*\(\s*'\s*\|\s*'\s*\)\s*\)\s*\)""",
+            RegexOption.IGNORE_CASE,
+        )
+        val m = re.find(html) ?: return null
+        val p = m.groupValues[1]
+        val a = m.groupValues[2].toIntOrNull() ?: 36
+        val k = m.groupValues[4].split("|")
+        if (k.isEmpty()) return null
+        fun b36(c: Int): String {
+            val div = c / a
+            val rem = c % a
+            val r = if (rem > 35) ((rem + 29).toChar()).toString() else rem.toString(36)
+            return (if (div == 0) "" else b36(div)) + r
+        }
+        var out = p
+        for (i in k.indices.reversed()) {
+            val word = k[i]
+            if (word.isEmpty()) continue
+            out = out.replace(Regex("\\b" + Regex.escape(b36(i)) + "\\b"), word)
+        }
+        return out
+    }
+
     private fun ensureHotlinkHeaders(
         url: String,
         headers: Map<String, String>,

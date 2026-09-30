@@ -1396,6 +1396,9 @@ class HikariApp : Application() {
             // on the 10s okhttp defaults.
             fun build(ignoreSSL: Boolean) = OkHttpClient.Builder()
                 .dns(DohDns)
+                // Same jar as PlayerHttp so Fastream cookies from embed extract
+                // are available when the player fetches the signed m3u8.
+                .cookieJar(com.hikari.app.net.PlayerHttp.cookieJar)
                 .followRedirects(true)
                 .followSslRedirects(true)
                 .retryOnConnectionFailure(true)
@@ -1403,9 +1406,6 @@ class HikariApp : Application() {
                 .readTimeout(30, TimeUnit.SECONDS)
                 .apply { if (ignoreSSL) ignoreAllSSLErrors() }
                 .cache(Cache(File(context.cacheDir, "http_cache"), 50L * 1024 * 1024))
-                // Auto Cloudflare handling for CS3 plugin requests (app.get /
-                // app.post): same detect → verify-WebView → retry-with-cookie
-                // flow Hikari's own Http client uses (see CloudflareVerifier).
                 .addInterceptor { chain -> com.hikari.app.net.CloudflareVerifier.intercept(chain) }
                 .build()
 
