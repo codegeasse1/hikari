@@ -667,7 +667,7 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
             // Prefer the structured description when present; still append unique
             // quality/size bits that aren't already inside it.
             val keep = bits.filter { !desc.contains(it, true) }
-            return (listOf(desc) + keep).joinToString(" • ").take(180)
+            return (listOf(desc) + keep).joinToString(" • ").take(400)
         }
         add(s.optString("language").ifBlank { s.optString("lang") }.ifBlank { null })
         add(s.optString("audio").ifBlank { s.optString("audioCodec") }.ifBlank { null })
@@ -676,7 +676,7 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
         add(s.optString("source").ifBlank { s.optString("releaseGroup") }.ifBlank { null })
         if (s.optBoolean("hdr", false) || s.optString("hdr").isNotBlank()) add("HDR")
         if (s.optBoolean("dv", false) || s.optString("dv").equals("true", true)) add("DV")
-        return bits.joinToString(" • ").take(180)
+        return bits.joinToString(" • ").take(400)
     }
 
     private fun infoHashOf(url: String): String? {

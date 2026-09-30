@@ -5387,7 +5387,7 @@ class PlayerActivity : ComponentActivity() {
             source.local -> "Saved on this device"
             source.details.isNotBlank() -> listOfNotNull(
                 hostOf(source.url),
-                source.details.take(140),
+                source.details.take(400),
             ).joinToString(" · ").ifBlank { null }
             else -> hostOf(source.url)
         },
@@ -5405,7 +5405,7 @@ class PlayerActivity : ComponentActivity() {
         // Server names run long ("Provider (Repo) · Plugin · 1080p") and they are
         // what the user is choosing between, so the row's capsule fits TWO lines
         // of it instead of cutting the name off — the box grows with the name.
-        labelMaxLines = 2,
+        labelMaxLines = 3,
     )
 
     /**
@@ -7157,8 +7157,8 @@ class PlayerActivity : ComponentActivity() {
             // sizing note, and roughly what a full-screen results list wants)
             // and 72% of its height, capped so the whole panel stays on screen
             // inside the room the hint line leaves.
-            fillFractionX = 0.86f,
-            fillFractionY = 0.72f,
+            fillFractionX = 0.90f,
+            fillFractionY = 0.88f,
         )
         // The keyboard is the point of this panel: the user came here to type.
         // ADJUST_RESIZE keeps the panel inside the room that is left once the

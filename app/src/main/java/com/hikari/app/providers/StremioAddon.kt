@@ -1224,7 +1224,7 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
         if (n.isNotEmpty() && d.startsWith(n, ignoreCase = true)) {
             d = d.removeRange(0, n.length).trim(' ', '·', '-', '|', ':')
         }
-        return d.take(140)
+        return d.take(400)
     }
 
     /**

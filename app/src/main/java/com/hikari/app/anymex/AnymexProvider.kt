@@ -137,7 +137,7 @@ class AnymexProvider(override val config: ProviderConfig) : ContentProvider {
                 providerId = config.id,
                 id = link,
                 title = name,
-                type = MediaType.UNKNOWN,
+                type = MediaType.SERIES,
                 posterUrl = o.optString("imageUrl").ifBlank { o.optString("image") }.trim().ifBlank { null },
             )
         }

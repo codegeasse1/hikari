@@ -145,6 +145,23 @@ object AnymexPluginManager {
 
     suspend fun install(context: Context, plugin: Cs3RepoPlugin): Result<Int> =
         withContext(Dispatchers.IO) {
+            // Dart-only Mangayomi entries have no runnable JS — refuse before
+            // download so the UI never falls through to "Module manifest is not JSON".
+            val metaHint = plugin.description
+            if (metaHint.contains("Dart-only", ignoreCase = true) ||
+                (!plugin.url.endsWith(".js", ignoreCase = true) &&
+                    !plugin.url.contains("/javascript/", ignoreCase = true))
+            ) {
+                // Still allow when URL is clearly a .js script.
+                if (!plugin.url.endsWith(".js", ignoreCase = true)) {
+                    return@withContext Result.failure(
+                        Exception(
+                            "This extension is Dart-only and needs the Mangayomi app — " +
+                                "Hikari runs JavaScript Anymex modules only.",
+                        ),
+                    )
+                }
+            }
             val bytes = runCatching {
                 Http.fetchBytesCancellable(plugin.url, mapOf("User-Agent" to Http.UA), 60)
             }.getOrNull()
@@ -154,6 +171,13 @@ object AnymexPluginManager {
             val source = runCatching { String(bytes, Charsets.UTF_8) }.getOrNull()
             if (source.isNullOrBlank()) {
                 return@withContext Result.failure(Exception("Extension script is empty"))
+            }
+            // HTML error pages (404) look like "not an extension".
+            val trimmed = source.trimStart()
+            if (trimmed.startsWith("<!") || trimmed.startsWith("<html", ignoreCase = true)) {
+                return@withContext Result.failure(
+                    Exception("Download returned a web page, not a script — the source URL may be dead."),
+                )
             }
             if (!source.contains("DefaultExtension") || !source.contains("MProvider")) {
                 return@withContext Result.failure(Exception("Not a Mangayomi/Anymex extension"))

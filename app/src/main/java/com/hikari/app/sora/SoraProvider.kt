@@ -143,11 +143,13 @@ class SoraProvider(override val config: ProviderConfig) : ContentProvider {
             val link = o.optString("href").trim()
             val title = o.optString("title").trim().ifBlank { o.optString("name").trim() }
             if (link.isBlank() || title.isBlank()) continue
+            // SERIES so ContentRepository.episodesFor actually asks the module
+            // (UNKNOWN used to short-circuit to null → "Play" only, no episodes).
             out += MediaItem(
                 providerId = config.id,
                 id = link,
                 title = title,
-                type = MediaType.UNKNOWN,
+                type = MediaType.SERIES,
                 posterUrl = o.optString("image").ifBlank { o.optString("imageURL") }
                     .ifBlank { o.optString("poster") }.ifBlank { null },
                 rawType = "anime",

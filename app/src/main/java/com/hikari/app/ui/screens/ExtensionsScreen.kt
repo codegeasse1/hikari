@@ -14,6 +14,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.navigation.NavHostController
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -1393,6 +1394,21 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun installScriptPlugin(plugin: Cs3RepoPlugin, kind: RepoKind): Result<Int> {
         val primary = if (kind == RepoKind.ANYMEX) installAnymexPlugin(plugin) else installSoraPlugin(plugin)
         if (primary.isSuccess) return primary
+        // Only cross-try when the payload could genuinely be the other format.
+        // Anymex JS (…/javascript/…/*.js) or Dart-only failures must not fall
+        // through to Sora's "Module manifest is not JSON".
+        val err = primary.exceptionOrNull()?.message.orEmpty()
+        if (err.contains("Dart-only", ignoreCase = true) ||
+            err.contains("Not a Mangayomi", ignoreCase = true) ||
+            err.contains("web page, not a script", ignoreCase = true)
+        ) {
+            return primary
+        }
+        val url = plugin.url
+        val looksAnymexJs = url.endsWith(".js", true) || url.contains("/javascript/", true)
+        val looksSoraManifest = url.endsWith(".json", true) || url.contains("manifest", true)
+        if (kind == RepoKind.ANYMEX && looksAnymexJs && !looksSoraManifest) return primary
+        if (kind == RepoKind.SORA && looksSoraManifest && !looksAnymexJs) return primary
         return if (kind == RepoKind.ANYMEX) installSoraPlugin(plugin) else installAnymexPlugin(plugin)
     }
 
@@ -7146,33 +7162,50 @@ private fun RepoCard(
             // to squeeze the repo's own name to 2–3 characters on a phone.
             // The name now has its own full-width line (chip moved to the
             // subtitle) so it always reads in full.
+            // TV remotes need a larger, always-focusable target — 40.dp icons
+            // on the trailing edge were unreachable past the row's open-click
+            // surface (D-pad landed on the row, never the buttons).
+            val actionSize = if (com.hikari.app.tv.TvMode.current()) 56.dp else 44.dp
             IconButton(
                 onClick = {
                     clipboard.setText(AnnotatedString(repo.url))
-                    // I18n.t, not tr: tr is @Composable, and a click handler is not
-                    // a composable scope (the same reason the toasts at ~5094 use it).
                     Toast.makeText(context, I18n.t("Repo link copied"), Toast.LENGTH_SHORT).show()
                 },
-                modifier = Modifier.size(40.dp)
+                modifier = Modifier
+                    .size(actionSize)
+                    .focusable(),
             ) {
                 Icon(
                     Icons.Filled.ContentCopy,
                     contentDescription = tr("Copy repo link"),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(if (com.hikari.app.tv.TvMode.current()) 28.dp else 22.dp),
                 )
             }
-            IconButton(onClick = onRefresh, modifier = Modifier.size(40.dp)) {
+            IconButton(
+                onClick = onRefresh,
+                modifier = Modifier
+                    .size(actionSize)
+                    .focusable(),
+            ) {
                 Icon(
                     Icons.Filled.Refresh,
                     contentDescription = tr("Refresh repo"),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(if (com.hikari.app.tv.TvMode.current()) 28.dp else 22.dp),
                 )
             }
-            IconButton(onClick = onRemoveRepo, modifier = Modifier.size(40.dp)) {
+            IconButton(
+                onClick = onRemoveRepo,
+                modifier = Modifier
+                    .size(actionSize)
+                    .focusable(),
+            ) {
                 Icon(
                     Icons.Filled.Delete,
                     contentDescription = tr("Remove repo"),
-                    tint = MaterialTheme.colorScheme.error
+                    tint = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(if (com.hikari.app.tv.TvMode.current()) 28.dp else 22.dp),
                 )
             }
         }

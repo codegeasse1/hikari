@@ -5445,7 +5445,10 @@ class ContentRepository(private val manager: ProviderManager) {
         item: MediaItem,
         onPartial: ((List<Episode>) -> Unit)? = null,
     ): List<Episode>? = withContext(Dispatchers.IO) {
-        if (item.type == MediaType.UNKNOWN) return@withContext null
+        // UNKNOWN used to bail out entirely — Sora/Anymex catalog rows were
+        // typed that way and the detail page never asked extractEpisodes, so
+        // every series looked like a movie (Play only, no episode list).
+        // Still prefer SERIES for cross-extension fallback below.
         // A Vega pack switch is a DIFFERENT list under the same title: scope
         // every cache on this lookup by the provider's current selection, so
         // pack 2 never paints (or inherits) pack 1's answers.
@@ -5472,7 +5475,7 @@ class ContentRepository(private val manager: ProviderManager) {
         // Stremio meta can still reclassify a mislabelled row, so the origin is
         // always asked and its non-empty result wins.
         val ordered = listOfNotNull(manager.byId(item.providerId)) +
-            (if (item.type == MediaType.SERIES) others else emptyList())
+            (if (item.type == MediaType.SERIES || item.type == MediaType.UNKNOWN) others else emptyList())
         for (p in ordered) {
             val eps = (withTimeoutOrNull(episodesForTimeoutMs(p)) {
                 cancellableCatching { p.getEpisodes(item) }.getOrNull() ?: emptyList()
@@ -5511,7 +5514,7 @@ class ContentRepository(private val manager: ProviderManager) {
         // available" while a dozen other installed extensions carried the show.
         // That is the reported "some aniyomi extension shows no episode on
         // series".
-        if (item.type == MediaType.SERIES) {
+        if (item.type == MediaType.SERIES || item.type == MediaType.UNKNOWN) {
             episodesFromExtensions(item, onPartial)?.let { list ->
                 // Same order as above: auto-translate first, then TMDB's names in
                 // the app's chosen language (which win when they exist).

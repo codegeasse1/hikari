@@ -1556,7 +1556,9 @@ fun DetailScreen(
     val tvDetailBigFlow = remember { detailApp.store.tvDetailBigFlow() }
     val tvDetailBig by tvDetailBigFlow.collectAsState(initial = false)
     val heroStyle =
-        if (com.hikari.app.tv.TvMode.current() && tvDetailBig) DetailHeroStyles.TALL
+        // Big TV detail: SIDE puts poster left + info/episodes right (matches
+        // the living-room layout users expect). TALL was full-width art only.
+        if (com.hikari.app.tv.TvMode.current() && tvDetailBig) DetailHeroStyles.SIDE
         else detailHeroStyle
     // How big the title LOGO is drawn (Settings → App Layout → Details header →
     // Title logo size), in percent of the size it has always been drawn at.

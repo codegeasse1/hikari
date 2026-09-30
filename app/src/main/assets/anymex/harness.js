@@ -472,6 +472,33 @@
     try { host = JSON.parse(g.__anymexHostMeta || '{}'); } catch (e) {}
     if (!host || typeof host !== 'object') host = {};
     this.source = Object.assign({}, host, source || {});
+    // Many scripts read SharedPreferences("url") / ("lang") instead of
+    // this.source.baseUrl — seed them so getPopular/search actually hit the
+    // site (otherwise requests go to "undefined/undefined/...").
+    try {
+      var s = this.source || {};
+      var base = String(s.baseUrl || s.url || host.baseUrl || '').replace(/\/+$/, '');
+      var lang = String(s.lang || host.lang || '').trim();
+      if (base) {
+        // If base already ends with /en, /all, etc. split for scripts that
+        // join url + "/" + lang + path.
+        var m = base.match(/^(https?:\/\/[^\/]+)(?:\/([a-zA-Z0-9_-]{2,8}))?$/);
+        if (m) {
+          if (!Object.prototype.hasOwnProperty.call(prefData, 'url') || !prefData['url']) {
+            prefData['url'] = m[1];
+          }
+          if ((!lang || lang === 'all') && m[2]) lang = m[2];
+        } else if (!Object.prototype.hasOwnProperty.call(prefData, 'url') || !prefData['url']) {
+          prefData['url'] = base;
+        }
+      }
+      if (lang && (!Object.prototype.hasOwnProperty.call(prefData, 'lang') || !prefData['lang'])) {
+        prefData['lang'] = lang;
+      }
+      // Also expose common keys scripts read.
+      if (s.name && !prefData['name']) prefData['name'] = s.name;
+      if (base && !prefData['baseUrl']) prefData['baseUrl'] = base;
+    } catch (e) {}
   };
 
   // Any top-level const foo = [{name, baseUrl, ...}] declares the source.
