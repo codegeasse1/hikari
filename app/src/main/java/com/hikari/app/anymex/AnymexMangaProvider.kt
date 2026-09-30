@@ -6,6 +6,7 @@ import com.hikari.app.data.MediaItem
 import com.hikari.app.data.MediaType
 import com.hikari.app.data.ProviderConfig
 import com.hikari.app.data.StreamSource
+import com.hikari.app.net.Http
 import com.hikari.app.providers.ContentProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
