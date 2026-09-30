@@ -83,6 +83,12 @@ object HikariExtractorRegistry {
         add("https://rapid-cloud.co") { HikariMegaPlayHost("https://rapid-cloud.co") }
         add("https://vidplay.site") { HikariMegaPlayHost("https://vidplay.site") }
 
+
+        // --- Fastream CDN (CS3 Fastream extractor; plugins often hand out
+        //     sN.fastream.to m3u8 OR emb.html embeds — both need the apex extractor) ---
+        add("https://fastream.to") { HikariFastreamHost("https://fastream.to") }
+        add("https://www.fastream.to") { HikariFastreamHost("https://fastream.to") }
+
         // --- hubu.cloud — the one upstream extractor the jar doesn't ship
         //     (trivial <video><source src> page); alias it so plugins' embeds
         //     resolve like they do in CloudStream. ---
@@ -215,5 +221,23 @@ private class HikariHubuHost(override val mainUrl: String) : ExtractorApi() {
                 type = ExtractorLinkType.M3U8,
             )
         )
+    }
+}
+
+
+/** Delegates to CloudStream Fastream extractor (packed JS + JWPlayer). */
+private class HikariFastreamHost(override val mainUrl: String) : ExtractorApi() {
+    override val name = "Fastream"
+    override val requiresReferer = false
+
+    override suspend fun getUrl(
+        url: String,
+        referer: String?,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit,
+    ) {
+        val f = com.lagradost.cloudstream3.extractors.Fastream()
+        f.mainUrl = mainUrl
+        f.getUrl(url, referer, subtitleCallback, callback)
     }
 }

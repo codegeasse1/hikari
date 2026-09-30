@@ -10341,26 +10341,25 @@ class PlayerActivity : ComponentActivity() {
             ).any { curUrl.contains(it, ignoreCase = true) }
             // Signed Fastream (etc.) 403 = expired token. Kill the whole host so
             // we don't waste time on every quality variant of the same CDN.
-            if (hotlinkHost && code == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS) {
-                val h = mirrorHostOf(curUrl)
-                if (h.isNotBlank()) deadHosts.add(h)
-                // Also mark sibling subdomains of the same apex (s40.fastream.to).
-                val apex = h.substringAfter('.').takeIf { it.contains('.') } ?: h
-                sources.forEach { s ->
-                    val mh = mirrorHostOf(s.url)
-                    if (mh.endsWith(apex) || apex in mh) deadHosts.add(mh)
-                }
-            }
+            // CloudStream retries the same link; Hikari used to mark the whole
+            // Fastream apex dead on first 403 WITHOUT trying other header sets.
+            // That made every Fastream quality fail while CS3 played the same
+            // m3u8. Walk header variants first (CS3 referer-only is variant 0
+            // after ensureHotlinkHeaders). Only mark host dead after variants
+            // are exhausted (see terminalHostFailure path below).
             if ((code == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS || headerIssue) &&
-                headerVariant < 2 && !terminalHostFailure && !hotlinkHost
+                headerVariant < 2 && !terminalHostFailure
             ) {
                 headerVariant++
-                // Silent retry — same server, next header set down. The only
-                // message the user sees is "Server failed — trying next" once
-                // this server is finally abandoned.
                 noSubsRetry = false
                 playSource(currentIndex)
                 return
+            }
+            // All header variants failed for this URL — mark host so siblings
+            // of the same CDN are deprioritized (not skipped until no alternatives).
+            if (hotlinkHost && code == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS) {
+                val h = mirrorHostOf(curUrl)
+                if (h.isNotBlank()) deadHosts.add(h)
             }
             // A dud link extracted mid-search: the SAME server is very often
             // fine a moment later, once the provider search has finished and
@@ -10555,6 +10554,11 @@ class PlayerActivity : ComponentActivity() {
     private fun sanitizeHeaderValue(v: String): String = v.filter { it.code < 128 }
 
     /** Sanitize every header; blank results are dropped entirely. */
+    /**
+     * Match CloudStream CS3IPlayer + JwPlayerHelper:
+     * - referer = apex mainUrl (https://fastream.to) when missing
+     * - do NOT force Origin or Sec-Fetch-* (CS3 does not; those 403 Fastream)
+     */
     private fun ensureHotlinkHeaders(
         url: String,
         headers: Map<String, String>,
@@ -10562,33 +10566,28 @@ class PlayerActivity : ComponentActivity() {
         val out = LinkedHashMap(headers)
         val host = url.substringAfter("://").substringBefore('/').substringBefore('?').lowercase()
         if (host.isBlank()) return out
-        // CloudStream Fastream uses mainUrl https://fastream.to — subdomains
-        // (s40.fastream.to) 403 unless Referer/Origin are the apex host.
         fun apexOf(h: String): String {
             val parts = h.split('.')
-            return if (parts.size >= 3 && parts.any { it in listOf("to", "com", "net", "org", "cc", "live", "xyz", "io") }) {
-                parts.takeLast(2).joinToString(".")
-            } else h
+            return if (parts.size >= 3) parts.takeLast(2).joinToString(".") else h
         }
         val hot = listOf(
             "fastream", "streamwish", "streamtape", "lulu", "dood", "filemoon",
             "mixdrop", "voe.", "vidplay", "mp4upload", "upstream", "streamlare",
             "vidmoly", "rabbitstream", "megacloud", "filelions", "lulustream",
-            "streamhub", "streamruby", "wish", "filelions", "vidhide",
+            "streamhub", "streamruby", "wish", "vidhide",
         )
         if (hot.any { host.contains(it) }) {
             val apex = apexOf(host)
-            val origin = "https://$apex"
-            // Prefer apex always for these CDNs (overwrite wrong subdomain Origin).
-            out["Referer"] = "$origin/"
-            out["Origin"] = origin
-            out["Sec-Fetch-Dest"] = "empty"
-            out["Sec-Fetch-Mode"] = "cors"
-            out["Sec-Fetch-Site"] = "cross-site"
-            out["Accept"] = "*/*"
-            // Browser UA — some CDNs 403 OkHttp-style / app UAs.
-            out["User-Agent"] =
-                "Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+            // Overwrite subdomain Referer with apex (CS3 mainUrl)
+            out["Referer"] = "https://$apex"
+            // Strip Origin / Sec-Fetch that we may have added earlier — CS3 never sends them
+            out.remove("Origin")
+            out.keys.filter { it.startsWith("Sec-Fetch", ignoreCase = true) }.toList()
+                .forEach { out.remove(it) }
+            out.putIfAbsent(
+                "User-Agent",
+                "Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+            )
         }
         out.putIfAbsent("User-Agent", Http.UA)
         return out

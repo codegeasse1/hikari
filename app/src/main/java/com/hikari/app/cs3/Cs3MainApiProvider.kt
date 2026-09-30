@@ -999,6 +999,12 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
      * Ensure Referer + Origin for hosts that hotlink-protect HLS (Fastream 403
      * was the reported case: CloudStream plays the same URL with these headers).
      */
+    /**
+     * CloudStream player (CS3IPlayer) only injects `referer` from ExtractorLink
+     * — it does NOT force Origin or Sec-Fetch-*. Forcing those was 403'ing
+     * Fastream/Streamwish while the same m3u8 played in CloudStream.
+     * Match CS3: apex Referer only when missing.
+     */
     private fun enrichHotlinkHeaders(url: String, headers: MutableMap<String, String>) {
         val host = url.substringAfter("://").substringBefore('/').substringBefore('?').lowercase()
         if (host.isBlank()) return
@@ -1011,20 +1017,17 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
             "filemoon", "mixdrop", "voe.", "vidplay", "mp4upload", "upstream",
             "streamlare", "vidmoly", "rabbitstream", "megacloud", "vidcloud",
             "filelions", "streamhub", "streamruby", "streamvid", "lulustream",
+            "wish", "vidhide",
         )
         if (hot.none { host.contains(it) }) {
             headers.putIfAbsent("User-Agent", com.hikari.app.net.Http.UA)
             return
         }
         val apex = apexOf(host)
-        val origin = "https://$apex"
-        headers["Referer"] = "$origin/"
-        headers["Origin"] = origin
+        // CS3 JwPlayerHelper uses referer = mainUrl (e.g. https://fastream.to)
+        headers.putIfAbsent("Referer", "https://$apex")
+        // Do NOT force Origin / Sec-Fetch-* — CloudStream does not.
         headers.putIfAbsent("User-Agent", com.hikari.app.net.Http.UA)
-        headers.putIfAbsent("Accept", "*/*")
-        headers.putIfAbsent("Sec-Fetch-Dest", "empty")
-        headers.putIfAbsent("Sec-Fetch-Mode", "cors")
-        headers.putIfAbsent("Sec-Fetch-Site", "cross-site")
     }
 
 
@@ -1060,8 +1063,7 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                     val c = ref.filter { it.code < 128 }
                     if (c.isNotBlank()) headers.putIfAbsent("Referer", c)
                 }
-                // Hotlink CDNs (Fastream, Streamwish, …) 403 without Origin/Referer
-                // matching the embed host — CloudStream's player always sends both.
+                // Hotlink CDNs: CS3 player sends Referer only (not Origin).
                 enrichHotlinkHeaders(l.url, headers)
                 val subSources = rawSubs.map { SubtitleSource(it.lang.ifBlank { "Sub" }, it.url) }
                 // Magnet / .torrent links go through the same TorrServer
