@@ -208,12 +208,12 @@ class AnymexMangaProvider(override val config: ProviderConfig) : ContentProvider
         // class="link _titleItem"> ... <strong class="title">Name</strong>
         val re = Regex(
             """href="(https://(?:m\.)?webtoons\.com/[^"]+)"[^>]*class="[^"]*link[^"]*"[^>]*>[\s\S]*?<strong class="title">([^<]+)</strong>""",
-            setOf(RegexOption.IGNORE_CASE),
+            RegexOption.IGNORE_CASE,
         )
         for (m in re.findAll(html)) {
             var href = m.groupValues[1].trim()
             val title = m.groupValues[2].trim()
-                .replace("&amp;", "&").replace("&#39;", "'").replace("&quot;", """)
+                .replace("&amp;", "&").replace("&#39;", "'").replace("&quot;", "\"")
             if (title.isBlank()) continue
             // Normalize mobile → desktop for later detail loads
             href = href.replace("https://m.webtoons.com/", "https://www.webtoons.com/")
@@ -232,7 +232,7 @@ class AnymexMangaProvider(override val config: ProviderConfig) : ContentProvider
             // Simpler: any title_no link + following title text within 800 chars
             val simple = Regex(
                 """href="(https://(?:m\.)?webtoons\.com/[^"]*title_no=\d+[^"]*)"[\s\S]{0,800}?<strong class="title">([^<]+)</strong>""",
-                setOf(RegexOption.IGNORE_CASE),
+                RegexOption.IGNORE_CASE,
             )
             for (m in simple.findAll(html)) {
                 var href = m.groupValues[1].replace("https://m.webtoons.com/", "https://www.webtoons.com/")
