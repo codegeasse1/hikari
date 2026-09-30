@@ -141,12 +141,24 @@ object AnymexPluginManager {
         val pkgPath = o.optString("pkgPath").trim()
         val url = codeUrl.ifBlank { null } ?: return null
         val name = o.optString("name").trim().ifBlank { return null }
-        val lang = o.optString("lang").trim()
+        // Multi-lang packages (MangaDex) only ship langs[] — pick en, else first.
+        var lang = o.optString("lang").trim()
+        if (lang.isBlank()) {
+            val langs = o.optJSONArray("langs")
+            if (langs != null && langs.length() > 0) {
+                lang = (0 until langs.length()).map { langs.optString(it) }
+                    .firstOrNull { it.equals("en", true) }
+                    ?: langs.optString(0).trim()
+            }
+        }
+        if (lang.isBlank()) lang = "en"
         val version = o.optString("version").trim()
         val baseUrl = o.optString("baseUrl").trim()
+        val apiUrl = o.optString("apiUrl").trim()
         val isMangaEntry = o.optBoolean("isManga", false) || o.optInt("itemType", 1) == 0
         val meta = JSONObject()
             .put("baseUrl", baseUrl)
+            .put("apiUrl", apiUrl)
             .put("lang", lang)
             .put("isManga", isMangaEntry)
             .toString()
@@ -266,10 +278,15 @@ object AnymexPluginManager {
             runCatching { dir.mkdirs() }
             val wrote = runCatching {
                 File(dir, "module.js").writeText(source)
+                val entryApiUrl = runCatching {
+                    JSONObject(plugin.sourceMeta).optString("apiUrl")
+                }.getOrNull().orEmpty()
                 File(dir, "meta.json").writeText(
                     JSONObject().put("name", name).put("isManga", isManga)
                         .put("sourceUrl", plugin.url).put("baseUrl", entryBaseUrl)
-                        .put("lang", entryLang).put("iconUrl", plugin.iconUrl.orEmpty()).toString(),
+                        .put("apiUrl", entryApiUrl)
+                        .put("lang", entryLang.ifBlank { "en" })
+                        .put("iconUrl", plugin.iconUrl.orEmpty()).toString(),
                 )
                 true
             }.getOrDefault(false)

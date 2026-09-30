@@ -146,10 +146,17 @@ class AnymexMangaProvider(override val config: ProviderConfig) : ContentProvider
                     lastOutcome[config.id] = "✗ " + o.optString("error").ifBlank { "catalog error" }
                     return emptyList()
                 }
-                o.optJSONArray("data")
-                    ?: o.optJSONArray("list")
-                    ?: o.optJSONArray("manga")
-                    ?: o.optJSONArray("results")
+                // {ok,data:{list:[...]}} from harness, or bare {list:[...]}
+                fun digList(x: JSONObject?): JSONArray? {
+                    if (x == null) return null
+                    x.optJSONArray("list")?.let { return it }
+                    x.optJSONArray("manga")?.let { return it }
+                    x.optJSONArray("results")?.let { return it }
+                    x.optJSONArray("data")?.let { return it }
+                    x.optJSONObject("data")?.let { return digList(it) }
+                    return null
+                }
+                digList(o)
             }.getOrNull()
         if (arr == null || arr.length() == 0) {
             if (lastOutcome[config.id]?.startsWith("✗") != true) {

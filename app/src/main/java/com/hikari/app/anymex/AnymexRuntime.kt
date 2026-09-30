@@ -412,7 +412,9 @@ object AnymexRuntime {
         val out = JSONObject()
         out.put("name", meta.optString("name"))
         out.put("baseUrl", meta.optString("baseUrl"))
-        out.put("lang", meta.optString("lang"))
+        out.put("apiUrl", meta.optString("apiUrl"))
+        val lang = meta.optString("lang").ifBlank { "en" }
+        out.put("lang", lang)
         out.put("iconUrl", meta.optString("iconUrl"))
         return out.toString()
     }

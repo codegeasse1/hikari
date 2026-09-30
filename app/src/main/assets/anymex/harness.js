@@ -492,13 +492,31 @@
           prefData['url'] = base;
         }
       }
+      if (!lang) lang = 'en';
+      this.source.lang = lang;
       if (lang && (!Object.prototype.hasOwnProperty.call(prefData, 'lang') || !prefData['lang'])) {
         prefData['lang'] = lang;
       }
+      // MangaDex & friends need apiUrl on this.source
+      if (!this.source.apiUrl && host.apiUrl) this.source.apiUrl = host.apiUrl;
+      if (!this.source.baseUrl && host.baseUrl) this.source.baseUrl = host.baseUrl;
       // Also expose common keys scripts read.
       if (s.name && !prefData['name']) prefData['name'] = s.name;
       if (base && !prefData['baseUrl']) prefData['baseUrl'] = base;
     } catch (e) {}
+  };
+
+  g.MProvider.prototype.getPreference = function (key) {
+    try {
+      var sp = new g.SharedPreferences();
+      var v = sp.get(String(key));
+      if (v !== undefined && v !== null && v !== '') return v;
+      // Sensible defaults used by MangaDex etc.
+      if (String(key) === 'custom_user_agent') {
+        return 'Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
+      }
+      return '';
+    } catch (e) { return ''; }
   };
 
   // Any top-level const foo = [{name, baseUrl, ...}] declares the source.

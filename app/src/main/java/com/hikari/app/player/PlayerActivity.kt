@@ -10325,8 +10325,16 @@ class PlayerActivity : ComponentActivity() {
             val headerIssue = details.contains("Unexpected char", true) ||
                 (details.contains("IllegalArgumentException", true) &&
                     (details.contains("User-Agent", true) || details.contains("Header", true)))
+            // Fastream / Streamwish / etc need apex Referer — stripping it
+            // (variant 1/2) makes 403 worse. Skip the strip walk for them and
+            // fall through to the next server (or re-extract) immediately.
+            val curUrl = sources.getOrNull(currentIndex)?.url.orEmpty()
+            val hotlinkHost = listOf(
+                "fastream", "streamwish", "streamtape", "lulu", "dood", "filemoon",
+                "mixdrop", "voe.", "vidplay", "mp4upload", "lulustream",
+            ).any { curUrl.contains(it, ignoreCase = true) }
             if ((code == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS || headerIssue) &&
-                headerVariant < 2 && !terminalHostFailure
+                headerVariant < 2 && !terminalHostFailure && !hotlinkHost
             ) {
                 headerVariant++
                 // Silent retry — same server, next header set down. The only
@@ -10536,16 +10544,33 @@ class PlayerActivity : ComponentActivity() {
         val out = LinkedHashMap(headers)
         val host = url.substringAfter("://").substringBefore('/').substringBefore('?').lowercase()
         if (host.isBlank()) return out
+        // CloudStream Fastream uses mainUrl https://fastream.to — subdomains
+        // (s40.fastream.to) 403 unless Referer/Origin are the apex host.
+        fun apexOf(h: String): String {
+            val parts = h.split('.')
+            return if (parts.size >= 3 && parts.any { it in listOf("to", "com", "net", "org", "cc", "live", "xyz", "io") }) {
+                parts.takeLast(2).joinToString(".")
+            } else h
+        }
         val hot = listOf(
             "fastream", "streamwish", "streamtape", "lulu", "dood", "filemoon",
             "mixdrop", "voe.", "vidplay", "mp4upload", "upstream", "streamlare",
             "vidmoly", "rabbitstream", "megacloud", "filelions", "lulustream",
-            "streamhub", "streamruby",
+            "streamhub", "streamruby", "wish", "filelions", "vidhide",
         )
         if (hot.any { host.contains(it) }) {
-            val origin = "https://$host"
-            out.putIfAbsent("Referer", "$origin/")
-            out.putIfAbsent("Origin", origin)
+            val apex = apexOf(host)
+            val origin = "https://$apex"
+            // Prefer apex always for these CDNs (overwrite wrong subdomain Origin).
+            out["Referer"] = "$origin/"
+            out["Origin"] = origin
+            out["Sec-Fetch-Dest"] = "empty"
+            out["Sec-Fetch-Mode"] = "cors"
+            out["Sec-Fetch-Site"] = "cross-site"
+            out["Accept"] = "*/*"
+            // Browser UA — some CDNs 403 OkHttp-style / app UAs.
+            out["User-Agent"] =
+                "Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
         }
         out.putIfAbsent("User-Agent", Http.UA)
         return out

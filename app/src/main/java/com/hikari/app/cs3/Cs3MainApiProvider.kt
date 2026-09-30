@@ -1002,8 +1002,12 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
     private fun enrichHotlinkHeaders(url: String, headers: MutableMap<String, String>) {
         val host = url.substringAfter("://").substringBefore('/').substringBefore('?').lowercase()
         if (host.isBlank()) return
+        fun apexOf(h: String): String {
+            val parts = h.split('.')
+            return if (parts.size >= 3) parts.takeLast(2).joinToString(".") else h
+        }
         val hot = listOf(
-            "fastream", "streamwish", "streamtape", "streamtape", "lulu", "dood",
+            "fastream", "streamwish", "streamtape", "lulu", "dood",
             "filemoon", "mixdrop", "voe.", "vidplay", "mp4upload", "upstream",
             "streamlare", "vidmoly", "rabbitstream", "megacloud", "vidcloud",
             "filelions", "streamhub", "streamruby", "streamvid", "lulustream",
@@ -1012,12 +1016,17 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
             headers.putIfAbsent("User-Agent", com.hikari.app.net.Http.UA)
             return
         }
-        val origin = "https://$host"
-        headers.putIfAbsent("Referer", "$origin/")
-        headers.putIfAbsent("Origin", origin)
+        val apex = apexOf(host)
+        val origin = "https://$apex"
+        headers["Referer"] = "$origin/"
+        headers["Origin"] = origin
         headers.putIfAbsent("User-Agent", com.hikari.app.net.Http.UA)
         headers.putIfAbsent("Accept", "*/*")
+        headers.putIfAbsent("Sec-Fetch-Dest", "empty")
+        headers.putIfAbsent("Sec-Fetch-Mode", "cors")
+        headers.putIfAbsent("Sec-Fetch-Site", "cross-site")
     }
+
 
     /** Maps the plugin's raw ExtractorLinks into Hikari StreamSources with
      *  CloudStream-style names ("OkRuSSL 1080p") and referer/header merging. */
