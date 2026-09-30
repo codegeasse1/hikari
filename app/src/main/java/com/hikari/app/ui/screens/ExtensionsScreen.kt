@@ -7803,6 +7803,8 @@ private fun SourceFolderView(
                 }.distinctBy { it.config.id }
                 if (scriptProviders.isNotEmpty() && nav != null) {
                     item {
+                        val popularTitle = tr("Popular")
+                        val latestTitle = tr("Latest")
                         GlassCard(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -7831,7 +7833,7 @@ private fun SourceFolderView(
                                                 Routes.safeNavigate(
                                                     nav,
                                                     Routes.catalog(
-                                                        cfg.id, "popular", tr("Popular"),
+                                                        cfg.id, "popular", popularTitle,
                                                         cfg.name, MediaType.SERIES, "manga"
                                                     )
                                                 )
@@ -7841,7 +7843,7 @@ private fun SourceFolderView(
                                                 Routes.safeNavigate(
                                                     nav,
                                                     Routes.catalog(
-                                                        cfg.id, "latest", tr("Latest"),
+                                                        cfg.id, "latest", latestTitle,
                                                         cfg.name, MediaType.SERIES, "manga"
                                                     )
                                                 )
@@ -7855,7 +7857,7 @@ private fun SourceFolderView(
                                                 Routes.safeNavigate(
                                                     nav,
                                                     Routes.catalog(
-                                                        cfg.id, "popular", tr("Popular"),
+                                                        cfg.id, "popular", popularTitle,
                                                         cfg.name, MediaType.SERIES
                                                     )
                                                 )
@@ -7865,7 +7867,7 @@ private fun SourceFolderView(
                                                 Routes.safeNavigate(
                                                     nav,
                                                     Routes.catalog(
-                                                        cfg.id, "latest", tr("Latest"),
+                                                        cfg.id, "latest", latestTitle,
                                                         cfg.name, MediaType.SERIES
                                                     )
                                                 )
@@ -8021,6 +8023,7 @@ private fun SourcesOverviewView(
     onRefreshRepo: (Cs3Repo) -> Unit,
     onRemoveRepo: (String) -> Unit,
     onOpenSettings: (ContentProvider) -> Unit,
+    nav: NavHostController? = null,
 ) {
     var extFilter by remember { mutableStateOf("") }
     val cs3SettingsIds = rememberCs3SettingsIds(providers)
