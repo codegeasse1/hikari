@@ -126,7 +126,7 @@ fun CategoryPickerSheet(
                     // buttons down the way a 300dp box would.
                     .heightIn(max = 300.dp),
             ) {
-                items(displayCategories, key = { it.id }) { c ->
+                items(categories, key = { it.id }) { c ->
                     CategoryToggleRow(
                         name = c.name,
                         checked = c.id in picked,
