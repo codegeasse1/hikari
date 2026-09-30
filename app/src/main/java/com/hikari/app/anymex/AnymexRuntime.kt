@@ -409,14 +409,60 @@ object AnymexRuntime {
         val meta = runCatching {
             JSONObject(moduleFile.parentFile?.let { File(it, "meta.json") }?.takeIf { it.exists() }?.readText() ?: "{}")
         }.getOrNull() ?: JSONObject()
+        // Always re-read the module's mangayomiSources so old installs without
+        // apiUrl/lang still work without a reinstall.
+        val fromJs = parseSourceFromModule(moduleFile)
         val out = JSONObject()
-        out.put("name", meta.optString("name"))
-        out.put("baseUrl", meta.optString("baseUrl"))
-        out.put("apiUrl", meta.optString("apiUrl"))
-        val lang = meta.optString("lang").ifBlank { "en" }
-        out.put("lang", lang)
-        out.put("iconUrl", meta.optString("iconUrl"))
+        fun pick(key: String, fallback: String = ""): String {
+            val a = meta.optString(key).trim()
+            val b = fromJs.optString(key).trim()
+            return when {
+                a.isNotBlank() && a != "null" -> a
+                b.isNotBlank() -> b
+                else -> fallback
+            }
+        }
+        out.put("name", pick("name"))
+        out.put("baseUrl", pick("baseUrl"))
+        out.put("apiUrl", pick("apiUrl"))
+        var lang = pick("lang")
+        if (lang.isBlank()) {
+            val langs = fromJs.optJSONArray("langs")
+            if (langs != null && langs.length() > 0) {
+                lang = (0 until langs.length()).map { langs.optString(it) }
+                    .firstOrNull { it.equals("en", true) } ?: langs.optString(0)
+            }
+        }
+        out.put("lang", lang.ifBlank { "en" })
+        out.put("iconUrl", pick("iconUrl"))
         return out.toString()
+    }
+
+    /** Best-effort extract of mangayomiSources[0] from module.js text. */
+    private fun parseSourceFromModule(moduleFile: File): JSONObject {
+        val src = runCatching { moduleFile.readText() }.getOrNull() ?: return JSONObject()
+        // Match: mangayomiSources = [{ ... }];  (may span lines)
+        val start = src.indexOf("mangayomiSources")
+        if (start < 0) return JSONObject()
+        val brace = src.indexOf('[', start)
+        if (brace < 0) return JSONObject()
+        var depth = 0
+        var end = -1
+        for (i in brace until minOf(src.length, brace + 8000)) {
+            when (src[i]) {
+                '[' , '{' -> depth++
+                ']' , '}' -> {
+                    depth--
+                    if (depth == 0) { end = i; break }
+                }
+            }
+        }
+        if (end < 0) return JSONObject()
+        val arrText = src.substring(brace, end + 1)
+        return runCatching {
+            val arr = JSONArray(arrText)
+            arr.optJSONObject(0) ?: JSONObject()
+        }.getOrNull() ?: JSONObject()
     }
 
     private suspend fun seedPrefs(qjs: QuickJs, kv: Kv) {

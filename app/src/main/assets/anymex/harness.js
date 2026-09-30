@@ -454,9 +454,11 @@
   }
 
   g.SharedPreferences = function () {};
-  g.SharedPreferences.prototype.get = function (key) {
+  g.SharedPreferences.prototype.get = function (key, def) {
     key = String(key);
-    return Object.prototype.hasOwnProperty.call(prefData, key) ? prefData[key] : '';
+    if (Object.prototype.hasOwnProperty.call(prefData, key)) return prefData[key];
+    // MangaDex: getPreference("original_languages", []) — second arg is default.
+    return arguments.length > 1 ? def : '';
   };
   g.SharedPreferences.prototype.getString = g.SharedPreferences.prototype.get;
   g.SharedPreferences.prototype.set = function (key, value) {
@@ -524,7 +526,15 @@
   // array whose item looks like a source entry wins, then the host listing.
   function declaredSource() {
     try {
-      if (Array.isArray(g.mangayomiSources) && g.mangayomiSources.length) return g.mangayomiSources[0];
+      if (Array.isArray(g.mangayomiSources) && g.mangayomiSources.length) {
+        var src = Object.assign({}, g.mangayomiSources[0]);
+        // Multi-lang packages omit singular lang — default en so API queries work.
+        if (!src.lang && Array.isArray(src.langs) && src.langs.length) {
+          src.lang = src.langs.indexOf('en') >= 0 ? 'en' : src.langs[0];
+        }
+        if (!src.lang) src.lang = 'en';
+        return src;
+      }
     } catch (e) {}
     try {
       var keys = Object.getOwnPropertyNames(g);

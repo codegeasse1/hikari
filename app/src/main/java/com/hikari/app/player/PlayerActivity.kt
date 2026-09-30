@@ -2221,33 +2221,39 @@ class PlayerActivity : ComponentActivity() {
     /** First server that is neither on a host that already failed terminally
      *  this session nor already known-dead from a probe — the best row to start
      *  playback on. Falls back to row 1 so something always plays. */
+    /** Signed CDN hosts that frequently 403 unless re-extracted (Fastream etc.). */
+    private fun isFragileHotlink(url: String): Boolean {
+        val u = url.lowercase()
+        return listOf(
+            "fastream.to", "streamwish.", "streamtape.", "dood.", "filemoon.",
+            "mixdrop.", "voe.sx", "lulustream.", "mp4upload.",
+        ).any { it in u }
+    }
+
     private fun healthyStartIndex(): Int {
         val healthy = { s: PlayerSource ->
             !s.isTorrent && s.url.isNotBlank() &&
                 mirrorHostOf(s.url) !in deadHosts && !StreamProbe.knownBad(s.url)
         }
-        // A server a probe has already RESOLVED wins: "start playing the instant
-        // one WORKING server is found" is exactly this set — the probe has been to
-        // the host and seen a video (or an HLS/DASH manifest) come back, so this
-        // row is the one that will show a picture, not the one that merely looks
-        // most promising from its name. The searches warm every source as it
-        // arrives (StreamProbe.warmAsync / warm), so by the time playback commits
-        // the fastest host is usually already verified.
+        // Prefer non-fragile hosts first: Fastream signed m3u8 often 403s by the
+        // time the user hits play — MovieBox/DASH/direct links are more stable.
+        fun rank(s: PlayerSource): Int {
+            var r = 0
+            if (s.isFromOrigin()) r -= 10
+            if (s.probeVerified()) r -= 5
+            if (isFragileHotlink(s.url)) r += 20
+            if (s.isM3u8 && isFragileHotlink(s.url)) r += 10
+            return r
+        }
         val verified = sources.filterIndexed { _, s -> healthy(s) && s.probeVerified() }
+            .sortedBy { rank(it) }
         if (verified.isNotEmpty()) {
-            val originVerified = verified.firstOrNull { it.isFromOrigin() }
-            if (originVerified != null) return sources.indexOf(originVerified)
             return sources.indexOf(verified.first())
         }
-        // "If I am on MovieBox, play MovieBox's server first": among the servers
-        // that can actually play, the one from the extension the title was
-        // opened from wins. This is the same preference the detail screen's
-        // search applies (the origin is asked first) — it just also has to be
-        // honoured at the moment playback commits to a row.
-        val origin = sources.indexOfFirst { it.isFromOrigin() && healthy(it) }
-        if (origin >= 0) return origin
-        val i = sources.indexOfFirst { healthy(it) }
-        return if (i >= 0) i else 0
+        val origin = sources.filter { it.isFromOrigin() && healthy(it) }.sortedBy { rank(it) }
+        if (origin.isNotEmpty()) return sources.indexOf(origin.first())
+        val ok = sources.filter { healthy(it) }.sortedBy { rank(it) }
+        return if (ok.isNotEmpty()) sources.indexOf(ok.first()) else 0
     }
 
     /** Starts playback — or, when the "don't play directly" setting is on,
@@ -10333,6 +10339,18 @@ class PlayerActivity : ComponentActivity() {
                 "fastream", "streamwish", "streamtape", "lulu", "dood", "filemoon",
                 "mixdrop", "voe.", "vidplay", "mp4upload", "lulustream",
             ).any { curUrl.contains(it, ignoreCase = true) }
+            // Signed Fastream (etc.) 403 = expired token. Kill the whole host so
+            // we don't waste time on every quality variant of the same CDN.
+            if (hotlinkHost && code == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS) {
+                val h = mirrorHostOf(curUrl)
+                if (h.isNotBlank()) deadHosts.add(h)
+                // Also mark sibling subdomains of the same apex (s40.fastream.to).
+                val apex = h.substringAfter('.').takeIf { it.contains('.') } ?: h
+                sources.forEach { s ->
+                    val mh = mirrorHostOf(s.url)
+                    if (mh.endsWith(apex) || apex in mh) deadHosts.add(mh)
+                }
+            }
             if ((code == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS || headerIssue) &&
                 headerVariant < 2 && !terminalHostFailure && !hotlinkHost
             ) {

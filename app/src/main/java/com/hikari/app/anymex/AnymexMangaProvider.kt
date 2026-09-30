@@ -37,19 +37,189 @@ class AnymexMangaProvider(override val config: ProviderConfig) : ContentProvider
     override suspend fun getCatalog(ref: CatalogRef, page: Int): List<MediaItem> =
         withContext(Dispatchers.IO) {
             val mod = module() ?: return@withContext emptyList()
+            val p = page.coerceAtLeast(1)
             val raw = when (ref.id) {
-                CATALOG_LATEST -> AnymexRuntime.latest(mod, config.id, page.coerceAtLeast(1))
-                else -> AnymexRuntime.popular(mod, config.id, page.coerceAtLeast(1))
+                CATALOG_LATEST -> AnymexRuntime.latest(mod, config.id, p)
+                else -> AnymexRuntime.popular(mod, config.id, p)
             }
-            mapItems(raw)
+            val fromJs = mapItems(raw)
+            if (fromJs.isNotEmpty()) return@withContext fromJs
+            // Native fallbacks for well-known sources when the JS harness fails
+            // (stale meta, site HTML changes, missing apiUrl on old installs).
+            val native = nativeCatalog(ref.id, p)
+            if (native.isNotEmpty()) {
+                lastOutcome[config.id] = "✓ ${native.size} titles (native)"
+            }
+            native
         }
 
     override suspend fun search(query: String, page: Int): List<MediaItem> =
         withContext(Dispatchers.IO) {
             if (query.isBlank()) return@withContext emptyList()
             val mod = module() ?: return@withContext emptyList()
-            mapItems(AnymexRuntime.search(mod, config.id, query, page.coerceAtLeast(1)))
+            val fromJs = mapItems(AnymexRuntime.search(mod, config.id, query, page.coerceAtLeast(1)))
+            if (fromJs.isNotEmpty()) return@withContext fromJs
+            nativeSearch(query, page.coerceAtLeast(1))
         }
+
+    private fun isMangaDex(): Boolean {
+        val n = config.name.lowercase()
+        val extra = config.extra.orEmpty().lowercase()
+        return "mangadex" in n || "mangadex" in extra
+    }
+
+    private fun isWebtoons(): Boolean {
+        val n = config.name.lowercase()
+        val extra = config.extra.orEmpty().lowercase()
+        return "webtoon" in n || "webtoons" in extra
+    }
+
+    private fun nativeCatalog(catalogId: String, page: Int): List<MediaItem> = when {
+        isMangaDex() -> nativeMangaDex(catalogId, page)
+        isWebtoons() -> nativeWebtoons(catalogId, page)
+        else -> emptyList()
+    }
+
+    private fun nativeSearch(query: String, page: Int): List<MediaItem> = when {
+        isMangaDex() -> nativeMangaDexSearch(query, page)
+        else -> emptyList()
+    }
+
+    private fun nativeMangaDex(catalogId: String, page: Int): List<MediaItem> {
+        val offset = 20 * (page - 1)
+        val order = if (catalogId == CATALOG_LATEST) "order[latestUploadedChapter]=desc"
+            else "order[followedCount]=desc"
+        val url = "https://api.mangadex.org/manga?limit=20&offset=$offset" +
+            "&availableTranslatedLanguage[]=en&includes[]=cover_art" +
+            "&contentRating[]=safe&contentRating[]=suggestive&$order"
+        return parseMangaDexList(url)
+    }
+
+    private fun nativeMangaDexSearch(query: String, page: Int): List<MediaItem> {
+        val offset = 20 * (page - 1)
+        val q = java.net.URLEncoder.encode(query, Charsets.UTF_8.name())
+        val url = "https://api.mangadex.org/manga?limit=20&offset=$offset&title=$q" +
+            "&includes[]=cover_art&contentRating[]=safe&contentRating[]=suggestive" +
+            "&availableTranslatedLanguage[]=en"
+        return parseMangaDexList(url)
+    }
+
+    private fun parseMangaDexList(url: String): List<MediaItem> {
+        val body = Http.fetchStringRobust(
+            url,
+            mapOf(
+                "User-Agent" to Http.UA,
+                "Accept" to "application/json",
+                "Referer" to "https://mangadex.org/",
+                "Origin" to "https://mangadex.org",
+            ),
+        ).getOrNull().orEmpty()
+        if (body.isBlank()) {
+            lastOutcome[config.id] = "✗ MangaDex API empty"
+            return emptyList()
+        }
+        val root = runCatching { JSONObject(body) }.getOrNull() ?: return emptyList()
+        val data = root.optJSONArray("data") ?: return emptyList()
+        val out = ArrayList<MediaItem>()
+        for (i in 0 until data.length()) {
+            val e = data.optJSONObject(i) ?: continue
+            val id = e.optString("id").trim()
+            if (id.isBlank()) continue
+            val attrs = e.optJSONObject("attributes") ?: continue
+            val titles = attrs.optJSONObject("title") ?: JSONObject()
+            val name = titles.optString("en").ifBlank {
+                val keys = titles.keys()
+                var found = ""
+                while (keys.hasNext()) {
+                    val k = keys.next()
+                    val v = titles.optString(k)
+                    if (v.isNotBlank()) { found = v; break }
+                }
+                found
+            }
+            if (name.isBlank()) continue
+            var cover: String? = null
+            val rels = e.optJSONArray("relationships")
+            if (rels != null) {
+                for (r in 0 until rels.length()) {
+                    val rel = rels.optJSONObject(r) ?: continue
+                    if (rel.optString("type") != "cover_art") continue
+                    val fn = rel.optJSONObject("attributes")?.optString("fileName").orEmpty()
+                    if (fn.isNotBlank()) {
+                        cover = "https://uploads.mangadex.org/covers/$id/$fn"
+                        break
+                    }
+                }
+            }
+            out += MediaItem(
+                providerId = config.id,
+                id = "/manga/$id",
+                title = name,
+                type = MediaType.SERIES,
+                posterUrl = cover,
+            )
+        }
+        return out
+    }
+
+    private fun nativeWebtoons(catalogId: String, page: Int): List<MediaItem> {
+        if (page > 1) return emptyList()
+        val sort = if (catalogId == CATALOG_LATEST) "?sortOrder=UPDATE" else ""
+        val url = "https://www.webtoons.com/en/originals$sort"
+        val html = Http.fetchStringRobust(
+            url,
+            mapOf(
+                "User-Agent" to "Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+                "Accept" to "text/html",
+                "Referer" to "https://www.webtoons.com/",
+            ),
+        ).getOrNull().orEmpty()
+        if (html.isBlank()) {
+            lastOutcome[config.id] = "✗ Webtoons page empty"
+            return emptyList()
+        }
+        // Current site: <a ... href="https://www.webtoons.com/en/..."> with nested title
+        val out = ArrayList<MediaItem>()
+        val seen = HashSet<String>()
+        // href + title patterns from current HTML
+        val linkRe = Regex(
+            """href="(https://www\.webtoons\.com/en/[^"]+/list\?[^"]+)"[^>]*>[\s\S]*?(?:class="[^"]*title[^"]*"[^>]*>([^<]+)|<p class="subj">([^<]+)|<strong[^>]*>([^<]+))""",
+            RegexOption.IGNORE_CASE,
+        )
+        for (m in linkRe.findAll(html)) {
+            val href = m.groupValues[1].trim()
+            val title = (m.groupValues[2].ifBlank { m.groupValues[3] }.ifBlank { m.groupValues[4] }).trim()
+            if (href.isBlank() || title.isBlank()) continue
+            if (!seen.add(href)) continue
+            out += MediaItem(
+                providerId = config.id,
+                id = href,
+                title = title.replace("&amp;", "&").replace("&#39;", "'"),
+                type = MediaType.SERIES,
+                posterUrl = null,
+            )
+            if (out.size >= 60) break
+        }
+        // Fallback: any /list? titleCard links
+        if (out.isEmpty()) {
+            val simple = Regex("""href="(https://www\.webtoons\.com/en/[^"]+)"[^>]*class="[^"]*link[^"]*"[^>]*>""")
+            for (m in simple.findAll(html)) {
+                val href = m.groupValues[1]
+                if ("/list?" !in href && "/episode" in href) continue
+                if (!seen.add(href)) continue
+                val name = href.substringAfterLast('/').substringBefore('?').replace('-', ' ')
+                if (name.length < 2) continue
+                out += MediaItem(
+                    providerId = config.id,
+                    id = href,
+                    title = name.replaceFirstChar { it.uppercase() },
+                    type = MediaType.SERIES,
+                )
+                if (out.size >= 40) break
+            }
+        }
+        return out
+    }
 
     override suspend fun getMeta(item: MediaItem): MediaItem = withContext(Dispatchers.IO) {
         val mod = module() ?: return@withContext item
