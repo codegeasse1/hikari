@@ -19,39 +19,34 @@ import java.util.concurrent.TimeUnit
  * which is exactly the kind of startup stall that reads as "buffering".
  *
  * One shared, playback-tuned client instead:
- *  - [StreamProbe] derives its own client from this one via `newBuilder()`,
+ *  - [StreamProbe] derives its own client from this one via newBuilder(),
  *    which shares this connection pool + dispatcher, so the CDN connection the
- *    probe just opened (while it classified the stream) is still warm and is
- *    REUSED by media3's OkHttpDataSource for the first media request — no
- *    second handshake, no repeat DNS;
+ *    probe just opened is still warm;
  *  - a bigger pool + per-host request budget lets HLS/DASH pull
- *    audio/video/subtitle segments (and seek prefetch) in parallel instead of
- *    the dispatcher queueing them behind each other;
- *  - a 20 s read timeout (down from 30 s) bounds how long a single hung CDN
- *    socket can stall the stream before the load-error policy opens a fresh
- *    connection and resumes at the current position via a Range request.
- *
- * The timeouts here are the *playback* timeouts. The probe deliberately
- * overrides them with much shorter ones so a dead wrapper page can never hold
- * up a source search.
+ *    audio/video/subtitle segments in parallel;
+ *  - a 20 s read timeout bounds how long a single hung CDN socket can stall the
+ *    stream before the load-error policy opens a fresh connection.
  */
 object PlayerHttp {
 
     /**
-     * Shared with CS3 plugin HTTP (see HikariApp wire) so Fastream embed cookies
-     * (file_id / aff / ref_url) are present when ExoPlayer fetches the m3u8 —
-     * CloudStream uses one client for extract+play; without this Hikari's player
-     * had an empty jar and Fastream answered 403.
+     * Shared with CS3 plugin HTTP so extractor cookies are present when
+     * ExoPlayer fetches the final media URL. CloudStream uses the same HTTP
+     * session across extraction and playback for precisely this reason.
      */
     val cookieJar: CookieJar = object : CookieJar {
         private val store = ConcurrentHashMap<String, List<Cookie>>()
+
         override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
             if (cookies.isEmpty()) return
             val host = url.topPrivateDomain() ?: url.host
             val existing = store[host].orEmpty().associateBy { it.name }.toMutableMap()
-            for (c in cookies) existing[c.name] = c
+            for (cookie in cookies) {
+                existing[cookie.name] = cookie
+            }
             store[host] = existing.values.toList()
         }
+
         override fun loadForRequest(url: HttpUrl): List<Cookie> {
             val host = url.topPrivateDomain() ?: url.host
             val all = store[host].orEmpty() + store[url.host].orEmpty()
@@ -59,21 +54,20 @@ object PlayerHttp {
         }
     }
 
-    val client: OkHttpClient by lazy {
+    /**
+     * A copy of the playback client without FastreamRecoveryInterceptor.
+     * The recovery interceptor uses this for its /dl refresh request so a
+     * recovery request can never recursively trigger another recovery.
+     */
+    val clientWithoutFastreamRecovery: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .cookieJar(cookieJar)
             .dns(DohDns)
-            // Give up on a dead host quickly: failover to the next server must
-            // not be gated on a long TCP timeout.
             .connectTimeout(15, TimeUnit.SECONDS)
-            // Per-socket-read cap. A CDN that stops delivering bytes is
-            // retried on a fresh connection (resuming via a Range request)
-            // rather than left "buffering" indefinitely.
             .readTimeout(20, TimeUnit.SECONDS)
             .writeTimeout(15, TimeUnit.SECONDS)
             .retryOnConnectionFailure(true)
             .followRedirects(true)
-            // Many aggregator links bounce https → http (HubCloud et al.).
             .followSslRedirects(true)
             .connectionPool(ConnectionPool(8, 5, TimeUnit.MINUTES))
             .dispatcher(
@@ -82,6 +76,12 @@ object PlayerHttp {
                     maxRequestsPerHost = 16
                 }
             )
+            .build()
+    }
+
+    val client: OkHttpClient by lazy {
+        clientWithoutFastreamRecovery.newBuilder()
+            .addInterceptor(FastreamRecoveryInterceptor())
             .build()
     }
 }
