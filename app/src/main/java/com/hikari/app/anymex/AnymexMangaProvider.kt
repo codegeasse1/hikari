@@ -37,19 +37,31 @@ class AnymexMangaProvider(override val config: ProviderConfig) : ContentProvider
 
     override suspend fun getCatalog(ref: CatalogRef, page: Int): List<MediaItem> =
         withContext(Dispatchers.IO) {
-            val mod = module() ?: return@withContext emptyList()
             val p = page.coerceAtLeast(1)
+            // Known sites: native first (JS harness is unreliable for MangaDex
+            // multi-lang + Webtoons HTML changes). JS still tried if native fails.
+            if (isMangaDex() || isWebtoons()) {
+                val native = nativeCatalog(ref.id, p)
+                if (native.isNotEmpty()) {
+                    lastOutcome[config.id] = "✓ ${native.size} titles"
+                    return@withContext native
+                }
+            }
+            val mod = module() ?: return@withContext emptyList()
             val raw = when (ref.id) {
                 CATALOG_LATEST -> AnymexRuntime.latest(mod, config.id, p)
                 else -> AnymexRuntime.popular(mod, config.id, p)
             }
             val fromJs = mapItems(raw)
-            if (fromJs.isNotEmpty()) return@withContext fromJs
-            // Native fallbacks for well-known sources when the JS harness fails
-            // (stale meta, site HTML changes, missing apiUrl on old installs).
+            if (fromJs.isNotEmpty()) {
+                lastOutcome[config.id] = "✓ ${fromJs.size} titles (js)"
+                return@withContext fromJs
+            }
             val native = nativeCatalog(ref.id, p)
             if (native.isNotEmpty()) {
                 lastOutcome[config.id] = "✓ ${native.size} titles (native)"
+            } else {
+                lastOutcome[config.id] = lastOutcome[config.id] ?: "✗ empty catalog"
             }
             native
         }
@@ -57,22 +69,33 @@ class AnymexMangaProvider(override val config: ProviderConfig) : ContentProvider
     override suspend fun search(query: String, page: Int): List<MediaItem> =
         withContext(Dispatchers.IO) {
             if (query.isBlank()) return@withContext emptyList()
-            val mod = module() ?: return@withContext emptyList()
-            val fromJs = mapItems(AnymexRuntime.search(mod, config.id, query, page.coerceAtLeast(1)))
+            val p = page.coerceAtLeast(1)
+            if (isMangaDex()) {
+                val native = nativeSearch(query, p)
+                if (native.isNotEmpty()) return@withContext native
+            }
+            val mod = module() ?: return@withContext nativeSearch(query, p)
+            val fromJs = mapItems(AnymexRuntime.search(mod, config.id, query, p))
             if (fromJs.isNotEmpty()) return@withContext fromJs
-            nativeSearch(query, page.coerceAtLeast(1))
+            nativeSearch(query, p)
         }
 
     private fun isMangaDex(): Boolean {
         val n = config.name.lowercase()
         val extra = config.extra.orEmpty().lowercase()
-        return "mangadex" in n || "mangadex" in extra
+        val id = config.id.lowercase()
+        val url = config.url.lowercase()
+        return "mangadex" in n || "mangadex" in extra || "mangadex" in id ||
+            "mangadex" in url
     }
 
     private fun isWebtoons(): Boolean {
         val n = config.name.lowercase()
         val extra = config.extra.orEmpty().lowercase()
-        return "webtoon" in n || "webtoons" in extra
+        val id = config.id.lowercase()
+        val url = config.url.lowercase()
+        return "webtoon" in n || "webtoons" in extra || "webtoon" in id ||
+            "webtoon" in url
     }
 
     private fun nativeCatalog(catalogId: String, page: Int): List<MediaItem> = when {
@@ -179,48 +202,55 @@ class AnymexMangaProvider(override val config: ProviderConfig) : ContentProvider
             lastOutcome[config.id] = "✗ Webtoons page empty"
             return emptyList()
         }
-        // Current site: <a ... href="https://www.webtoons.com/en/..."> with nested title
         val out = ArrayList<MediaItem>()
         val seen = HashSet<String>()
-        // href + title patterns from current HTML
-        val linkRe = Regex(
-            """href="(https://www\.webtoons\.com/en/[^"]+/list\?[^"]+)"[^>]*>[\s\S]*?(?:class="[^"]*title[^"]*"[^>]*>([^<]+)|<p class="subj">([^<]+)|<strong[^>]*>([^<]+))""",
-            RegexOption.IGNORE_CASE,
+        // Live HTML (2026): <a href="https://m.webtoons.com/en/.../list?title_no=N"
+        // class="link _titleItem"> ... <strong class="title">Name</strong>
+        val re = Regex(
+            """href="(https://(?:m\.)?webtoons\.com/[^"]+)"[^>]*class="[^"]*link[^"]*"[^>]*>[\s\S]*?<strong class="title">([^<]+)</strong>""",
+            setOf(RegexOption.IGNORE_CASE),
         )
-        for (m in linkRe.findAll(html)) {
-            val href = m.groupValues[1].trim()
-            val title = (m.groupValues[2].ifBlank { m.groupValues[3] }.ifBlank { m.groupValues[4] }).trim()
-            if (href.isBlank() || title.isBlank()) continue
+        for (m in re.findAll(html)) {
+            var href = m.groupValues[1].trim()
+            val title = m.groupValues[2].trim()
+                .replace("&amp;", "&").replace("&#39;", "'").replace("&quot;", """)
+            if (title.isBlank()) continue
+            // Normalize mobile → desktop for later detail loads
+            href = href.replace("https://m.webtoons.com/", "https://www.webtoons.com/")
             if (!seen.add(href)) continue
+            // Poster from nearby img if present in the match window is optional
             out += MediaItem(
                 providerId = config.id,
                 id = href,
-                title = title.replace("&amp;", "&").replace("&#39;", "'"),
+                title = title,
                 type = MediaType.SERIES,
                 posterUrl = null,
             )
-            if (out.size >= 60) break
+            if (out.size >= 80) break
         }
-        // Fallback: any /list? titleCard links
         if (out.isEmpty()) {
-            val simple = Regex("""href="(https://www\.webtoons\.com/en/[^"]+)"[^>]*class="[^"]*link[^"]*"[^>]*>""")
+            // Simpler: any title_no link + following title text within 800 chars
+            val simple = Regex(
+                """href="(https://(?:m\.)?webtoons\.com/[^"]*title_no=\d+[^"]*)"[\s\S]{0,800}?<strong class="title">([^<]+)</strong>""",
+                setOf(RegexOption.IGNORE_CASE),
+            )
             for (m in simple.findAll(html)) {
-                val href = m.groupValues[1]
-                if ("/list?" !in href && "/episode" in href) continue
-                if (!seen.add(href)) continue
-                val name = href.substringAfterLast('/').substringBefore('?').replace('-', ' ')
-                if (name.length < 2) continue
+                var href = m.groupValues[1].replace("https://m.webtoons.com/", "https://www.webtoons.com/")
+                val title = m.groupValues[2].trim()
+                if (title.isBlank() || !seen.add(href)) continue
                 out += MediaItem(
                     providerId = config.id,
                     id = href,
-                    title = name.replaceFirstChar { it.uppercase() },
+                    title = title.replace("&amp;", "&"),
                     type = MediaType.SERIES,
                 )
-                if (out.size >= 40) break
+                if (out.size >= 80) break
             }
         }
+        if (out.isEmpty()) lastOutcome[config.id] = "✗ Webtoons parse 0 (html ${html.length})"
         return out
     }
+
 
     override suspend fun getMeta(item: MediaItem): MediaItem = withContext(Dispatchers.IO) {
         val mod = module() ?: return@withContext item
