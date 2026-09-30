@@ -1,3 +1,19 @@
+## 0.10.69
+
+Everything new and fixed since the last release (0.10.68):
+
+### Added
+
+- The Anymex folder is one catalog now — installed Sora and Anymex extensions sit in a single Browse card at the top (Anymex anime opens Popular with Latest one tap away, manga opens its own shelves, Sora jumps straight into its search), with every Sora and Anymex repo and every installed script extension listed together underneath, instead of two subfolders
+- I added the video extractors AnymeX itself ships (dood, streamwish, filemoon, mp4upload, okru, voe and the rest) — an extension calling one now resolves it through this app's own extractor stack, so sites like VIVAMAXph that play through an extractor actually play
+
+### Fixed
+
+- I fixed Test on Anymex extensions saying "Script failed to load: ReferenceError: MProvider" — the check ran every script through the Sora engine first and Sora has no MProvider, so the Sora error won before Anymex was ever tried; Mangayomi-format scripts go to the Anymex check first now, and installing falls back to the other engine when a script lives under the wrong repo kind
+- I fixed Anymex catalogs going blank on extensions whose settings were never seeded — the host now reads each extension's own defaults (site mirror, language, cover quality) exactly like AnymeX does, and I added the string helpers (substringAfterLast, substringBeforeLast, substringBetween) and date helper upstream scripts call
+- I fixed the My Stuff tabs sticking halfway when tapped — the tap fired its own page animation while the section change fired a second one, and the two cancelled each other mid-scroll; the tap just picks the section now and the one animation follows it, while swiping works exactly as before
+- I fixed the library category drag running away to the end — a move can only happen once every 140 ms and only into the row the finger actually reached, the edge auto-scroll is gentler with a single scroll job, and the same fix covers the collection editor's drag
+
 ## 0.10.68
 
 Everything new and fixed since the last release (0.10.67):

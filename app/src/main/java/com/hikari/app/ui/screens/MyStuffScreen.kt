@@ -197,10 +197,6 @@ fun MyStuffScreen(nav: NavHostController, initial: String = MyStuff.LIBRARY) {
         if (strip.size > 1) {
             MyStuffStrip(strip, section) { picked ->
                 section = picked
-                scope.launch {
-                    val target = strip.indexOf(picked)
-                    if (target >= 0) pager.animateScrollToPage(target)
-                }
             }
         }
         androidx.compose.foundation.pager.HorizontalPager(

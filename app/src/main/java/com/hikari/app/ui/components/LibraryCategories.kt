@@ -248,14 +248,30 @@ private fun DragGrip() {
 private fun categoryDragTarget(
     ids: List<String>,
     centres: Map<String, Float>,
+    tops: Map<String, Float>,
     from: Int,
     pointerY: Float,
 ): Int {
-    ids.getOrNull(from + 1)?.let { next ->
-        centres[next]?.let { if (pointerY > it) return from + 1 }
-    }
-    ids.getOrNull(from - 1)?.let { prev ->
-        centres[prev]?.let { if (pointerY < it) return from - 1 }
+    if (from < 0 || from >= ids.size) return from
+    val top = tops[ids[from]]
+    val centre = centres[ids[from]]
+    if (top != null && centre != null) {
+        val rowH = (centre - top).coerceAtLeast(1f) * 2f
+        if (from + 1 < ids.size) {
+            val nextTop = tops[ids[from + 1]] ?: Float.MAX_VALUE
+            if (pointerY > nextTop + rowH * 0.45f) return from + 1
+        }
+        if (from - 1 >= 0) {
+            val prevTop = tops[ids[from - 1]] ?: Float.MIN_VALUE
+            if (pointerY < prevTop + rowH * 0.55f) return from - 1
+        }
+    } else {
+        ids.getOrNull(from + 1)?.let { next ->
+            centres[next]?.let { if (pointerY > it) return from + 1 }
+        }
+        ids.getOrNull(from - 1)?.let { prev ->
+            centres[prev]?.let { if (pointerY < it) return from - 1 }
+        }
     }
     return from
 }
@@ -263,8 +279,8 @@ private fun categoryDragTarget(
 private fun categoryAutoScrollStep(pointerY: Float, top: Float, bottom: Float, edge: Float): Float =
     when {
         bottom <= top -> 0f
-        pointerY < top + edge -> -14f
-        pointerY > bottom - edge -> 14f
+        pointerY < top + edge -> -6f
+        pointerY > bottom - edge -> 6f
         else -> 0f
     }
 
@@ -332,7 +348,10 @@ fun CategoryManagerSheet(
     val dragScope = rememberCoroutineScope()
     val haptics = LocalHapticFeedback.current
     val rowCentres = remember { HashMap<String, Float>() }
+    val rowTops = remember { HashMap<String, Float>() }
     val dragY = remember { floatArrayOf(0f) }
+    val lastMoveAt = remember { longArrayOf(0L) }
+    var categoryScrollJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
     val listBounds = remember { floatArrayOf(0f, 0f) }
     val autoScrollEdge = with(LocalDensity.current) { 72.dp.toPx() }
 
@@ -415,32 +434,41 @@ fun CategoryManagerSheet(
                                     editingId = c.id
                                     editingText = c.name
                                 }
-                                .onGloballyPositioned { lc -> rowCentres[c.id] = lc.boundsInRoot().center.y }
+                                .onGloballyPositioned { lc ->
+                                    val b = lc.boundsInRoot()
+                                    rowCentres[c.id] = b.center.y
+                                    rowTops[c.id] = b.top
+                                }
                                 .pointerInput(c.id) {
                                     detectDragGesturesAfterLongPress(
                                         onDragStart = {
                                             liftedId = c.id
                                             dragY[0] = rowCentres[c.id] ?: 0f
+                                            lastMoveAt[0] = 0L
                                             haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                                         },
                                         onDrag = { change, amount ->
                                             change.consume()
                                             dragY[0] += amount.y
                                             val from = categories.indexOfFirst { it.id == c.id }
-                                            if (from < 0) {
-                                                return@detectDragGesturesAfterLongPress
-                                            }
-                                            val to = categoryDragTarget(
-                                                categories.map { it.id },
-                                                rowCentres,
-                                                from,
-                                                dragY[0],
-                                            )
-                                            if (to != from && to in categories.indices) {
-                                                onMove(c.id, to - from)
-                                                haptics.performHapticFeedback(
-                                                    HapticFeedbackType.TextHandleMove
-                                                )
+                                            if (from >= 0) {
+                                                val now = System.currentTimeMillis()
+                                                if (now - lastMoveAt[0] >= 140L) {
+                                                    val to = categoryDragTarget(
+                                                        categories.map { it.id },
+                                                        rowCentres,
+                                                        rowTops,
+                                                        from,
+                                                        dragY[0],
+                                                    )
+                                                    if (to != from && to in categories.indices) {
+                                                        lastMoveAt[0] = now
+                                                        onMove(c.id, to - from)
+                                                        haptics.performHapticFeedback(
+                                                            HapticFeedbackType.TextHandleMove
+                                                        )
+                                                    }
+                                                }
                                             }
                                             val step = categoryAutoScrollStep(
                                                 dragY[0],
@@ -448,10 +476,21 @@ fun CategoryManagerSheet(
                                                 listBounds[1],
                                                 autoScrollEdge,
                                             )
-                                            if (step != 0f) dragScope.launch { listState.scrollBy(step) }
+                                            categoryScrollJob?.cancel()
+                                            categoryScrollJob = if (step != 0f) {
+                                                dragScope.launch { listState.scrollBy(step) }
+                                            } else null
                                         },
-                                        onDragEnd = { liftedId = null },
-                                        onDragCancel = { liftedId = null },
+                                        onDragEnd = {
+                                            liftedId = null
+                                            categoryScrollJob?.cancel()
+                                            categoryScrollJob = null
+                                        },
+                                        onDragCancel = {
+                                            liftedId = null
+                                            categoryScrollJob?.cancel()
+                                            categoryScrollJob = null
+                                        },
                                     )
                                 }
                                 .padding(vertical = 14.dp, horizontal = 8.dp),

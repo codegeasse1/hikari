@@ -1164,7 +1164,7 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
                 val pid = Uri.decode(entry.arguments?.getString("pid").orEmpty())
                 IptvPlaylistScreen(nav, pid)
             }
-            composable(Routes.EXTENSIONS) { ExtensionsScreen() }
+            composable(Routes.EXTENSIONS) { ExtensionsScreen(nav) }
             // The Telegram tab (off by default — see Routes.TELEGRAM): the public
             // channels the user added, played in this app's own player.
             composable(Routes.TELEGRAM) { TelegramScreen(nav) }

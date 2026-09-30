@@ -109,6 +109,33 @@
       return s.substring(0, i);
     };
   }
+  if (typeof String.prototype.substringAfterLast !== 'function') {
+    String.prototype.substringAfterLast = function (delimiter, missing) {
+      var s = String(this);
+      var i = s.lastIndexOf(String(delimiter));
+      if (i === -1) return missing === undefined ? s : missing;
+      return s.substring(i + String(delimiter).length);
+    };
+  }
+  if (typeof String.prototype.substringBeforeLast !== 'function') {
+    String.prototype.substringBeforeLast = function (delimiter, missing) {
+      var s = String(this);
+      var i = s.lastIndexOf(String(delimiter));
+      if (i === -1) return missing === undefined ? s : missing;
+      return s.substring(0, i);
+    };
+  }
+  if (typeof String.prototype.substringBetween !== 'function') {
+    String.prototype.substringBetween = function (left, right) {
+      var s = String(this);
+      var a = s.indexOf(String(left));
+      if (a === -1) return '';
+      a += String(left).length;
+      var b = s.indexOf(String(right), a);
+      if (b === -1) return '';
+      return s.substring(a, b);
+    };
+  }
 
   // ---- cheerio ----
   var cheerio = null;
@@ -447,19 +474,30 @@
     this.source = Object.assign({}, host, source || {});
   };
 
+  // Any top-level const foo = [{name, baseUrl, ...}] declares the source.
+  // Repos name it freely (mangayomiSources, kegaretaSauces, ...), so the first
+  // array whose item looks like a source entry wins, then the host listing.
+  function declaredSource() {
+    try {
+      if (Array.isArray(g.mangayomiSources) && g.mangayomiSources.length) return g.mangayomiSources[0];
+    } catch (e) {}
+    try {
+      var keys = Object.getOwnPropertyNames(g);
+      for (var i = 0; i < keys.length; i++) {
+        var v = g[keys[i]];
+        if (Array.isArray(v) && v.length && v[0] && typeof v[0] === 'object' &&
+            (v[0].baseUrl || v[0].name)) return v[0];
+      }
+    } catch (e) {}
+    try { return JSON.parse(g.__anymexHostMeta || '{}'); } catch (e2) { return {}; }
+  }
+
   // ---- extension instance ----
   function extension() {
     if (g.__anymexExt) return g.__anymexExt;
     try {
       if (typeof g.DefaultExtension !== 'function') return null;
-      var src = null;
-      try {
-        if (Array.isArray(g.mangayomiSources) && g.mangayomiSources.length) src = g.mangayomiSources[0];
-      } catch (e) {}
-      if (!src) {
-        try { src = JSON.parse(g.__anymexHostMeta || '{}'); } catch (e2) {}
-      }
-      g.__anymexExt = new g.DefaultExtension(src || {});
+      g.__anymexExt = new g.DefaultExtension(declaredSource() || {});
       return g.__anymexExt;
     } catch (e) { return null; }
   }
@@ -468,16 +506,47 @@
 
   g.__anymexSourceMeta = function () {
     try {
-      if (Array.isArray(g.mangayomiSources) && g.mangayomiSources.length) {
-        var s = g.mangayomiSources[0] || {};
-        return JSON.stringify({ ok: true, isManga: !!s.isManga, name: s.name || '' });
-      }
+      var s = declaredSource() || {};
       if (typeof g.DefaultExtension === 'function') {
-        return JSON.stringify({ ok: true, isManga: false, name: '' });
+        var cap = null;
+        try {
+          var probe = new g.DefaultExtension(s);
+          var hasVideo = typeof probe.getVideoList === 'function';
+          var hasPages = typeof probe.getPageList === 'function';
+          if (hasVideo || hasPages) cap = !hasVideo && hasPages;
+        } catch (e) {}
+        return JSON.stringify({ ok: true, isManga: cap != null ? cap : !!s.isManga, name: s.name || '' });
       }
     } catch (e) {}
     return JSON.stringify({ ok: false });
   };
+
+  g.parseDates = function (value, format, locale) {
+    try {
+      var tt = Date.parse(String(value));
+      if (!isNaN(tt)) return tt;
+    } catch (e) {}
+    return 0;
+  };
+
+  function extractViaHost(url, quality) {
+    if (typeof g.__anymexExtract !== 'function') return Promise.resolve([]);
+    return g.__anymexExtract(String(url == null ? '' : url), String(quality == null ? '' : quality))
+      .then(function (raw) {
+        try { var pp = JSON.parse(raw); return Array.isArray(pp) ? pp : []; }
+        catch (e) { return []; }
+      }, function () { return []; });
+  }
+  var __anymexExtractorNames = ['sibnetExtractor', 'myTvExtractor', 'okruExtractor',
+    'voeExtractor', 'vidBomExtractor', 'streamlareExtractor', 'sendVidExtractor',
+    'yourUploadExtractor', 'gogoCdnExtractor', 'doodExtractor', 'streamTapeExtractor',
+    'mp4UploadExtractor', 'streamWishExtractor', 'filemoonExtractor',
+    'quarkVideosExtractor', 'ucVideosExtractor', 'quarkFilesExtractor', 'ucFilesExtractor'];
+  __anymexExtractorNames.forEach(function (name) {
+    if (typeof g[name] !== 'function') {
+      g[name] = function (url, quality) { return extractViaHost(url, quality); };
+    }
+  });
 
   function describeError(e) {
     if (e === undefined || e === null) return 'unknown error';

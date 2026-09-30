@@ -1111,6 +1111,8 @@ private fun FolderEditorPage(
     // onGloballyPositioned would recompose the whole page on every scroll.
     val rowCentres = remember { HashMap<String, Float>() }
     val dragY = remember { floatArrayOf(0f) }
+    val lastMoveAt = remember { longArrayOf(0L) }
+    var collectScrollJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
     val listBounds = remember { floatArrayOf(0f, 0f) }
     val autoScrollEdge = with(LocalDensity.current) { 72.dp.toPx() }
 
@@ -1374,21 +1376,25 @@ private fun FolderEditorPage(
                                 onDragStart = {
                                     liftedKey = s.key
                                     dragY[0] = rowCentres[s.key] ?: 0f
+                                    lastMoveAt[0] = 0L
                                     haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                                 },
                                 onDrag = { change, amount ->
                                     change.consume()
                                     dragY[0] += amount.y
                                     val from = sources.indexOfFirst { it.key == s.key }
-                                    if (from < 0) {
-                                        return@detectDragGesturesAfterLongPress
-                                    }
-                                    val to = dragTarget(sources, rowCentres, from, dragY[0])
-                                    if (to != from && to in sources.indices) {
-                                        sources = sources.moveItem(from, to)
-                                        haptics.performHapticFeedback(
-                                            HapticFeedbackType.TextHandleMove
-                                        )
+                                    if (from >= 0) {
+                                        val now = System.currentTimeMillis()
+                                        if (now - lastMoveAt[0] >= 140L) {
+                                            val to = dragTarget(sources, rowCentres, from, dragY[0])
+                                            if (to != from && to in sources.indices) {
+                                                lastMoveAt[0] = now
+                                                sources = sources.moveItem(from, to)
+                                                haptics.performHapticFeedback(
+                                                    HapticFeedbackType.TextHandleMove
+                                                )
+                                            }
+                                        }
                                     }
                                     val step = autoScrollStep(
                                         dragY[0],
@@ -1396,9 +1402,16 @@ private fun FolderEditorPage(
                                         listBounds[1],
                                         autoScrollEdge,
                                     )
-                                    if (step != 0f) dragScope.launch { listState.scrollBy(step) }
+                                    collectScrollJob?.cancel()
+                                    collectScrollJob = if (step != 0f) {
+                                        dragScope.launch { listState.scrollBy(step) }
+                                    } else null
                                 },
-                                onDragEnd = { liftedKey = null },
+                                onDragEnd = {
+                                    liftedKey = null
+                                    collectScrollJob?.cancel()
+                                    collectScrollJob = null
+                                },
                                 onDragCancel = { liftedKey = null },
                             )
                         },
@@ -1752,8 +1765,8 @@ private fun dragTarget(
 private fun autoScrollStep(pointerY: Float, top: Float, bottom: Float, edge: Float): Float =
     when {
         bottom <= top -> 0f
-        pointerY < top + edge -> -14f
-        pointerY > bottom - edge -> 14f
+        pointerY < top + edge -> -6f
+        pointerY > bottom - edge -> 6f
         else -> 0f
     }
 

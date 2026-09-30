@@ -13,6 +13,7 @@ import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.navigation.NavHostController
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -53,6 +54,7 @@ import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -112,6 +114,7 @@ import com.hikari.app.cs3.Cs3PluginManager
 import com.hikari.app.hiki.HikariPluginManager
 import com.hikari.app.data.Cs3Repo
 import com.hikari.app.data.Cs3RepoPlugin
+import com.hikari.app.data.MediaType
 import com.hikari.app.data.ProviderConfig
 import com.hikari.app.data.ProviderType
 import com.hikari.app.data.RepoKind
@@ -129,6 +132,7 @@ import com.hikari.app.ui.components.EmptyState
 import com.hikari.app.ui.components.GlassCard
 import com.hikari.app.ui.components.GlassSearchField
 import com.hikari.app.ui.navigation.LocalTaskbarInset
+import com.hikari.app.ui.navigation.Routes
 import com.hikari.app.ui.rememberNsfwEnabled
 import com.hikari.app.ui.theme.rememberGlassTokens
 import com.hikari.app.web.WebViewActivity
@@ -604,6 +608,18 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         val src = runCatching { String(bytes, Charsets.UTF_8) }.getOrNull().orEmpty()
         if (src.isBlank()) return ("Downloaded file is empty.") to false
         val ctx = HikariApp.instance
+        if (looksAnymexScript(src)) {
+            val info = runCatching {
+                kotlinx.coroutines.withTimeoutOrNull(25_000) {
+                    com.hikari.app.anymex.AnymexRuntime.inspect(ctx, src)
+                }
+            }.getOrNull()
+            if (info != null && info.ok) {
+                return ("Working — valid Anymex " + (if (info.isManga) "manga" else "anime") +
+                    " extension (" + size + ").") to true
+            }
+            return ("File downloaded but the Anymex extension would not load.") to false
+        }
         val soraVerdict = runCatching {
             kotlinx.coroutines.withTimeoutOrNull(25_000) {
                 com.hikari.app.sora.SoraRuntime.validate(ctx, src)
@@ -632,17 +648,11 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         if (soraVerdict != null && soraVerdict.startsWith("ERR:")) {
             return ("Script failed to load: " + soraVerdict.removePrefix("ERR:").take(120)) to false
         }
-        val info = runCatching {
-            kotlinx.coroutines.withTimeoutOrNull(25_000) {
-                com.hikari.app.anymex.AnymexRuntime.inspect(ctx, src)
-            }
-        }.getOrNull()
-        if (info != null && info.ok) {
-            return ("Working — valid Anymex " + (if (info.isManga) "manga" else "anime") +
-                " extension (" + size + ").") to true
-        }
         return ("File downloaded but it has no source entry points.") to false
     }
+
+    private fun looksAnymexScript(src: String): Boolean =
+        src.contains("DefaultExtension") && src.contains("MProvider")
 
     private fun validateListingBytes(url: String, bytes: ByteArray): String? {
         val u = url.trim()
@@ -1379,6 +1389,12 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         com.hikari.app.anymex.AnymexPluginManager
             .install(getApplication<Application>(), plugin)
             .also { requestRefresh() }
+
+    suspend fun installScriptPlugin(plugin: Cs3RepoPlugin, kind: RepoKind): Result<Int> {
+        val primary = if (kind == RepoKind.ANYMEX) installAnymexPlugin(plugin) else installSoraPlugin(plugin)
+        if (primary.isSuccess) return primary
+        return if (kind == RepoKind.ANYMEX) installSoraPlugin(plugin) else installAnymexPlugin(plugin)
+    }
 
     suspend fun uninstallAnymexPlugin(pluginUrl: String): Int {
         val removed = com.hikari.app.anymex.AnymexPluginManager
@@ -2881,10 +2897,10 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                                 RepoKind.SKYSTREAM -> installSkyStreamPlugin(p)
                                 RepoKind.ANIYOMI -> installAniyomiPlugin(p)
                                 RepoKind.VEGA -> installVegaPlugin(p)
-                                RepoKind.SORA -> installSoraPlugin(p)
-                                 RepoKind.ANYMEX -> installAnymexPlugin(p)
-                                RepoKind.SORA -> installSoraPlugin(p)
-                                 RepoKind.ANYMEX -> installAnymexPlugin(p)
+                                RepoKind.SORA -> installScriptPlugin(p, RepoKind.SORA)
+                                RepoKind.ANYMEX -> installScriptPlugin(p, RepoKind.ANYMEX)
+                                RepoKind.SORA -> installScriptPlugin(p, RepoKind.SORA)
+                                RepoKind.ANYMEX -> installScriptPlugin(p, RepoKind.ANYMEX)
                             }
                         }
                     }.getOrNull()
@@ -3040,8 +3056,8 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                                 RepoKind.SKYSTREAM -> installSkyStreamPlugin(p)
                                 RepoKind.ANIYOMI -> installAniyomiPlugin(p)
                                 RepoKind.VEGA -> installVegaPlugin(p)
-                                RepoKind.SORA -> installSoraPlugin(p)
-                                 RepoKind.ANYMEX -> installAnymexPlugin(p)
+                                RepoKind.SORA -> installScriptPlugin(p, RepoKind.SORA)
+                                RepoKind.ANYMEX -> installScriptPlugin(p, RepoKind.ANYMEX)
                             }
                         }
                     }.getOrNull()
@@ -3138,7 +3154,7 @@ private val LocalRepoNameByProvider = compositionLocalOf<Map<String, String>> { 
 private const val REPO_LOAD_CEILING_MS = 75_000L
 
 @Composable
-fun ExtensionsScreen() {
+fun ExtensionsScreen(nav: NavHostController? = null) {
     val vm: ExtensionsViewModel = viewModel()
     val providers by vm.providers.collectAsState()
     val scope = rememberCoroutineScope()
@@ -3391,8 +3407,8 @@ fun ExtensionsScreen() {
                 RepoKind.SKYSTREAM -> vm.installSkyStreamPlugin(p)
                 RepoKind.ANIYOMI -> vm.installAniyomiPlugin(p)
                 RepoKind.VEGA -> vm.installVegaPlugin(p)
-                RepoKind.SORA -> vm.installSoraPlugin(p)
-                 RepoKind.ANYMEX -> vm.installAnymexPlugin(p)
+                RepoKind.SORA -> vm.installScriptPlugin(p, RepoKind.SORA)
+                RepoKind.ANYMEX -> vm.installScriptPlugin(p, RepoKind.ANYMEX)
             }
             // The listing's own 18+ tag goes onto the rows that were just
             // created, so with the adult-content switch off an adult extension
@@ -3646,6 +3662,7 @@ fun ExtensionsScreen() {
                 vm.runUninstall("Removing repo…", "Removed repo") { vm.removeCs3Repo(url) }
             },
             onOpenSettings = { openProviderSettings(it) },
+            nav = nav,
         )
         else -> RepoBrowserView(
             repos = repos,
@@ -7630,6 +7647,7 @@ private fun SourceFolderView(
     onRemoveRepo: (String) -> Unit,
     onOpenSettings: (ContentProvider) -> Unit,
     onOpenFolder: (SourceFolder) -> Unit = {},
+    nav: NavHostController? = null,
 ) {
     val kind = when (folder) {
         SourceFolder.CLOUDSTREAM -> RepoKind.CS3
@@ -7777,32 +7795,108 @@ private fun SourceFolderView(
             )
         ) {
             if (folder == SourceFolder.ANYMEX_HOME) {
-                val soraCount = repos.count { it.kind == RepoKind.SORA }
-                val anymexCount = repos.count { it.kind == RepoKind.ANYMEX }
-                item {
-                    GlassCard(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp)
-                    ) {
-                        Column {
-                            SourceActionRow(
-                                icon = Icons.Filled.Extension,
-                                title = tr("Sora"),
-                                subtitle = I18n.t(if (soraCount == 1) "%s repo" else "%s repos")
-                                    .replace("%s", soraCount.toString()) + " · Sora sources",
-                                onClick = { onOpenFolder(SourceFolder.SORA) }
-                            )
-                            SourceDivider()
-                            SourceActionRow(
-                                icon = Icons.Filled.Extension,
-                                title = tr("Anymex"),
-                                subtitle = I18n.t(if (anymexCount == 1) "%s repo" else "%s repos")
-                                    .replace("%s", anymexCount.toString()) + " · Anymex extensions",
-                                onClick = { onOpenFolder(SourceFolder.ANYMEX) }
-                            )
+                val scriptRepos = repos.filter { it.kind == RepoKind.SORA || it.kind == RepoKind.ANYMEX }
+                val scriptProviders = providers.filter {
+                    it.config.type == ProviderType.SORA ||
+                        it.config.type == ProviderType.ANYMEX ||
+                        it.config.type == ProviderType.ANYMEX_MANGA
+                }.distinctBy { it.config.id }
+                if (scriptProviders.isNotEmpty() && nav != null) {
+                    item {
+                        GlassCard(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp)
+                        ) {
+                            Column {
+                                scriptProviders.forEachIndexed { index, p ->
+                                    val cfg = p.config
+                                    when (cfg.type) {
+                                        ProviderType.SORA -> SourceActionRow(
+                                            icon = Icons.Filled.Search,
+                                            title = cfg.name,
+                                            subtitle = tr("Sora · search to browse"),
+                                            onClick = {
+                                                Routes.safeNavigate(
+                                                    nav,
+                                                    "provider-search?q=&provider=" + Uri.encode(cfg.id)
+                                                )
+                                            },
+                                        )
+                                        ProviderType.ANYMEX_MANGA -> SourceActionRow(
+                                            icon = Icons.Filled.Extension,
+                                            title = cfg.name,
+                                            subtitle = tr("Anymex manga · Popular"),
+                                            onClick = {
+                                                Routes.safeNavigate(
+                                                    nav,
+                                                    Routes.catalog(
+                                                        cfg.id, "popular", tr("Popular"),
+                                                        cfg.name, MediaType.SERIES, "manga"
+                                                    )
+                                                )
+                                            },
+                                            trailingIcon = Icons.Filled.Refresh,
+                                            onTrailing = {
+                                                Routes.safeNavigate(
+                                                    nav,
+                                                    Routes.catalog(
+                                                        cfg.id, "latest", tr("Latest"),
+                                                        cfg.name, MediaType.SERIES, "manga"
+                                                    )
+                                                )
+                                            },
+                                        )
+                                        else -> SourceActionRow(
+                                            icon = Icons.Filled.Extension,
+                                            title = cfg.name,
+                                            subtitle = tr("Anymex · Popular"),
+                                            onClick = {
+                                                Routes.safeNavigate(
+                                                    nav,
+                                                    Routes.catalog(
+                                                        cfg.id, "popular", tr("Popular"),
+                                                        cfg.name, MediaType.SERIES
+                                                    )
+                                                )
+                                            },
+                                            trailingIcon = Icons.Filled.Refresh,
+                                            onTrailing = {
+                                                Routes.safeNavigate(
+                                                    nav,
+                                                    Routes.catalog(
+                                                        cfg.id, "latest", tr("Latest"),
+                                                        cfg.name, MediaType.SERIES
+                                                    )
+                                                )
+                                            },
+                                        )
+                                    }
+                                    if (index < scriptProviders.lastIndex) SourceDivider()
+                                }
+                            }
                         }
                     }
+                }
+                items(scriptRepos, key = { "repo-" + it.url }) { repo ->
+                    RepoCard(
+                        repo = repo,
+                        pluginCount = (pluginsByRepo[repo.url] ?: emptyList()).size,
+                        state = repoState[repo.url],
+                        onClick = { onOpenRepo(repo) },
+                        onRefresh = { onRefreshRepo(repo) },
+                        onRemoveRepo = { onRemoveRepo(repo.url) }
+                    )
+                }
+                items(scriptProviders, key = { "script-" + it.config.id }) { p ->
+                    ProviderCard(
+                        p = p,
+                        onVerify = rememberVerifyAction(p),
+                        status = pluginStatus(p, iptvTick),
+                        onToggle = { enabled -> onToggleProvider(p.config.id, enabled) },
+                        onDelete = { onDeleteProvider(p.config.id) },
+                        onSettings = { onOpenSettings(p) }
+                    )
                 }
             } else if (kind != null) {
                 if (folderRepos.isEmpty()) {

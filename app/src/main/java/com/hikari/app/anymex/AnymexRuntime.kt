@@ -196,6 +196,16 @@ object AnymexRuntime {
             android.util.Log.d("Anymex", msg)
             ""
         }
+        qjs.asyncFunction("__anymexExtract") { args ->
+            val url = args.getOrNull(0)?.toString() ?: ""
+            val quality = args.getOrNull(1)?.toString() ?: ""
+            inFlight.incrementAndGet()
+            try {
+                bridgeExtractAsync(url, quality)
+            } finally {
+                inFlight.decrementAndGet()
+            }
+        }
 
         qjs.evaluateCached("boot.js", bootJs)
         qjs.evaluateCached(
@@ -430,7 +440,13 @@ object AnymexRuntime {
             return JSONObject.quote(values.optString(idx))
         }
         o.optJSONObject("editTextPreference")?.let { ep ->
-            return JSONObject.quote(ep.optString("defaultValue"))
+            val v = ep.optString("defaultValue").ifBlank { ep.optString("value") }
+            return JSONObject.quote(v)
+        }
+        o.optJSONObject("multiSelectListPreference")?.let { mp ->
+            val vals = mp.optJSONArray("values")
+            if (vals != null) return vals.toString()
+            return "[]"
         }
         o.optJSONObject("switchPreferenceCompat")?.let { sp ->
             if (sp.has("default")) return sp.optBoolean("default", false).toString()
@@ -440,6 +456,30 @@ object AnymexRuntime {
             if (cp.has("default")) return cp.optBoolean("default", false).toString()
         }
         return null
+    }
+
+    private suspend fun bridgeExtractAsync(url: String, quality: String): String {
+        val u = url.trim()
+        if (u.isEmpty()) return "[]"
+        val found = withTimeoutOrNull(45_000) {
+            withContext(Dispatchers.IO) {
+                runCatching { com.hikari.app.cs3.FallbackResolver.resolve(u) }.getOrNull()
+            }
+        }.orEmpty()
+        val arr = JSONArray()
+        for (s in found) {
+            val link = s.url.trim()
+            if (link.isEmpty()) continue
+            val o = JSONObject()
+            o.put("url", link)
+            o.put("originalUrl", link)
+            o.put("quality", quality.ifBlank { s.name.ifBlank { "Origin" } })
+            val hdrs = JSONObject()
+            s.headers.forEach { (k, v) -> runCatching { hdrs.put(k, v) } }
+            o.put("headers", hdrs)
+            arr.put(o)
+        }
+        return arr.toString()
     }
 
     // ---- fetch bridge ----
