@@ -133,26 +133,48 @@ class AnymexMangaProvider(override val config: ProviderConfig) : ContentProvider
     }
 
     private fun mapItems(raw: String?): List<MediaItem> {
-        if (raw.isNullOrBlank()) return emptyList()
+        if (raw.isNullOrBlank()) {
+            lastOutcome[config.id] = "✗ Empty catalog response"
+            return emptyList()
+        }
         val t = raw.trim()
-        val arr: JSONArray = runCatching { JSONArray(t) }.getOrNull()
-            ?: runCatching { JSONObject(t).optJSONArray("list") }.getOrNull()
-            ?: return emptyList()
+        // Runtime returns {ok,data} envelopes — same as AnymexProvider.listArray.
+        val arr: JSONArray? = runCatching { JSONArray(t) }.getOrNull()
+            ?: runCatching {
+                val o = JSONObject(t)
+                if (o.has("ok") && !o.optBoolean("ok", true)) {
+                    lastOutcome[config.id] = "✗ " + o.optString("error").ifBlank { "catalog error" }
+                    return emptyList()
+                }
+                o.optJSONArray("data")
+                    ?: o.optJSONArray("list")
+                    ?: o.optJSONArray("manga")
+                    ?: o.optJSONArray("results")
+            }.getOrNull()
+        if (arr == null || arr.length() == 0) {
+            if (lastOutcome[config.id]?.startsWith("✗") != true) {
+                lastOutcome[config.id] = "✗ No titles in catalog"
+            }
+            return emptyList()
+        }
         val out = ArrayList<MediaItem>()
         for (i in 0 until arr.length()) {
             val o = arr.optJSONObject(i) ?: continue
-            val name = o.optString("name").trim()
+            val name = o.optString("name").ifBlank { o.optString("title") }.trim()
             if (name.isBlank()) continue
-            val link = o.optString("link").ifBlank { o.optString("url") }.trim()
+            val link = o.optString("link").ifBlank { o.optString("url") }
+                .ifBlank { o.optString("id") }.trim()
             if (link.isBlank()) continue
             out += MediaItem(
                 providerId = config.id,
                 id = link,
                 title = name,
                 type = MediaType.SERIES,
-                posterUrl = o.optString("imageUrl").ifBlank { o.optString("image") }.trim().ifBlank { null },
+                posterUrl = o.optString("imageUrl").ifBlank { o.optString("image") }
+                    .ifBlank { o.optString("cover") }.trim().ifBlank { null },
             )
         }
+        if (out.isNotEmpty()) lastOutcome[config.id] = "✓ ${out.size} titles"
         return out
     }
 

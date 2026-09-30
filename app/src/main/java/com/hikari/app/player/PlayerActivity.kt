@@ -8445,7 +8445,11 @@ class PlayerActivity : ComponentActivity() {
         // media3 surfaces as a fatal playback error even though the stream is
         // fine. Sanitizing here means a sloppy extension can never crash the
         // player, now or in the future.
-        val cleanHeaders = sanitizeHeaders(src.headers)
+        val cleanHeaders = sanitizeHeaders(
+            // Hotlink CDNs need Origin+Referer even when the extension omitted them
+            // (Fastream 403 while CloudStream plays the same m3u8).
+            ensureHotlinkHeaders(src.url, src.headers),
+        )
         val sourceHeaders = when (headerVariant) {
             1 -> cleanHeaders.filterKeys { !it.equals("Referer", ignoreCase = true) }
             2 -> emptyMap()
@@ -10525,6 +10529,28 @@ class PlayerActivity : ComponentActivity() {
     private fun sanitizeHeaderValue(v: String): String = v.filter { it.code < 128 }
 
     /** Sanitize every header; blank results are dropped entirely. */
+    private fun ensureHotlinkHeaders(
+        url: String,
+        headers: Map<String, String>,
+    ): Map<String, String> {
+        val out = LinkedHashMap(headers)
+        val host = url.substringAfter("://").substringBefore('/').substringBefore('?').lowercase()
+        if (host.isBlank()) return out
+        val hot = listOf(
+            "fastream", "streamwish", "streamtape", "lulu", "dood", "filemoon",
+            "mixdrop", "voe.", "vidplay", "mp4upload", "upstream", "streamlare",
+            "vidmoly", "rabbitstream", "megacloud", "filelions", "lulustream",
+            "streamhub", "streamruby",
+        )
+        if (hot.any { host.contains(it) }) {
+            val origin = "https://$host"
+            out.putIfAbsent("Referer", "$origin/")
+            out.putIfAbsent("Origin", origin)
+        }
+        out.putIfAbsent("User-Agent", Http.UA)
+        return out
+    }
+
     private fun sanitizeHeaders(h: Map<String, String>): Map<String, String> =
         h.mapNotNull { (k, v) ->
             val c = sanitizeHeaderValue(v)

@@ -589,7 +589,13 @@ private fun EngineRow(
                     scope.launch {
                         val site = withContext(Dispatchers.IO) {
                             runCatching {
-                                com.hikari.app.manga.MangaExtensionManager.siteUrlOf(engine.config)
+                                when (engine.config.type) {
+                                    com.hikari.app.data.ProviderType.ANYMEX_MANGA,
+                                    com.hikari.app.data.ProviderType.ANYMEX ->
+                                        com.hikari.app.anymex.AnymexPluginManager.siteUrlOf(engine.config)
+                                    else ->
+                                        com.hikari.app.manga.MangaExtensionManager.siteUrlOf(engine.config)
+                                }
                             }.getOrNull()
                         }
                         if (site.isNullOrBlank()) {

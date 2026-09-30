@@ -59,9 +59,39 @@ object AnymexPluginManager {
     )
 
     suspend fun seedDefaults(context: Context, store: AppStore) {
+        // Drop known-dead indexes that still sit in older installs (404 HTML).
+        val deadHints = listOf("miraienoki", "anymex anime", "anymex manga")
+        runCatching {
+            store.repos()
+                .filter { r ->
+                    r.kind == RepoKind.ANYMEX && deadHints.any { h ->
+                        r.url.contains(h, true) || r.name.contains(h, true)
+                    }
+                }
+                .forEach { r -> runCatching { store.removeCs3Repo(r.url) } }
+        }
         for ((url, name, desc) in DEFAULT_REPOS) {
             runCatching { store.seedCs3Repo(Cs3Repo(url, name, desc, RepoKind.ANYMEX)) }
         }
+    }
+
+    /** Home page for Cloudflare verify — from meta.json written at install. */
+    fun siteUrlOf(config: ProviderConfig): String? {
+        val metaFile = File(dirOf(config), "meta.json")
+        if (!metaFile.exists()) return null
+        val base = runCatching {
+            JSONObject(metaFile.readText()).optString("baseUrl").trim()
+        }.getOrNull().orEmpty()
+        if (base.startsWith("http")) return base
+        // Fall back to the source URL's origin when the module declares none.
+        val src = config.extra?.trim().orEmpty()
+        if (src.startsWith("http")) {
+            return runCatching {
+                val u = java.net.URI(src)
+                "${u.scheme}://${u.host}/"
+            }.getOrNull()
+        }
+        return null
     }
 
     fun repoPlugins(indexText: String, indexUrl: String): List<Cs3RepoPlugin> {

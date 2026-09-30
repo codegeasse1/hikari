@@ -2536,6 +2536,17 @@ internal fun webUrlFor(p: ContentProvider): String? = when (p.config.type) {
     // And a manga extension's `url` is its local .ext path too.
     ProviderType.MANGA ->
         com.hikari.app.manga.MangaExtensionManager.siteUrlOf(p.config)
+    ProviderType.ANYMEX, ProviderType.ANYMEX_MANGA ->
+        com.hikari.app.anymex.AnymexPluginManager.siteUrlOf(p.config)
+    ProviderType.SORA -> {
+        // Sora modules store no baseUrl; use the module's download origin if any.
+        p.config.extra?.takeIf { it.startsWith("http") }?.let { src ->
+            runCatching {
+                val u = java.net.URI(src)
+                "${u.scheme}://${u.host}/"
+            }.getOrNull()
+        }
+    }
     ProviderType.CS3 -> runCatching {
         val file = java.io.File(p.config.url)
         if (!file.exists()) return@runCatching null

@@ -995,6 +995,30 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
     // ran on pages every other engine had already failed on, which is exactly
     // where it was least likely to succeed. See the CHANGELOG.
 
+    /**
+     * Ensure Referer + Origin for hosts that hotlink-protect HLS (Fastream 403
+     * was the reported case: CloudStream plays the same URL with these headers).
+     */
+    private fun enrichHotlinkHeaders(url: String, headers: MutableMap<String, String>) {
+        val host = url.substringAfter("://").substringBefore('/').substringBefore('?').lowercase()
+        if (host.isBlank()) return
+        val hot = listOf(
+            "fastream", "streamwish", "streamtape", "streamtape", "lulu", "dood",
+            "filemoon", "mixdrop", "voe.", "vidplay", "mp4upload", "upstream",
+            "streamlare", "vidmoly", "rabbitstream", "megacloud", "vidcloud",
+            "filelions", "streamhub", "streamruby", "streamvid", "lulustream",
+        )
+        if (hot.none { host.contains(it) }) {
+            headers.putIfAbsent("User-Agent", com.hikari.app.net.Http.UA)
+            return
+        }
+        val origin = "https://$host"
+        headers.putIfAbsent("Referer", "$origin/")
+        headers.putIfAbsent("Origin", origin)
+        headers.putIfAbsent("User-Agent", com.hikari.app.net.Http.UA)
+        headers.putIfAbsent("Accept", "*/*")
+    }
+
     /** Maps the plugin's raw ExtractorLinks into Hikari StreamSources with
      *  CloudStream-style names ("OkRuSSL 1080p") and referer/header merging. */
     private fun toStreamSources(
@@ -1027,6 +1051,9 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                     val c = ref.filter { it.code < 128 }
                     if (c.isNotBlank()) headers.putIfAbsent("Referer", c)
                 }
+                // Hotlink CDNs (Fastream, Streamwish, …) 403 without Origin/Referer
+                // matching the embed host — CloudStream's player always sends both.
+                enrichHotlinkHeaders(l.url, headers)
                 val subSources = rawSubs.map { SubtitleSource(it.lang.ifBlank { "Sub" }, it.url) }
                 // Magnet / .torrent links go through the same TorrServer
                 // engine as Stremio infoHash streams.

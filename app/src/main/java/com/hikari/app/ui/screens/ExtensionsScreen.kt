@@ -7671,8 +7671,11 @@ private fun SiteRow(
 private fun isMangayomiRepo(repo: Cs3Repo): Boolean {
     val u = repo.url.lowercase()
     val n = repo.name.lowercase()
-    return "mangayomi" in u || "mangayomi" in n ||
-        "kodjodevf" in u || "miraienoki" in u
+    // Only official Mangayomi indexes — NOT MiraiEnoki "Anymex Anime/Manga"
+    // (those 404 and were wrongly classified here before).
+    return "kodjodevf/mangayomi" in u ||
+        "mangayomi-extensions" in u ||
+        (n.contains("mangayomi") && !n.contains("anymex") && !n.contains("kegareta"))
 }
 
 enum class SourceFolder { CLOUDSTREAM, HIKARI, NUVIO, SKYSTREAM, ANIYOMI, VEGA, SORA, ANYMEX, MANGAYOMI, ANYMEX_HOME, STREMIO, IPTV }
