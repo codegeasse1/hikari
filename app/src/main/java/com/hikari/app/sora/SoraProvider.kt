@@ -225,7 +225,7 @@ class SoraProvider(override val config: ProviderConfig) : ContentProvider {
             if (primary == null && fallback == null) {
                 return@withContext fail("✗ No playable link for this title.")
             }
-            fun tryStreams(link: String): List<StreamSource> {
+            suspend fun tryStreams(link: String): List<StreamSource> {
                 val payload = SoraRuntime.streams(moduleFile, config.id, link)
                 val data = dataOf(payload) ?: return emptyList()
                 return mapStreamsAny(data)
