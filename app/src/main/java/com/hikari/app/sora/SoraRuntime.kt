@@ -57,6 +57,8 @@ object SoraRuntime {
     private const val TV_CONCURRENT = 2
     private const val FETCH_TIMEOUT_MS = 30_000L
     private const val CALL_TIMEOUT_MS = 60_000L
+    /** Stream extraction must answer fast — Anymex-app users expect ~3–4s. */
+    private const val STREAM_TIMEOUT_MS = 18_000L
     private const val CATALOG_TIMEOUT_MS = 75_000L
     private const val VALIDATE_TIMEOUT_MS = 20_000L
     private const val CALL_GRACE_MS = 20_000L
@@ -271,7 +273,7 @@ object SoraRuntime {
         run(moduleFile, providerId, "extractEpisodes", "[${quote(url)}]", CATALOG_TIMEOUT_MS)
 
     suspend fun streams(moduleFile: File, providerId: String, url: String): String =
-        run(moduleFile, providerId, "extractStreamUrl", "[${quote(url)}]", CALL_TIMEOUT_MS)
+        run(moduleFile, providerId, "extractStreamUrl", "[${quote(url)}]", STREAM_TIMEOUT_MS)
 
     /**
      * True when the script is a Sora video module: it exports the four anime

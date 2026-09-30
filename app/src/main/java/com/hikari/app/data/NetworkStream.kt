@@ -69,7 +69,8 @@ object NetworkStream {
     /** Anything with a scheme is worth trying; the resolver is what decides. */
     fun isStreamLink(url: String): Boolean {
         val u = url.trim()
-        return u.startsWith("http://") || u.startsWith("https://")
+        return u.startsWith("http://") || u.startsWith("https://") ||
+            u.startsWith("magnet:", ignoreCase = true)
     }
 
     private val MEDIA_EXTENSIONS = listOf(
@@ -88,6 +89,8 @@ object NetworkStream {
         "terabox", "1024tera", "4funbox", "momerybox", "tibibox",
         "nepnepbox", "telebox", "mirrobox", "shibabox",
     )
+
+    private val MDISK_HOSTS = listOf("mdisk.", "mdisk.me", "disk.mdisk", "diskwala")
 
     /** What the API wants for a share: `app_id`/`channel`/`clienttype` are the
      *  web app's own values, and the desktop-app user agent is what the hosts
@@ -173,6 +176,22 @@ object NetworkStream {
     }
 
     private suspend fun resolveBounded(url: String, label: String): List<StreamSource> {
+        // Magnet / torrent URL — hand to the torrent engine as-is.
+        if (url.startsWith("magnet:", ignoreCase = true) ||
+            url.lowercase().substringBefore('?').endsWith(".torrent")
+        ) {
+            return listOf(
+                StreamSource(
+                    name = label.ifBlank { "Torrent" },
+                    url = url,
+                    isTorrent = true,
+                    infoHash = Regex(
+                        """[?&]xt=urn:btih:([a-zA-Z0-9]{32,40})""",
+                        RegexOption.IGNORE_CASE,
+                    ).find(url)?.groupValues?.get(1),
+                ),
+            )
+        }
         // 1. Already a stream: nothing to resolve, and asking a CDN to prove it
         //    would only add a round trip to every play.
         if (isDirectMedia(url)) return listOf(sourceOf(url, label))

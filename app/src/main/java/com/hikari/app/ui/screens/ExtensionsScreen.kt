@@ -2879,7 +2879,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                                     RepoKind.ANYMEX -> "extension"
             RepoKind.CS3 -> "plugin"
         }
-        val pending = plugins.filterNot { SourceUrls.anyKeyIn(it.url, installedUrls) }
+        val pending = plugins.filterNot { SourceUrls.anyKeyIn(it.url, installedUrls) || isDartOnlyPlugin(it) }
         if (pending.isEmpty()) {
             val n = plugins.size
             setSuccess("All $n $unit${if (n == 1) "" else "s"} already installed")
@@ -3567,6 +3567,7 @@ fun ExtensionsScreen(nav: NavHostController? = null) {
             installStopping = installStopping,
             onStopInstall = { vm.stopBulkInstall() },
             onBack = { openFolder = null; vm.clearStatus() },
+            onOpenFolder = { openFolder = it },
             onOpenRepo = { repo ->
                 openRepoUrl = repo.url
                 vm.clearStatus()
@@ -3581,7 +3582,7 @@ fun ExtensionsScreen(nav: NavHostController? = null) {
                     SourceFolder.ANIYOMI -> RepoKind.ANIYOMI
                     SourceFolder.VEGA -> RepoKind.VEGA
                     SourceFolder.SORA -> RepoKind.SORA
-                     SourceFolder.ANYMEX -> RepoKind.ANYMEX
+                    SourceFolder.ANYMEX -> RepoKind.ANYMEX
                     SourceFolder.ANYMEX_HOME -> RepoKind.ANYMEX
                     else -> RepoKind.CS3
                 }
@@ -5591,7 +5592,7 @@ private fun RepoPluginsView(
                 bottom = LocalTaskbarInset.current + 24.dp,
             )
         ) {
-            val uninstalled = plugins.count { !SourceUrls.anyKeyIn(it.url, installedUrls) }
+            val uninstalled = plugins.count { !SourceUrls.anyKeyIn(it.url, installedUrls) && !isDartOnlyPlugin(it) }
             val installedHere = plugins.count { SourceUrls.anyKeyIn(it.url, installedUrls) }
             val testingHere = plugins.count { p ->
                 val target = installedProviderFor(p, providers)
@@ -7212,6 +7213,15 @@ private fun RepoCard(
     }
 }
 
+private fun isDartOnlyPlugin(p: Cs3RepoPlugin): Boolean {
+    val d = p.description
+    if (d.contains("Dart-only", ignoreCase = true)) return true
+    val u = p.url
+    if (u.endsWith(".js", true) || u.contains("/javascript/", true)) return false
+    if (u.contains("/dart/", true)) return true
+    return false
+}
+
 @Composable
 private fun PluginRow(
     p: Cs3RepoPlugin,
@@ -7241,7 +7251,9 @@ private fun PluginRow(
     // What a press of the WHOLE row does: the same thing the row's own trailing
     // button does — install, update, or uninstall — so the big highlight the
     // remote lands on always belongs to an action written on the row itself.
-    val rowAction: () -> Unit = when {
+    val dartOnly = isDartOnlyPlugin(p)
+    val rowAction: (() -> Unit)? = when {
+        !installed && dartOnly -> null
         !installed -> onInstall
         updateAvailable -> onUpdate ?: onUninstall
         else -> onUninstall
@@ -7259,7 +7271,7 @@ private fun PluginRow(
             // other control in the app wears) and the centre press; touch is
             // untouched, and the trailing buttons stay their own targets, so
             // pressing Right still steps onto them.
-            .tvPress(previewPass = false, onClick = rowAction),
+            .tvPress(previewPass = false, onClick = { rowAction?.invoke() }),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
@@ -7347,6 +7359,12 @@ private fun PluginRow(
                     Text(tr("Uninstall"), color = MaterialTheme.colorScheme.error)
                 }
             }
+        } else if (dartOnly) {
+            Text(
+                tr("Dart-only"),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         } else {
             Button(onClick = onInstall) {
                 Icon(Icons.Filled.Download, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -7828,6 +7846,30 @@ private fun SourceFolderView(
             )
         ) {
             if (folder == SourceFolder.ANYMEX_HOME) {
+                // Three sub-areas so Sora / Anymex / Mangayomi indexes stay
+                // separate — user opens the one they want, then adds repos there.
+                item {
+                    Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                        Text(
+                            tr("Browse by type"),
+                            style = MaterialTheme.typography.titleSmall,
+                            modifier = Modifier.padding(bottom = 8.dp),
+                        )
+                        SourceActionRow(
+                            icon = Icons.Filled.FolderOpen,
+                            title = tr("Sora"),
+                            subtitle = tr("Sora / AnymeX script modules"),
+                            onClick = { onOpenFolder(SourceFolder.SORA) },
+                        )
+                        SourceDivider()
+                        SourceActionRow(
+                            icon = Icons.Filled.FolderOpen,
+                            title = tr("Anymex"),
+                            subtitle = tr("JavaScript Anymex / Mangayomi extensions"),
+                            onClick = { onOpenFolder(SourceFolder.ANYMEX) },
+                        )
+                    }
+                }
                 val scriptRepos = repos.filter { it.kind == RepoKind.SORA || it.kind == RepoKind.ANYMEX }
                 // Installed Sora/Anymex sources belong under "Installed extensions",
                 // not mixed into this folder's repo list (users were seeing
@@ -8004,22 +8046,23 @@ private fun SourceFolderView(
                 }
             }
         }
-        if (folder != SourceFolder.ANYMEX_HOME) {
         AddRepoButton(
             label = when (folder) {
                 SourceFolder.STREMIO -> "Add Stremio addon"
                 SourceFolder.IPTV -> "Add IPTV playlist"
-                SourceFolder.ANYMEX_HOME -> "Add repo"
+                SourceFolder.SORA -> "Add Sora repo"
+                SourceFolder.ANYMEX -> "Add Anymex repo"
+                SourceFolder.ANYMEX_HOME -> "Add Anymex / Sora repo"
                 else -> "Add repo"
             },
             onClick = when (folder) {
                 SourceFolder.STREMIO -> onAddStremio
                 SourceFolder.IPTV -> onAddIptv
-                SourceFolder.ANYMEX_HOME -> onAddRepo
+                SourceFolder.SORA -> onAddRepo  // will be wired to SORA kind by parent
+                SourceFolder.ANYMEX, SourceFolder.ANYMEX_HOME -> onAddRepo
                 else -> onAddRepo
             }
         )
-        }
     }
 }
 

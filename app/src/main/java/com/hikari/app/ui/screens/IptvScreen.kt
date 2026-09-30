@@ -139,6 +139,7 @@ fun IptvScreen(nav: NavHostController) {
     // is what the link IS (a list of channels, or one file on some host that has
     // to be resolved before it plays) — see [NetworkStream].
     var addStream by remember { mutableStateOf(false) }
+    var addTorrent by remember { mutableStateOf(false) }
     var addFileLabel by remember { mutableStateOf("") }
     var addFilePath by remember { mutableStateOf("") }
     var adding by remember { mutableStateOf(false) }
@@ -156,13 +157,15 @@ fun IptvScreen(nav: NavHostController) {
         }
     }
 
-    fun addNow() {
-        val link = addLink
+    fun addNow(playAfter: Boolean = false) {
+        val link = addLink.trim()
         val local = addFilePath.takeIf { it.isNotBlank() }
         val name = addName
+        val wasStream = addStream
+        val wantTorrent = addTorrent
         adding = true
         scope.launch {
-            val result = if (addStream) {
+            val result = if (wasStream) {
                 addNetworkStream(app, link, name)
             } else {
                 addIptvPlaylist(app, link, local, name)
@@ -170,21 +173,28 @@ fun IptvScreen(nav: NavHostController) {
             adding = false
             result.fold(
                 onSuccess = { n ->
-                    Toast.makeText(
-                        uiContext,
-                        if (addStream) {
-                            I18n.t("Added network stream")
-                        } else {
-                            I18n.t("Added IPTV playlist (%s channels)").replace("%s", n.toString())
-                        },
-                        Toast.LENGTH_LONG,
-                    ).show()
+                    val msg = when {
+                        wantTorrent -> I18n.t("Added torrent stream")
+                        wasStream -> I18n.t("Added network stream")
+                        else -> I18n.t("Added IPTV playlist (%s channels)").replace("%s", n.toString())
+                    }
+                    Toast.makeText(uiContext, msg, Toast.LENGTH_LONG).show()
                     showAdd = false
                     addStream = false
+                    addTorrent = false
                     addLink = ""
                     addName = ""
                     addFileLabel = ""
                     addFilePath = ""
+                    if (playAfter && wasStream) {
+                        val id = app.store.providers().firstOrNull { p ->
+                            p.type == com.hikari.app.data.ProviderType.IPTV &&
+                                (p.url == link || p.extra == link)
+                        }?.id
+                        if (id != null) {
+                            Routes.safeNavigate(nav, Routes.iptvPlaylist(id))
+                        }
+                    }
                 },
                 onFailure = { t ->
                     Toast.makeText(
@@ -359,19 +369,30 @@ fun IptvScreen(nav: NavHostController) {
                         AddModePill(
                             label = tr("Playlist"),
                             selected = !addStream,
-                            onClick = { addStream = false },
+                            onClick = { addStream = false; addTorrent = false },
                         )
                         Spacer(Modifier.width(8.dp))
                         AddModePill(
                             label = tr("Network stream"),
-                            selected = addStream,
-                            onClick = { addStream = true },
+                            selected = addStream && !addTorrent,
+                            onClick = { addStream = true; addTorrent = false },
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        AddModePill(
+                            label = tr("Torrent"),
+                            selected = addTorrent,
+                            onClick = { addStream = true; addTorrent = true },
                         )
                     }
                     Spacer(Modifier.height(10.dp))
                     if (!LocalHideHelp.current) {
                     Text(
-                        if (addStream) {
+                        if (addTorrent) {
+                            tr(
+                                "Paste a magnet link or .torrent URL. Add saves it for later; " +
+                                    "Play starts it now through the torrent engine."
+                            )
+                        } else if (addStream) {
                             tr(
                                 "Paste a link to a stream: an m3u8 or mp4, a Terabox/Telebox " +
                                     "share, an MDisk link, or a download page — anything an " +
@@ -450,15 +471,27 @@ fun IptvScreen(nav: NavHostController) {
                 }
             },
             confirmButton = {
-                Button(
-                    enabled = !adding && (addLink.isNotBlank() || addFilePath.isNotBlank()),
-                    onClick = { addNow() },
-                ) { Text(tr("Add")) }
+                Row {
+                    if (addStream && addLink.isNotBlank()) {
+                        TextButton(
+                            enabled = !adding,
+                            onClick = {
+                                // Play now: save then navigate into the stream card
+                                addNow(playAfter = true)
+                            },
+                        ) { Text(tr("Play")) }
+                        Spacer(Modifier.width(8.dp))
+                    }
+                    Button(
+                        enabled = !adding && (addLink.isNotBlank() || addFilePath.isNotBlank()),
+                        onClick = { addNow(playAfter = false) },
+                    ) { Text(tr("Add")) }
+                }
             },
             dismissButton = {
                 TextButton(onClick = {
                     showAdd = false
-                    addStream = false
+                    addStream = false; addTorrent = false
                     addLink = ""
                     addName = ""
                     addFileLabel = ""

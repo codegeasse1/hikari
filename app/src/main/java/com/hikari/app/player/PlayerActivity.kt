@@ -4394,15 +4394,9 @@ class PlayerActivity : ComponentActivity() {
                 addView(TextView(this@PlayerActivity).apply {
                     text = sub
                     dpText(9f)
-                    // Two lines, not one. The sub line is where a menu explains
-                    // itself — "Nothing applied — the picture exactly as the
-                    // server sent it" is 56 characters and does not fit a phone's
-                    // panel on one line, so a one-line cap ellipsised the
-                    // explanation of the option being chosen, which is exactly the
-                    // text that makes the choice possible. The capsule grows by one
-                    // line when it needs to; the rows that do not need it are
-                    // unchanged, so the menu still reads as one family.
-                    maxLines = 2
+                    // Server details (size, audio, codec, flags) need several
+                    // lines — two was still ellipsising mid-sentence ("…2026").
+                    maxLines = 6
                     ellipsize = TextUtils.TruncateAt.END
                     includeFontPadding = false
                     setTextColor(0xFF98A3B5.toInt())
@@ -5385,10 +5379,14 @@ class PlayerActivity : ComponentActivity() {
         sub = when {
             source.url.startsWith("hikari-td:") -> "Telegram"
             source.local -> "Saved on this device"
-            source.details.isNotBlank() -> listOfNotNull(
-                hostOf(source.url),
-                source.details.take(400),
-            ).joinToString(" · ").ifBlank { null }
+            source.details.isNotBlank() -> {
+                // Full details on their own lines — do not pack host + details
+                // into one ellipsised row (that was the "… after 2026" report).
+                val host = hostOf(source.url)
+                val d = source.details.trim()
+                if (host.isNullOrBlank()) d else "$host
+$d"
+            }
             else -> hostOf(source.url)
         },
         badge = when {

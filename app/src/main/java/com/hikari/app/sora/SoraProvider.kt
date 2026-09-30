@@ -322,6 +322,15 @@ class SoraProvider(override val config: ProviderConfig) : ContentProvider {
                         if (clean.isNotBlank()) headers.putIfAbsent(k, clean)
                     }
                     headers.putIfAbsent("User-Agent", Http.UA)
+                    // Many embed hosts require a same-site Referer; without it
+                    // the player buffers forever then hits the 20s dud timer.
+                    if (!headers.containsKey("Referer") && !headers.containsKey("referer")) {
+                        val origin = runCatching {
+                            val u = java.net.URI(raw)
+                            "${u.scheme}://${u.host}/"
+                        }.getOrNull()
+                        if (!origin.isNullOrBlank()) headers["Referer"] = origin
+                    }
                     val subs = ArrayList<SubtitleSource>()
                     o.optJSONArray("subtitles")?.let { sa ->
                         for (j in 0 until sa.length()) {
