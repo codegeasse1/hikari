@@ -4654,6 +4654,28 @@ class ContentRepository(private val manager: ProviderManager) {
                 if (second.why != null) attempt = second
             }
         }
+        // French/localized display title failed on English-only Sora/Nuvio
+        // indexes — also try every other name on the item (originalTitle /
+        // English from TMDB). "Search every provider" only helps when the
+        // query is a name those servers actually index.
+        if (best == null) {
+            for (alt in item.allTitles) {
+                if (alt.equals(title, ignoreCase = true)) continue
+                                val altAttempt = searchBestMatch(
+                    p,
+                    alt,
+                    item,
+                    CROSS_EXT_MIN_MATCH,
+                    episode = episode,
+                    ignoreEmpty = ignoreEmptyRecord,
+                )
+                if (altAttempt.best != null) {
+                    best = altAttempt.best
+                    attempt = altAttempt
+                    break
+                }
+            }
+        }
         if (best == null && attempt.cachedEmpty) {
             // Answered (and remembered) "no such title" moments ago — report it
             // without re-recording a note or re-asking this repo.

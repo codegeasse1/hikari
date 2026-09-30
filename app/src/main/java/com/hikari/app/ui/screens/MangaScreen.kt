@@ -68,6 +68,7 @@ import com.hikari.app.data.ProviderConfig
 import com.hikari.app.i18n.I18n
 import com.hikari.app.i18n.tr
 import com.hikari.app.manga.MangaProvider
+import com.hikari.app.providers.ContentProvider
 import com.hikari.app.manga.MangaProgress
 import com.hikari.app.manga.MangaRecord
 import com.hikari.app.manga.MangaStore
@@ -114,7 +115,13 @@ fun MangaScreen(nav: NavHostController) {
     val all by app.providers.providers.collectAsState()
     // One provider per SOURCE the engine publishes (an extension usually has
     // one), which is exactly the granularity a reader wants: each is one site.
-    val engines = remember(all) { all.filterIsInstance<MangaProvider>() }
+    // Anymex manga (Mangayomi JS) is also a manga engine — same Browse / search.
+    val engines = remember(all) {
+        all.filter { p ->
+            p is MangaProvider ||
+                p.config.type == com.hikari.app.data.ProviderType.ANYMEX_MANGA
+        }
+    }
     val engineKey = remember(engines) { engines.joinToString(",") { it.config.id } }
 
     val rev = rememberMangaRevision()
@@ -462,7 +469,7 @@ fun MangaScreen(nav: NavHostController) {
  */
 @Composable
 private fun EngineRow(
-    engine: MangaProvider,
+    engine: ContentProvider,
     nav: NavHostController,
     pinned: Boolean,
     revealPin: Boolean,
@@ -500,7 +507,7 @@ private fun EngineRow(
                         onTap = {
                             if (revealPin) onRevealPin()
                             else openCatalog(
-                                nav, providerId, name, MangaProvider.CATALOG_POPULAR, popularLabel,
+                                nav, providerId, name, "popular", popularLabel,
                             )
                         },
                     )
@@ -515,7 +522,7 @@ private fun EngineRow(
                 .tvPress(previewPass = false, onClick = {
                     if (revealPin) onRevealPin()
                     else openCatalog(
-                        nav, providerId, name, MangaProvider.CATALOG_POPULAR, popularLabel,
+                        nav, providerId, name, "popular", popularLabel,
                     )
                 })
                 .padding(start = 12.dp, top = 12.dp, bottom = 12.dp, end = 4.dp),
@@ -536,10 +543,10 @@ private fun EngineRow(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     EngineAction(popularLabel) {
-                        openCatalog(nav, providerId, name, MangaProvider.CATALOG_POPULAR, popularLabel)
+                        openCatalog(nav, providerId, name, "popular", popularLabel)
                     }
                     EngineAction(latestLabel) {
-                        openCatalog(nav, providerId, name, MangaProvider.CATALOG_LATEST, latestLabel)
+                        openCatalog(nav, providerId, name, "latest", latestLabel)
                     }
                 }
             }
@@ -942,7 +949,7 @@ private fun MangaIcon(config: ProviderConfig, size: Dp) {
     }
 }
 
-private fun engineName(engines: List<MangaProvider>, providerId: String): String =
+private fun engineName(engines: List<ContentProvider>, providerId: String): String =
     engines.firstOrNull { it.config.id == providerId }?.config?.name.orEmpty()
 
 /**

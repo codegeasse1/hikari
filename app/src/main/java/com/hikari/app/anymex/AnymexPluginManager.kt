@@ -120,7 +120,9 @@ object AnymexPluginManager {
             .put("lang", lang)
             .put("isManga", isMangaEntry)
             .toString()
-        val dartOnly = o.optInt("sourceCodeLanguage", 1) == 0 && !url.endsWith(".js", true)
+        val dartOnly = o.optInt("sourceCodeLanguage", 1) == 0 &&
+            !url.endsWith(".js", true) &&
+            !url.contains("/javascript/", true)
         val kind = when {
             isMangaEntry -> "manga"
             else -> "anime"
@@ -221,7 +223,15 @@ object AnymexPluginManager {
             val name = info?.name?.ifBlank { null } ?: plugin.name
             val prefix = if (isManga) "anymexm|" else "anymex|"
             val type = if (isManga) ProviderType.ANYMEX_MANGA else ProviderType.ANYMEX
-            val id = prefix + safe(name.ifBlank { plugin.url.substringAfterLast('/').substringBeforeLast('.') })
+            // ID must be unique per source URL — safe(name) collapsed every
+            // non-ASCII name to underscores, so installing one Chinese manga
+            // replaced another (Install A → B shows Uninstall, Install B → A gone).
+            val idKey = plugin.url.trim().ifBlank { name }
+                .substringAfter("://")
+                .replace(Regex("[^A-Za-z0-9_.-]"), "_")
+                .takeLast(72)
+                .ifBlank { Integer.toHexString(plugin.url.hashCode()) }
+            val id = prefix + idKey
             val dir = moduleDir(context, id.removePrefix(prefix))
             runCatching { dir.mkdirs() }
             val wrote = runCatching {

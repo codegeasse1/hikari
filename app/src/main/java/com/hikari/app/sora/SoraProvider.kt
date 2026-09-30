@@ -220,17 +220,25 @@ class SoraProvider(override val config: ProviderConfig) : ContentProvider {
             if (!moduleFile.exists()) {
                 return@withContext fail("✗ Module file missing — reinstall this extension.")
             }
-            val link = episode?.id?.takeIf { it.isNotBlank() }
-                ?: item.id.takeIf { it.isNotBlank() }
-                ?: return@withContext fail("✗ No playable link for this title.")
-            val payload = SoraRuntime.streams(moduleFile, config.id, link)
-            val data = dataOf(payload)
-            if (data == null) {
-                val err = runCatching { JSONObject(payload).optString("error") }.getOrNull()
-                return@withContext fail("✗ " + (err?.takeIf { it.isNotBlank() } ?: "no sources found"))
+            val primary = episode?.id?.takeIf { it.isNotBlank() }
+            val fallback = item.id.takeIf { it.isNotBlank() }
+            if (primary == null && fallback == null) {
+                return@withContext fail("✗ No playable link for this title.")
             }
-            val out = mapStreamsAny(data)
-            if (out.isEmpty()) return@withContext fail("✗ No playable sources for this title.")
+            fun tryStreams(link: String): List<StreamSource> {
+                val payload = SoraRuntime.streams(moduleFile, config.id, link)
+                val data = dataOf(payload) ?: return emptyList()
+                return mapStreamsAny(data)
+            }
+            var out = primary?.let { tryStreams(it) }.orEmpty()
+            // Episode href sometimes is a relative path the module can't resolve —
+            // fall back to the series page URL (item.id).
+            if (out.isEmpty() && fallback != null && fallback != primary) {
+                out = tryStreams(fallback)
+            }
+            if (out.isEmpty()) {
+                return@withContext fail("✗ No playable sources for this title.")
+            }
             streamErrors.remove(config.id)
             lastOutcome[config.id] = "✓ ${out.size} source${if (out.size == 1) "" else "s"} in " +
                 "${(System.currentTimeMillis() - started) / 1000}s"

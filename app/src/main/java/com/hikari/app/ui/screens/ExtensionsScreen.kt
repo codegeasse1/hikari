@@ -3582,6 +3582,7 @@ fun ExtensionsScreen(nav: NavHostController? = null) {
                     SourceFolder.VEGA -> RepoKind.VEGA
                     SourceFolder.SORA -> RepoKind.SORA
                     SourceFolder.ANYMEX -> RepoKind.ANYMEX
+                    SourceFolder.MANGAYOMI -> RepoKind.ANYMEX
                     SourceFolder.ANYMEX_HOME -> RepoKind.ANYMEX
                     else -> RepoKind.CS3
                 }
@@ -7213,11 +7214,12 @@ private fun RepoCard(
 }
 
 private fun isDartOnlyPlugin(p: Cs3RepoPlugin): Boolean {
-    val d = p.description
-    if (d.contains("Dart-only", ignoreCase = true)) return true
     val u = p.url
+    // A runnable JS URL always wins — index metadata is often wrong.
     if (u.endsWith(".js", true) || u.contains("/javascript/", true)) return false
     if (u.contains("/dart/", true)) return true
+    val d = p.description
+    if (d.contains("Dart-only", ignoreCase = true)) return true
     return false
 }
 
@@ -7666,7 +7668,14 @@ private fun SiteRow(
     }
 }
 
-enum class SourceFolder { CLOUDSTREAM, HIKARI, NUVIO, SKYSTREAM, ANIYOMI, VEGA, SORA, ANYMEX, ANYMEX_HOME, STREMIO, IPTV }
+private fun isMangayomiRepo(repo: Cs3Repo): Boolean {
+    val u = repo.url.lowercase()
+    val n = repo.name.lowercase()
+    return "mangayomi" in u || "mangayomi" in n ||
+        "kodjodevf" in u || "miraienoki" in u
+}
+
+enum class SourceFolder { CLOUDSTREAM, HIKARI, NUVIO, SKYSTREAM, ANIYOMI, VEGA, SORA, ANYMEX, MANGAYOMI, ANYMEX_HOME, STREMIO, IPTV }
 
 @Composable
 private fun SourceFolderView(
@@ -7707,7 +7716,7 @@ private fun SourceFolderView(
         SourceFolder.ANIYOMI -> RepoKind.ANIYOMI
         SourceFolder.VEGA -> RepoKind.VEGA
         SourceFolder.SORA -> RepoKind.SORA
-                     SourceFolder.ANYMEX -> RepoKind.ANYMEX
+        SourceFolder.ANYMEX, SourceFolder.MANGAYOMI -> RepoKind.ANYMEX
         SourceFolder.STREMIO, SourceFolder.IPTV, SourceFolder.ANYMEX_HOME -> null
     }
     val (title, subtitle) = when (folder) {
@@ -7718,8 +7727,9 @@ private fun SourceFolderView(
         SourceFolder.ANIYOMI -> "Aniyomi repos" to "index.min.json · Aniyomi extensions"
         SourceFolder.VEGA -> "Vega repos" to "manifest.json · Vega providers"
         SourceFolder.SORA -> "Sora repos" to "AnymeX script index · Sora sources"
-         SourceFolder.ANYMEX -> "Anymex repos" to "index.json · Anymex extensions"
-        SourceFolder.ANYMEX_HOME -> "Anymex" to "Sora sources · Anymex extensions"
+        SourceFolder.ANYMEX -> "Anymex repos" to "index.json · Anymex / Kegareta"
+        SourceFolder.MANGAYOMI -> "Mangayomi repos" to "index.json · Mangayomi extensions"
+        SourceFolder.ANYMEX_HOME -> "Anymex" to "Sora · Anymex · Mangayomi"
         SourceFolder.STREMIO -> "Stremio addons" to "manifest.json · Stremio addons"
         SourceFolder.IPTV -> "IPTV playlists" to "M3U / M3U8 links and files · your channels"
     }
@@ -7731,12 +7741,21 @@ private fun SourceFolderView(
         SourceFolder.ANIYOMI -> "Aniyomi"
         SourceFolder.VEGA -> "Vega"
         SourceFolder.SORA -> "Sora"
-         SourceFolder.ANYMEX -> "Anymex"
+        SourceFolder.ANYMEX -> "Anymex"
+        SourceFolder.MANGAYOMI -> "Mangayomi"
         SourceFolder.ANYMEX_HOME -> "Anymex"
         SourceFolder.STREMIO -> "Stremio"
         SourceFolder.IPTV -> "IPTV"
     }
-    val folderRepos = if (kind != null) repos.filter { it.kind == kind } else emptyList()
+    val folderRepos = when (folder) {
+        SourceFolder.MANGAYOMI -> repos.filter {
+            it.kind == RepoKind.ANYMEX && isMangayomiRepo(it)
+        }
+        SourceFolder.ANYMEX -> repos.filter {
+            it.kind == RepoKind.ANYMEX && !isMangayomiRepo(it)
+        }
+        else -> if (kind != null) repos.filter { it.kind == kind } else emptyList()
+    }
     val stremioProviders = if (folder == SourceFolder.STREMIO)
         providers.filter { it.config.type == ProviderType.STREMIO }
     else emptyList()
@@ -7864,12 +7883,20 @@ private fun SourceFolderView(
                         SourceActionRow(
                             icon = Icons.Filled.FolderOpen,
                             title = tr("Anymex"),
-                            subtitle = tr("JavaScript Anymex / Mangayomi extensions"),
+                            subtitle = tr("JavaScript Anymex / Kegareta indexes"),
                             onClick = { onOpenFolder(SourceFolder.ANYMEX) },
+                        )
+                        SourceDivider()
+                        SourceActionRow(
+                            icon = Icons.Filled.FolderOpen,
+                            title = tr("Mangayomi"),
+                            subtitle = tr("Official Mangayomi extension indexes"),
+                            onClick = { onOpenFolder(SourceFolder.MANGAYOMI) },
                         )
                     }
                 }
-                val scriptRepos = repos.filter { it.kind == RepoKind.SORA || it.kind == RepoKind.ANYMEX }
+                // Repos live inside Sora / Anymex / Mangayomi — not listed here.
+                val scriptRepos = emptyList<Cs3Repo>()
                 // Installed Sora/Anymex sources belong under "Installed extensions",
                 // not mixed into this folder's repo list (users were seeing
                 // dessin-anime / KissAsian rows here after install).
@@ -8051,14 +8078,15 @@ private fun SourceFolderView(
                 SourceFolder.IPTV -> "Add IPTV playlist"
                 SourceFolder.SORA -> "Add Sora repo"
                 SourceFolder.ANYMEX -> "Add Anymex repo"
+                SourceFolder.MANGAYOMI -> "Add Mangayomi repo"
                 SourceFolder.ANYMEX_HOME -> "Add Anymex / Sora repo"
                 else -> "Add repo"
             },
             onClick = when (folder) {
                 SourceFolder.STREMIO -> onAddStremio
                 SourceFolder.IPTV -> onAddIptv
-                SourceFolder.SORA -> onAddRepo  // will be wired to SORA kind by parent
-                SourceFolder.ANYMEX, SourceFolder.ANYMEX_HOME -> onAddRepo
+                SourceFolder.SORA -> onAddRepo
+                SourceFolder.ANYMEX, SourceFolder.MANGAYOMI, SourceFolder.ANYMEX_HOME -> onAddRepo
                 else -> onAddRepo
             }
         )
