@@ -10706,6 +10706,21 @@ class PlayerActivity : ComponentActivity() {
         // are exactly the ones that may actually play a title this repo can't.
         // So whenever the detail screen is still attached, ask it for fresh
         // sources before declaring failure.
+        // Fastream is already doing the same bounded re-extraction CloudStream does:
+        // Fastream.getUrl(embed) -> /dl -> JwPlayerHelper/M3u8Helper -> fresh signed link.
+        // Once that walk has been exhausted, NEVER fall into the generic source refresh.
+        // That generic refresh re-runs the whole extension search and can feed the exact
+        // same Fastream row back again, producing the "Found N fresh servers — retrying…"
+        // loop that can sit on screen for 100+ seconds. If another server exists it was
+        // already handled by nextUntriedIndex() above; with none left, fail NOW.
+        val currentUrl = sources.getOrNull(currentIndex)?.url.orEmpty()
+        if (isFastreamUrl(currentUrl) && fastreamRefreshAttempts >= 2) {
+            showError(
+                I18n.t("Fastream link failed after CloudStream extraction. No more Fastream variants are available."),
+                false,
+            )
+            return
+        }
         val ioLike = isIoFailure(code, headerIssue)
         val canRefresh = ioLike || liveSessionId != null
         if (!(canRefresh && refreshSources(currentIndex, details))) {
@@ -10782,11 +10797,18 @@ class PlayerActivity : ComponentActivity() {
         val normalized = url.trim()
         // If the extension already supplied the CloudStream emb.html?ID= form,
         // feed that exact URL back into the real CloudStream extractor.
-        val embed = if (normalized.contains("fastream.to/emb.html?", ignoreCase = true)) {
-            normalized
-        } else {
-            val code = fastreamFileCode(normalized) ?: return null
-            "https://fastream.to/emb.html?$code="
+        // Pass the ORIGINAL Fastream page back to the bundled CloudStream extractor.
+        // This is intentional: CloudStream itself decides whether the input is the special
+        // emb.html?<id>= endpoint (POST /dl) or an ordinary Fastream page (GET the page).
+        // Rebuilding an "embed-$code.html" URL here was Hikari-specific and could take a
+        // perfectly valid CloudStream source down a different extraction path.
+        val embed = when {
+            normalized.contains("fastream.to/emb.html?", ignoreCase = true) -> normalized
+            normalized.contains("fastream.to/embed-", ignoreCase = true) -> normalized
+            else -> {
+                val code = fastreamFileCode(normalized) ?: return null
+                "https://fastream.to/emb.html?$code="
+            }
         }
         return runCatching {
             val links = mutableListOf<com.lagradost.cloudstream3.utils.ExtractorLink>()
