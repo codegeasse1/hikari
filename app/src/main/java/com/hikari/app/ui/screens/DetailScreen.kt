@@ -3008,8 +3008,25 @@ fun DetailScreen(
                     .onSizeChanged { headerPx = it.height }
             ) {
                 HeroArtwork(model = tvHeroImage.first, wide = true, modifier = Modifier.fillMaxSize())
-                Box(Modifier.fillMaxSize().background(Brush.horizontalGradient(listOf(
-                    Color.Black.copy(alpha = 0.92f), Color.Black.copy(alpha = 0.58f), Color.Transparent))))
+                Box(
+                    Modifier.fillMaxSize().background(
+                        Brush.horizontalGradient(
+                            if (episodePosterStyle) {
+                                listOf(
+                                    Color.Transparent,
+                                    Color.Black.copy(alpha = 0.58f),
+                                    Color.Black.copy(alpha = 0.92f),
+                                )
+                            } else {
+                                listOf(
+                                    Color.Black.copy(alpha = 0.92f),
+                                    Color.Black.copy(alpha = 0.58f),
+                                    Color.Transparent,
+                                )
+                            }
+                        )
+                    )
+                )
                 Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(
                     Color.Transparent, Color.Transparent, MaterialTheme.colorScheme.background))))
                 IconButton(onClick = { nav.popBackStack() }, modifier = Modifier.align(Alignment.TopStart).padding(18.dp).tvPress(
