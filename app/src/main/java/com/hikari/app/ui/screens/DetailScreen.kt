@@ -2987,7 +2987,7 @@ fun DetailScreen(
         heroLogo = runCatching { TmdbMeta.logo(item) }.getOrNull()
     }
     val tvHeroImage = m?.let { Artwork.heroModel(it) }
-        ?: (PosterLoader.model(posterUrl ?: fallbackPoster) to false)
+        ?: (PosterLoader.model(posterUrl) to false)
 
     val heroBlock: @Composable () -> Unit = {
         if (isTvLayout) {
@@ -3014,7 +3014,7 @@ fun DetailScreen(
                     }
                     val tvMeta = buildList {
                         m?.year?.let { add(it.toString()) }
-                        if (m?.genres?.isNotEmpty() == true) add(m.genres.take(3).joinToString(" · ") { trTag(it) })
+                        if (m?.genres?.isNotEmpty() == true) add(m.genres.take(3).joinToString(" · "))
                         extras?.details?.runtimeMinutes?.let { mins ->
                             add(if (mins >= 60) (mins / 60).toString()+"h "+(mins % 60).toString()+"m" else mins.toString()+"m")
                         }
