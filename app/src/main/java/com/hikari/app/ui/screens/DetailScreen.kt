@@ -6242,6 +6242,7 @@ private fun EpisodeRow(
         Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
+            .tvPress(previewPass = false, onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -6286,7 +6287,7 @@ private fun EpisodeRow(
         )
         if (onDownload != null) {
             Spacer(Modifier.width(4.dp))
-            IconButton(onClick = onDownload, modifier = Modifier.size(36.dp)) {
+            IconButton(onClick = onDownload, modifier = Modifier.size(44.dp).tvPress(previewPass = true, onClick = onDownload)) {
                 Icon(
                     painter = painterResource(R.drawable.ic_download),
                     contentDescription = tr("Download"),
