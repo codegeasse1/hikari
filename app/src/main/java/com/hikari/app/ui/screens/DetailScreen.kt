@@ -3116,6 +3116,7 @@ fun DetailScreen(
                     // and away as the page is read — see the header note above
                     // for what the wordmark drawn over it does while it does.
                     item(key = "hero") { heroBlock() }
+                    if (!com.hikari.app.tv.TvMode.current()) {
                     item {
                     // The first line of the page is spaced off the header art on
                     // purpose. It used to start flush against the artwork's
@@ -3246,6 +3247,7 @@ fun DetailScreen(
                         Spacer(Modifier.height(16.dp))
                     }
                 }
+                    }
                 // Type reporting varies wildly across .cs3 plugins, so only use
                 // it as a hint: show the episode list whenever the item is a
                 // series OR the provider actually returned episodes, and always
@@ -3269,6 +3271,7 @@ fun DetailScreen(
                 val isSeries = detailIsSeries
                 val btnEp = detailBtnEp
                 val actionLabel = detailActionLabel
+                if (!com.hikari.app.tv.TvMode.current()) {
                 item {
                     // The remote lands on Play the moment this row exists: on a
                     // television the page opens with the D-pad already sitting
@@ -3355,6 +3358,7 @@ fun DetailScreen(
                             }
                         }
                     }
+                }
                 }
                 // A Vega movie's quality rows (the provider's own quality list —
                 // "480p [650MB]", "1080p [9.3GB]" — the way the Vega app lists
