@@ -1944,10 +1944,10 @@ fun DetailScreen(
         // server is found, the player comes up instantly and starts playback the
         // moment a server lands on the live session. Source resolution keeps
         // running here in the background.
-        // A real Play tap supersedes the page's own prefetch: its stream walk
-        // holds the same extension, and the lookup started below must not queue
-        // behind a search the user has just taken over (see [prefetchJob]).
-        vm.cancelPrefetch()
+        // Keep an already-running detail-page prefetch alive. DetailViewModel
+        // shares the extraction through StreamCache, so cancelling it here throws
+        // away the fastest path to a server and starts the same provider walk again.
+        // The player can open immediately and consume the prefetch's first result.
         selectedEp = ep
         pendingStartPos = startPos
         streams = emptyList()
@@ -2002,6 +2002,30 @@ fun DetailScreen(
         // and the source sheet.
         if (launchPlayer(emptyList<StreamSource>(), ep, sid, startPos, wantsDownload)) {
             launched.set(true)
+        }
+        // Warm-start from the persisted last successful server. This removes the
+        // blank "Searching your extension..." wait on repeat plays while the normal
+        // provider search continues in parallel. The player already has failover,
+        // so a stale remembered URL is simply skipped when it cannot prepare.
+        app.appScope.launch {
+            runCatching {
+                val warmType = (vm.meta.value ?: m)?.type?.name ?: type.name
+                val warmKey = "${livePid}|$warmType|${mediaId}|${ep?.id.orEmpty()}"
+                val last = app.store.lastSource(warmKey)
+                if (last.url.isNotBlank() && !last.url.startsWith("javascript:", true)) {
+                    StreamsLive.append(
+                        sid,
+                        listOf(
+                            StreamSource(
+                                name = last.name.ifBlank { "Last used server" },
+                                url = last.url,
+                                providerId = livePid,
+                                providerName = providers.firstOrNull { it.config.id == livePid }?.config?.name.orEmpty(),
+                            )
+                        )
+                    )
+                }
+            }
         }
         // The coroutine's own copy of everything found so far. Deliberately NOT
         // the Compose state: the search outlives this screen, so it keeps its
