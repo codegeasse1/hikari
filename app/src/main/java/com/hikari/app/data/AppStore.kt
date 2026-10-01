@@ -622,6 +622,8 @@ class AppStore(private val ctx: Context) {
         /** Whether the first-run television defaults have been applied to this
          *  install already (they must be applied once, not on every launch). */
         val TV_SEEDED = booleanPreferencesKey("tvSeeded")
+        /** One-time migration for the new player UI defaults. User choices are preserved. */
+        val PLAYER_UI_DEFAULTS_SEEDED = booleanPreferencesKey("playerUiDefaultsSeeded")
         val TV_POSTER_SCALE = intPreferencesKey("tvPosterScale")
         val TV_DETAIL_BIG = booleanPreferencesKey("tvDetailBig")
         val TV_DETAIL_BIG_CHOSEN = booleanPreferencesKey("tvDetailBigChosen")
@@ -727,6 +729,7 @@ class AppStore(private val ctx: Context) {
             K.PLAYER_ENHANCE_CHOSEN.name,
             K.PLAYER_ENHANCE_UNSUPPORTED.name,
             K.TV_SEEDED.name,
+            K.PLAYER_UI_DEFAULTS_SEEDED.name,
             K.TV_POSTER_SCALE.name,
             K.TV_DETAIL_BIG.name,
             K.UI_SCALE_ENABLED.name,
@@ -1032,9 +1035,8 @@ class AppStore(private val ctx: Context) {
      *  screens can be sized apart. See [DEFAULT_DETAIL_LOGO_SIZE] for the scale. */
     const val DEFAULT_LOADING_LOGO_SIZE = 100
 
-        /** The player's control shell ([PlayerSkins]). Minimal — see
-         *  [com.hikari.app.player.PlayerSkins.FALLBACK] for why. */
-        const val DEFAULT_PLAYER_SKIN = com.hikari.app.player.PlayerSkins.MINIMAL
+        /** The player's default shell. TV Player is the new default for both layouts. */
+        const val DEFAULT_PLAYER_SKIN = com.hikari.app.player.PlayerSkins.TV
 
         /** The look of the "finding your server" card ([LoadingStyles]). Poster
          *  card: the title's own poster on a glass card, so the first thing a
@@ -1704,6 +1706,17 @@ class AppStore(private val ctx: Context) {
         store.data.map { it[K.TV_SEEDED] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun tvSeeded(): Boolean = tvSeededFlow().first()
+
+    fun playerUiDefaultsSeededFlow(): Flow<Boolean> =
+        store.data.map { it[K.PLAYER_UI_DEFAULTS_SEEDED] ?: false }
+            .distinctUntilChanged()
+            .flowOn(Dispatchers.Default)
+
+    suspend fun playerUiDefaultsSeeded(): Boolean = playerUiDefaultsSeededFlow().first()
+
+    suspend fun setPlayerUiDefaultsSeeded(seeded: Boolean) {
+        write("PLAYER_UI_DEFAULTS_SEEDED") { it[K.PLAYER_UI_DEFAULTS_SEEDED] = seeded }
+    }
 
     suspend fun setTvSeeded(seeded: Boolean) {
         write("TV_SEEDED") { it[K.TV_SEEDED] = seeded }
@@ -3011,7 +3024,7 @@ class AppStore(private val ctx: Context) {
 
     /** Whether the playback pills should show icons only. */
     fun playerIconOnlyFlow(): Flow<Boolean> =
-        store.data.map { it[K.PLAYER_ICON_ONLY] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
+        store.data.map { it[K.PLAYER_ICON_ONLY] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun playerIconOnly(): Boolean = playerIconOnlyFlow().first()
 
@@ -3033,7 +3046,7 @@ class AppStore(private val ctx: Context) {
 
     /** Whether player panels use the large left-side TV layout. */
     fun playerTvPanelsFlow(): Flow<Boolean> =
-        store.data.map { it[K.PLAYER_TV_PANELS] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
+        store.data.map { it[K.PLAYER_TV_PANELS] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun playerTvPanels(): Boolean = playerTvPanelsFlow().first()
 

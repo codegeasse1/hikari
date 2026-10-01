@@ -3473,61 +3473,72 @@ fun DetailScreen(
                                         )
                                     }
                                 }
-                                Row(
-                                    Modifier.fillMaxWidth().padding(top = 2.dp, bottom = 14.dp),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                Column(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .padding(top = 2.dp, bottom = 14.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp),
                                 ) {
                                     if (seasons.size > 1) {
-                                        Box {
-                                            OutlinedButton(
-                                                onClick = { seasonExpanded = true },
-                                                contentPadding = PaddingValues(horizontal = 11.dp, vertical = 4.dp),
-                                                modifier = Modifier.tvPress(previewPass = true, onClick = { seasonExpanded = true })
-                                            ) {
-                                                Text(tr("Season %s").replace("%s", activeSeason.toString()), maxLines = 1)
-                                            }
-                                            DropdownMenu(
-                                                expanded = seasonExpanded,
-                                                onDismissRequest = { seasonExpanded = false }
-                                            ) {
-                                                seasons.forEach { s ->
-                                                    DropdownMenuItem(
-                                                        modifier = Modifier.tvPress(previewPass = true, onClick = { selectedSeason = s; rangeStart = 0; seasonExpanded = false }),
-                                                        text = { Text(tr("Season %s").replace("%s", s.toString())) },
+                                        Text(
+                                            tr("Seasons"),
+                                            style = MaterialTheme.typography.labelLarge,
+                                            color = Color.White.copy(alpha = 0.72f),
+                                        )
+                                        Row(
+                                            Modifier
+                                                .fillMaxWidth()
+                                                .horizontalScroll(rememberScrollState()),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        ) {
+                                            seasons.forEach { s ->
+                                                OutlinedButton(
+                                                    onClick = {
+                                                        selectedSeason = s
+                                                        rangeStart = 0
+                                                    },
+                                                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                                                    modifier = Modifier.tvPress(
+                                                        enabled = isTvLayout,
+                                                        previewPass = true,
                                                         onClick = {
                                                             selectedSeason = s
                                                             rangeStart = 0
-                                                            seasonExpanded = false
                                                         }
+                                                    ),
+                                                ) {
+                                                    Text(
+                                                        tr("Season %s").replace("%s", s.toString()),
+                                                        maxLines = 1,
                                                     )
                                                 }
                                             }
                                         }
                                     }
                                     if (ranges.isNotEmpty()) {
-                                        Box {
-                                            OutlinedButton(
-                                                onClick = { rangeExpanded = true },
-                                                contentPadding = PaddingValues(horizontal = 11.dp, vertical = 4.dp),
-                                                modifier = Modifier.tvPress(previewPass = true, onClick = { rangeExpanded = true })
-                                            ) {
-                                                val end = (safeStart + epPageSize).coerceAtMost(shownEps.size)
-                                                Text("${safeStart + 1}–$end", maxLines = 1)
-                                            }
-                                            DropdownMenu(
-                                                expanded = rangeExpanded,
-                                                onDismissRequest = { rangeExpanded = false }
-                                            ) {
-                                                ranges.forEach { start ->
-                                                    val end = (start + epPageSize).coerceAtMost(shownEps.size)
-                                                    DropdownMenuItem(
-                                                        modifier = Modifier.tvPress(previewPass = true, onClick = { rangeStart = start; rangeExpanded = false }),
-                                                        text = { Text("${start + 1}–$end") },
-                                                        onClick = {
-                                                            rangeStart = start
-                                                            rangeExpanded = false
-                                                        }
-                                                    )
+                                        Text(
+                                            tr("Episodes"),
+                                            style = MaterialTheme.typography.labelLarge,
+                                            color = Color.White.copy(alpha = 0.72f),
+                                        )
+                                        Row(
+                                            Modifier
+                                                .fillMaxWidth()
+                                                .horizontalScroll(rememberScrollState()),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        ) {
+                                            ranges.forEach { start ->
+                                                val end = (start + epPageSize).coerceAtMost(shownEps.size)
+                                                OutlinedButton(
+                                                    onClick = { rangeStart = start },
+                                                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                                                    modifier = Modifier.tvPress(
+                                                        enabled = isTvLayout,
+                                                        previewPass = true,
+                                                        onClick = { rangeStart = start }
+                                                    ),
+                                                ) {
+                                                    Text("${start + 1}–$end", maxLines = 1)
                                                 }
                                             }
                                         }

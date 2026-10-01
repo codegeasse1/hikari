@@ -447,6 +447,24 @@ class HikariApp : Application() {
                 ) {
                     runCatching { store.setTvDetailBig(true) }
                 }
+                // New player defaults: migrate only the old untouched defaults.
+                // Explicit user choices are preserved across the update.
+                if (!store.playerUiDefaultsSeeded()) {
+                    runCatching {
+                        if (store.playerSkin() == com.hikari.app.player.PlayerSkins.MINIMAL) {
+                            store.setPlayerSkin(com.hikari.app.player.PlayerSkins.TV)
+                        }
+                        if (!store.playerIconOnly()) {
+                            store.setPlayerIconOnly(true)
+                        }
+                        if (!store.playerTvPanels()) {
+                            store.setPlayerTvPanels(true)
+                        }
+                        // 24dp remains the historical default; do not overwrite a
+                        // different value because that means the user chose it.
+                        store.setPlayerUiDefaultsSeeded(true)
+                    }
+                }
                 syncTvPerformance(store)
                 syncTvEnhance(store)
                 // Keep the PERFORMANCE MODE in step with the layout from here

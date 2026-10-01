@@ -100,9 +100,9 @@ fun Modifier.tvToggle(
     enabled: Boolean = true,
     onValueChange: (Boolean) -> Unit,
 ): Modifier = this
-    .focusable(enabled)
+    .focusable(enabled && TvMode.isTv)
     .onPreviewKeyEvent { event ->
-        if (!enabled || event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+        if (!enabled || !TvMode.isTv || event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
         when {
             isPressKey(event.key) -> {
                 onValueChange(!value)
@@ -167,12 +167,13 @@ fun Modifier.tvPress(
      */
     onClick: () -> Unit,
 ): Modifier {
+    val tvEnabled = enabled && TvMode.isTv
     val interactions = remember { MutableInteractionSource() }
     val indication = LocalIndication.current
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     val state = remember { HoldState() }
     fun down(): Boolean {
-        if (!enabled) return false
+        if (!tvEnabled) return false
         if (onHold == null) {
             onClick()
             return true
@@ -202,7 +203,7 @@ fun Modifier.tvPress(
         return true
     }
     fun handle(event: androidx.compose.ui.input.key.KeyEvent): Boolean {
-        if (!enabled) return false
+        if (!tvEnabled) return false
         if (!isPressKey(event.key)) return false
         return when (event.type) {
             KeyEventType.KeyDown -> down()
@@ -224,7 +225,7 @@ fun Modifier.tvPress(
     }
     return this
         .indication(interactions, indication)
-        .focusable(enabled, interactions)
+        .focusable(tvEnabled, interactions)
         .then(press)
 }
 
@@ -244,9 +245,9 @@ fun Modifier.tvAdjust(
     enabled: Boolean = true,
     onAdjust: (Int) -> Unit,
 ): Modifier = this
-    .focusable(enabled)
+    .focusable(enabled && TvMode.isTv)
     .onPreviewKeyEvent { event ->
-        if (!enabled || event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+        if (!enabled || !TvMode.isTv || event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
         when (event.key) {
             Key.DirectionLeft -> {
                 onAdjust(-1)
