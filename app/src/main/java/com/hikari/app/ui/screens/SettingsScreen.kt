@@ -745,6 +745,9 @@ fun SettingsScreen(nav: NavHostController) {
                     }
                     item { SettingsCard { VideoEnhanceCard(app) } }
                     item { SettingsCard { PlayerUiCard(app) } }
+                    item { SettingsCard { HoldToFastForwardCard(app) } }
+                    item { SettingsCard { PlayerIconLabelsCard(app) } }
+                    item { SettingsCard { TvPlayerPanelsCard(app) } }
                     item { SettingsCard { VolumeBoostCard(app) } }
                     item { SettingsCard { SubtitlesDefaultCard(app) } }
                     // "When playback starts" lives in Playback & Servers, once:
@@ -3313,6 +3316,88 @@ private fun PlayerUiCard(app: HikariApp) {
                 scope.launch { runCatching { app.store.setPlayerSkin(pick) } }
             },
             onDismiss = { pickerOpen = false },
+        )
+    }
+}
+
+/**
+ * Speed used by the player's press-and-hold fast-play gesture.
+ */
+@Composable
+private fun HoldToFastForwardCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    val flow = remember { app.store.playerHoldSpeedFlow() }
+    val speed by flow.collectAsState(initial = 2f)
+    var pickerOpen by remember { mutableStateOf(false) }
+    val values = remember { (200..400 step 25).map { it / 100f } }
+
+    Column(Modifier.padding(16.dp)) {
+        SettingsCardHeading(Icons.Filled.Speed, tr("Press-and-hold speed"))
+        ChoiceRow(
+            value = speed.toString() + "x",
+            supporting = tr("Hold your finger on the video for 1 second to play faster. Choose 2x through 4x."),
+            leadingIcon = Icons.Filled.Speed,
+            onClick = { pickerOpen = true },
+        )
+    }
+    if (pickerOpen) {
+        ChoiceDialog(
+            title = tr("Press-and-hold speed"),
+            items = values.map {
+                ChoiceItem(it.toString(), it.toString() + "x", tr("Used while you keep your finger down"))
+            },
+            selectedKey = speed.toString(),
+            onPick = { pick ->
+                pickerOpen = false
+                pick.toFloatOrNull()?.let { chosen ->
+                    scope.launch { runCatching { app.store.setPlayerHoldSpeed(chosen) } }
+                }
+            },
+            onDismiss = { pickerOpen = false },
+        )
+    }
+}
+
+/**
+ * Whether player pills keep their text labels or show only their icons.
+ */
+@Composable
+private fun PlayerIconLabelsCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    val flow = remember { app.store.playerIconOnlyFlow() }
+    val on by flow.collectAsState(initial = false)
+
+    Column(Modifier.padding(16.dp)) {
+        SettingsCardHeading(Icons.Filled.Tune, tr("Player button labels"))
+        SettingsToggle(
+            label = tr("Show icons only"),
+            supporting = tr("Hide names such as Source, Audio and Subtitles while keeping their icons."),
+            checked = on,
+            onCheckedChange = { value ->
+                scope.launch { runCatching { app.store.setPlayerIconOnly(value) } }
+            },
+        )
+    }
+}
+
+/**
+ * TV menu layout for Source, Subtitles, Audio, Quality and other player sheets.
+ */
+@Composable
+private fun TvPlayerPanelsCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    val flow = remember { app.store.playerTvPanelsFlow() }
+    val on by flow.collectAsState(initial = false)
+
+    Column(Modifier.padding(16.dp)) {
+        SettingsCardHeading(Icons.Filled.Tv, tr("TV player panels"))
+        SettingsToggle(
+            label = tr("Use large left-side panels"),
+            supporting = tr("On TV, open player menus from the left side toward the middle. D-pad navigation stays enabled."),
+            checked = on,
+            onCheckedChange = { value ->
+                scope.launch { runCatching { app.store.setPlayerTvPanels(value) } }
+            },
         )
     }
 }

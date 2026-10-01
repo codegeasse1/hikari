@@ -351,6 +351,12 @@ class AppStore(private val ctx: Context) {
          *  a sideways drag does nothing — the surface only plays — while the
          *  up/down brightness & volume swipes keep their own switch. */
         val PLAYER_SLIDE_SEEK = booleanPreferencesKey("playerSlideSeek")
+        /** Speed used while the viewer keeps a finger down on the video. */
+        val PLAYER_HOLD_SPEED = intPreferencesKey("playerHoldSpeed")
+        /** Show player pills as icons without their text labels. */
+        val PLAYER_ICON_ONLY = booleanPreferencesKey("playerIconOnly")
+        /** Use the large left-side TV menu for player panels. */
+        val PLAYER_TV_PANELS = booleanPreferencesKey("playerTvPanels")
         /**
          * The player's volume BOOSTER: +6 dB (2× the amplitude) applied to the
          * audio session by an `android.media.audiofx.LoudnessEnhancer`, so a
@@ -2984,6 +2990,39 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setPlayerSlideSeek(on: Boolean) {
         write("PLAYER_SLIDE_SEEK") { it[K.PLAYER_SLIDE_SEEK] = on }
+    }
+
+    /** Playback speed used by the press-and-hold fast-play gesture (2.00x–4.00x). */
+    fun playerHoldSpeedFlow(): Flow<Float> =
+        store.data.map { ((it[K.PLAYER_HOLD_SPEED] ?: 200).coerceIn(200, 400) / 100f) }
+            .distinctUntilChanged()
+            .flowOn(Dispatchers.Default)
+
+    suspend fun playerHoldSpeed(): Float = playerHoldSpeedFlow().first()
+
+    suspend fun setPlayerHoldSpeed(speed: Float) {
+        val stored = (speed.coerceIn(2f, 4f) * 100f).toInt()
+        write("PLAYER_HOLD_SPEED") { it[K.PLAYER_HOLD_SPEED] = stored }
+    }
+
+    /** Whether the playback pills should show icons only. */
+    fun playerIconOnlyFlow(): Flow<Boolean> =
+        store.data.map { it[K.PLAYER_ICON_ONLY] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun playerIconOnly(): Boolean = playerIconOnlyFlow().first()
+
+    suspend fun setPlayerIconOnly(on: Boolean) {
+        write("PLAYER_ICON_ONLY") { it[K.PLAYER_ICON_ONLY] = on }
+    }
+
+    /** Whether player panels use the large left-side TV layout. */
+    fun playerTvPanelsFlow(): Flow<Boolean> =
+        store.data.map { it[K.PLAYER_TV_PANELS] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun playerTvPanels(): Boolean = playerTvPanelsFlow().first()
+
+    suspend fun setPlayerTvPanels(on: Boolean) {
+        write("PLAYER_TV_PANELS") { it[K.PLAYER_TV_PANELS] = on }
     }
 
     /**

@@ -884,6 +884,15 @@ class PlayerActivity : ComponentActivity() {
     private var auraRingColor = 0
 
     private var speedIndex = 2
+    /** Speed selected for the press-and-hold fast-play gesture. */
+    private var holdFastSpeed = 2f
+    /** Player pill labels can be hidden while retaining their icons. */
+    private var iconOnlyControls = false
+    /** Large left-side TV panels are opt-in from Settings → Player. */
+    private var tvPanelsEnabled = false
+    private val originalPillLabels = HashMap<Int, CharSequence>()
+    private val originalPillDrawables = HashMap<Int, Array<Drawable?>>()
+    private var signedLinkRefreshes = 0
 
     /** True while the controls are locked — the media3 controller stays hidden
      *  and only the small top-right unlock button remains touchable. */
@@ -1043,7 +1052,7 @@ class PlayerActivity : ComponentActivity() {
     private val saveHandler = Handler(Looper.getMainLooper())
     private var saveTask: Runnable? = null
 
-    /** Main-thread handler driving the press-and-hold (≥2s → 2×) timer. */
+    /** Main-thread handler driving the press-and-hold fast-play timer. */
     private val speedHandler = Handler(Looper.getMainLooper())
     private var holdSpeedTimer: Runnable? = null
     private var holdingFast = false
@@ -1367,6 +1376,17 @@ class PlayerActivity : ComponentActivity() {
                     getString(R.string.player_options),
                     listOf(
                         GlassOption(
+                            I18n.t("Press-and-hold speed"),
+                            holdFastSpeed.toString() + "x · " + I18n.t("1 second"),
+                            iconRes = R.drawable.ic_speed, marker = RowMarker.ICON, chevron = true,
+                        ),
+                        GlassOption(
+                            I18n.t("Icon-only player controls"),
+                            if (iconOnlyControls) I18n.t("On") else I18n.t("Off"),
+                            iconRes = R.drawable.ic_settings, marker = RowMarker.ICON,
+                            selected = iconOnlyControls,
+                        ),
+                        GlassOption(
                             getString(R.string.player_fit_video), getString(R.string.player_fit_video_desc),
                             iconRes = R.drawable.ic_resize, marker = RowMarker.ICON,
                             selected = resizeIndex == 0,
@@ -1413,17 +1433,28 @@ class PlayerActivity : ComponentActivity() {
                     iconRes = R.drawable.ic_settings,
                 ) { which ->
                     when (which) {
-                        0, 1, 2 -> {
-                            resizeIndex = which
-                            playerView?.resizeMode = when (which) {
+                        0 -> showHoldSpeedDialog { openOptions() }
+                        1 -> {
+                            iconOnlyControls = !iconOnlyControls
+                            lifecycleScope.launch {
+                                runCatching {
+                                    (applicationContext as HikariApp).store.setPlayerIconOnly(iconOnlyControls)
+                                }
+                            }
+                            applyControlLabels()
+                            openOptions()
+                        }
+                        2, 3, 4 -> {
+                            resizeIndex = which - 2
+                            playerView?.resizeMode = when (which - 2) {
                                 1 -> C.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING
                                 2 -> AspectRatioFrameLayout.RESIZE_MODE_FILL
                                 else -> C.VIDEO_SCALING_MODE_SCALE_TO_FIT
                             }
                             updateResizeButton()
                         }
-                        3 -> cycleRotation()
-                        4 -> {
+                        5 -> cycleRotation()
+                        6 -> {
                             // Same setting as Settings -> Playback start -> the
                             // "Don't play directly" switch, so the player can
                             // flip it without leaving the video.
@@ -1437,7 +1468,7 @@ class PlayerActivity : ComponentActivity() {
                             }
                             openOptions()
                         }
-                        5 -> showCodecOverlay()
+                        7 -> showCodecOverlay()
                     }
                 }
             }
@@ -1540,6 +1571,22 @@ class PlayerActivity : ComponentActivity() {
                 (applicationContext as HikariApp).store.playerSwipes()
             }.getOrDefault(true)
         }
+        lifecycleScope.launch {
+            holdFastSpeed = runCatching {
+                (applicationContext as HikariApp).store.playerHoldSpeed()
+            }.getOrDefault(2f).coerceIn(2f, 4f)
+        }
+        lifecycleScope.launch {
+            iconOnlyControls = runCatching {
+                (applicationContext as HikariApp).store.playerIconOnly()
+            }.getOrDefault(false)
+            applyControlLabels()
+        }
+        lifecycleScope.launch {
+            tvPanelsEnabled = runCatching {
+                (applicationContext as HikariApp).store.playerTvPanels()
+            }.getOrDefault(false)
+        }
         // Slide-to-seek (the horizontal scrub drag). Its own switch, ON until
         // the answer lands — see [playerSlideSeekFlow].
         lifecycleScope.launch {
@@ -1633,16 +1680,14 @@ class PlayerActivity : ComponentActivity() {
                     downY = event.y
                     holdSpeedTimer?.let { speedHandler.removeCallbacks(it) }
                     val task = Runnable {
-                        // Finger has stayed down ≥2s → play at 2× until lift.
-                        // Not while the controls are locked: the lock exists to
-                        // stop accidental interaction, and a speed change is
-                        // very audible.
+                        // Finger has stayed down for the configured threshold →
+                        // play at the user's chosen fast speed until lift.
                         if (controlsLocked) return@Runnable
                         holdingFast = true
-                        applySpeed(2f)
+                        applySpeed(holdFastSpeed)
                     }
                     holdSpeedTimer = task
-                    speedHandler.postDelayed(task, 2000)
+                    speedHandler.postDelayed(task, 1000)
                 }
                 MotionEvent.ACTION_MOVE -> {
                     if (verticalMode == 0 && !horizontalMode) {
@@ -2412,6 +2457,58 @@ class PlayerActivity : ComponentActivity() {
                 it.visibility = View.VISIBLE
                 updateCodecOverlay()
                 startCodecTicker()
+            }
+        }
+    }
+
+    private fun showHoldSpeedDialog(onDone: (() -> Unit)? = null) {
+        val values = (200..400 step 25).map { it / 100f }
+        val options = values.map { value ->
+            GlassOption(
+                label = value.toString() + "x",
+                sub = if (value == holdFastSpeed) I18n.t("Used while you keep your finger down") else null,
+                iconRes = R.drawable.ic_speed,
+                marker = RowMarker.ICON,
+                selected = kotlin.math.abs(value - holdFastSpeed) < 0.001f,
+            )
+        }
+        showGlassMenu(
+            I18n.t("Press-and-hold speed"),
+            options,
+            hint = I18n.t("Hold your finger on the video for 1 second to use this speed."),
+            iconRes = R.drawable.ic_speed,
+        ) { which ->
+            holdFastSpeed = values.getOrNull(which) ?: 2f
+            lifecycleScope.launch {
+                runCatching {
+                    (applicationContext as HikariApp).store.setPlayerHoldSpeed(holdFastSpeed)
+                }
+            }
+            onDone?.invoke()
+        }
+    }
+
+    private fun applyControlLabels() {
+        for (id in pillIds) {
+            val v = findViewById<TextView>(id) ?: continue
+            val original = originalPillLabels.getOrPut(id) { v.text }
+            val drawables = originalPillDrawables.getOrPut(id) { v.compoundDrawablesRelative.copyOf() }
+            if (iconOnlyControls) {
+                v.text = ""
+                v.setCompoundDrawablesRelative(
+                    drawables[0], drawables[1],
+                    if (id == R.id.speed_btn) null else drawables[2],
+                    drawables[3],
+                )
+                v.compoundDrawablePadding = 0
+                val side = (7f * resources.displayMetrics.density).roundToInt()
+                v.setPadding(side, v.paddingTop, side, v.paddingBottom)
+            } else {
+                v.text = original
+                v.setCompoundDrawablesRelative(drawables[0], drawables[1], drawables[2], drawables[3])
+                v.compoundDrawablePadding = (6f * resources.displayMetrics.density).roundToInt()
+                val side = (PlayerSkins.spec(skin).pillPadH * resources.displayMetrics.density).roundToInt()
+                v.setPadding(side, v.paddingTop, side, v.paddingBottom)
             }
         }
     }
@@ -3538,6 +3635,7 @@ class PlayerActivity : ComponentActivity() {
         }
 
         applyAccentPalette()
+        applyControlLabels()
     }
 
     /** A single-colour vertical fade used by the Minimal skin's bars. */
@@ -4463,7 +4561,17 @@ class PlayerActivity : ComponentActivity() {
         // row height, so the shape is clamped to a stadium and every row reads
         // as a pill — the "curved" look the whole player menu set uses.
         val tvMenu = PlayerSkins.normalize(skin) == PlayerSkins.TV && playerTvRemote()
-        val rowShape = if (tvMenu) {
+        val rowShape = if (tvMenu && tvPanelsEnabled && option.labelMaxLines >= 3) {
+            GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 14f * density
+                setColor(if (option.selected) withAlpha(accentMidColor, 0.20f) else 0x161B202A)
+                setStroke(
+                    ((if (option.selected) 1.4f else 0.8f) * density).roundToInt().coerceAtLeast(1),
+                    if (option.selected) 0x70FFFFFF else 0x18FFFFFF
+                )
+            }
+        } else if (tvMenu) {
             GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
                 cornerRadius = 12f * density
@@ -4502,9 +4610,12 @@ class PlayerActivity : ComponentActivity() {
                 isFocusableInTouchMode = true
                 if (foreground == null) foreground = tvFocusRing()
             }
+            val card = tvMenu && tvPanelsEnabled && option.labelMaxLines >= 3
             setPadding(
-                (10 * density).toInt(), (6 * density).toInt(),
-                (10 * density).toInt(), (6 * density).toInt()
+                ((if (card) 14 else 10) * density).toInt(),
+                ((if (card) 10 else 6) * density).toInt(),
+                ((if (card) 14 else 10) * density).toInt(),
+                ((if (card) 10 else 6) * density).toInt()
             )
             background = if (onClick == null) rowShape
             else RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), rowShape, null)
@@ -4514,7 +4625,7 @@ class PlayerActivity : ComponentActivity() {
             orientation = LinearLayout.VERTICAL
             addView(TextView(this@PlayerActivity).apply {
                 text = option.label
-                dpText(11.5f)
+                dpText(if (tvMenu && tvPanelsEnabled && option.labelMaxLines >= 3) 13f else 11.5f)
                 // One line by default: a row is a capsule, so its HEIGHT decides
                 // how round it reads (the corner radius is clamped to half of
                 // it), and a label that wrapped to a second line made those rows
@@ -4531,7 +4642,7 @@ class PlayerActivity : ComponentActivity() {
             option.sub?.takeIf { it.isNotBlank() }?.let { sub ->
                 addView(TextView(this@PlayerActivity).apply {
                     text = sub
-                    dpText(9f)
+                    dpText(if (tvMenu && tvPanelsEnabled && option.labelMaxLines >= 3) 10.5f else 9f)
                     // Two lines, not one. The sub line is where a menu explains
                     // itself — "Nothing applied — the picture exactly as the
                     // server sent it" is 56 characters and does not fit a phone's
@@ -4772,7 +4883,10 @@ class PlayerActivity : ComponentActivity() {
         // skin but Default — see [CurvedGlassPanel.applySkin]) has no glow to
         // make room for, so it only keeps a small margin and the panel itself
         // grows into the rest of the screen: more rows visible, less clipping.
-        val flatPanel = PlayerSkins.isFlat(skin)
+        val sideTvPanel = tvPanelsEnabled && playerTvRemote()
+        val tvSheet = (PlayerSkins.normalize(skin) == PlayerSkins.TV || sideTvPanel) && playerTvRemote()
+        val panelSkin = if (sideTvPanel) PlayerSkins.TV else skin
+        val flatPanel = PlayerSkins.isFlat(panelSkin)
         val halo = if (flatPanel) (10 * density).toInt() else glassHaloPx
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
 
@@ -4800,7 +4914,6 @@ class PlayerActivity : ComponentActivity() {
                     setTextColor(0xFF9AA5B5.toInt())
                 }
             }
-        val tvSheet = PlayerSkins.normalize(skin) == PlayerSkins.TV && playerTvRemote()
         val headerRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -4937,7 +5050,7 @@ class PlayerActivity : ComponentActivity() {
             // Source / Subtitles / Audio / Speed matches the control bar the
             // user picked (Settings -> Player -> Player UI): the bowed neon
             // glass for Glass, and a flat slab/deck/card for the other three.
-            applySkin(skin)
+            applySkin(panelSkin)
             // The rows bend to the panel's curve (see CurvedGlassPanel). The
             // caller hands over the containers that actually hold them — when
             // the whole list fits that is the row container itself, and the row
@@ -5007,7 +5120,8 @@ class PlayerActivity : ComponentActivity() {
         }).coerceAtMost(w.x - 2 * halo - (8 * density).toInt())
             .coerceAtLeast((140 * density).toInt())
         val panelW = if (tvSheet) {
-            (win.x * 0.70f).toInt().coerceAtMost(win.x - 2 * halo - (18 * density).toInt())
+            (win.x * if (sideTvPanel) 0.58f else 0.70f).toInt()
+                .coerceAtMost(win.x - 2 * halo - (18 * density).toInt())
         } else {
             panelWidthFor(win)
         }
@@ -5046,7 +5160,7 @@ class PlayerActivity : ComponentActivity() {
         val room = roomFor(win, panelW)
         val minPanel = (110 * density).toInt()
         val panelH = if (tvSheet) {
-            (win.y * 0.84f).toInt().coerceIn(minPanel, room)
+            (win.y * if (sideTvPanel) 0.90f else 0.84f).toInt().coerceIn(minPanel, room)
         } else if (fillFractionY > 0f) {
             // A FILL panel is the requested fraction of the window, still capped
             // by the room above so the whole thing stays on screen.
@@ -5083,14 +5197,18 @@ class PlayerActivity : ComponentActivity() {
         // The halo is added back on top so the PANEL keeps that width.
         dialog.window?.apply {
             setLayout(panelW + 2 * halo, WindowManager.LayoutParams.WRAP_CONTENT)
-            if (tvSheet) setGravity(Gravity.END or Gravity.CENTER_VERTICAL)
-            else setGravity(Gravity.CENTER)
-            setDimAmount(if (tvSheet) 0.48f else 0.65f)
+            if (tvSheet) {
+                setGravity(
+                    if (sideTvPanel) Gravity.START or Gravity.CENTER_VERTICAL
+                    else Gravity.END or Gravity.CENTER_VERTICAL
+                )
+            } else setGravity(Gravity.CENTER)
+            setDimAmount(if (tvSheet) 0.50f else 0.65f)
             addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
         }
 
         if (tvSheet) {
-            dialog.window?.decorView?.translationX = (22 * density)
+            dialog.window?.decorView?.translationX = if (sideTvPanel) (-12 * density) else (22 * density)
             dialog.window?.decorView?.alpha = 0f
             dialog.window?.decorView?.animate()
                 ?.translationX(0f)
@@ -5223,7 +5341,7 @@ class PlayerActivity : ComponentActivity() {
             lastWinW = now.x
             lastWinH = now.y
             val w = if (tvSheet) {
-                (now.x * 0.70f).toInt().coerceAtMost(now.x - 2 * halo - (18 * density).toInt())
+                (now.x * if (sideTvPanel) 0.58f else 0.70f).toInt().coerceAtMost(now.x - 2 * halo - (18 * density).toInt())
             } else {
                 panelWidthFor(now)
             }
@@ -5586,7 +5704,9 @@ class PlayerActivity : ComponentActivity() {
             source.details.isNotBlank() -> {
                 val host = hostOf(source.url)
                 val d = source.details.trim()
-                if (host.isNullOrBlank()) d else "$host\n$d"
+                val provider = source.providerName.trim()
+                val body = if (host.isNullOrBlank()) d else "$host\n$d"
+                if (tvPanelsEnabled && provider.isNotBlank()) "$body\n$provider" else body
             }
             else -> hostOf(source.url)
         },
@@ -10534,6 +10654,24 @@ class PlayerActivity : ComponentActivity() {
                 noSubsRetry = false
                 playSource(currentIndex)
                 return
+            }
+
+            // A 403 after all three header variants is usually a stale signed
+            // playlist, not a dead mirror. Re-run the attached detail search
+            // before walking the other rows. Closing/reopening the app used to
+            // "fix" this because it happened to obtain a fresh signed URL.
+            if (httpStatus == 403 &&
+                liveSessionId != null &&
+                signedLinkRefreshes < 2 &&
+                !isLiveSource(sources.getOrNull(currentIndex))
+            ) {
+                signedLinkRefreshes++
+                sources.getOrNull(currentIndex)?.url
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { triedUrls.add(it) }
+                noSubsRetry = false
+                resetHeaderWalk()
+                if (refreshSources(currentIndex, details)) return
             }
             // A dud link extracted mid-search: the SAME server is very often
             // fine a moment later, once the provider search has finished and
