@@ -10609,7 +10609,7 @@ class PlayerActivity : ComponentActivity() {
     private fun showLoadingBanner() {
         val banner = loadingBanner ?: return
         val box = loadingTitleBox ?: return
-        val tvLayout = com.hikari.app.tv.TvMode.current()
+        val tvLayout = com.hikari.app.tv.TvMode.isTv
         val style = if (tvLayout) com.hikari.app.ui.LoadingStyles.CINEMATIC
             else com.hikari.app.ui.LoadingStyles.normalize(loadingStyle)
         loadingTitle?.text = intent.getStringExtra("title").orEmpty().ifBlank { "Loading" }.uppercase()
