@@ -96,7 +96,23 @@ class ProviderManager(private val store: AppStore, private val context: Context)
                 // right after, and the second one used to be pure work.
                 if (configs == lastConfigs && _providers.value.isNotEmpty()) continue
                 lastConfigs = configs
-                _providers.value = configs.mapNotNull { instantiate(it) }
+                // An extension is third-party code. A bad constructor or a
+                // freshly-installed module must never take down MainActivity:
+                // before this guard one broken provider during the post-install
+                // refresh could crash the process, and Android would relaunch
+                // Hikari on the Home tab — exactly the "install -> suddenly Home"
+                // behaviour seen on TV. Keep the rest of the installed providers
+                // alive and record the offending provider for diagnostics.
+                _providers.value = configs.mapNotNull { config ->
+                    runCatching { instantiate(config) }
+                        .onFailure { error ->
+                            com.hikari.app.data.Logs.log(
+                                "Providers",
+                                "failed to load ${config.id}: ${error.message ?: error.javaClass.simpleName}",
+                            )
+                        }
+                        .getOrNull()
+                }
             } while (refreshQueued)
         } finally {
             refreshLock.unlock()
