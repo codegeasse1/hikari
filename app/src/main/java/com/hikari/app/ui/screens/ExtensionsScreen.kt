@@ -3175,11 +3175,11 @@ fun ExtensionsScreen(nav: NavHostController? = null) {
     val providers by vm.providers.collectAsState()
     val scope = rememberCoroutineScope()
 
-    var openRepoUrl by remember { mutableStateOf<String?>(null) }
-    var sourcesOpen by remember { mutableStateOf(false) }
-    var openFolder by remember { mutableStateOf<SourceFolder?>(null) }
-    var allReposOpen by remember { mutableStateOf(false) }
-    var installedOpen by remember { mutableStateOf(false) }
+    var openRepoUrl by rememberSaveable { mutableStateOf<String?>(null) }
+    var sourcesOpen by rememberSaveable { mutableStateOf(false) }
+    var openFolder by rememberSaveable { mutableStateOf<SourceFolder?>(null) }
+    var allReposOpen by rememberSaveable { mutableStateOf(false) }
+    var installedOpen by rememberSaveable { mutableStateOf(false) }
     var showStremio by remember { mutableStateOf(false) }
     var showIptv by remember { mutableStateOf(false) }
     var iptvUrl by remember { mutableStateOf("") }
