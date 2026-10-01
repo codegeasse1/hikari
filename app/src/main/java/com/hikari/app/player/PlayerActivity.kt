@@ -4770,8 +4770,17 @@ class PlayerActivity : ComponentActivity() {
         // wrong in the too-large direction only.
         val cfgW = (resources.configuration.screenWidthDp * density).toInt()
         val cfgH = (resources.configuration.screenHeightDp * density).toInt()
-        if (cfgW > 0 && cfgW < size.x) size.x = cfgW
-        if (cfgH > 0 && cfgH < size.y) size.y = cfgH
+        // Configuration bounds can remain in the display's natural portrait
+        // orientation while the player window is landscape. Never clamp a
+        // landscape width down to the portrait width (that was the reason a
+        // TV-panel on a phone suddenly became only ~400px wide).
+        val cfgMatches = if (size.x >= size.y) {
+            if (cfgW >= cfgH) Pair(cfgW, cfgH) else Pair(cfgH, cfgW)
+        } else {
+            if (cfgW <= cfgH) Pair(cfgW, cfgH) else Pair(cfgH, cfgW)
+        }
+        if (cfgMatches.first > 0 && cfgMatches.first < size.x) size.x = cfgMatches.first
+        if (cfgMatches.second > 0 && cfgMatches.second < size.y) size.y = cfgMatches.second
         return size
     }
 
@@ -5139,10 +5148,12 @@ class PlayerActivity : ComponentActivity() {
         }).coerceAtMost(w.x - 2 * halo - (8 * density).toInt())
             .coerceAtLeast((140 * density).toInt())
         val panelW = if (tvSheet) {
-            // Portrait phones need a near-full-width panel; on wide/landscape
-            // windows keep the TV side-panel proportions.
-            val sideFraction = if (win.x < win.y) 0.92f else 0.58f
-            (win.x * if (sideTvPanel) sideFraction else 0.70f).toInt()
+            // With the TV-panel preference enabled, every sheet gets at least
+            // half of the actual player width. A caller can request a wider
+            // results panel (the live server chooser does this below).
+            val requestedFraction = if (fillFractionX > 0f) fillFractionX
+            else if (sideTvPanel) 0.62f else 0.70f
+            (win.x * requestedFraction.coerceIn(0.50f, 0.94f)).toInt()
                 .coerceAtMost(win.x - 2 * halo - (18 * density).toInt())
         } else {
             panelWidthFor(win)
@@ -5364,7 +5375,7 @@ class PlayerActivity : ComponentActivity() {
             lastWinW = now.x
             lastWinH = now.y
             val w = if (tvSheet) {
-                (now.x * if (sideTvPanel) if (now.x < now.y) 0.92f else 0.58f else 0.70f).toInt().coerceAtMost(now.x - 2 * halo - (18 * density).toInt())
+                (now.x * (if (fillFractionX > 0f) fillFractionX else if (sideTvPanel) 0.62f else 0.70f).coerceIn(0.50f, 0.94f)).toInt().coerceAtMost(now.x - 2 * halo - (18 * density).toInt())
             } else {
                 panelWidthFor(now)
             }
@@ -6184,6 +6195,9 @@ class PlayerActivity : ComponentActivity() {
             // The server chooser is a live, unknown-length list. Keep it tall
             // enough to show several servers immediately instead of fitting to
             // the first two rows, while remaining relative to the current window.
+            // This chooser is intentionally wide on both phone and TV:
+            // servers are a full-width result list, not a narrow side sheet.
+            fillFractionX = 0.90f,
             fillFractionY = 0.72f,
         )
         if (hintView != null) {
