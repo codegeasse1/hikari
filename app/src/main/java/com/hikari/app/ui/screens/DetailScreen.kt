@@ -6531,7 +6531,7 @@ private fun EpisodePosterCard(
             style = MaterialTheme.typography.labelMedium,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(top = 5.dp, horizontal = 2.dp)
+            modifier = Modifier.padding(start = 2.dp, top = 5.dp, end = 2.dp)
         )
     }
 }
