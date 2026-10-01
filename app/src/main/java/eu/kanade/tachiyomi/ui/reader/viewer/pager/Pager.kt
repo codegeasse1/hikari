@@ -82,53 +82,67 @@ open class Pager(
     private var isGestureDetectorEnabled = true
 
     /**
-     * Dispatches a touch event.
+     * Manual page turns are intercepted before ViewPager's own drag recogniser once the
+     * gesture is clearly horizontal. The old dispatch-level fallback let DirectionalViewPager
+     * see the same MOVE events first; on some image pages it started its own drag and then our
+     * fallback changed the page again on ACTION_UP. That produced the intermittent "two or
+     * three swipes for one page" behaviour.
+     *
+     * Here the child gets ACTION_DOWN normally, but as soon as the horizontal threshold is
+     * crossed [onInterceptTouchEvent] takes ownership and [onTouchEvent] performs exactly one
+     * logical page change. A zoomed image remains pannable; only the current page holder is
+     * allowed to veto the page-turn gesture.
      */
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
-        // DirectionalViewPager gives nested image views first refusal. SubsamplingScaleImageView
-        // can report itself horizontally scrollable even at fit-to-screen scale, which prevents
-        // the pager from ever entering its drag state. Take the page-turn gesture here instead.
-        // A zoomed SSIV is excluded so normal image panning remains intact.
-        //
-        // R2L is also handled here because DirectionalViewPager maps physical left swipes to
-        // index+1 unconditionally. In R2L the physical direction is reversed: right swipe is
-        // next and left swipe is previous.
-        when (ev.actionMasked) {
-            MotionEvent.ACTION_DOWN -> {
-                swipeDownX = ev.x
-                swipeDownY = ev.y
-                swipeDownItem = currentItem
-                manualSwipeActive = false
-                manualSwipeEligible = isHorizontal() && !currentPageConsumesHorizontalPan()
-            }
-            MotionEvent.ACTION_MOVE -> {
-                if (!manualSwipeActive && manualSwipeEligible) {
-                    val dx = ev.x - swipeDownX
-                    val dy = ev.y - swipeDownY
-                    val slop = ViewConfiguration.get(context).scaledPagingTouchSlopCompat()
-                    if (kotlin.math.abs(dx) > slop &&
-                        kotlin.math.abs(dx) > kotlin.math.abs(dy) * 1.15f
-                    ) {
-                        manualSwipeActive = true
-                        parent?.requestDisallowInterceptTouchEvent(true)
-                        // The image received ACTION_DOWN before the pager knew this was a
-                        // page gesture. Cancel that child gesture exactly once, otherwise the
-                        // child can finish the same drag later and consume the next page change,
-                        // which was the intermittent "two or three swipes for one page" symptom.
-                        runCatching {
-                            MotionEvent.obtain(ev).apply {
-                                action = MotionEvent.ACTION_CANCEL
-                                super@Pager.dispatchTouchEvent(this)
-                                recycle()
-                            }
+        val handled = super.dispatchTouchEvent(ev)
+        if (isGestureDetectorEnabled) {
+            gestureDetector.onTouchEvent(ev)
+        }
+        return handled
+    }
+
+    override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
+        try {
+            when (ev.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    swipeDownX = ev.x
+                    swipeDownY = ev.y
+                    swipeDownItem = currentItem
+                    manualSwipeActive = false
+                    manualSwipeEligible = isHorizontal() && !currentPageConsumesHorizontalPan()
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    if (!manualSwipeActive && manualSwipeEligible) {
+                        val dx = ev.x - swipeDownX
+                        val dy = ev.y - swipeDownY
+                        val slop = ViewConfiguration.get(context).scaledPagingTouchSlopCompat()
+                        if (kotlin.math.abs(dx) > slop &&
+                            kotlin.math.abs(dx) > kotlin.math.abs(dy) * 1.15f
+                        ) {
+                            manualSwipeActive = true
+                            parent?.requestDisallowInterceptTouchEvent(true)
+                            // Returning true here is the important part: the normal ViewPager
+                            // recogniser never receives the same drag, so it cannot turn one
+                            // physical swipe into a second page change.
+                            return true
                         }
-                        return true
                     }
                 }
-                if (manualSwipeActive) return true
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    if (manualSwipeActive) return true
+                }
             }
-            MotionEvent.ACTION_UP -> {
-                if (manualSwipeActive) {
+            return super.onInterceptTouchEvent(ev)
+        } catch (e: IllegalArgumentException) {
+            return false
+        }
+    }
+
+    override fun onTouchEvent(ev: MotionEvent): Boolean {
+        if (manualSwipeActive) {
+            when (ev.actionMasked) {
+                MotionEvent.ACTION_MOVE -> return true
+                MotionEvent.ACTION_UP -> {
                     val dx = ev.x - swipeDownX
                     val slop = ViewConfiguration.get(context).scaledPagingTouchSlopCompat()
                     val base = swipeDownItem
@@ -140,7 +154,6 @@ open class Pager(
                         }
                     } else base
                     if (next != base && next >= 0 && next < (adapter?.count ?: 0)) {
-                        // One physical swipe owns exactly one logical page change.
                         setCurrentItem(next, true)
                     }
                     manualSwipeActive = false
@@ -148,9 +161,7 @@ open class Pager(
                     parent?.requestDisallowInterceptTouchEvent(false)
                     return true
                 }
-            }
-            MotionEvent.ACTION_CANCEL -> {
-                if (manualSwipeActive) {
+                MotionEvent.ACTION_CANCEL -> {
                     manualSwipeActive = false
                     manualSwipeEligible = false
                     parent?.requestDisallowInterceptTouchEvent(false)
@@ -158,11 +169,15 @@ open class Pager(
                 }
             }
         }
-        val handled = super.dispatchTouchEvent(ev)
-        if (isGestureDetectorEnabled) {
-            gestureDetector.onTouchEvent(ev)
+        return try {
+            super.onTouchEvent(ev)
+        } catch (e: NullPointerException) {
+            false
+        } catch (e: IndexOutOfBoundsException) {
+            false
+        } catch (e: IllegalArgumentException) {
+            false
         }
-        return handled
     }
 
     /** True when the visible page is zoomed enough that horizontal movement should pan it. */
