@@ -8503,7 +8503,23 @@ class PlayerActivity : ComponentActivity() {
         val networkFactory: DataSource.Factory = OkHttpDataSource.Factory(client)
             .setUserAgent(ua)
             .setDefaultRequestProperties(sourceHeaders)
-        // DefaultDataSource sits IN FRONT of the OkHttp factory, and that is
+
+        // Match CloudStream: cache online byte ranges before they reach the network.
+        // This is particularly important for TorrServer, where progressive playback
+        // can issue multiple Range reads during container initialization.
+        val cachedNetworkFactory: DataSource.Factory = runCatching {
+            val cache = playerCache ?: SimpleCache(
+                java.io.File(cacheDir, "player-cache"),
+                LeastRecentlyUsedCacheEvictor(150L * 1024L * 1024L),
+                StandaloneDatabaseProvider(this),
+            ).also { playerCache = it }
+            CacheDataSource.Factory()
+                .setCache(cache)
+                .setUpstreamDataSourceFactory(networkFactory)
+                .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+        }.getOrElse { networkFactory }
+
+        // DefaultDataSource sits IN FRONT of the cache-aware network factory, and that is
         // what makes the provider subtitles work at all: they are handed to
         // ExoPlayer as local (file://) URIs, and OkHttpDataSource alone only
         // speaks http(s) — it throws on any other scheme, so every subtitle
@@ -8516,14 +8532,21 @@ class PlayerActivity : ComponentActivity() {
             // is what plays a video that lives in the user's Telegram account
             // (see com.hikari.app.telegram.TdFileDataSource). Everything else
             // goes through the chain below, exactly as before.
-            DefaultDataSource.Factory(this, networkFactory)
+            DefaultDataSource.Factory(this, cachedNetworkFactory)
         )
 
         // DRM-protected sources (ClearKey/Widevine) get a matching media3 DRM
         // session manager; without it ExoPlayer opens the encrypted manifest
         // with no keys and renders a black screen while the timeline still runs.
         val drmManager = buildDrmSessionManager(src.drm, dataSourceFactory)
-        val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
+        // CloudStream uses this updated extractor family in its own player. Keep
+        // that behavior in Hikari, especially for MKV files whose seek information
+        // is stored at the back of the file.
+        val extractorFactory = UpdatedDefaultExtractorsFactory()
+            .setFragmentedMp4ExtractorFlags(
+                androidx.media3.extractor.mp4.FragmentedMp4Extractor.FLAG_MERGE_FRAGMENTED_SIDX
+            )
+        val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory, extractorFactory)
             // Ride out transient CDN hiccups quietly — a fresh connection and a
             // Range-resumed read — instead of letting one dropped socket tear
             // the whole player down, while still failing FAST on terminal ones
