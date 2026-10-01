@@ -3932,7 +3932,7 @@ class PlayerActivity : ComponentActivity() {
      * the layout alone left their remotes moving a focus nobody could see, in
      * the player and in every sheet it opens).
      */
-    private fun playerTvRemote(): Boolean = TvMode.isTv || TvInput.isRemoteActiveNow()
+    private fun playerTvRemote(): Boolean = TvMode.isTv
 
     private fun applyTvFocus() {
         if (!playerTvRemote()) return
