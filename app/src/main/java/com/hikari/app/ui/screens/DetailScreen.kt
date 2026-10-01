@@ -3010,6 +3010,129 @@ fun DetailScreen(
                     previewPass = true, onClick = { nav.popBackStack() })) {
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = tr("Back"), tint = Color.White)
                 }
+                if (detailIsSeries) {
+                    Box(
+                        Modifier
+                            .align(Alignment.CenterEnd)
+                            .padding(top = 58.dp, end = 22.dp, bottom = 24.dp)
+                            .fillMaxWidth(0.37f)
+                            .fillMaxHeight(0.88f)
+                            .clip(RoundedCornerShape(18.dp))
+                            .background(Color.Black.copy(alpha = 0.58f))
+                            .border(1.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(18.dp))
+                    ) {
+                        Column(
+                            Modifier
+                                .fillMaxSize()
+                                .padding(horizontal = 12.dp, vertical = 10.dp)
+                                .verticalScroll(rememberScrollState())
+                        ) {
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(7.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    tr("Episodes (%s)").replace("%s", shownEps.size.toString()),
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = Color.White,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                IconButton(
+                                    onClick = { epsNewestFirst = !epsNewestFirst },
+                                    modifier = Modifier.size(36.dp).tvPress(
+                                        previewPass = true,
+                                        onClick = { epsNewestFirst = !epsNewestFirst }
+                                    )
+                                ) {
+                                    Icon(
+                                        if (epsNewestFirst) Icons.Filled.ArrowDownward else Icons.Filled.ArrowUpward,
+                                        contentDescription = if (epsNewestFirst) tr("Newest episode first") else tr("Oldest episode first"),
+                                        tint = Color.White,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
+                            Row(
+                                Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                if (seasons.size > 1) {
+                                    Box {
+                                        OutlinedButton(
+                                            onClick = { seasonExpanded = true },
+                                            contentPadding = PaddingValues(horizontal = 9.dp, vertical = 3.dp),
+                                            modifier = Modifier.tvPress(previewPass = true, onClick = { seasonExpanded = true })
+                                        ) {
+                                            Text(tr("Season %s").replace("%s", activeSeason.toString()), maxLines = 1)
+                                        }
+                                        DropdownMenu(
+                                            expanded = seasonExpanded,
+                                            onDismissRequest = { seasonExpanded = false }
+                                        ) {
+                                            seasons.forEach { s ->
+                                                DropdownMenuItem(
+                                                    text = { Text(tr("Season %s").replace("%s", s.toString())) },
+                                                    onClick = {
+                                                        selectedSeason = s
+                                                        rangeStart = 0
+                                                        seasonExpanded = false
+                                                    }
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                                if (ranges.isNotEmpty()) {
+                                    Box {
+                                        OutlinedButton(
+                                            onClick = { rangeExpanded = true },
+                                            contentPadding = PaddingValues(horizontal = 9.dp, vertical = 3.dp),
+                                            modifier = Modifier.tvPress(previewPass = true, onClick = { rangeExpanded = true })
+                                        ) {
+                                            val end = (safeStart + epPageSize).coerceAtMost(shownEps.size)
+                                            Text("${safeStart + 1}–$end", maxLines = 1)
+                                        }
+                                        DropdownMenu(
+                                            expanded = rangeExpanded,
+                                            onDismissRequest = { rangeExpanded = false }
+                                        ) {
+                                            ranges.forEach { start ->
+                                                val end = (start + epPageSize).coerceAtMost(shownEps.size)
+                                                DropdownMenuItem(
+                                                    text = { Text("${start + 1}–$end") },
+                                                    onClick = {
+                                                        rangeStart = start
+                                                        rangeExpanded = false
+                                                    }
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if (pageEps.isEmpty()) {
+                                Text(
+                                    if (episodesLoading || !episodesLoaded) tr("Loading episodes…")
+                                    else if (episodesFailed) tr("Couldn't load the episode list from this extension.")
+                                    else tr("No episode list available."),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = Color.White.copy(alpha = 0.78f),
+                                    modifier = Modifier.padding(vertical = 12.dp)
+                                )
+                            } else {
+                                pageEps.forEach { ep ->
+                                    EpisodeRow(
+                                        ep = ep,
+                                        onClick = { tryPlay(ep) },
+                                        onDownload = { tryDownload(ep) }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
                 Column(Modifier.align(Alignment.BottomStart).fillMaxWidth(0.60f).padding(start = 42.dp, end = 24.dp, bottom = 34.dp)) {
                     if (!heroLogo.isNullOrBlank()) {
                         AsyncImage(model = heroLogo, contentDescription = artTitle, contentScale = ContentScale.Fit,
@@ -3502,7 +3625,7 @@ fun DetailScreen(
                         }
                     }
                 }
-                if (isSeries) {
+                if (isSeries && !isTvLayout) {
                     // A Vega series' pack picker (audio variants, seasons,
                     // season+quality rows — the provider's own titles, verbatim,
                     // the way the Vega app's dropdown lists its entries). Only
@@ -3620,7 +3743,7 @@ fun DetailScreen(
                                             ranges.forEach { start ->
                                                 val end = (start + epPageSize).coerceAtMost(shownEps.size)
                                                 DropdownMenuItem(
-                                                    text = { Text("$start–$end") },
+                                                    text = { Text("${start + 1}–$end") },
                                                     onClick = {
                                                         rangeStart = start
                                                         rangeExpanded = false
