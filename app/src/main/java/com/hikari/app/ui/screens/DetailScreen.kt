@@ -1074,16 +1074,48 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
         }
+        // Another lookup (usually the detail-page prefetch) may already own
+        // this extraction. Do not merely wait on its completion: that owner is
+        // publishing partial servers through _liveStreams while it works. A Play
+        // tap that joined the pending extraction used to sit on the player's
+        // "Searching…" card until the entire owner finished, even though a server
+        // had already arrived in the shared live feed. Forward that feed to THIS
+        // lookup's onProgress callback so the player can start immediately, while
+        // still sharing the single extraction and avoiding duplicate provider work.
+        suspend fun awaitShared(pending: CompletableDeferred<StreamLookup>): StreamLookup {
+            val seed = _liveStreams.value
+            if (seed.isNotEmpty()) onProgress?.invoke(seed)
+            val result = withTimeoutOrNull(JOIN_WAIT_MS) {
+                kotlinx.coroutines.coroutineScope {
+                    val forward = if (onProgress != null) {
+                        launch {
+                            _liveStreams.collect { partial ->
+                                if (partial.isNotEmpty()) onProgress(partial)
+                            }
+                        }
+                    } else null
+                    try {
+                        pending.await()
+                    } finally {
+                        forward?.cancel()
+                    }
+                }
+            }
+            return result
+                ?: StreamLookup(
+                    _liveStreams.value.takeIf { it.isNotEmpty() } ?: emptyList(),
+                    complete = false,
+                )
+        }
+
         StreamCache.joined(key)?.let { pending ->
-            return withTimeoutOrNull(JOIN_WAIT_MS) { pending.await() }
-                ?: StreamLookup(emptyList(), complete = false)
+            return awaitShared(pending)
         }
         val deferred = CompletableDeferred<StreamLookup>()
         if (!StreamCache.claim(key, deferred)) {
             val pending = StreamCache.joined(key)
                 ?: return StreamLookup(emptyList(), complete = false)
-            return withTimeoutOrNull(JOIN_WAIT_MS) { pending.await() }
-                ?: StreamLookup(emptyList(), complete = false)
+            return awaitShared(pending)
         }
         try {
             val lookup = withContext(Dispatchers.IO) {
