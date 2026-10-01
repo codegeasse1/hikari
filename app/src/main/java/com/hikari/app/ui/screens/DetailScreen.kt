@@ -3186,6 +3186,7 @@ fun DetailScreen(
                                 pageEps.forEach { ep ->
                                     EpisodeRow(
                                         ep = ep,
+                                        fallbackImage = m?.backdropUrl ?: m?.posterUrl ?: posterUrl,
                                         onClick = { tryPlay(ep) },
                                         onDownload = { tryDownload(ep) }
                                     )
@@ -3233,38 +3234,20 @@ fun DetailScreen(
                         }
                     }
                 }
-                if (episodePosterStyle) {
-                    Button(
-                        onClick = { tryPlay(detailBtnEp) },
-                        modifier = Modifier
-                            .align(Alignment.BottomEnd)
-                            .padding(end = 42.dp, bottom = 18.dp)
-                            .focusRequester(playFocus)
-                            .tvPress(
-                                previewPass = true,
-                                onClick = { tryPlay(detailBtnEp) }
-                            )
-                    ) {
-                        Icon(Icons.Filled.PlayArrow, contentDescription = null)
-                        Spacer(Modifier.width(8.dp))
-                        Text(detailActionLabel)
-                    }
-                } else {
-                    Button(
-                        onClick = { tryPlay(detailBtnEp) },
-                        modifier = Modifier
-                            .align(Alignment.BottomEnd)
-                            .padding(end = 42.dp, bottom = 18.dp)
-                            .focusRequester(playFocus)
-                            .tvPress(
-                                previewPass = true,
-                                onClick = { tryPlay(detailBtnEp) }
-                            )
-                    ) {
-                        Icon(Icons.Filled.PlayArrow, contentDescription = null)
-                        Spacer(Modifier.width(8.dp))
-                        Text(detailActionLabel)
-                    }
+                Button(
+                    onClick = { tryPlay(detailBtnEp) },
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(end = 42.dp, bottom = 18.dp)
+                        .focusRequester(playFocus)
+                        .tvPress(
+                            previewPass = true,
+                            onClick = { tryPlay(detailBtnEp) }
+                        )
+                ) {
+                    Icon(Icons.Filled.PlayArrow, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text(detailActionLabel)
                 }
             }
         } else {
@@ -4101,6 +4084,7 @@ fun DetailScreen(
                                 item(key = "ep-$index") {
                                     EpisodeRow(
                                         ep,
+                                        fallbackImage = m?.backdropUrl ?: m?.posterUrl ?: posterUrl,
                                         onClick = { tryPlay(ep) },
                                         onDownload = { tryDownload(ep) },
                                     )
@@ -6667,7 +6651,7 @@ private fun EpisodePosterCard(
                 .clip(RoundedCornerShape(10.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant)
         ) {
-            val thumb = PosterLoader.model(ep.image ?: fallbackImage)
+            val thumb = PosterLoader.model(ep.image?.takeIf { it.isNotBlank() } ?: fallbackImage)
             if (thumb != null) {
                 AsyncImage(
                     model = thumb,
@@ -6732,6 +6716,7 @@ private fun EpisodePosterCard(
 @Composable
 private fun EpisodeRow(
     ep: Episode,
+    fallbackImage: String? = null,
     onClick: () -> Unit,
     /** Download this episode without watching it: the player opens on it and
      *  shows its own download chooser the moment a server is ready. Null hides
@@ -6747,7 +6732,7 @@ private fun EpisodeRow(
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        val thumb = PosterLoader.model(ep.image)
+        val thumb = PosterLoader.model(ep.image?.takeIf { it.isNotBlank() } ?: fallbackImage)
         if (thumb != null) {
             AsyncImage(
                 model = thumb,
