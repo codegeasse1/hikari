@@ -192,34 +192,6 @@ open class Pager(
 
     private fun ViewConfiguration.scaledPagingTouchSlopCompat(): Int = scaledPagingTouchSlop
     /**
-     * Whether the given [ev] should be intercepted. Only used to prevent crashes when child
-     * views manipulate [requestDisallowInterceptTouchEvent].
-     */
-    override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
-        return try {
-            super.onInterceptTouchEvent(ev)
-        } catch (e: IllegalArgumentException) {
-            false
-        }
-    }
-
-    /**
-     * Handles a touch event. Only used to prevent crashes when child views manipulate
-     * [requestDisallowInterceptTouchEvent].
-     */
-    override fun onTouchEvent(ev: MotionEvent): Boolean {
-        return try {
-            super.onTouchEvent(ev)
-        } catch (e: NullPointerException) {
-            false
-        } catch (e: IndexOutOfBoundsException) {
-            false
-        } catch (e: IllegalArgumentException) {
-            false
-        }
-    }
-
-    /**
      * Executes the given key event when this pager has focus. Just do nothing because the reader
      * already dispatches key events to the viewer and has more control than this method.
      */
