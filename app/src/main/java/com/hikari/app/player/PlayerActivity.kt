@@ -222,6 +222,7 @@ class PlayerActivity : ComponentActivity() {
         val url: String,
         val headers: Map<String, String>,
         val quality: Int,
+        val ordinal: Int,
     )
 
     /** Subtitle tracks contributed by the installed SUBTITLE addons
@@ -8429,7 +8430,7 @@ class PlayerActivity : ComponentActivity() {
             loadingSpinnerStatus?.text = coverPlaybackLine
             lifecycleScope.launch {
                 val resolved = withContext(Dispatchers.IO) {
-                    runCatching { refreshFastreamLink(embed, preferredQuality) }.getOrNull()
+                    runCatching { refreshFastreamLink(embed, preferredQuality, preferredOrdinal) }.getOrNull()
                 }
                 if (currentIndex != index || isFinishing || isDestroyed) return@launch
                 if (resolved != null && resolved.url.isNotBlank()) {
@@ -9180,7 +9181,11 @@ class PlayerActivity : ComponentActivity() {
             liveHint -> liveStartBudgetMs
             torrent -> 50_000L
             telegram -> com.hikari.app.telegram.TdFileDataSource.PLAYER_START_BUDGET_MS
-            else -> 20_000L
+            // Ordinary CloudStream playback does not impose Hikari's old 20s
+            // per-mirror watchdog; Media3's actual load error is what advances
+            // to the next ExtractorLink. Keep only a short safety net for a host
+            // that stays BUFFERING without ever producing an error.
+            else -> 8_000L
         }
         val task = Runnable {
             watchdogTask = null
@@ -9416,7 +9421,14 @@ class PlayerActivity : ComponentActivity() {
      *  ANY other server before it admits the playback cannot start. Long on
      *  purpose: the alternative is the failure panel the user reported, shown
      *  over a search that was still finding servers. */
-    private val stalledReplacementWaitMs: Long = 180_000L
+    // CloudStream advances to its next ExtractorLink as soon as Media3 reports
+    // the link error. Hikari's old 180s replacement wait was the opposite: after
+    // the last known source stalled it kept the title card alive for three minutes
+    // while the background sweep continued, which is exactly the 100s+ "Found N
+    // fresh servers — retrying…" state seen in testing. Keep a short bounded window
+    // only for the special case where the live search is still able to hand us a
+    // genuinely new source.
+    private val stalledReplacementWaitMs: Long = 12_000L
 
     /** How long a probe may hold up the FIRST picture (see [probeAndPlay]).
      *  The walk itself is allowed its own, much longer budget — it just does not
@@ -9438,7 +9450,7 @@ class PlayerActivity : ComponentActivity() {
 
     /** How many "nothing has played yet" servers may be skipped without asking
      *  the user (see [promptSlowServer]). */
-    private val maxSilentSkips: Int = 6
+    private val maxSilentSkips: Int = 3
 
     /**
      * How long a LIVE stream may take to draw its first frame before it is
@@ -10487,7 +10499,7 @@ class PlayerActivity : ComponentActivity() {
                 loadingSpinnerStatus?.text = coverPlaybackLine
                 lifecycleScope.launch {
                     val resolved = withContext(Dispatchers.IO) {
-                        runCatching { refreshFastreamLink(fastreamBase, preferredQuality) }.getOrNull()
+                        runCatching { refreshFastreamLink(fastreamBase, preferredQuality, preferredOrdinal) }.getOrNull()
                     }
                     if (currentIndex != retryIndex || isFinishing || isDestroyed) return@launch
                     if (resolved != null && resolved.url.isNotBlank()) {
@@ -10761,6 +10773,7 @@ class PlayerActivity : ComponentActivity() {
     private suspend fun refreshFastreamLink(
         url: String,
         preferredQuality: Int? = null,
+        preferredOrdinal: Int? = null,
     ): FastreamResolvedLink? {
         val normalized = url.trim()
         // If the extension already supplied the CloudStream emb.html?ID= form,
@@ -10784,9 +10797,14 @@ class PlayerActivity : ComponentActivity() {
             // Fastream's JWPlayer/M3u8Helper path can return 360p, 480p, 720p, … from one
             // master playlist. Keep the quality represented by the server row instead of
             // collapsing every row onto the extractor's first result.
-            val selected = preferredQuality?.let { wanted ->
-                links.minByOrNull { kotlin.math.abs(it.quality - wanted) }
-            } ?: links.first()
+            val selectedIndex = preferredOrdinal
+                ?.minus(1)
+                ?.takeIf { it in links.indices }
+                ?: preferredQuality?.let { wanted ->
+                    links.indices.minByOrNull { kotlin.math.abs(links[it].quality - wanted) }
+                }
+                ?: 0
+            val selected = links[selectedIndex]
             val merged = LinkedHashMap<String, String>()
             selected.headers?.forEach { (k, v) ->
                 if (v.isNotBlank()) merged[k] = v
@@ -10796,6 +10814,7 @@ class PlayerActivity : ComponentActivity() {
                 url = selected.url,
                 headers = sanitizeHeaders(ensureHotlinkHeaders(selected.url, merged)),
                 quality = selected.quality,
+                ordinal = selectedIndex + 1,
             )
         }.getOrNull()
     }
@@ -12143,20 +12162,20 @@ class PlayerActivity : ComponentActivity() {
         /** How many times a player whose every server died may ask the detail
          *  screen for a fresh extraction before finally reporting failure.
          *  Bounded so a genuinely dead video can't loop forever. */
-        private const val MAX_REFRESH_ATTEMPTS = 2
+        private const val MAX_REFRESH_ATTEMPTS = 1
 
         /** How long to wait for re-extracted servers to arrive on the live
          *  session before giving up and showing the error panel. Generous
          *  because the fresh extraction may include a title search across the
          *  other installed extensions, which takes longer than re-running one
          *  repo. */
-        private const val REFRESH_WAIT_MS = 40_000L
+        private const val REFRESH_WAIT_MS = 12_000L
 
         /** How long to wait for a fresh link for the server that just failed
          *  (see onPlayerError's reconnect). Short: the user is sitting on the
          *  title card with no video, and the normal failover must not be held
          *  back for long. */
-        private const val RELINK_WAIT_MS = 12_000L
+        private const val RELINK_WAIT_MS = 8_000L
 
         private val SPEEDS = floatArrayOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f)
 
