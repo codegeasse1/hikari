@@ -161,6 +161,7 @@ import com.hikari.app.ui.components.CategoryPickerSheet
 import com.hikari.app.ui.components.GlassShape
 import com.hikari.app.ui.components.HeroArtwork
 import com.hikari.app.ui.navigation.Routes
+import com.hikari.app.ui.theme.pageBackground
 import com.hikari.app.tv.tvPress
 import com.hikari.app.web.WebViewActivity
 import kotlin.math.roundToInt
@@ -3197,17 +3198,17 @@ fun DetailScreen(
                 }
                 Column(
                     Modifier
-                        .align(if (episodePosterStyle) Alignment.CenterEnd else Alignment.BottomStart)
-                        .fillMaxWidth(if (episodePosterStyle) 0.43f else 0.60f)
+                        .align(Alignment.BottomStart)
+                        .fillMaxWidth(if (episodePosterStyle) 0.78f else 0.68f)
                         .padding(
-                            start = if (episodePosterStyle) 18.dp else 42.dp,
-                            end = 42.dp,
-                            bottom = if (episodePosterStyle) 92.dp else 34.dp,
+                            start = 42.dp,
+                            end = if (episodePosterStyle) 42.dp else 18.dp,
+                            bottom = if (episodePosterStyle) 88.dp else 34.dp,
                         )
                 ) {
                     if (!heroLogo.isNullOrBlank()) {
                         AsyncImage(model = heroLogo, contentDescription = artTitle, contentScale = ContentScale.Fit,
-                            modifier = Modifier.fillMaxWidth(0.72f).heightIn(max = 92.dp))
+                            modifier = Modifier.fillMaxWidth(if (episodePosterStyle) 0.82f else 0.72f).heightIn(max = 92.dp))
                     } else {
                         Text(artTitle, style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold,
                             color = Color.White, maxLines = 2, overflow = TextOverflow.Ellipsis)
@@ -3237,8 +3238,8 @@ fun DetailScreen(
                 Button(
                     onClick = { tryPlay(detailBtnEp) },
                     modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(end = 42.dp, bottom = 18.dp)
+                        .align(Alignment.BottomStart)
+                        .padding(start = 42.dp, bottom = 18.dp)
                         .focusRequester(playFocus)
                         .tvPress(
                             previewPass = true,
@@ -3337,8 +3338,13 @@ fun DetailScreen(
                             Column(
                                 Modifier
                                     .fillMaxWidth()
-                                    .background(Color.Black.copy(alpha = 0.22f))
-                                    .padding(horizontal = 42.dp, vertical = 18.dp)
+                                    .background(pageBackground())
+                                    .padding(
+                                        start = 42.dp,
+                                        end = 42.dp,
+                                        top = if (headerProgress > 0.6f) pinnedLogoDp + 18.dp else 18.dp,
+                                        bottom = 18.dp,
+                                    )
                             ) {
                                 Row(
                                     Modifier.fillMaxWidth(),
@@ -4222,6 +4228,7 @@ fun DetailScreen(
             // setting is on and this title has one (see LoadingTitleBlock).
             logo = if (loadingLogoOn) heroLogo else null,
             logoPercent = loadingLogoPercent,
+            tvLayout = isTvLayout,
         )
     }
 
@@ -4552,9 +4559,18 @@ private fun PlayLoadingBanner(
     /** How big that wordmark is drawn, in percent of its default (see
      *  AppStore.DEFAULT_LOADING_LOGO_SIZE). */
     logoPercent: Int = 100,
+    tvLayout: Boolean = false,
 ) {
     val style = rememberLoadingStyle()
     val effects = rememberLoadingEffect()
+    // TV has a wide 16:9 canvas. Never put the phone-oriented poster/minimal
+    // cards inside that canvas: use the same full-bleed cinematic treatment as
+    // the movie reference, with the artwork fitted edge-to-edge and the title
+    // wordmark centered over it.
+    if (tvLayout) {
+        CinematicLoadingCard(title, episodeLabel, detail, image, logo, logoPercent, effects)
+        return
+    }
     when (LoadingStyles.normalize(style)) {
         LoadingStyles.MINIMAL -> MinimalLoadingCard(title, episodeLabel, detail, logo, logoPercent, effects)
         LoadingStyles.SPOTLIGHT -> SpotlightLoadingCard(title, episodeLabel, detail, image, logo, logoPercent, effects)
