@@ -2994,7 +2994,13 @@ fun DetailScreen(
             // TV detail is a single cinematic hero: artwork, title, metadata,
             // overview and the primary action live in the same focusable scene.
             val tvHeight = (androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp * 0.68f).dp
-            Box(Modifier.fillMaxWidth().height(tvHeight.coerceAtLeast(420.dp)).onSizeChanged { headerPx = it.height }) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(tvHeight.coerceAtLeast(420.dp))
+                    .focusGroup()
+                    .onSizeChanged { headerPx = it.height }
+            ) {
                 HeroArtwork(model = tvHeroImage.first, wide = true, modifier = Modifier.fillMaxSize())
                 Box(Modifier.fillMaxSize().background(Brush.horizontalGradient(listOf(
                     Color.Black.copy(alpha = 0.92f), Color.Black.copy(alpha = 0.58f), Color.Transparent))))
