@@ -3151,7 +3151,10 @@ fun DetailScreen(
                                     contentPadding = PaddingValues(horizontal = 2.dp),
                                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                                 ) {
-                                    items(pageEps, key = { "tv-ep-poster-" + it.number + "-" + it.season }) { ep ->
+                                    itemsIndexed(
+                                        pageEps,
+                                        key = { index, ep -> "tv-ep-poster-$" + "{index}-" + ep.season + "-" + ep.number }
+                                    ) { _, ep ->
                                         EpisodePosterCard(
                                             ep = ep,
                                             onClick = { tryPlay(ep) },
