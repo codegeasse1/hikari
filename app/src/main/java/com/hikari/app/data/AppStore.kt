@@ -614,6 +614,7 @@ class AppStore(private val ctx: Context) {
         val TV_SEEDED = booleanPreferencesKey("tvSeeded")
         val TV_POSTER_SCALE = intPreferencesKey("tvPosterScale")
         val TV_DETAIL_BIG = booleanPreferencesKey("tvDetailBig")
+        val TV_DETAIL_BIG_CHOSEN = booleanPreferencesKey("tvDetailBigChosen")
         /** The PERFORMANCE BOOSTER (Settings → Performance): one switch that
          *  drops the heaviest work Hikari does on a slow device — the blurred
          *  poster halo, the animated poster/loading treatments, and the width of
@@ -1716,6 +1717,15 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setTvDetailBig(big: Boolean) {
         write("TV_DETAIL_BIG") { it[K.TV_DETAIL_BIG] = big }
+    }
+
+    fun tvDetailBigChosenFlow(): Flow<Boolean> =
+        store.data.map { it[K.TV_DETAIL_BIG_CHOSEN] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun tvDetailBigChosen(): Boolean = tvDetailBigChosenFlow().first()
+
+    suspend fun setTvDetailBigChosen(chosen: Boolean) {
+        write("TV_DETAIL_BIG_CHOSEN") { it[K.TV_DETAIL_BIG_CHOSEN] = chosen }
     }
 
     // ---- The floating bottom bar: which tab buttons the user keeps ----
