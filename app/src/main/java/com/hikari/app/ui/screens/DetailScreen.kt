@@ -1908,7 +1908,10 @@ fun DetailScreen(
                 // multi-MB base64 string.
                 putExtra(
                     "bannerBackdrop",
-                    PosterLoader.tokenize(((m?.backdropUrl ?: posterUrl)).orEmpty()).orEmpty()
+                    PosterLoader.tokenize(
+                        if (isTvLayout) m?.backdropUrl.orEmpty()
+                        else (m?.backdropUrl ?: posterUrl).orEmpty()
+                    ).orEmpty()
                 )
                 putExtra("showLoadingBanner", showLoadingCoverSetting)
                 putExtra("loadingStyle", loadingStyleSetting)
@@ -3269,10 +3272,13 @@ fun DetailScreen(
                 Column(
                     Modifier
                         .align(Alignment.BottomStart)
-                        .fillMaxWidth()
+                        // Normal episode-list mode owns the right side of the TV hero.
+                        // Keep the detail text inside the remaining left area instead of
+                        // letting long overviews draw underneath the episode panel.
+                        .fillMaxWidth(if (episodePosterStyle) 1f else 0.56f)
                         .padding(
                             start = 42.dp,
-                            end = 42.dp,
+                            end = 18.dp,
                             bottom = if (episodePosterStyle) 88.dp else 34.dp,
                         )
                 ) {
@@ -3297,28 +3303,36 @@ fun DetailScreen(
                         modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
                     Text(detailActionLabel, style = MaterialTheme.typography.labelLarge, color = Color.White.copy(alpha = 0.72f),
                         modifier = Modifier.padding(top = 7.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(top = 10.dp)) {
-                        FilledTonalButton(onClick = { tryDownload(detailBtnEp) }, modifier = Modifier.tvPress(
-                            previewPass = true, onClick = { tryDownload(detailBtnEp) })) {
-                            Icon(painter = painterResource(R.drawable.ic_download), contentDescription = tr("Download"))
-                        }
-                    }
                 }
-                Button(
-                    onClick = { tryPlay(detailBtnEp) },
-                    modifier = Modifier
+                Row(
+                    Modifier
                         .align(Alignment.BottomStart)
-                        .padding(start = 42.dp, bottom = 18.dp)
-                        .focusRequester(playFocus)
-                        .tvPress(
-                            previewPass = true,
-                            onClick = { tryPlay(detailBtnEp) }
-                        )
+                        .padding(start = 42.dp, bottom = 18.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Icon(Icons.Filled.PlayArrow, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text(detailActionLabel)
+                    Button(
+                        onClick = { tryPlay(detailBtnEp) },
+                        modifier = Modifier
+                            .focusRequester(playFocus)
+                            .tvPress(
+                                previewPass = true,
+                                onClick = { tryPlay(detailBtnEp) }
+                            )
+                    ) {
+                        Icon(Icons.Filled.PlayArrow, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text(detailActionLabel)
+                    }
+                    FilledTonalButton(
+                        onClick = { tryDownload(detailBtnEp) },
+                        modifier = Modifier.tvPress(
+                            previewPass = true,
+                            onClick = { tryDownload(detailBtnEp) }
+                        )
+                    ) {
+                        Icon(painter = painterResource(R.drawable.ic_download), contentDescription = tr("Download"))
+                    }
                 }
             }
         } else {

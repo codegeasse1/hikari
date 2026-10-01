@@ -1139,6 +1139,11 @@ class PlayerActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Re-run hardware TV detection before the View-based player decides its loading layout.
+        // The main activity normally does this already, but the player can be entered directly
+        // (including after an activity/process restore), so its cinematic TV cover must never
+        // depend on stale application-start state.
+        TvMode.detect(this)
         setContentView(R.layout.activity_player)
         // The app font (Settings → Appearance & Theme → App font) reaches this View-based
         // screen by walking the inflated hierarchy — the Compose theme cannot.
@@ -10660,10 +10665,17 @@ class PlayerActivity : ComponentActivity() {
 
         // Backdrop (or the poster as a fallback) — already tokenized by the
         // detail screen, so this never carries a multi-MB base64 string.
-        val bannerModel = PosterLoader.model(
+        // On TV the loading cover is deliberately cinematic. Do not fall back to a
+        // portrait poster: center-cropping it into a landscape TV frame is the exact
+        // vertical/poster loading screen users see on TV. The detail screen sends a
+        // real backdrop when one exists; without one the XML fallback remains clean.
+        val bannerSource = if (tvLayout) {
+            intent.getStringExtra("bannerBackdrop")?.takeIf { it.isNotBlank() }
+        } else {
             intent.getStringExtra("bannerBackdrop")?.takeIf { it.isNotBlank() }
                 ?: intent.getStringExtra("histPoster")
-        )
+        }
+        val bannerModel = PosterLoader.model(bannerSource)
         // The title's own POSTER, for the styles that show it as art in its own
         // right (POSTER), falling back to the backdrop so a title whose addon
         // gave no poster still shows something.

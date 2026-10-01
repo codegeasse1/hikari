@@ -3176,6 +3176,9 @@ fun ExtensionsScreen(nav: NavHostController? = null) {
     var openRepoUrl by rememberSaveable { mutableStateOf<String?>(null) }
     var sourcesOpen by rememberSaveable { mutableStateOf(false) }
     var openFolder by rememberSaveable { mutableStateOf<SourceFolder?>(null) }
+    // Source folders can contain sub-folders (Anymex -> Sora/Mangayomi). Keep
+    // an explicit folder stack so one Back press means exactly one level back.
+    var folderHistory by rememberSaveable { mutableStateOf(emptyList<String>()) }
     var allReposOpen by rememberSaveable { mutableStateOf(false) }
     var installedOpen by rememberSaveable { mutableStateOf(false) }
     var showStremio by remember { mutableStateOf(false) }
@@ -3468,6 +3471,27 @@ fun ExtensionsScreen(nav: NavHostController? = null) {
         vm.updatePlugins(listOf(match.second to match.first))
     }
 
+    fun openSourceFolder(next: SourceFolder) {
+        val current = openFolder
+        if (current != null && current != next) {
+            folderHistory = (folderHistory + current.name).takeLast(16)
+        }
+        openFolder = next
+        vm.clearStatus()
+    }
+
+    fun backSourceFolder() {
+        val previous = folderHistory.lastOrNull()
+        if (previous == null) {
+            folderHistory = emptyList()
+            openFolder = null
+        } else {
+            folderHistory = folderHistory.dropLast(1)
+            openFolder = runCatching { SourceFolder.valueOf(previous) }.getOrNull()
+        }
+        vm.clearStatus()
+    }
+
     val folder = openFolder
 
     BackHandler(
@@ -3478,10 +3502,7 @@ fun ExtensionsScreen(nav: NavHostController? = null) {
                 openRepoUrl = null
                 vm.clearStatus()
             }
-            folder != null -> {
-                openFolder = null
-                vm.clearStatus()
-            }
+            folder != null -> backSourceFolder()
             allReposOpen -> allReposOpen = false
             installedOpen -> installedOpen = false
             sourcesOpen -> sourcesOpen = false
@@ -3564,7 +3585,7 @@ fun ExtensionsScreen(nav: NavHostController? = null) {
             installRunning = installRunning,
             installStopping = installStopping,
             onStopInstall = { vm.stopBulkInstall() },
-            onBack = { openFolder = null; vm.clearStatus() },
+            onBack = { backSourceFolder() },
             onOpenRepo = { repo ->
                 openRepoUrl = repo.url
                 vm.clearStatus()
@@ -3597,7 +3618,7 @@ fun ExtensionsScreen(nav: NavHostController? = null) {
                 vm.runUninstall("Removing repo…", "Removed repo") { vm.removeCs3Repo(url) }
             },
             onOpenSettings = { openProviderSettings(it) },
-            onOpenFolder = { openFolder = it; vm.clearStatus() },
+            onOpenFolder = { openSourceFolder(it) },
         )
         allReposOpen -> AllReposView(
             repos = repos,
@@ -3702,7 +3723,7 @@ fun ExtensionsScreen(nav: NavHostController? = null) {
                 if (pluginsByRepo[repo.url] == null) vm.refreshRepo(repo)
             },
             onOpenSources = { sourcesOpen = true; vm.clearStatus() },
-            onOpenFolder = { f -> openFolder = f; vm.clearStatus() },
+            onOpenFolder = { f -> openSourceFolder(f) },
             onOpenAllRepos = { allReposOpen = true; vm.clearStatus() },
             onOpenInstalled = { installedOpen = true; vm.clearStatus() },
             onAddScraper = { vm.clearStatus(); showScraper = true },
@@ -7373,7 +7394,7 @@ private fun PluginRow(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         } else {
-            Button(onClick = onInstall, modifier = Modifier.tvPress(previewPass = true, onClick = onInstall)) {
+            Button(onClick = onInstall) {
                 Icon(Icons.Filled.Download, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(6.dp))
                 Text(tr("Install"))
