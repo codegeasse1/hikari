@@ -70,6 +70,10 @@ import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSourceException
 import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.cache.CacheDataSource
+import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
+import androidx.media3.datasource.cache.SimpleCache
+import androidx.media3.database.StandaloneDatabaseProvider
 import androidx.media3.datasource.HttpDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
@@ -111,6 +115,7 @@ import com.hikari.app.net.PlayerHttp
 import com.hikari.app.net.SlowNetTip
 import com.hikari.app.net.StreamProbe
 import com.hikari.app.tracker.TrackerSync
+import com.lagradost.cloudstream3.ui.player.UpdatedDefaultExtractorsFactory
 import com.hikari.app.tv.TvInput
 import com.hikari.app.tv.TvMode
 import com.hikari.app.ui.AccentStore
@@ -176,6 +181,8 @@ class PlayerActivity : ComponentActivity() {
         val trackers: List<String> = emptyList(),
         /** True once the source is a TorrServer URL (raw file streaming). */
         val torrentStream: Boolean = false,
+        /** Original CloudStream/Fastream embed URL retained across signed-URL refreshes. */
+        val fastreamSourceUrl: String? = null,
         /** DRM protection info (ClearKey/Widevine) — null for ordinary streams. */
         val drm: DrmSpec? = null,
         /** True for a locally-downloaded copy (a file:// URL or a local
@@ -992,7 +999,16 @@ class PlayerActivity : ComponentActivity() {
     /** The system file picker for "Add external subtitle". */
     private var externalSubLauncher: ActivityResultLauncher<Array<String>>? = null
 
+    /** Retained only for cleanup compatibility. Torrent playback no longer shows a modal. */
     private var torrentDialog: Dialog? = null
+
+    /** CloudStream places a SimpleCache in front of its online data source. */
+    private var playerCache: SimpleCache? = null
+
+    /** Torrent recovery is separate from generic server failover. */
+    private var torrentRetryIndex = -1
+    private var torrentRetryCount = 0
+    private var torrentRetryTask: Runnable? = null
 
     /** Shown while an extension-less / container-unknown stream URL is probed
      *  to discover its real mime/URL before ExoPlayer sees it. */
@@ -7937,6 +7953,8 @@ class PlayerActivity : ComponentActivity() {
         if (index != currentIndex) {
             headerVariant = 0
             fastreamRefreshAttempts = 0
+            torrentRetryIndex = index
+            torrentRetryCount = 0
             // A DIFFERENT server: the one attempt at a restart it is allowed
             // (see [firstFrameRetried]) resets with it. Staying on the same
             // server (a retry after an error, a restart) keeps the flag.
