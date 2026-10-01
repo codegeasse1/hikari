@@ -91,6 +91,7 @@ abstract class PagerViewer(val context: Context) {
 
     init {
         pager.isVisible = false // Don't layout the pager yet
+        pager.isRightToLeft = this is R2LPagerViewer
         pager.layoutParams = ViewGroup.LayoutParams(MATCH_PARENT, MATCH_PARENT)
         pager.isFocusable = false
         pager.offscreenPageLimit = 1
