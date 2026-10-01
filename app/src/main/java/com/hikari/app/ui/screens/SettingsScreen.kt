@@ -2849,7 +2849,7 @@ private fun TvPosterSizeCard(app: HikariApp) {
 private fun TvDetailStyleCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
     val flow = remember { app.store.tvDetailBigFlow() }
-    val on by flow.collectAsState(initial = true)
+    val on by flow.collectAsState(initial = com.hikari.app.tv.TvMode.current())
 
     SettingsSection(
         id = "tv.detailStyle",
