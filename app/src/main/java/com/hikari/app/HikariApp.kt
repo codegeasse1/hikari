@@ -428,6 +428,7 @@ class HikariApp : Application() {
                         store.setUiScaleEnabled(true)
                         store.setUiScale(110)
                         store.setTvPerf(true)
+                        store.setTvDetailBig(true)
                         Logs.log(
                             "App",
                             "television detected (${com.hikari.app.tv.TvMode.describe(this@HikariApp)})" +
