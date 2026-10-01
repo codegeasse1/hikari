@@ -3164,13 +3164,10 @@ fun DetailScreen(
                                     modifier = Modifier.padding(vertical = 12.dp)
                                 )
                             } else if (episodePosterStyle) {
-                                Box(
-                                    Modifier
+                                LazyRow(
+                                    modifier = Modifier
                                         .fillMaxWidth()
-                                        .background(MaterialTheme.colorScheme.surface)
-                                ) {
-                                    LazyRow(
-                                        modifier = Modifier.fillMaxWidth(),
+                                        .background(MaterialTheme.colorScheme.surface),
                                     contentPadding = PaddingValues(horizontal = 2.dp),
                                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                                 ) {
@@ -3186,8 +3183,6 @@ fun DetailScreen(
                                             modifier = Modifier.width(150.dp),
                                         )
                                     }
-                                    )
-                                }
                                 }
                             } else {
                                 pageEps.forEach { ep ->
