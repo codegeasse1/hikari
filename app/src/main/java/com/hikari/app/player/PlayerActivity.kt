@@ -1147,6 +1147,24 @@ class PlayerActivity : ComponentActivity() {
         hideSystemUi()
 
         playerView = findViewById(R.id.player_view)
+        // The progress bar is a real focus target on TV. Once it owns focus,
+        // Left/Right scrubs the video instead of jumping between the buttons.
+        // This complements the normal hidden-controller D-pad seek path.
+        findViewById<android.view.View>(R.id.exo_progress)?.setOnKeyListener { _, keyCode, event ->
+            if (event.action == android.view.KeyEvent.ACTION_DOWN && playerTvRemote()) {
+                when (keyCode) {
+                    android.view.KeyEvent.KEYCODE_DPAD_LEFT -> {
+                        tvSeek(-TV_SEEK_STEP_MS)
+                        true
+                    }
+                    android.view.KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                        tvSeek(TV_SEEK_STEP_MS)
+                        true
+                    }
+                    else -> false
+                }
+            } else false
+        }
         // The Player UI skin is read from the synchronous mirror HikariApp keeps
         // in step with the saved preference (see PlayerSkins), so the controller
         // can be styled the moment it exists.
@@ -4383,8 +4401,8 @@ class PlayerActivity : ComponentActivity() {
                 // server list is the exception (see [serverOption]): there the
                 // name is the choice being made, so it wraps to two lines and
                 // the capsule grows with it.
-                maxLines = option.labelMaxLines
-                ellipsize = TextUtils.TruncateAt.END
+                maxLines = if (option.labelMaxLines >= 3) 6 else option.labelMaxLines
+                ellipsize = if (option.labelMaxLines >= 3) null else TextUtils.TruncateAt.END
                 includeFontPadding = false
                 typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
                 setTextColor(if (option.selected) 0xFFFFFFFF.toInt() else 0xFFDCE3EE.toInt())
