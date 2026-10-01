@@ -8550,9 +8550,6 @@ class PlayerActivity : ComponentActivity() {
         // that behavior in Hikari, especially for MKV files whose seek information
         // is stored at the back of the file.
         val extractorFactory = UpdatedDefaultExtractorsFactory()
-            .setFragmentedMp4ExtractorFlags(
-                androidx.media3.extractor.mp4.FragmentedMp4Extractor.FLAG_MERGE_FRAGMENTED_SIDX
-            )
         val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory, extractorFactory)
             // Ride out transient CDN hiccups quietly — a fresh connection and a
             // Range-resumed read — instead of letting one dropped socket tear
