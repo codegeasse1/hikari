@@ -3044,7 +3044,7 @@ fun DetailScreen(
                             .fillMaxWidth(0.37f)
                             .fillMaxHeight(0.88f)
                             .clip(RoundedCornerShape(18.dp))
-                            .background(Color.Black.copy(alpha = 0.58f))
+                            .background(Color.Black.copy(alpha = 0.94f))
                             .border(1.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(18.dp))
                     ) {
                         Column(
@@ -3237,8 +3237,8 @@ fun DetailScreen(
                 Button(
                     onClick = { tryPlay(detailBtnEp) },
                     modifier = Modifier
-                        .align(Alignment.BottomStart)
-                        .padding(start = 42.dp, bottom = 18.dp)
+                        .align(Alignment.BottomEnd)
+                        .padding(end = 42.dp, bottom = 18.dp)
                         .focusRequester(playFocus)
                         .tvPress(
                             previewPass = true,
@@ -4898,7 +4898,7 @@ private fun CinematicLoadingCard(
             AsyncImage(
                 model = model,
                 contentDescription = null,
-                contentScale = if (tvLayout) ContentScale.Fit else ContentScale.Crop,
+                contentScale = ContentScale.Crop,
                 modifier = Modifier
                     .fillMaxSize()
                     .graphicsLayer {
@@ -4944,7 +4944,7 @@ private fun CinematicLoadingCard(
                 logo,
                 logoPercent,
                 maxLogoHeight = if (tvLayout) 280.dp else 148.dp,
-                logoWidthFraction = if (tvLayout) 0.72f else 0.78f,
+                logoWidthFraction = if (tvLayout) 0.82f else 0.78f,
             ) { Color(0xFFF5C569) }
         }
         Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 56.dp)) {
