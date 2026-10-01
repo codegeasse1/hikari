@@ -2143,7 +2143,7 @@ class PlayerActivity : ComponentActivity() {
                         // it is just no longer what the one line on screen is
                         // about (see [coverPlaybackLine]).
                         val line = coverPlaybackLine ?: s ?: DEFAULT_LOADING_STATUS
-                        loadingStatus?.text = if (tvLayout) com.hikari.app.i18n.tr("Buffering…") else line
+                        loadingStatus?.text = line
                         loadingSpinnerStatus?.text = line
                     }
                     // Belt-and-braces: the detail screen reports "found nothing"
