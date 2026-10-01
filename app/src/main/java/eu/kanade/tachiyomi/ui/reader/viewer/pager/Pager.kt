@@ -111,6 +111,17 @@ open class Pager(
                     ) {
                         manualSwipeActive = true
                         parent?.requestDisallowInterceptTouchEvent(true)
+                        // The image received ACTION_DOWN before the pager knew this was a
+                        // page gesture. Cancel that child gesture exactly once, otherwise the
+                        // child can finish the same drag later and consume the next page change,
+                        // which was the intermittent "two or three swipes for one page" symptom.
+                        runCatching {
+                            MotionEvent.obtain(ev).apply {
+                                action = MotionEvent.ACTION_CANCEL
+                                super@Pager.dispatchTouchEvent(this)
+                                recycle()
+                            }
+                        }
                         return true
                     }
                 }
@@ -120,17 +131,20 @@ open class Pager(
                 if (manualSwipeActive) {
                     val dx = ev.x - swipeDownX
                     val slop = ViewConfiguration.get(context).scaledPagingTouchSlopCompat()
+                    val base = swipeDownItem
                     val next = if (kotlin.math.abs(dx) > slop) {
                         if (isRightToLeft) {
-                            if (dx > 0f) currentItem + 1 else currentItem - 1
+                            if (dx > 0f) base + 1 else base - 1
                         } else {
-                            if (dx < 0f) currentItem + 1 else currentItem - 1
+                            if (dx < 0f) base + 1 else base - 1
                         }
-                    } else currentItem
-                    if (next != currentItem && next >= 0 && next < (adapter?.count ?: 0)) {
+                    } else base
+                    if (next != base && next >= 0 && next < (adapter?.count ?: 0)) {
+                        // One physical swipe owns exactly one logical page change.
                         setCurrentItem(next, true)
                     }
                     manualSwipeActive = false
+                    manualSwipeEligible = false
                     parent?.requestDisallowInterceptTouchEvent(false)
                     return true
                 }
@@ -138,6 +152,7 @@ open class Pager(
             MotionEvent.ACTION_CANCEL -> {
                 if (manualSwipeActive) {
                     manualSwipeActive = false
+                    manualSwipeEligible = false
                     parent?.requestDisallowInterceptTouchEvent(false)
                     return true
                 }
