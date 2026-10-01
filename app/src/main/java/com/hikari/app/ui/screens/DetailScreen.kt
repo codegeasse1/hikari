@@ -3415,6 +3415,7 @@ fun DetailScreen(
                                             ) {
                                                 seasons.forEach { s ->
                                                     DropdownMenuItem(
+                                                        modifier = Modifier.tvPress(previewPass = true, onClick = { selectedSeason = s; rangeStart = 0; seasonExpanded = false }),
                                                         text = { Text(tr("Season %s").replace("%s", s.toString())) },
                                                         onClick = {
                                                             selectedSeason = s
@@ -3443,6 +3444,7 @@ fun DetailScreen(
                                                 ranges.forEach { start ->
                                                     val end = (start + epPageSize).coerceAtMost(shownEps.size)
                                                     DropdownMenuItem(
+                                                        modifier = Modifier.tvPress(previewPass = true, onClick = { rangeStart = start; rangeExpanded = false }),
                                                         text = { Text("${start + 1}–$end") },
                                                         onClick = {
                                                             rangeStart = start
@@ -3963,6 +3965,7 @@ fun DetailScreen(
                                         ) {
                                             seasons.forEach { s ->
                                                 DropdownMenuItem(
+                                                    modifier = Modifier.tvPress(previewPass = true, onClick = { selectedSeason = s; seasonExpanded = false }),
                                                     text = {
                                                         Text(tr("Season %s").replace("%s", s.toString()))
                                                     },
@@ -3981,7 +3984,8 @@ fun DetailScreen(
                                     Box {
                                         OutlinedButton(
                                             onClick = { rangeExpanded = true },
-                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                                            modifier = Modifier.tvPress(previewPass = true, onClick = { rangeExpanded = true })
                                         ) {
                                             val end = (safeStart + epPageSize).coerceAtMost(shownEps.size)
                                             Text("${safeStart + 1}–$end", maxLines = 1)
@@ -3993,6 +3997,7 @@ fun DetailScreen(
                                             ranges.forEach { start ->
                                                 val end = (start + epPageSize).coerceAtMost(shownEps.size)
                                                 DropdownMenuItem(
+                                                    modifier = Modifier.tvPress(previewPass = true, onClick = { rangeStart = start; rangeExpanded = false }),
                                                     text = { Text("${start + 1}–$end") },
                                                     onClick = {
                                                         rangeStart = start
