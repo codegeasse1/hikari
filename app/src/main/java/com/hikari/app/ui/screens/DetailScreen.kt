@@ -2012,13 +2012,14 @@ fun DetailScreen(
                 val warmType = (vm.meta.value ?: m)?.type?.name ?: type.name
                 val warmKey = "${livePid}|$warmType|${mediaId}|${ep?.id.orEmpty()}"
                 val last = app.store.lastSource(warmKey)
-                if (last.url.isNotBlank() && !last.url.startsWith("javascript:", true)) {
+                val warmUrl = last?.url.orEmpty()
+                if (warmUrl.isNotBlank() && !warmUrl.startsWith("javascript:", true)) {
                     StreamsLive.append(
                         sid,
                         listOf(
                             StreamSource(
-                                name = last.name.ifBlank { "Last used server" },
-                                url = last.url,
+                                name = last?.name?.ifBlank { "Last used server" } ?: "Last used server",
+                                url = warmUrl,
                                 providerId = livePid,
                                 providerName = providers.firstOrNull { it.config.id == livePid }?.config?.name.orEmpty(),
                             )
