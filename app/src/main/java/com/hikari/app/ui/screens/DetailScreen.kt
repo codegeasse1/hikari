@@ -161,7 +161,6 @@ import com.hikari.app.ui.components.CategoryPickerSheet
 import com.hikari.app.ui.components.GlassShape
 import com.hikari.app.ui.components.HeroArtwork
 import com.hikari.app.ui.navigation.Routes
-import com.hikari.app.ui.theme.pageBackground
 import com.hikari.app.tv.tvPress
 import com.hikari.app.web.WebViewActivity
 import kotlin.math.roundToInt
@@ -3338,7 +3337,7 @@ fun DetailScreen(
                             Column(
                                 Modifier
                                     .fillMaxWidth()
-                                    .background(pageBackground())
+                                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.96f))
                                     .padding(
                                         start = 42.dp,
                                         end = 42.dp,
