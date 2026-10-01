@@ -570,6 +570,7 @@ class PlayerActivity : ComponentActivity() {
         provider = provider,
         providerId = providerId,
         providerName = providerName,
+        details = details,
     )
 
     /** The inverse of [toPlayerSource]: a player source as a data-layer source,
@@ -590,6 +591,7 @@ class PlayerActivity : ComponentActivity() {
         provider = provider,
         providerId = providerId,
         providerName = providerName,
+        details = details,
     )
 
     /** Which header set the CURRENT source is being tried with, when a CDN
@@ -4399,8 +4401,8 @@ class PlayerActivity : ComponentActivity() {
                     // text that makes the choice possible. The capsule grows by one
                     // line when it needs to; the rows that do not need it are
                     // unchanged, so the menu still reads as one family.
-                    maxLines = 2
-                    ellipsize = TextUtils.TruncateAt.END
+                    maxLines = if (option.labelMaxLines >= 3) 8 else 2
+                    ellipsize = if (option.labelMaxLines >= 3) null else TextUtils.TruncateAt.END
                     includeFontPadding = false
                     setTextColor(0xFF98A3B5.toInt())
                 }, LinearLayout.LayoutParams(
