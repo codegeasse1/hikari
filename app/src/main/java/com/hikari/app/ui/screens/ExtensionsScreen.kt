@@ -6206,7 +6206,7 @@ private fun ProviderCard(
             // remove — so they can never steal the names' width again.
             Row(verticalAlignment = Alignment.CenterVertically) {
             if (updateAvailable && onUpdate != null) {
-                IconButton(onClick = onUpdate) {
+                IconButton(onClick = onUpdate, modifier = Modifier.tvPress(previewPass = true, onClick = onUpdate)) {
                     Icon(
                         Icons.Filled.Refresh,
                         contentDescription = tr("Update"),
@@ -6215,7 +6215,7 @@ private fun ProviderCard(
                 }
             }
             if (onTest != null) {
-                IconButton(onClick = onTest, enabled = !testing) {
+                IconButton(onClick = onTest, enabled = !testing, modifier = Modifier.tvPress(previewPass = true, enabled = !testing, onClick = onTest)) {
                     Icon(
                         Icons.Filled.PlayArrow,
                         contentDescription = tr("Test provider"),
@@ -6225,7 +6225,7 @@ private fun ProviderCard(
                 }
             }
             if (onVerify != null) {
-                IconButton(onClick = onVerify) {
+                IconButton(onClick = onVerify, modifier = Modifier.tvPress(previewPass = true, onClick = onVerify)) {
                     Icon(
                         Icons.Filled.Public,
                         contentDescription = tr("Open the site to pass its Cloudflare check"),
@@ -6234,7 +6234,7 @@ private fun ProviderCard(
                 }
             }
             if (onSettings != null) {
-                IconButton(onClick = onSettings) {
+                IconButton(onClick = onSettings, modifier = Modifier.tvPress(previewPass = true, onClick = onSettings)) {
                     Icon(
                         Icons.Filled.Settings,
                         contentDescription = tr("Provider settings"),
@@ -6242,7 +6242,7 @@ private fun ProviderCard(
                     )
                 }
             }
-            IconButton(onClick = onDelete) {
+            IconButton(onClick = onDelete, modifier = Modifier.tvPress(previewPass = true, onClick = onDelete)) {
                 Icon(
                     Icons.Filled.Delete,
                     contentDescription = tr("Remove"),
@@ -6964,6 +6964,7 @@ private fun SettingsElementRow(
                         Modifier
                             .fillMaxWidth()
                             .clickable { onValue(key, optValue) }
+                            .tvPress(previewPass = false, onClick = { onValue(key, optValue) })
                             .padding(vertical = 2.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -7069,7 +7070,7 @@ private fun RepoCard(
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
     GlassCard(
-        onClick = onClick,
+        onClick = if (com.hikari.app.tv.TvMode.current()) null else onClick,
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 6.dp)
@@ -7077,7 +7078,8 @@ private fun RepoCard(
         Row(
             Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 8.dp),
+                .padding(horizontal = 12.dp, vertical = 8.dp)
+                .tvPress(previewPass = false, onClick = onClick),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box(
@@ -7174,7 +7176,10 @@ private fun RepoCard(
                 },
                 modifier = Modifier
                     .size(actionSize)
-                    .focusable(),
+                    .tvPress(previewPass = true, onClick = {
+                        clipboard.setText(AnnotatedString(repo.url))
+                        Toast.makeText(context, I18n.t("Repo link copied"), Toast.LENGTH_SHORT).show()
+                    }),
             ) {
                 Icon(
                     Icons.Filled.ContentCopy,
@@ -7187,7 +7192,7 @@ private fun RepoCard(
                 onClick = onRefresh,
                 modifier = Modifier
                     .size(actionSize)
-                    .focusable(),
+                    .tvPress(previewPass = true, onClick = onRefresh),
             ) {
                 Icon(
                     Icons.Filled.Refresh,
@@ -7200,7 +7205,7 @@ private fun RepoCard(
                 onClick = onRemoveRepo,
                 modifier = Modifier
                     .size(actionSize)
-                    .focusable(),
+                    .tvPress(previewPass = true, onClick = onRemoveRepo),
             ) {
                 Icon(
                     Icons.Filled.Delete,
@@ -7324,7 +7329,7 @@ private fun PluginRow(
             }
         }
         if (installed && onSettings != null) {
-            IconButton(onClick = onSettings) {
+            IconButton(onClick = onSettings, modifier = Modifier.tvPress(previewPass = true, onClick = onSettings)) {
                 Icon(
                     Icons.Filled.Settings,
                     contentDescription = tr("Plugin settings"),
@@ -7333,18 +7338,19 @@ private fun PluginRow(
             }
         }
         if (onTest != null) {
-            TextButton(onClick = onTest, enabled = !testing) {
+            TextButton(onClick = onTest, enabled = !testing, modifier = Modifier.tvPress(previewPass = true, enabled = !testing, onClick = onTest)) {
                 Text(if (testing) tr("Testing…") else tr("Test"))
             }
         }
         Spacer(Modifier.width(8.dp))
         if (installed) {
             if (updateAvailable && onUpdate != null) {
-                TextButton(onClick = onUninstall) {
+                TextButton(onClick = onUninstall, modifier = Modifier.tvPress(previewPass = true, onClick = onUninstall)) {
                     Text(tr("Uninstall"), color = MaterialTheme.colorScheme.error)
                 }
                 Button(
                     onClick = onUpdate,
+                    modifier = Modifier.tvPress(previewPass = true, onClick = onUpdate),
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                 ) {
                     Icon(
@@ -7367,7 +7373,7 @@ private fun PluginRow(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         } else {
-            Button(onClick = onInstall) {
+            Button(onClick = onInstall, modifier = Modifier.tvPress(previewPass = true, onClick = onInstall)) {
                 Icon(Icons.Filled.Download, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(6.dp))
                 Text(tr("Install"))
