@@ -3198,16 +3198,16 @@ fun DetailScreen(
                 Column(
                     Modifier
                         .align(Alignment.BottomStart)
-                        .fillMaxWidth(if (episodePosterStyle) 0.78f else 0.68f)
+                        .fillMaxWidth()
                         .padding(
                             start = 42.dp,
-                            end = if (episodePosterStyle) 42.dp else 18.dp,
+                            end = 42.dp,
                             bottom = if (episodePosterStyle) 88.dp else 34.dp,
                         )
                 ) {
                     if (!heroLogo.isNullOrBlank()) {
                         AsyncImage(model = heroLogo, contentDescription = artTitle, contentScale = ContentScale.Fit,
-                            modifier = Modifier.fillMaxWidth(if (episodePosterStyle) 0.82f else 0.72f).heightIn(max = 92.dp))
+                            modifier = Modifier.fillMaxWidth(if (episodePosterStyle) 0.48f else 0.58f).heightIn(max = 92.dp))
                     } else {
                         Text(artTitle, style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold,
                             color = Color.White, maxLines = 2, overflow = TextOverflow.Ellipsis)
@@ -3852,6 +3852,17 @@ fun DetailScreen(
                     }
                 }
                 if (isSeries && !isTvLayout) {
+                    // Episode content is always painted on a real surface. Glass
+                    // themes use transparent page backgrounds, which otherwise
+                    // lets the hero art show through the rows and hide them.
+                    item(key = "episode-surface-spacer") {
+                        Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .height(1.dp)
+                                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.98f))
+                        )
+                    }
                     // A Vega series' pack picker (audio variants, seasons,
                     // season+quality rows — the provider's own titles, verbatim,
                     // the way the Vega app's dropdown lists its entries). Only
@@ -4896,14 +4907,14 @@ private fun CinematicLoadingCard(
             AsyncImage(
                 model = model,
                 contentDescription = null,
-                contentScale = ContentScale.Crop,
+                contentScale = if (tvLayout) ContentScale.Fit else ContentScale.Crop,
                 modifier = Modifier
                     .fillMaxSize()
                     .graphicsLayer {
-                        val s = 1f + drift * 0.12f
+                        val s = if (tvLayout) 1f else 1f + drift * 0.12f
                         scaleX = s
                         scaleY = s
-                        alpha = 0.62f
+                        alpha = if (tvLayout) 0.82f else 0.62f
                     }
             )
         }
