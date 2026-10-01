@@ -32,6 +32,13 @@ open class Pager(
 
     var isRestoring = false
 
+    /** True for the R2L viewer. Used only by the touch fallback below. */
+    var isRightToLeft = false
+
+    private var swipeDownX = 0f
+    private var swipeDownY = 0f
+    private var swipeDownItem = 0
+
     override fun onRestoreInstanceState(state: Parcelable?) {
         isRestoring = true
         val currentItem = currentItem
@@ -75,6 +82,41 @@ open class Pager(
      * Dispatches a touch event.
      */
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        // DirectionalViewPager normally handles the swipe itself. Some page views
+        // (notably SubsamplingScaleImageView) can consume the gesture, however, and
+        // that leaves L2R/R2L paging completely dead. Record the gesture around the
+        // normal dispatch and only apply a fallback if ViewPager did NOT change page.
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                swipeDownX = ev.x
+                swipeDownY = ev.y
+                swipeDownItem = currentItem
+            }
+
+            MotionEvent.ACTION_UP -> {
+                val dx = ev.x - swipeDownX
+                val dy = ev.y - swipeDownY
+                val slop = ViewConfiguration.get(context).scaledTouchSlop * 2
+                if (currentItem == swipeDownItem &&
+                    kotlin.math.abs(dx) > slop &&
+                    kotlin.math.abs(dx) > kotlin.math.abs(dy) * 1.25f
+                ) {
+                    val next = if (isRightToLeft) {
+                        if (dx > 0) currentItem - 1 else currentItem + 1
+                    } else {
+                        if (dx < 0) currentItem + 1 else currentItem - 1
+                    }
+                    if (next >= 0 && next < (adapter?.count ?: 0)) {
+                        setCurrentItem(next, true)
+                    }
+                }
+            }
+
+            MotionEvent.ACTION_CANCEL -> {
+                swipeDownItem = currentItem
+            }
+        }
+
         val handled = super.dispatchTouchEvent(ev)
         if (isGestureDetectorEnabled) {
             gestureDetector.onTouchEvent(ev)
