@@ -3550,7 +3550,10 @@ fun DetailScreen(
                                     strokeWidth = 2.dp
                                 )
                             }
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Row(
+                                Modifier.focusGroup(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
                                 // The order arrow. Up = episode 1 first (the way
                                 // the providers hand the list over), down = the
                                 // last episode first for shows whose newest
@@ -6252,6 +6255,7 @@ private fun EpisodeRow(
     Row(
         Modifier
             .fillMaxWidth()
+            .focusGroup()
             .clickable(onClick = onClick)
             .tvPress(previewPass = false, onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 8.dp),
