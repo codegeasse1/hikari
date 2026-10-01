@@ -8016,32 +8016,18 @@ class PlayerActivity : ComponentActivity() {
         val src = sources[index]
         errorPanel?.visibility = View.GONE
 
+        // CloudStream Torrent.transformLink still runs off the UI thread, but there
+        // is no modal progress dialog. The player appears as soon as TorrServer gives
+        // us its local stream URL instead of blocking the whole player UI.
         torrentDialog?.let { runCatching { it.dismiss() } }
         torrentDialog = null
 
         lifecycleScope.launch {
-            // Shown only if the resolve is still running after a beat: a warm
-            // engine answers fast and the user never sees a dialog at all, while
-            // a cold start still explains the wait. Cancellable — backing out
-            // abandons the resolve with it instead of parking the player.
-            val slowJob = launch {
-                kotlinx.coroutines.delay(1200)
-                if (isActive && torrentDialog == null) {
-                    torrentDialog = showGlassProgress(
-                        "Torrent stream",
-                        "Starting torrent engine…\nFirst play can take a few seconds.",
-                        cancelable = true,
-                    )
-                }
-            }
             val res = try {
                 Result.success(withContext(Dispatchers.IO) { transformTorrent(src) })
             } catch (t: Throwable) {
                 Result.failure(t)
             }
-            slowJob.cancel()
-            torrentDialog?.let { runCatching { it.dismiss() } }
-            torrentDialog = null
 
             res.onSuccess { playable ->
                 // TorrServer's /stream/<file>?…&play endpoint serves the torrent
