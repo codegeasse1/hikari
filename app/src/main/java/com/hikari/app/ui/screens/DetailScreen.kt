@@ -4568,7 +4568,7 @@ private fun PlayLoadingBanner(
     // the movie reference, with the artwork fitted edge-to-edge and the title
     // wordmark centered over it.
     if (tvLayout) {
-        CinematicLoadingCard(title, episodeLabel, detail, image, logo, logoPercent, effects)
+        CinematicLoadingCard(title, episodeLabel, detail, image, logo, logoPercent, effects, tvLayout = true)
         return
     }
     when (LoadingStyles.normalize(style)) {
@@ -4655,7 +4655,12 @@ private fun rememberLoadingCoverBrush(hasArtwork: Boolean): Brush {
  *  Never removed by a style: a loading screen with no sign of life is
  *  indistinguishable from a hung app. */
 @Composable
-private fun LoadingStatusLine(tint: Color, dim: Color, centered: Boolean = true) {
+private fun LoadingStatusLine(
+    tint: Color,
+    dim: Color,
+    centered: Boolean = true,
+    statusText: String = tr("Finding the best server…"),
+) {
     Column(
         horizontalAlignment = if (centered) Alignment.CenterHorizontally else Alignment.Start,
         modifier = Modifier.padding(horizontal = 24.dp),
@@ -4667,7 +4672,7 @@ private fun LoadingStatusLine(tint: Color, dim: Color, centered: Boolean = true)
         )
         Spacer(Modifier.height(10.dp))
         Text(
-            tr("Finding the best server…"),
+            statusText,
             style = MaterialTheme.typography.labelMedium,
             color = dim,
             textAlign = if (centered) TextAlign.Center else TextAlign.Start,
@@ -4866,6 +4871,7 @@ private fun CinematicLoadingCard(
     logo: String?,
     logoPercent: Int,
     effects: Set<String>,
+    tvLayout: Boolean = false,
 ) {
     val transition = rememberInfiniteTransition()
     val breath by transition.animateFloat(
@@ -4930,10 +4936,22 @@ private fun CinematicLoadingCard(
                 },
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            LoadingTitleBlock(title, episodeLabel, detail, logo, logoPercent) { Color(0xFFF5C569) }
+            LoadingTitleBlock(
+                title,
+                episodeLabel,
+                detail,
+                logo,
+                logoPercent,
+                maxLogoHeight = if (tvLayout) 280.dp else 148.dp,
+                logoWidthFraction = if (tvLayout) 0.72f else 0.78f,
+            ) { Color(0xFFF5C569) }
         }
         Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 56.dp)) {
-            LoadingStatusLine(Color(0xFFF5C569), Color(0xCCFFFFFF))
+            LoadingStatusLine(
+                Color(0xFFF5C569),
+                Color(0xCCFFFFFF),
+                statusText = if (tvLayout) tr("Buffering…") else tr("Finding the best server…"),
+            )
         }
         // The chosen loading treatments, over everything the style just drew
         // (Settings → App Layout → Loading screen → Effect).
@@ -4961,6 +4979,8 @@ private fun LoadingTitleBlock(
      *  user turned it off) — the text title is then drawn instead. */
     logo: String? = null,
     logoPercent: Int = 100,
+    maxLogoHeight: androidx.compose.ui.unit.Dp = 148.dp,
+    logoWidthFraction: Float = 0.78f,
     accent: () -> Color,
 ) {
     val logoModel = PosterLoader.model(logo?.takeIf { it.isNotBlank() })
@@ -4974,9 +4994,9 @@ private fun LoadingTitleBlock(
                 // about the size a text title occupied; the slider moves it
                 // either way from there (50%…160%).
                 .fillMaxWidth(
-                    (0.78f * (logoPercent.coerceIn(50, 160) / 100f)).coerceIn(0.2f, 1f)
+                    (logoWidthFraction * (logoPercent.coerceIn(50, 160) / 100f)).coerceIn(0.2f, 1f)
                 )
-                .heightIn(max = 148.dp)
+                .heightIn(max = maxLogoHeight)
         )
     } else {
         Text(
