@@ -5112,7 +5112,7 @@ class PlayerActivity : ComponentActivity() {
             dialog.window?.decorView?.post {
                 val decor = dialog.window?.decorView ?: return@post
                 decor.tvFocusableTree()
-                wireTvFocus(decor)
+                (decor as? ViewGroup)?.let { wireTvFocus(it) }
                 (findFirstFocusable(scroll) ?: findFirstFocusable(decor))?.requestFocus()
             }
             // Rows that arrive AFTER the open (subtitle search results, addon
