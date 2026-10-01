@@ -1,8 +1,12 @@
 package com.hikari.app.net
 
 import okhttp3.ConnectionPool
+import okhttp3.Cookie
+import okhttp3.CookieJar
 import okhttp3.Dispatcher
+import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 /**
@@ -33,8 +37,33 @@ import java.util.concurrent.TimeUnit
  */
 object PlayerHttp {
 
+    /**
+     * Shared cookie jar for CS3 extraction and playback. CloudStream's extractor may
+     * establish a session cookie before returning a signed media URL (Fastream is a
+     * common example). Keeping the jar shared is safe; the player itself otherwise
+     * remains the stable 0.10.66 networking path.
+     */
+    val cookieJar: CookieJar = object : CookieJar {
+        private val store = ConcurrentHashMap<String, List<Cookie>>()
+
+        override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
+            if (cookies.isEmpty()) return
+            val host = url.topPrivateDomain() ?: url.host
+            val existing = store[host].orEmpty().associateBy { it.name }.toMutableMap()
+            for (cookie in cookies) existing[cookie.name] = cookie
+            store[host] = existing.values.toList()
+        }
+
+        override fun loadForRequest(url: HttpUrl): List<Cookie> {
+            val host = url.topPrivateDomain() ?: url.host
+            val all = store[host].orEmpty() + store[url.host].orEmpty()
+            return all.filter { it.matches(url) }.distinctBy { it.name }
+        }
+    }
+
     val client: OkHttpClient by lazy {
         OkHttpClient.Builder()
+            .cookieJar(cookieJar)
             .dns(DohDns)
             // Give up on a dead host quickly: failover to the next server must
             // not be gated on a long TCP timeout.
