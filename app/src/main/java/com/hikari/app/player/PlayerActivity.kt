@@ -215,6 +215,15 @@ class PlayerActivity : ComponentActivity() {
                 !StreamProbe.knownBad(url) && StreamProbe.cached(url) != null
     }
 
+    /** A CloudStream Fastream extraction result, including the headers/referer that
+     *  CloudStream carries from ExtractorLink into its player. Dropping these headers and
+     *  keeping only the signed URL is what turns an otherwise valid Fastream link into a 403. */
+    private data class FastreamResolvedLink(
+        val url: String,
+        val headers: Map<String, String>,
+        val quality: Int,
+    )
+
     /** Subtitle tracks contributed by the installed SUBTITLE addons
      *  (OpenSubtitles v3, SubDL…), merged into the playing source's own tracks. */
     private var addonSubs: List<SubtitleSource> = emptyList()
@@ -8392,7 +8401,7 @@ class PlayerActivity : ComponentActivity() {
         notifySourcesChanged()
     }
 
-    private fun playDirectInner(index: Int) {
+    private fun playDirectInner(index: Int, allowFastreamRefresh: Boolean = true) {
         if (index < 0 || index >= sources.size) {
             showError(I18n.t("No more servers to try."), false)
             return
@@ -8400,37 +8409,54 @@ class PlayerActivity : ComponentActivity() {
         dismissSlowDialog()
         currentIndex = index
         var src = sources[index]
-        // Fastream / Pelispedia: refresh signed m3u8 from embed before play so
-        // we match CloudStream (fresh token + cookies in shared jar).
-        if (isFastreamUrl(src.url) && fastreamRefreshAttempts < 2) {
+        // CloudStream resolves Fastream at play time. Do the same off the main thread.
+        // The old runBlocking() implementation froze the player Activity while /dl and the
+        // returned master playlist were fetched. Worse, it kept only link.url and discarded
+        // ExtractorLink.referer/headers, so the resulting s40.fastream.to URL answered 403.
+        if (allowFastreamRefresh && isFastreamUrl(src.url) && fastreamRefreshAttempts < 2) {
             if (src.fastreamSourceUrl == null) {
                 src = src.copy(fastreamSourceUrl = src.url)
                 val seeded = sources.toMutableList()
                 seeded[index] = src
                 sources = seeded
             }
+            val embed = src.fastreamSourceUrl ?: src.url
+            val preferredQuality = Regex("""(\\d{3,4})p""", RegexOption.IGNORE_CASE)
+                .find(src.name)?.groupValues?.getOrNull(1)?.toIntOrNull()
             fastreamRefreshAttempts++
-            val fresh = runCatching {
-                refreshFastreamUrl(src.fastreamSourceUrl ?: src.url)
-            }.getOrNull()
-            if (!fresh.isNullOrBlank() && fresh != src.url) {
-                val list = sources.toMutableList()
-                list[index] = src.copy(
-                    url = fresh,
-                    headers = ensureHotlinkHeaders(fresh, src.headers),
-                    isM3u8 = true,
-                    fastreamSourceUrl = src.fastreamSourceUrl ?: src.url,
-                )
-                sources = list
-                src = sources[index]
-                notifySourcesChanged()
-            } else {
-                // Still apply CS3 headers even if refresh failed
-                val list = sources.toMutableList()
-                list[index] = src.copy(headers = ensureHotlinkHeaders(src.url, src.headers))
-                sources = list
-                src = sources[index]
+            coverPlaybackLine = I18n.t("Resolving Fastream…")
+            loadingStatus?.text = coverPlaybackLine
+            loadingSpinnerStatus?.text = coverPlaybackLine
+            lifecycleScope.launch {
+                val resolved = withContext(Dispatchers.IO) {
+                    runCatching { refreshFastreamLink(embed, preferredQuality) }.getOrNull()
+                }
+                if (currentIndex != index || isFinishing || isDestroyed) return@launch
+                if (resolved != null && resolved.url.isNotBlank()) {
+                    val list = sources.toMutableList()
+                    val current = list.getOrNull(index) ?: return@launch
+                    list[index] = current.copy(
+                        url = resolved.url,
+                        headers = ensureHotlinkHeaders(resolved.url, resolved.headers),
+                        isM3u8 = true,
+                        fastreamSourceUrl = current.fastreamSourceUrl ?: embed,
+                    )
+                    sources = list
+                    notifySourcesChanged()
+                } else {
+                    val list = sources.toMutableList()
+                    val current = list.getOrNull(index) ?: return@launch
+                    list[index] = current.copy(
+                        headers = ensureHotlinkHeaders(current.url, current.headers),
+                        fastreamSourceUrl = current.fastreamSourceUrl ?: embed,
+                    )
+                    sources = list
+                }
+                // The resolved link is now handed to the normal player setup. Do not resolve
+                // the embed a second time in this same attempt.
+                playDirectInner(index, allowFastreamRefresh = false)
             }
+            return
         }
         // Remember what we've actually handed to ExoPlayer this session — a
         // later re-extraction usually repeats most of these URLs, and freshIndex
@@ -10428,66 +10454,72 @@ class PlayerActivity : ComponentActivity() {
                 playSource(currentIndex)
                 return
             }
-            // Some CDNs 403 the request as long as it carries a Referer / other
-            // extractor headers, even though the bare URL plays fine in a
-            // browser. And some addons hand us a header with non-ASCII chars
-            // (a Cyrillic look-alike User-Agent), which OkHttp rejects with
-            // IllegalArgumentException. Both are header problems, not server
-            // problems — walk the header set down (full → no Referer → none)
-            // before declaring the server dead.
+            // Some CDNs reject malformed/non-ASCII extractor headers. Those can be
+            // safely retried with the header set reduced. Fastream is deliberately excluded:
+            // CloudStream's Fastream path uses the embed's apex Referer, and stripping it is
+            // not a valid recovery strategy for a 403.
             val headerIssue = details.contains("Unexpected char", true) ||
                 (details.contains("IllegalArgumentException", true) &&
                     (details.contains("User-Agent", true) || details.contains("Header", true)))
-            // Fastream / Streamwish / etc need apex Referer — stripping it
-            // (variant 1/2) makes 403 worse. Skip the strip walk for them and
-            // fall through to the next server (or re-extract) immediately.
             val curUrl = sources.getOrNull(currentIndex)?.url.orEmpty()
             val hotlinkHost = listOf(
                 "fastream", "streamwish", "streamtape", "lulu", "dood", "filemoon",
                 "mixdrop", "voe.", "vidplay", "mp4upload", "lulustream",
             ).any { curUrl.contains(it, ignoreCase = true) }
-            // Signed Fastream (etc.) 403 = expired token. Kill the whole host so
-            // we don't waste time on every quality variant of the same CDN.
-            // CloudStream retries the same link; Hikari used to mark the whole
-            // Fastream apex dead on first 403 WITHOUT trying other header sets.
-            // That made every Fastream quality fail while CS3 played the same
-            // m3u8. Walk header variants first (CS3 referer-only is variant 0
-            // after ensureHotlinkHeaders). Only mark host dead after variants
-            // are exhausted (see terminalHostFailure path below).
+
+            // Fastream 403 means the signed CDN URL is stale/rejected. CloudStream does NOT
+            // solve this by deleting Referer or trying the same signed URL again: it re-runs
+            // Fastream.getUrl(embed), which POSTs /dl and lets JwPlayerHelper/M3u8Helper produce
+            // a fresh signed link. Hikari must preserve that ExtractorLink's headers/referer.
+            // Run the re-extraction asynchronously so a slow /dl request cannot freeze the UI
+            // for 20s+ per quality/server.
+            if (hotlinkHost && isFastreamUrl(curUrl) &&
+                code == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS &&
+                !terminalHostFailure && fastreamRefreshAttempts < 2
+            ) {
+                fastreamRefreshAttempts++
+                val retryIndex = currentIndex
+                val fastreamBase = sources.getOrNull(retryIndex)?.fastreamSourceUrl ?: curUrl
+                val preferredQuality = Regex("""(\\d{3,4})p""", RegexOption.IGNORE_CASE)
+                    .find(sources.getOrNull(retryIndex)?.name.orEmpty())?.groupValues?.getOrNull(1)?.toIntOrNull()
+                coverPlaybackLine = I18n.t("Refreshing Fastream…")
+                loadingStatus?.text = coverPlaybackLine
+                loadingSpinnerStatus?.text = coverPlaybackLine
+                lifecycleScope.launch {
+                    val resolved = withContext(Dispatchers.IO) {
+                        runCatching { refreshFastreamLink(fastreamBase, preferredQuality) }.getOrNull()
+                    }
+                    if (currentIndex != retryIndex || isFinishing || isDestroyed) return@launch
+                    if (resolved != null && resolved.url.isNotBlank()) {
+                        val list = sources.toMutableList()
+                        val old = list.getOrNull(retryIndex) ?: return@launch
+                        list[retryIndex] = old.copy(
+                            url = resolved.url,
+                            headers = ensureHotlinkHeaders(resolved.url, resolved.headers),
+                            isM3u8 = true,
+                            fastreamSourceUrl = old.fastreamSourceUrl ?: fastreamBase,
+                        )
+                        sources = list
+                        headerVariant = 0
+                        noSubsRetry = false
+                        notifySourcesChanged()
+                        playDirectInner(retryIndex, allowFastreamRefresh = false)
+                    } else {
+                        // Re-extraction failed: let normal failover handle it. Do not spend
+                        // another 20s walking header variants that CloudStream would never use.
+                        failoverFromCurrent(details, code, headerIssue)
+                    }
+                }
+                return
+            }
+
             if ((code == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS || headerIssue) &&
-                headerVariant < 2 && !terminalHostFailure
+                headerVariant < 2 && !terminalHostFailure && !hotlinkHost
             ) {
                 headerVariant++
                 noSubsRetry = false
                 playSource(currentIndex)
                 return
-            }
-            // Fastream: one more refresh from embed then retry same index once.
-            if (hotlinkHost && isFastreamUrl(curUrl) &&
-                code == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS &&
-                !terminalHostFailure &&
-                fastreamRefreshAttempts < 2
-            ) {
-                fastreamRefreshAttempts++
-                val fastreamBase = sources.getOrNull(currentIndex)?.fastreamSourceUrl ?: curUrl
-                val fresh = runCatching {
-                    refreshFastreamUrl(fastreamBase)
-                }.getOrNull()
-                if (!fresh.isNullOrBlank() && fresh != curUrl && currentIndex in sources.indices) {
-                    val list = sources.toMutableList()
-                    val old = list[currentIndex]
-                    list[currentIndex] = old.copy(
-                        url = fresh,
-                        headers = ensureHotlinkHeaders(fresh, old.headers),
-                        isM3u8 = true,
-                        fastreamSourceUrl = old.fastreamSourceUrl ?: fastreamBase,
-                    )
-                    sources = list
-                    headerVariant = 0
-                    noSubsRetry = false
-                    playSource(currentIndex)
-                    return
-                }
             }
             if (hotlinkHost && code == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS) {
                 val h = mirrorHostOf(curUrl)
@@ -10726,7 +10758,10 @@ class PlayerActivity : ComponentActivity() {
      * only a guessed m3u8 regex here was not equivalent and could leave Hikari
      * with a signed URL that CloudStream would have refreshed correctly.
      */
-    private fun refreshFastreamUrl(url: String): String? {
+    private suspend fun refreshFastreamLink(
+        url: String,
+        preferredQuality: Int? = null,
+    ): FastreamResolvedLink? {
         val normalized = url.trim()
         // If the extension already supplied the CloudStream emb.html?ID= form,
         // feed that exact URL back into the real CloudStream extractor.
@@ -10737,18 +10772,31 @@ class PlayerActivity : ComponentActivity() {
             "https://fastream.to/emb.html?$code="
         }
         return runCatching {
-            var first: com.lagradost.cloudstream3.utils.ExtractorLink? = null
-            kotlinx.coroutines.runBlocking(Dispatchers.IO) {
-                com.lagradost.cloudstream3.extractors.Fastream().getUrl(
-                    embed,
-                    "https://fastream.to/",
-                    subtitleCallback = {},
-                    callback = { link ->
-                        if (first == null && link.url.isNotBlank()) first = link
-                    },
-                )
+            val links = mutableListOf<com.lagradost.cloudstream3.utils.ExtractorLink>()
+            com.lagradost.cloudstream3.extractors.Fastream().getUrl(
+                embed,
+                "https://fastream.to/",
+                subtitleCallback = {},
+                callback = { link -> if (link.url.isNotBlank()) links += link },
+            )
+            if (links.isEmpty()) return@runCatching null
+
+            // Fastream's JWPlayer/M3u8Helper path can return 360p, 480p, 720p, … from one
+            // master playlist. Keep the quality represented by the server row instead of
+            // collapsing every row onto the extractor's first result.
+            val selected = preferredQuality?.let { wanted ->
+                links.minByOrNull { kotlin.math.abs(it.quality - wanted) }
+            } ?: links.first()
+            val merged = LinkedHashMap<String, String>()
+            selected.headers?.forEach { (k, v) ->
+                if (v.isNotBlank()) merged[k] = v
             }
-            first?.url
+            selected.referer?.takeIf { it.isNotBlank() }?.let { merged.putIfAbsent("Referer", it) }
+            FastreamResolvedLink(
+                url = selected.url,
+                headers = sanitizeHeaders(ensureHotlinkHeaders(selected.url, merged)),
+                quality = selected.quality,
+            )
         }.getOrNull()
     }
 
