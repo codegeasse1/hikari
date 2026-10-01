@@ -7,7 +7,6 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.ViewConfiguration
 import androidx.viewpager.widget.DirectionalViewPager
-import com.davemorrissey.labs.subscaleview.SubsamplingScaleImageView
 import eu.kanade.tachiyomi.ui.reader.viewer.GestureDetectorWithLongTap
 
 /**
@@ -32,15 +31,6 @@ open class Pager(
     var longTapListener: ((MotionEvent) -> Boolean)? = null
 
     var isRestoring = false
-
-    /** True for the R2L viewer. Used only by the touch fallback below. */
-    var isRightToLeft = false
-
-    private var swipeDownX = 0f
-    private var swipeDownY = 0f
-    private var swipeDownItem = 0
-    private var manualSwipeActive = false
-    private var manualSwipeEligible = true
 
     override fun onRestoreInstanceState(state: Parcelable?) {
         isRestoring = true
@@ -82,16 +72,7 @@ open class Pager(
     private var isGestureDetectorEnabled = true
 
     /**
-     * Manual page turns are intercepted before ViewPager's own drag recogniser once the
-     * gesture is clearly horizontal. The old dispatch-level fallback let DirectionalViewPager
-     * see the same MOVE events first; on some image pages it started its own drag and then our
-     * fallback changed the page again on ACTION_UP. That produced the intermittent "two or
-     * three swipes for one page" behaviour.
-     *
-     * Here the child gets ACTION_DOWN normally, but as soon as the horizontal threshold is
-     * crossed [onInterceptTouchEvent] takes ownership and [onTouchEvent] performs exactly one
-     * logical page change. A zoomed image remains pannable; only the current page holder is
-     * allowed to veto the page-turn gesture.
+     * Dispatches a touch event.
      */
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
         val handled = super.dispatchTouchEvent(ev)
@@ -101,74 +82,23 @@ open class Pager(
         return handled
     }
 
+    /**
+     * Whether the given [ev] should be intercepted. Only used to prevent crashes when child
+     * views manipulate [requestDisallowInterceptTouchEvent].
+     */
     override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
-        try {
-            when (ev.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    swipeDownX = ev.x
-                    swipeDownY = ev.y
-                    swipeDownItem = currentItem
-                    manualSwipeActive = false
-                    manualSwipeEligible = isHorizontal() && !currentPageConsumesHorizontalPan()
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    if (!manualSwipeActive && manualSwipeEligible) {
-                        val dx = ev.x - swipeDownX
-                        val dy = ev.y - swipeDownY
-                        val slop = ViewConfiguration.get(context).scaledPagingTouchSlopCompat()
-                        if (kotlin.math.abs(dx) > slop &&
-                            kotlin.math.abs(dx) > kotlin.math.abs(dy) * 1.15f
-                        ) {
-                            manualSwipeActive = true
-                            parent?.requestDisallowInterceptTouchEvent(true)
-                            // Returning true here is the important part: the normal ViewPager
-                            // recogniser never receives the same drag, so it cannot turn one
-                            // physical swipe into a second page change.
-                            return true
-                        }
-                    }
-                }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    if (manualSwipeActive) return true
-                }
-            }
-            return super.onInterceptTouchEvent(ev)
+        return try {
+            super.onInterceptTouchEvent(ev)
         } catch (e: IllegalArgumentException) {
-            return false
+            false
         }
     }
 
+    /**
+     * Handles a touch event. Only used to prevent crashes when child views manipulate
+     * [requestDisallowInterceptTouchEvent].
+     */
     override fun onTouchEvent(ev: MotionEvent): Boolean {
-        if (manualSwipeActive) {
-            when (ev.actionMasked) {
-                MotionEvent.ACTION_MOVE -> return true
-                MotionEvent.ACTION_UP -> {
-                    val dx = ev.x - swipeDownX
-                    val slop = ViewConfiguration.get(context).scaledPagingTouchSlopCompat()
-                    val base = swipeDownItem
-                    val next = if (kotlin.math.abs(dx) > slop) {
-                        if (isRightToLeft) {
-                            if (dx > 0f) base + 1 else base - 1
-                        } else {
-                            if (dx < 0f) base + 1 else base - 1
-                        }
-                    } else base
-                    if (next != base && next >= 0 && next < (adapter?.count ?: 0)) {
-                        setCurrentItem(next, true)
-                    }
-                    manualSwipeActive = false
-                    manualSwipeEligible = false
-                    parent?.requestDisallowInterceptTouchEvent(false)
-                    return true
-                }
-                MotionEvent.ACTION_CANCEL -> {
-                    manualSwipeActive = false
-                    manualSwipeEligible = false
-                    parent?.requestDisallowInterceptTouchEvent(false)
-                    return true
-                }
-            }
-        }
         return try {
             super.onTouchEvent(ev)
         } catch (e: NullPointerException) {
@@ -180,17 +110,6 @@ open class Pager(
         }
     }
 
-    /** True when the visible page is zoomed enough that horizontal movement should pan it. */
-    private fun currentPageConsumesHorizontalPan(): Boolean {
-        for (i in 0 until childCount) {
-            val holder = getChildAt(i) as? PagerPageHolder ?: continue
-            val image = holder.getImageView()
-            return image is SubsamplingScaleImageView && image.scale > image.minScale + 0.01f
-        }
-        return false
-    }
-
-    private fun ViewConfiguration.scaledPagingTouchSlopCompat(): Int = scaledPagingTouchSlop
     /**
      * Executes the given key event when this pager has focus. Just do nothing because the reader
      * already dispatches key events to the viewer and has more control than this method.

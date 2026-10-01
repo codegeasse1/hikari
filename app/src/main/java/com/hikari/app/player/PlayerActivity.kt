@@ -70,10 +70,6 @@ import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSourceException
 import androidx.media3.datasource.DefaultDataSource
-import androidx.media3.datasource.cache.CacheDataSource
-import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
-import androidx.media3.datasource.cache.SimpleCache
-import androidx.media3.database.StandaloneDatabaseProvider
 import androidx.media3.datasource.HttpDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
@@ -115,7 +111,6 @@ import com.hikari.app.net.PlayerHttp
 import com.hikari.app.net.SlowNetTip
 import com.hikari.app.net.StreamProbe
 import com.hikari.app.tracker.TrackerSync
-import com.lagradost.cloudstream3.ui.player.UpdatedDefaultExtractorsFactory
 import com.hikari.app.tv.TvInput
 import com.hikari.app.tv.TvMode
 import com.hikari.app.ui.AccentStore
@@ -181,8 +176,6 @@ class PlayerActivity : ComponentActivity() {
         val trackers: List<String> = emptyList(),
         /** True once the source is a TorrServer URL (raw file streaming). */
         val torrentStream: Boolean = false,
-        /** Original CloudStream/Fastream embed URL retained across signed-URL refreshes. */
-        val fastreamSourceUrl: String? = null,
         /** DRM protection info (ClearKey/Widevine) — null for ordinary streams. */
         val drm: DrmSpec? = null,
         /** True for a locally-downloaded copy (a file:// URL or a local
@@ -198,9 +191,6 @@ class PlayerActivity : ComponentActivity() {
         val providerId: String = "",
         /** That provider's display name (the repo plugin's name). */
         val providerName: String = "",
-        /** One extra details line for the row ("1080p · 1.7 GB") — carried
-         *  from the extracting extension (see StreamSource.details). */
-        val details: String = "",
     ) {
         /**
          * True when a probe has already been to this URL and come back with a
@@ -214,16 +204,6 @@ class PlayerActivity : ComponentActivity() {
             !isTorrent && !local && url.isNotBlank() &&
                 !StreamProbe.knownBad(url) && StreamProbe.cached(url) != null
     }
-
-    /** A CloudStream Fastream extraction result, including the headers/referer that
-     *  CloudStream carries from ExtractorLink into its player. Dropping these headers and
-     *  keeping only the signed URL is what turns an otherwise valid Fastream link into a 403. */
-    private data class FastreamResolvedLink(
-        val url: String,
-        val headers: Map<String, String>,
-        val quality: Int,
-        val ordinal: Int,
-    )
 
     /** Subtitle tracks contributed by the installed SUBTITLE addons
      *  (OpenSubtitles v3, SubDL…), merged into the playing source's own tracks. */
@@ -588,7 +568,6 @@ class PlayerActivity : ComponentActivity() {
         provider = provider,
         providerId = providerId,
         providerName = providerName,
-        details = details,
     )
 
     /** The inverse of [toPlayerSource]: a player source as a data-layer source,
@@ -609,7 +588,6 @@ class PlayerActivity : ComponentActivity() {
         provider = provider,
         providerId = providerId,
         providerName = providerName,
-        details = details,
     )
 
     /** Which header set the CURRENT source is being tried with, when a CDN
@@ -619,11 +597,6 @@ class PlayerActivity : ComponentActivity() {
      *  don't expect even though the bare URL works in a browser — the player
      *  walks these variants before giving up on a server. */
     private var headerVariant = 0
-
-    /** Fastream refreshes are deliberately bounded. A signed URL can change on every
-     * refresh, so URL-based tried tracking alone can otherwise create an endless
-     * 403 -> refresh -> new signed URL -> 403 loop. */
-    private var fastreamRefreshAttempts = 0
 
     /** True while the current source is retried with text tracks disabled
      *  (its HLS manifest carried a garbage subtitle track that made media3
@@ -1009,16 +982,7 @@ class PlayerActivity : ComponentActivity() {
     /** The system file picker for "Add external subtitle". */
     private var externalSubLauncher: ActivityResultLauncher<Array<String>>? = null
 
-    /** Retained only for cleanup compatibility. Torrent playback no longer shows a modal. */
     private var torrentDialog: Dialog? = null
-
-    /** CloudStream places a SimpleCache in front of its online data source. */
-    private var playerCache: SimpleCache? = null
-
-    /** Torrent recovery is separate from generic server failover. */
-    private var torrentRetryIndex = -1
-    private var torrentRetryCount = 0
-    private var torrentRetryTask: Runnable? = null
 
     /** Shown while an extension-less / container-unknown stream URL is probed
      *  to discover its real mime/URL before ExoPlayer sees it. */
@@ -1878,7 +1842,6 @@ class PlayerActivity : ComponentActivity() {
                     provider = o.optString("provider"),
                     providerId = o.optString("providerId"),
                     providerName = o.optString("providerName"),
-                    details = o.optString("details"),
                 )
             }
         }.getOrDefault(emptyList())
@@ -2252,39 +2215,33 @@ class PlayerActivity : ComponentActivity() {
     /** First server that is neither on a host that already failed terminally
      *  this session nor already known-dead from a probe — the best row to start
      *  playback on. Falls back to row 1 so something always plays. */
-    /** Signed CDN hosts that frequently 403 unless re-extracted (Fastream etc.). */
-    private fun isFragileHotlink(url: String): Boolean {
-        val u = url.lowercase()
-        return listOf(
-            "fastream.to", "streamwish.", "streamtape.", "dood.", "filemoon.",
-            "mixdrop.", "voe.sx", "lulustream.", "mp4upload.",
-        ).any { it in u }
-    }
-
     private fun healthyStartIndex(): Int {
         val healthy = { s: PlayerSource ->
             !s.isTorrent && s.url.isNotBlank() &&
                 mirrorHostOf(s.url) !in deadHosts && !StreamProbe.knownBad(s.url)
         }
-        // Prefer non-fragile hosts first: Fastream signed m3u8 often 403s by the
-        // time the user hits play — MovieBox/DASH/direct links are more stable.
-        fun rank(s: PlayerSource): Int {
-            var r = 0
-            if (s.isFromOrigin()) r -= 10
-            if (s.probeVerified()) r -= 5
-            if (isFragileHotlink(s.url)) r += 20
-            if (s.isM3u8 && isFragileHotlink(s.url)) r += 10
-            return r
-        }
+        // A server a probe has already RESOLVED wins: "start playing the instant
+        // one WORKING server is found" is exactly this set — the probe has been to
+        // the host and seen a video (or an HLS/DASH manifest) come back, so this
+        // row is the one that will show a picture, not the one that merely looks
+        // most promising from its name. The searches warm every source as it
+        // arrives (StreamProbe.warmAsync / warm), so by the time playback commits
+        // the fastest host is usually already verified.
         val verified = sources.filterIndexed { _, s -> healthy(s) && s.probeVerified() }
-            .sortedBy { rank(it) }
         if (verified.isNotEmpty()) {
+            val originVerified = verified.firstOrNull { it.isFromOrigin() }
+            if (originVerified != null) return sources.indexOf(originVerified)
             return sources.indexOf(verified.first())
         }
-        val origin = sources.filter { it.isFromOrigin() && healthy(it) }.sortedBy { rank(it) }
-        if (origin.isNotEmpty()) return sources.indexOf(origin.first())
-        val ok = sources.filter { healthy(it) }.sortedBy { rank(it) }
-        return if (ok.isNotEmpty()) sources.indexOf(ok.first()) else 0
+        // "If I am on MovieBox, play MovieBox's server first": among the servers
+        // that can actually play, the one from the extension the title was
+        // opened from wins. This is the same preference the detail screen's
+        // search applies (the origin is asked first) — it just also has to be
+        // honoured at the moment playback commits to a row.
+        val origin = sources.indexOfFirst { it.isFromOrigin() && healthy(it) }
+        if (origin >= 0) return origin
+        val i = sources.indexOfFirst { healthy(it) }
+        return if (i >= 0) i else 0
     }
 
     /** Starts playback — or, when the "don't play directly" setting is on,
@@ -4431,9 +4388,15 @@ class PlayerActivity : ComponentActivity() {
                 addView(TextView(this@PlayerActivity).apply {
                     text = sub
                     dpText(9f)
-                    // Server details (size, audio, codec, flags) need several
-                    // lines — two was still ellipsising mid-sentence ("…2026").
-                    maxLines = 6
+                    // Two lines, not one. The sub line is where a menu explains
+                    // itself — "Nothing applied — the picture exactly as the
+                    // server sent it" is 56 characters and does not fit a phone's
+                    // panel on one line, so a one-line cap ellipsised the
+                    // explanation of the option being chosen, which is exactly the
+                    // text that makes the choice possible. The capsule grows by one
+                    // line when it needs to; the rows that do not need it are
+                    // unchanged, so the menu still reads as one family.
+                    maxLines = 2
                     ellipsize = TextUtils.TruncateAt.END
                     includeFontPadding = false
                     setTextColor(0xFF98A3B5.toInt())
@@ -5416,13 +5379,6 @@ class PlayerActivity : ComponentActivity() {
         sub = when {
             source.url.startsWith("hikari-td:") -> "Telegram"
             source.local -> "Saved on this device"
-            source.details.isNotBlank() -> {
-                // Full details on their own lines — do not pack host + details
-                // into one ellipsised row (that was the "… after 2026" report).
-                val host = hostOf(source.url)
-                val d = source.details.trim()
-                if (host.isNullOrBlank()) d else (host + "\n" + d)
-            }
             else -> hostOf(source.url)
         },
         badge = when {
@@ -5439,7 +5395,7 @@ class PlayerActivity : ComponentActivity() {
         // Server names run long ("Provider (Repo) · Plugin · 1080p") and they are
         // what the user is choosing between, so the row's capsule fits TWO lines
         // of it instead of cutting the name off — the box grows with the name.
-        labelMaxLines = 3,
+        labelMaxLines = 2,
     )
 
     /**
@@ -7191,8 +7147,8 @@ class PlayerActivity : ComponentActivity() {
             // sizing note, and roughly what a full-screen results list wants)
             // and 72% of its height, capped so the whole panel stays on screen
             // inside the room the hint line leaves.
-            fillFractionX = 0.90f,
-            fillFractionY = 0.88f,
+            fillFractionX = 0.86f,
+            fillFractionY = 0.72f,
         )
         // The keyboard is the point of this panel: the user came here to type.
         // ADJUST_RESIZE keeps the panel inside the room that is left once the
@@ -7962,9 +7918,6 @@ class PlayerActivity : ComponentActivity() {
         }
         if (index != currentIndex) {
             headerVariant = 0
-            fastreamRefreshAttempts = 0
-            torrentRetryIndex = index
-            torrentRetryCount = 0
             // A DIFFERENT server: the one attempt at a restart it is allowed
             // (see [firstFrameRetried]) resets with it. Staying on the same
             // server (a retry after an error, a restart) keeps the flag.
@@ -8026,18 +7979,32 @@ class PlayerActivity : ComponentActivity() {
         val src = sources[index]
         errorPanel?.visibility = View.GONE
 
-        // CloudStream Torrent.transformLink still runs off the UI thread, but there
-        // is no modal progress dialog. The player appears as soon as TorrServer gives
-        // us its local stream URL instead of blocking the whole player UI.
         torrentDialog?.let { runCatching { it.dismiss() } }
         torrentDialog = null
 
         lifecycleScope.launch {
+            // Shown only if the resolve is still running after a beat: a warm
+            // engine answers fast and the user never sees a dialog at all, while
+            // a cold start still explains the wait. Cancellable — backing out
+            // abandons the resolve with it instead of parking the player.
+            val slowJob = launch {
+                kotlinx.coroutines.delay(1200)
+                if (isActive && torrentDialog == null) {
+                    torrentDialog = showGlassProgress(
+                        "Torrent stream",
+                        "Starting torrent engine…\nFirst play can take a few seconds.",
+                        cancelable = true,
+                    )
+                }
+            }
             val res = try {
                 Result.success(withContext(Dispatchers.IO) { transformTorrent(src) })
             } catch (t: Throwable) {
                 Result.failure(t)
             }
+            slowJob.cancel()
+            torrentDialog?.let { runCatching { it.dismiss() } }
+            torrentDialog = null
 
             res.onSuccess { playable ->
                 // TorrServer's /stream/<file>?…&play endpoint serves the torrent
@@ -8402,65 +8369,14 @@ class PlayerActivity : ComponentActivity() {
         notifySourcesChanged()
     }
 
-    private fun playDirectInner(index: Int, allowFastreamRefresh: Boolean = true) {
+    private fun playDirectInner(index: Int) {
         if (index < 0 || index >= sources.size) {
             showError(I18n.t("No more servers to try."), false)
             return
         }
         dismissSlowDialog()
         currentIndex = index
-        var src = sources[index]
-        // CloudStream resolves Fastream at play time. Do the same off the main thread.
-        // The old runBlocking() implementation froze the player Activity while /dl and the
-        // returned master playlist were fetched. Worse, it kept only link.url and discarded
-        // ExtractorLink.referer/headers, so the resulting s40.fastream.to URL answered 403.
-        if (allowFastreamRefresh && isFastreamUrl(src.url) && fastreamRefreshAttempts < 2) {
-            if (src.fastreamSourceUrl == null) {
-                src = src.copy(fastreamSourceUrl = src.url)
-                val seeded = sources.toMutableList()
-                seeded[index] = src
-                sources = seeded
-            }
-            val embed = src.fastreamSourceUrl ?: src.url
-            val preferredQuality = Regex("""(\\d{3,4})p""", RegexOption.IGNORE_CASE)
-                .find(src.name)?.groupValues?.getOrNull(1)?.toIntOrNull()
-            val preferredOrdinal = Regex("""\((\d+)\)\s*$""")
-                .find(src.name)?.groupValues?.getOrNull(1)?.toIntOrNull()
-            fastreamRefreshAttempts++
-            coverPlaybackLine = I18n.t("Resolving Fastream…")
-            loadingStatus?.text = coverPlaybackLine
-            loadingSpinnerStatus?.text = coverPlaybackLine
-            lifecycleScope.launch {
-                val resolved = withContext(Dispatchers.IO) {
-                    runCatching { refreshFastreamLink(embed, preferredQuality, preferredOrdinal) }.getOrNull()
-                }
-                if (currentIndex != index || isFinishing || isDestroyed) return@launch
-                if (resolved != null && resolved.url.isNotBlank()) {
-                    val list = sources.toMutableList()
-                    val current = list.getOrNull(index) ?: return@launch
-                    list[index] = current.copy(
-                        url = resolved.url,
-                        headers = ensureHotlinkHeaders(resolved.url, resolved.headers),
-                        isM3u8 = true,
-                        fastreamSourceUrl = current.fastreamSourceUrl ?: embed,
-                    )
-                    sources = list
-                    notifySourcesChanged()
-                } else {
-                    val list = sources.toMutableList()
-                    val current = list.getOrNull(index) ?: return@launch
-                    list[index] = current.copy(
-                        headers = ensureHotlinkHeaders(current.url, current.headers),
-                        fastreamSourceUrl = current.fastreamSourceUrl ?: embed,
-                    )
-                    sources = list
-                }
-                // The resolved link is now handed to the normal player setup. Do not resolve
-                // the embed a second time in this same attempt.
-                playDirectInner(index, allowFastreamRefresh = false)
-            }
-            return
-        }
+        val src = sources[index]
         // Remember what we've actually handed to ExoPlayer this session — a
         // later re-extraction usually repeats most of these URLs, and freshIndex
         // must not pick one we already know dies.
@@ -8522,11 +8438,7 @@ class PlayerActivity : ComponentActivity() {
         // media3 surfaces as a fatal playback error even though the stream is
         // fine. Sanitizing here means a sloppy extension can never crash the
         // player, now or in the future.
-        val cleanHeaders = sanitizeHeaders(
-            // Hotlink CDNs need Origin+Referer even when the extension omitted them
-            // (Fastream 403 while CloudStream plays the same m3u8).
-            ensureHotlinkHeaders(src.url, src.headers),
-        )
+        val cleanHeaders = sanitizeHeaders(src.headers)
         val sourceHeaders = when (headerVariant) {
             1 -> cleanHeaders.filterKeys { !it.equals("Referer", ignoreCase = true) }
             2 -> emptyMap()
@@ -8539,23 +8451,7 @@ class PlayerActivity : ComponentActivity() {
         val networkFactory: DataSource.Factory = OkHttpDataSource.Factory(client)
             .setUserAgent(ua)
             .setDefaultRequestProperties(sourceHeaders)
-
-        // Match CloudStream: cache online byte ranges before they reach the network.
-        // This is particularly important for TorrServer, where progressive playback
-        // can issue multiple Range reads during container initialization.
-        val cachedNetworkFactory: DataSource.Factory = runCatching {
-            val cache = playerCache ?: SimpleCache(
-                java.io.File(cacheDir, "player-cache"),
-                LeastRecentlyUsedCacheEvictor(150L * 1024L * 1024L),
-                StandaloneDatabaseProvider(this),
-            ).also { playerCache = it }
-            CacheDataSource.Factory()
-                .setCache(cache)
-                .setUpstreamDataSourceFactory(networkFactory)
-                .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
-        }.getOrElse { networkFactory }
-
-        // DefaultDataSource sits IN FRONT of the cache-aware network factory, and that is
+        // DefaultDataSource sits IN FRONT of the OkHttp factory, and that is
         // what makes the provider subtitles work at all: they are handed to
         // ExoPlayer as local (file://) URIs, and OkHttpDataSource alone only
         // speaks http(s) — it throws on any other scheme, so every subtitle
@@ -8568,18 +8464,14 @@ class PlayerActivity : ComponentActivity() {
             // is what plays a video that lives in the user's Telegram account
             // (see com.hikari.app.telegram.TdFileDataSource). Everything else
             // goes through the chain below, exactly as before.
-            DefaultDataSource.Factory(this, cachedNetworkFactory)
+            DefaultDataSource.Factory(this, networkFactory)
         )
 
         // DRM-protected sources (ClearKey/Widevine) get a matching media3 DRM
         // session manager; without it ExoPlayer opens the encrypted manifest
         // with no keys and renders a black screen while the timeline still runs.
         val drmManager = buildDrmSessionManager(src.drm, dataSourceFactory)
-        // CloudStream uses this updated extractor family in its own player. Keep
-        // that behavior in Hikari, especially for MKV files whose seek information
-        // is stored at the back of the file.
-        val extractorFactory = UpdatedDefaultExtractorsFactory()
-        val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory, extractorFactory)
+        val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
             // Ride out transient CDN hiccups quietly — a fresh connection and a
             // Range-resumed read — instead of letting one dropped socket tear
             // the whole player down, while still failing FAST on terminal ones
@@ -9183,11 +9075,7 @@ class PlayerActivity : ComponentActivity() {
             liveHint -> liveStartBudgetMs
             torrent -> 50_000L
             telegram -> com.hikari.app.telegram.TdFileDataSource.PLAYER_START_BUDGET_MS
-            // Ordinary CloudStream playback does not impose Hikari's old 20s
-            // per-mirror watchdog; Media3's actual load error is what advances
-            // to the next ExtractorLink. Keep only a short safety net for a host
-            // that stays BUFFERING without ever producing an error.
-            else -> 8_000L
+            else -> 20_000L
         }
         val task = Runnable {
             watchdogTask = null
@@ -9423,14 +9311,7 @@ class PlayerActivity : ComponentActivity() {
      *  ANY other server before it admits the playback cannot start. Long on
      *  purpose: the alternative is the failure panel the user reported, shown
      *  over a search that was still finding servers. */
-    // CloudStream advances to its next ExtractorLink as soon as Media3 reports
-    // the link error. Hikari's old 180s replacement wait was the opposite: after
-    // the last known source stalled it kept the title card alive for three minutes
-    // while the background sweep continued, which is exactly the 100s+ "Found N
-    // fresh servers — retrying…" state seen in testing. Keep a short bounded window
-    // only for the special case where the live search is still able to hand us a
-    // genuinely new source.
-    private val stalledReplacementWaitMs: Long = 12_000L
+    private val stalledReplacementWaitMs: Long = 180_000L
 
     /** How long a probe may hold up the FIRST picture (see [probeAndPlay]).
      *  The walk itself is allowed its own, much longer budget — it just does not
@@ -9452,7 +9333,7 @@ class PlayerActivity : ComponentActivity() {
 
     /** How many "nothing has played yet" servers may be skipped without asking
      *  the user (see [promptSlowServer]). */
-    private val maxSilentSkips: Int = 3
+    private val maxSilentSkips: Int = 6
 
     /**
      * How long a LIVE stream may take to draw its first frame before it is
@@ -10244,10 +10125,6 @@ class PlayerActivity : ComponentActivity() {
 
         override fun onRenderedFirstFrame() {
             renderedFirstFrame = true
-            torrentRetryTask?.let { bufferingWatchdog.removeCallbacks(it) }
-            torrentRetryTask = null
-            torrentRetryCount = 0
-            torrentRetryIndex = currentIndex
             // Real video is on screen — retract any "your connection looks slow"
             // verdict, measured or not.
             SlowNetTip.onFirstFrame()
@@ -10364,47 +10241,6 @@ class PlayerActivity : ComponentActivity() {
             // text tracks disabled before giving up on it.
             val code = error.errorCode
             val httpStatus = httpStatusOf(details)
-            val currentSource = sources.getOrNull(currentIndex)
-
-            // TorrServer is a local proxy. A transient Range/reader error must not
-            // immediately mark 127.0.0.1 dead and switch to another torrent. Reopen
-            // the SAME transformed URL with a short backoff first.
-            if (currentSource?.torrentStream == true) {
-                if (torrentRetryIndex != currentIndex) {
-                    torrentRetryIndex = currentIndex
-                    torrentRetryCount = 0
-                }
-                val retryable = httpStatus == null ||
-                    httpStatus == 408 || httpStatus == 429 || httpStatus >= 500 ||
-                    code == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
-                    code == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT ||
-                    code == PlaybackException.ERROR_CODE_IO_UNSPECIFIED ||
-                    code == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND
-                if (retryable && torrentRetryCount < 4) {
-                    torrentRetryCount++
-                    val attempt = torrentRetryCount
-                    val retryIndex = currentIndex
-                    val delayMs = 500L * attempt
-                    torrentRetryTask?.let { bufferingWatchdog.removeCallbacks(it) }
-                    val task = Runnable {
-                        torrentRetryTask = null
-                        if (currentIndex == retryIndex &&
-                            sources.getOrNull(retryIndex)?.torrentStream == true
-                        ) {
-                            com.hikari.app.data.Logs.log(
-                                "Player",
-                                "TorrServer transient error; reopening same torrent ($attempt/4)",
-                            )
-                            playDirect(retryIndex)
-                        }
-                    }
-                    torrentRetryTask = task
-                    bufferingWatchdog.postDelayed(task, delayMs)
-                    return
-                }
-                torrentRetryTask = null
-                torrentRetryCount = 0
-            }
             // A 5xx — or a refused/timed-out connection — is the HOST saying
             // "not this file, not now". The same mirror hands out every quality
             // of the same video, so it answers the same way for all of them,
@@ -10416,7 +10252,7 @@ class PlayerActivity : ComponentActivity() {
                 code == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
                 code == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT ||
                 code == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND
-            if (terminalHostFailure && currentSource?.torrentStream != true) {
+            if (terminalHostFailure) {
                 val h = mirrorHostOf(sources.getOrNull(currentIndex)?.url.orEmpty())
                 if (h.isNotBlank()) deadHosts.add(h)
             }
@@ -10468,78 +10304,26 @@ class PlayerActivity : ComponentActivity() {
                 playSource(currentIndex)
                 return
             }
-            // Some CDNs reject malformed/non-ASCII extractor headers. Those can be
-            // safely retried with the header set reduced. Fastream is deliberately excluded:
-            // CloudStream's Fastream path uses the embed's apex Referer, and stripping it is
-            // not a valid recovery strategy for a 403.
+            // Some CDNs 403 the request as long as it carries a Referer / other
+            // extractor headers, even though the bare URL plays fine in a
+            // browser. And some addons hand us a header with non-ASCII chars
+            // (a Cyrillic look-alike User-Agent), which OkHttp rejects with
+            // IllegalArgumentException. Both are header problems, not server
+            // problems — walk the header set down (full → no Referer → none)
+            // before declaring the server dead.
             val headerIssue = details.contains("Unexpected char", true) ||
                 (details.contains("IllegalArgumentException", true) &&
                     (details.contains("User-Agent", true) || details.contains("Header", true)))
-            val curUrl = sources.getOrNull(currentIndex)?.url.orEmpty()
-            val hotlinkHost = listOf(
-                "fastream", "streamwish", "streamtape", "lulu", "dood", "filemoon",
-                "mixdrop", "voe.", "vidplay", "mp4upload", "lulustream",
-            ).any { curUrl.contains(it, ignoreCase = true) }
-
-            // Fastream 403 means the signed CDN URL is stale/rejected. CloudStream does NOT
-            // solve this by deleting Referer or trying the same signed URL again: it re-runs
-            // Fastream.getUrl(embed), which POSTs /dl and lets JwPlayerHelper/M3u8Helper produce
-            // a fresh signed link. Hikari must preserve that ExtractorLink's headers/referer.
-            // Run the re-extraction asynchronously so a slow /dl request cannot freeze the UI
-            // for 20s+ per quality/server.
-            if (hotlinkHost && isFastreamUrl(curUrl) &&
-                code == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS &&
-                !terminalHostFailure && fastreamRefreshAttempts < 2
-            ) {
-                fastreamRefreshAttempts++
-                val retryIndex = currentIndex
-                val fastreamBase = sources.getOrNull(retryIndex)?.fastreamSourceUrl ?: curUrl
-                val preferredQuality = Regex("""(\\d{3,4})p""", RegexOption.IGNORE_CASE)
-                    .find(sources.getOrNull(retryIndex)?.name.orEmpty())?.groupValues?.getOrNull(1)?.toIntOrNull()
-                val preferredOrdinal = Regex("""\((\d+)\)\s*$""")
-                    .find(sources.getOrNull(retryIndex)?.name.orEmpty())?.groupValues?.getOrNull(1)?.toIntOrNull()
-                coverPlaybackLine = I18n.t("Refreshing Fastream…")
-                loadingStatus?.text = coverPlaybackLine
-                loadingSpinnerStatus?.text = coverPlaybackLine
-                lifecycleScope.launch {
-                    val resolved = withContext(Dispatchers.IO) {
-                        runCatching { refreshFastreamLink(fastreamBase, preferredQuality, preferredOrdinal) }.getOrNull()
-                    }
-                    if (currentIndex != retryIndex || isFinishing || isDestroyed) return@launch
-                    if (resolved != null && resolved.url.isNotBlank()) {
-                        val list = sources.toMutableList()
-                        val old = list.getOrNull(retryIndex) ?: return@launch
-                        list[retryIndex] = old.copy(
-                            url = resolved.url,
-                            headers = ensureHotlinkHeaders(resolved.url, resolved.headers),
-                            isM3u8 = true,
-                            fastreamSourceUrl = old.fastreamSourceUrl ?: fastreamBase,
-                        )
-                        sources = list
-                        headerVariant = 0
-                        noSubsRetry = false
-                        notifySourcesChanged()
-                        playDirectInner(retryIndex, allowFastreamRefresh = false)
-                    } else {
-                        // Re-extraction failed: let normal failover handle it. Do not spend
-                        // another 20s walking header variants that CloudStream would never use.
-                        failoverFromCurrent(details, code, headerIssue)
-                    }
-                }
-                return
-            }
-
             if ((code == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS || headerIssue) &&
-                headerVariant < 2 && !terminalHostFailure && !hotlinkHost
+                headerVariant < 2 && !terminalHostFailure
             ) {
                 headerVariant++
+                // Silent retry — same server, next header set down. The only
+                // message the user sees is "Server failed — trying next" once
+                // this server is finally abandoned.
                 noSubsRetry = false
                 playSource(currentIndex)
                 return
-            }
-            if (hotlinkHost && code == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS) {
-                val h = mirrorHostOf(curUrl)
-                if (h.isNotBlank()) deadHosts.add(h)
             }
             // A dud link extracted mid-search: the SAME server is very often
             // fine a moment later, once the provider search has finished and
@@ -10706,21 +10490,6 @@ class PlayerActivity : ComponentActivity() {
         // are exactly the ones that may actually play a title this repo can't.
         // So whenever the detail screen is still attached, ask it for fresh
         // sources before declaring failure.
-        // Fastream is already doing the same bounded re-extraction CloudStream does:
-        // Fastream.getUrl(embed) -> /dl -> JwPlayerHelper/M3u8Helper -> fresh signed link.
-        // Once that walk has been exhausted, NEVER fall into the generic source refresh.
-        // That generic refresh re-runs the whole extension search and can feed the exact
-        // same Fastream row back again, producing the "Found N fresh servers — retrying…"
-        // loop that can sit on screen for 100+ seconds. If another server exists it was
-        // already handled by nextUntriedIndex() above; with none left, fail NOW.
-        val currentUrl = sources.getOrNull(currentIndex)?.url.orEmpty()
-        if (isFastreamUrl(currentUrl) && fastreamRefreshAttempts >= 2) {
-            showError(
-                I18n.t("Fastream link failed after CloudStream extraction. No more Fastream variants are available."),
-                false,
-            )
-            return
-        }
         val ioLike = isIoFailure(code, headerIssue)
         val canRefresh = ioLike || liveSessionId != null
         if (!(canRefresh && refreshSources(currentIndex, details))) {
@@ -10749,162 +10518,6 @@ class PlayerActivity : ComponentActivity() {
     private fun sanitizeHeaderValue(v: String): String = v.filter { it.code < 128 }
 
     /** Sanitize every header; blank results are dropped entirely. */
-    /**
-     * Match CloudStream CS3IPlayer + JwPlayerHelper:
-     * - referer = apex mainUrl (https://fastream.to) when missing
-     * - do NOT force Origin or Sec-Fetch-* (CS3 does not; those 403 Fastream)
-     */
-
-    /**
-     * Pelispedia (and many Storm plugins) resolve to Fastream embed pages.
-     * CloudStream unpacks the embed at play time so the signed m3u8 + cookies
-     * are fresh. Hikari used to keep the first m3u8 forever → 403 while CS3
-     * played. Re-hit embed-CODE.html, unpack Dean-Edwards packer, return a
-     * fresh master.m3u8 with apex Referer.
-     */
-    private fun fastreamFileCode(url: String): String? {
-        val u = url
-        Regex("""fastream\.to/embed-([a-zA-Z0-9]+)\.html""", RegexOption.IGNORE_CASE)
-            .find(u)?.groupValues?.getOrNull(1)?.let { return it }
-        // CloudStream current Fastream extractor accepts emb.html?<file_code>=.
-        Regex("""fastream\.to/emb\.html\?([a-zA-Z0-9_-]+)=""", RegexOption.IGNORE_CASE)
-            .find(u)?.groupValues?.getOrNull(1)?.let { return it }
-        Regex("""/([a-zA-Z0-9]{8,})_,""", RegexOption.IGNORE_CASE)
-            .find(u)?.groupValues?.getOrNull(1)?.let { return it }
-        Regex("""/([a-zA-Z0-9]{8,})\.urlset""", RegexOption.IGNORE_CASE)
-            .find(u)?.groupValues?.getOrNull(1)?.let { return it }
-        Regex("""/([a-zA-Z0-9]{8,})\.m3u8""", RegexOption.IGNORE_CASE)
-            .find(u)?.groupValues?.getOrNull(1)?.let { return it }
-        return null
-    }
-
-    private fun isFastreamUrl(url: String): Boolean =
-        url.contains("fastream", ignoreCase = true)
-
-    /**
-     * Refresh Fastream exactly through the bundled CloudStream extractor.
-     *
-     * CloudStream's Fastream implementation posts the embed id to /dl and then
-     * parses the returned scripts with JwPlayerHelper/M3u8Helper. Re-implementing
-     * only a guessed m3u8 regex here was not equivalent and could leave Hikari
-     * with a signed URL that CloudStream would have refreshed correctly.
-     */
-    private suspend fun refreshFastreamLink(
-        url: String,
-        preferredQuality: Int? = null,
-        preferredOrdinal: Int? = null,
-    ): FastreamResolvedLink? {
-        val normalized = url.trim()
-        // If the extension already supplied the CloudStream emb.html?ID= form,
-        // feed that exact URL back into the real CloudStream extractor.
-        // Pass the ORIGINAL Fastream page back to the bundled CloudStream extractor.
-        // This is intentional: CloudStream itself decides whether the input is the special
-        // emb.html?<id>= endpoint (POST /dl) or an ordinary Fastream page (GET the page).
-        // Rebuilding an "embed-$code.html" URL here was Hikari-specific and could take a
-        // perfectly valid CloudStream source down a different extraction path.
-        val embed = when {
-            normalized.contains("fastream.to/emb.html?", ignoreCase = true) -> normalized
-            normalized.contains("fastream.to/embed-", ignoreCase = true) -> normalized
-            else -> {
-                val code = fastreamFileCode(normalized) ?: return null
-                "https://fastream.to/emb.html?$code="
-            }
-        }
-        return runCatching {
-            val links = mutableListOf<com.lagradost.cloudstream3.utils.ExtractorLink>()
-            com.lagradost.cloudstream3.extractors.Fastream().getUrl(
-                embed,
-                "https://fastream.to/",
-                subtitleCallback = {},
-                callback = { link -> if (link.url.isNotBlank()) links += link },
-            )
-            if (links.isEmpty()) return@runCatching null
-
-            // Fastream's JWPlayer/M3u8Helper path can return 360p, 480p, 720p, … from one
-            // master playlist. Keep the quality represented by the server row instead of
-            // collapsing every row onto the extractor's first result.
-            val selectedIndex = preferredOrdinal
-                ?.minus(1)
-                ?.takeIf { it in links.indices }
-                ?: preferredQuality?.let { wanted ->
-                    links.indices.minByOrNull { kotlin.math.abs(links[it].quality - wanted) }
-                }
-                ?: 0
-            val selected = links[selectedIndex]
-            val merged = LinkedHashMap<String, String>()
-            selected.headers?.forEach { (k, v) ->
-                if (v.isNotBlank()) merged[k] = v
-            }
-            selected.referer?.takeIf { it.isNotBlank() }?.let { merged.putIfAbsent("Referer", it) }
-            FastreamResolvedLink(
-                url = selected.url,
-                headers = sanitizeHeaders(ensureHotlinkHeaders(selected.url, merged)),
-                quality = selected.quality,
-                ordinal = selectedIndex + 1,
-            )
-        }.getOrNull()
-    }
-
-    /** Same P.A.C.K.E.R. unpack as FallbackResolver (Fastream embed pages). */
-    private fun unpackDeanEdwards(html: String): String? {
-        val re = Regex(
-            """eval\s*\(\s*function\s*\(\s*p\s*,\s*a\s*,\s*c\s*,\s*k\s*,\s*e\s*,\s*d\s*\)\s*\{[\s\S]*?return p\}\s*\(\s*'([\s\S]*?)'\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*'([\s\S]*?)'\.split\s*\(\s*'\s*\|\s*'\s*\)\s*\)\s*\)""",
-            RegexOption.IGNORE_CASE,
-        )
-        val m = re.find(html) ?: return null
-        val p = m.groupValues[1]
-        val a = m.groupValues[2].toIntOrNull() ?: 36
-        val k = m.groupValues[4].split("|")
-        if (k.isEmpty()) return null
-        fun b36(c: Int): String {
-            val div = c / a
-            val rem = c % a
-            val r = if (rem > 35) ((rem + 29).toChar()).toString() else rem.toString(36)
-            return (if (div == 0) "" else b36(div)) + r
-        }
-        var out = p
-        for (i in k.indices.reversed()) {
-            val word = k[i]
-            if (word.isEmpty()) continue
-            out = out.replace(Regex("\\b" + Regex.escape(b36(i)) + "\\b"), word)
-        }
-        return out
-    }
-
-    private fun ensureHotlinkHeaders(
-        url: String,
-        headers: Map<String, String>,
-    ): Map<String, String> {
-        val out = LinkedHashMap(headers)
-        val host = url.substringAfter("://").substringBefore('/').substringBefore('?').lowercase()
-        if (host.isBlank()) return out
-        fun apexOf(h: String): String {
-            val parts = h.split('.')
-            return if (parts.size >= 3) parts.takeLast(2).joinToString(".") else h
-        }
-        val hot = listOf(
-            "fastream", "streamwish", "streamtape", "lulu", "dood", "filemoon",
-            "mixdrop", "voe.", "vidplay", "mp4upload", "upstream", "streamlare",
-            "vidmoly", "rabbitstream", "megacloud", "filelions", "lulustream",
-            "streamhub", "streamruby", "wish", "vidhide",
-        )
-        if (hot.any { host.contains(it) }) {
-            val apex = apexOf(host)
-            // Overwrite subdomain Referer with apex (CS3 mainUrl)
-            out["Referer"] = "https://$apex"
-            // Strip Origin / Sec-Fetch that we may have added earlier — CS3 never sends them
-            out.remove("Origin")
-            out.keys.filter { it.startsWith("Sec-Fetch", ignoreCase = true) }.toList()
-                .forEach { out.remove(it) }
-            out.putIfAbsent(
-                "User-Agent",
-                "Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
-            )
-        }
-        out.putIfAbsent("User-Agent", Http.UA)
-        return out
-    }
-
     private fun sanitizeHeaders(h: Map<String, String>): Map<String, String> =
         h.mapNotNull { (k, v) ->
             val c = sanitizeHeaderValue(v)
@@ -12114,13 +11727,8 @@ class PlayerActivity : ComponentActivity() {
         sweepReleaseTask = null
         firstFrameTask?.let { bufferingWatchdog.removeCallbacks(it) }
         firstFrameTask = null
-        torrentRetryTask?.let { bufferingWatchdog.removeCallbacks(it) }
-        torrentRetryTask = null
-        torrentRetryCount = 0
         torrentDialog?.let { runCatching { it.dismiss() } }
         torrentDialog = null
-        playerCache?.let { runCatching { it.release() } }
-        playerCache = null
         probeDialog?.let { runCatching { it.dismiss() } }
         probeDialog = null
         player?.let { p ->
@@ -12188,20 +11796,20 @@ class PlayerActivity : ComponentActivity() {
         /** How many times a player whose every server died may ask the detail
          *  screen for a fresh extraction before finally reporting failure.
          *  Bounded so a genuinely dead video can't loop forever. */
-        private const val MAX_REFRESH_ATTEMPTS = 1
+        private const val MAX_REFRESH_ATTEMPTS = 2
 
         /** How long to wait for re-extracted servers to arrive on the live
          *  session before giving up and showing the error panel. Generous
          *  because the fresh extraction may include a title search across the
          *  other installed extensions, which takes longer than re-running one
          *  repo. */
-        private const val REFRESH_WAIT_MS = 12_000L
+        private const val REFRESH_WAIT_MS = 40_000L
 
         /** How long to wait for a fresh link for the server that just failed
          *  (see onPlayerError's reconnect). Short: the user is sitting on the
          *  title card with no video, and the normal failover must not be held
          *  back for long. */
-        private const val RELINK_WAIT_MS = 8_000L
+        private const val RELINK_WAIT_MS = 12_000L
 
         private val SPEEDS = floatArrayOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f)
 
