@@ -3142,20 +3142,22 @@ fun DetailScreen(
                                     modifier = Modifier.padding(vertical = 12.dp)
                                 )
                             } else if (episodePosterStyle) {
-                                pageEps.chunked(2).forEach { pair ->
-                                    Row(
-                                        Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                    ) {
-                                        pair.forEach { ep ->
-                                            EpisodePosterCard(
-                                                ep = ep,
-                                                onClick = { tryPlay(ep) },
-                                                onDownload = { tryDownload(ep) },
-                                                modifier = Modifier.weight(1f)
-                                            )
-                                        }
-                                        if (pair.size == 1) Spacer(Modifier.weight(1f))
+                                // TV poster mode is intentionally a horizontal shelf:
+                                // one episode card after another, matching the reference
+                                // layout instead of turning the TV episode panel into a
+                                // 2-column grid.
+                                LazyRow(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    contentPadding = PaddingValues(horizontal = 2.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                ) {
+                                    items(pageEps, key = { "tv-ep-poster-" + it.number + "-" + it.season }) { ep ->
+                                        EpisodePosterCard(
+                                            ep = ep,
+                                            onClick = { tryPlay(ep) },
+                                            onDownload = { tryDownload(ep) },
+                                            modifier = Modifier.width(150.dp),
+                                        )
                                     }
                                 }
                             } else {
