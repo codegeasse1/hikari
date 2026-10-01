@@ -1556,6 +1556,7 @@ fun DetailScreen(
     val detailHeroStyle by detailHeroFlow.collectAsState(initial = DetailHeroStyles.WIDE)
     val tvDetailBigFlow = remember { detailApp.store.tvDetailBigFlow() }
     val tvDetailBig by tvDetailBigFlow.collectAsState(initial = false)
+    val isTvLayout = com.hikari.app.tv.TvMode.current()
     val heroStyle =
         // Big TV detail: SIDE puts poster left + info/episodes right (matches
         // the living-room layout users expect). TALL was full-width art only.
@@ -2985,13 +2986,16 @@ fun DetailScreen(
         val item = m ?: return@LaunchedEffect
         heroLogo = runCatching { TmdbMeta.logo(item) }.getOrNull()
     }
+    val tvHeroImage = m?.let { Artwork.heroModel(it) }
+        ?: (PosterLoader.model(posterUrl ?: fallbackPoster) to false)
+
     val heroBlock: @Composable () -> Unit = {
-        if (com.hikari.app.tv.TvMode.current()) {
+        if (isTvLayout) {
             // TV detail is a single cinematic hero: artwork, title, metadata,
             // overview and the primary action live in the same focusable scene.
             val tvHeight = (androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp * 0.68f).dp
             Box(Modifier.fillMaxWidth().height(tvHeight.coerceAtLeast(420.dp)).onSizeChanged { headerPx = it.height }) {
-                HeroArtwork(model = image.first, wide = true, modifier = Modifier.fillMaxSize())
+                HeroArtwork(model = tvHeroImage.first, wide = true, modifier = Modifier.fillMaxSize())
                 Box(Modifier.fillMaxSize().background(Brush.horizontalGradient(listOf(
                     Color.Black.copy(alpha = 0.92f), Color.Black.copy(alpha = 0.58f), Color.Transparent))))
                 Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(
@@ -3117,7 +3121,7 @@ fun DetailScreen(
                     // and away as the page is read — see the header note above
                     // for what the wordmark drawn over it does while it does.
                     item(key = "hero") { heroBlock() }
-                    if (!com.hikari.app.tv.TvMode.current()) {
+                    if (!isTvLayout) {
                     item {
                     // The first line of the page is spaced off the header art on
                     // purpose. It used to start flush against the artwork's
@@ -3272,7 +3276,7 @@ fun DetailScreen(
                 val isSeries = detailIsSeries
                 val btnEp = detailBtnEp
                 val actionLabel = detailActionLabel
-                if (!com.hikari.app.tv.TvMode.current()) {
+                if (!isTvLayout) {
                 item {
                     // The remote lands on Play the moment this row exists: on a
                     // television the page opens with the D-pad already sitting
