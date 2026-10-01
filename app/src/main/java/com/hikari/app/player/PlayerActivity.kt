@@ -10316,6 +10316,47 @@ class PlayerActivity : ComponentActivity() {
             // text tracks disabled before giving up on it.
             val code = error.errorCode
             val httpStatus = httpStatusOf(details)
+            val currentSource = sources.getOrNull(currentIndex)
+
+            // TorrServer is a local proxy. A transient Range/reader error must not
+            // immediately mark 127.0.0.1 dead and switch to another torrent. Reopen
+            // the SAME transformed URL with a short backoff first.
+            if (currentSource?.torrentStream == true) {
+                if (torrentRetryIndex != currentIndex) {
+                    torrentRetryIndex = currentIndex
+                    torrentRetryCount = 0
+                }
+                val retryable = httpStatus == null ||
+                    httpStatus == 408 || httpStatus == 429 || httpStatus >= 500 ||
+                    code == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
+                    code == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT ||
+                    code == PlaybackException.ERROR_CODE_IO_UNSPECIFIED ||
+                    code == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND
+                if (retryable && torrentRetryCount < 4) {
+                    torrentRetryCount++
+                    val attempt = torrentRetryCount
+                    val retryIndex = currentIndex
+                    val delayMs = 500L * attempt
+                    torrentRetryTask?.let { bufferingWatchdog.removeCallbacks(it) }
+                    val task = Runnable {
+                        torrentRetryTask = null
+                        if (currentIndex == retryIndex &&
+                            sources.getOrNull(retryIndex)?.torrentStream == true
+                        ) {
+                            com.hikari.app.data.Logs.log(
+                                "Player",
+                                "TorrServer transient error; reopening same torrent ($attempt/4)",
+                            )
+                            playDirect(retryIndex)
+                        }
+                    }
+                    torrentRetryTask = task
+                    bufferingWatchdog.postDelayed(task, delayMs)
+                    return
+                }
+                torrentRetryTask = null
+                torrentRetryCount = 0
+            }
             // A 5xx — or a refused/timed-out connection — is the HOST saying
             // "not this file, not now". The same mirror hands out every quality
             // of the same video, so it answers the same way for all of them,
@@ -10327,7 +10368,7 @@ class PlayerActivity : ComponentActivity() {
                 code == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
                 code == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT ||
                 code == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND
-            if (terminalHostFailure) {
+            if (terminalHostFailure && currentSource?.torrentStream != true) {
                 val h = mirrorHostOf(sources.getOrNull(currentIndex)?.url.orEmpty())
                 if (h.isNotBlank()) deadHosts.add(h)
             }
