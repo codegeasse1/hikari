@@ -1710,7 +1710,7 @@ class AppStore(private val ctx: Context) {
     }
 
     fun tvDetailBigFlow(): Flow<Boolean> =
-        store.data.map { it[K.TV_DETAIL_BIG] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
+        store.data.map { it[K.TV_DETAIL_BIG] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun tvDetailBig(): Boolean = tvDetailBigFlow().first()
 
