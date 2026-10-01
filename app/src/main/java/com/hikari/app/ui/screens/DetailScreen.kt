@@ -63,6 +63,8 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.automirrored.filled.ViewList
+import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -1616,6 +1618,10 @@ fun DetailScreen(
      * beside the episode count, and remembered across a rotation.
      */
     var epsNewestFirst by rememberSaveable { mutableStateOf(false) }
+    // Episode presentation can be switched without leaving the detail page.
+    // List mode keeps the compact existing rows; poster mode uses the episode
+    // artwork like the TV reference layout.
+    var episodePosterStyle by rememberSaveable { mutableStateOf(false) }
 
     // Related/Similar cells. Tapping a cell opens the title directly instead of
     // dropping the user on the Search tab with a bare name query (which lists
@@ -3053,6 +3059,20 @@ fun DetailScreen(
                                         modifier = Modifier.size(18.dp)
                                     )
                                 }
+                                IconButton(
+                                    onClick = { episodePosterStyle = !episodePosterStyle },
+                                    modifier = Modifier.size(36.dp).tvPress(
+                                        previewPass = true,
+                                        onClick = { episodePosterStyle = !episodePosterStyle }
+                                    )
+                                ) {
+                                    Icon(
+                                        if (episodePosterStyle) Icons.AutoMirrored.Filled.ViewList else Icons.Filled.GridView,
+                                        contentDescription = if (episodePosterStyle) tr("Use episode list") else tr("Use episode poster grid"),
+                                        tint = Color.White,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
                             }
                             Row(
                                 Modifier.fillMaxWidth().padding(bottom = 8.dp),
@@ -3121,6 +3141,23 @@ fun DetailScreen(
                                     color = Color.White.copy(alpha = 0.78f),
                                     modifier = Modifier.padding(vertical = 12.dp)
                                 )
+                            } else if (episodePosterStyle) {
+                                pageEps.chunked(2).forEach { pair ->
+                                    Row(
+                                        Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        pair.forEach { ep ->
+                                            EpisodePosterCard(
+                                                ep = ep,
+                                                onClick = { tryPlay(ep) },
+                                                onDownload = { tryDownload(ep) },
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                        }
+                                        if (pair.size == 1) Spacer(Modifier.weight(1f))
+                                    }
+                                }
                             } else {
                                 pageEps.forEach { ep ->
                                     EpisodeRow(
@@ -3134,6 +3171,18 @@ fun DetailScreen(
                     }
                 }
                 Column(Modifier.align(Alignment.BottomStart).fillMaxWidth(0.60f).padding(start = 42.dp, end = 24.dp, bottom = 34.dp)) {
+                    Button(
+                        onClick = { tryPlay(detailBtnEp) },
+                        modifier = Modifier.focusRequester(playFocus).tvPress(
+                            previewPass = true,
+                            onClick = { tryPlay(detailBtnEp) }
+                        )
+                    ) {
+                        Icon(Icons.Filled.PlayArrow, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text(detailActionLabel)
+                    }
+                    Spacer(Modifier.height(8.dp))
                     if (!heroLogo.isNullOrBlank()) {
                         AsyncImage(model = heroLogo, contentDescription = artTitle, contentScale = ContentScale.Fit,
                             modifier = Modifier.fillMaxWidth(0.72f).heightIn(max = 92.dp))
@@ -3157,10 +3206,6 @@ fun DetailScreen(
                         modifier = Modifier.padding(top = 7.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.padding(top = 10.dp)) {
-                        Button(onClick = { tryPlay(detailBtnEp) }, modifier = Modifier.focusRequester(playFocus).tvPress(
-                            previewPass = true, onClick = { tryPlay(detailBtnEp) })) {
-                            Icon(Icons.Filled.PlayArrow, contentDescription = null); Spacer(Modifier.width(8.dp)); Text(detailActionLabel)
-                        }
                         FilledTonalButton(onClick = { tryDownload(detailBtnEp) }, modifier = Modifier.tvPress(
                             previewPass = true, onClick = { tryDownload(detailBtnEp) })) {
                             Icon(painter = painterResource(R.drawable.ic_download), contentDescription = tr("Download"))
@@ -3699,6 +3744,20 @@ fun DetailScreen(
                                         modifier = Modifier.size(18.dp),
                                     )
                                 }
+                                IconButton(
+                                    onClick = { episodePosterStyle = !episodePosterStyle },
+                                    modifier = Modifier.size(32.dp).tvPress(
+                                        previewPass = true,
+                                        onClick = { episodePosterStyle = !episodePosterStyle }
+                                    )
+                                ) {
+                                    Icon(
+                                        if (episodePosterStyle) Icons.AutoMirrored.Filled.ViewList else Icons.Filled.GridView,
+                                        contentDescription = if (episodePosterStyle) tr("Use episode list") else tr("Use episode poster grid"),
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
                                 if (seasons.size > 1) {
                                     Box {
                                         OutlinedButton(
@@ -3819,13 +3878,36 @@ fun DetailScreen(
                         // key MUST be unique — plugins (MoviesMod, …) emit
                         // duplicate ids/numbers per quality group, and a
                         // duplicate Compose key crashes the whole screen.
-                        pageEps.forEachIndexed { index, ep ->
-                            item(key = "ep-$index") {
-                                EpisodeRow(
-                                    ep,
-                                    onClick = { tryPlay(ep) },
-                                    onDownload = { tryDownload(ep) },
-                                )
+                        if (episodePosterStyle) {
+                            pageEps.chunked(3).forEachIndexed { rowIndex, row ->
+                                item(key = "ep-poster-$rowIndex") {
+                                    Row(
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 16.dp, vertical = 5.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
+                                        row.forEach { ep ->
+                                            EpisodePosterCard(
+                                                ep = ep,
+                                                onClick = { tryPlay(ep) },
+                                                onDownload = { tryDownload(ep) },
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                        }
+                                        repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
+                                    }
+                                }
+                            }
+                        } else {
+                            pageEps.forEachIndexed { index, ep ->
+                                item(key = "ep-$index") {
+                                    EpisodeRow(
+                                        ep,
+                                        onClick = { tryPlay(ep) },
+                                        onDownload = { tryDownload(ep) },
+                                    )
+                                }
                             }
                         }
                     }
@@ -6363,6 +6445,89 @@ private fun TrailerRow(trailers: List<Trailer>, onClick: (Trailer) -> Unit) {
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun EpisodePosterCard(
+    ep: Episode,
+    onClick: () -> Unit,
+    onDownload: (() -> Unit)? = null,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick)
+            .tvPress(previewPass = false, onClick = onClick)
+            .padding(bottom = 4.dp)
+    ) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .aspectRatio(1.55f)
+                .clip(RoundedCornerShape(10.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+        ) {
+            val thumb = PosterLoader.model(ep.image)
+            if (thumb != null) {
+                AsyncImage(
+                    model = thumb,
+                    contentDescription = tr("Episode %s").replace("%s", ep.number.toString()),
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop
+                )
+            }
+            Box(
+                Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(6.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(Color.Black.copy(alpha = 0.72f))
+                    .padding(horizontal = 7.dp, vertical = 3.dp)
+            ) {
+                Text(
+                    "E" + ep.number.toString().padStart(2, '0'),
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White
+                )
+            }
+            Box(
+                Modifier
+                    .align(Alignment.Center)
+                    .size(34.dp)
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.60f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(Icons.Filled.PlayArrow, contentDescription = tr("Play"), tint = Color.White)
+            }
+            if (onDownload != null) {
+                IconButton(
+                    onClick = onDownload,
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .size(36.dp)
+                        .tvPress(previewPass = true, onClick = onDownload)
+                ) {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_download),
+                        contentDescription = tr("Download"),
+                        tint = Color.White,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+        }
+        Text(
+            ep.name?.ifBlank { tr("Episode %s").replace("%s", ep.number.toString()) }
+                ?: tr("Episode %s").replace("%s", ep.number.toString()),
+            style = MaterialTheme.typography.labelMedium,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(top = 5.dp, horizontal = 2.dp)
+        )
     }
 }
 
