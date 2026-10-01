@@ -3852,17 +3852,6 @@ fun DetailScreen(
                     }
                 }
                 if (isSeries && !isTvLayout) {
-                    // Episode content is always painted on a real surface. Glass
-                    // themes use transparent page backgrounds, which otherwise
-                    // lets the hero art show through the rows and hide them.
-                    item(key = "episode-surface-spacer") {
-                        Box(
-                            Modifier
-                                .fillMaxWidth()
-                                .height(1.dp)
-                                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.98f))
-                        )
-                    }
                     // A Vega series' pack picker (audio variants, seasons,
                     // season+quality rows — the provider's own titles, verbatim,
                     // the way the Vega app's dropdown lists its entries). Only
@@ -3889,6 +3878,7 @@ fun DetailScreen(
                         Row(
                             Modifier
                                 .fillMaxWidth()
+                                .background(MaterialTheme.colorScheme.background.copy(alpha = 0.98f))
                                 .padding(horizontal = 16.dp, vertical = 4.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -4079,6 +4069,7 @@ fun DetailScreen(
                                     Row(
                                         Modifier
                                             .fillMaxWidth()
+                                            .background(MaterialTheme.colorScheme.background.copy(alpha = 0.98f))
                                             .padding(horizontal = 16.dp, vertical = 5.dp),
                                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                                     ) {
@@ -6772,7 +6763,7 @@ private fun EpisodeRow(
     Row(
         Modifier
             .fillMaxWidth()
-            
+            .background(MaterialTheme.colorScheme.background.copy(alpha = 0.98f))
             .clickable(onClick = onClick)
             .tvPress(previewPass = false, onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 8.dp),
