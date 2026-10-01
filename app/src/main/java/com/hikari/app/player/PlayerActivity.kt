@@ -3477,6 +3477,7 @@ class PlayerActivity : ComponentActivity() {
         )) {
             if (bar == null) continue
             bar.background = when {
+                PlayerSkins.normalize(skin) == PlayerSkins.TV -> softScrim(bottomAnchored)
                 drawable != 0 -> ContextCompat.getDrawable(this, drawable)
                 PlayerSkins.normalize(skin) == PlayerSkins.MINIMAL -> softScrim(bottomAnchored)
                 else -> null
@@ -3503,7 +3504,11 @@ class PlayerActivity : ComponentActivity() {
         for (id in pillIds) {
             val v = findViewById<TextView>(id) ?: continue
             if ((v.parent as? View)?.id == R.id.player_top_actions) continue
-            v.background = ContextCompat.getDrawable(this, spec.pillBackground)
+            v.background = if (PlayerSkins.normalize(skin) == PlayerSkins.TV) {
+                ColorDrawable(android.graphics.Color.TRANSPARENT)
+            } else {
+                ContextCompat.getDrawable(this, spec.pillBackground)
+            }
             v.setTextSize(TypedValue.COMPLEX_UNIT_DIP, spec.pillTextDp)
             v.setPadding(dp(spec.pillPadH), dp(spec.pillPadV), dp(spec.pillPadH), dp(spec.pillPadV))
             (v.layoutParams as? ViewGroup.MarginLayoutParams)?.let { lp ->
@@ -3551,6 +3556,17 @@ class PlayerActivity : ComponentActivity() {
      * again after any control-layout change (a pill moved out of the top bar
      * gets its accent fill back).
      */
+    /** Subtle active-control treatment for the TV skin: focus supplies the strong outline. */
+    private fun tvAccentPillRipple(radiusDp: Float): Drawable {
+        val d = resources.displayMetrics.density
+        val base = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = radiusDp * d
+            setColor(withAlpha(accentMidColor, 0.20f))
+        }
+        return RippleDrawable(ColorStateList.valueOf(0x35FFFFFF), base, null)
+    }
+
     private fun applyAccentPalette() {
         val d = resources.displayMetrics.density
 
@@ -3561,7 +3577,11 @@ class PlayerActivity : ComponentActivity() {
         for (id in accentPillIds) {
             val v = findViewById<TextView>(id) ?: continue
             if ((v.parent as? View)?.id == R.id.player_top_actions) continue
-            v.background = accentPillRipple(accentRadius)
+            v.background = if (PlayerSkins.normalize(skin) == PlayerSkins.TV) {
+                tvAccentPillRipple(accentRadius)
+            } else {
+                accentPillRipple(accentRadius)
+            }
         }
 
         // The highlighted metadata badge (video quality).
@@ -3895,6 +3915,41 @@ class PlayerActivity : ComponentActivity() {
      * until the viewer presses a direction key, and the whole point of the TV
      * fix is that the remote works the moment a menu appears.
      */
+    /**
+     * Explicit TV focus graph for rows and horizontal strips. Android's nearest-
+     * neighbour algorithm is useful for simple layouts, but a player has nested
+     * scrollers and a side sheet; explicit axes keep remote movement predictable.
+     */
+    private fun wireTvFocus(container: ViewGroup) {
+        val children = (0 until container.childCount)
+            .map { container.getChildAt(it) }
+            .filter { it.isShown && it.visibility == View.VISIBLE && it.isFocusable }
+        // Assign every ID BEFORE linking next-focus targets. Programmatic rows
+        // normally start at NO_ID; linking the first row to the second before
+        // the second gets an ID would silently leave that direction automatic.
+        children.forEach { if (it.id == View.NO_ID) it.id = View.generateViewId() }
+        if (children.size >= 2) {
+            val horizontal = container is HorizontalScrollView ||
+                (container as? LinearLayout)?.orientation == LinearLayout.HORIZONTAL
+            for (i in children.indices) {
+                val v = children[i]
+                if (horizontal) {
+                    if (i > 0) v.nextFocusLeftId = children[i - 1].id
+                    if (i < children.lastIndex) v.nextFocusRightId = children[i + 1].id
+                } else {
+                    if (i > 0) v.nextFocusUpId = children[i - 1].id
+                    if (i < children.lastIndex) v.nextFocusDownId = children[i + 1].id
+                }
+            }
+        }
+        for (i in 0 until container.childCount) {
+            val child = container.getChildAt(i)
+            if (child is ViewGroup && child !is ScrollView && child !is HorizontalScrollView) {
+                wireTvFocus(child)
+            }
+        }
+    }
+
     private fun findFirstFocusable(root: View?): View? {
         if (root == null) return null
         if (root.isShown && root.visibility == View.VISIBLE && root.isFocusable) return root
@@ -4335,7 +4390,7 @@ class PlayerActivity : ComponentActivity() {
     /** The leading marker of a row, or null for [RowMarker.NONE]. */
     private fun rowMarker(option: GlassOption): View? {
         val density = resources.displayMetrics.density
-        val size = (16 * density).toInt()
+        val size = ((if (PlayerSkins.normalize(skin) == PlayerSkins.TV) 20 else 16) * density).toInt()
         return when (option.marker) {
             RowMarker.RADIO -> {
                 // The reference player's radio: a filled gradient disc with a
@@ -4407,7 +4462,17 @@ class PlayerActivity : ComponentActivity() {
         // Rows are capsules: the radius is deliberately larger than half the
         // row height, so the shape is clamped to a stadium and every row reads
         // as a pill — the "curved" look the whole player menu set uses.
-        val rowShape = if (option.selected) {
+        val tvMenu = PlayerSkins.normalize(skin) == PlayerSkins.TV && playerTvRemote()
+        val rowShape = if (tvMenu) {
+            GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 12f * density
+                setColor(if (option.selected) withAlpha(accentMidColor, 0.18f) else 0x00000000)
+                if (option.selected) {
+                    setStroke((1f * density).roundToInt().coerceAtLeast(1), 0x30FFFFFF)
+                }
+            }
+        } else if (option.selected) {
             GradientDrawable(
                 GradientDrawable.Orientation.LEFT_RIGHT,
                 intArrayOf(withAlpha(accentStartColor, 0.30f), withAlpha(accentEndColor, 0.34f))
@@ -4510,9 +4575,12 @@ class PlayerActivity : ComponentActivity() {
         val density = resources.displayMetrics.density
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            val tvMenu = PlayerSkins.normalize(skin) == PlayerSkins.TV && playerTvRemote()
             setPadding(
-                (8 * density).toInt(), (4 * density).toInt(),
-                (8 * density).toInt(), (2 * density).toInt()
+                ((if (tvMenu) 12 else 8) * density).toInt(),
+                ((if (tvMenu) 6 else 4) * density).toInt(),
+                ((if (tvMenu) 12 else 8) * density).toInt(),
+                ((if (tvMenu) 6 else 2) * density).toInt()
             )
         }
     }
@@ -4524,7 +4592,13 @@ class PlayerActivity : ComponentActivity() {
             glassRow(option, onClick),
             LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { bottomMargin = (3 * density).toInt() }
+            ).apply {
+                bottomMargin = if (PlayerSkins.normalize(skin) == PlayerSkins.TV && playerTvRemote()) {
+                    (6 * density).toInt()
+                } else {
+                    (3 * density).toInt()
+                }
+            }
         )
     }
 
@@ -4726,6 +4800,7 @@ class PlayerActivity : ComponentActivity() {
                     setTextColor(0xFF9AA5B5.toInt())
                 }
             }
+        val tvSheet = PlayerSkins.normalize(skin) == PlayerSkins.TV && playerTvRemote()
         val headerRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -4744,9 +4819,33 @@ class PlayerActivity : ComponentActivity() {
                         (13 * density).toInt(), (13 * density).toInt()
                     ).apply { marginEnd = (6 * density).toInt() })
                 }
-                addView(hintView, LinearLayout.LayoutParams(
-                    0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
-                ).apply { marginEnd = (8 * density).toInt() })
+                if (tvSheet) {
+                    val titleStack = LinearLayout(this@PlayerActivity).apply {
+                        orientation = LinearLayout.VERTICAL
+                        addView(TextView(this@PlayerActivity).apply {
+                            text = title
+                            dpText(24f)
+                            includeFontPadding = false
+                            maxLines = 1
+                            ellipsize = TextUtils.TruncateAt.END
+                            typeface = Typeface.create("sans-serif", Typeface.NORMAL)
+                            setTextColor(0xFFFFFFFF.toInt())
+                        })
+                        if (!hint.isNullOrBlank()) {
+                            addView(hintView, LinearLayout.LayoutParams(
+                                LinearLayout.LayoutParams.MATCH_PARENT,
+                                LinearLayout.LayoutParams.WRAP_CONTENT
+                            ).apply { topMargin = (5 * density).toInt() })
+                        }
+                    }
+                    addView(titleStack, LinearLayout.LayoutParams(
+                        0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
+                    ).apply { marginEnd = (16 * density).toInt() })
+                } else {
+                    addView(hintView, LinearLayout.LayoutParams(
+                        0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
+                    ).apply { marginEnd = (8 * density).toInt() })
+                }
             } else {
                 addView(View(this@PlayerActivity), LinearLayout.LayoutParams(0, 1, 1f))
             }
@@ -4774,7 +4873,7 @@ class PlayerActivity : ComponentActivity() {
             if (playerTvRemote() && cancelable) {
                 addView(TextView(this@PlayerActivity).apply {
                     text = "‹ " + I18n.t("Back")
-                    dpText(10f)
+                    dpText(if (tvSheet) 11f else 10f)
                     includeFontPadding = false
                     gravity = Gravity.CENTER
                     isSingleLine = true
@@ -4907,7 +5006,11 @@ class PlayerActivity : ComponentActivity() {
             )
         }).coerceAtMost(w.x - 2 * halo - (8 * density).toInt())
             .coerceAtLeast((140 * density).toInt())
-        val panelW = panelWidthFor(win)
+        val panelW = if (tvSheet) {
+            (win.x * 0.70f).toInt().coerceAtMost(win.x - 2 * halo - (18 * density).toInt())
+        } else {
+            panelWidthFor(win)
+        }
 
         /** The height of the hint line for a window of [width] px, measured (see
          *  [roomFor] for why it is measured rather than guessed). */
@@ -4942,7 +5045,9 @@ class PlayerActivity : ComponentActivity() {
 
         val room = roomFor(win, panelW)
         val minPanel = (110 * density).toInt()
-        val panelH = if (fillFractionY > 0f) {
+        val panelH = if (tvSheet) {
+            (win.y * 0.84f).toInt().coerceIn(minPanel, room)
+        } else if (fillFractionY > 0f) {
             // A FILL panel is the requested fraction of the window, still capped
             // by the room above so the whole thing stays on screen.
             (win.y * fillFractionY).toInt().coerceIn(minPanel, room)
@@ -4978,9 +5083,20 @@ class PlayerActivity : ComponentActivity() {
         // The halo is added back on top so the PANEL keeps that width.
         dialog.window?.apply {
             setLayout(panelW + 2 * halo, WindowManager.LayoutParams.WRAP_CONTENT)
-            setGravity(Gravity.CENTER)
-            setDimAmount(0.65f)
+            if (tvSheet) setGravity(Gravity.END or Gravity.CENTER_VERTICAL)
+            else setGravity(Gravity.CENTER)
+            setDimAmount(if (tvSheet) 0.48f else 0.65f)
             addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+        }
+
+        if (tvSheet) {
+            dialog.window?.decorView?.translationX = (22 * density)
+            dialog.window?.decorView?.alpha = 0f
+            dialog.window?.decorView?.animate()
+                ?.translationX(0f)
+                ?.alpha(1f)
+                ?.setDuration(180L)
+                ?.start()
         }
 
         // Television: a panel is a menu, and a menu a remote cannot walk is not
@@ -4996,6 +5112,7 @@ class PlayerActivity : ComponentActivity() {
             dialog.window?.decorView?.post {
                 val decor = dialog.window?.decorView ?: return@post
                 decor.tvFocusableTree()
+                wireTvFocus(decor)
                 (findFirstFocusable(scroll) ?: findFirstFocusable(decor))?.requestFocus()
             }
             // Rows that arrive AFTER the open (subtitle search results, addon
@@ -5004,7 +5121,11 @@ class PlayerActivity : ComponentActivity() {
             // appear, so late rows are focusable and ringed like the rest.
             val rewalk = object : android.view.ViewGroup.OnHierarchyChangeListener {
                 override fun onChildViewAdded(parent: android.view.View, child: android.view.View) {
-                    runCatching { child.tvFocusableTree() }
+                    runCatching {
+                        child.tvFocusableTree()
+                        (child as? ViewGroup)?.let { wireTvFocus(it) }
+                        wireTvFocus(scroll)
+                    }
                 }
                 override fun onChildViewRemoved(parent: android.view.View, child: android.view.View) {}
             }
@@ -5101,7 +5222,11 @@ class PlayerActivity : ComponentActivity() {
             if (now.x == lastWinW && now.y == lastWinH) return
             lastWinW = now.x
             lastWinH = now.y
-            val w = panelWidthFor(now)
+            val w = if (tvSheet) {
+                (now.x * 0.70f).toInt().coerceAtMost(now.x - 2 * halo - (18 * density).toInt())
+            } else {
+                panelWidthFor(now)
+            }
             runCatching {
                 dialog.window?.setLayout(
                     w + 2 * halo, WindowManager.LayoutParams.WRAP_CONTENT
@@ -5623,14 +5748,15 @@ class PlayerActivity : ComponentActivity() {
                     setColor(0x14FFFFFF.toInt())
                 }
             }
-            val padX = (8 * density).roundToInt()
-            val probe = TextView(this).apply { dpText(9.5f) }
+            val tvMenu = PlayerSkins.normalize(skin) == PlayerSkins.TV && playerTvRemote()
+            val padX = ((if (tvMenu) 14 else 8) * density).roundToInt()
+            val probe = TextView(this).apply { dpText(if (tvMenu) 13f else 9.5f) }
             val textW = ceil(probe.paint.measureText(label)).toInt()
             val w = (textW + padX * 2).coerceAtLeast((28 * density).roundToInt())
-            val h = (21 * density).roundToInt()
+            val h = ((if (tvMenu) 40 else 21) * density).roundToInt()
             return TextView(this).apply {
                 text = label
-                dpText(9.5f)
+                dpText(if (tvMenu) 13f else 9.5f)
                 isSingleLine = true
                 includeFontPadding = false
                 gravity = Gravity.CENTER
@@ -5647,7 +5773,7 @@ class PlayerActivity : ComponentActivity() {
                 if (playerTvRemote() && foreground == null) foreground = tvFocusRing()
                 setOnClickListener { onClick() }
                 layoutParams = LinearLayout.LayoutParams(w, h).apply {
-                    marginEnd = (5 * density).roundToInt()
+                    marginEnd = ((if (tvMenu) 8 else 5) * density).roundToInt()
                 }
             }
         }

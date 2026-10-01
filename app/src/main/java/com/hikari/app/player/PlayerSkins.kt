@@ -182,18 +182,20 @@ object PlayerSkins {
         )
 
         TV -> SkinSpec(
-            topBarBackground = com.hikari.app.R.drawable.top_bar_bg,
-            bottomBarBackground = com.hikari.app.R.drawable.player_deck_bg,
-            pillBackground = com.hikari.app.R.drawable.pill_cinema_ripple,
-            pillTextDp = 12f,
-            pillPadH = 12,
-            pillPadV = 7,
-            pillMargin = 4,
-            accentPillRadius = 9f,
+            // TV uses the player's own gradient scrims rather than rectangular
+            // decks. The controls remain visible, but the picture stays dominant.
+            topBarBackground = 0,
+            bottomBarBackground = 0,
+            pillBackground = com.hikari.app.R.drawable.pill_flat_ripple,
+            pillTextDp = 13f,
+            pillPadH = 10,
+            pillPadV = 6,
+            pillMargin = 5,
+            accentPillRadius = 12f,
             playTreatment = PlayTreatment.SOLID,
-            playSizeDp = 58,
-            deckMarginDp = 18,
-            topBarPadBottom = 10,
+            playSizeDp = 64,
+            deckMarginDp = 0,
+            topBarPadBottom = 12,
         )
 
         NEON -> SkinSpec(
