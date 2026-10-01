@@ -8403,9 +8403,15 @@ class PlayerActivity : ComponentActivity() {
         // Fastream / Pelispedia: refresh signed m3u8 from embed before play so
         // we match CloudStream (fresh token + cookies in shared jar).
         if (isFastreamUrl(src.url) && fastreamRefreshAttempts < 2) {
+            if (src.fastreamSourceUrl == null) {
+                src = src.copy(fastreamSourceUrl = src.url)
+                val seeded = sources.toMutableList()
+                seeded[index] = src
+                sources = seeded
+            }
             fastreamRefreshAttempts++
             val fresh = runCatching {
-                refreshFastreamUrl(src.url)
+                refreshFastreamUrl(src.fastreamSourceUrl ?: src.url)
             }.getOrNull()
             if (!fresh.isNullOrBlank() && fresh != src.url) {
                 val list = sources.toMutableList()
@@ -8413,6 +8419,7 @@ class PlayerActivity : ComponentActivity() {
                     url = fresh,
                     headers = ensureHotlinkHeaders(fresh, src.headers),
                     isM3u8 = true,
+                    fastreamSourceUrl = src.fastreamSourceUrl ?: src.url,
                 )
                 sources = list
                 src = sources[index]
@@ -10200,6 +10207,10 @@ class PlayerActivity : ComponentActivity() {
 
         override fun onRenderedFirstFrame() {
             renderedFirstFrame = true
+            torrentRetryTask?.let { bufferingWatchdog.removeCallbacks(it) }
+            torrentRetryTask = null
+            torrentRetryCount = 0
+            torrentRetryIndex = currentIndex
             // Real video is on screen — retract any "your connection looks slow"
             // verdict, measured or not.
             SlowNetTip.onFirstFrame()
@@ -12013,8 +12024,13 @@ class PlayerActivity : ComponentActivity() {
         sweepReleaseTask = null
         firstFrameTask?.let { bufferingWatchdog.removeCallbacks(it) }
         firstFrameTask = null
+        torrentRetryTask?.let { bufferingWatchdog.removeCallbacks(it) }
+        torrentRetryTask = null
+        torrentRetryCount = 0
         torrentDialog?.let { runCatching { it.dismiss() } }
         torrentDialog = null
+        playerCache?.let { runCatching { it.release() } }
+        playerCache = null
         probeDialog?.let { runCatching { it.dismiss() } }
         probeDialog = null
         player?.let { p ->
