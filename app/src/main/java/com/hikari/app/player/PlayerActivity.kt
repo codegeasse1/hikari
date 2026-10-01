@@ -8424,6 +8424,8 @@ class PlayerActivity : ComponentActivity() {
             val embed = src.fastreamSourceUrl ?: src.url
             val preferredQuality = Regex("""(\\d{3,4})p""", RegexOption.IGNORE_CASE)
                 .find(src.name)?.groupValues?.getOrNull(1)?.toIntOrNull()
+            val preferredOrdinal = Regex("""\((\d+)\)\s*$""")
+                .find(src.name)?.groupValues?.getOrNull(1)?.toIntOrNull()
             fastreamRefreshAttempts++
             coverPlaybackLine = I18n.t("Resolving Fastream…")
             loadingStatus?.text = coverPlaybackLine
@@ -10493,6 +10495,8 @@ class PlayerActivity : ComponentActivity() {
                 val retryIndex = currentIndex
                 val fastreamBase = sources.getOrNull(retryIndex)?.fastreamSourceUrl ?: curUrl
                 val preferredQuality = Regex("""(\\d{3,4})p""", RegexOption.IGNORE_CASE)
+                    .find(sources.getOrNull(retryIndex)?.name.orEmpty())?.groupValues?.getOrNull(1)?.toIntOrNull()
+                val preferredOrdinal = Regex("""\((\d+)\)\s*$""")
                     .find(sources.getOrNull(retryIndex)?.name.orEmpty())?.groupValues?.getOrNull(1)?.toIntOrNull()
                 coverPlaybackLine = I18n.t("Refreshing Fastream…")
                 loadingStatus?.text = coverPlaybackLine
