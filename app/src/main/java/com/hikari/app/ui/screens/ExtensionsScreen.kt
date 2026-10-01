@@ -2915,8 +2915,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                                 RepoKind.VEGA -> installVegaPlugin(p)
                                 RepoKind.SORA -> installScriptPlugin(p, RepoKind.SORA)
                                 RepoKind.ANYMEX -> installScriptPlugin(p, RepoKind.ANYMEX)
-                                RepoKind.SORA -> installScriptPlugin(p, RepoKind.SORA)
-                                RepoKind.ANYMEX -> installScriptPlugin(p, RepoKind.ANYMEX)
                             }
                         }
                     }.getOrNull()
