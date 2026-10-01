@@ -3164,8 +3164,13 @@ fun DetailScreen(
                                     modifier = Modifier.padding(vertical = 12.dp)
                                 )
                             } else if (episodePosterStyle) {
-                                LazyRow(
-                                    modifier = Modifier.fillMaxWidth(),
+                                Box(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .background(MaterialTheme.colorScheme.surface)
+                                ) {
+                                    LazyRow(
+                                        modifier = Modifier.fillMaxWidth(),
                                     contentPadding = PaddingValues(horizontal = 2.dp),
                                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                                 ) {
@@ -3181,6 +3186,8 @@ fun DetailScreen(
                                             modifier = Modifier.width(150.dp),
                                         )
                                     }
+                                    )
+                                }
                                 }
                             } else {
                                 pageEps.forEach { ep ->
@@ -3207,7 +3214,7 @@ fun DetailScreen(
                 ) {
                     if (!heroLogo.isNullOrBlank()) {
                         AsyncImage(model = heroLogo, contentDescription = artTitle, contentScale = ContentScale.Fit,
-                            modifier = Modifier.fillMaxWidth(if (episodePosterStyle) 0.48f else 0.58f).heightIn(max = 92.dp))
+                            modifier = Modifier.fillMaxWidth(if (episodePosterStyle) 0.62f else 0.58f).heightIn(max = 108.dp))
                     } else {
                         Text(artTitle, style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold,
                             color = Color.White, maxLines = 2, overflow = TextOverflow.Ellipsis)
@@ -3222,8 +3229,8 @@ fun DetailScreen(
                     if (tvMeta.isNotBlank()) Text(tvMeta, style = MaterialTheme.typography.titleSmall,
                         color = Color.White.copy(alpha = 0.92f), modifier = Modifier.padding(top = 8.dp))
                     if (!displayOverview.isNullOrBlank()) Text(displayOverview, style = MaterialTheme.typography.bodyMedium,
-                        color = Color.White.copy(alpha = 0.84f), maxLines = 3, overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.padding(top = 8.dp))
+                        color = Color.White.copy(alpha = 0.84f), maxLines = if (episodePosterStyle) 4 else 3, overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
                     Text(detailActionLabel, style = MaterialTheme.typography.labelLarge, color = Color.White.copy(alpha = 0.72f),
                         modifier = Modifier.padding(top = 7.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically,
@@ -3337,7 +3344,7 @@ fun DetailScreen(
                             Column(
                                 Modifier
                                     .fillMaxWidth()
-                                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.96f))
+                                    .background(MaterialTheme.colorScheme.surface)
                                     .padding(
                                         start = 42.dp,
                                         end = 42.dp,
