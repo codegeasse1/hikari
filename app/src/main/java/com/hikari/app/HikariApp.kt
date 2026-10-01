@@ -442,6 +442,11 @@ class HikariApp : Application() {
                     }
                     store.setTvSeeded(true)
                 }
+                if (com.hikari.app.tv.TvMode.isTv &&
+                    runCatching { !store.tvDetailBigChosen() }.getOrDefault(false)
+                ) {
+                    runCatching { store.setTvDetailBig(true) }
+                }
                 syncTvPerformance(store)
                 syncTvEnhance(store)
                 // Keep the PERFORMANCE MODE in step with the layout from here
