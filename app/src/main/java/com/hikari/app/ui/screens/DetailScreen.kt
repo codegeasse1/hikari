@@ -2998,7 +2998,7 @@ fun DetailScreen(
                 Modifier
                     .fillMaxWidth()
                     .height(tvHeight.coerceAtLeast(420.dp))
-                    .focusGroup()
+                    
                     .onSizeChanged { headerPx = it.height }
             ) {
                 HeroArtwork(model = tvHeroImage.first, wide = true, modifier = Modifier.fillMaxSize())
@@ -3551,7 +3551,7 @@ fun DetailScreen(
                                 )
                             }
                             Row(
-                                Modifier.focusGroup(),
+                                Modifier,
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 // The order arrow. Up = episode 1 first (the way
@@ -6255,7 +6255,7 @@ private fun EpisodeRow(
     Row(
         Modifier
             .fillMaxWidth()
-            .focusGroup()
+            
             .clickable(onClick = onClick)
             .tvPress(previewPass = false, onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 8.dp),
