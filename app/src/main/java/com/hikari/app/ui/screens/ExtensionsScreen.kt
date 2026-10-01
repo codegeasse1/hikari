@@ -7078,6 +7078,7 @@ private fun RepoCard(
         Row(
             Modifier
                 .fillMaxWidth()
+                .focusGroup()
                 .padding(horizontal = 12.dp, vertical = 8.dp)
                 .tvPress(previewPass = false, onClick = onClick),
             verticalAlignment = Alignment.CenterVertically
