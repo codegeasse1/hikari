@@ -3224,7 +3224,7 @@ fun DetailScreen(
                     if (tvMeta.isNotBlank()) Text(tvMeta, style = MaterialTheme.typography.titleSmall,
                         color = Color.White.copy(alpha = 0.92f), modifier = Modifier.padding(top = 8.dp))
                     if (!displayOverview.isNullOrBlank()) Text(displayOverview, style = MaterialTheme.typography.bodyMedium,
-                        color = Color.White.copy(alpha = 0.84f), maxLines = if (episodePosterStyle) 4 else 3, overflow = TextOverflow.Ellipsis,
+                        color = Color.White.copy(alpha = 0.84f), maxLines = if (episodePosterStyle) 5 else 3, overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
                     Text(detailActionLabel, style = MaterialTheme.typography.labelLarge, color = Color.White.copy(alpha = 0.72f),
                         modifier = Modifier.padding(top = 7.dp))
@@ -3239,8 +3239,8 @@ fun DetailScreen(
                 Button(
                     onClick = { tryPlay(detailBtnEp) },
                     modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(end = 42.dp, bottom = 18.dp)
+                        .align(Alignment.BottomStart)
+                        .padding(start = 42.dp, bottom = 18.dp)
                         .focusRequester(playFocus)
                         .tvPress(
                             previewPass = true,
@@ -3339,12 +3339,13 @@ fun DetailScreen(
                             Column(
                                 Modifier
                                     .fillMaxWidth()
+                                    .zIndex(2f)
                                     .background(MaterialTheme.colorScheme.surface)
                                     .padding(
                                         start = 42.dp,
                                         end = 42.dp,
-                                        top = if (headerProgress > 0.6f) pinnedLogoDp + 18.dp else 18.dp,
-                                        bottom = 18.dp,
+                                        top = 18.dp,
+                                        bottom = 24.dp,
                                     )
                             ) {
                                 Row(
@@ -4186,7 +4187,7 @@ fun DetailScreen(
     // the page's own box rather than inside the scrolling list, which is what
     // makes it "not move with the image": the art goes, the title stays.
     val logoArt = heroLogo
-    if (!logoArt.isNullOrBlank()) {
+    if (!logoArt.isNullOrBlank() && !(isTvLayout && episodePosterStyle)) {
         // [logoFrac] (above) is the width this frame's wordmark is fitted into:
         // bigger setting = bigger logo, at BOTH ends of the scroll. Its height
         // follows the art's aspect ratio, so this is "bigger logo", never
