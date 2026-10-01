@@ -5385,8 +5385,7 @@ class PlayerActivity : ComponentActivity() {
             source.details.isNotBlank() -> {
                 val host = hostOf(source.url)
                 val d = source.details.trim()
-                if (host.isNullOrBlank()) d else "$host
-$d"
+                if (host.isNullOrBlank()) d else "$host\\n$d"
             }
             else -> hostOf(source.url)
         },
