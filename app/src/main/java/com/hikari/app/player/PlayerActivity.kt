@@ -4899,12 +4899,11 @@ class PlayerActivity : ComponentActivity() {
         // skin but Default — see [CurvedGlassPanel.applySkin]) has no glow to
         // make room for, so it only keeps a small margin and the panel itself
         // grows into the rest of the screen: more rows visible, less clipping.
-        // The large TV panel is a TV-LAYOUT feature, not a remote-detection
-        // feature. A phone can be controlled by a remote, but when its layout is
-        // still PHONE the panel must remain the normal phone-sized sheet.
-        val sideTvPanel = tvPanelsEnabled && TvMode.isTv
-        val tvSheet = ((PlayerSkins.normalize(skin) == PlayerSkins.TV && TvMode.isTv) || sideTvPanel) &&
-            playerTvRemote()
+        // "TV player panels" is an explicit UI preference. It must work on
+        // phones too; the phone gets the same TV-style panel, but its width is
+        // calculated from the current window below so it never overflows.
+        val sideTvPanel = tvPanelsEnabled
+        val tvSheet = (PlayerSkins.normalize(skin) == PlayerSkins.TV || sideTvPanel)
         val panelSkin = if (sideTvPanel) PlayerSkins.TV else skin
         val flatPanel = PlayerSkins.isFlat(panelSkin)
         val halo = if (flatPanel) (10 * density).toInt() else glassHaloPx
@@ -5140,7 +5139,10 @@ class PlayerActivity : ComponentActivity() {
         }).coerceAtMost(w.x - 2 * halo - (8 * density).toInt())
             .coerceAtLeast((140 * density).toInt())
         val panelW = if (tvSheet) {
-            (win.x * if (sideTvPanel) 0.58f else 0.70f).toInt()
+            // Portrait phones need a near-full-width panel; on wide/landscape
+            // windows keep the TV side-panel proportions.
+            val sideFraction = if (win.x < win.y) 0.92f else 0.58f
+            (win.x * if (sideTvPanel) sideFraction else 0.70f).toInt()
                 .coerceAtMost(win.x - 2 * halo - (18 * density).toInt())
         } else {
             panelWidthFor(win)
@@ -5180,7 +5182,8 @@ class PlayerActivity : ComponentActivity() {
         val room = roomFor(win, panelW)
         val minPanel = (110 * density).toInt()
         val panelH = if (tvSheet) {
-            (win.y * if (sideTvPanel) 0.90f else 0.84f).toInt().coerceIn(minPanel, room)
+            val sideHeight = if (win.x < win.y) 0.82f else 0.90f
+            (win.y * if (sideTvPanel) sideHeight else 0.84f).toInt().coerceIn(minPanel, room)
         } else if (fillFractionY > 0f) {
             // A FILL panel is the requested fraction of the window, still capped
             // by the room above so the whole thing stays on screen.
@@ -5361,7 +5364,7 @@ class PlayerActivity : ComponentActivity() {
             lastWinW = now.x
             lastWinH = now.y
             val w = if (tvSheet) {
-                (now.x * if (sideTvPanel) 0.58f else 0.70f).toInt().coerceAtMost(now.x - 2 * halo - (18 * density).toInt())
+                (now.x * if (sideTvPanel) if (now.x < now.y) 0.92f else 0.58f else 0.70f).toInt().coerceAtMost(now.x - 2 * halo - (18 * density).toInt())
             } else {
                 panelWidthFor(now)
             }
