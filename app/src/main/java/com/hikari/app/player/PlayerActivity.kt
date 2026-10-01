@@ -10461,8 +10461,9 @@ class PlayerActivity : ComponentActivity() {
                 fastreamRefreshAttempts < 2
             ) {
                 fastreamRefreshAttempts++
+                val fastreamBase = sources.getOrNull(currentIndex)?.fastreamSourceUrl ?: curUrl
                 val fresh = runCatching {
-                    refreshFastreamUrl(curUrl)
+                    refreshFastreamUrl(fastreamBase)
                 }.getOrNull()
                 if (!fresh.isNullOrBlank() && fresh != curUrl && currentIndex in sources.indices) {
                     val list = sources.toMutableList()
@@ -10471,6 +10472,7 @@ class PlayerActivity : ComponentActivity() {
                         url = fresh,
                         headers = ensureHotlinkHeaders(fresh, old.headers),
                         isM3u8 = true,
+                        fastreamSourceUrl = old.fastreamSourceUrl ?: fastreamBase,
                     )
                     sources = list
                     headerVariant = 0
@@ -10693,6 +10695,9 @@ class PlayerActivity : ComponentActivity() {
         val u = url
         Regex("""fastream\.to/embed-([a-zA-Z0-9]+)\.html""", RegexOption.IGNORE_CASE)
             .find(u)?.groupValues?.getOrNull(1)?.let { return it }
+        // CloudStream current Fastream extractor accepts emb.html?<file_code>=.
+        Regex("""fastream\.to/emb\.html\?([a-zA-Z0-9_-]+)=""", RegexOption.IGNORE_CASE)
+            .find(u)?.groupValues?.getOrNull(1)?.let { return it }
         Regex("""/([a-zA-Z0-9]{8,})_,""", RegexOption.IGNORE_CASE)
             .find(u)?.groupValues?.getOrNull(1)?.let { return it }
         Regex("""/([a-zA-Z0-9]{8,})\.urlset""", RegexOption.IGNORE_CASE)
@@ -10714,8 +10719,15 @@ class PlayerActivity : ComponentActivity() {
      * with a signed URL that CloudStream would have refreshed correctly.
      */
     private fun refreshFastreamUrl(url: String): String? {
-        val code = fastreamFileCode(url) ?: return null
-        val embed = "https://fastream.to/emb.html?$code="
+        val normalized = url.trim()
+        // If the extension already supplied the CloudStream emb.html?ID= form,
+        // feed that exact URL back into the real CloudStream extractor.
+        val embed = if (normalized.contains("fastream.to/emb.html?", ignoreCase = true)) {
+            normalized
+        } else {
+            val code = fastreamFileCode(normalized) ?: return null
+            "https://fastream.to/emb.html?$code="
+        }
         return runCatching {
             var first: com.lagradost.cloudstream3.utils.ExtractorLink? = null
             kotlinx.coroutines.runBlocking(Dispatchers.IO) {
