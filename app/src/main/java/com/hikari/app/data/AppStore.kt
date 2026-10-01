@@ -355,8 +355,12 @@ class AppStore(private val ctx: Context) {
         val PLAYER_HOLD_SPEED = intPreferencesKey("playerHoldSpeed")
         /** Show player pills as icons without their text labels. */
         val PLAYER_ICON_ONLY = booleanPreferencesKey("playerIconOnly")
+        /** Size of player icons when the text labels are hidden, in dp. */
+        val PLAYER_ICON_SIZE = intPreferencesKey("playerIconSize")
         /** Use the large left-side TV menu for player panels. */
         val PLAYER_TV_PANELS = booleanPreferencesKey("playerTvPanels")
+        /** Size of TV episode rows/cards as a percentage of the default size. */
+        val TV_EPISODE_SIZE = intPreferencesKey("tvEpisodeSize")
         /**
          * The player's volume BOOSTER: +6 dB (2× the amplitude) applied to the
          * audio session by an `android.media.audiofx.LoudnessEnhancer`, so a
@@ -3015,6 +3019,18 @@ class AppStore(private val ctx: Context) {
         write("PLAYER_ICON_ONLY") { it[K.PLAYER_ICON_ONLY] = on }
     }
 
+    /** Size of player icons when the text labels are hidden (20–44dp). */
+    fun playerIconSizeFlow(): Flow<Int> =
+        store.data.map { (it[K.PLAYER_ICON_SIZE] ?: 24).coerceIn(20, 44) }
+            .distinctUntilChanged()
+            .flowOn(Dispatchers.Default)
+
+    suspend fun playerIconSize(): Int = playerIconSizeFlow().first()
+
+    suspend fun setPlayerIconSize(size: Int) {
+        write("PLAYER_ICON_SIZE") { it[K.PLAYER_ICON_SIZE] = size.coerceIn(20, 44) }
+    }
+
     /** Whether player panels use the large left-side TV layout. */
     fun playerTvPanelsFlow(): Flow<Boolean> =
         store.data.map { it[K.PLAYER_TV_PANELS] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
@@ -3023,6 +3039,18 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setPlayerTvPanels(on: Boolean) {
         write("PLAYER_TV_PANELS") { it[K.PLAYER_TV_PANELS] = on }
+    }
+
+    /** Size of the TV detail screen's episode rows/cards (80–160%). */
+    fun tvEpisodeSizeFlow(): Flow<Int> =
+        store.data.map { (it[K.TV_EPISODE_SIZE] ?: 100).coerceIn(80, 160) }
+            .distinctUntilChanged()
+            .flowOn(Dispatchers.Default)
+
+    suspend fun tvEpisodeSize(): Int = tvEpisodeSizeFlow().first()
+
+    suspend fun setTvEpisodeSize(size: Int) {
+        write("TV_EPISODE_SIZE") { it[K.TV_EPISODE_SIZE] = size.coerceIn(80, 160) }
     }
 
     /**

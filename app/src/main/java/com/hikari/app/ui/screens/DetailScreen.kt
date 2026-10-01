@@ -1593,6 +1593,9 @@ fun DetailScreen(
     val isTvLayout = com.hikari.app.tv.TvMode.current()
     val tvDetailBigFlow = remember { detailApp.store.tvDetailBigFlow() }
     val tvDetailBig by tvDetailBigFlow.collectAsState(initial = isTvLayout)
+    val tvEpisodeSizeFlow = remember { detailApp.store.tvEpisodeSizeFlow() }
+    val tvEpisodeSize by tvEpisodeSizeFlow.collectAsState(initial = 100)
+    val tvEpisodeScale = if (isTvLayout) (tvEpisodeSize / 100f).coerceIn(0.8f, 1.6f) else 1f
     val heroStyle =
         // Big TV detail: SIDE puts poster left + info/episodes right (matches
         // the living-room layout users expect). TALL was full-width art only.
@@ -3252,7 +3255,7 @@ fun DetailScreen(
                                             fallbackImage = m?.backdropUrl ?: m?.posterUrl ?: posterUrl,
                                             onClick = { tryPlay(ep) },
                                             onDownload = { tryDownload(ep) },
-                                            modifier = Modifier.width(150.dp),
+                                            modifier = Modifier.width((150f * tvEpisodeScale).dp),
                                         )
                                     }
                                 }
@@ -3262,7 +3265,8 @@ fun DetailScreen(
                                         ep = ep,
                                         fallbackImage = m?.backdropUrl ?: m?.posterUrl ?: posterUrl,
                                         onClick = { tryPlay(ep) },
-                                        onDownload = { tryDownload(ep) }
+                                        onDownload = { tryDownload(ep) },
+                                        sizeScale = tvEpisodeScale,
                                     )
                                 }
                             }
@@ -6758,13 +6762,15 @@ private fun EpisodePosterCard(
     onClick: () -> Unit,
     onDownload: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
+    sizeScale: Float = 1f,
 ) {
+    val s = sizeScale.coerceIn(0.8f, 1.6f)
     Column(
         modifier
             .clip(RoundedCornerShape(10.dp))
             .clickable(onClick = onClick)
             .tvPress(previewPass = false, onClick = onClick)
-            .padding(bottom = 4.dp)
+            .padding(bottom = (4f * s).dp)
     ) {
         Box(
             Modifier
@@ -6785,10 +6791,10 @@ private fun EpisodePosterCard(
             Box(
                 Modifier
                     .align(Alignment.TopEnd)
-                    .padding(6.dp)
+                    .padding((6f * s).dp)
                     .clip(RoundedCornerShape(6.dp))
                     .background(Color.Black.copy(alpha = 0.72f))
-                    .padding(horizontal = 7.dp, vertical = 3.dp)
+                    .padding(horizontal = (7f * s).dp, vertical = (3f * s).dp)
             ) {
                 Text(
                     "E" + ep.number.toString().padStart(2, '0'),
@@ -6800,7 +6806,7 @@ private fun EpisodePosterCard(
             Box(
                 Modifier
                     .align(Alignment.Center)
-                    .size(34.dp)
+                    .size((34f * s).dp)
                     .clip(CircleShape)
                     .background(Color.Black.copy(alpha = 0.60f)),
                 contentAlignment = Alignment.Center
@@ -6812,14 +6818,14 @@ private fun EpisodePosterCard(
                     onClick = onDownload,
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
-                        .size(36.dp)
+                        .size((36f * s).dp)
                         .tvPress(previewPass = true, onClick = onDownload)
                 ) {
                     Icon(
                         painter = painterResource(R.drawable.ic_download),
                         contentDescription = tr("Download"),
                         tint = Color.White,
-                        modifier = Modifier.size(18.dp)
+                        modifier = Modifier.size((18f * s).dp)
                     )
                 }
             }
@@ -6830,7 +6836,7 @@ private fun EpisodePosterCard(
             style = MaterialTheme.typography.labelMedium,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(start = 2.dp, top = 5.dp, end = 2.dp)
+            modifier = Modifier.padding(start = (2f * s).dp, top = (5f * s).dp, end = (2f * s).dp)
         )
     }
 }
@@ -6844,14 +6850,16 @@ private fun EpisodeRow(
      *  shows its own download chooser the moment a server is ready. Null hides
      *  the button (callers that have nowhere to send a download). */
     onDownload: (() -> Unit)? = null,
+    sizeScale: Float = 1f,
 ) {
+    val s = sizeScale.coerceIn(0.8f, 1.6f)
     Row(
         Modifier
             .fillMaxWidth()
             .background(MaterialTheme.colorScheme.background.copy(alpha = 0.98f))
             .clickable(onClick = onClick)
             .tvPress(previewPass = false, onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 8.dp),
+            .padding(horizontal = (16f * s).dp, vertical = (8f * s).dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         val thumb = PosterLoader.model(ep.image?.takeIf { it.isNotBlank() } ?: fallbackImage)
@@ -6860,7 +6868,7 @@ private fun EpisodeRow(
                 model = thumb,
                 contentDescription = null,
                 modifier = Modifier
-                    .size(56.dp)
+                    .size((56f * s).dp)
                     .clip(RoundedCornerShape(8.dp)),
                 contentScale = ContentScale.Crop
             )
@@ -6879,7 +6887,7 @@ private fun EpisodeRow(
                 )
             }
         }
-        Spacer(Modifier.width(12.dp))
+        Spacer(Modifier.width((12f * s).dp))
         Text(
             ep.name?.ifBlank { tr("Episode %s").replace("%s", ep.number.toString()) }
                 ?: tr("Episode %s").replace("%s", ep.number.toString()),
@@ -6894,13 +6902,13 @@ private fun EpisodeRow(
             tint = MaterialTheme.colorScheme.primary
         )
         if (onDownload != null) {
-            Spacer(Modifier.width(4.dp))
-            IconButton(onClick = onDownload, modifier = Modifier.size(44.dp).tvPress(previewPass = true, onClick = onDownload)) {
+            Spacer(Modifier.width((4f * s).dp))
+            IconButton(onClick = onDownload, modifier = Modifier.size((44f * s).dp).tvPress(previewPass = true, onClick = onDownload)) {
                 Icon(
                     painter = painterResource(R.drawable.ic_download),
                     contentDescription = tr("Download"),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(20.dp)
+                    modifier = Modifier.size((20f * s).dp)
                 )
             }
         }

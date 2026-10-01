@@ -888,6 +888,8 @@ class PlayerActivity : ComponentActivity() {
     private var holdFastSpeed = 2f
     /** Player pill labels can be hidden while retaining their icons. */
     private var iconOnlyControls = false
+    /** Size of icon-only player controls, in dp. */
+    private var iconOnlySizeDp = 24
     /** Large left-side TV panels are opt-in from Settings → Player. */
     private var tvPanelsEnabled = false
     private val originalPillLabels = HashMap<Int, CharSequence>()
@@ -1580,6 +1582,9 @@ class PlayerActivity : ComponentActivity() {
             iconOnlyControls = runCatching {
                 (applicationContext as HikariApp).store.playerIconOnly()
             }.getOrDefault(false)
+            iconOnlySizeDp = runCatching {
+                (applicationContext as HikariApp).store.playerIconSize()
+            }.getOrDefault(24).coerceIn(20, 44)
             applyControlLabels()
         }
         lifecycleScope.launch {
@@ -2489,6 +2494,14 @@ class PlayerActivity : ComponentActivity() {
     }
 
     private fun applyControlLabels() {
+        val density = resources.displayMetrics.density
+        val iconPx = (iconOnlySizeDp * density).roundToInt().coerceAtLeast(1)
+        fun sized(drawable: Drawable?): Drawable? =
+            drawable?.mutate()?.apply { setBounds(0, 0, iconPx, iconPx) }
+        fun intrinsic(drawable: Drawable?): Drawable? =
+            drawable?.mutate()?.apply {
+                setBounds(0, 0, intrinsicWidth.coerceAtLeast(1), intrinsicHeight.coerceAtLeast(1))
+            }
         for (id in pillIds) {
             val v = findViewById<TextView>(id) ?: continue
             val original = originalPillLabels.getOrPut(id) { v.text }
@@ -2496,18 +2509,21 @@ class PlayerActivity : ComponentActivity() {
             if (iconOnlyControls) {
                 v.text = ""
                 v.setCompoundDrawablesRelative(
-                    drawables[0], drawables[1],
-                    if (id == R.id.speed_btn) null else drawables[2],
-                    drawables[3],
+                    sized(drawables[0]), sized(drawables[1]),
+                    if (id == R.id.speed_btn) null else sized(drawables[2]),
+                    sized(drawables[3]),
                 )
                 v.compoundDrawablePadding = 0
-                val side = (7f * resources.displayMetrics.density).roundToInt()
+                val side = (7f * density).roundToInt()
                 v.setPadding(side, v.paddingTop, side, v.paddingBottom)
             } else {
                 v.text = original
-                v.setCompoundDrawablesRelative(drawables[0], drawables[1], drawables[2], drawables[3])
-                v.compoundDrawablePadding = (6f * resources.displayMetrics.density).roundToInt()
-                val side = (PlayerSkins.spec(skin).pillPadH * resources.displayMetrics.density).roundToInt()
+                v.setCompoundDrawablesRelative(
+                    intrinsic(drawables[0]), intrinsic(drawables[1]),
+                    intrinsic(drawables[2]), intrinsic(drawables[3]),
+                )
+                v.compoundDrawablePadding = (6f * density).roundToInt()
+                val side = (PlayerSkins.spec(skin).pillPadH * density).roundToInt()
                 v.setPadding(side, v.paddingTop, side, v.paddingBottom)
             }
         }
@@ -4883,8 +4899,12 @@ class PlayerActivity : ComponentActivity() {
         // skin but Default — see [CurvedGlassPanel.applySkin]) has no glow to
         // make room for, so it only keeps a small margin and the panel itself
         // grows into the rest of the screen: more rows visible, less clipping.
-        val sideTvPanel = tvPanelsEnabled && playerTvRemote()
-        val tvSheet = (PlayerSkins.normalize(skin) == PlayerSkins.TV || sideTvPanel) && playerTvRemote()
+        // The large TV panel is a TV-LAYOUT feature, not a remote-detection
+        // feature. A phone can be controlled by a remote, but when its layout is
+        // still PHONE the panel must remain the normal phone-sized sheet.
+        val sideTvPanel = tvPanelsEnabled && TvMode.isTv
+        val tvSheet = ((PlayerSkins.normalize(skin) == PlayerSkins.TV && TvMode.isTv) || sideTvPanel) &&
+            playerTvRemote()
         val panelSkin = if (sideTvPanel) PlayerSkins.TV else skin
         val flatPanel = PlayerSkins.isFlat(panelSkin)
         val halo = if (flatPanel) (10 * density).toInt() else glassHaloPx
@@ -5706,7 +5726,7 @@ class PlayerActivity : ComponentActivity() {
                 val d = source.details.trim()
                 val provider = source.providerName.trim()
                 val body = if (host.isNullOrBlank()) d else "$host\n$d"
-                if (tvPanelsEnabled && provider.isNotBlank()) "$body\n$provider" else body
+                if (tvPanelsEnabled && TvMode.isTv && provider.isNotBlank()) "$body\n$provider" else body
             }
             else -> hostOf(source.url)
         },
@@ -6158,6 +6178,10 @@ class PlayerActivity : ComponentActivity() {
             hint = baseHint,
             iconRes = if (forDownload) R.drawable.ic_download else R.drawable.ic_server,
             rowHosts = listOf(list),
+            // The server chooser is a live, unknown-length list. Keep it tall
+            // enough to show several servers immediately instead of fitting to
+            // the first two rows, while remaining relative to the current window.
+            fillFractionY = 0.72f,
         )
         if (hintView != null) {
             // The hint doubles as the live status of the OTHER extensions: which

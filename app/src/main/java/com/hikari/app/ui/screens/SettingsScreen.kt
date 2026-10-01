@@ -942,6 +942,7 @@ fun SettingsScreen(nav: NavHostController) {
                     item { SettingsCard(top = 2.dp) { TvDeviceCard(app) } }
                     item { SettingsCard { TvPosterSizeCard(app) } }
                     item { SettingsCard { TvDetailStyleCard(app) } }
+                    item { SettingsCard { TvEpisodeSizeCard(app) } }
                     item { SettingsCard { TvOverscanCard(app) } }
                     item { SettingsCard { TvPerformanceCard(app) } }
                     item { SettingsCard { TvRemoteCard() } }
@@ -3366,6 +3367,13 @@ private fun PlayerIconLabelsCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
     val flow = remember { app.store.playerIconOnlyFlow() }
     val on by flow.collectAsState(initial = false)
+    val sizeFlow = remember { app.store.playerIconSizeFlow() }
+    val iconSize by sizeFlow.collectAsState(initial = 24)
+    var sizeDraft by remember { mutableStateOf(24f) }
+
+    LaunchedEffect(iconSize) {
+        sizeDraft = iconSize.toFloat()
+    }
 
     Column(Modifier.padding(16.dp)) {
         SettingsCardHeading(Icons.Filled.Tune, tr("Player button labels"))
@@ -3376,6 +3384,91 @@ private fun PlayerIconLabelsCard(app: HikariApp) {
             onCheckedChange = { value ->
                 scope.launch { runCatching { app.store.setPlayerIconOnly(value) } }
             },
+        )
+        if (on) {
+            Spacer(Modifier.height(10.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    tr("Icon size"),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Spacer(Modifier.weight(1f))
+                Text(
+                    "${sizeDraft.roundToInt()} dp",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+            Slider(
+                value = sizeDraft,
+                onValueChange = { sizeDraft = it },
+                onValueChangeFinished = {
+                    scope.launch { runCatching { app.store.setPlayerIconSize(sizeDraft.roundToInt()) } }
+                },
+                valueRange = 20f..44f,
+                steps = 5,
+                modifier = Modifier.fillMaxWidth().tvAdjust { delta ->
+                    sizeDraft = (sizeDraft.roundToInt() + delta * 4).coerceIn(20, 44).toFloat()
+                    scope.launch { runCatching { app.store.setPlayerIconSize(sizeDraft.roundToInt()) } }
+                },
+            )
+            Text(
+                tr("Increase this when icon-only controls look too small."),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/**
+ * Size of the episode UI used by the TV detail screen in both list and poster modes.
+ * 100% keeps the existing size; the slider deliberately affects only the TV layout.
+ */
+@Composable
+private fun TvEpisodeSizeCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    val flow = remember { app.store.tvEpisodeSizeFlow() }
+    val size by flow.collectAsState(initial = 100)
+    var draft by remember { mutableStateOf(100f) }
+
+    LaunchedEffect(size) {
+        draft = size.toFloat()
+    }
+
+    Column(Modifier.padding(16.dp)) {
+        SettingsCardHeading(Icons.Filled.Tv, tr("TV episode UI size"))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                tr("Episode size"),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                "${draft.roundToInt()}%",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
+        Slider(
+            value = draft,
+            onValueChange = { draft = it },
+            onValueChangeFinished = {
+                scope.launch { runCatching { app.store.setTvEpisodeSize(draft.roundToInt()) } }
+            },
+            valueRange = 80f..160f,
+            steps = 7,
+            modifier = Modifier.fillMaxWidth().tvAdjust { delta ->
+                draft = (draft.roundToInt() + delta * 10).coerceIn(80, 160).toFloat()
+                scope.launch { runCatching { app.store.setTvEpisodeSize(draft.roundToInt()) } }
+            },
+        )
+        Text(
+            tr("Applies to both the episode list and the movie-style poster view."),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
 }
