@@ -7,6 +7,7 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.ViewConfiguration
 import androidx.viewpager.widget.DirectionalViewPager
+import com.davemorrissey.labs.subscaleview.SubsamplingScaleImageView
 import eu.kanade.tachiyomi.ui.reader.viewer.GestureDetectorWithLongTap
 
 /**
@@ -38,6 +39,8 @@ open class Pager(
     private var swipeDownX = 0f
     private var swipeDownY = 0f
     private var swipeDownItem = 0
+    private var manualSwipeActive = false
+    private var manualSwipeEligible = true
 
     override fun onRestoreInstanceState(state: Parcelable?) {
         isRestoring = true
@@ -82,41 +85,64 @@ open class Pager(
      * Dispatches a touch event.
      */
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
-        // DirectionalViewPager normally handles the swipe itself. Some page views
-        // (notably SubsamplingScaleImageView) can consume the gesture, however, and
-        // that leaves L2R/R2L paging completely dead. Record the gesture around the
-        // normal dispatch and only apply a fallback if ViewPager did NOT change page.
+        // DirectionalViewPager gives nested image views first refusal. SubsamplingScaleImageView
+        // can report itself horizontally scrollable even at fit-to-screen scale, which prevents
+        // the pager from ever entering its drag state. Take the page-turn gesture here instead.
+        // A zoomed SSIV is excluded so normal image panning remains intact.
+        //
+        // R2L is also handled here because DirectionalViewPager maps physical left swipes to
+        // index+1 unconditionally. In R2L the physical direction is reversed: right swipe is
+        // next and left swipe is previous.
         when (ev.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 swipeDownX = ev.x
                 swipeDownY = ev.y
                 swipeDownItem = currentItem
+                manualSwipeActive = false
+                manualSwipeEligible = isHorizontal() && !currentPageConsumesHorizontalPan()
             }
-
-            MotionEvent.ACTION_UP -> {
-                val dx = ev.x - swipeDownX
-                val dy = ev.y - swipeDownY
-                val slop = ViewConfiguration.get(context).scaledTouchSlop * 2
-                if (currentItem == swipeDownItem &&
-                    kotlin.math.abs(dx) > slop &&
-                    kotlin.math.abs(dx) > kotlin.math.abs(dy) * 1.25f
-                ) {
-                    val next = if (isRightToLeft) {
-                        if (dx > 0) currentItem - 1 else currentItem + 1
-                    } else {
-                        if (dx < 0) currentItem + 1 else currentItem - 1
-                    }
-                    if (next >= 0 && next < (adapter?.count ?: 0)) {
-                        setCurrentItem(next, true)
+            MotionEvent.ACTION_MOVE -> {
+                if (!manualSwipeActive && manualSwipeEligible) {
+                    val dx = ev.x - swipeDownX
+                    val dy = ev.y - swipeDownY
+                    val slop = ViewConfiguration.get(context).scaledPagingTouchSlopCompat()
+                    if (kotlin.math.abs(dx) > slop &&
+                        kotlin.math.abs(dx) > kotlin.math.abs(dy) * 1.15f
+                    ) {
+                        manualSwipeActive = true
+                        parent?.requestDisallowInterceptTouchEvent(true)
+                        return true
                     }
                 }
+                if (manualSwipeActive) return true
             }
-
+            MotionEvent.ACTION_UP -> {
+                if (manualSwipeActive) {
+                    val dx = ev.x - swipeDownX
+                    val slop = ViewConfiguration.get(context).scaledPagingTouchSlopCompat()
+                    val next = if (kotlin.math.abs(dx) > slop) {
+                        if (isRightToLeft) {
+                            if (dx > 0f) currentItem + 1 else currentItem - 1
+                        } else {
+                            if (dx < 0f) currentItem + 1 else currentItem - 1
+                        }
+                    } else currentItem
+                    if (next != currentItem && next >= 0 && next < (adapter?.count ?: 0)) {
+                        setCurrentItem(next, true)
+                    }
+                    manualSwipeActive = false
+                    parent?.requestDisallowInterceptTouchEvent(false)
+                    return true
+                }
+            }
             MotionEvent.ACTION_CANCEL -> {
-                swipeDownItem = currentItem
+                if (manualSwipeActive) {
+                    manualSwipeActive = false
+                    parent?.requestDisallowInterceptTouchEvent(false)
+                    return true
+                }
             }
         }
-
         val handled = super.dispatchTouchEvent(ev)
         if (isGestureDetectorEnabled) {
             gestureDetector.onTouchEvent(ev)
@@ -124,6 +150,31 @@ open class Pager(
         return handled
     }
 
+    /** Prevent a fit-to-screen SubsamplingScaleImageView from blocking pager interception. */
+    override fun canScroll(
+        v: View,
+        checkV: Boolean,
+        delta: Int,
+        x: Int,
+        y: Int,
+    ): Boolean {
+        if (v is SubsamplingScaleImageView && v.scale <= v.minScale + 0.01f) {
+            return false
+        }
+        return super.canScroll(v, checkV, delta, x, y)
+    }
+
+    /** True when the visible page is zoomed enough that horizontal movement should pan it. */
+    private fun currentPageConsumesHorizontalPan(): Boolean {
+        for (i in 0 until childCount) {
+            val holder = getChildAt(i) as? PagerPageHolder ?: continue
+            val image = holder.getImageView()
+            return image is SubsamplingScaleImageView && image.scale > image.minScale + 0.01f
+        }
+        return false
+    }
+
+    private fun ViewConfiguration.scaledPagingTouchSlopCompat(): Int = scaledPagingTouchSlop
     /**
      * Whether the given [ev] should be intercepted. Only used to prevent crashes when child
      * views manipulate [requestDisallowInterceptTouchEvent].
