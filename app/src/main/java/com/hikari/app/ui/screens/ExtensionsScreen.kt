@@ -7268,6 +7268,7 @@ private fun PluginRow(
     Row(
         Modifier
             .fillMaxWidth()
+            .focusGroup()
             .padding(vertical = 6.dp)
             // The row is a focus TARGET, not just a container. A plain Row has
             // no focus node at all, so on a television the D-pad could only ever
