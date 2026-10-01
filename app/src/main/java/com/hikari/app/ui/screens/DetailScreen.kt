@@ -1557,7 +1557,7 @@ fun DetailScreen(
     val detailHeroFlow = remember { detailApp.store.detailHeroStyleFlow() }
     val detailHeroStyle by detailHeroFlow.collectAsState(initial = DetailHeroStyles.WIDE)
     val tvDetailBigFlow = remember { detailApp.store.tvDetailBigFlow() }
-    val tvDetailBig by tvDetailBigFlow.collectAsState(initial = false)
+    val tvDetailBig by tvDetailBigFlow.collectAsState(initial = isTvLayout)
     val isTvLayout = com.hikari.app.tv.TvMode.current()
     val heroStyle =
         // Big TV detail: SIDE puts poster left + info/episodes right (matches
