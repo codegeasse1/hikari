@@ -1150,7 +1150,7 @@ class PlayerActivity : ComponentActivity() {
         // The progress bar is a real focus target on TV. Once it owns focus,
         // Left/Right scrubs the video instead of jumping between the buttons.
         // This complements the normal hidden-controller D-pad seek path.
-        findViewById<android.view.View>(R.id.exo_progress)?.setOnKeyListener { _, keyCode, event ->
+        findViewById<android.view.View>(androidx.media3.ui.R.id.exo_progress)?.setOnKeyListener { _, keyCode, event ->
             if (event.action == android.view.KeyEvent.ACTION_DOWN && playerTvRemote()) {
                 when (keyCode) {
                     android.view.KeyEvent.KEYCODE_DPAD_LEFT -> {
