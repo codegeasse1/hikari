@@ -1850,7 +1850,17 @@ fun DetailScreen(
     // 10-episode melon list only ever played its first video.
     val playerLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
-    ) { playerLaunched = false; showLoadingBanner = false }
+    ) {
+        // The player session is gone. Stop the live sink from forwarding a late
+        // background result into the destroyed session; the next Play tap installs
+        // a fresh sink/session. Leaving the old callback installed was especially
+        // bad with the shared prefetch: a later provider result could recreate the
+        // removed session and make the next play appear to be searching the wrong
+        // session.
+        vm.liveSink = null
+        playerLaunched = false
+        showLoadingBanner = false
+    }
     // [wantsDownload] rides along as the `openDownload` intent extra: the player
     // then puts its download chooser up as soon as a server is ready instead of
     // just watching. Same intent, same player, same chooser as the in-player
