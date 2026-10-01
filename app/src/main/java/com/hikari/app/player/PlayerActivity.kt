@@ -603,6 +603,11 @@ class PlayerActivity : ComponentActivity() {
      *  walks these variants before giving up on a server. */
     private var headerVariant = 0
 
+    /** Fastream refreshes are deliberately bounded. A signed URL can change on every
+     * refresh, so URL-based tried tracking alone can otherwise create an endless
+     * 403 -> refresh -> new signed URL -> 403 loop. */
+    private var fastreamRefreshAttempts = 0
+
     /** True while the current source is retried with text tracks disabled
      *  (its HLS manifest carried a garbage subtitle track that made media3
      *  crash with "Expected WEBVTT. Got 1"). */
@@ -7931,6 +7936,7 @@ class PlayerActivity : ComponentActivity() {
         }
         if (index != currentIndex) {
             headerVariant = 0
+            fastreamRefreshAttempts = 0
             // A DIFFERENT server: the one attempt at a restart it is allowed
             // (see [firstFrameRetried]) resets with it. Staying on the same
             // server (a retry after an error, a restart) keeps the flag.
@@ -8392,9 +8398,10 @@ class PlayerActivity : ComponentActivity() {
         var src = sources[index]
         // Fastream / Pelispedia: refresh signed m3u8 from embed before play so
         // we match CloudStream (fresh token + cookies in shared jar).
-        if (isFastreamUrl(src.url)) {
+        if (isFastreamUrl(src.url) && fastreamRefreshAttempts < 2) {
+            fastreamRefreshAttempts++
             val fresh = runCatching {
-                kotlinx.coroutines.runBlocking(Dispatchers.IO) { refreshFastreamUrl(src.url) }
+                refreshFastreamUrl(src.url)
             }.getOrNull()
             if (!fresh.isNullOrBlank() && fresh != src.url) {
                 val list = sources.toMutableList()
@@ -10382,10 +10389,12 @@ class PlayerActivity : ComponentActivity() {
             // Fastream: one more refresh from embed then retry same index once.
             if (hotlinkHost && isFastreamUrl(curUrl) &&
                 code == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS &&
-                !terminalHostFailure
+                !terminalHostFailure &&
+                fastreamRefreshAttempts < 2
             ) {
+                fastreamRefreshAttempts++
                 val fresh = runCatching {
-                    kotlinx.coroutines.runBlocking(Dispatchers.IO) { refreshFastreamUrl(curUrl) }
+                    refreshFastreamUrl(curUrl)
                 }.getOrNull()
                 if (!fresh.isNullOrBlank() && fresh != curUrl && currentIndex in sources.indices) {
                     val list = sources.toMutableList()
@@ -10628,31 +10637,30 @@ class PlayerActivity : ComponentActivity() {
     private fun isFastreamUrl(url: String): Boolean =
         url.contains("fastream", ignoreCase = true)
 
-    /** Returns fresh m3u8 URL or null if refresh failed. */
+    /**
+     * Refresh Fastream exactly through the bundled CloudStream extractor.
+     *
+     * CloudStream's Fastream implementation posts the embed id to /dl and then
+     * parses the returned scripts with JwPlayerHelper/M3u8Helper. Re-implementing
+     * only a guessed m3u8 regex here was not equivalent and could leave Hikari
+     * with a signed URL that CloudStream would have refreshed correctly.
+     */
     private fun refreshFastreamUrl(url: String): String? {
         val code = fastreamFileCode(url) ?: return null
-        val embed = "https://fastream.to/embed-$code.html"
+        val embed = "https://fastream.to/emb.html?$code="
         return runCatching {
-            val req = okhttp3.Request.Builder()
-                .url(embed)
-                .header(
-                    "User-Agent",
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            var first: com.lagradost.cloudstream3.utils.ExtractorLink? = null
+            kotlinx.coroutines.runBlocking(Dispatchers.IO) {
+                com.lagradost.cloudstream3.extractors.Fastream().getUrl(
+                    embed,
+                    "https://fastream.to/",
+                    subtitleCallback = {},
+                    callback = { link ->
+                        if (first == null && link.url.isNotBlank()) first = link
+                    },
                 )
-                .header("Referer", "https://fastream.to/")
-                .header("Accept", "text/html,application/xhtml+xml")
-                .build()
-            val html = client.newCall(req).execute().use { it.body?.string().orEmpty() }
-            if (html.isBlank()) return@runCatching null
-            val script = unpackDeanEdwards(html) ?: html
-            Regex(
-                """https?://[^"'\\\s]*fastream\.to[^"'\\\s]*\.m3u8[^"'\\\s]*""",
-                RegexOption.IGNORE_CASE,
-            ).find(script)?.value?.replace("\\/", "/")
-                ?: Regex(
-                    """file\s*:\s*"([^"]+\.m3u8[^"]*)"""",
-                    RegexOption.IGNORE_CASE,
-                ).find(script)?.groupValues?.getOrNull(1)?.replace("\\/", "/")
+            }
+            first?.url
         }.getOrNull()
     }
 
