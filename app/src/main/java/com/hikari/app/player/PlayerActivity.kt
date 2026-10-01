@@ -2143,7 +2143,7 @@ class PlayerActivity : ComponentActivity() {
                         // it is just no longer what the one line on screen is
                         // about (see [coverPlaybackLine]).
                         val line = coverPlaybackLine ?: s ?: DEFAULT_LOADING_STATUS
-                        loadingStatus?.text = line
+                        loadingStatus?.text = if (tvLayout) com.hikari.app.i18n.tr("Buffering…") else line
                         loadingSpinnerStatus?.text = line
                     }
                     // Belt-and-braces: the detail screen reports "found nothing"
@@ -10609,7 +10609,9 @@ class PlayerActivity : ComponentActivity() {
     private fun showLoadingBanner() {
         val banner = loadingBanner ?: return
         val box = loadingTitleBox ?: return
-        val style = com.hikari.app.ui.LoadingStyles.normalize(loadingStyle)
+        val tvLayout = com.hikari.app.tv.TvMode.current()
+        val style = if (tvLayout) com.hikari.app.ui.LoadingStyles.CINEMATIC
+            else com.hikari.app.ui.LoadingStyles.normalize(loadingStyle)
         loadingTitle?.text = intent.getStringExtra("title").orEmpty().ifBlank { "Loading" }.uppercase()
 
         // The title WORDMARK (Settings → App Layout → Loading screen → Title
@@ -10625,7 +10627,7 @@ class PlayerActivity : ComponentActivity() {
         )
         loadingLogo?.apply {
             if (logoModel != null) {
-                val widthFrac = (0.78f * (loadingLogoPercent / 100f)).coerceIn(0.2f, 1f)
+                val widthFrac = ((if (tvLayout) 0.82f else 0.78f) * (loadingLogoPercent / 100f)).coerceIn(0.2f, 1f)
                 val screenW = resources.displayMetrics.widthPixels
                 visibility = View.VISIBLE
                 val lp = layoutParams
@@ -10681,7 +10683,17 @@ class PlayerActivity : ComponentActivity() {
         // Set below once we know whether any artwork actually reaches the
         // screen; drives how strong the scrim is drawn (see below).
         var artShown = false
-        when (style) {
+        if (tvLayout) {
+            loadingGlow?.visibility = View.GONE
+            loadingCardPoster?.apply {
+                setImageDrawable(null)
+                visibility = View.GONE
+            }
+            loadingTitle?.setTextSize(TypedValue.COMPLEX_UNIT_SP, 36f)
+            loadingEpisode?.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+            loadingDetail?.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            backdropAlpha = 1f
+        } else when (style) {
             com.hikari.app.ui.LoadingStyles.MINIMAL -> {
                 // Flat and quiet: no artwork at all, a small title, the spinner.
                 backdropVisible = false
@@ -10763,6 +10775,7 @@ class PlayerActivity : ComponentActivity() {
             if (backdropVisible && bannerModel != null) {
                 artShown = true
                 iv.alpha = backdropAlpha
+                iv.scaleType = if (tvLayout) ImageView.ScaleType.CENTER_CROP else ImageView.ScaleType.CENTER_CROP
                 iv.visibility = View.VISIBLE
                 iv.load(bannerModel)
             } else if (backdropVisible && posterModel != null) {
