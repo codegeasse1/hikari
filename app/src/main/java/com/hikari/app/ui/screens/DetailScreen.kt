@@ -3153,7 +3153,7 @@ fun DetailScreen(
                                 ) {
                                     itemsIndexed(
                                         pageEps,
-                                        key = { index, ep -> "tv-ep-poster-$" + "{index}-" + ep.season + "-" + ep.number }
+                                        key = { index, ep -> "tv-ep-poster-" + index + "-" + ep.season + "-" + ep.number }
                                     ) { _, ep ->
                                         EpisodePosterCard(
                                             ep = ep,
