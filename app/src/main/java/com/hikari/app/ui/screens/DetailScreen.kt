@@ -2658,6 +2658,25 @@ fun DetailScreen(
             ?: sortedEps.firstOrNull { savedProgressFor(it) != null }
     }
 
+    // The primary TV detail action is computed before the hero is built so the
+    // living-room layout can put Play directly over the artwork. Phone layout keeps
+    // the existing action row below the header.
+    val detailUnknownVegaKind = m?.type == MediaType.UNKNOWN &&
+        m?.providerId?.startsWith("vega|") == true &&
+        !episodesLoaded
+    val detailIsSeries = m?.type == MediaType.SERIES ||
+        detailUnknownVegaKind ||
+        (episodes?.isNotEmpty() == true)
+    val detailCanPlay = !detailIsSeries || episodes.isNullOrEmpty()
+    val detailBtnEp = if (detailCanPlay) null else (resumeEp ?: sortedEps.firstOrNull())
+    val detailActionLabel = when {
+        resumeEp != null ->
+            I18n.t("Resume") + if (resumeEp.season > 1)
+                " S"+resumeEp.season+" E"+resumeEp.number else " E"+resumeEp.number
+        detailBtnEp == null -> I18n.t("Play")
+        detailBtnEp.season > 1 -> I18n.t("Play") + " S"+detailBtnEp.season+" E"+detailBtnEp.number
+        else -> I18n.t("Play") + " E"+detailBtnEp.number
+    }
     // What the heart saves into the Library — built from the (type-corrected)
     // meta when it has arrived, and from the nav args before that, so the
     // button works even while the origin's /meta is still in flight.
@@ -2966,16 +2985,59 @@ fun DetailScreen(
         heroLogo = runCatching { TmdbMeta.logo(item) }.getOrNull()
     }
     val heroBlock: @Composable () -> Unit = {
-        Box(
-            Modifier
-                .fillMaxWidth()
-                // The art's height is read from the layout, not from the style's
-                // aspect ratio: the five header shapes are different heights, one
-                // of them wraps its content, and the wordmark's travel is
-                // measured against the real thing.
-                .onSizeChanged { headerPx = it.height }
-        ) {
-            Hero(meta, posterUrl, onBack = { nav.popBackStack() }, style = heroStyle)
+        if (com.hikari.app.tv.TvMode.current()) {
+            // TV detail is a single cinematic hero: artwork, title, metadata,
+            // overview and the primary action live in the same focusable scene.
+            val tvHeight = (androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp * 0.68f).dp
+            Box(Modifier.fillMaxWidth().height(tvHeight.coerceAtLeast(420.dp)).onSizeChanged { headerPx = it.height }) {
+                HeroArtwork(model = image.first, wide = true, modifier = Modifier.fillMaxSize())
+                Box(Modifier.fillMaxSize().background(Brush.horizontalGradient(listOf(
+                    Color.Black.copy(alpha = 0.92f), Color.Black.copy(alpha = 0.58f), Color.Transparent))))
+                Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(
+                    Color.Transparent, Color.Transparent, MaterialTheme.colorScheme.background))))
+                IconButton(onClick = { nav.popBackStack() }, modifier = Modifier.align(Alignment.TopStart).padding(18.dp).tvPress(
+                    previewPass = true, onClick = { nav.popBackStack() })) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = tr("Back"), tint = Color.White)
+                }
+                Column(Modifier.align(Alignment.BottomStart).fillMaxWidth(0.60f).padding(start = 42.dp, end = 24.dp, bottom = 34.dp)) {
+                    if (!heroLogo.isNullOrBlank()) {
+                        AsyncImage(model = heroLogo, contentDescription = artTitle, contentScale = ContentScale.Fit,
+                            modifier = Modifier.fillMaxWidth(0.72f).heightIn(max = 92.dp))
+                    } else {
+                        Text(artTitle, style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold,
+                            color = Color.White, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    }
+                    val tvMeta = buildList {
+                        m?.year?.let { add(it.toString()) }
+                        if (m?.genres?.isNotEmpty() == true) add(m.genres.take(3).joinToString(" · ") { trTag(it) })
+                        extras?.details?.runtimeMinutes?.let { mins ->
+                            add(if (mins >= 60) (mins / 60).toString()+"h "+(mins % 60).toString()+"m" else mins.toString()+"m")
+                        }
+                    }.joinToString("  ·  ")
+                    if (tvMeta.isNotBlank()) Text(tvMeta, style = MaterialTheme.typography.titleSmall,
+                        color = Color.White.copy(alpha = 0.92f), modifier = Modifier.padding(top = 8.dp))
+                    if (!displayOverview.isNullOrBlank()) Text(displayOverview, style = MaterialTheme.typography.bodyMedium,
+                        color = Color.White.copy(alpha = 0.84f), maxLines = 3, overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(top = 8.dp))
+                    Text(detailActionLabel, style = MaterialTheme.typography.labelLarge, color = Color.White.copy(alpha = 0.72f),
+                        modifier = Modifier.padding(top = 7.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(top = 10.dp)) {
+                        Button(onClick = { tryPlay(detailBtnEp) }, modifier = Modifier.focusRequester(playFocus).tvPress(
+                            previewPass = true, onClick = { tryPlay(detailBtnEp) })) {
+                            Icon(Icons.Filled.PlayArrow, contentDescription = null); Spacer(Modifier.width(8.dp)); Text(detailActionLabel)
+                        }
+                        FilledTonalButton(onClick = { tryDownload(detailBtnEp) }, modifier = Modifier.tvPress(
+                            previewPass = true, onClick = { tryDownload(detailBtnEp) })) {
+                            Icon(painter = painterResource(R.drawable.ic_download), contentDescription = tr("Download"))
+                        }
+                    }
+                }
+            }
+        } else {
+            Box(Modifier.fillMaxWidth().onSizeChanged { headerPx = it.height }) {
+                Hero(meta, posterUrl, onBack = { nav.popBackStack() }, style = heroStyle)
+            }
         }
     }
 
@@ -3204,27 +3266,9 @@ fun DetailScreen(
                 // truth, and the loading row is the same one any other engine
                 // shows. Other engines' items are not UNKNOWN, so nothing
                 // changes for them.
-                val unknownVegaKind = m?.type == MediaType.UNKNOWN &&
-                    m?.providerId?.startsWith("vega|") == true &&
-                    !episodesLoaded
-                val isSeries = m?.type == MediaType.SERIES ||
-                    unknownVegaKind ||
-                    (episodes?.isNotEmpty() == true)
-                // A movie (or a series whose provider exposes no episode list)
-                // plays straight from this button. A real series gets the SAME
-                // button, pointed at the episode the viewer is up to, so a
-                // returning viewer never has to hunt through the list — while
-                // the episode rows below still allow picking any other one.
-                val canPlay = !isSeries || episodes.isNullOrEmpty()
-                val btnEp = if (canPlay) null else (resumeEp ?: sortedEps.firstOrNull())
-                val actionLabel = when {
-                    resumeEp != null ->
-                        I18n.t("Resume") + if (resumeEp.season > 1)
-                            " S${resumeEp.season} E${resumeEp.number}" else " E${resumeEp.number}"
-                    btnEp == null -> I18n.t("Play")
-                    btnEp.season > 1 -> I18n.t("Play") + " S${btnEp.season} E${btnEp.number}"
-                    else -> I18n.t("Play") + " E${btnEp.number}"
-                }
+                val isSeries = detailIsSeries
+                val btnEp = detailBtnEp
+                val actionLabel = detailActionLabel
                 item {
                     // The remote lands on Play the moment this row exists: on a
                     // television the page opens with the D-pad already sitting
