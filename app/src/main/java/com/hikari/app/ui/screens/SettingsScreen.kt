@@ -2862,7 +2862,12 @@ private fun TvDetailStyleCard(app: HikariApp) {
             supporting = tr("Draw the detail image large above the content"),
             checked = on,
             onCheckedChange = { value ->
-                scope.launch { runCatching { app.store.setTvDetailBig(value) } }
+                scope.launch {
+                    runCatching {
+                        app.store.setTvDetailBig(value)
+                        app.store.setTvDetailBigChosen(true)
+                    }
+                }
             },
         )
     }
