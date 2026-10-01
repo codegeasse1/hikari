@@ -150,20 +150,6 @@ open class Pager(
         return handled
     }
 
-    /** Prevent a fit-to-screen SubsamplingScaleImageView from blocking pager interception. */
-    override fun canScroll(
-        v: View,
-        checkV: Boolean,
-        delta: Int,
-        x: Int,
-        y: Int,
-    ): Boolean {
-        if (v is SubsamplingScaleImageView && v.scale <= v.minScale + 0.01f) {
-            return false
-        }
-        return super.canScroll(v, checkV, delta, x, y)
-    }
-
     /** True when the visible page is zoomed enough that horizontal movement should pan it. */
     private fun currentPageConsumesHorizontalPan(): Boolean {
         for (i in 0 until childCount) {
