@@ -7,6 +7,7 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.ViewConfiguration
 import androidx.viewpager.widget.DirectionalViewPager
+import com.davemorrissey.labs.subscaleview.SubsamplingScaleImageView
 import eu.kanade.tachiyomi.ui.reader.viewer.GestureDetectorWithLongTap
 
 /**
@@ -31,6 +32,15 @@ open class Pager(
     var longTapListener: ((MotionEvent) -> Boolean)? = null
 
     var isRestoring = false
+
+    /** True for the R2L viewer; physical swipe direction is reversed. */
+    var isRightToLeft = false
+
+    private var swipeDownX = 0f
+    private var swipeDownY = 0f
+    private var swipeDownItem = 0
+    private var manualSwipeActive = false
+    private var manualSwipeEligible = true
 
     override fun onRestoreInstanceState(state: Parcelable?) {
         isRestoring = true
@@ -75,11 +85,80 @@ open class Pager(
      * Dispatches a touch event.
      */
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                swipeDownX = ev.x
+                swipeDownY = ev.y
+                swipeDownItem = currentItem
+                manualSwipeActive = false
+                manualSwipeEligible = isHorizontal() && !currentPageConsumesHorizontalPan()
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (!manualSwipeActive && manualSwipeEligible) {
+                    val dx = ev.x - swipeDownX
+                    val dy = ev.y - swipeDownY
+                    val slop = ViewConfiguration.get(context).scaledPagingTouchSlop
+                    if (kotlin.math.abs(dx) > slop &&
+                        kotlin.math.abs(dx) > kotlin.math.abs(dy) * 1.15f
+                    ) {
+                        manualSwipeActive = true
+                        parent?.requestDisallowInterceptTouchEvent(true)
+                        runCatching {
+                            MotionEvent.obtain(ev).apply {
+                                action = MotionEvent.ACTION_CANCEL
+                                super@Pager.dispatchTouchEvent(this)
+                                recycle()
+                            }
+                        }
+                        return true
+                    }
+                }
+                if (manualSwipeActive) return true
+            }
+            MotionEvent.ACTION_UP -> {
+                if (manualSwipeActive) {
+                    val dx = ev.x - swipeDownX
+                    val slop = ViewConfiguration.get(context).scaledPagingTouchSlop
+                    val base = swipeDownItem
+                    val next = if (kotlin.math.abs(dx) > slop) {
+                        if (isRightToLeft) {
+                            if (dx > 0f) base + 1 else base - 1
+                        } else {
+                            if (dx < 0f) base + 1 else base - 1
+                        }
+                    } else base
+                    if (next != base && next >= 0 && next < (adapter?.count ?: 0)) {
+                        setCurrentItem(next, true)
+                    }
+                    manualSwipeActive = false
+                    manualSwipeEligible = false
+                    parent?.requestDisallowInterceptTouchEvent(false)
+                    return true
+                }
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                if (manualSwipeActive) {
+                    manualSwipeActive = false
+                    manualSwipeEligible = false
+                    parent?.requestDisallowInterceptTouchEvent(false)
+                    return true
+                }
+            }
+        }
         val handled = super.dispatchTouchEvent(ev)
         if (isGestureDetectorEnabled) {
             gestureDetector.onTouchEvent(ev)
         }
         return handled
+    }
+
+    private fun currentPageConsumesHorizontalPan(): Boolean {
+        for (i in 0 until childCount) {
+            val holder = getChildAt(i) as? PagerPageHolder ?: continue
+            val image = holder.getImageView()
+            return image is SubsamplingScaleImageView && image.scale > image.minScale + 0.01f
+        }
+        return false
     }
 
     /**
