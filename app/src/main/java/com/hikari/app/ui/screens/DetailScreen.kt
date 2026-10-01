@@ -1621,7 +1621,7 @@ fun DetailScreen(
     // Episode presentation can be switched without leaving the detail page.
     // List mode keeps the compact existing rows; poster mode uses the episode
     // artwork like the TV reference layout.
-    var episodePosterStyle by rememberSaveable { mutableStateOf(false) }
+    var episodePosterStyle by rememberSaveable(isTvLayout) { mutableStateOf(isTvLayout) }
 
     // Related/Similar cells. Tapping a cell opens the title directly instead of
     // dropping the user on the Search tab with a bare name query (which lists
@@ -2999,7 +2999,7 @@ fun DetailScreen(
         if (isTvLayout) {
             // TV detail is a single cinematic hero: artwork, title, metadata,
             // overview and the primary action live in the same focusable scene.
-            val tvHeight = (androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp * if (episodePosterStyle) 0.60f else 0.68f).dp
+            val tvHeight = (androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp * if (episodePosterStyle) 0.55f else 0.68f).dp
             Box(
                 Modifier
                     .fillMaxWidth()
@@ -3113,6 +3113,7 @@ fun DetailScreen(
                                         ) {
                                             seasons.forEach { s ->
                                                 DropdownMenuItem(
+                                                    modifier = Modifier.tvPress(previewPass = true, onClick = { selectedSeason = s; rangeStart = 0; seasonExpanded = false }),
                                                     text = { Text(tr("Season %s").replace("%s", s.toString())) },
                                                     onClick = {
                                                         selectedSeason = s
@@ -3141,6 +3142,7 @@ fun DetailScreen(
                                             ranges.forEach { start ->
                                                 val end = (start + epPageSize).coerceAtMost(shownEps.size)
                                                 DropdownMenuItem(
+                                                    modifier = Modifier.tvPress(previewPass = true, onClick = { rangeStart = start; rangeExpanded = false }),
                                                     text = { Text("${start + 1}–$end") },
                                                     onClick = {
                                                         rangeStart = start
@@ -3173,6 +3175,7 @@ fun DetailScreen(
                                     ) { _, ep ->
                                         EpisodePosterCard(
                                             ep = ep,
+                                            fallbackImage = m?.backdropUrl ?: m?.posterUrl ?: posterUrl,
                                             onClick = { tryPlay(ep) },
                                             onDownload = { tryDownload(ep) },
                                             modifier = Modifier.width(150.dp),
@@ -3198,21 +3201,9 @@ fun DetailScreen(
                         .padding(
                             start = if (episodePosterStyle) 18.dp else 42.dp,
                             end = 42.dp,
-                            bottom = if (episodePosterStyle) 24.dp else 34.dp,
+                            bottom = if (episodePosterStyle) 92.dp else 34.dp,
                         )
                 ) {
-                    Button(
-                        onClick = { tryPlay(detailBtnEp) },
-                        modifier = Modifier.focusRequester(playFocus).tvPress(
-                            previewPass = true,
-                            onClick = { tryPlay(detailBtnEp) }
-                        )
-                    ) {
-                        Icon(Icons.Filled.PlayArrow, contentDescription = null)
-                        Spacer(Modifier.width(8.dp))
-                        Text(detailActionLabel)
-                    }
-                    Spacer(Modifier.height(8.dp))
                     if (!heroLogo.isNullOrBlank()) {
                         AsyncImage(model = heroLogo, contentDescription = artTitle, contentScale = ContentScale.Fit,
                             modifier = Modifier.fillMaxWidth(0.72f).heightIn(max = 92.dp))
@@ -3240,6 +3231,39 @@ fun DetailScreen(
                             previewPass = true, onClick = { tryDownload(detailBtnEp) })) {
                             Icon(painter = painterResource(R.drawable.ic_download), contentDescription = tr("Download"))
                         }
+                    }
+                }
+                if (episodePosterStyle) {
+                    Button(
+                        onClick = { tryPlay(detailBtnEp) },
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(end = 42.dp, bottom = 18.dp)
+                            .focusRequester(playFocus)
+                            .tvPress(
+                                previewPass = true,
+                                onClick = { tryPlay(detailBtnEp) }
+                            )
+                    ) {
+                        Icon(Icons.Filled.PlayArrow, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text(detailActionLabel)
+                    }
+                } else {
+                    Button(
+                        onClick = { tryPlay(detailBtnEp) },
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(end = 42.dp, bottom = 18.dp)
+                            .focusRequester(playFocus)
+                            .tvPress(
+                                previewPass = true,
+                                onClick = { tryPlay(detailBtnEp) }
+                            )
+                    ) {
+                        Icon(Icons.Filled.PlayArrow, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text(detailActionLabel)
                     }
                 }
             }
@@ -3451,9 +3475,10 @@ fun DetailScreen(
                                         ) { _, ep ->
                                             EpisodePosterCard(
                                                 ep = ep,
+                                                fallbackImage = m?.backdropUrl ?: m?.posterUrl ?: posterUrl,
                                                 onClick = { tryPlay(ep) },
                                                 onDownload = { tryDownload(ep) },
-                                                modifier = Modifier.width(210.dp),
+                                                modifier = Modifier.width(160.dp),
                                             )
                                         }
                                     }
@@ -4056,6 +4081,7 @@ fun DetailScreen(
                                         row.forEach { ep ->
                                             EpisodePosterCard(
                                                 ep = ep,
+                                                fallbackImage = m?.backdropUrl ?: m?.posterUrl ?: posterUrl,
                                                 onClick = { tryPlay(ep) },
                                                 onDownload = { tryDownload(ep) },
                                                 modifier = Modifier.weight(1f)
@@ -6617,6 +6643,7 @@ private fun TrailerRow(trailers: List<Trailer>, onClick: (Trailer) -> Unit) {
 @Composable
 private fun EpisodePosterCard(
     ep: Episode,
+    fallbackImage: String? = null,
     onClick: () -> Unit,
     onDownload: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
@@ -6635,7 +6662,7 @@ private fun EpisodePosterCard(
                 .clip(RoundedCornerShape(10.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant)
         ) {
-            val thumb = PosterLoader.model(ep.image)
+            val thumb = PosterLoader.model(ep.image ?: fallbackImage)
             if (thumb != null) {
                 AsyncImage(
                     model = thumb,
