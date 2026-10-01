@@ -1183,7 +1183,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             deferred.complete(StreamLookup(partial, complete = false))
             throw e
         } finally {
-            StreamCache.release(key)
+            StreamCache.release(key, deferred)
         }
     }
 
@@ -3271,7 +3271,7 @@ fun DetailScreen(
                 }
                 Column(
                     Modifier
-                        .align(Alignment.BottomStart)
+                        .align(if (episodePosterStyle) Alignment.BottomStart else Alignment.TopStart)
                         // Normal episode-list mode owns the right side of the TV hero.
                         // Keep the detail text inside the remaining left area instead of
                         // letting long overviews draw underneath the episode panel.
@@ -3279,7 +3279,8 @@ fun DetailScreen(
                         .padding(
                             start = 42.dp,
                             end = 18.dp,
-                            bottom = if (episodePosterStyle) 88.dp else 34.dp,
+                            top = if (episodePosterStyle) 0.dp else 82.dp,
+                            bottom = if (episodePosterStyle) 88.dp else 0.dp,
                         )
                 ) {
                     if (!heroLogo.isNullOrBlank()) {
@@ -3303,35 +3304,33 @@ fun DetailScreen(
                         modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
                     Text(detailActionLabel, style = MaterialTheme.typography.labelLarge, color = Color.White.copy(alpha = 0.72f),
                         modifier = Modifier.padding(top = 7.dp))
-                }
-                Row(
-                    Modifier
-                        .align(Alignment.BottomStart)
-                        .padding(start = 42.dp, bottom = 18.dp),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Button(
-                        onClick = { tryPlay(detailBtnEp) },
-                        modifier = Modifier
-                            .focusRequester(playFocus)
-                            .tvPress(
+                    Row(
+                        Modifier.padding(top = 18.dp),
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Button(
+                            onClick = { tryPlay(detailBtnEp) },
+                            modifier = Modifier
+                                .focusRequester(playFocus)
+                                .tvPress(
+                                    previewPass = true,
+                                    onClick = { tryPlay(detailBtnEp) }
+                                )
+                        ) {
+                            Icon(Icons.Filled.PlayArrow, contentDescription = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text(detailActionLabel)
+                        }
+                        FilledTonalButton(
+                            onClick = { tryDownload(detailBtnEp) },
+                            modifier = Modifier.tvPress(
                                 previewPass = true,
-                                onClick = { tryPlay(detailBtnEp) }
+                                onClick = { tryDownload(detailBtnEp) }
                             )
-                    ) {
-                        Icon(Icons.Filled.PlayArrow, contentDescription = null)
-                        Spacer(Modifier.width(8.dp))
-                        Text(detailActionLabel)
-                    }
-                    FilledTonalButton(
-                        onClick = { tryDownload(detailBtnEp) },
-                        modifier = Modifier.tvPress(
-                            previewPass = true,
-                            onClick = { tryDownload(detailBtnEp) }
-                        )
-                    ) {
-                        Icon(painter = painterResource(R.drawable.ic_download), contentDescription = tr("Download"))
+                        ) {
+                            Icon(painter = painterResource(R.drawable.ic_download), contentDescription = tr("Download"))
+                        }
                     }
                 }
             }

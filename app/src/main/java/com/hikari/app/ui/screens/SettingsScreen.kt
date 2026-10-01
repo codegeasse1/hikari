@@ -3270,7 +3270,7 @@ private fun DetailHeaderCard(app: HikariApp) {
 }
 
 /**
- * The Player UI skin (Settings → Player): four looks for the playback controls.
+ * The Player UI skin (Settings → Player): five looks for the playback controls, including a dedicated TV Player.
  * Default is Hikari's own curved-glass look — the one the app shipped with.
  *
  * It applies to the NEXT playback session rather than the one already running —

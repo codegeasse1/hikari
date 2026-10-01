@@ -45,6 +45,7 @@ object PlayerSkins {
     const val MINIMAL = "minimal"
     const val CINEMA = "cinema"
     const val NEON = "neon"
+    const val TV = "tv"
 
     /**
      * Every skin, in the order the picker lists them. [DEFAULT] leads because it
@@ -55,7 +56,7 @@ object PlayerSkins {
      * default also added that box one" — Default had grown a flat box while the
      * curved pane they asked to be the default sat under the other name).
      */
-    val ALL = listOf(DEFAULT, MINIMAL, CINEMA, NEON)
+    val ALL = listOf(DEFAULT, MINIMAL, CINEMA, NEON, TV)
 
     /**
      * What an install that has never chosen a skin gets: Minimal.
@@ -91,6 +92,7 @@ object PlayerSkins {
         MINIMAL -> "Minimal"
         CINEMA -> "Cinema"
         NEON -> "Neon"
+        TV -> "TV Player"
         else -> "Default"
     }
 
@@ -98,6 +100,7 @@ object PlayerSkins {
         MINIMAL -> "No panels — just the controls floating on the video"
         CINEMA -> "A solid deck under the picture, square control plates"
         NEON -> "Floating rounded decks with glowing accent edges"
+        TV -> "Netflix-style dark controls made for TV remotes and D-pad navigation"
         else -> "Hikari's curved glass — frosted bars, neon-edged panels"
     }
 
@@ -176,6 +179,21 @@ object PlayerSkins {
             playSizeDp = 52,
             deckMarginDp = 0,
             topBarPadBottom = 8,
+        )
+
+        TV -> SkinSpec(
+            topBarBackground = com.hikari.app.R.drawable.top_bar_bg,
+            bottomBarBackground = com.hikari.app.R.drawable.player_deck_bg,
+            pillBackground = com.hikari.app.R.drawable.pill_cinema_ripple,
+            pillTextDp = 12f,
+            pillPadH = 12,
+            pillPadV = 7,
+            pillMargin = 4,
+            accentPillRadius = 9f,
+            playTreatment = PlayTreatment.SOLID,
+            playSizeDp = 58,
+            deckMarginDp = 18,
+            topBarPadBottom = 10,
         )
 
         NEON -> SkinSpec(

@@ -38,7 +38,18 @@ object StreamCache {
      *  tell a finished empty answer apart from a pass that was cut short (see
      *  [ContentRepository.StreamLookup]) — the latter must be retried, not
      *  believed. */
-    private val inflight = ConcurrentHashMap<String, CompletableDeferred<ContentRepository.StreamLookup>>()
+    private data class Pending(
+        val deferred: CompletableDeferred<ContentRepository.StreamLookup>,
+        val startedAt: Long,
+    )
+
+    /** A provider extraction that has made no hand-off for this long is no longer
+     * allowed to hold every later Play tap hostage. The old coroutine is left
+     * alive and may still publish a result; its deferred is simply detached from
+     * the join slot so a fresh lookup can take over. */
+    private const val INFLIGHT_STALE_MS = 15_000L
+
+    private val inflight = ConcurrentHashMap<String, Pending>()
 
     fun get(key: String): Entry? = entries[key]
 
@@ -65,13 +76,39 @@ object StreamCache {
     }
 
     /** The extraction already running for [key], or null when there is none. */
-    fun joined(key: String): CompletableDeferred<ContentRepository.StreamLookup>? = inflight[key]
+    fun joined(key: String): CompletableDeferred<ContentRepository.StreamLookup>? {
+        val pending = inflight[key] ?: return null
+        if (pending.deferred.isCompleted) {
+            inflight.remove(key, pending)
+            return null
+        }
+        if (System.currentTimeMillis() - pending.startedAt >= INFLIGHT_STALE_MS) {
+            if (inflight.remove(key, pending)) {
+                Logs.log(
+                    "Search",
+                    "discarding stale shared extraction for $key after " +
+                        (INFLIGHT_STALE_MS / 1000) +
+                        "s so a new Play can retry",
+                )
+            }
+            return null
+        }
+        return pending.deferred
+    }
 
     /** Claims the extraction slot for [key]; false when someone else holds it. */
     fun claim(key: String, deferred: CompletableDeferred<ContentRepository.StreamLookup>): Boolean =
-        inflight.putIfAbsent(key, deferred) == null
+        inflight.putIfAbsent(key, Pending(deferred, System.currentTimeMillis())) == null
 
-    fun release(key: String) {
-        inflight.remove(key)
+    /** Release only the owner that still occupies the slot. An older extraction
+     * may finish after a stale takeover and must never remove the new owner's slot. */
+    fun release(
+        key: String,
+        owner: CompletableDeferred<ContentRepository.StreamLookup>? = null,
+    ) {
+        val pending = inflight[key] ?: return
+        if (owner == null || pending.deferred === owner) {
+            inflight.remove(key, pending)
+        }
     }
 }

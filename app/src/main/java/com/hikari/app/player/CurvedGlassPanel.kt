@@ -225,6 +225,16 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
                 flatBorder = withAlpha(midColor, 0.75f)
                 flatBorderPx = 1.4f * density
             }
+            PlayerSkins.TV -> {
+                // TV Player uses a quiet flat streaming-TV menu: dark, solid,
+                // rounded and readable from across a living room. No curved
+                // neon edge competes with D-pad focus.
+                flat = true
+                flatCornerPx = 14f * density
+                flatFill = 0xF20A0C12.toInt()
+                flatBorder = 0x33FFFFFF
+                flatBorderPx = 1.2f * density
+            }
             else -> {
                 flat = false
             }

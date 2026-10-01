@@ -539,6 +539,9 @@ class PlayerActivity : ComponentActivity() {
      *  under the loading cover's "Finding the best server…" line. */
     private var liveStatusJob: Job? = null
 
+    /** One automatic rescue for a live session that has produced no server. */
+    private var rescueRefreshUsed = false
+
     /** Ticking elapsed-seconds suffix on the loading cover, so a long search
      *  visibly is still running instead of looking frozen. */
     private var loadingTickerJob: Job? = null
@@ -2007,6 +2010,23 @@ class PlayerActivity : ComponentActivity() {
                 // well go now rather than at the next batch.
                 onOriginSettled = { if (pendingStart) launch { tryStart() } }
                 if (originSettled) onOriginSettled?.invoke()
+                // A genuinely wedged shared extraction must not leave the player on
+                // the title card for minutes. The normal path shares the in-flight work;
+                // only after it has produced NOTHING for this long do we request one
+                // fresh pass. StreamCache's stale-owner guard lets that pass take over
+                // an abandoned extraction without starting duplicate work immediately.
+                if (awaitLive && !downloadPickMode && !rescueRefreshUsed) launch {
+                    delay(SEARCH_RESCUE_MS)
+                    if (playbackCommitted || sources.isNotEmpty() || liveSearchDone) return@launch
+                    rescueRefreshUsed = true
+                    com.hikari.app.data.Logs.log(
+                        "Player",
+                        "SEARCH RESCUE: no live server after " + (SEARCH_RESCUE_MS / 1000) +
+                            "s — requesting a fresh lookup"
+                    )
+                    StreamsLive.setStatus(liveId, "Search is taking too long — retrying…")
+                    StreamsLive.requestRefresh(liveId)
+                }
                 // THE FAILSAFE (see [START_FAILSAFE_MS]). Armed here rather than
                 // in the collector because [tryStart] — the thing it calls — does
                 // not exist until this line, and a POLL rather than a one-shot
@@ -3661,7 +3681,7 @@ class PlayerActivity : ComponentActivity() {
         for (c in controlOrder) {
             val v = controlView(c) ?: continue
             (v.parent as? ViewGroup)?.removeView(v)
-            when (controlLayout[c] ?: c.defaultSlot) {
+            when (effectiveControlSlot(c)) {
                 PlayerControlSlot.TOP_BAR -> {
                     top.addView(v)
                     compactForTopBar(v)
@@ -3707,6 +3727,37 @@ class PlayerActivity : ComponentActivity() {
         applyTvFocus()
         runCatching {
             (playerView as? android.view.ViewGroup)?.let { applyFocusRings(it) }
+        }
+    }
+
+    /**
+     * The dedicated TV Player skin has a living-room layout: title/back and the
+     * five compact actions stay on top, while the playback menu reads as one
+     * bottom rail. Respect the user's explicit Player controls customization;
+     * this map only replaces the shipped defaults while the TV skin is active.
+     */
+    private fun effectiveControlSlot(control: PlayerControl): PlayerControlSlot {
+        if (PlayerSkins.normalize(skin) != PlayerSkins.TV ||
+            !PlayerControlsConfig.isDefault(controlLayout)
+        ) return controlLayout[control] ?: control.defaultSlot
+        return when (control) {
+            PlayerControl.FAVORITE,
+            PlayerControl.DOWNLOAD,
+            PlayerControl.PIP,
+            PlayerControl.OPTIONS,
+            PlayerControl.LOCK -> PlayerControlSlot.TOP_BAR
+
+            PlayerControl.SPEED,
+            PlayerControl.EPISODES,
+            PlayerControl.SOURCES,
+            PlayerControl.QUALITY,
+            PlayerControl.AUDIO,
+            PlayerControl.SUBS,
+            PlayerControl.ROTATE,
+            PlayerControl.SKIP -> PlayerControlSlot.BOTTOM_LEFT
+
+            PlayerControl.ENHANCE,
+            PlayerControl.RESIZE -> PlayerControlSlot.BOTTOM_RIGHT
         }
     }
 
@@ -11800,7 +11851,7 @@ class PlayerActivity : ComponentActivity() {
          *  first server from the detail screen's live search. The detail screen
          *  normally signals completion ([StreamsLive.markDone]) long before
          *  this; the timeout only covers the search never reporting back. */
-        private const val LIVE_WAIT_TIMEOUT_MS = 90_000L
+        private const val LIVE_WAIT_TIMEOUT_MS = 30_000L
 
         /**
          * How long a server may SIT on the list with playback not committed
@@ -11817,11 +11868,13 @@ class PlayerActivity : ComponentActivity() {
          * deliberately short: the fetching of the servers themselves is not
          * something this waits for, only their being ignored.
          */
-        private const val START_FAILSAFE_MS = 4_000L
+        private const val START_FAILSAFE_MS = 2_500L
 
         /** How often the failsafe above re-checks "servers in hand, nothing
          *  playing" (see [START_FAILSAFE_MS]). */
         private const val START_FAILSAFE_POLL_MS = 1_000L
+        /** If a live lookup has produced no source at all, ask the detail search once more. */
+        private const val SEARCH_RESCUE_MS = 15_000L
 
         /** The cover's default line while the detail screen hasn't reported any
          *  search progress yet (matches the layout's initial text). */
