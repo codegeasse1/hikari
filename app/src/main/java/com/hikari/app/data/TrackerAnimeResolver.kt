@@ -55,7 +55,7 @@ object TrackerAnimeResolver {
         anilistDetail(item)
     }
 
-    private fun simklClientId(): String =
+    private suspend fun simklClientId(): String =
         runCatching {
             HikariApp.instance.store.trackerClients()
                 .firstOrNull { it.kind == TrackerKind.SIMKL }?.id.orEmpty()
@@ -162,7 +162,7 @@ object TrackerAnimeResolver {
         val year = media.optJSONObject("startDate")?.optInt("year", 0)?.takeIf { it > 0 }
         val rating = media.optDouble("averageScore", 0.0).takeIf { it > 0 }?.div(10.0)
         val poster = media.optJSONObject("coverImage")?.optString("large")?.trim()?.takeIf { it.startsWith("http") }
-        val backdrop = media.optJSONObject("bannerImage")?.trim()?.takeIf { it.startsWith("http") }
+        val backdrop = media.optString("bannerImage").trim().takeIf { it.startsWith("http") }
         if (overview == null && genres.isEmpty() && year == null && rating == null) return null
         return Detail(overview, genres, year, poster, backdrop, rating)
     }
