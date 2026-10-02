@@ -838,7 +838,7 @@ object VegaRuntime {
                     override fun onResponse(call: Call, response: Response) {
                         fun finish(resp: Response): Fetched {
                             return try {
-                            val bytes = response.body?.bytes() ?: ByteArray(0)
+                            val bytes = resp.body?.bytes() ?: ByteArray(0)
                             // Vega's Cinewood helper only invokes its WebView WAF
                             // solver when axios sees HTTP 403. Cloudflare also
                             // serves the interstitial as HTTP 200 on some edges,
@@ -847,19 +847,19 @@ object VegaRuntime {
                             // Normalize a genuine CF interstitial to 403 so the
                             // provider's existing WAF recovery path is activated.
                             val effectiveStatus =
-                                if (response.code in 200..299 && isCloudflareChallenge(bytes)) 403
-                                else response.code
+                                if (resp.code in 200..299 && isCloudflareChallenge(bytes)) 403
+                                else resp.code
                             Fetched.Ok(
                                 status = effectiveStatus,
-                                message = response.message,
-                                finalUrl = response.request.url.toString(),
-                                headers = lowerHeaders(response.headers),
+                                message = resp.message,
+                                finalUrl = resp.request.url.toString(),
+                                headers = lowerHeaders(resp.headers),
                                 bytes = bytes,
                             )
                         } catch (t: Throwable) {
                             Fetched.Failure(t.message ?: t.javaClass.simpleName)
                         } finally {
-                            runCatching { response.close() }
+                            runCatching { resp.close() }
                         }
                         }
                         rememberCookies(response.request.url.toString(), response.headers)
@@ -879,6 +879,7 @@ object VegaRuntime {
                                         clientFor(followRedirects).newCall(req).execute()
                                     }.getOrNull()
                                     if (retry != null) {
+                                        rememberCookies(retry.request.url.toString(), retry.headers)
                                         val out2 = finish(retry)
                                         runCatching { retry.close() }
                                         cont.resume(out2)
