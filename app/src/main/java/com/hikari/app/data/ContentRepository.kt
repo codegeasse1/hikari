@@ -5593,23 +5593,37 @@ class ContentRepository(private val manager: ProviderManager) {
         // always asked and its non-empty result wins.
         val ordered = listOfNotNull(manager.byId(item.providerId)) +
             (if (item.type == MediaType.SERIES || item.type == MediaType.UNKNOWN) others else emptyList())
-        for (p in ordered) {
-            val eps = (withTimeoutOrNull(episodesForTimeoutMs(p)) {
-                cancellableCatching { p.getEpisodes(item) }.getOrNull() ?: emptyList()
-            }) ?: emptyList()
-            if (eps.isNotEmpty()) {
-                val restored = restoreAnimeSeasons(item, eps)
-                val sorted = restored.sortedWith(compareBy({ it.season }, { it.number }))
-                // Publish the extension's own list the MOMENT it answers, before
-                // any polish: the page must never read "Episodes (0)" over a
-                // list that already exists (see [onPartial]).
-                onPartial?.invoke(sorted)
-                // Auto-translate FIRST, then the TMDB name lookup: when the user
-                // has a TMDB language set, TMDB's own name for the episode is what
-                // the page and the player should print, and it must not be
-                // overwritten by the per-extension "translate this to English"
-                // option (which is about the extension's own content, not about
-                // the language the app is being read in).
+
+        // Do not serialize every episode lookup behind the first extension. A cold
+        // CloudStream/Anymex runtime can take several seconds to answer while a
+        // second installed source can already have the full list. Start a small,
+        // bounded fan-out and publish each non-empty answer immediately. The
+        // origin still wins when it eventually answers, preserving source
+        // preference while making the first visible episode arrive as soon as
+        // ANY capable extension responds.
+        if (item.type == MediaType.SERIES || item.type == MediaType.UNKNOWN) {
+            val targets = ordered.distinctBy { it.config.id }.take(8)
+            val answers = coroutineScope {
+                targets.mapIndexed { index, p ->
+                    async(Dispatchers.IO) {
+                        val eps = withTimeoutOrNull(episodesForTimeoutMs(p)) {
+                            cancellableCatching { p.getEpisodes(item) }.getOrNull().orEmpty()
+                        }.orEmpty()
+                        if (eps.isNotEmpty()) {
+                            val restored = restoreAnimeSeasons(item, eps)
+                            val sorted = restored.sortedWith(compareBy({ it.season }, { it.number }))
+                            onPartial?.invoke(sorted)
+                            Triple(index, p, sorted)
+                        } else {
+                            null
+                        }
+                    }
+                }.awaitAll().filterNotNull()
+            }
+            if (answers.isNotEmpty()) {
+                val originIndex = answers.firstOrNull { it.first == 0 }
+                val winner = originIndex ?: answers.minByOrNull { it.first }!!
+                val sorted = winner.third
                 val translated = translateEpisodes(item.providerId, sorted)
                 if (translated !== sorted) onPartial?.invoke(translated)
                 val named = withRealEpisodeNames(item, translated)
@@ -5618,7 +5632,26 @@ class ContentRepository(private val manager: ProviderManager) {
                 if (named !== translated) onPartial?.invoke(named)
                 return@withContext named
             }
+        } else {
+            for (p in ordered) {
+                val eps = (withTimeoutOrNull(episodesForTimeoutMs(p)) {
+                    cancellableCatching { p.getEpisodes(item) }.getOrNull() ?: emptyList()
+                }) ?: emptyList()
+                if (eps.isNotEmpty()) {
+                    val restored = restoreAnimeSeasons(item, eps)
+                    val sorted = restored.sortedWith(compareBy({ it.season }, { it.number }))
+                    onPartial?.invoke(sorted)
+                    val translated = translateEpisodes(item.providerId, sorted)
+                    if (translated !== sorted) onPartial?.invoke(translated)
+                    val named = withRealEpisodeNames(item, translated)
+                    synchronized(episodeCache) { episodeCache[selKey] = named }
+                    MetaCache.putEpisodes(epsKey, named)
+                    if (named !== translated) onPartial?.invoke(named)
+                    return@withContext named
+                }
+            }
         }
+
         // Last resort, for ANY series whose own list came back empty: borrow the
         // episode list from an installed extension that scrapes it from its
         // site. Those lists come straight from the source site, so they are the
