@@ -204,9 +204,10 @@ object TrackerApi {
             "https://shikimori.one/oauth/authorize?response_type=code" +
                 "&client_id=${enc(clientId)}&redirect_uri=${enc(REDIRECT_URI)}&state=${enc(state)}"
 
-        TrackerKind.SIMKL ->
-            "https://simkl.com/oauth/authorize?response_type=code" +
-                "&client_id=${enc(clientId)}&redirect_uri=${enc(REDIRECT_URI)}&state=${enc(state)}"
+        // Simkl's current public-client flow is PIN based. It does not
+        // require a client secret or a redirect URI; the app displays a code and
+        // polls /oauth/pin/<user_code>.
+        TrackerKind.SIMKL -> ""
 
         // No browser step: Kitsu takes the account's own credentials, and Trakt
         // is a device code (see [startDevice]).
@@ -454,21 +455,8 @@ object TrackerApi {
             )
         }
 
-        TrackerKind.SIMKL -> {
-            val body = JSONObject().apply {
-                put("code", code)
-                put("client_id", client.id)
-                put("client_secret", client.secret)
-                put("grant_type", "authorization_code")
-                put("redirect_uri", redirect)
-            }.toString()
-            tokenAccount(
-                client,
-                post("https://api.simkl.com/oauth/token", body),
-                which = "Simkl",
-                me = { token -> simklMe(client.id, token) },
-            )
-        }
+        TrackerKind.SIMKL ->
+            Result.failure(Exception("Simkl uses PIN sign-in."))
 
         else -> Result.failure(Exception("${client.kind.label} does not use a code."))
     }
@@ -530,8 +518,29 @@ object TrackerApi {
 
     // ------------------------------------------------------- sign-in: device/PIN
 
-    /** Starts a device-code sign-in (Trakt). Simkl uses OAuth2 authorization-code flow. */
+    /** Starts a PIN/device-code sign-in (Simkl + Trakt). */
     suspend fun startDevice(client: TrackerClient): Result<DeviceLogin> = when (client.kind) {
+        TrackerKind.SIMKL -> {
+            val reply = get(
+                "https://api.simkl.com/oauth/pin?client_id=${enc(client.id)}"
+            )
+            val o = reply.json()
+            val userCode = o?.optString("user_code").orEmpty()
+            if (!reply.ok || userCode.isBlank()) {
+                Result.failure(Exception(problem(reply, "Simkl sign-in")))
+            } else {
+                Result.success(
+                    DeviceLogin(
+                        userCode = userCode,
+                        verifyUrl = o?.optString("verification_url").orEmpty().ifBlank { "https://simkl.com/pin/" },
+                        pollCode = userCode,
+                        intervalSec = o?.optInt("interval", 5)?.coerceIn(2, 30) ?: 5,
+                        expiresInSec = o?.optInt("expires_in", 900)?.coerceAtLeast(60) ?: 900,
+                    )
+                )
+            }
+        }
+
         TrackerKind.TRAKT -> {
             val reply = post(
                 "https://api.trakt.tv/oauth/device/code",
@@ -684,15 +693,9 @@ object TrackerApi {
             // replaced by signing in again.
             TrackerKind.ANILIST -> return null
 
-            TrackerKind.SIMKL -> post(
-                "https://api.simkl.com/oauth/token",
-                JSONObject().apply {
-                    put("grant_type", "refresh_token")
-                    put("refresh_token", account.refresh)
-                    put("client_id", client.id)
-                    put("client_secret", client.secret)
-                }.toString(),
-            )
+            // Simkl access tokens from the PIN flow are long-lived and
+            // are replaced by signing in again; there is no refresh-token path.
+            TrackerKind.SIMKL -> return null
         }
         val o = reply.json() ?: return null
         val token = o.optString("access_token")
