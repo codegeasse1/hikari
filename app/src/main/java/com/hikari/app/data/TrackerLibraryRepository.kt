@@ -36,10 +36,18 @@ object TrackerLibraryRepository {
             JSONArray(response.body?.string().orEmpty())
         }.getOrNull()
 
-        val movies = (get("/users/${enc(user)}/watchlist/movies?extended=full&page=1&limit=250") ?: JSONArray())
-            .mapNotNull { traktItem(it as? JSONObject, MediaType.MOVIE) }
-        val shows = (get("/users/${enc(user)}/watchlist/shows?extended=full&page=1&limit=250") ?: JSONArray())
-            .mapNotNull { traktItem(it as? JSONObject, MediaType.SERIES) }
+        val movieArray = get("/users/${enc(user)}/watchlist/movies?extended=full&page=1&limit=250") ?: JSONArray()
+        val movies = buildList {
+            for (i in 0 until movieArray.length()) {
+                traktItem(movieArray.optJSONObject(i), MediaType.MOVIE)?.let(::add)
+            }
+        }
+        val showArray = get("/users/${enc(user)}/watchlist/shows?extended=full&page=1&limit=250") ?: JSONArray()
+        val shows = buildList {
+            for (i in 0 until showArray.length()) {
+                traktItem(showArray.optJSONObject(i), MediaType.SERIES)?.let(::add)
+            }
+        }
         if (movies.isNotEmpty()) out += Shelf("trakt.watchlist.movies", "Trakt Watchlist · Movies", movies)
         if (shows.isNotEmpty()) out += Shelf("trakt.watchlist.shows", "Trakt Watchlist · Shows", shows)
 
