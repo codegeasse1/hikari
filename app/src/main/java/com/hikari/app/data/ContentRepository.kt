@@ -2512,6 +2512,16 @@ class ContentRepository(private val manager: ProviderManager) {
         withContext(Dispatchers.IO) {
             val all = manager.providers.value.filter { it.config.enabled }
             val origin = manager.byId(item.providerId)
+            // Tracker library rows are virtual catalogue entries: "anilist",
+            // "simkl", "mal", etc. are tracker ids, not installed ContentProvider
+            // ids. Treating them like ordinary provider origins made playback
+            // either stop at "provider not found" or ask only Stremio by id.
+            // They must be resolved by title through the installed playback
+            // extensions, exactly like a TMDB catalogue row without an origin.
+            val trackerBacked = item.providerId.lowercase() in setOf(
+                "anilist", "simkl", "mal", "kitsu", "shikimori", "trakt"
+            )
+
             // Settings → Playback → Server search. Off ("only this extension",
             // the CloudStream model) means the lookup never leaves the repo the
             // title was opened from: no sibling repos of the same engine, no
@@ -2534,7 +2544,11 @@ class ContentRepository(private val manager: ProviderManager) {
             // every other provider's".
             val originIsIptv = IptvMark.of(item)
             val originIsException = originIsIptv || SearchScope.isException(item.providerId)
-            val scopeAll = if (originIsException) false else SearchScope.allExtensions
+            val scopeAll = when {
+                originIsException -> false
+                trackerBacked -> true
+                else -> SearchScope.allExtensions
+            }
             val exceptions = if (originIsException) {
                 emptySet()
             } else {
@@ -5726,16 +5740,24 @@ class ContentRepository(private val manager: ProviderManager) {
         // servers on every lookup, so their episode list may be borrowed too.
         // (A title opened FROM such an extension never reaches this code — the
         // origin answers its own episode list first; see [SearchScope].)
+        val trackerBacked = item.providerId.lowercase() in setOf(
+            "anilist", "simkl", "mal", "kitsu", "shikimori", "trakt"
+        )
         val exceptionIds = if (SearchScope.isException(item.providerId)) emptySet()
         else SearchScope.exceptions
-        if (!SearchScope.allExtensions && exceptionIds.isEmpty()) return null
+        // A tracker row is a virtual source, not an installed extension. Its
+        // episode list must therefore be borrowed by title even when the user's
+        // ordinary "search all extensions" setting is off; otherwise a saved
+        // AniList series can render perfectly in the library but has no provider
+        // from which Hikari can obtain its actual episodes.
+        if (!SearchScope.allExtensions && exceptionIds.isEmpty() && !trackerBacked) return null
         val originType = manager.byId(item.providerId)?.config?.type
         val candidates = manager.providers.value
             .filter { p ->
                 p.config.enabled &&
                     p.config.id != item.providerId &&
                     !isCfSkipped(p.config.id) &&
-                    (SearchScope.allExtensions || p.config.id in exceptionIds) &&
+                    (SearchScope.allExtensions || p.config.id in exceptionIds || trackerBacked) &&
                     when (p.config.type) {
                         ProviderType.CS3,
                         ProviderType.HIKARI,
