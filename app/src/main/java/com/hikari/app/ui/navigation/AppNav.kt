@@ -27,6 +27,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoStories
 import androidx.compose.material.icons.filled.BarChart
+import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.Favorite
@@ -85,6 +86,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.hikari.app.HikariApp
 import com.hikari.app.data.MediaType
+import com.hikari.app.ui.screens.AnimeCalendarScreen
 import com.hikari.app.ui.screens.CatalogScreen
 import com.hikari.app.ui.screens.CollectionGridScreen
 import com.hikari.app.ui.screens.CollectionViewScreen
@@ -116,6 +118,7 @@ import androidx.compose.runtime.collectAsState
 
 object Routes {
     const val HOME = "home"
+    const val ANIME_CALENDAR = "anime-calendar"
     const val SEARCH = "search"
     const val EXTENSIONS = "extensions"
     const val SETTINGS = "settings"
@@ -856,6 +859,7 @@ data class BottomTab(
 
 val BottomTabs = listOf(
     BottomTab(Routes.HOME, "Home", Icons.Filled.Home),
+    BottomTab(Routes.ANIME_CALENDAR, "Anime", Icons.Filled.CalendarMonth),
     BottomTab(Routes.SEARCH, "Search", Icons.Filled.Search),
     // Library + History + Downloads are ONE slot: they are all "my stuff"
     // (saved titles, what you played, what you saved offline) rather than
@@ -1143,6 +1147,7 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
                         )
                 ) {
             composable(Routes.HOME) { HomeScreen(nav) }
+            composable(Routes.ANIME_CALENDAR) { AnimeCalendarScreen(nav) }
             composable(Routes.SEARCH) { SearchScreen(nav) }
             composable(
                 route = Routes.SEARCH_QUERY,
