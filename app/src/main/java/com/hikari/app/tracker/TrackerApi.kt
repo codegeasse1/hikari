@@ -192,7 +192,7 @@ object TrackerApi {
     fun authorizeUrl(kind: TrackerKind, clientId: String, state: String): String = when (kind) {
         // AniList's implicit grant: the token itself comes back in the redirect.
         TrackerKind.ANILIST ->
-            "https://anilist.co/api/v2/oauth/authorize?client_id=${enc(clientId)}&response_type=token"
+            "https://anilist.co/api/v2/oauth/authorize?client_id=" + enc(clientId) + "&response_type=token" + "&redirect_uri=" + enc(REDIRECT_URI) + "&state=" + enc(state)
 
         TrackerKind.MAL ->
             "https://myanimelist.net/v1/oauth2/authorize?response_type=code" +
@@ -530,27 +530,8 @@ object TrackerApi {
 
     // ------------------------------------------------------- sign-in: device/PIN
 
-    /** Starts a code-based sign-in (Simkl's PIN, Trakt's device code). */
+    /** Starts a device-code sign-in (Trakt). Simkl uses OAuth2 authorization-code flow. */
     suspend fun startDevice(client: TrackerClient): Result<DeviceLogin> = when (client.kind) {
-        TrackerKind.SIMKL -> {
-            val reply = get("https://api.simkl.com/oauth/pin?client_id=${enc(client.id)}")
-            val o = reply.json()
-            val userCode = o?.optString("user_code").orEmpty()
-            if (!reply.ok || userCode.isBlank()) {
-                Result.failure(Exception(problem(reply, "Simkl sign-in")))
-            } else {
-                Result.success(
-                    DeviceLogin(
-                        userCode = userCode,
-                        verifyUrl = o?.optString("verification_url").orEmpty().ifBlank { "https://simkl.com/pin" },
-                        pollCode = userCode,
-                        intervalSec = o?.optInt("interval", 5)?.coerceIn(2, 30) ?: 5,
-                        expiresInSec = o?.optInt("expires_in", 600) ?: 600,
-                    )
-                )
-            }
-        }
-
         TrackerKind.TRAKT -> {
             val reply = post(
                 "https://api.trakt.tv/oauth/device/code",
@@ -701,7 +682,17 @@ object TrackerApi {
 
             // AniList tokens do not expire; Simkl's live until revoked and are
             // replaced by signing in again.
-            TrackerKind.ANILIST, TrackerKind.SIMKL -> return null
+            TrackerKind.ANILIST -> return null
+
+            TrackerKind.SIMKL -> post(
+                "https://api.simkl.com/oauth/token",
+                JSONObject().apply {
+                    put("grant_type", "refresh_token")
+                    put("refresh_token", account.refresh)
+                    put("client_id", client.id)
+                    put("client_secret", client.secret)
+                }.toString(),
+            )
         }
         val o = reply.json() ?: return null
         val token = o.optString("access_token")
