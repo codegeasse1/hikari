@@ -163,6 +163,7 @@ import com.hikari.app.tv.tvTextFieldKeys
  * in the scoped-search route.
  */
 private const val COLLECTION_PREFIX = Routes.COLLECTION_PROVIDER_PREFIX
+private const val TRACKER_PREFIX = "tracker:"
 
 class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val manager = (app as HikariApp).providers
     private val store = (app as HikariApp).store
@@ -350,7 +351,6 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
     }
 
     /** True when a stored Home pick refers to a collection, not an extension. */
-    private const val TRACKER_PREFIX = "tracker:"
     private fun isCollectionKey(key: String): Boolean = key.startsWith(COLLECTION_PREFIX)
     private fun isTrackerKey(key: String): Boolean = key.startsWith(TRACKER_PREFIX)
     private fun trackerKindOf(key: String): TrackerKind? = TrackerKind.of(key.removePrefix(TRACKER_PREFIX))
