@@ -4652,6 +4652,21 @@ private fun ServerSearchCard(app: HikariApp) {
         }
         Spacer(Modifier.height(14.dp))
 
+        // Tracker-server routing: these controls decide which installed
+        // provider families participate when a tracker/TMDB title has no native
+        // extension origin. Keep the existing family switches wired to the same
+        // SearchScope store; this heading makes the feature discoverable instead
+        // of hiding the source routing under the generic server-search switch.
+        SettingsCardHeading(Icons.Filled.Extension, tr("Tracker server"))
+        if (!LocalHideHelp.current) {
+            Text(
+                tr("Choose which installed Nuvio, Stremio and Hikari/provider families can be searched for tracker titles. Each family can be narrowed further to individual extensions below."),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+
         // ---- The nuvio family ----
         // The one widening that does not depend on the switch above: a title
         // opened FROM a nuvio provider is also asked in every other installed
