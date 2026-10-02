@@ -3082,7 +3082,10 @@ fun DetailScreen(
                     
                     .onSizeChanged { headerPx = it.height }
             ) {
-                HeroArtwork(model = tvHeroImage.first, wide = true, modifier = Modifier.fillMaxSize())
+                // The TV hero artwork is rendered once by the fixed backdrop
+                // behind the LazyColumn. Keeping a second HeroArtwork here caused
+                // the exact duplicate-image seam visible when the episode shelf
+                // entered the viewport.
                 Box(
                     Modifier.fillMaxSize().background(
                         Brush.horizontalGradient(
@@ -3102,8 +3105,9 @@ fun DetailScreen(
                         )
                     )
                 )
-                Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(
-                    Color.Transparent, Color.Transparent, MaterialTheme.colorScheme.background))))
+                // Do not paint an opaque page-background strip at the bottom of
+                // the hero. The fixed cinematic backdrop must remain visible behind
+                // the episode content as the single continuous image.
                 IconButton(onClick = { nav.popBackStack() }, modifier = Modifier.align(Alignment.TopStart).padding(18.dp).tvPress(
                     previewPass = true, onClick = { nav.popBackStack() })) {
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = tr("Back"), tint = Color.White)
@@ -3119,7 +3123,9 @@ fun DetailScreen(
                             .fillMaxWidth(0.37f)
                             .fillMaxHeight(0.88f)
                             .clip(RoundedCornerShape(18.dp))
-                            .background(Color.Black.copy(alpha = 0.94f))
+                            // Keep this alternate list view translucent too, so
+                            // the same backdrop remains visible behind every detail section.
+                            .background(Color.Black.copy(alpha = 0.30f))
                             .border(1.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(18.dp))
                     ) {
                         Column(
@@ -3240,9 +3246,7 @@ fun DetailScreen(
                                 )
                             } else if (episodePosterStyle) {
                                 LazyRow(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .background(MaterialTheme.colorScheme.surface),
+                                    modifier = Modifier.fillMaxWidth(),
                                     contentPadding = PaddingValues(horizontal = 2.dp),
                                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                                 ) {
