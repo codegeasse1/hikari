@@ -181,6 +181,7 @@ class SoraProvider(override val config: ProviderConfig) : ContentProvider {
     }
 
     override suspend fun getEpisodes(item: MediaItem): List<Episode>? =
+        if (item.type == MediaType.MOVIE) null else
         withContext(Dispatchers.IO) {
             if (item.id.isBlank() || !moduleFile.exists()) return@withContext null
             episodeCache[item.id]?.takeIf { it.isNotEmpty() }?.let { return@withContext it }
