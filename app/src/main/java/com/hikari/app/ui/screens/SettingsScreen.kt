@@ -4557,7 +4557,6 @@ private val ProviderType.isFamilyEngine: Boolean
         this != ProviderType.IPTV && this != ProviderType.MANGA
 
 @Composable
-private
 private fun TrackerServerSearchCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
     val trackerSearchAll by remember { app.store.trackerServerSearchAllFlow() }.collectAsState(initial = true)
@@ -4607,7 +4606,7 @@ private fun TrackerServerSearchCard(app: HikariApp) {
                     value = when {
                         selected.isEmpty() -> tr("Choose %s extensions").replace("%s", t.groupLabel)
                         on -> tr("All %s extensions (%s)").replace("%s", t.groupLabel).replace("%s", ids.size.toString())
-                        else -> selected.size.toString() + " " + t.groupLabel,
+                        else -> selected.size.toString() + " " + t.groupLabel
                     },
                     supporting = tr("Tap to choose individual %s extensions").replace("%s", t.groupLabel),
                     leadingIcon = Icons.Filled.Extension,
