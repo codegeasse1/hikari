@@ -69,7 +69,7 @@ enum class TrackerKind(
     SIMKL(
         "simkl",
         "Simkl",
-        TrackerFlow.PIN,
+        TrackerFlow.DEVICE,
         "https://simkl.com/settings/developer",
         false,
         TrackerScope.ANIME_AND_VIDEO,
@@ -114,7 +114,7 @@ enum class TrackerFlow {
     /** The app shows a short code, the user types it on the service's site. */
     PIN,
 
-    /** Same as [PIN], but the code is confirmed on a device-code page (Trakt). */
+    /** Same as [PIN], but the code is confirmed on a device-code page (Trakt/Simkl OAuth 2). */
     DEVICE,
 }
 
