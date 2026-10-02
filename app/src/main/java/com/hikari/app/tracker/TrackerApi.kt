@@ -489,8 +489,8 @@ object TrackerApi {
             "grant_type" to "password",
             "username" to username,
             "password" to password,
-            "client_id" to client.id,
-            "client_secret" to client.secret,
+            "client_id" to client.id.takeIf { it.isNotBlank() },
+            "client_secret" to client.secret.takeIf { it.isNotBlank() },
         )
         return tokenAccount(
             client,

@@ -136,7 +136,7 @@ fun TrackerLoginDialog(
     fun saveClient() {
         val id = idField.trim()
         error = null
-        if (id.isBlank()) {
+        if (id.isBlank() && kind != TrackerKind.KITSU) {
             error = missingId
             return
         }
