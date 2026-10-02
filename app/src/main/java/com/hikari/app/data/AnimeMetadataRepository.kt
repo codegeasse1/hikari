@@ -150,6 +150,48 @@ object AnimeMetadataRepository {
         return Metadata(displayTitle, score, next, "AniList")
     }
 
+    private data class SimklCalendarEntry(val title: String, val next: String?, val ids: Set<String>)
+    private var calendarAt = 0L
+    private var calendar: List<SimklCalendarEntry> = emptyList()
+
+    private suspend fun simklCalendar(): List<SimklCalendarEntry> {
+        val now = System.currentTimeMillis()
+        if (calendar.isNotEmpty() && now - calendarAt < 6 * 60 * 60 * 1000L) return calendar
+        val raw = Http.getStringQuiet("https://data.simkl.in/calendar/anime.json") ?: return calendar
+        val root = runCatching { JSONObject(raw) }.getOrNull()
+        val array = runCatching { org.json.JSONArray(raw) }.getOrNull() ?: root?.optJSONArray("anime") ?: root?.optJSONArray("items") ?: return calendar
+        val out = ArrayList<SimklCalendarEntry>()
+        for (i in 0 until array.length()) {
+            val o = array.optJSONObject(i) ?: continue
+            val media = o.optJSONObject("anime") ?: o.optJSONObject("show") ?: o
+            val idsObject = media.optJSONObject("ids") ?: o.optJSONObject("ids")
+            val ids = buildSet {
+                idsObject?.let { idsObj -> listOf("simkl", "tmdb", "mal", "anilist", "imdb").forEach { key ->
+                    val value = idsObj.optString(key).trim()
+                    if (value.isNotBlank() && value != "0") add(key + ":" + value.lowercase())
+                }}
+            }
+            val title = media.optString("title").ifBlank { media.optString("name") }.trim()
+            val date = listOf("airing_at", "airingAt", "release_date", "releaseDate", "date")
+                .firstNotNullOfOrNull { key -> o.optString(key).takeIf { it.isNotBlank() } }
+                ?: media.optString("airing_at").takeIf { it.isNotBlank() }
+            if (title.isNotBlank()) out += SimklCalendarEntry(title, date, ids)
+        }
+        if (out.isNotEmpty()) { calendar = out; calendarAt = now }
+        return calendar
+    }
+
+    private fun normalized(value: String): String =
+        value.lowercase().replace(Regex("[^\\p{L}\\p{N}]+"), " ").replace(Regex("\\s+"), " ").trim()
+
+    private suspend fun simklNextEpisode(item: MediaItem): String? {
+        val key = item.providerId.lowercase() + ":" + item.id.lowercase()
+        val entries = simklCalendar()
+        return entries.firstOrNull { key in it.ids }?.next ?: entries.firstOrNull {
+            normalized(it.title) == normalized(item.searchTitle) || normalized(it.title) == normalized(item.title)
+        }?.next
+    }
+
     private suspend fun simkl(app: HikariApp, item: MediaItem): Metadata? {
         val client = app.store.trackerClients().firstOrNull { it.kind == TrackerKind.SIMKL } ?: return null
         if (!client.ready) return null
