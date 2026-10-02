@@ -123,7 +123,7 @@ object TrackerLibraryRepository {
     private suspend fun loadAniList(app: HikariApp): Result<List<Shelf>> {
         val account=app.store.trackers().firstOrNull{it.kind==TrackerKind.ANILIST}
             ?: return Result.failure(IllegalStateException("Connect AniList in Settings → Trackers first."))
-        val query="""query(\$name:String){MediaListCollection(userName:\$name,type:ANIME){lists{name entries{media{id title{userPreferred english romaji} coverImage{large} startDate{year} averageScore nextAiringEpisode{airingAt episode}}}}}}"""
+        val query = "query(\$name:String){MediaListCollection(userName: \$name,type:ANIME){lists{name entries{media{id title{userPreferred english romaji} coverImage{large} startDate{year} averageScore nextAiringEpisode{airingAt episode}}}}}}"
         val raw=Http.postStringQuiet("https://graphql.anilist.co",JSONObject().put("query",query).put("variables",JSONObject().put("name",account.user)).toString())
             ?: return Result.failure(IllegalStateException("AniList did not return a library."))
         val lists=JSONObject(raw).optJSONObject("data")?.optJSONObject("MediaListCollection")?.optJSONArray("lists")?:JSONArray()

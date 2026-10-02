@@ -19,7 +19,7 @@ object AnimeMetadataRepository {
     }
     private fun aniList(title:String):Metadata?{
         if(title.isBlank())return null
-        val q="""query(\$search:String){Media(search:\$search,type:ANIME){title{userPreferred english romaji}averageScore nextAiringEpisode{airingAt episode}}}"""
+        val q = "query(\$search:String){Media(search: \$search,type:ANIME){title{userPreferred english romaji}averageScore nextAiringEpisode{airingAt episode}}}"
         val raw=Http.postStringQuiet("https://graphql.anilist.co",JSONObject().put("query",q).put("variables",JSONObject().put("search",title)).toString())?:return null
         val m=JSONObject(raw).optJSONObject("data")?.optJSONObject("Media")?:return null;val t=m.optJSONObject("title");val n=m.optJSONObject("nextAiringEpisode")
         val next=n?.optLong("airingAt",0L)?.takeIf{it>0}?.let{java.time.Instant.ofEpochSecond(it).toString()}
