@@ -769,8 +769,18 @@ object VegaRuntime {
                     override fun onResponse(call: Call, response: Response) {
                         val outcome = try {
                             val bytes = response.body?.bytes() ?: ByteArray(0)
+                            // Vega's Cinewood helper only invokes its WebView WAF
+                            // solver when axios sees HTTP 403. Cloudflare also
+                            // serves the interstitial as HTTP 200 on some edges,
+                            // which previously made getWithWAF treat the challenge
+                            // HTML as the real page and then produced no links.
+                            // Normalize a genuine CF interstitial to 403 so the
+                            // provider's existing WAF recovery path is activated.
+                            val effectiveStatus =
+                                if (response.code in 200..299 && isCloudflareChallenge(bytes)) 403
+                                else response.code
                             Fetched.Ok(
-                                status = response.code,
+                                status = effectiveStatus,
                                 message = response.message,
                                 finalUrl = response.request.url.toString(),
                                 headers = lowerHeaders(response.headers),
@@ -788,6 +798,17 @@ object VegaRuntime {
                 if (!cont.isCancelled) cont.resume(Fetched.Failure(t.message ?: t.javaClass.simpleName))
             }
         }
+
+    private fun isCloudflareChallenge(bytes: ByteArray): Boolean {
+        if (bytes.isEmpty()) return false
+        val text = runCatching { String(bytes, Charsets.UTF_8).take(256_000).lowercase() }.getOrDefault("")
+        if (text.isBlank()) return false
+        return text.contains("<title>just a moment...</title>") ||
+            text.contains("challenges.cloudflare.com") ||
+            text.contains("cf-mitigated") ||
+            text.contains("cf-chl-widget") ||
+            (text.contains("cloudflare ray id") && text.contains("please wait"))
+    }
 
     private fun lowerHeaders(headers: okhttp3.Headers): Map<String, String> {
         val out = LinkedHashMap<String, String>()
