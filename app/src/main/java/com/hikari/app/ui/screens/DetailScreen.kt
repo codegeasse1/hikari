@@ -3070,6 +3070,42 @@ fun DetailScreen(
     val tvHeroImage = m?.let { Artwork.heroModel(it) }
         ?: (PosterLoader.model(posterUrl) to false)
 
+    // TV detail uses the hero artwork as a FIXED page backdrop. The content
+    // LazyColumn is intentionally transparent, so production, cast, trailers
+    // and episodes travel over the same cinematic image instead of painting
+    // separate opaque black/surface panels between sections.
+    val tvDetailBackdrop: @Composable () -> Unit = {
+        Box(Modifier.fillMaxSize()) {
+            HeroArtwork(
+                model = tvHeroImage.first,
+                wide = true,
+                modifier = Modifier.fillMaxSize(),
+            )
+            Box(
+                Modifier.fillMaxSize().background(
+                    Brush.verticalGradient(
+                        listOf(
+                            Color.Black.copy(alpha = 0.16f),
+                            Color.Black.copy(alpha = 0.48f),
+                            Color.Black.copy(alpha = 0.88f),
+                        )
+                    )
+                )
+            )
+            Box(
+                Modifier.fillMaxSize().background(
+                    Brush.horizontalGradient(
+                        listOf(
+                            Color.Black.copy(alpha = 0.42f),
+                            Color.Transparent,
+                            Color.Black.copy(alpha = 0.28f),
+                        )
+                    )
+                )
+            )
+        }
+    }
+
     val heroBlock: @Composable () -> Unit = {
         if (isTvLayout) {
             // TV detail is a single cinematic hero: artwork, title, metadata,
@@ -3082,47 +3118,10 @@ fun DetailScreen(
                     
                     .onSizeChanged { headerPx = it.height }
             ) {
-                HeroArtwork(model = tvHeroImage.first, wide = true, modifier = Modifier.fillMaxSize())
-                Box(
-                    Modifier.fillMaxSize().background(
-                        Brush.horizontalGradient(
-                            if (episodePosterStyle) {
-                                listOf(
-                                    Color.Transparent,
-                                    Color.Black.copy(alpha = 0.58f),
-                                    Color.Black.copy(alpha = 0.92f),
-                                )
-                            } else {
-                                listOf(
-                                    Color.Black.copy(alpha = 0.92f),
-                                    Color.Black.copy(alpha = 0.58f),
-                                    Color.Transparent,
-                                )
-                            }
-                        )
-                    )
-                )
-                Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(
-                    Color.Transparent, Color.Transparent, MaterialTheme.colorScheme.background))))
-                IconButton(onClick = { nav.popBackStack() }, modifier = Modifier.align(Alignment.TopStart).padding(18.dp).tvPress(
-                    previewPass = true, onClick = { nav.popBackStack() })) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = tr("Back"), tint = Color.White)
-                }
-                // In poster mode the episode shelf moves OUT of the hero. This leaves
-                // the whole lower part of the screen for episodes instead of squeezing them
-                // into the narrow right-side panel.
-                if (detailIsSeries && !episodePosterStyle) {
-                    Box(
-                        Modifier
-                            .align(Alignment.CenterEnd)
-                            .padding(top = 58.dp, end = 22.dp, bottom = 24.dp)
-                            .fillMaxWidth(0.37f)
-                            .fillMaxHeight(0.88f)
-                            .clip(RoundedCornerShape(18.dp))
-                            .background(Color.Black.copy(alpha = 0.94f))
-                            .border(1.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(18.dp))
-                    ) {
-                        Column(
+                // The backdrop is rendered once behind the whole TV page.
+                // Keep this hero item itself transparent so the page content can
+                // continue to scroll over that image.
+                Column(
                             Modifier
                                 .fillMaxSize()
                                 .padding(horizontal = 12.dp, vertical = 10.dp)
@@ -3397,6 +3396,12 @@ fun DetailScreen(
     }
 
     Box(Modifier.fillMaxSize()) {
+    // TV keeps the cinematic artwork fixed behind the complete detail feed.
+    // This is deliberately outside the LazyColumn: scrolling/focus movement
+    // changes only the foreground content, never the backdrop.
+    if (isTvLayout) {
+        tvDetailBackdrop()
+    }
     // The status bar's height, in dp (a composable read, so it is taken here
     // rather than inside the arithmetic that positions the wordmark).
     val statusBarTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
@@ -3420,162 +3425,6 @@ fun DetailScreen(
                     // and away as the page is read — see the header note above
                     // for what the wordmark drawn over it does while it does.
                     item(key = "hero") { heroBlock() }
-                    if (isTvLayout && detailIsSeries && episodePosterStyle) {
-                        item(key = "tv-poster-episodes") {
-                            Column(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .zIndex(2f)
-                                    .background(MaterialTheme.colorScheme.surface)
-                                    .padding(
-                                        start = 42.dp,
-                                        end = 42.dp,
-                                        top = 18.dp,
-                                        bottom = 24.dp,
-                                    )
-                            ) {
-                                Row(
-                                    Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text(
-                                        tr("Episodes (%s)").replace("%s", shownEps.size.toString()),
-                                        style = MaterialTheme.typography.titleLarge,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = Color.White,
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                    IconButton(
-                                        onClick = { epsNewestFirst = !epsNewestFirst },
-                                        modifier = Modifier.size(40.dp).tvPress(
-                                            previewPass = true,
-                                            onClick = { epsNewestFirst = !epsNewestFirst }
-                                        )
-                                    ) {
-                                        Icon(
-                                            if (epsNewestFirst) Icons.Filled.ArrowDownward else Icons.Filled.ArrowUpward,
-                                            contentDescription = if (epsNewestFirst) tr("Newest episode first") else tr("Oldest episode first"),
-                                            tint = Color.White
-                                        )
-                                    }
-                                    IconButton(
-                                        onClick = { episodePosterStyle = !episodePosterStyle },
-                                        modifier = Modifier.size(40.dp).tvPress(
-                                            previewPass = true,
-                                            onClick = { episodePosterStyle = !episodePosterStyle }
-                                        )
-                                    ) {
-                                        Icon(
-                                            Icons.AutoMirrored.Filled.ViewList,
-                                            contentDescription = tr("Use episode list"),
-                                            tint = Color.White
-                                        )
-                                    }
-                                }
-                                Column(
-                                    Modifier
-                                        .fillMaxWidth()
-                                        .padding(top = 2.dp, bottom = 14.dp),
-                                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                                ) {
-                                    if (seasons.size > 1) {
-                                        Text(
-                                            tr("Seasons"),
-                                            style = MaterialTheme.typography.labelLarge,
-                                            color = Color.White.copy(alpha = 0.72f),
-                                        )
-                                        Row(
-                                            Modifier
-                                                .fillMaxWidth()
-                                                .horizontalScroll(rememberScrollState()),
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                        ) {
-                                            seasons.forEach { s ->
-                                                OutlinedButton(
-                                                    onClick = {
-                                                        selectedSeason = s
-                                                        rangeStart = 0
-                                                    },
-                                                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
-                                                    modifier = Modifier.tvPress(
-                                                        enabled = isTvLayout,
-                                                        previewPass = true,
-                                                        onClick = {
-                                                            selectedSeason = s
-                                                            rangeStart = 0
-                                                        }
-                                                    ),
-                                                ) {
-                                                    Text(
-                                                        tr("Season %s").replace("%s", s.toString()),
-                                                        maxLines = 1,
-                                                    )
-                                                }
-                                            }
-                                        }
-                                    }
-                                    if (ranges.isNotEmpty()) {
-                                        Text(
-                                            tr("Episodes"),
-                                            style = MaterialTheme.typography.labelLarge,
-                                            color = Color.White.copy(alpha = 0.72f),
-                                        )
-                                        Row(
-                                            Modifier
-                                                .fillMaxWidth()
-                                                .horizontalScroll(rememberScrollState()),
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                        ) {
-                                            ranges.forEach { start ->
-                                                val end = (start + epPageSize).coerceAtMost(shownEps.size)
-                                                OutlinedButton(
-                                                    onClick = { rangeStart = start },
-                                                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
-                                                    modifier = Modifier.tvPress(
-                                                        enabled = isTvLayout,
-                                                        previewPass = true,
-                                                        onClick = { rangeStart = start }
-                                                    ),
-                                                ) {
-                                                    Text("${start + 1}–$end", maxLines = 1)
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                if (pageEps.isEmpty()) {
-                                    Text(
-                                        if (episodesLoading || !episodesLoaded) tr("Loading episodes…")
-                                        else if (episodesFailed) tr("Couldn't load the episode list from this extension.")
-                                        else tr("No episode list available."),
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = Color.White.copy(alpha = 0.78f),
-                                        modifier = Modifier.padding(vertical = 12.dp)
-                                    )
-                                } else {
-                                    LazyRow(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        contentPadding = PaddingValues(horizontal = 2.dp),
-                                        horizontalArrangement = Arrangement.spacedBy(14.dp)
-                                    ) {
-                                        itemsIndexed(
-                                            pageEps,
-                                            key = { index, ep -> "tv-ep-poster-shelf-" + index + "-" + ep.season + "-" + ep.number }
-                                        ) { _, ep ->
-                                            EpisodePosterCard(
-                                                ep = ep,
-                                                fallbackImage = m?.backdropUrl ?: m?.posterUrl ?: posterUrl,
-                                                onClick = { tryPlay(ep) },
-                                                onDownload = { tryDownload(ep) },
-                                                modifier = Modifier.width(160.dp),
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
                     if (!isTvLayout) {
                     item {
                     // The first line of the page is spaced off the header art on
@@ -3951,6 +3800,161 @@ fun DetailScreen(
                         }
                     }
                 }
+                    if (isTvLayout && detailIsSeries && episodePosterStyle) {
+                        item(key = "tv-poster-episodes") {
+                            Column(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .zIndex(2f)
+                                    .padding(
+                                        start = 42.dp,
+                                        end = 42.dp,
+                                        top = 18.dp,
+                                        bottom = 24.dp,
+                                    )
+                            ) {
+                                Row(
+                                    Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        tr("Episodes (%s)").replace("%s", shownEps.size.toString()),
+                                        style = MaterialTheme.typography.titleLarge,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = Color.White,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    IconButton(
+                                        onClick = { epsNewestFirst = !epsNewestFirst },
+                                        modifier = Modifier.size(40.dp).tvPress(
+                                            previewPass = true,
+                                            onClick = { epsNewestFirst = !epsNewestFirst }
+                                        )
+                                    ) {
+                                        Icon(
+                                            if (epsNewestFirst) Icons.Filled.ArrowDownward else Icons.Filled.ArrowUpward,
+                                            contentDescription = if (epsNewestFirst) tr("Newest episode first") else tr("Oldest episode first"),
+                                            tint = Color.White
+                                        )
+                                    }
+                                    IconButton(
+                                        onClick = { episodePosterStyle = !episodePosterStyle },
+                                        modifier = Modifier.size(40.dp).tvPress(
+                                            previewPass = true,
+                                            onClick = { episodePosterStyle = !episodePosterStyle }
+                                        )
+                                    ) {
+                                        Icon(
+                                            Icons.AutoMirrored.Filled.ViewList,
+                                            contentDescription = tr("Use episode list"),
+                                            tint = Color.White
+                                        )
+                                    }
+                                }
+                                Column(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .padding(top = 2.dp, bottom = 14.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    if (seasons.size > 1) {
+                                        Text(
+                                            tr("Seasons"),
+                                            style = MaterialTheme.typography.labelLarge,
+                                            color = Color.White.copy(alpha = 0.72f),
+                                        )
+                                        Row(
+                                            Modifier
+                                                .fillMaxWidth()
+                                                .horizontalScroll(rememberScrollState()),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        ) {
+                                            seasons.forEach { s ->
+                                                OutlinedButton(
+                                                    onClick = {
+                                                        selectedSeason = s
+                                                        rangeStart = 0
+                                                    },
+                                                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                                                    modifier = Modifier.tvPress(
+                                                        enabled = isTvLayout,
+                                                        previewPass = true,
+                                                        onClick = {
+                                                            selectedSeason = s
+                                                            rangeStart = 0
+                                                        }
+                                                    ),
+                                                ) {
+                                                    Text(
+                                                        tr("Season %s").replace("%s", s.toString()),
+                                                        maxLines = 1,
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if (ranges.isNotEmpty()) {
+                                        Text(
+                                            tr("Episodes"),
+                                            style = MaterialTheme.typography.labelLarge,
+                                            color = Color.White.copy(alpha = 0.72f),
+                                        )
+                                        Row(
+                                            Modifier
+                                                .fillMaxWidth()
+                                                .horizontalScroll(rememberScrollState()),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        ) {
+                                            ranges.forEach { start ->
+                                                val end = (start + epPageSize).coerceAtMost(shownEps.size)
+                                                OutlinedButton(
+                                                    onClick = { rangeStart = start },
+                                                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                                                    modifier = Modifier.tvPress(
+                                                        enabled = isTvLayout,
+                                                        previewPass = true,
+                                                        onClick = { rangeStart = start }
+                                                    ),
+                                                ) {
+                                                    Text("${start + 1}–$end", maxLines = 1)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                if (pageEps.isEmpty()) {
+                                    Text(
+                                        if (episodesLoading || !episodesLoaded) tr("Loading episodes…")
+                                        else if (episodesFailed) tr("Couldn't load the episode list from this extension.")
+                                        else tr("No episode list available."),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = Color.White.copy(alpha = 0.78f),
+                                        modifier = Modifier.padding(vertical = 12.dp)
+                                    )
+                                } else {
+                                    LazyRow(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        contentPadding = PaddingValues(horizontal = 2.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(14.dp)
+                                    ) {
+                                        itemsIndexed(
+                                            pageEps,
+                                            key = { index, ep -> "tv-ep-poster-shelf-" + index + "-" + ep.season + "-" + ep.number }
+                                        ) { _, ep ->
+                                            EpisodePosterCard(
+                                                ep = ep,
+                                                fallbackImage = m?.backdropUrl ?: m?.posterUrl ?: posterUrl,
+                                                onClick = { tryPlay(ep) },
+                                                onDownload = { tryDownload(ep) },
+                                                modifier = Modifier.width(160.dp),
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 if (isSeries && !isTvLayout) {
                     // A Vega series' pack picker (audio variants, seasons,
                     // season+quality rows — the provider's own titles, verbatim,
@@ -4260,10 +4264,29 @@ fun DetailScreen(
     }
     }
 
+    // TV keeps navigation fixed above the scrolling content as well.
+    // The D-pad can therefore always reach Back after the list has moved.
+    if (isTvLayout) {
+        IconButton(
+            onClick = { nav.popBackStack() },
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(18.dp)
+                .zIndex(20f)
+                .tvPress(previewPass = true, onClick = { nav.popBackStack() }),
+        ) {
+            Icon(
+                Icons.AutoMirrored.Filled.ArrowBack,
+                contentDescription = tr("Back"),
+                tint = Color.White,
+            )
+        }
+    }
+
     // The way OUT of the page is never allowed to scroll off: the header's own
     // back button is drawn inside the art, so this one takes over from the same
     // corner, at the same size, as soon as the art is mostly gone.
-    if (headerProgress > 0.6f) {
+    if (!isTvLayout && headerProgress > 0.6f) {
         IconButton(
             onClick = { nav.popBackStack() },
             modifier = Modifier.align(Alignment.TopStart).padding(4.dp),
@@ -4284,7 +4307,7 @@ fun DetailScreen(
     // the page's own box rather than inside the scrolling list, which is what
     // makes it "not move with the image": the art goes, the title stays.
     val logoArt = heroLogo
-    if (!logoArt.isNullOrBlank() && !(isTvLayout && episodePosterStyle)) {
+    if (!isTvLayout && !logoArt.isNullOrBlank()) {
         // [logoFrac] (above) is the width this frame's wordmark is fitted into:
         // bigger setting = bigger logo, at BOTH ends of the scroll. Its height
         // follows the art's aspect ratio, so this is "bigger logo", never
