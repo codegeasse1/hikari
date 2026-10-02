@@ -124,8 +124,22 @@ object TrackerLibraryRepository {
         val account=app.store.trackers().firstOrNull{it.kind==TrackerKind.ANILIST}
             ?: return Result.failure(IllegalStateException("Connect AniList in Settings → Trackers first."))
         val query = "query(\$name:String){MediaListCollection(userName: \$name,type:ANIME){lists{name entries{media{id title{userPreferred english romaji} coverImage{large} startDate{year} averageScore nextAiringEpisode{airingAt episode}}}}}}"
-        val raw=Http.postStringQuiet("https://graphql.anilist.co",JSONObject().put("query",query).put("variables",JSONObject().put("name",account.user)).toString())
-            ?: return Result.failure(IllegalStateException("AniList did not return a library."))
+        // AniList's MediaListCollection is user-specific. The access token
+        // must be sent as a Bearer token; without it a connected account can still
+        // return an empty/unauthorized collection.
+        val raw = Http.postStringQuiet(
+            "https://graphql.anilist.co",
+            JSONObject()
+                .put("query", query)
+                .put("variables", JSONObject().put("name", account.user))
+                .toString(),
+            mapOf(
+                "Authorization" to "Bearer " + account.token,
+                "Accept" to "application/json",
+                "Content-Type" to "application/json",
+            ),
+        ) ?: return Result.failure(IllegalStateException("AniList did not return a library."))
+
         val lists=JSONObject(raw).optJSONObject("data")?.optJSONObject("MediaListCollection")?.optJSONArray("lists")?:JSONArray()
         val out=ArrayList<Shelf>()
         for(i in 0 until lists.length()){
