@@ -660,7 +660,7 @@ class VegaProvider(override val config: ProviderConfig) : ContentProvider {
             val isExternal = kind == "external" || kind == "externalurl"
             out += StreamSource(
                 name = name,
-                url = if (isTorrent || isExternal) raw else Http.normalizeDriveUrl(raw),
+                url = raw,
                 headers = headers,
                 subtitles = subs,
                 isTorrent = isTorrent,
