@@ -315,6 +315,23 @@
 
   // ---- openWebView ----
   function openWebView(url, opts) {
+    try {
+      if (typeof g.__vegaSolve === 'function') {
+        var u = String(url || '');
+        return Promise.resolve(u).then(function (target) {
+          return g.__vegaSolve(target);
+        }).then(function (raw) {
+          var o = raw;
+          try { if (typeof raw === 'string') o = JSON.parse(raw); } catch (e) { o = null; }
+          if (o && (o.ok === true || (o.cookies && String(o.cookies).length > 0))) {
+            return { userAgent: commonHeaders['User-Agent'] || '', cookies: String(o.cookies || ''), url: u };
+          }
+          return { success: false, url: u, error: 'silent web-view solve did not clear the challenge' };
+        }, function () {
+          return { success: false, url: u, error: 'silent web-view solve is unavailable' };
+        });
+      }
+    } catch (e) {}
     return Promise.resolve({
       success: false,
       url: String(url || ''),

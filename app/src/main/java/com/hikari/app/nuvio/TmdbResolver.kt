@@ -119,6 +119,11 @@ object TmdbResolver {
 
     private suspend fun resolveNetwork(item: MediaItem): Resolved? {
         val id = item.id.trim()
+        // Tracker anime rows carry the TRACKER's numeric id (AniList/MAL/Kitsu),
+        // not a TMDB id. Treating it as one resolved every anime title to an
+        // unrelated TMDB entry (wrong details, wrong episodes, servers for the
+        // wrong show). Route those through the strict anime title search.
+        if (isTrackerAnime(item)) return searchByTitleStrictAnime(item)
         if (id.isNotEmpty() && id.all { it.isDigit() }) {
             return resolveNumericId(id, item)
         }
@@ -220,6 +225,59 @@ object TmdbResolver {
             // second chance that costs two requests and only runs when every
             // name search has already come back empty.
             ?: searchViaImdb(item)
+    }
+
+    private fun isTrackerAnime(item: MediaItem): Boolean {
+        if (item.providerId.lowercase() !in setOf("anilist", "simkl", "mal", "kitsu", "shikimori")) return false
+        return item.rawType.contains("anime", true) || item.providerId.equals("anilist", true)
+    }
+
+    /**
+     * Strict anime title search: both movie and tv namespaces (anime films are
+     * TMDB movies), requiring a year match and a Japanese-origin signal, and
+     * returning null when nothing qualifies rather than a wrong show.
+     */
+    private suspend fun searchByTitleStrictAnime(item: MediaItem): Resolved? {
+        val title = item.searchTitle
+        if (title.isBlank()) return null
+        val variants = TmdbMeta.queryVariants(title)
+        if (variants.isEmpty()) return null
+        var best: Resolved? = null
+        var bestScore = 0
+        for (kind in listOf("tv", "movie")) {
+            for (v in variants) {
+                val data = apiGet("/search/$kind", mapOf("query" to v)) ?: continue
+                val arr = data.optJSONArray("results") ?: continue
+                for (i in 0 until arr.length()) {
+                    val o = arr.optJSONObject(i) ?: continue
+                    val oid = o.optString("id").trim()
+                    if (oid.isBlank() || oid == "null") continue
+                    val score = candidateScore(o, variants, item.year)
+                    if (score < 40) continue
+                    val raw = o.optString("release_date").ifBlank { o.optString("first_air_date") }
+                    val y = raw.take(4).toIntOrNull()
+                    if (item.year != null && item.year > 0 && y != null && kotlin.math.abs(y - item.year) > 1) continue
+                    val lang = o.optString("original_language").lowercase()
+                    var ja = lang == "ja"
+                    if (!ja) {
+                        val genres = o.optJSONArray("genre_ids")
+                        if (genres != null) {
+                            for (g in 0 until genres.length()) {
+                                if (genres.optInt(g) == 16) { ja = true; break }
+                            }
+                        }
+                    }
+                    if (!ja) {
+                        val names = listOf(o.optString("title"), o.optString("name"), o.optString("original_title"), o.optString("original_name"))
+                        val exact = variants.any { vv -> names.any { nn -> TmdbMeta.normalizeTitle(nn) == TmdbMeta.normalizeTitle(vv) && vv.isNotBlank() } }
+                        if (!exact) continue
+                    }
+                    if (score > bestScore) { bestScore = score; best = Resolved(oid, kind) }
+                }
+                if (bestScore >= 65) return best
+            }
+        }
+        return best
     }
 
     /**

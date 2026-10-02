@@ -5516,7 +5516,11 @@ class ContentRepository(private val manager: ProviderManager) {
         // never queue behind a background stream pass in the same extension —
         // an Aniyomi stream lookup walks up to eight hosters, which is the
         // reported "~15 seconds for the episode list".
-        episodesForInner(item, onPartial)
+        val got = episodesForInner(item, onPartial)
+        if (!got.isNullOrEmpty()) return@interactive got
+        // Tracker anime with no borrowable list: build the correct numbered
+        // list from AniList/MyAnimeList episode counts instead of Episodes (0).
+        TrackerAnimeResolver.fallbackEpisodes(item)
     }
 
     /**

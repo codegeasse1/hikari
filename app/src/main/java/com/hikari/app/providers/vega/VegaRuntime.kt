@@ -75,7 +75,7 @@ object VegaRuntime {
      * extensions installed, so two at a time still walks through them all.
      */
     private const val TV_CONCURRENT = 2
-    private const val FETCH_TIMEOUT_MS = 15_000L
+    private const val FETCH_TIMEOUT_MS = 30_000L
     /** One provider call. Same ceiling nuvio uses: a cold engine plus a slow
      *  site fetch plus extraction is normal. */
     private const val CALL_TIMEOUT_MS = 45_000L
@@ -187,6 +187,68 @@ object VegaRuntime {
         }
     }
 
+    private val vegaMemCookies = java.util.concurrent.ConcurrentHashMap<String, Map<String, String>>()
+    private val vegaWafRetryAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    private fun jarCookiesFor(url: String): Map<String, String> {
+        val out = LinkedHashMap<String, String>()
+        runCatching {
+            android.webkit.CookieManager.getInstance().getCookie(url)?.split(";")?.forEach { part ->
+                val nv = part.trim().split("=", limit = 2)
+                if (nv.size == 2 && nv[0].isNotBlank()) out[nv[0].trim()] = nv[1].trim()
+            }
+        }
+        vegaMemCookies[hostOf(url)]?.forEach { (k, v) -> out[k] = v }
+        return out
+    }
+
+    private fun rememberCookies(url: String, headers: okhttp3.Headers) {
+        val sets = headers.values("Set-Cookie")
+        if (sets.isEmpty()) return
+        val merged = (vegaMemCookies[hostOf(url)] ?: emptyMap()).toMutableMap()
+        for (s in sets) {
+            val nv = s.substringBefore(";").trim().split("=", limit = 2)
+            if (nv.size == 2 && nv[0].isNotBlank()) merged[nv[0].trim()] = nv[1].trim()
+        }
+        vegaMemCookies[hostOf(url)] = merged
+        runCatching {
+            val cm = android.webkit.CookieManager.getInstance()
+            for (s in sets) cm.setCookie(url, s)
+            cm.flush()
+        }
+    }
+
+    private fun mergeJarCookies(url: String, headersJson: String): String {
+        val jar = jarCookiesFor(url)
+        if (jar.isEmpty()) return headersJson
+        return runCatching {
+            val h = JSONObject(headersJson)
+            val keys = ArrayList<String>()
+            h.keys().forEach { keys += it }
+            val explicitKey = keys.firstOrNull { it.equals("Cookie", true) }
+            val pairs = LinkedHashMap<String, String>()
+            if (explicitKey != null) {
+                h.optString(explicitKey).split(";").forEach { part ->
+                    val nv = part.trim().split("=", limit = 2)
+                    if (nv.size == 2 && nv[0].isNotBlank()) pairs[nv[0].trim()] = nv[1].trim()
+                }
+                h.remove(explicitKey)
+            }
+            jar.forEach { (k, v) -> pairs[k] = v }
+            h.put("Cookie", pairs.entries.joinToString("; ") { it.key + "=" + it.value })
+            h.toString()
+        }.getOrDefault(headersJson)
+    }
+
+    private fun isWafBlocked(status: Int, bytes: ByteArray): Boolean {
+        if (status != 403 && status != 503) return false
+        if (bytes.isEmpty()) return true
+        val text = runCatching { String(bytes, Charsets.UTF_8).take(64_000).lowercase() }.getOrDefault("")
+        return text.contains("just a moment") || text.contains("attention required") ||
+            text.contains("cf-chl") || text.contains("checking your browser") ||
+            text.contains("challenges.cloudflare.com") || text.contains("cf-mitigated")
+    }
+
     private fun readAsset(path: String): String =
         runCatching {
             HikariApp.instance.assets.open(path).bufferedReader().readText()
@@ -206,7 +268,6 @@ object VegaRuntime {
                     maxRequestsPerHost = 12
                 }
             )
-            .dns(DohDns)
             .build()
     }
 
@@ -254,6 +315,14 @@ object VegaRuntime {
             } finally {
                 inFlight.decrementAndGet()
             }
+        }
+        qjs.asyncFunction("__vegaSolve") { args ->
+            val url = args.getOrNull(0)?.toString() ?: ""
+            try {
+                val ok = com.hikari.app.net.CloudflareSolver.solve(url, com.hikari.app.net.Http.UA, null, 20_000L)
+                val cookies = runCatching { android.webkit.CookieManager.getInstance().getCookie(url) ?: "" }.getOrDefault("")
+                "{\"ok\":" + ok + ",\"cookies\":" + quote(cookies) + "}"
+            } catch (t: Throwable) { "{\"ok\":false,\"cookies\":\"\"}" }
         }
         qjs.function("__vegDone") { args ->
             val payload = args.getOrNull(0)?.toString() ?: ""
@@ -767,7 +836,8 @@ object VegaRuntime {
                     }
 
                     override fun onResponse(call: Call, response: Response) {
-                        val outcome = try {
+                        fun finish(resp: Response): Fetched {
+                            return try {
                             val bytes = response.body?.bytes() ?: ByteArray(0)
                             // Vega's Cinewood helper only invokes its WebView WAF
                             // solver when axios sees HTTP 403. Cloudflare also
@@ -791,6 +861,33 @@ object VegaRuntime {
                         } finally {
                             runCatching { response.close() }
                         }
+                        }
+                        rememberCookies(response.request.url.toString(), response.headers)
+                        if (!cont.isCancelled && isWafBlocked(response.code, runCatching { response.peekBody(262_144L).bytes() }.getOrDefault(ByteArray(0)))) {
+                            val u = response.request.url.toString()
+                            val last = vegaWafRetryAt[u] ?: 0L
+                            if (System.currentTimeMillis() - last > 10 * 60_000L) {
+                                vegaWafRetryAt[u] = System.currentTimeMillis()
+                                runCatching { response.close() }
+                                val solved = runCatching { com.hikari.app.net.CloudflareSolver.solve(u, com.hikari.app.net.Http.UA, null, 20_000L) }.getOrDefault(false)
+                                if (solved) {
+                                    val retry = runCatching {
+                                        val req = response.request.newBuilder().apply {
+                                            val merged = jarCookiesFor(u)
+                                            if (merged.isNotEmpty()) header("Cookie", merged.entries.joinToString("; ") { it.key + "=" + it.value })
+                                        }.build()
+                                        clientFor(followRedirects).newCall(req).execute()
+                                    }.getOrNull()
+                                    if (retry != null) {
+                                        val out2 = finish(retry)
+                                        runCatching { retry.close() }
+                                        cont.resume(out2)
+                                        return
+                                    }
+                                }
+                            }
+                        }
+                        val outcome = finish(response)
                         if (!cont.isCancelled) cont.resume(outcome)
                     }
                 })
@@ -827,7 +924,7 @@ object VegaRuntime {
         body: String,
     ): Request {
         val builder = Request.Builder().url(url).header("User-Agent", com.hikari.app.net.Http.UA)
-        val h = runCatching { JSONObject(headersJson) }.getOrNull()
+        val h = runCatching { JSONObject(mergeJarCookies(url, headersJson)) }.getOrNull()
         if (h != null) {
             h.keys().forEach { k ->
                 // OkHttp only decompresses gzip/br transparently when the REQUEST

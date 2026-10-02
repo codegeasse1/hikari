@@ -131,7 +131,7 @@ object TrackerLibraryRepository {
             "https://graphql.anilist.co",
             JSONObject()
                 .put("query", query)
-                .put("variables", JSONObject().put("name", account.user))
+                .put("variables", JSONObject().put("name", anilistUser(app, account)))
                 .toString(),
             mapOf(
                 "Authorization" to "Bearer " + account.token,
@@ -148,6 +148,15 @@ object TrackerLibraryRepository {
             if(items.isNotEmpty())out+=Shelf("anilist."+i+"."+name,name,items)
         }
         return Result.success(out)
+    }
+    private suspend fun anilistUser(app: HikariApp, account: com.hikari.app.data.TrackerAccount): String {
+        if (account.user.isNotBlank()) return account.user
+        val raw = Http.postStringQuiet(
+            "https://graphql.anilist.co",
+            JSONObject().put("query", "{Viewer{name}}").toString(),
+            mapOf("Authorization" to "Bearer " + account.token, "Accept" to "application/json", "Content-Type" to "application/json"),
+        ) ?: return ""
+        return JSONObject(raw).optJSONObject("data")?.optJSONObject("Viewer")?.optString("name").orEmpty()
     }
     private suspend fun loadMal(app:HikariApp):Result<List<Shelf>>{
         val account=app.store.trackers().firstOrNull{it.kind==TrackerKind.MAL}
