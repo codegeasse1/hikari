@@ -723,25 +723,27 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                     title = base.title.ifBlank { meta.title },
                     originalTitle = base.originalTitle.ifBlank { meta.originalTitle },
                 )
-                _episodesLoading.value = true
-                val gen = newEpisodeGeneration()
-                try {
-                    // Retried, never silently final — see [loadEpisodesFor]. This
-                    // used to be a bare `runCatching { repo.episodesFor(meta) }`
-                    // whose null (a failed load, or a CANCELLED one, since
-                    // runCatching swallows CancellationException too) painted
-                    // "Episodes (0) — No episode list available." over a series
-                    // that has plenty of episodes — and that verdict stayed for
-                    // the life of the screen.
-                    val list = loadEpisodesFor(meta, gen)
-                    if (gen == episodeGeneration) _episodes.value = list
-                } finally {
-                    if (gen == episodeGeneration) {
-                        _episodesLoading.value = false
-                        _episodesLoaded.value = true
+                if (meta.type == MediaType.MOVIE) {
+                    // A movie has no episode endpoint. Never enter the episode
+                    // loader for it; otherwise the page flashes "Loading
+                    // episodes" and can report Episodes (0) after a harmless
+                    // provider miss.
+                    _episodes.value = emptyList()
+                    _episodesLoading.value = false
+                    _episodesLoaded.value = true
+                } else {
+                    _episodesLoading.value = true
+                    val gen = newEpisodeGeneration()
+                    try {
+                        val list = loadEpisodesFor(meta, gen)
+                        if (gen == episodeGeneration) _episodes.value = list
+                    } finally {
+                        if (gen == episodeGeneration) {
+                            _episodesLoading.value = false
+                            _episodesLoaded.value = true
+                        }
                     }
                 }
-            }
             val item = _meta.value ?: base
             // The Vega picker rows (packs / quality rows) arrive on their own —
             // the page never waits for them, and pack 0 is already showing.
