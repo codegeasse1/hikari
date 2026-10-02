@@ -2,6 +2,7 @@ package com.hikari.app.nuvio
 
 import com.hikari.app.HikariApp
 import com.hikari.app.data.MediaItem
+import com.hikari.app.data.TrackerAnimeResolver
 import com.hikari.app.data.NsfwGate
 import com.hikari.app.data.MediaType
 import com.hikari.app.data.TmdbMeta
@@ -122,8 +123,15 @@ object TmdbResolver {
         // Tracker anime rows carry the TRACKER's numeric id (AniList/MAL/Kitsu),
         // not a TMDB id. Treating it as one resolved every anime title to an
         // unrelated TMDB entry (wrong details, wrong episodes, servers for the
-        // wrong show). Route those through the strict anime title search.
-        if (isTrackerAnime(item)) return searchByTitleStrictAnime(item)
+        // wrong show). Simkl maps every anime to its TMDB id exactly, so that
+        // mapping is tried first and the fuzzy title search is only the backup
+        // (it needs a year match the tracker's season entries often miss).
+        if (isTrackerAnime(item)) {
+            runCatching { TrackerAnimeResolver.simklTmdbRef(item) }.getOrNull()?.let { ref ->
+                if (ref.tmdbId.isNotBlank()) return Resolved(ref.tmdbId, ref.mediaType)
+            }
+            return searchByTitleStrictAnime(item)
+        }
         if (id.isNotEmpty() && id.all { it.isDigit() }) {
             return resolveNumericId(id, item)
         }

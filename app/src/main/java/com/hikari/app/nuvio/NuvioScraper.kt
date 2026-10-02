@@ -228,6 +228,7 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
 
     override suspend fun getMeta(item: MediaItem): MediaItem {
         if (item.id.isBlank() || !item.id.all { it.isDigit() }) return item
+        if (com.hikari.app.data.TrackerAnimeResolver.isTrackerAnime(item)) return item
         val type = if (item.type == MediaType.SERIES) "tv" else "movie"
         val d = TmdbResolver.apiGet("/$type/${item.id}", emptyMap()) ?: return item
         val year = listOf("release_date", "first_air_date")
@@ -256,6 +257,7 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
         if (item.type != MediaType.SERIES) return@withContext null
         val id = item.id
         if (id.isBlank() || !id.all { it.isDigit() }) return@withContext null
+        if (com.hikari.app.data.TrackerAnimeResolver.isTrackerAnime(item)) return@withContext null
         val tv = TmdbResolver.apiGet("/tv/$id", emptyMap()) ?: return@withContext null
         val seasons = tv.optJSONArray("seasons") ?: return@withContext null
         val nums = (0 until seasons.length()).mapNotNull { i ->

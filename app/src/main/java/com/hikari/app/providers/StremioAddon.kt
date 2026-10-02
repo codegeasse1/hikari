@@ -908,7 +908,12 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
             noEpisode -> ":1:1"
             else -> ""
         }
-        val idPart = episode?.id ?: (item.id + epSuffix)
+        // Tracker fallback episodes carry synthetic "<trackerId>#e<N>" ids: handing
+        // one to an addon would ask about a namespace it never heard of, so the
+        // item id plus the real season/episode suffix is sent instead.
+        val rawEpId = episode?.id
+        val idPart = if (episode != null && rawEpId != null && "#e" in rawEpId) item.id + epSuffix
+        else rawEpId ?: (item.id + epSuffix)
 
         // Resolve the id this addon can actually answer. The real client only
         // ever asks an addon about an id namespace the addon DECLARED (its
@@ -947,7 +952,13 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
             // prefix, so an addon declaring only `tt` (Torrentio, Cinemeta) was
             // never handed the IMDb id behind a `tmdb:` id — it was asked about
             // a namespace it does not know and answered nothing.
+            // A tracker anime id is the TRACKER's number, never a TMDB one: reading
+            // its digits as a TMDB id asked the addon about an unrelated show
+            // (wrong details, S01E01 servers for episode 148). Those resolve
+            // through the Simkl TMDB bridge below instead.
             val digits = tmdbDigitsOf(idPart)
+                .takeUnless { com.hikari.app.data.TrackerAnimeResolver.isTrackerAnime(item) }
+                .orEmpty()
             val kind = if (item.type == MediaType.SERIES) "tv" else "movie"
             if (digits.isNotEmpty() && acceptsPrefix("tmdb:")) {
                 videoIds += "tmdb:$digits" + epSuffix

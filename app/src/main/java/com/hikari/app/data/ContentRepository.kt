@@ -5576,19 +5576,19 @@ class ContentRepository(private val manager: ProviderManager) {
         streamsRememberedKey(item, episode, vegaSelectionSuffix(item))
 
 
-    /** Restore season/local episode numbers when an anime provider flattened
-     * several AniList TV seasons into one season=1 list. Provider episode ids
-     * are kept unchanged so playback links remain owned by the source. */
-    private suspend fun restoreAnimeSeasons(item: MediaItem, episodes: List<Episode>): List<Episode> {
-        if (item.type != MediaType.SERIES || episodes.size < 20) return episodes
-        if (episodes.map { it.season }.distinct().any { it > 1 }) return episodes
-        val layout = runCatching { AnimeMetadataRepository.seasonLayout(item.searchTitle) }
-            .getOrDefault(emptyList())
-        if (layout.size < 2) return episodes
+        private val tmdbSeasonLayouts = java.util.concurrent.ConcurrentHashMap<String, List<AnimeMetadataRepository.SeasonLayout>>()
+
+    /** A flat season=1 list cut into per-season local numbering per [layout], or
+     *  null when the list does not match it (tolerance 20%). Provider episode ids
+     *  are kept unchanged so playback links remain owned by the source. */
+    private fun splitFlatEpisodes(
+        episodes: List<Episode>,
+        layout: List<AnimeMetadataRepository.SeasonLayout>,
+    ): List<Episode>? {
+        if (layout.size < 2) return null
         val expected = layout.sumOf { it.episodes }
         val tolerance = maxOf(5, (expected * 0.20).toInt())
-        if (kotlin.math.abs(expected - episodes.size) > tolerance) return episodes
-
+        if (kotlin.math.abs(expected - episodes.size) > tolerance) return null
         val out = ArrayList<Episode>(episodes.size)
         var cursor = 0
         for (bucket in layout) {
@@ -5605,8 +5605,56 @@ class ContentRepository(private val manager: ProviderManager) {
             val n = out.count { it.season == lastSeason } + 1
             out += original.copy(season = lastSeason, number = n)
         }
-        return if (out.size == episodes.size) out else episodes
+        return out.takeIf { it.size == episodes.size }
     }
+
+    /** TMDB's own season episode counts for [item], cached per title. Donghua is
+     *  excluded by the caller: TMDB slices those by broadcast year while the
+     *  sites serve one absolute numbering. */
+    private suspend fun tmdbSeasonLayout(item: MediaItem): List<AnimeMetadataRepository.SeasonLayout> {
+        val key = item.searchTitle.lowercase() + "|" + (item.year ?: 0)
+        tmdbSeasonLayouts[key]?.let { return it }
+        val out = withTimeoutOrNull(8_000) { tmdbSeasonLayoutNetwork(item) }.orEmpty()
+        if (out.isNotEmpty()) tmdbSeasonLayouts[key] = out
+        return out
+    }
+
+    private suspend fun tmdbSeasonLayoutNetwork(item: MediaItem): List<AnimeMetadataRepository.SeasonLayout> {
+        val resolved = runCatching { com.hikari.app.nuvio.TmdbResolver.resolve(item) }.getOrNull()
+            ?: return emptyList()
+        if (!resolved.mediaType.equals("tv", true) && !resolved.mediaType.equals("anime", true)) return emptyList()
+        val tv = com.hikari.app.nuvio.TmdbResolver.apiGet("/tv/" + resolved.tmdbId, emptyMap())
+            ?: return emptyList()
+        val arr = tv.optJSONArray("seasons") ?: return emptyList()
+        return (0 until arr.length()).mapNotNull { i ->
+            val s = arr.optJSONObject(i) ?: return@mapNotNull null
+            val n = s.optInt("season_number", -1)
+            val c = s.optInt("episode_count", 0)
+            if (n > 0 && c > 0) AnimeMetadataRepository.SeasonLayout(n, c) else null
+        }
+    }
+
+    /** Restore season/local episode numbers when a source flattened several TV
+     *  seasons into one season=1 list, so a two-season show reads as two seasons
+     *  instead of one long episode list. Anime seasons come from AniList season
+     *  relations; every other flat series falls back to TMDB season counts.
+     *  Donghua keeps absolute numbering, which is what the sites serve.
+     *  Provider episode ids are kept unchanged so playback links remain owned
+     *  by the source. */
+    private suspend fun restoreAnimeSeasons(item: MediaItem, episodes: List<Episode>): List<Episode> {
+        if (item.type != MediaType.SERIES || episodes.size < 20) return episodes
+        if (episodes.map { it.season }.distinct().any { it > 1 }) return episodes
+        val aniLayout = runCatching { AnimeMetadataRepository.seasonLayout(item.searchTitle) }
+            .getOrDefault(emptyList())
+        splitFlatEpisodes(episodes, aniLayout)?.let { return it }
+        val cjk = Regex("[一-鿿぀-ヿ가-힯㐀-䶿豈-﫿]")
+        if (cjk.containsMatchIn(item.searchTitle)) return episodes
+        val tmdbLayout = runCatching { tmdbSeasonLayout(item) }.getOrDefault(emptyList())
+        splitFlatEpisodes(episodes, tmdbLayout)?.let { return it }
+        return episodes
+    }
+
+
 
     private suspend fun episodesForInner(
         item: MediaItem,
@@ -5739,7 +5787,8 @@ class ContentRepository(private val manager: ProviderManager) {
         // beats "Episodes (0)" for a show that plainly has episodes.
         if (TrackerAnimeResolver.isTrackerAnime(item)) {
             runCatching { TrackerAnimeResolver.trackerEpisodes(item) }.getOrNull()
-                ?.takeIf { it.isNotEmpty() }?.let { list ->
+                ?.takeIf { it.isNotEmpty() }?.let { raw ->
+                    val list = restoreAnimeSeasons(item, raw)
                     onPartial?.invoke(list)
                     val translated = translateEpisodes(item.providerId, list)
                     if (translated !== list) onPartial?.invoke(translated)

@@ -55,6 +55,33 @@ object TrackerAnimeResolver {
         anilistDetail(item)
     }
 
+    data class TmdbRef(val tmdbId: String, val mediaType: String)
+
+    suspend fun simklTmdbRef(item: MediaItem): TmdbRef? = withContext(Dispatchers.IO) {
+        val clientId = simklClientId()
+        if (clientId.isBlank()) return@withContext null
+        val o = simklAnimeObject(item, clientId) ?: return@withContext null
+        val tmdb = o.optJSONObject("ids")?.optInt("tmdb", 0)?.takeIf { it > 0 } ?: return@withContext null
+        val kind = o.optString("anime_type").trim().lowercase()
+            .ifBlank { o.optString("type").trim().lowercase() }
+        val mediaType = if (kind == "movie") "movie" else "tv"
+        TmdbRef(tmdb.toString(), mediaType)
+    }
+
+    private fun simklAnimeObject(item: MediaItem, clientId: String): JSONObject? {
+        val direct = if (item.providerId.equals("simkl", true)) {
+            item.id.toIntOrNull()?.takeIf { it > 0 }
+        } else {
+            null
+        }
+        val simklId = direct ?: simklIdFor(item.searchTitle, clientId) ?: return null
+        val raw = Http.getStringQuiet(
+            "https://api.simkl.com/anime/" + simklId + "?extended=full&client_id=" + URLEncoder.encode(clientId, "UTF-8"),
+        ) ?: return null
+        val o = runCatching { JSONObject(raw) }.getOrNull() ?: return null
+        return o.optJSONObject("anime") ?: o
+    }
+
     private suspend fun simklClientId(): String =
         runCatching {
             HikariApp.instance.store.trackerClients()
@@ -64,16 +91,7 @@ object TrackerAnimeResolver {
     private suspend fun simklDetail(item: MediaItem): Detail? {
         val clientId = simklClientId()
         if (clientId.isBlank()) return null
-        val simklId = if (item.providerId.equals("simkl", true)) {
-            item.id.toIntOrNull()?.takeIf { it > 0 }
-        } else {
-            null
-        } ?: simklIdFor(item.searchTitle, clientId) ?: return null
-        val raw = Http.getStringQuiet(
-            "https://api.simkl.com/anime/" + simklId + "?extended=full&client_id=" + URLEncoder.encode(clientId, "UTF-8"),
-        ) ?: return null
-        val o = runCatching { JSONObject(raw) }.getOrNull() ?: return null
-        val data = o.optJSONObject("anime") ?: o
+        val data = simklAnimeObject(item, clientId) ?: return null
         val overview = data.optString("overview").trim().takeIf { it.isNotBlank() }
         val genres = (0 until (data.optJSONArray("genres")?.length() ?: 0))
             .mapNotNull { i -> data.optJSONArray("genres")?.optString(i)?.trim()?.takeIf { it.isNotBlank() } }
@@ -108,16 +126,7 @@ object TrackerAnimeResolver {
     private suspend fun simklCountEpisodes(item: MediaItem): List<Episode>? {
         val clientId = simklClientId()
         if (clientId.isBlank()) return null
-        val simklId = if (item.providerId.equals("simkl", true)) {
-            item.id.toIntOrNull()?.takeIf { it > 0 }
-        } else {
-            null
-        } ?: simklIdFor(item.searchTitle, clientId) ?: return null
-        val raw = Http.getStringQuiet(
-            "https://api.simkl.com/anime/" + simklId + "?extended=full&client_id=" + URLEncoder.encode(clientId, "UTF-8"),
-        ) ?: return null
-        val o = runCatching { JSONObject(raw) }.getOrNull() ?: return null
-        val data = o.optJSONObject("anime") ?: o
+        val data = simklAnimeObject(item, clientId) ?: return null
         val total = data.optInt("total_episodes", 0)
         if (total < 1 || total > 3000) return null
         return List(total) { i ->
