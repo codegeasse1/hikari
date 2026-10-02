@@ -2578,7 +2578,7 @@ private fun sourceSiteUrl(file: java.io.File, name: String): String? {
         if (score <= 0) return@mapNotNull null
         score to "https://" + host + "/"
     }.sortedByDescending { it.first }.map { it.second }.firstOrNull()
-    scored ?: explicit
+    return scored ?: explicit
 }
 
 internal fun webUrlFor(p: ContentProvider): String? = when (p.config.type) {

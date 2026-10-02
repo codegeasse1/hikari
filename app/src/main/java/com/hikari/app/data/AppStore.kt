@@ -1682,7 +1682,7 @@ class AppStore(private val ctx: Context) {
      }
      fun trackerProviderIdsFlow(): Flow<Set<String>> = store.data.map { it[K.TRACKER_PROVIDER_IDS] ?: emptySet() }.distinctUntilChanged().flowOn(Dispatchers.Default)
      suspend fun trackerProviderIds(): Set<String> = trackerProviderIdsFlow().first()
-     suspend fun setTrackerProviderIds(ids: Collection<String>) { write("TRACKER_PROVIDER_IDS") { it[K.TRACKER_PROVIDER_IDS] = ids.toSet() } }
+     suspend fun setTrackerProviderIds(ids: kotlin.collections.Collection<String>) { write("TRACKER_PROVIDER_IDS") { it[K.TRACKER_PROVIDER_IDS] = ids.toSet() } }
 
 fun searchExceptionOnFlow(): Flow<Boolean> =
         store.data.map { it[K.SEARCH_EXCEPTION_ON] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
