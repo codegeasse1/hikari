@@ -222,6 +222,7 @@ import kotlinx.coroutines.withContext
 import com.hikari.app.tv.tvAdjust
 import com.hikari.app.tv.tvToggle
 import com.hikari.app.tv.tvTextFieldKeys
+import com.hikari.app.tv.tvPress
 
 @Composable
 private fun SettingsDivider() {
