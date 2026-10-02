@@ -2561,11 +2561,24 @@ private fun sourceSiteUrl(file: java.io.File, name: String): String? {
     val text = runCatching { file.readText() }.getOrNull() ?: return null
     val blocked = setOf("github.com", "raw.githubusercontent.com", "image.tmdb.org", "api.themoviedb.org", "anilist.co", "simkl.com", "trakt.tv", "imdb.com", "google.com", "youtube.com")
     val tokens = name.lowercase().split(Regex("[^a-z0-9]+"))
-    return Regex("https?://[A-Za-z0-9.-]+").findAll(text).mapNotNull { m ->
+    // Never return an arbitrary zero-score URL from a Nuvio source file:
+    // unrelated catalog URLs such as Cinemeta must not open for another extension.
+    val explicit = Regex(
+        """(?i)(?:mainUrl|baseUrl|siteUrl|homeUrl|website|domain)\s*[:=]\s*["'](https?://[^"'\s]+)["']"""
+    ).findAll(text).mapNotNull { m ->
+        val raw = m.groupValues.getOrNull(1) ?: return@mapNotNull null
+        val host = runCatching { java.net.URI(raw).host?.lowercase()?.removePrefix("www.") }.getOrNull() ?: return@mapNotNull null
+        if (host in blocked) return@mapNotNull null
+        "https://" + host + "/"
+    }.firstOrNull()
+    val scored = Regex("https?://[A-Za-z0-9.-]+").findAll(text).mapNotNull { m ->
         val host = runCatching { java.net.URI(m.value).host?.lowercase()?.removePrefix("www.") }.getOrNull() ?: return@mapNotNull null
         if (host in blocked) return@mapNotNull null
-        tokens.count { it.length >= 3 && host.contains(it) } to "https://" + host + "/"
+        val score = tokens.count { it.length >= 3 && host.contains(it) }
+        if (score <= 0) return@mapNotNull null
+        score to "https://" + host + "/"
     }.sortedByDescending { it.first }.map { it.second }.firstOrNull()
+    scored ?: explicit
 }
 
 internal fun webUrlFor(p: ContentProvider): String? = when (p.config.type) {

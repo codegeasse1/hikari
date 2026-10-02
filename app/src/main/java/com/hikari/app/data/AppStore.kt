@@ -595,6 +595,11 @@ class AppStore(private val ctx: Context) {
          *  Default OFF for every engine — see [engineFamiliesFlow] and
          *  [com.hikari.app.data.SearchScope.engineFamilies]. */
         val SEARCH_FAMILY_TYPES = stringSetPreferencesKey("searchFamilyTypes")
+         val TRACKER_SERVER_SEARCH_ALL = booleanPreferencesKey("trackerServerSearchAll")
+         val TRACKER_NUVIO_SEARCH_ALL = booleanPreferencesKey("trackerNuvioSearchAll")
+         val TRACKER_STREMIO_SEARCH_ALL = booleanPreferencesKey("trackerStremioSearchAll")
+         val TRACKER_FAMILY_TYPES = stringSetPreferencesKey("trackerFamilyTypes")
+         val TRACKER_PROVIDER_IDS = stringSetPreferencesKey("trackerProviderIds")
         /** "Exception extensions" (Settings → Playback & Servers → Server
          *  search): extensions that are asked for servers for EVERY title, even
          *  when [SEARCH_ALL_EXTENSIONS] is off. See
@@ -1647,7 +1652,39 @@ class AppStore(private val ctx: Context) {
      * a title opened FROM one of them plays from that extension alone. Off (the
      * default), they change nothing at all.
      */
-    fun searchExceptionOnFlow(): Flow<Boolean> =
+         // ---- Tracker-only server routing ------------------------------------
+     fun trackerServerSearchAllFlow(): Flow<Boolean> = store.data.map { it[K.TRACKER_SERVER_SEARCH_ALL] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
+     suspend fun trackerServerSearchAll(): Boolean = trackerServerSearchAllFlow().first()
+     suspend fun setTrackerServerSearchAll(on: Boolean) { write("TRACKER_SERVER_SEARCH_ALL") { it[K.TRACKER_SERVER_SEARCH_ALL] = on } }
+     fun trackerNuvioSearchAllFlow(): Flow<Boolean> = store.data.map { it[K.TRACKER_NUVIO_SEARCH_ALL] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
+     suspend fun trackerNuvioSearchAll(): Boolean = trackerNuvioSearchAllFlow().first()
+     suspend fun setTrackerNuvioSearchAll(on: Boolean) { write("TRACKER_NUVIO_SEARCH_ALL") { it[K.TRACKER_NUVIO_SEARCH_ALL] = on } }
+     fun trackerStremioSearchAllFlow(): Flow<Boolean> = store.data.map { it[K.TRACKER_STREMIO_SEARCH_ALL] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
+     suspend fun trackerStremioSearchAll(): Boolean = trackerStremioSearchAllFlow().first()
+     suspend fun setTrackerStremioSearchAll(on: Boolean) { write("TRACKER_STREMIO_SEARCH_ALL") { it[K.TRACKER_STREMIO_SEARCH_ALL] = on } }
+     fun trackerEngineFamiliesFlow(): Flow<Set<String>> = store.data.map { prefs ->
+         val out = HashSet<String>(8)
+         if (prefs[K.TRACKER_NUVIO_SEARCH_ALL] != false) out += ProviderType.NUVIO.name
+         if (prefs[K.TRACKER_STREMIO_SEARCH_ALL] != false) out += ProviderType.STREMIO.name
+         out += prefs[K.TRACKER_FAMILY_TYPES].orEmpty()
+         out
+     }.distinctUntilChanged().flowOn(Dispatchers.Default)
+     suspend fun trackerEngineFamilies(): Set<String> = trackerEngineFamiliesFlow().first()
+     suspend fun setTrackerEngineFamily(type: ProviderType, on: Boolean) {
+         when (type) {
+             ProviderType.NUVIO -> setTrackerNuvioSearchAll(on)
+             ProviderType.STREMIO -> setTrackerStremioSearchAll(on)
+             else -> write("TRACKER_FAMILY_TYPES") { prefs ->
+                 val current = prefs[K.TRACKER_FAMILY_TYPES].orEmpty()
+                 prefs[K.TRACKER_FAMILY_TYPES] = if (on) current + type.name else current - type.name
+             }
+         }
+     }
+     fun trackerProviderIdsFlow(): Flow<Set<String>> = store.data.map { it[K.TRACKER_PROVIDER_IDS] ?: emptySet() }.distinctUntilChanged().flowOn(Dispatchers.Default)
+     suspend fun trackerProviderIds(): Set<String> = trackerProviderIdsFlow().first()
+     suspend fun setTrackerProviderIds(ids: Collection<String>) { write("TRACKER_PROVIDER_IDS") { it[K.TRACKER_PROVIDER_IDS] = ids.toSet() } }
+
+fun searchExceptionOnFlow(): Flow<Boolean> =
         store.data.map { it[K.SEARCH_EXCEPTION_ON] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun searchExceptionOn(): Boolean = searchExceptionOnFlow().first()

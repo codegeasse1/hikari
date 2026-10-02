@@ -12,6 +12,9 @@ import com.hikari.app.data.SubtitleSource
 import com.hikari.app.net.Http
 import com.hikari.app.providers.ContentProvider
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -258,22 +261,31 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
             val n = s.optInt("season_number")
             if (n > 0 && s.optInt("episode_count") > 0) n else null
         }.take(MAX_SEASONS)
-        val rows = mutableListOf<TmdbEp>()
-        for (sn in nums) {
-            val sd = TmdbResolver.apiGet("/tv/$id/season/$sn", emptyMap()) ?: continue
-            val eps = sd.optJSONArray("episodes") ?: continue
-            for (i in 0 until eps.length()) {
-                val e = eps.optJSONObject(i) ?: continue
-                val en = e.optInt("episode_number")
-                if (en <= 0) continue
-                rows += TmdbEp(
-                    season = sn,
-                    number = en,
-                    name = e.optString("name").takeIf { it.isNotBlank() && it != "null" },
-                    image = e.tmdbPath("still_path")?.let { IMG + it },
-                    air = e.optString("air_date").trim().takeIf { it.length == 10 },
-                )
-            }
+        // TMDB season endpoints are independent; fetch them concurrently so
+        // long-running shows do not consume the entire detail timeout serially.
+        val rows = coroutineScope {
+            nums.map { sn ->
+                async(Dispatchers.IO) {
+                    val sd = TmdbResolver.apiGet("/tv/$id/season/$sn", emptyMap())
+                        ?: return@async emptyList<TmdbEp>()
+                    val eps = sd.optJSONArray("episodes")
+                        ?: return@async emptyList<TmdbEp>()
+                    buildList {
+                        for (i in 0 until eps.length()) {
+                            val e = eps.optJSONObject(i) ?: continue
+                            val en = e.optInt("episode_number")
+                            if (en <= 0) continue
+                            add(TmdbEp(
+                                season = sn,
+                                number = en,
+                                name = e.optString("name").takeIf { it.isNotBlank() && it != "null" },
+                                image = e.tmdbPath("still_path")?.let { IMG + it },
+                                air = e.optString("air_date").trim().takeIf { it.length == 10 },
+                            ))
+                        }
+                    }
+                }
+            }.awaitAll().flatten()
         }
         if (rows.isEmpty()) return@withContext null
 

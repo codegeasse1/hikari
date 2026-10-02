@@ -786,7 +786,10 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun loadEpisodesFor(item: MediaItem, gen: Int): List<Episode> {
         // A movie (or an item whose type is still unknown) has no episode list
         // to retry — one ask, and its answer stands.
-        val tries = if (item.type == MediaType.SERIES) EPISODE_LOAD_TRIES else 1
+        // episodesFor() already performs a bounded parallel fallback. Repeating
+        // that whole sweep three times could keep the page in "Loading episodes…"
+        // for minutes; the explicit Try again action is the retry path.
+        val tries = 1
         var got: List<Episode> = emptyList()
         for (attempt in 1..tries) {
             val at = System.currentTimeMillis()

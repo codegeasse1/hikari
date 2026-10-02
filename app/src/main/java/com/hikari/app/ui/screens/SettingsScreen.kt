@@ -788,6 +788,7 @@ fun SettingsScreen(nav: NavHostController) {
                 }
                 SettingsFolder.PLAYBACK_SERVERS -> {
                     item { SettingsCard(top = 2.dp) { ServerSearchCard(app) } }
+                    item { SettingsCard { TrackerServerSearchCard(app) } }
                     // "When playback starts" (play the first server / wait for more)
                     // lives here — it is a decision about SERVERS — and only here:
                     // the same card used to show up in the Player folder too.
@@ -4564,6 +4565,82 @@ private fun PlaybackStartCard(app: HikariApp) {
 private val ProviderType.isFamilyEngine: Boolean
     get() = this != ProviderType.NUVIO && this != ProviderType.STREMIO &&
         this != ProviderType.IPTV && this != ProviderType.MANGA
+
+@Composable
+private fun TrackerServerSearchCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    val trackerSearchAll by remember { app.store.trackerServerSearchAllFlow() }.collectAsState(initial = true)
+    val trackerNuvioAll by remember { app.store.trackerNuvioSearchAllFlow() }.collectAsState(initial = true)
+    val trackerStremioAll by remember { app.store.trackerStremioSearchAllFlow() }.collectAsState(initial = true)
+    val trackerFamilies by remember { app.store.trackerEngineFamiliesFlow() }.collectAsState(initial = setOf(ProviderType.NUVIO.name, ProviderType.STREMIO.name))
+    val trackerProviderIds by remember { app.store.trackerProviderIdsFlow() }.collectAsState(initial = emptySet())
+    val installed by app.providers.providers.collectAsState()
+    val enabled = installed.filter { it.config.enabled }
+    val engines = remember(enabled) { enabled.map { it.config.type }.distinct().filter { it.isFamilyEngine }.sortedBy { it.groupLabel } }
+    var cloudstreamPicker by remember { mutableStateOf(false) }
+
+    Column(Modifier.padding(16.dp)) {
+        SettingsCardHeading(Icons.Filled.Sync, tr("Tracker servers"))
+        if (!LocalHideHelp.current) Text(
+            tr("These source choices apply only to titles opened from tracker libraries. The existing server-search options above are unchanged."),
+            style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(10.dp))
+        SettingsToggle(label = tr("Search tracker servers"), supporting = tr("Use the tracker-only source choices below"),
+            checked = trackerSearchAll, onCheckedChange = { on -> scope.launch { runCatching { app.store.setTrackerServerSearchAll(on) } } })
+        if (trackerSearchAll) {
+            Spacer(Modifier.height(10.dp))
+            SettingsToggle(label = tr("Search every Nuvio provider"), supporting = tr("Use all installed Nuvio providers for tracker titles"),
+                checked = trackerNuvioAll, onCheckedChange = { on -> scope.launch { runCatching { app.store.setTrackerNuvioSearchAll(on) } } })
+            Spacer(Modifier.height(8.dp))
+            SettingsToggle(label = tr("Search every Stremio addon"), supporting = tr("Use all installed Stremio addons for tracker titles"),
+                checked = trackerStremioAll, onCheckedChange = { on -> scope.launch { runCatching { app.store.setTrackerStremioSearchAll(on) } } })
+            for (type in engines.filter { it != ProviderType.NUVIO && it != ProviderType.STREMIO }) {
+                Spacer(Modifier.height(8.dp))
+                if (type == ProviderType.CS3) {
+                    val cs3 = enabled.filter { it.config.type == ProviderType.CS3 }
+                    val ids = cs3.map { it.config.id }.toSet()
+                    val allSelected = ids.isNotEmpty() && ProviderType.CS3.name in trackerFamilies
+                    val selected = if (allSelected) ids else trackerProviderIds.intersect(ids)
+                    ChoiceRow(value = when {
+                        selected.isEmpty() -> tr("Search CloudStream providers")
+                        selected.size == ids.size -> tr("All CloudStream providers")
+                        else -> "${selected.size} " + tr("CloudStream providers")
+                    }, supporting = tr("Tap to choose individual CloudStream extensions"), leadingIcon = Icons.Filled.Extension,
+                        onClick = { cloudstreamPicker = true })
+                } else {
+                    val on = type.name in trackerFamilies
+                    SettingsToggle(label = tr("Search every %s").replace("%s", type.groupLabel),
+                        supporting = tr("Use every installed %s for tracker titles").replace("%s", type.groupLabel),
+                        checked = on, onCheckedChange = { value -> scope.launch { runCatching { app.store.setTrackerEngineFamily(type, value) } } })
+                }
+            }
+        }
+    }
+    if (cloudstreamPicker) {
+        val cs3 = enabled.filter { it.config.type == ProviderType.CS3 }
+        val ids = cs3.map { it.config.id }.toSet()
+        val allSelected = ids.isNotEmpty() && ProviderType.CS3.name in trackerFamilies
+        val selected = if (allSelected) ids else trackerProviderIds.intersect(ids)
+        MultiChoiceDialog(title = tr("CloudStream tracker servers"),
+            items = cs3.sortedBy { it.config.name.ifBlank { it.config.id }.lowercase() }.map {
+                ChoiceItem(key = it.config.id, label = it.config.name.ifBlank { it.config.id }, supporting = it.config.type.groupLabel)
+            }, selectedKeys = selected,
+            onToggle = { id ->
+                scope.launch {
+                    val next = selected.toMutableSet()
+                    if (!next.add(id)) next.remove(id)
+                    if (next.size == ids.size && ids.isNotEmpty()) {
+                        runCatching { app.store.setTrackerEngineFamily(ProviderType.CS3, true); app.store.setTrackerProviderIds(trackerProviderIds - ids) }
+                    } else {
+                        runCatching { app.store.setTrackerEngineFamily(ProviderType.CS3, false); app.store.setTrackerProviderIds((trackerProviderIds - ids) + next) }
+                    }
+                }
+            }, onDismiss = { cloudstreamPicker = false }, searchable = true,
+            searchPlaceholder = tr("Search CloudStream extensions"),
+            footnote = tr("Scrollable list — select only the CloudStream extensions you want tracker titles to search."))
+    }
+}
 
 @Composable
 private fun ServerSearchCard(app: HikariApp) {

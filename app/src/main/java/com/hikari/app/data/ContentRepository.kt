@@ -2544,15 +2544,24 @@ class ContentRepository(private val manager: ProviderManager) {
             // every other provider's".
             val originIsIptv = IptvMark.of(item)
             val originIsException = originIsIptv || SearchScope.isException(item.providerId)
-            val scopeAll = when {
+            val trackerTargets = if (trackerBacked) {
+                val on = runCatching { HikariApp.instance.store.trackerServerSearchAll() }.getOrDefault(true)
+                if (!on) emptySet() else {
+                    val families = runCatching { HikariApp.instance.store.trackerEngineFamilies() }
+                        .getOrDefault(setOf(ProviderType.NUVIO.name, ProviderType.STREMIO.name))
+                    val selected = runCatching { HikariApp.instance.store.trackerProviderIds() }.getOrDefault(emptySet())
+                    all.filter { it.config.enabled && (it.config.type.name in families || it.config.id in selected) }
+                        .map { it.config.id }.toSet()
+                }
+            } else emptySet()
+            val scopeAll = if (trackerBacked) false else when {
                 originIsException -> false
-                trackerBacked -> true
                 else -> SearchScope.allExtensions
             }
-            val exceptions = if (originIsException) {
-                emptySet()
-            } else {
-                SearchScope.exceptions
+            val exceptions = when {
+                originIsException -> emptySet()
+                trackerBacked -> trackerTargets
+                else -> SearchScope.exceptions
             }
             // Read once, like the two above: one lookup must never be
             // half-scoped (see docs/SEARCH.md). "Search every Nuvio provider".
@@ -2583,7 +2592,10 @@ class ContentRepository(private val manager: ProviderManager) {
             val originUsable = origin != null && origin.config.enabled
             val originless = !originIsIptv && !originUsable
             val stremioAddons = if (originless) {
-                all.filter { it.config.type == ProviderType.STREMIO }
+                all.filter {
+                    it.config.type == ProviderType.STREMIO &&
+                        (!trackerBacked || it.config.id in trackerTargets)
+                }
             } else {
                 emptyList()
             }
@@ -2635,14 +2647,18 @@ class ContentRepository(private val manager: ProviderManager) {
                     //    always include.
                     originless ->
                         if (com.hikari.app.nuvio.TmdbResolver.isLikelyResolvable(item)) {
-                            all.filter { it.config.type == ProviderType.NUVIO }
-                                .sortedWith(nuvioOrder(item.providerId))
+                            all.filter {
+                                it.config.type == ProviderType.NUVIO &&
+                                    (!trackerBacked || it.config.id in trackerTargets)
+                            }.sortedWith(nuvioOrder(item.providerId))
                         } else {
                             emptyList()
                         }
                     originIsNuvio && nuvioFamily ->
-                        all.filter { it.config.type == ProviderType.NUVIO }
-                            .sortedWith(nuvioOrder(item.providerId))
+                        all.filter {
+                            it.config.type == ProviderType.NUVIO &&
+                                (!trackerBacked || it.config.id in trackerTargets)
+                        }.sortedWith(nuvioOrder(item.providerId))
                     exceptions.isEmpty() -> emptyList()
                     else -> all.filter {
                         it.config.type == ProviderType.NUVIO && it.config.id in exceptions
@@ -5750,14 +5766,14 @@ class ContentRepository(private val manager: ProviderManager) {
         // ordinary "search all extensions" setting is off; otherwise a saved
         // AniList series can render perfectly in the library but has no provider
         // from which Hikari can obtain its actual episodes.
-        if (!SearchScope.allExtensions && exceptionIds.isEmpty() && !trackerBacked) return null
+        // Episode discovery is metadata, not server search; do not inherit playback scope.
         val originType = manager.byId(item.providerId)?.config?.type
         val candidates = manager.providers.value
             .filter { p ->
                 p.config.enabled &&
                     p.config.id != item.providerId &&
                     !isCfSkipped(p.config.id) &&
-                    (SearchScope.allExtensions || p.config.id in exceptionIds || trackerBacked) &&
+                    true
                     when (p.config.type) {
                         ProviderType.CS3,
                         ProviderType.HIKARI,
