@@ -110,6 +110,7 @@ import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.Wallpaper
 import androidx.compose.material3.AlertDialog
@@ -345,8 +346,28 @@ private enum class SettingsFolder(
     TRACKERS(
         "trackers",
         "Trackers",
-        "AniList, MyAnimeList, Kitsu, Simkl, Shikimori & Trakt",
+        "Trakt, Simkl and watch-progress syncing",
         Icons.Filled.Sync,
+    ),
+    INTEGRATIONS(
+        "integrations",
+        "Integrations",
+        "TMDB enrichment, MDBList ratings & external services",
+        Icons.Filled.ViewCarousel,
+    ),
+    INTEGRATIONS_TMDB(
+        "integrations.tmdb",
+        "TMDB Enrichment",
+        "Artwork, metadata, episodes, credits & recommendations",
+        Icons.Filled.Panorama,
+        parent = "integrations",
+    ),
+    INTEGRATIONS_MDBLIST(
+        "integrations.mdblist",
+        "MDBList Ratings",
+        "External IMDb, TMDB, Rotten Tomatoes & more",
+        Icons.Filled.Star,
+        parent = "integrations",
     ),    // The user's own catalogs (Collections) live here rather than under
     // Appearance & Theme: they are something the user CREATES and manages — like the
     // extensions they install — not a way the app looks, and a folder of their
@@ -797,11 +818,30 @@ fun SettingsScreen(nav: NavHostController) {
                 SettingsFolder.TRACKERS -> {
                     item { SettingsCard(top = 2.dp) { TrackersCard(app) } }
                 }
+                SettingsFolder.INTEGRATIONS -> {
+                    SettingsFolder.entries
+                        .filter { it.parent == SettingsFolder.INTEGRATIONS.key }
+                        .forEach { target ->
+                            item {
+                                SettingsFolderRow(
+                                    folder = target,
+                                    onClick = { openSubPage(target) },
+                                )
+                            }
+                        }
+                }
+                SettingsFolder.INTEGRATIONS_TMDB -> {
+                    item { SettingsCard(top = 2.dp) { TmdbIntegrationCard(app) } }
+                    item { SettingsCard { TmdbLanguageCard(app, appLanguage) } }
+                    item { SettingsCard { TmdbModulesCard(app) } }
+                }
+                SettingsFolder.INTEGRATIONS_MDBLIST -> {
+                    item { SettingsCard(top = 2.dp) { MdbListIntegrationCard(app) } }
+                    item { SettingsCard { MdbListProvidersCard(app) } }
+                }
                 SettingsFolder.APPEARANCE -> {
                     item { SettingsCard(top = 2.dp) { LanguageCard(app, appLanguage) } }
-                    item { SettingsCard { TmdbLanguageCard(app, appLanguage) } }
                     item { SettingsCard { ProviderCatalogSettingsCard(app) } }
-                    item { SettingsCard { MetadataApiKeysCard(app) } }
                     item {
                         SettingsCard {
                             Box {
@@ -3670,43 +3710,233 @@ private fun ProviderCatalogSettingsCard(app: HikariApp) {
     )
 }
 
+
 @Composable
-private fun MetadataApiKeysCard(app: HikariApp) {
-    val scope = rememberCoroutineScope()
-    var tmdb by remember { mutableStateOf("") }
-    var mdblist by remember { mutableStateOf("") }
-    LaunchedEffect(Unit) {
-        tmdb = app.store.tmdbApiKey()
-        mdblist = app.store.mdbListApiKey()
-    }
-    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
-        Text(tr("Metadata & ratings"), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-        Text(tr("TMDB enriches metadata. MDBList adds external ratings when an IMDb id is available."),
-            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(top = 4.dp, bottom = 10.dp))
-        OutlinedTextField(value = tmdb, onValueChange = { tmdb = it }, label = { Text("TMDB API key") },
-            singleLine = true, visualTransformation = PasswordVisualTransformation(),
+private fun ApiKeyEditor(
+    label: String,
+    value: String,
+    savedValue: String,
+    onValueChange: (String) -> Unit,
+    onSave: () -> Unit,
+) {
+    var visible by rememberSaveable(label) { mutableStateOf(false) }
+    Column(Modifier.fillMaxWidth()) {
+        OutlinedTextField(
+            value = value,
+            onValueChange = onValueChange,
+            label = { Text(label) },
+            singleLine = true,
+            visualTransformation = if (visible) androidx.compose.ui.text.input.VisualTransformation.None else PasswordVisualTransformation(),
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-            modifier = Modifier.fillMaxWidth().tvTextFieldKeys(tmdb))
-        OutlinedTextField(value = mdblist, onValueChange = { mdblist = it }, label = { Text("MDBList API key") },
-            singleLine = true, visualTransformation = PasswordVisualTransformation(),
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-            modifier = Modifier.fillMaxWidth().padding(top = 8.dp).tvTextFieldKeys(mdblist))
-        TextButton(onClick = {
-            scope.launch {
-                app.store.setTmdbApiKey(tmdb)
-                app.store.setMdbListApiKey(mdblist)
-                Ratings.clearCache()
-            }
-        }, modifier = Modifier.tvPress(previewPass = true, onClick = {
-            scope.launch {
-                app.store.setTmdbApiKey(tmdb)
-                app.store.setMdbListApiKey(mdblist)
-                Ratings.clearCache()
-            }
-        })) { Text(tr("Save metadata keys")) }
+            trailingIcon = {
+                IconButton(onClick = { visible = !visible }) {
+                    Icon(
+                        if (visible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                        contentDescription = if (visible) "Hide $label" else "Show $label",
+                    )
+                }
+            },
+            modifier = Modifier.fillMaxWidth().tvTextFieldKeys(value),
+        )
+        TextButton(
+            onClick = onSave,
+            enabled = value.trim() != savedValue.trim(),
+            modifier = Modifier.tvPress(previewPass = true, onClick = onSave),
+        ) {
+            Text(if (value.trim() == savedValue.trim()) tr("Saved") else tr("Save"))
+        }
     }
 }
+
+@Composable
+private fun TmdbIntegrationCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    val enabled by remember { app.store.tmdbEnabledFlow() }.collectAsState(initial = true)
+    val savedKey by remember { app.store.tmdbApiKeyFlow() }.collectAsState(initial = "")
+    var draftKey by remember { mutableStateOf("") }
+    LaunchedEffect(savedKey) { draftKey = savedKey }
+
+    Column(Modifier.padding(16.dp)) {
+        SettingsSection(
+            id = "integrations.tmdb.main",
+            icon = Icons.Filled.Panorama,
+            title = tr("TMDB enrichment"),
+            summary = if (enabled) tr("Enabled") else tr("Disabled"),
+        ) {
+            SettingsToggle(
+                label = tr("Enable TMDB enrichment"),
+                supporting = tr("Use TMDB as a metadata source to enhance addon data"),
+                checked = enabled,
+                onCheckedChange = { scope.launch { runCatching { app.store.setTmdbEnabled(it) } } },
+            )
+            Spacer(Modifier.height(10.dp))
+            Text(
+                tr("Personal API key"),
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Text(
+                tr("Leave blank to use the default. A personal key overrides it."),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp, bottom = 10.dp),
+            )
+            ApiKeyEditor(
+                label = "TMDB API key",
+                value = draftKey,
+                savedValue = savedKey,
+                onValueChange = { draftKey = it },
+                onSave = {
+                    scope.launch { runCatching { app.store.setTmdbApiKey(draftKey.trim()) } }
+                },
+            )
+        }
+    }
+}
+
+@Composable
+private fun TmdbModulesCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    val modules = listOf(
+        Triple("trailers", "Trailers", "Trailer candidates from TMDB videos for the detail trailer section"),
+        Triple("artwork", "Artwork", "Logo and backdrop images from TMDB"),
+        Triple("basic", "Basic Info", "Description, genres, and rating from TMDB"),
+        Triple("details", "Details", "Runtime, status, country, and language from TMDB"),
+        Triple("credits", "Credits", "Cast with photos, director, and writer from TMDB"),
+        Triple("productions", "Productions", "Production companies from TMDB"),
+        Triple("networks", "Networks", "Networks with logos from TMDB"),
+        Triple("episodes", "Episodes", "Episode titles, overviews, thumbnails, and runtime from TMDB"),
+        Triple("season_posters", "Season posters", "Use TMDB season posters in the metadata season selector"),
+        Triple("more_like", "More Like This", "TMDB recommendation backdrops on the detail page"),
+        Triple("collections", "Collections", "TMDB movie collections in release order"),
+    )
+    Column(Modifier.padding(16.dp)) {
+        SettingsSection(
+            id = "integrations.tmdb.modules",
+            icon = Icons.Filled.Tune,
+            title = tr("Modules"),
+            summary = tr("Choose which TMDB enrichments are requested"),
+        ) {
+            modules.forEachIndexed { index, module ->
+                val (key, title, description) = module
+                val moduleEnabled by remember(key) { app.store.tmdbModuleFlow(key) }.collectAsState(initial = true)
+                SettingsToggle(
+                    label = tr(title),
+                    supporting = tr(description),
+                    checked = moduleEnabled,
+                    onCheckedChange = { value ->
+                        scope.launch { runCatching { app.store.setTmdbModule(key, value) } }
+                    },
+                )
+                if (index != modules.lastIndex) {
+                    HorizontalDivider(
+                        modifier = Modifier.padding(top = 10.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MdbListIntegrationCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    val enabled by remember { app.store.mdbEnabledFlow() }.collectAsState(initial = false)
+    val savedKey by remember { app.store.mdbListApiKeyFlow() }.collectAsState(initial = "")
+    var draftKey by remember { mutableStateOf("") }
+    LaunchedEffect(savedKey) { draftKey = savedKey }
+
+    Column(Modifier.padding(16.dp)) {
+        SettingsSection(
+            id = "integrations.mdblist.main",
+            icon = Icons.Filled.Star,
+            title = tr("MDBList ratings"),
+            summary = if (enabled) tr("Enabled") else tr("Disabled"),
+        ) {
+            SettingsToggle(
+                label = tr("Enable MDBList ratings"),
+                supporting = tr("Fetch ratings from external providers in metadata detail screens"),
+                checked = enabled,
+                onCheckedChange = { scope.launch { runCatching { app.store.setMdbEnabled(it) } } },
+            )
+            Spacer(Modifier.height(10.dp))
+            Text(
+                tr("API key"),
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Text(
+                tr("Save either key independently. Clearing a key and saving removes it."),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp, bottom = 10.dp),
+            )
+            ApiKeyEditor(
+                label = "MDBList API key",
+                value = draftKey,
+                savedValue = savedKey,
+                onValueChange = { draftKey = it },
+                onSave = {
+                    scope.launch {
+                        runCatching {
+                            app.store.setMdbListApiKey(draftKey.trim())
+                            Ratings.clearCache()
+                        }
+                    }
+                },
+            )
+        }
+    }
+}
+
+@Composable
+private fun MdbListProvidersCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    val providers = listOf(
+        Triple("imdb", "IMDb", "IMDb score"),
+        Triple("tmdb", "TMDB", "TMDB score"),
+        Triple("tomatoes", "Rotten Tomatoes", "Tomatometer"),
+        Triple("metacritic", "Metacritic", "Metascore"),
+        Triple("trakt", "Trakt", "Trakt score"),
+        Triple("letterboxd", "Letterboxd", "Letterboxd score"),
+        Triple("audience", "Audience Score", "Rotten Tomatoes audience score"),
+        Triple("mal", "MyAnimeList", "MyAnimeList score"),
+    )
+    Column(Modifier.padding(16.dp)) {
+        SettingsSection(
+            id = "integrations.mdblist.providers",
+            icon = Icons.Filled.Star,
+            title = tr("External ratings providers"),
+            summary = tr("Choose which ratings MDBList contributes"),
+        ) {
+            providers.forEachIndexed { index, provider ->
+                val (key, title, description) = provider
+                val providerEnabled by remember(key) { app.store.mdbProviderFlow(key) }.collectAsState(initial = true)
+                SettingsToggle(
+                    label = tr(title),
+                    supporting = tr(description),
+                    checked = providerEnabled,
+                    onCheckedChange = { value ->
+                        scope.launch {
+                            runCatching {
+                                app.store.setMdbProvider(key, value)
+                                Ratings.clearCache()
+                            }
+                        }
+                    },
+                )
+                if (index != providers.lastIndex) {
+                    HorizontalDivider(
+                        modifier = Modifier.padding(top = 10.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
+                    )
+                }
+            }
+        }
+    }
+}
+
 
 @Composable
 private fun TmdbLanguageCard(app: HikariApp, appLanguage: String) {
