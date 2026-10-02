@@ -860,10 +860,14 @@ fun HomeScreen(nav: NavHostController) {
             val own = withContext(Dispatchers.IO) {
                 providers.firstOrNull { it.config.id == selected }?.let { webUrlFor(it) }
             }
-            val blocked = com.hikari.app.net.CloudflareVerifier.blockedHost()
-            val url = own ?: blocked?.let { "https://$it/" }
-            val host = own?.let { runCatching { java.net.URI(it).host?.lowercase() }.getOrNull() }
-                ?: blocked
+            // The WebView button belongs to the selected extension. Never
+            // fall back to the last Cloudflare-blocked host from another
+            // extension: that stale global value was exactly how tapping the
+            // button for extension B could open extension A's page.
+            val url = own
+            val host = own?.let {
+                runCatching { java.net.URI(it).host?.lowercase() }.getOrNull()
+            }
             if (url != null) {
                 verifyLauncher.launch(
                     Intent(context, WebViewActivity::class.java).apply {
