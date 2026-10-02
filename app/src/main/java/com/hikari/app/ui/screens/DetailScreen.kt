@@ -593,6 +593,13 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             // invent an unrelated "original title" and then search 250 repos for
             // it, which is far worse than the problem being fixed.
             val isTmdbRow = providerId == "tmdb" || rawType.equals("tmdb", ignoreCase = true)
+            val isTrackerRow = providerId.lowercase() in setOf(
+                "anilist", "simkl", "mal", "kitsu", "shikimori", "trakt"
+            )
+            // Tracker library rows are virtual: their provider id identifies the
+            // tracker account, not an installed playback extension. Keep the
+            // detail page alive and let ContentRepository resolve the title
+            // through the installed playback providers.
             // A live TV channel's NAME is not a title any database knows: the
             // English-name lookup below searched TMDB with "Sony TV HD" and
             // "Pardesi TV" for nothing. IPTV items keep their own name as the
@@ -613,7 +620,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 remapMissingProvider(providerId, lookupNames) ?: providerId
             }
             _activeProviderId.value = activeProvider
-            if (manager.byId(activeProvider) == null && !isTmdbRow) {
+            if (manager.byId(activeProvider) == null && !isTmdbRow && !isTrackerRow) {
                 // Only reached when the remap above could not find the title in
                 // any installed provider either — i.e. the extension really is
                 // gone. Say what to do about it instead of a bare "not found".
