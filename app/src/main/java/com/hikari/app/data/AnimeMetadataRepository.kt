@@ -129,11 +129,20 @@ object AnimeMetadataRepository {
         val anime = item.rawType.equals("anime", true) || item.providerId in setOf("anilist", "mal", "kitsu", "shikimori")
         if (!anime || !runCatching { app.store.animeMetadataEnabled() }.getOrDefault(true)) return@withContext null
         val mode = runCatching { app.store.animeMetadataSource() }.getOrDefault("auto").lowercase()
-        val ani = runCatching { aniList(item.searchTitle) }.getOrNull()
+        // The source picker is a real source selector, not merely a preference
+        // for the rating. The old code always queried AniList and only disabled
+        // Simkl when AniList was selected, so choosing "Simkl" still silently
+        // used AniList metadata and choosing "AniList" could never prove that
+        // the selected source was actually being used.
+        val ani = if (mode == "simkl") null else runCatching { aniList(item.searchTitle) }.getOrNull()
         val sim = if (mode == "anilist") null else runCatching { simkl(app, item) }.getOrNull()
         if (ani == null && sim == null) return@withContext null
-        Metadata(ani?.title ?: sim?.title, sim?.rating ?: ani?.rating, ani?.nextEpisodeDate,
-            listOfNotNull(sim?.source, ani?.source).distinct().joinToString(" + "))
+        Metadata(
+            ani?.title ?: sim?.title,
+            if (mode == "simkl") sim?.rating else ani?.rating ?: sim?.rating,
+            ani?.nextEpisodeDate ?: sim?.nextEpisodeDate,
+            listOfNotNull(sim?.source, ani?.source).distinct().joinToString(" + "),
+        )
     }
 
     private fun aniList(title: String): Metadata? {
