@@ -231,19 +231,19 @@
           android:focusableInTouchMode="true"
           android:nextFocusDown="@+id/player_pill_scroll"
           android:layout_width="0dp"
-          android:layout_height="18dp"
+          android:layout_height="22dp"
           android:layout_weight="1"
           android:layout_marginStart="6dp"
           android:layout_marginEnd="6dp"
-          app:bar_height="3dp"
+          app:bar_height="5dp"
           app:bar_gravity="center"
-          app:touch_target_height="18dp"
+          app:touch_target_height="22dp"
           app:played_color="@color/hikari_accent_mid"
           app:buffered_color="#66FFFFFF"
           app:unplayed_color="#40FFFFFF"
           app:scrubber_color="#FFFFFF"
-          app:scrubber_enabled_size="11dp"
-          app:scrubber_dragged_size="14dp" />
+          app:scrubber_enabled_size="12dp"
+          app:scrubber_dragged_size="16dp" />
 
       <TextView
           android:id="@id/exo_duration"

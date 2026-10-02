@@ -4577,14 +4577,23 @@ class PlayerActivity : ComponentActivity() {
         // row height, so the shape is clamped to a stadium and every row reads
         // as a pill — the "curved" look the whole player menu set uses.
         val tvMenu = PlayerSkins.normalize(skin) == PlayerSkins.TV && playerTvRemote()
-        val rowShape = if (tvMenu && tvPanelsEnabled && option.labelMaxLines >= 3) {
-            GradientDrawable().apply {
+        val tvServerCard = tvMenu && tvPanelsEnabled && option.labelMaxLines >= 3
+        val rowShape = if (tvServerCard) {
+            // TV server rows are deliberately cards rather than empty outlined
+            // capsules: the remote user needs a clear, high-contrast target from
+            // the sofa, and the server name/subtitle should read as one result.
+            GradientDrawable(
+                GradientDrawable.Orientation.LEFT_RIGHT,
+                intArrayOf(
+                    if (option.selected) withAlpha(accentMidColor, 0.22f) else 0x201A2430,
+                    if (option.selected) withAlpha(accentEndColor, 0.16f) else 0x14141D28
+                )
+            ).apply {
                 shape = GradientDrawable.RECTANGLE
-                cornerRadius = 14f * density
-                setColor(if (option.selected) withAlpha(accentMidColor, 0.20f) else 0x161B202A)
+                cornerRadius = 18f * density
                 setStroke(
-                    ((if (option.selected) 1.4f else 0.8f) * density).roundToInt().coerceAtLeast(1),
-                    if (option.selected) 0x70FFFFFF else 0x18FFFFFF
+                    ((if (option.selected) 1.6f else 1.0f) * density).roundToInt().coerceAtLeast(1),
+                    if (option.selected) withAlpha(accentMidColor, 0.95f) else 0x38FFFFFF
                 )
             }
         } else if (tvMenu) {
@@ -4627,21 +4636,22 @@ class PlayerActivity : ComponentActivity() {
                 if (foreground == null) foreground = tvFocusRing()
             }
             val card = tvMenu && tvPanelsEnabled && option.labelMaxLines >= 3
+            if (card) minimumHeight = (74 * density).roundToInt()
             setPadding(
-                ((if (card) 14 else 10) * density).toInt(),
-                ((if (card) 10 else 6) * density).toInt(),
-                ((if (card) 14 else 10) * density).toInt(),
-                ((if (card) 10 else 6) * density).toInt()
+                ((if (card) 16 else 10) * density).toInt(),
+                ((if (card) 12 else 6) * density).toInt(),
+                ((if (card) 16 else 10) * density).toInt(),
+                ((if (card) 12 else 6) * density).toInt()
             )
             background = if (onClick == null) rowShape
-            else RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), rowShape, null)
+            else RippleDrawable(ColorStateList.valueOf(0x38FFFFFF), rowShape, null)
         }
         rowMarker(option)?.let { row.addView(it) }
         row.addView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(TextView(this@PlayerActivity).apply {
                 text = option.label
-                dpText(if (tvMenu && tvPanelsEnabled && option.labelMaxLines >= 3) 13f else 11.5f)
+                dpText(if (tvMenu && tvPanelsEnabled && option.labelMaxLines >= 3) 14.5f else 11.5f)
                 // One line by default: a row is a capsule, so its HEIGHT decides
                 // how round it reads (the corner radius is clamped to half of
                 // it), and a label that wrapped to a second line made those rows
