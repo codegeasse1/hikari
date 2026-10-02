@@ -12,6 +12,9 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URLEncoder
+import java.security.MessageDigest
+import java.security.SecureRandom
+import android.util.Base64
 
 /**
  * Every tracker's HTTP surface, in one place (Settings → Trackers).
@@ -49,6 +52,8 @@ object TrackerApi {
         val pollCode: String,
         val intervalSec: Int = 5,
         val expiresInSec: Int = 600,
+        /** PKCE verifier required by Simkl OAuth2 device authorization. */
+        val codeVerifier: String = "",
     )
 
     // ------------------------------------------------------------------ replies
@@ -521,21 +526,46 @@ object TrackerApi {
     /** Starts a PIN/device-code sign-in (Simkl + Trakt). */
     suspend fun startDevice(client: TrackerClient): Result<DeviceLogin> = when (client.kind) {
         TrackerKind.SIMKL -> {
-            val reply = get(
-                "https://api.simkl.com/oauth/pin?client_id=${enc(client.id)}"
+            // Current Simkl developer apps are OAuth 2.0 clients. The legacy
+            // /oauth/pin endpoint only accepts the old PIN app type and returns
+            // HTTP 400 for the current client type — exactly the error shown in
+            // the supplied screenshot. Use Simkl's OAuth2 device endpoint and
+            // PKCE S256 instead.
+            val verifierBytes = ByteArray(32).also { SecureRandom().nextBytes(it) }
+            val verifier = Base64.encodeToString(
+                verifierBytes,
+                Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING,
+            )
+            val challenge = Base64.encodeToString(
+                MessageDigest.getInstance("SHA-256").digest(verifier.toByteArray(Charsets.US_ASCII)),
+                Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING,
+            )
+            val reply = post(
+                "https://api.simkl.com/oauth2/device",
+                form(
+                    "client_id" to client.id,
+                    "code_challenge" to challenge,
+                    "code_challenge_method" to "S256",
+                ),
+                contentType = FORM,
             )
             val o = reply.json()
+            val deviceCode = o?.optString("device_code").orEmpty()
             val userCode = o?.optString("user_code").orEmpty()
-            if (!reply.ok || userCode.isBlank()) {
+            val verifyUrl = o?.optString("verification_uri_complete").orEmpty()
+                .ifBlank { o?.optString("verification_uri").orEmpty() }
+                .ifBlank { "https://simkl.com/oauth/authorize" }
+            if (!reply.ok || deviceCode.isBlank() || userCode.isBlank()) {
                 Result.failure(Exception(problem(reply, "Simkl sign-in")))
             } else {
                 Result.success(
                     DeviceLogin(
                         userCode = userCode,
-                        verifyUrl = o?.optString("verification_url").orEmpty().ifBlank { "https://simkl.com/pin/" },
-                        pollCode = userCode,
+                        verifyUrl = verifyUrl,
+                        pollCode = deviceCode,
                         intervalSec = o?.optInt("interval", 5)?.coerceIn(2, 30) ?: 5,
                         expiresInSec = o?.optInt("expires_in", 900)?.coerceAtLeast(60) ?: 900,
+                        codeVerifier = verifier,
                     )
                 )
             }
@@ -575,24 +605,39 @@ object TrackerApi {
     suspend fun pollDevice(client: TrackerClient, login: DeviceLogin): Result<TrackerAccount?> =
         when (client.kind) {
             TrackerKind.SIMKL -> {
-                val reply = get(
-                    "https://api.simkl.com/oauth/pin/${enc(login.pollCode)}?client_id=${enc(client.id)}"
+                val reply = post(
+                    "https://api.simkl.com/oauth2/token",
+                    form(
+                        "grant_type" to "urn:ietf:params:oauth:grant-type:device_code",
+                        "device_code" to login.pollCode,
+                        "client_id" to client.id,
+                        "code_verifier" to login.codeVerifier,
+                    ),
+                    contentType = FORM,
                 )
-                val token = reply.json()?.optString("access_token").orEmpty()
-                if (token.isNotBlank()) {
-                    val who = simklMe(client.id, token)
-                    Result.success(
-                        TrackerAccount(
-                            kind = client.kind,
-                            user = who?.first.orEmpty(),
-                            userId = who?.second.orEmpty(),
-                            token = token,
+                val o = reply.json()
+                val token = o?.optString("access_token").orEmpty()
+                when {
+                    token.isNotBlank() -> {
+                        val who = simklMe(client.id, token)
+                        val expiresIn = o?.optLong("expires_in", 0L) ?: 0L
+                        Result.success(
+                            TrackerAccount(
+                                kind = client.kind,
+                                user = who?.first.orEmpty(),
+                                userId = who?.second.orEmpty(),
+                                token = token,
+                                refresh = o?.optString("refresh_token").orEmpty(),
+                                expiresAt = if (expiresIn > 0) System.currentTimeMillis() + expiresIn * 1000L else 0L,
+                            )
                         )
-                    )
-                } else if (reply.ok) {
-                    Result.success(null)
-                } else {
-                    Result.failure(Exception(problem(reply, "Simkl sign-in")))
+                    }
+                    o?.optString("error") == "authorization_pending" ||
+                        o?.optString("error") == "slow_down" ||
+                        reply.code == 428 -> Result.success(null)
+                    reply.code == 400 && o?.optString("error").orEmpty().isBlank() ->
+                        Result.success(null)
+                    else -> Result.failure(Exception(problem(reply, "Simkl sign-in")))
                 }
             }
 
