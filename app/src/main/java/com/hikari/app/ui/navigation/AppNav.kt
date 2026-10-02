@@ -988,8 +988,15 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
         }
     }
     LaunchedEffect(tabRoute) { barExpanded = true }
-    LaunchedEffect(homeRequest) {
-        if (homeRequest > 0) Routes.navigateTab(nav, Routes.HOME)
+    LaunchedEffect(homeRequest, tabRoute) {
+        // The home request is emitted by WebViewActivity's explicit "Go to app
+        // home" action. Extension installation can briefly create/finish a
+        // WebView-backed activity on some plugin paths; never let that global
+        // request tear the user out of the Extensions tab while an extension
+        // repo/install flow is active.
+        if (homeRequest > 0 && tabRoute != Routes.EXTENSIONS) {
+            Routes.navigateTab(nav, Routes.HOME)
+        }
     }
 
     Box(Modifier.fillMaxSize().nestedScroll(barScroll).padding(tvEdge)) {
