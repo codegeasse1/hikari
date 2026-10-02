@@ -167,6 +167,7 @@
 
   function normalizeHeaders(h) {
     var out = {};
+    for (var ck in commonHeaders) if (Object.prototype.hasOwnProperty.call(commonHeaders, ck) && isDef(commonHeaders[ck])) out[String(ck)] = String(commonHeaders[ck]);
     if (!h) return out;
     if (typeof h.forEach === 'function' && typeof h.get === 'function') {
       h.forEach(function (v, k) { if (isDef(v)) out[String(k)] = String(v); });
