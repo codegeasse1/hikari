@@ -1,5 +1,6 @@
 package com.hikari.app.data
 
+import com.hikari.app.HikariApp
 import com.hikari.app.net.Http
 import com.hikari.app.nuvio.TmdbResolver
 import org.json.JSONObject
@@ -482,8 +483,8 @@ object TmdbMeta {
             imdbId = d.optJSONObject("external_ids")
                 ?.optString("imdb_id")?.trim()
                 ?.takeIf { it.startsWith("tt") && it.length >= 8 },
-        )?.takeIf { useDetails || useBasic }
-        
+        )?.takeIf { useDetails || useBasic } else null
+
         val cast = ArrayList<CastMember>(20)
         val castArr = if (useCredits) credits?.optJSONArray("cast") else null
         for (i in 0 until (castArr?.length() ?: 0)) {
@@ -632,7 +633,7 @@ object TmdbMeta {
                 // "Shrek 2" is how its own row reads in the reference client.
                 items = items.sortedBy { it.year ?: 9999 },
             )
-        }
+        } else null
 
         return TitleExtras(
             details = details,
