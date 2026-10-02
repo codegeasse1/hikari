@@ -268,12 +268,20 @@ fun HeroArtwork(
         return
     }
     if (wide) {
+        // TV hero/detail backgrounds must preserve the complete artwork. A
+        // backdrop coming from a provider is not guaranteed to have the exact
+        // aspect ratio of the TV hero frame; Crop can therefore remove faces
+        // (the supplied TV screenshot shows the actor's nose being cut).
+        // Phone/tablet keeps the cinematic crop, while TV uses Fit so the whole
+        // source image remains visible and is letterboxed inside the frame
+        // instead of being cropped.
+        val tv = TvMode.current()
         PosterImage(
             model = model,
             contentDescription = contentDescription,
             modifier = modifier,
-            contentScale = ContentScale.Crop,
-            alignment = Alignment.TopCenter,
+            contentScale = if (tv) ContentScale.Fit else ContentScale.Crop,
+            alignment = Alignment.Center,
         )
         return
     }
