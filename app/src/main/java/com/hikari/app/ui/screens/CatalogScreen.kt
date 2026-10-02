@@ -69,6 +69,8 @@ import coil.compose.AsyncImage
 import com.hikari.app.HikariApp
 import com.hikari.app.data.CatalogRef
 import com.hikari.app.data.MediaItem
+import com.hikari.app.data.MetaCache
+import com.hikari.app.data.TrackerLibraryRepository
 import com.hikari.app.data.MediaType
 import com.hikari.app.data.ProviderType
 import com.hikari.app.i18n.I18n
@@ -173,6 +175,9 @@ class CatalogViewModel(
     private var page = 1
     private var loadJob: kotlinx.coroutines.Job? = null
 
+    private var trackerAll: List<MediaItem>? = null
+    private val TRACKER_PAGE = 60
+
     /**
      * The engine's own record of the last call it made to this provider, when
      * that call FAILED. Success lines ("✓ 40 title(s)") are not errors and are
@@ -226,6 +231,10 @@ class CatalogViewModel(
     fun loadNext() {
         if (_loading.value || _done.value) return
         loadJob?.cancel()
+        if (providerId.startsWith("tracker:")) {
+            loadTrackerNext()
+            return
+        }
         // Set BEFORE the coroutine is launched, not inside it: the grid reads
         // this to decide between the spinner and its empty state, and the frame
         // between "the list was emptied" and "the coroutine ran" was long enough
@@ -294,6 +303,21 @@ class CatalogViewModel(
                 fresh
             }
             if (translated.isEmpty()) {
+                // The catalogue behind this page is gone from the install (or was
+                // never one — a tracker shelf opens through this same page), yet
+                // Home's row just showed its titles: serve the disk copy of that
+                // same page instead of "Nothing here right now".
+                if (page == 1 && _items.value.isEmpty()) {
+                    val diskKey = MetaCache.catalogKey(providerId, ref, page)
+                    val disk = MetaCache.cachedCatalog(diskKey, Long.MAX_VALUE).orEmpty()
+                    if (disk.isNotEmpty()) {
+                        _items.value = withContext(Dispatchers.IO) { disk.map { it.tokenizePoster() } }
+                        _reason.value = null
+                        page++
+                        _loading.value = false
+                        return@launch
+                    }
+                }
                 // The engine's own record of the call wins over the generic
                 // message the caller caught: it is the one that names the real
                 // cause (a class-load failure, an assertion about our OkHttp
@@ -312,6 +336,68 @@ class CatalogViewModel(
         loadJob?.invokeOnCompletion { com.hikari.app.work.BackgroundWork.end(work) }
     }
 
+    /**
+     * One page of a TRACKER shelf ("tracker:anilist" etc. — Home's tracker rows
+     * open through this same catalogue page, but no installed provider answers
+     * for those ids). The shelf is the tracker's own library listing, so the
+     * page shows exactly what the Home row showed, paged locally; the row's
+     * search box filters it locally too.
+     */
+    private fun loadTrackerNext() {
+        if (_loading.value || _done.value) return
+        _loading.value = true
+        val work = com.hikari.app.work.BackgroundWork.begin("Loading $catalogName") {
+            loadJob?.cancel()
+        }
+        loadJob = viewModelScope.launch {
+            try {
+                var all = trackerAll
+                if (all == null) {
+                    val kindKey = providerId.removePrefix("tracker:")
+                    val app = getApplication<Application>() as HikariApp
+                    val loaded = TrackerLibraryRepository.load(app, kindKey)
+                    val shelves = loaded.getOrDefault(emptyList())
+                    val shelf = shelves.firstOrNull { it.key == _catalog.value }
+                        ?: shelves.firstOrNull { it.title == catalogName }
+                    if (shelf == null) {
+                        _reason.value = loaded.exceptionOrNull()?.message
+                        _done.value = true
+                        _loading.value = false
+                        return@launch
+                    }
+                    all = shelf.items
+                    trackerAll = all
+                }
+                val q = _query.value.trim()
+                val filtered = if (q.isBlank()) all
+                else all.filter {
+                    it.title.contains(q, ignoreCase = true) ||
+                        it.searchTitle.contains(q, ignoreCase = true)
+                }
+                val from = (page - 1) * TRACKER_PAGE
+                val slice = filtered.drop(from).take(TRACKER_PAGE)
+                if (slice.isEmpty()) {
+                    if (page == 1) {
+                        _reason.value = null
+                    }
+                    _done.value = true
+                } else {
+                    val tokenized = withContext(Dispatchers.IO) { slice.map { it.tokenizePoster() } }
+                    _items.value = _items.value + tokenized
+                    page++
+                    _reason.value = null
+                    if (from + slice.size >= filtered.size) _done.value = true
+                }
+            } catch (t: Throwable) {
+                if (t is kotlinx.coroutines.CancellationException) throw t
+                _reason.value = describeFailure(t)
+                _done.value = true
+            }
+            _loading.value = false
+        }
+        loadJob?.invokeOnCompletion { com.hikari.app.work.BackgroundWork.end(work) }
+    }
+
     /** "ClassName: message" from the ROOT cause of [t] — what the empty state
      *  shows when a load failed. See [_reason]. */
     private fun describeFailure(t: Throwable): String {
@@ -322,6 +408,7 @@ class CatalogViewModel(
 
     fun refresh() {
         page = 1
+        trackerAll = null
         _items.value = emptyList()
         _done.value = false
         _reason.value = null

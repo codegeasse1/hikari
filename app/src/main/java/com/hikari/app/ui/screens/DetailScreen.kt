@@ -614,7 +614,13 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 ?: if (isIptv) null else englishSearchName(title, isTmdbRow)
             val lookupNames = listOfNotNull(title.takeIf { it.isNotBlank() }, originalName)
                 .distinctBy { it.lowercase() }
-            val activeProvider = if (manager.byId(providerId) != null) {
+            // Tracker rows are virtual catalogue entries (AniList/Simkl/MAL/…): their
+            // id is the TRACKER's numeric id, which no installed extension can
+            // interpret. Remapping one onto an extension kept that numeric id and
+            // the extension answered with an unrelated title's details/episodes
+            // (wrong show, wrong seasons) — so tracker rows always stay virtual
+            // and resolve by title through the installed providers instead.
+            val activeProvider = if (manager.byId(providerId) != null || isTrackerRow) {
                 providerId
             } else {
                 remapMissingProvider(providerId, lookupNames) ?: providerId

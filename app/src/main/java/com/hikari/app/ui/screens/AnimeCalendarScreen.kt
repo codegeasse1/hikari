@@ -77,11 +77,19 @@ fun AnimeCalendarScreen(nav: NavHostController) {
                     Text("Anime Calendar", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
                     Text("Upcoming episodes and recently aired", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                OutlinedTextField(value = query, onValueChange = { query = it }, label = { Text("Search anime") }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(top = 12.dp))
                 IconButton(onClick = { refresh++ }) {
                     Icon(Icons.Filled.Refresh, contentDescription = "Refresh")
                 }
             }
+        }
+        item {
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                label = { Text("Search anime") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
         }
 
         if (loading) {

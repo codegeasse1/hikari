@@ -5488,6 +5488,21 @@ class ContentRepository(private val manager: ProviderManager) {
             if (result.year == null && r.year != null) result = result.copy(year = r.year)
             if (result.backdropUrl != null && result.overview != null) break
         }
+        // Tracker anime rows carry the tracker's numeric id, so TMDB can only ever
+        // be reached by title search — and for anime Simkl's own records are the
+        // correct ones (TMDB's anime coverage misfires on donghua and sequel
+        // seasons). Fill what the origin left bare from Simkl first; the rating
+        // pass below still applies on top.
+        if (TrackerAnimeResolver.isTrackerAnime(result) && (result.overview.isNullOrBlank() || result.genres.isEmpty())) {
+            runCatching { TrackerAnimeResolver.detail(result) }.getOrNull()?.let { d ->
+                if (result.overview.isNullOrBlank() && !d.overview.isNullOrBlank()) result = result.copy(overview = d.overview)
+                if (result.genres.isEmpty() && d.genres.isNotEmpty()) result = result.copy(genres = d.genres)
+                if (result.year == null && d.year != null) result = result.copy(year = d.year)
+                if (result.posterUrl.isNullOrBlank() && d.posterUrl != null) result = result.copy(posterUrl = d.posterUrl)
+                if (result.backdropUrl == null && d.backdropUrl != null) result = result.copy(backdropUrl = d.backdropUrl)
+                if (result.rating == null && d.rating != null) result = result.copy(rating = d.rating)
+            }
+        }
         val translated = translateItem(result)
         val animeMeta = runCatching { AnimeMetadataRepository.enrich(HikariApp.instance, translated) }.getOrNull()
         val finalMeta = animeMeta?.let {
@@ -5519,8 +5534,10 @@ class ContentRepository(private val manager: ProviderManager) {
         val got = episodesForInner(item, onPartial)
         if (!got.isNullOrEmpty()) return@interactive got
         // Tracker anime with no borrowable list: build the correct numbered
-        // list from AniList/MyAnimeList episode counts instead of Episodes (0).
-        TrackerAnimeResolver.fallbackEpisodes(item)
+        // list (Bangumi numbering for donghua, Simkl counts for every anime,
+        // AniList/MyAnimeList counts otherwise) instead of Episodes (0).
+        TrackerAnimeResolver.trackerEpisodes(item)
+            ?: TrackerAnimeResolver.fallbackEpisodes(item)
     }
 
     /**
@@ -5715,6 +5732,23 @@ class ContentRepository(private val manager: ProviderManager) {
                 if (named !== translated) onPartial?.invoke(named)
                 return@withContext named
             }
+        }
+        // Tracker anime with no borrowable site list: Bangumi tracks donghua
+        // week by week with the numbering the sites serve, and Simkl carries the
+        // correct episode count for every other anime — a correct numbered list
+        // beats "Episodes (0)" for a show that plainly has episodes.
+        if (TrackerAnimeResolver.isTrackerAnime(item)) {
+            runCatching { TrackerAnimeResolver.trackerEpisodes(item) }.getOrNull()
+                ?.takeIf { it.isNotEmpty() }?.let { list ->
+                    onPartial?.invoke(list)
+                    val translated = translateEpisodes(item.providerId, list)
+                    if (translated !== list) onPartial?.invoke(translated)
+                    val named = withRealEpisodeNames(item, translated)
+                    synchronized(episodeCache) { episodeCache[selKey] = named }
+                    MetaCache.putEpisodes(epsKey, named)
+                    if (named !== translated) onPartial?.invoke(named)
+                    return@withContext named
+                }
         }
         // Nothing fresh. Hand back the disk cache when there is one instead of a
         // bare null, so a series whose engine is unreachable right now still
