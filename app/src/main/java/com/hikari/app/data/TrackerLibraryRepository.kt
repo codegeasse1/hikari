@@ -123,7 +123,7 @@ object TrackerLibraryRepository {
     private suspend fun loadAniList(app: HikariApp): Result<List<Shelf>> {
         val account=app.store.trackers().firstOrNull{it.kind==TrackerKind.ANILIST}
             ?: return Result.failure(IllegalStateException("Connect AniList in Settings → Trackers first."))
-        val query="""query($name:String){MediaListCollection(userName:$name,type:ANIME){lists{name entries{media{id title{userPreferred english romaji} coverImage{large} startDate{year} averageScore nextAiringEpisode{airingAt episode}}}}}}"""
+        val query="""query(\$name:String){MediaListCollection(userName:\$name,type:ANIME){lists{name entries{media{id title{userPreferred english romaji} coverImage{large} startDate{year} averageScore nextAiringEpisode{airingAt episode}}}}}}"""
         val raw=Http.postStringQuiet("https://graphql.anilist.co",JSONObject().put("query",query).put("variables",JSONObject().put("name",account.user)).toString())
             ?: return Result.failure(IllegalStateException("AniList did not return a library."))
         val lists=JSONObject(raw).optJSONObject("data")?.optJSONObject("MediaListCollection")?.optJSONArray("lists")?:JSONArray()
@@ -164,7 +164,7 @@ object TrackerLibraryRepository {
             val item=MediaItem("kitsu",o.optString("id"),aa.optString("canonicalTitle").ifBlank{"Untitled"},MediaType.SERIES,aa.optJSONObject("posterImage")?.optString("original"),rawType="anime",rating=score,metadataSource="Kitsu")
             groups.getOrPut(at.optString("status").ifBlank{"unknown"}){ArrayList()}.add(item)
         }
-        return Result.success(groups.map{Shelf("kitsu."+it.key,"Kitsu · "+it.key.replace('_',' ').replaceFirstChar{it.uppercase()},it.value)})
+        return Result.success(groups.map { entry -> val status = entry.key; Shelf("kitsu."+status, "Kitsu · "+status.replace('_',' ').replaceFirstChar{it.uppercase()}, entry.value) })
     }
     private suspend fun loadShikimori(app:HikariApp):Result<List<Shelf>>{
         val account=app.store.trackers().firstOrNull{it.kind==TrackerKind.SHIKIMORI}
@@ -190,7 +190,7 @@ object TrackerLibraryRepository {
     }
     private fun malMedia(o:JSONObject?):MediaItem?{
         if(o==null)return null;val id=o.optInt("id",0);if(id<=0)return null
-        return MediaItem("mal",id.toString(),o.optJSONObject("title")?.optString("title").ifBlank{"Untitled"},MediaType.SERIES,o.optJSONObject("main_picture")?.optString("large"),o.optString("start_date").take(4).toIntOrNull(),rawType="anime",rating=o.optDouble("mean",0.0).takeIf{it>0},metadataSource="MyAnimeList")
+        return MediaItem("mal",id.toString(),o.optJSONObject("title")?.optString("title").orEmpty().ifBlank{"Untitled"},MediaType.SERIES,o.optJSONObject("main_picture")?.optString("large"),o.optString("start_date").take(4).toIntOrNull(),rawType="anime",rating=o.optDouble("mean",0.0).takeIf{it>0},metadataSource="MyAnimeList")
     }
     private fun shikiMedia(o:JSONObject?):MediaItem?{
         if(o==null)return null;val id=o.optInt("id",0);if(id<=0)return null

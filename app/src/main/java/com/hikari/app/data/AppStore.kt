@@ -487,6 +487,8 @@ class AppStore(private val ctx: Context) {
         val MDB_AUDIENCE = booleanPreferencesKey("mdbAudience")
         val MDB_MAL = booleanPreferencesKey("mdbMal")
         val TRACKER_LIBRARY_SOURCE = stringPreferencesKey("trackerLibrarySource")
+        val ANIME_METADATA_ENABLED = booleanPreferencesKey("animeMetadataEnabled")
+        val ANIME_METADATA_SOURCE = stringPreferencesKey("animeMetadataSource")
         val TRACKER_PROGRESS_SOURCE = stringPreferencesKey("trackerProgressSource")
         val TRACKER_RECOMMENDATIONS_SOURCE = stringPreferencesKey("trackerRecommendationsSource")
         val TRACKER_CONTINUE_DAYS = intPreferencesKey("trackerContinueDays")
@@ -956,6 +958,13 @@ class AppStore(private val ctx: Context) {
             }
         }
     }
+
+    fun animeMetadataEnabledFlow(): Flow<Boolean> = store.data.map { it[K.ANIME_METADATA_ENABLED] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
+    suspend fun animeMetadataEnabled(): Boolean = animeMetadataEnabledFlow().first()
+    suspend fun setAnimeMetadataEnabled(value: Boolean) { write("ANIME_METADATA_ENABLED") { it[K.ANIME_METADATA_ENABLED] = value } }
+    fun animeMetadataSourceFlow(): Flow<String> = store.data.map { it[K.ANIME_METADATA_SOURCE] ?: "auto" }.distinctUntilChanged().flowOn(Dispatchers.Default)
+    suspend fun animeMetadataSource(): String = animeMetadataSourceFlow().first()
+    suspend fun setAnimeMetadataSource(value: String) { write("ANIME_METADATA_SOURCE") { it[K.ANIME_METADATA_SOURCE] = value } }
 
     fun trackerLibrarySourceFlow(): Flow<String> = store.data.map { it[K.TRACKER_LIBRARY_SOURCE] ?: "nuvio" }.distinctUntilChanged().flowOn(Dispatchers.Default)
     suspend fun trackerLibrarySource(): String = trackerLibrarySourceFlow().first()
