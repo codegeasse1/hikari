@@ -11,8 +11,8 @@ import java.net.URLEncoder
 object TrackerLibraryRepository {
     data class Shelf(val key: String, val title: String, val items: List<MediaItem>)
 
-    suspend fun load(app: HikariApp): Result<List<Shelf>> = withContext(Dispatchers.IO) {
-        when (runCatching { app.store.trackerLibrarySource() }.getOrDefault("nuvio").lowercase()) {
+    suspend fun load(app: HikariApp, sourceOverride: String? = null): Result<List<Shelf>> = withContext(Dispatchers.IO) {
+        when ((sourceOverride ?: runCatching { app.store.trackerLibrarySource() }.getOrDefault("nuvio")).lowercase()) {
             "trakt" -> loadTrakt(app)
             "simkl" -> loadSimkl(app)
             "anilist" -> loadAniList(app)
