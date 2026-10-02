@@ -25,7 +25,7 @@ object AnimeMetadataRepository {
         if (key.isBlank()) return@withContext emptyList()
         seasonCache[key]?.let { return@withContext it }
 
-        val searchQuery = """query($search:String!){Page(perPage:10){media(search:$search,type:ANIME){id format episodes title{userPreferred english romaji}}}}"""
+        val searchQuery = "query(\$search:String!){Page(perPage:10){media(search:\$search,type:ANIME){id format episodes title{userPreferred english romaji}}}}"
         val raw = Http.postStringQuiet(
             "https://graphql.anilist.co",
             JSONObject()
@@ -46,8 +46,8 @@ object AnimeMetadataRepository {
             }
 
         fun norm(s: String): String = s.lowercase()
-            .replace(Regex("[^\\p{L}\\p{N}]+"), " ")
-            .replace(Regex("\\s+"), " ").trim()
+            .replace(Regex("[^\p{L}\p{N}]+"), " ")
+            .replace(Regex("\s+"), " ").trim()
 
         fun score(wanted: String, candidate: String): Int {
             val a = norm(wanted); val b = norm(candidate)
@@ -62,9 +62,9 @@ object AnimeMetadataRepository {
 
         fun explicitSeason(name: String): Int? {
             val patterns = listOf(
-                Regex("""(?i)\\b(\\d+)(?:st|nd|rd|th)\\s+season\\b"""),
-                Regex("""(?i)\\bseason\\s*(\\d+)\\b"""),
-                Regex("""(?i)\\b(first|second|third|fourth|fifth|sixth)\\s+season\\b"""),
+                Regex("""(?i)\b(\d+)(?:st|nd|rd|th)\s+season\b"""),
+                Regex("""(?i)\bseason\s*(\d+)\b"""),
+                Regex("""(?i)\b(first|second|third|fourth|fifth|sixth)\s+season\b"""),
             )
             for (r in patterns) {
                 val m = r.find(name) ?: continue
@@ -94,7 +94,7 @@ object AnimeMetadataRepository {
         val seen = HashSet<Int>()
         queue.add(baseId to "BASE")
 
-        val relationQuery = """query($id:Int!){Media(id:$id,type:ANIME){id format episodes seasonYear title{userPreferred english romaji} relations{edges{relationType node{id format episodes seasonYear title{userPreferred english romaji}}}}}}"""
+        val relationQuery = "query(\$id:Int!){Media(id:\$id,type:ANIME){id format episodes seasonYear title{userPreferred english romaji} relations{edges{relationType node{id format episodes seasonYear title{userPreferred english romaji}}}}}}
 
         while (queue.isNotEmpty() && seen.size < 12) {
             val (id, relation) = queue.removeFirst()
