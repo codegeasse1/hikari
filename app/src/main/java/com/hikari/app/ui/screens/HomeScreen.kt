@@ -2553,6 +2553,18 @@ internal suspend fun PointerInputScope.holdOrTap(
  *  verification WebView button). HIKARI providers expose it through their SDK
  *  mainUrl; Stremio/universal use the configured URL; CS3 plugins load theirs
  *  from the plugin dex. Null when unknown — the button is hidden then. */
+private fun sourceSiteUrl(file: java.io.File, name: String): String? {
+    if (!file.isFile) return null
+    val text = runCatching { file.readText() }.getOrNull() ?: return null
+    val blocked = setOf("github.com", "raw.githubusercontent.com", "image.tmdb.org", "api.themoviedb.org", "anilist.co", "simkl.com", "trakt.tv", "imdb.com", "google.com", "youtube.com")
+    val tokens = name.lowercase().split(Regex("[^a-z0-9]+"))
+    return Regex("https?://[A-Za-z0-9.-]+").findAll(text).mapNotNull { m ->
+        val host = runCatching { java.net.URI(m.value).host?.lowercase()?.removePrefix("www.") }.getOrNull() ?: return@mapNotNull null
+        if (host in blocked) return@mapNotNull null
+        tokens.count { it.length >= 3 && host.contains(it) } to "https://" + host + "/"
+    }.sortedByDescending { it.first }.map { it.second }.firstOrNull()
+}
+
 internal fun webUrlFor(p: ContentProvider): String? = when (p.config.type) {
     ProviderType.STREMIO, ProviderType.UNIVERSAL -> p.config.url.takeIf { it.startsWith("http://") || it.startsWith("https://") }?.let { raw ->
         runCatching { val u = java.net.URI(raw); val path = u.path.orEmpty().removeSuffix("/"); val base = if (path.endsWith("/manifest.json", true)) path.dropLast("/manifest.json".length) else path; u.scheme + "://" + u.authority + if (base.isBlank()) "/" else base }.getOrNull()
@@ -2563,6 +2575,13 @@ internal fun webUrlFor(p: ContentProvider): String? = when (p.config.type) {
     ProviderType.MANGA -> com.hikari.app.manga.MangaExtensionManager.siteUrlOf(p.config)
     ProviderType.ANYMEX, ProviderType.ANYMEX_MANGA -> com.hikari.app.anymex.AnymexPluginManager.siteUrlOf(p.config)
     ProviderType.SORA -> p.config.extra?.takeIf { it.startsWith("http") }?.let { src -> runCatching { val u = java.net.URI(src); u.scheme + "://" + u.host + "/" }.getOrNull() }
+    ProviderType.NUVIO -> sourceSiteUrl(java.io.File(p.config.url), p.config.name)
+    ProviderType.VEGA -> runCatching {
+        val dir = com.hikari.app.providers.vega.VegaPluginManager.dirOf(p.config)
+        sourceSiteUrl(java.io.File(dir, "meta.js"), p.config.name)
+            ?: sourceSiteUrl(java.io.File(dir, "posts.js"), p.config.name)
+            ?: sourceSiteUrl(java.io.File(dir, "stream.js"), p.config.name)
+    }.getOrNull()
     ProviderType.CS3 -> runCatching {
         val file = java.io.File(p.config.url); if (!file.exists()) return@runCatching null
         val apis = com.hikari.app.cs3.Cs3PluginManager.apisFor(com.hikari.app.HikariApp.instance, file)
