@@ -85,7 +85,21 @@ class ProviderManager(private val store: AppStore, private val context: Context)
                     )
                     runCatching { store.saveProviders(unique) }
                 }
-                val configs = ExtensionNsfw.filter(context, unique)
+                // The NSFW filter may inspect an older Aniyomi/Manga
+                // extension's metadata. That is third-party APK code and must
+                // never be allowed to escape refresh: an install followed by a
+                // metadata exception used to kill MainActivity, after which
+                // Android relaunched Hikari on Home — the exact TV symptom this
+                // path is responsible for.
+                val configs = runCatching {
+                    ExtensionNsfw.filter(context, unique)
+                }.onFailure { error ->
+                    com.hikari.app.data.Logs.log(
+                        "Providers",
+                        "NSFW provider filter failed; keeping installed providers: " +
+                            (error.message ?: error.javaClass.simpleName),
+                    )
+                }.getOrElse { unique }
                 // Same configs in, same providers out — and assigning the same
                 // list again is NOT harmless: it emits on [providers], which
                 // re-runs every screen effect that watches it (the extensions

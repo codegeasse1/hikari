@@ -15,6 +15,10 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.navigation.NavHostController
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.focusGroup
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -5294,7 +5298,10 @@ private fun LazyListScope.repoStatusItems(
                 )
             }
             if (err != null) {
-                TextButton(onClick = { onRefreshRepo(repo) }) { Text(tr("Retry")) }
+                TextButton(
+                    onClick = { onRefreshRepo(repo) },
+                    modifier = Modifier.tvPress(previewPass = true, onClick = { onRefreshRepo(repo) }),
+                ) { Text(tr("Retry")) }
             } else {
                 CircularProgressIndicator(
                     Modifier.size(18.dp),
@@ -7088,6 +7095,13 @@ private fun RepoCard(
 ) {
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
+    // Keep the row and its three trailing actions as one explicit TV focus
+    // chain. The row remains the "open repo" target; Right then walks Copy →
+    // Refresh → Remove instead of the spatial focus algorithm choosing another
+    // row and making the actions effectively unreachable.
+    val copyFocus = remember { FocusRequester() }
+    val refreshFocus = remember { FocusRequester() }
+    val removeFocus = remember { FocusRequester() }
     GlassCard(
         onClick = if (com.hikari.app.tv.TvMode.current()) null else onClick,
         modifier = Modifier
@@ -7097,7 +7111,10 @@ private fun RepoCard(
         Row(
             Modifier
                 .fillMaxWidth()
-                
+                .focusGroup()
+                .focusProperties {
+                    right = copyFocus
+                }
                 .padding(horizontal = 12.dp, vertical = 8.dp)
                 .tvPress(previewPass = false, onClick = onClick),
             verticalAlignment = Alignment.CenterVertically
@@ -7196,6 +7213,11 @@ private fun RepoCard(
                 },
                 modifier = Modifier
                     .size(actionSize)
+                    .focusRequester(copyFocus)
+                    .focusProperties {
+                        left = FocusRequester.Default
+                        right = refreshFocus
+                    }
                     .tvPress(previewPass = true, onClick = {
                         clipboard.setText(AnnotatedString(repo.url))
                         Toast.makeText(context, I18n.t("Repo link copied"), Toast.LENGTH_SHORT).show()
@@ -7212,6 +7234,11 @@ private fun RepoCard(
                 onClick = onRefresh,
                 modifier = Modifier
                     .size(actionSize)
+                    .focusRequester(refreshFocus)
+                    .focusProperties {
+                        left = copyFocus
+                        right = removeFocus
+                    }
                     .tvPress(previewPass = true, onClick = onRefresh),
             ) {
                 Icon(
@@ -7225,6 +7252,10 @@ private fun RepoCard(
                 onClick = onRemoveRepo,
                 modifier = Modifier
                     .size(actionSize)
+                    .focusRequester(removeFocus)
+                    .focusProperties {
+                        left = refreshFocus
+                    }
                     .tvPress(previewPass = true, onClick = onRemoveRepo),
             ) {
                 Icon(
@@ -7383,7 +7414,10 @@ private fun PluginRow(
                     Text(tr("Update"))
                 }
             } else {
-                TextButton(onClick = onUninstall) {
+                TextButton(
+                    onClick = onUninstall,
+                    modifier = Modifier.tvPress(previewPass = true, onClick = onUninstall),
+                ) {
                     Text(tr("Uninstall"), color = MaterialTheme.colorScheme.error)
                 }
             }
@@ -7394,7 +7428,10 @@ private fun PluginRow(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         } else {
-            Button(onClick = onInstall) {
+            Button(
+                onClick = onInstall,
+                modifier = Modifier.tvPress(previewPass = true, onClick = onInstall),
+            ) {
                 Icon(Icons.Filled.Download, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(6.dp))
                 Text(tr("Install"))

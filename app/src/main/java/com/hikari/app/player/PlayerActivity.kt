@@ -5922,8 +5922,13 @@ class PlayerActivity : ComponentActivity() {
                 // rebuilt live while servers land (see the watcher below), long
                 // after the dialog's one-time focus pass — and an engine chip
                 // left unfocusable strands the remote above the list entirely.
-                isFocusable = true
-                isFocusableInTouchMode = true
+                // Chips are normal touch controls on phone layout. They must not
+                // become focus targets there: making a TextView focusable on a
+                // touch window can consume the first tap as focus acquisition
+                // instead of activation. TV layout keeps the focus target for D-pad.
+                val tvChip = playerTvRemote()
+                isFocusable = tvChip
+                isFocusableInTouchMode = tvChip
                 if (playerTvRemote() && foreground == null) foreground = tvFocusRing()
                 setOnClickListener { onClick() }
                 layoutParams = LinearLayout.LayoutParams(w, h).apply {
