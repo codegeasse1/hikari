@@ -26,7 +26,7 @@ object TrackerLibraryRepository {
         val client = app.store.trackerClients().firstOrNull { it.kind == TrackerKind.TRAKT }
             ?: TrackerClient(TrackerKind.TRAKT)
         if (!client.ready) return Result.failure(IllegalStateException("Trakt app credentials are not configured."))
-        val headers = mapOf("Authorization" to "Bearer \${account.token}", "trakt-api-version" to "2", "trakt-api-key" to client.id)
+        val headers = mapOf("Authorization" to "Bearer ${account.token}", "trakt-api-version" to "2", "trakt-api-key" to client.id)
         val user = account.user.ifBlank { return Result.failure(IllegalStateException("Trakt username is unavailable; reconnect Trakt.")) }
         val out = ArrayList<Shelf>()
 
@@ -36,15 +36,15 @@ object TrackerLibraryRepository {
             JSONArray(response.body?.string().orEmpty())
         }.getOrNull()
 
-        val movies = get("/users/\${enc(user)}/watchlist/movies?extended=full&page=1&limit=250").orEmpty()
+        val movies = (get("/users/${enc(user)}/watchlist/movies?extended=full&page=1&limit=250") ?: JSONArray())
             .mapNotNull { traktItem(it as? JSONObject, MediaType.MOVIE) }
-        val shows = get("/users/\${enc(user)}/watchlist/shows?extended=full&page=1&limit=250").orEmpty()
+        val shows = (get("/users/${enc(user)}/watchlist/shows?extended=full&page=1&limit=250") ?: JSONArray())
             .mapNotNull { traktItem(it as? JSONObject, MediaType.SERIES) }
         if (movies.isNotEmpty()) out += Shelf("trakt.watchlist.movies", "Trakt Watchlist · Movies", movies)
         if (shows.isNotEmpty()) out += Shelf("trakt.watchlist.shows", "Trakt Watchlist · Shows", shows)
 
         val lists = runCatching {
-            val response = Http.get("https://api.trakt.tv/users/\${enc(user)}/lists", headers)
+            val response = Http.get("https://api.trakt.tv/users/${enc(user)}/lists", headers)
             if (!response.isSuccessful) JSONArray() else JSONArray(response.body?.string().orEmpty())
         }.getOrDefault(JSONArray())
 
@@ -56,7 +56,7 @@ object TrackerLibraryRepository {
             }
             if (slug.isBlank()) continue
             val response = runCatching {
-                Http.get("https://api.trakt.tv/users/\${enc(user)}/lists/\${enc(slug)}/items?extended=full&page=1&limit=1000", headers)
+                Http.get("https://api.trakt.tv/users/${enc(user)}/lists/${enc(slug)}/items?extended=full&page=1&limit=1000", headers)
             }.getOrNull() ?: continue
             if (!response.isSuccessful) continue
             val array = runCatching { JSONArray(response.body?.string().orEmpty()) }.getOrNull() ?: continue
@@ -71,7 +71,7 @@ object TrackerLibraryRepository {
             }.distinctBy { it.uniqueId }
             if (items.isNotEmpty()) out += Shelf("trakt.list.$slug", list.optString("name", slug), items)
         }
-        Result.success(out)
+        return Result.success(out)
     }
 
     private suspend fun loadSimkl(app: HikariApp): Result<List<Shelf>> {
@@ -82,11 +82,11 @@ object TrackerLibraryRepository {
         if (!client.ready) return Result.failure(IllegalStateException("Simkl app credentials are not configured."))
         val response = runCatching {
             Http.get("https://api.simkl.com/sync/all-items/?extended=full", mapOf(
-                "Authorization" to "Bearer \${account.token}",
+                "Authorization" to "Bearer ${account.token}",
                 "simkl-api-key" to client.id,
             ))
         }.getOrElse { return Result.failure(it) }
-        if (!response.isSuccessful) return Result.failure(IllegalStateException("Simkl returned HTTP \${response.code}."))
+        if (!response.isSuccessful) return Result.failure(IllegalStateException("Simkl returned HTTP ${response.code}."))
         val root = JSONObject(response.body?.string().orEmpty())
         val out = ArrayList<Shelf>()
 
@@ -104,7 +104,7 @@ object TrackerLibraryRepository {
         parse("movies", "Simkl · Movies", MediaType.MOVIE)
         parse("tv_shows", "Simkl · TV Shows", MediaType.SERIES)
         parse("anime", "Simkl · Anime", MediaType.SERIES)
-        Result.success(out)
+        return Result.success(out)
     }
 
     private fun traktItem(row: JSONObject?, type: MediaType): MediaItem? =

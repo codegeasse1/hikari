@@ -464,12 +464,13 @@ private fun LibraryCard(
 
 @Composable
 private fun TrackerLibraryCard(item: MediaItem, onClick: () -> Unit) {
+    val style = rememberPosterStyle()
     Column(modifier = Modifier.width(112.dp).clickable(onClick = onClick)) {
         PosterArt(
-            url = item.posterUrl,
+            model = Artwork.model(item),
             contentDescription = item.title,
+            style = style,
             modifier = Modifier.fillMaxWidth().aspectRatio(0.67f).clip(RoundedCornerShape(12.dp)),
-            contentScale = ContentScale.Crop,
         )
         Text(item.title, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Medium,
             maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 6.dp))
