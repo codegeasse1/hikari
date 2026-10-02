@@ -64,6 +64,12 @@ object PlayerHttp {
     val client: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .cookieJar(cookieJar)
+            // Playback must use the same Cloudflare/session-aware path as
+            // extraction. Some hosts return a playable URL only after the
+            // extractor has established clearance cookies; a separate plain
+            // OkHttp client made ExoPlayer lose that session and produced a
+            // black/no-video player even though the source was resolved.
+            .addInterceptor { chain -> CloudflareVerifier.intercept(chain) }
             .dns(DohDns)
             // Give up on a dead host quickly: failover to the next server must
             // not be gated on a long TCP timeout.
