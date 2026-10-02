@@ -407,21 +407,20 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
                 }
             }
         }
+        val trackerFlow = kotlinx.coroutines.flow.flow { emit(trackerRows()) }
         return when {
-            // The ordinary case, and the one that must never move: NO pick at
-            // all is "All providers", which is the feed that stacked every
-            // installed extension's home page. It has to ask for that feed
-            // (`homeRowsStreaming()` — no id filter) rather than for
-            // `homeRowsStreamingFor(emptySet())`, which reads as "rows from
-            // NONE of the providers" and painted an empty Home for anyone on
-            // All — the reported "in home clicking all provider … not all show
-            // like it earlier used to show".
+            // No pick means "All providers" — keep the normal extension feed.
             picks.isEmpty() -> repo.homeRowsStreaming()
+            // A tracker pick must actually become a Home feed. Previously
+            // trackerRows() existed but this switch never returned it, so
+            // selecting AniList/Simkl produced an empty Home catalog.
+            trackerKeys.isNotEmpty() && extensionIds.isNotEmpty() ->
+                kotlinx.coroutines.flow.merge(
+                    trackerFlow,
+                    repo.homeRowsStreamingFor(extensionIds),
+                )
+            trackerKeys.isNotEmpty() -> trackerFlow
             extensionIds.isNotEmpty() -> repo.homeRowsStreamingFor(extensionIds)
-            // A pick made ONLY of collections has no extension feed at all:
-            // falling through to the combined feed here would quietly stack
-            // every installed extension's home page under the user's own
-            // catalogs.
             else -> kotlinx.coroutines.flow.flowOf(emptyList())
         }
     }
