@@ -100,7 +100,6 @@ object AnimeMetadataRepository {
         queue.add(baseId to "BASE")
 
         val relationQuery = "query(\$id:Int!){Media(id:\$id,type:ANIME){id format episodes seasonYear title{userPreferred english romaji} relations{edges{relationType node{id format episodes seasonYear title{userPreferred english romaji}}}}}}"
-        val relationQuery = "query(\$id:Int!){Media(id:\$id,type:ANIME){id format episodes seasonYear title{userPreferred english romaji} relations{edges{relationType node{id format episodes seasonYear title{userPreferred english romaji}}}}}}"
         while (queue.isNotEmpty() && seen.size < 12) {
             val (id, relation) = queue.removeFirst()
             if (!seen.add(id)) continue
