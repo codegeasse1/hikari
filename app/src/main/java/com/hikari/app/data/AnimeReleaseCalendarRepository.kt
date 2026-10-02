@@ -113,6 +113,6 @@ object AnimeReleaseCalendarRepository {
         }
         val result = out.sortedBy { it.airAt }
         if (result.isNotEmpty()) cache = Cache(System.currentTimeMillis(), result)
-        result
+        return result
     }
 }
