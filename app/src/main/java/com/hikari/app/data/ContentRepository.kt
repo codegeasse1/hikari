@@ -360,7 +360,7 @@ class ContentRepository(private val manager: ProviderManager) {
          *  search still in flight after this is not slow, it is stuck, and it
          *  must not sit in the "N still searching" line forever (see
          *  [InFlight.hangAfterMs]). */
-        const val SEARCH_HANG_AFTER_MS = 90_000L
+        const val SEARCH_HANG_AFTER_MS = 25_000L
 
         /** How long an extension that stopped answering is left out of the
          *  search. It used to be "for the whole session", which is why the ONE
@@ -1215,7 +1215,7 @@ class ContentRepository(private val manager: ProviderManager) {
     // the full slow-mode multiplier.
     private val SEARCH_PAGE_TIMEOUT_MS get() = minOf(NetTuning.timeout(25_000L), 30_000L)
     private val SEARCH_PROVIDER_BUDGET_MS get() = minOf(NetTuning.timeout(90_000L), 90_000L)
-    private val SEARCH_TOTAL_BUDGET_MS get() = minOf(NetTuning.timeout(140_000L), 140_000L)
+    private val SEARCH_TOTAL_BUDGET_MS get() = minOf(NetTuning.timeout(60_000L), 60_000L)
 
     // ---- Cross-extension fallback ----
     // The SAME title is asked of the other installed extensions (search → best
@@ -1290,7 +1290,7 @@ class ContentRepository(private val manager: ProviderManager) {
      *  which is how servers from a repo the user KNEW had them (MovieBox,
      *  4KHDHub's mirrors, …) stayed missing from the list. Results stream to the
      *  player as they land, so a longer tail costs nothing at play time. */
-    private val CROSS_EXT_BUDGET_MS get() = minOf(NetTuning.timeout(150_000L), 150_000L)
+    private val CROSS_EXT_BUDGET_MS get() = minOf(NetTuning.timeout(60_000L), 60_000L)
 
     /** Verdicts a background sweep is allowed to retry (see
      *  [startSweepIfNeeded]). Everything here means "the repo was never really
@@ -1332,7 +1332,7 @@ class ContentRepository(private val manager: ProviderManager) {
      *  extension while the video plays" half of the pass, and everything it
      *  produces is only ever ADDED to a list the user is not blocked on. Still a
      *  ceiling, and the per-repo semaphores bound how hard it hits the phone. */
-    private val SWEEP_BUDGET_MS get() = minOf(NetTuning.timeout(120_000L), 120_000L)
+    private val SWEEP_BUDGET_MS get() = minOf(NetTuning.timeout(45_000L), 45_000L)
 
     /** How many budget-rounds one background sweep may run. A round hands the
      *  repos it never reached to the next one (see [runSweep]), so this is what
@@ -1430,7 +1430,7 @@ class ContentRepository(private val manager: ProviderManager) {
     private val CROSS_EXT_SEARCH_TIMEOUT_MS get() = minOf(NetTuning.timeout(20_000L), 25_000L)
     private val CROSS_EXT_EPISODES_TIMEOUT_MS get() = minOf(NetTuning.timeout(20_000L), 25_000L)
     private val CROSS_EXT_META_TIMEOUT_MS get() = minOf(NetTuning.timeout(15_000L), 20_000L)
-    private val CROSS_EXT_STREAMS_TIMEOUT_MS get() = minOf(NetTuning.timeout(45_000L), 50_000L)
+    private val CROSS_EXT_STREAMS_TIMEOUT_MS get() = minOf(NetTuning.timeout(18_000L), 20_000L)
 
     // ---- Aniyomi gets a wider clock -------------------------------------
     // An Aniyomi extension is an APK: the first call into one pays a cold class
@@ -1443,10 +1443,10 @@ class ContentRepository(private val manager: ProviderManager) {
     // in the extension's own catalogue contributed no servers at all. The
     // ceiling is still clamped, so a dead extension cannot hold the pass.
     private fun isAniyomi(p: ContentProvider) = p.config.type == ProviderType.ANIYOMI
-    private val ANIYOMI_SEARCH_TIMEOUT_MS get() = minOf(NetTuning.timeout(45_000L), 60_000L)
+    private val ANIYOMI_SEARCH_TIMEOUT_MS get() = minOf(NetTuning.timeout(20_000L), 25_000L)
     private val ANIYOMI_META_TIMEOUT_MS get() = minOf(NetTuning.timeout(45_000L), 60_000L)
     private val ANIYOMI_EPISODES_TIMEOUT_MS get() = minOf(NetTuning.timeout(75_000L), 90_000L)
-    private val ANIYOMI_STREAMS_TIMEOUT_MS get() = minOf(NetTuning.timeout(110_000L), 150_000L)
+    private val ANIYOMI_STREAMS_TIMEOUT_MS get() = minOf(NetTuning.timeout(35_000L), 40_000L)
 
     private fun searchTimeoutMs(p: ContentProvider) =
         if (isAniyomi(p)) ANIYOMI_SEARCH_TIMEOUT_MS else CROSS_EXT_SEARCH_TIMEOUT_MS
@@ -2500,6 +2500,7 @@ class ContentRepository(private val manager: ProviderManager) {
     }
 
     private suspend fun streamsForInner(
+        // Tracker-origin titles use the tracker-only server choices when enabled.
         item: MediaItem,
         episode: Episode?,
         onProgress: (suspend (List<StreamSource>) -> Unit)?,
@@ -5507,6 +5508,7 @@ class ContentRepository(private val manager: ProviderManager) {
      *  different addon, e.g. Cinemeta-backed ids). Non-empty results are cached
      *  so re-opening a detail page doesn't repeat the whole lookup. */
     suspend fun episodesFor(
+        // Movies never have episodes: answer instantly so movies never show Loading episodes.
         item: MediaItem,
         onPartial: ((List<Episode>) -> Unit)? = null,
     ): List<Episode>? = com.hikari.app.providers.ProviderGate.interactive {

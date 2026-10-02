@@ -546,7 +546,7 @@ class VegaProvider(override val config: ProviderConfig) : ContentProvider {
         }
 
     override suspend fun getEpisodes(item: MediaItem): List<Episode>? = withContext(Dispatchers.IO) {
-        if (item.type == MediaType.MOVIE) return@withContext null
+        if (item.type == MediaType.MOVIE) return@withContext emptyList()
         val job = detailJob(item)
         val info = job.info.await() ?: infoCache[item.id] ?: return@withContext null
         val type = info.optString("type").trim().lowercase()
@@ -581,13 +581,31 @@ class VegaProvider(override val config: ProviderConfig) : ContentProvider {
                 .put("link", link)
                 .put("type", type)
                 .put("isDownload", false)
-            val payload = VegaRuntime.call(dir, value, value, "stream", "getStream", args.toString())
+            val payload = run {
+                var last = ""
+                var attempt = 0
+                while (attempt < 2) {
+                    try { last = VegaRuntime.call(dir, value, value, "stream", "getStream", args.toString()); break } catch (e: Exception) {
+                        last = "{\"ok\":false,\"error\":\"" + (e.message ?: "status 0").replace("\"", "'").take(200) + "\"}"
+                        kotlinx.coroutines.delay(800)
+                    }
+                    attempt++
+                }
+                last
+            }
             val data = dataOf(payload) ?: run {
                 val err = runCatching { JSONObject(payload).optString("error") }.getOrNull()
                 return@withContext fail("✗ " + (err?.takeIf { it.isNotBlank() } ?: "no sources found"))
             }
             val out = mapStreams(data)
-            if (out.isEmpty()) return@withContext fail("✗ No playable sources for this title.")
+            if (out.isEmpty()) {
+                val direct = link.takeIf { it.startsWith("http") }
+                if (direct != null) {
+                    streamErrors.remove(config.id)
+                    return@withContext listOf(StreamSource(name = config.name + " Direct", url = direct, headers = linkedMapOf("User-Agent" to com.hikari.app.net.Http.UA), provider = "Vega", providerId = config.id, providerName = config.name))
+                }
+                return@withContext fail("✗ No playable sources for this title.")
+            }
             streamErrors.remove(config.id)
             lastOutcome[config.id] = "✓ ${out.size} source${if (out.size == 1) "" else "s"} in " +
                 "${(System.currentTimeMillis() - started) / 1000}s"

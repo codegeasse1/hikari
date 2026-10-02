@@ -75,17 +75,17 @@ object VegaRuntime {
      * extensions installed, so two at a time still walks through them all.
      */
     private const val TV_CONCURRENT = 2
-    private const val FETCH_TIMEOUT_MS = 30_000L
+    private const val FETCH_TIMEOUT_MS = 15_000L
     /** One provider call. Same ceiling nuvio uses: a cold engine plus a slow
      *  site fetch plus extraction is normal. */
-    private const val CALL_TIMEOUT_MS = 60_000L
+    private const val CALL_TIMEOUT_MS = 45_000L
     /** getPosts/getSearchPosts/getMeta — a catalog or a detail page needs
      *  several page fetches and can outlast [CALL_TIMEOUT_MS] on a slow link. */
-    private const val CATALOG_TIMEOUT_MS = 75_000L
+    private const val CATALOG_TIMEOUT_MS = 50_000L
     /** [detail]: one engine that answers a whole detail view — the meta document
      *  AND the season requests that document asks for — so it gets the catalog
      *  budget rather than [CALL_TIMEOUT_MS]. */
-    private const val DETAIL_TIMEOUT_MS = 75_000L
+    private const val DETAIL_TIMEOUT_MS = 50_000L
     private const val VALIDATE_TIMEOUT_MS = 20_000L
     /** Room on top of a call's budget for the pump loop's own bookkeeping. */
     private const val CALL_GRACE_MS = 20_000L

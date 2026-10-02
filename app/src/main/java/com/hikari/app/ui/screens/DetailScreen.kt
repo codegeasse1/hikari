@@ -853,6 +853,8 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
     /** The episode lookup, restarted — used by [retryEpisodes] and by a Vega
      *  pack switch (which is a different list, not a filter over the old one). */
     private fun reloadEpisodes() {
+            // Movies never load episodes: answer instantly so movies never spin on Loading episodes.
+            if (base.type == MediaType.MOVIE) { _episodesLoading.value = false; _episodesLoaded.value = true; return }
         val item = _meta.value ?: return
         episodeRetryJob?.cancel()
         episodeRetryJob = viewModelScope.launch {

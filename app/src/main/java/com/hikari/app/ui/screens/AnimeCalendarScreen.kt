@@ -22,6 +22,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -51,6 +52,7 @@ fun AnimeCalendarScreen(nav: NavHostController) {
     var releases by remember { mutableStateOf<List<AnimeReleaseCalendarRepository.Release>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     var refresh by remember { mutableStateOf(0) }
+    var query by remember { mutableStateOf("") }
 
     LaunchedEffect(refresh) {
         loading = true
@@ -59,8 +61,9 @@ fun AnimeCalendarScreen(nav: NavHostController) {
     }
 
     val now = System.currentTimeMillis()
-    val upcoming = releases.filter { it.airAt >= now }.take(80)
-    val recent = releases.filter { it.airAt < now }.sortedByDescending { it.airAt }.take(40)
+    val q = query.trim().lowercase()
+    val upcoming = releases.filter { it.airAt >= now }.filter { q.isBlank() || it.title.lowercase().contains(q) }.take(80)
+    val recent = releases.filter { it.airAt < now }.filter { q.isBlank() || it.title.lowercase().contains(q) }.sortedByDescending { it.airAt }.take(40)
     val formatter = DateTimeFormatter.ofPattern("EEE, dd MMM · hh:mm a").withZone(ZoneId.systemDefault())
 
     LazyColumn(
@@ -74,6 +77,7 @@ fun AnimeCalendarScreen(nav: NavHostController) {
                     Text("Anime Calendar", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
                     Text("Upcoming episodes and recently aired", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
+                OutlinedTextField(value = query, onValueChange = { query = it }, label = { Text("Search anime") }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(top = 12.dp))
                 IconButton(onClick = { refresh++ }) {
                     Icon(Icons.Filled.Refresh, contentDescription = "Refresh")
                 }

@@ -251,6 +251,8 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
     }
 
     override suspend fun getEpisodes(item: MediaItem): List<Episode>? = withContext(Dispatchers.IO) {
+        // Movies never show Loading episodes.
+        if (item.type == MediaType.MOVIE) return@withContext null
         if (item.type != MediaType.SERIES) return@withContext null
         val id = item.id
         if (id.isBlank() || !id.all { it.isDigit() }) return@withContext null

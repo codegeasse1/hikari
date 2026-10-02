@@ -341,11 +341,11 @@ object TmdbMeta {
 
     /** TMDB's "similar" titles for [item] (same genre/vibe). */
     suspend fun similar(item: MediaItem, limit: Int = 18): List<MediaItem> =
-        if (runCatching { HikariApp.instance.store.tmdbEnabled() && HikariApp.instance.store.tmdbModule("more_like") }.getOrDefault(true)) shelf(item, "similar", limit) else emptyList()
+        if (runCatching { HikariApp.instance.store.tmdbModule("more_like") }.getOrDefault(true)) shelf(item, "similar", limit) else emptyList()
 
     /** TMDB's "recommendations" for [item] (what people watched next). */
     suspend fun related(item: MediaItem, limit: Int = 18): List<MediaItem> =
-        if (runCatching { HikariApp.instance.store.tmdbEnabled() && HikariApp.instance.store.tmdbModule("more_like") }.getOrDefault(true)) shelf(item, "recommendations", limit) else emptyList()
+        if (runCatching { HikariApp.instance.store.tmdbModule("more_like") }.getOrDefault(true)) shelf(item, "recommendations", limit) else emptyList()
 
     private suspend fun shelf(item: MediaItem, kind: String, limit: Int): List<MediaItem> {
         val resolved = runCatching { TmdbResolver.resolve(item) }.getOrNull() ?: return emptyList()
@@ -409,7 +409,7 @@ object TmdbMeta {
      * the page or playback. Null when the title can't be resolved to a TMDB id.
      */
     suspend fun extras(item: MediaItem): TitleExtras? {
-        if (!runCatching { HikariApp.instance.store.tmdbEnabled() }.getOrDefault(true)) return null
+        // TMDB master toggle no longer gates modules: each module toggle decides alone.
         val useTrailers = runCatching { HikariApp.instance.store.tmdbModule("trailers") }.getOrDefault(true)
         val useDetails = runCatching { HikariApp.instance.store.tmdbModule("details") }.getOrDefault(true)
         val useBasic = runCatching { HikariApp.instance.store.tmdbModule("basic") }.getOrDefault(true)

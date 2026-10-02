@@ -661,6 +661,8 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
     }
 
     override suspend fun getEpisodes(item: MediaItem): List<Episode>? = withContext(Dispatchers.IO) {
+        // Movies never show Loading episodes.
+        if (item.type == MediaType.MOVIE) return@withContext null
         val resp = loadResponse(item.id) ?: return@withContext null
         when (resp) {
             is AnimeLoadResponse -> {
