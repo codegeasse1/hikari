@@ -2136,11 +2136,16 @@ class ContentRepository(private val manager: ProviderManager) {
      * end of the list. The concurrency gates/timeouts match [homeRows] so a
      * weak device still can't be flooded with requests.
      */
-    fun homeRowsStreaming(providerId: String? = null): Flow<List<CatalogRow>> =
+    fun homeRowsStreaming(providerId: String? = null): Flow<List<CatalogRow>> = flow {
+        val providerCatalogsEnabled = runCatching { HikariApp.instance.store.providerCatalogsEnabled() }.getOrDefault(true)
+        val animeFallback = if (!providerCatalogsEnabled && providerId == null) {
+            runCatching { AnimeCatalogRepository.homeRows() }.getOrDefault(emptyList())
+        } else emptyList()
         homeRowsStreamingWhere(
             match = { providerId == null || it.config.id == providerId },
             allowDisabledProviderFallback = providerId != null,
-        )
+        ).collect { rows -> emit(if (animeFallback.isEmpty()) rows else animeFallback + rows) }
+    }
 
     /**
      * The same feed for a MULTI pick: every selected provider's catalogs, in one
