@@ -119,6 +119,7 @@ object EpisodeTitles {
         language: String? = null,
     ): Names =
         withContext(Dispatchers.IO) {
+            if (!runCatching { com.hikari.app.HikariApp.instance.store.tmdbEnabled() && com.hikari.app.HikariApp.instance.store.tmdbModule("episodes") }.getOrDefault(true)) return@withContext EMPTY
             if (title.isBlank() || numbers.isEmpty()) return@withContext EMPTY
             val lang = language?.trim().orEmpty().ifBlank { LANGUAGE }
             // The raw title, not [TmdbMeta.normalizeTitle]'s form: that drops

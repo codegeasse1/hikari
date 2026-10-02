@@ -5596,6 +5596,88 @@ private fun MyStuffLockCard(app: HikariApp) {
  *    a service that refused the token, is visible instead of silent.
  */
 @Composable
+private fun TrackerServiceCard(
+    kind: TrackerKind,
+    account: com.hikari.app.data.TrackerAccount?,
+    client: TrackerClient,
+    working: Boolean,
+    onSignIn: () -> Unit,
+    onSignOut: () -> Unit,
+) {
+    var expanded by rememberSaveable(kind.key) { mutableStateOf(false) }
+    val connected = account != null
+    val gradient = when (kind) {
+        TrackerKind.TRAKT -> Brush.linearGradient(listOf(Color(0xFF76279A), Color(0xFFE31E4F), Color(0xFFF32328)))
+        TrackerKind.SIMKL -> Brush.linearGradient(listOf(Color(0xFF111111), Color(0xFF2A2A2A), Color(0xFF0D0D0D)))
+        TrackerKind.MAL -> Brush.linearGradient(listOf(Color(0xFF173D69), Color(0xFF2D65A0)))
+        else -> Brush.linearGradient(listOf(MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.surface))
+    }
+    Column(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(26.dp))
+            .background(gradient)
+            .border(1.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(26.dp))
+    ) {
+        Row(
+            Modifier.fillMaxWidth().clickable { expanded = !expanded }
+                .padding(horizontal = 18.dp, vertical = 18.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(kind.label, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = Color.White)
+                Text(
+                    when {
+                        connected -> tr("Connected") + " · " + account?.user.orEmpty().ifBlank { tr("your account") }
+                        client.ready -> tr("Ready to connect")
+                        else -> tr("Not connected")
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color.White.copy(alpha = 0.82f),
+                )
+            }
+            Icon(
+                Icons.Filled.ExpandMore,
+                contentDescription = null,
+                tint = Color.White.copy(alpha = 0.86f),
+                modifier = Modifier.rotate(if (expanded) 180f else 0f).size(28.dp),
+            )
+        }
+        AnimatedVisibility(visible = expanded) {
+            Column(
+                Modifier.fillMaxWidth().padding(start = 18.dp, end = 18.dp, bottom = 18.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    if (connected) tr("This account can receive Hikari watch updates.") else kind.blurb,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.White.copy(alpha = 0.78f),
+                )
+                if (!connected) {
+                    OutlinedButton(
+                        onClick = onSignIn,
+                        enabled = !working,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = androidx.compose.material3.ButtonDefaults.outlinedButtonColors(
+                            contentColor = Color.White,
+                            disabledContentColor = Color.White.copy(alpha = 0.45f),
+                        ),
+                    ) { Text(tr("Connect")) }
+                } else {
+                    OutlinedButton(
+                        onClick = onSignOut,
+                        enabled = !working,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = androidx.compose.material3.ButtonDefaults.outlinedButtonColors(
+                            contentColor = Color.White,
+                            disabledContentColor = Color.White.copy(alpha = 0.45f),
+                        ),
+                    ) { Text(tr("Disconnect")) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun TrackersCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
     val accountsFlow = remember { app.store.trackersFlow() }
@@ -5621,55 +5703,20 @@ private fun TrackersCard(app: HikariApp) {
         for (kind in TrackerKind.entries) {
             val account = accounts.firstOrNull { it.kind == kind }
             val client = clients.firstOrNull { it.kind == kind } ?: TrackerClient(kind)
-            HorizontalDivider(
-                modifier = Modifier.padding(top = 12.dp, bottom = 8.dp),
-                color = MaterialTheme.colorScheme.outlineVariant,
+            TrackerServiceCard(
+                kind = kind,
+                account = account,
+                client = client,
+                working = working,
+                onSignIn = { message = null; loginFor = kind },
+                onSignOut = {
+                    scope.launch {
+                        runCatching { app.store.removeTrackerAccount(kind) }
+                        message = kind.label + signedOutSuffix
+                    }
+                },
             )
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        kind.label,
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
-                    Text(
-                        when {
-                            account != null ->
-                                tr("Signed in as ") + account.user.ifBlank { yourAccount } +
-                                    if (account.expired) " · " + tr("refreshing the token…") else ""
-                            client.ready -> tr("App registered — press Sign in to connect")
-                            else -> kind.blurb
-                        },
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (account != null) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        },
-                    )
-                }
-                Spacer(Modifier.width(8.dp))
-                if (account == null) {
-                    TextButton(
-                        enabled = !working,
-                        onClick = { message = null; loginFor = kind },
-                    ) { Text(tr("Sign in")) }
-                } else {
-                    TextButton(
-                        enabled = !working,
-                        onClick = {
-                            scope.launch {
-                                runCatching { app.store.removeTrackerAccount(kind) }
-                                // `tr` is composable and this is a click handler, so
-                                // the suffix is hoisted like every other string that
-                                // has to be read outside a composable position.
-                                message = kind.label + signedOutSuffix
-                            }
-                        },
-                    ) { Text(tr("Sign out")) }
-                }
-            }
+            Spacer(Modifier.height(10.dp))
         }
 
         HorizontalDivider(

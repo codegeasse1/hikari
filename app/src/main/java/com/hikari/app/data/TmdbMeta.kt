@@ -54,6 +54,8 @@ object TmdbMeta {
      * whole means neither source knew this title.
      */
     suspend fun artwork(item: MediaItem): Pair<String?, String?>? {
+        if (!runCatching { HikariApp.instance.store.tmdbEnabled() }.getOrDefault(true) ||
+            !runCatching { HikariApp.instance.store.tmdbModule("artwork") }.getOrDefault(true)) return null
         val resolved = runCatching { TmdbResolver.resolve(item) }.getOrNull()
         if (resolved != null) {
             val seg = segment(resolved.mediaType)
@@ -86,6 +88,8 @@ object TmdbMeta {
     private val logoCache = java.util.concurrent.ConcurrentHashMap<String, String>()
 
     suspend fun logo(item: MediaItem): String? {
+        if (!runCatching { HikariApp.instance.store.tmdbEnabled() }.getOrDefault(true) ||
+            !runCatching { HikariApp.instance.store.tmdbModule("artwork") }.getOrDefault(true)) return null
         val resolved = runCatching { TmdbResolver.resolve(item) }.getOrNull() ?: return null
         val key = resolved.mediaType + "/" + resolved.tmdbId
         logoCache[key]?.let { return it.takeIf { cached -> cached.isNotBlank() } }
@@ -336,11 +340,11 @@ object TmdbMeta {
 
     /** TMDB's "similar" titles for [item] (same genre/vibe). */
     suspend fun similar(item: MediaItem, limit: Int = 18): List<MediaItem> =
-        shelf(item, "similar", limit)
+        if (runCatching { HikariApp.instance.store.tmdbEnabled() && HikariApp.instance.store.tmdbModule("more_like") }.getOrDefault(true)) shelf(item, "similar", limit) else emptyList()
 
     /** TMDB's "recommendations" for [item] (what people watched next). */
     suspend fun related(item: MediaItem, limit: Int = 18): List<MediaItem> =
-        shelf(item, "recommendations", limit)
+        if (runCatching { HikariApp.instance.store.tmdbEnabled() && HikariApp.instance.store.tmdbModule("more_like") }.getOrDefault(true)) shelf(item, "recommendations", limit) else emptyList()
 
     private suspend fun shelf(item: MediaItem, kind: String, limit: Int): List<MediaItem> {
         val resolved = runCatching { TmdbResolver.resolve(item) }.getOrNull() ?: return emptyList()
@@ -404,6 +408,14 @@ object TmdbMeta {
      * the page or playback. Null when the title can't be resolved to a TMDB id.
      */
     suspend fun extras(item: MediaItem): TitleExtras? {
+        if (!runCatching { HikariApp.instance.store.tmdbEnabled() }.getOrDefault(true)) return null
+        val useTrailers = runCatching { HikariApp.instance.store.tmdbModule("trailers") }.getOrDefault(true)
+        val useDetails = runCatching { HikariApp.instance.store.tmdbModule("details") }.getOrDefault(true)
+        val useBasic = runCatching { HikariApp.instance.store.tmdbModule("basic") }.getOrDefault(true)
+        val useCredits = runCatching { HikariApp.instance.store.tmdbModule("credits") }.getOrDefault(true)
+        val useProductions = runCatching { HikariApp.instance.store.tmdbModule("productions") }.getOrDefault(true)
+        val useNetworks = runCatching { HikariApp.instance.store.tmdbModule("networks") }.getOrDefault(true)
+        val useCollections = runCatching { HikariApp.instance.store.tmdbModule("collections") }.getOrDefault(true)
         val resolved = runCatching { TmdbResolver.resolve(item) }.getOrNull() ?: return null
         val seg = segment(resolved.mediaType)
         val certKey = if (seg == "movie") "release_dates" else "content_ratings"
@@ -418,7 +430,13 @@ object TmdbMeta {
         // after it, so a localized trailer still leads the row and the English
         // ones fill the rest; `null` catches videos with no language tag at all.
         val query = LinkedHashMap<String, String>()
-        query["append_to_response"] = "credits,videos,$certKey,external_ids"
+        val append = buildList {
+            if (useCredits) add("credits")
+            if (useTrailers) add("videos")
+            if (useDetails || useBasic) add(certKey)
+            add("external_ids")
+        }
+        query["append_to_response"] = append.joinToString(",")
         val videoLang = TmdbResolver.contentLanguage.substringBefore('-').lowercase()
         if (videoLang.isNotBlank() && videoLang != "en") {
             query["include_video_language"] = "$videoLang,en,null"
@@ -447,27 +465,27 @@ object TmdbMeta {
         }
         val writers = crewNames(crew, setOf("Writer", "Screenplay", "Story"), limit = 3)
 
-        val details = TitleDetails(
-            status = d.optString("status").trim().takeIf { it.isNotBlank() },
-            runtimeMinutes = runtime,
+        val details = if (useDetails || useBasic) TitleDetails(
+            status = if (useDetails) d.optString("status").trim().takeIf { it.isNotBlank() } else null,
+            runtimeMinutes = if (useDetails) runtime else null,
             year = yearOf(d),
-            rating = d.optDouble("vote_average").takeIf { it > 0.0 },
-            voteCount = d.optInt("vote_count").takeIf { it > 0 },
-            certification = certificationOf(d, seg),
-            country = originCountryOf(d),
-            language = d.optString("original_language").trim()
-                .takeIf { it.isNotBlank() }?.uppercase(),
-            releaseDate = (if (isMovie) d.optString("release_date") else d.optString("first_air_date"))
-                .trim().takeIf { it.length >= 10 },
-            director = directors.takeIf { it.isNotEmpty() }?.joinToString(", "),
-            writers = writers,
+            rating = if (useBasic) d.optDouble("vote_average").takeIf { it > 0.0 } else null,
+            voteCount = if (useBasic) d.optInt("vote_count").takeIf { it > 0 } else null,
+            certification = if (useDetails) certificationOf(d, seg) else null,
+            country = if (useDetails) originCountryOf(d) else null,
+            language = if (useDetails) d.optString("original_language").trim()
+                .takeIf { it.isNotBlank() }?.uppercase() else null,
+            releaseDate = if (useDetails) (if (isMovie) d.optString("release_date") else d.optString("first_air_date"))
+                .trim().takeIf { it.length >= 10 } else null,
+            director = if (useCredits) directors.takeIf { it.isNotEmpty() }?.joinToString(", ") else null,
+            writers = if (useCredits) writers else emptyList(),
             imdbId = d.optJSONObject("external_ids")
                 ?.optString("imdb_id")?.trim()
                 ?.takeIf { it.startsWith("tt") && it.length >= 8 },
-        )
-
+        )?.takeIf { useDetails || useBasic }
+        
         val cast = ArrayList<CastMember>(20)
-        val castArr = credits?.optJSONArray("cast")
+        val castArr = if (useCredits) credits?.optJSONArray("cast") else null
         for (i in 0 until (castArr?.length() ?: 0)) {
             if (cast.size >= 20) break
             val o = castArr?.optJSONObject(i) ?: continue
@@ -507,6 +525,7 @@ object TmdbMeta {
         // Trailers before teasers, official before unofficial — the order the
         // reference clients show them in. `videos` mixes everything together.
         val ranked = ArrayList<ScoredTrailer>(12)
+        if (!useTrailers) ranked.clear()
         val vids = d.optJSONObject("videos")?.optJSONArray("results")
         for (i in 0 until (vids?.length() ?: 0)) {
             val o = vids?.optJSONObject(i) ?: continue
@@ -563,15 +582,15 @@ object TmdbMeta {
                 )
             }
         }
-        addCompanies("production_companies", isNetwork = false)
-        addCompanies("networks", isNetwork = true)
+        if (useProductions) addCompanies("production_companies", isNetwork = false)
+        if (useNetworks) addCompanies("networks", isNetwork = true)
 
         // ---- The franchise ("Shrek Collection") ----
         //
         // `belongs_to_collection` is in the details response too (movies only),
         // but it names the collection and carries no parts — those are one more
         // request, made ONLY when a collection actually exists.
-        val collection = run {
+        val collection = if (useCollections) run {
             val coll = d.optJSONObject("belongs_to_collection") ?: return@run null
             val collId = coll.optString("id").trim()
             if (collId.isBlank()) return@run null

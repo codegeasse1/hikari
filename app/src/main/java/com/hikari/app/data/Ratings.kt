@@ -646,6 +646,8 @@ object Ratings {
     }
 
     private suspend fun mdbListRatings(imdbId: String, item: MediaItem): List<TitleRating> {
+        val enabled = runCatching { HikariApp.instance.store.mdbEnabled() }.getOrDefault(false)
+        if (!enabled) return emptyList()
         val key = runCatching { HikariApp.instance.store.mdbListApiKey() }.getOrDefault("").trim()
         if (key.isBlank()) return emptyList()
         val mediaType = if (item.type == MediaType.MOVIE) "movie" else "show"
@@ -669,6 +671,15 @@ object Ratings {
                         "tmdb" -> RatingSource.TMDB
                         else -> null
                     } ?: continue
+                    val providerEnabled = when (mapped) {
+                        RatingSource.IMDB -> "imdb"
+                        RatingSource.TOMATOMETER -> "tomatoes"
+                        RatingSource.POPCORN -> "audience"
+                        RatingSource.METACRITIC -> "metacritic"
+                        RatingSource.LETTERBOXD -> "letterboxd"
+                        RatingSource.TMDB -> "tmdb"
+                    }
+                    if (!runCatching { HikariApp.instance.store.mdbProvider(providerEnabled) }.getOrDefault(true)) continue
                     val text = when (mapped) {
                         RatingSource.LETTERBOXD, RatingSource.IMDB -> String.format(Locale.US, "%.1f", value)
                         else -> String.format(Locale.US, "%.0f%%", value)

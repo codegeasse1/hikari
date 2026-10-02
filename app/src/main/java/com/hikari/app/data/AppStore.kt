@@ -465,6 +465,32 @@ class AppStore(private val ctx: Context) {
         /** Language TMDB titles are shown in. "" = follow the app language,
          *  "none" = leave TMDB on English, otherwise a TMDB code ("es-ES"). */
         val TMDB_LANGUAGE = stringPreferencesKey("tmdbLanguage")
+        val TMDB_ENABLED = booleanPreferencesKey("tmdbEnabled")
+        val TMDB_MODULE_TRAILERS = booleanPreferencesKey("tmdbModuleTrailers")
+        val TMDB_MODULE_ARTWORK = booleanPreferencesKey("tmdbModuleArtwork")
+        val TMDB_MODULE_BASIC = booleanPreferencesKey("tmdbModuleBasic")
+        val TMDB_MODULE_DETAILS = booleanPreferencesKey("tmdbModuleDetails")
+        val TMDB_MODULE_CREDITS = booleanPreferencesKey("tmdbModuleCredits")
+        val TMDB_MODULE_PRODUCTIONS = booleanPreferencesKey("tmdbModuleProductions")
+        val TMDB_MODULE_NETWORKS = booleanPreferencesKey("tmdbModuleNetworks")
+        val TMDB_MODULE_EPISODES = booleanPreferencesKey("tmdbModuleEpisodes")
+        val TMDB_MODULE_SEASON_POSTERS = booleanPreferencesKey("tmdbModuleSeasonPosters")
+        val TMDB_MODULE_MORE_LIKE = booleanPreferencesKey("tmdbModuleMoreLike")
+        val TMDB_MODULE_COLLECTIONS = booleanPreferencesKey("tmdbModuleCollections")
+        val MDB_ENABLED = booleanPreferencesKey("mdbEnabled")
+        val MDB_IMDB = booleanPreferencesKey("mdbImdb")
+        val MDB_TMDB = booleanPreferencesKey("mdbTmdb")
+        val MDB_TOMATOES = booleanPreferencesKey("mdbTomatoes")
+        val MDB_METACRITIC = booleanPreferencesKey("mdbMetacritic")
+        val MDB_TRAKT = booleanPreferencesKey("mdbTrakt")
+        val MDB_LETTERBOXD = booleanPreferencesKey("mdbLetterboxd")
+        val MDB_AUDIENCE = booleanPreferencesKey("mdbAudience")
+        val MDB_MAL = booleanPreferencesKey("mdbMal")
+        val TRACKER_LIBRARY_SOURCE = stringPreferencesKey("trackerLibrarySource")
+        val TRACKER_PROGRESS_SOURCE = stringPreferencesKey("trackerProgressSource")
+        val TRACKER_RECOMMENDATIONS_SOURCE = stringPreferencesKey("trackerRecommendationsSource")
+        val TRACKER_CONTINUE_DAYS = intPreferencesKey("trackerContinueDays")
+        val TRACKER_COMMENTS = booleanPreferencesKey("trackerComments")
         /** Key of the app-wide font (see [com.hikari.app.ui.AppFonts]). */
         val APP_FONT = stringPreferencesKey("appFont")
         /** File name (inside filesDir/fonts) of a font the user imported. */
@@ -858,6 +884,94 @@ class AppStore(private val ctx: Context) {
         store.data.map { it[K.TMDB_LANGUAGE] ?: "" }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun tmdbLanguage(): String = tmdbLanguageFlow().first()
+
+    fun tmdbEnabledFlow(): Flow<Boolean> = store.data.map { it[K.TMDB_ENABLED] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
+    suspend fun tmdbEnabled(): Boolean = tmdbEnabledFlow().first()
+    suspend fun setTmdbEnabled(value: Boolean) { write("TMDB_ENABLED") { it[K.TMDB_ENABLED] = value } }
+
+    fun tmdbModuleFlow(name: String): Flow<Boolean> = store.data.map { prefs ->
+        when (name) {
+            "trailers" -> prefs[K.TMDB_MODULE_TRAILERS] ?: true
+            "artwork" -> prefs[K.TMDB_MODULE_ARTWORK] ?: true
+            "basic" -> prefs[K.TMDB_MODULE_BASIC] ?: true
+            "details" -> prefs[K.TMDB_MODULE_DETAILS] ?: true
+            "credits" -> prefs[K.TMDB_MODULE_CREDITS] ?: true
+            "productions" -> prefs[K.TMDB_MODULE_PRODUCTIONS] ?: true
+            "networks" -> prefs[K.TMDB_MODULE_NETWORKS] ?: true
+            "episodes" -> prefs[K.TMDB_MODULE_EPISODES] ?: true
+            "season_posters" -> prefs[K.TMDB_MODULE_SEASON_POSTERS] ?: true
+            "more_like" -> prefs[K.TMDB_MODULE_MORE_LIKE] ?: true
+            "collections" -> prefs[K.TMDB_MODULE_COLLECTIONS] ?: true
+            else -> true
+        }
+    }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun tmdbModule(name: String): Boolean = tmdbModuleFlow(name).first()
+    suspend fun setTmdbModule(name: String, value: Boolean) {
+        write("TMDB_MODULE_" + name) { prefs ->
+            when (name) {
+                "trailers" -> prefs[K.TMDB_MODULE_TRAILERS] = value
+                "artwork" -> prefs[K.TMDB_MODULE_ARTWORK] = value
+                "basic" -> prefs[K.TMDB_MODULE_BASIC] = value
+                "details" -> prefs[K.TMDB_MODULE_DETAILS] = value
+                "credits" -> prefs[K.TMDB_MODULE_CREDITS] = value
+                "productions" -> prefs[K.TMDB_MODULE_PRODUCTIONS] = value
+                "networks" -> prefs[K.TMDB_MODULE_NETWORKS] = value
+                "episodes" -> prefs[K.TMDB_MODULE_EPISODES] = value
+                "season_posters" -> prefs[K.TMDB_MODULE_SEASON_POSTERS] = value
+                "more_like" -> prefs[K.TMDB_MODULE_MORE_LIKE] = value
+                "collections" -> prefs[K.TMDB_MODULE_COLLECTIONS] = value
+            }
+        }
+    }
+
+    fun mdbEnabledFlow(): Flow<Boolean> = store.data.map { it[K.MDB_ENABLED] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
+    suspend fun mdbEnabled(): Boolean = mdbEnabledFlow().first()
+    suspend fun setMdbEnabled(value: Boolean) { write("MDB_ENABLED") { it[K.MDB_ENABLED] = value } }
+    fun mdbProviderFlow(name: String): Flow<Boolean> = store.data.map { p ->
+        when (name) {
+            "imdb" -> p[K.MDB_IMDB] ?: true
+            "tmdb" -> p[K.MDB_TMDB] ?: true
+            "tomatoes" -> p[K.MDB_TOMATOES] ?: true
+            "metacritic" -> p[K.MDB_METACRITIC] ?: true
+            "trakt" -> p[K.MDB_TRAKT] ?: true
+            "letterboxd" -> p[K.MDB_LETTERBOXD] ?: true
+            "audience" -> p[K.MDB_AUDIENCE] ?: true
+            "mal" -> p[K.MDB_MAL] ?: true
+            else -> true
+        }
+    }.distinctUntilChanged().flowOn(Dispatchers.Default)
+    suspend fun mdbProvider(name: String): Boolean = mdbProviderFlow(name).first()
+    suspend fun setMdbProvider(name: String, value: Boolean) {
+        write("MDB_PROVIDER_" + name) { p ->
+            when (name) {
+                "imdb" -> p[K.MDB_IMDB] = value
+                "tmdb" -> p[K.MDB_TMDB] = value
+                "tomatoes" -> p[K.MDB_TOMATOES] = value
+                "metacritic" -> p[K.MDB_METACRITIC] = value
+                "trakt" -> p[K.MDB_TRAKT] = value
+                "letterboxd" -> p[K.MDB_LETTERBOXD] = value
+                "audience" -> p[K.MDB_AUDIENCE] = value
+                "mal" -> p[K.MDB_MAL] = value
+            }
+        }
+    }
+
+    fun trackerLibrarySourceFlow(): Flow<String> = store.data.map { it[K.TRACKER_LIBRARY_SOURCE] ?: "nuvio" }.distinctUntilChanged().flowOn(Dispatchers.Default)
+    suspend fun trackerLibrarySource(): String = trackerLibrarySourceFlow().first()
+    suspend fun setTrackerLibrarySource(value: String) { write("TRACKER_LIBRARY_SOURCE") { it[K.TRACKER_LIBRARY_SOURCE] = value } }
+    fun trackerProgressSourceFlow(): Flow<String> = store.data.map { it[K.TRACKER_PROGRESS_SOURCE] ?: "nuvio" }.distinctUntilChanged().flowOn(Dispatchers.Default)
+    suspend fun trackerProgressSource(): String = trackerProgressSourceFlow().first()
+    suspend fun setTrackerProgressSource(value: String) { write("TRACKER_PROGRESS_SOURCE") { it[K.TRACKER_PROGRESS_SOURCE] = value } }
+    fun trackerRecommendationsSourceFlow(): Flow<String> = store.data.map { it[K.TRACKER_RECOMMENDATIONS_SOURCE] ?: "tmdb" }.distinctUntilChanged().flowOn(Dispatchers.Default)
+    suspend fun trackerRecommendationsSource(): String = trackerRecommendationsSourceFlow().first()
+    suspend fun setTrackerRecommendationsSource(value: String) { write("TRACKER_RECOMMENDATIONS_SOURCE") { it[K.TRACKER_RECOMMENDATIONS_SOURCE] = value } }
+    fun trackerContinueDaysFlow(): Flow<Int> = store.data.map { it[K.TRACKER_CONTINUE_DAYS] ?: 60 }.distinctUntilChanged().flowOn(Dispatchers.Default)
+    suspend fun trackerContinueDays(): Int = trackerContinueDaysFlow().first()
+    suspend fun setTrackerContinueDays(value: Int) { write("TRACKER_CONTINUE_DAYS") { it[K.TRACKER_CONTINUE_DAYS] = value.coerceIn(7, 3650) } }
+    fun trackerCommentsFlow(): Flow<Boolean> = store.data.map { it[K.TRACKER_COMMENTS] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
+    suspend fun trackerComments(): Boolean = trackerCommentsFlow().first()
+    suspend fun setTrackerComments(value: Boolean) { write("TRACKER_COMMENTS") { it[K.TRACKER_COMMENTS] = value } }
 
     fun tmdbApiKeyFlow(): Flow<String> = store.data.map { it[K.TMDB_API_KEY].orEmpty() }.distinctUntilChanged().flowOn(Dispatchers.Default)
     suspend fun tmdbApiKey(): String = store.data.first()[K.TMDB_API_KEY].orEmpty()
