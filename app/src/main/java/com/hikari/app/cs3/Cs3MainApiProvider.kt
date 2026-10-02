@@ -1031,6 +1031,16 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
     }
 
 
+    private fun isLikelyHls(url: String): Boolean {
+        val u = url.substringBefore('?').lowercase()
+        return u.endsWith(".m3u8") || u.contains(".m3u8/")
+    }
+
+    private fun isLikelyDash(url: String): Boolean {
+        val u = url.substringBefore('?').lowercase()
+        return u.endsWith(".mpd") || u.contains(".mpd/")
+    }
+
     /** Maps the plugin's raw ExtractorLinks into Hikari StreamSources with
      *  CloudStream-style names ("OkRuSSL 1080p") and referer/header merging. */
     private fun toStreamSources(
@@ -1085,8 +1095,13 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                     url = if (isTorrent) l.url else Http.normalizeDriveUrl(l.url),
                     headers = headers,
                     subtitles = subSources,
-                    isM3u8 = l.isM3u8,
-                    isMpd = l.isDash,
+                    // Some CloudStream extensions (including web
+                    // providers) do not set the boolean container flag even
+                    // though the emitted URL is an HLS/DASH manifest. Infer it
+                    // from the final URL as a compatibility fallback so Media3
+                    // does not try to parse a manifest as a progressive file.
+                    isM3u8 = l.isM3u8 || isLikelyHls(l.url),
+                    isMpd = l.isDash || isLikelyDash(l.url),
                     isTorrent = isTorrent,
                     infoHash = if (isTorrent) infoHashOf(l.url) else null,
                     fileIdx = magnetIndex(l.url),
