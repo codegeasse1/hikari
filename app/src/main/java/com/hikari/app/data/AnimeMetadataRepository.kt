@@ -69,6 +69,7 @@ object AnimeMetadataRepository {
             for (r in patterns) {
                 val m = r.find(name) ?: continue
                 m.groupValues.getOrNull(1)?.toIntOrNull()?.let { return it }
+                return when (m.groupValues.getOrNull(1)?.lowercase()) {
                     "first" -> 1
                     "second" -> 2
                     "third" -> 3
@@ -76,6 +77,10 @@ object AnimeMetadataRepository {
                     "fifth" -> 5
                     "sixth" -> 6
                     else -> null
+                }
+            }
+            return null
+        }
 
         val base = (0 until media.length())
             .mapNotNull { media.optJSONObject(it) }
@@ -94,7 +99,7 @@ object AnimeMetadataRepository {
         val seen = HashSet<Int>()
         queue.add(baseId to "BASE")
 
-        val relationQuery = "query(\$id:Int!){Media(id:\$id,type:ANIME){id format episodes seasonYear title{userPreferred english romaji} relations{edges{relationType node{id format episodes seasonYear title{userPreferred english romaji}}}}}}
+        val relationQuery = "query(\$id:Int!){Media(id:\$id,type:ANIME){id format episodes seasonYear title{userPreferred english romaji} relations{edges{relationType node{id format episodes seasonYear title{userPreferred english romaji}}}}}}"
         val relationQuery = "query(\$id:Int!){Media(id:\$id,type:ANIME){id format episodes seasonYear title{userPreferred english romaji} relations{edges{relationType node{id format episodes seasonYear title{userPreferred english romaji}}}}}}"
         while (queue.isNotEmpty() && seen.size < 12) {
             val (id, relation) = queue.removeFirst()
