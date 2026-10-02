@@ -431,6 +431,7 @@ class UniversalScraper(override val config: ProviderConfig) : ContentProvider {
     }
 
     override suspend fun getEpisodes(item: MediaItem): List<Episode>? {
+        if (item.type == MediaType.MOVIE) return null
         if (api != null) return getApiEpisodes(item)
         val e = conf.optJSONObject("episodes") ?: return null
         val tpl = e.optString("url")

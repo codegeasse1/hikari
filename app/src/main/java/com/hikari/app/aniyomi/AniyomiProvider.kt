@@ -415,6 +415,7 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
     }
 
     override suspend fun getEpisodes(item: MediaItem): List<Episode>? = gate {
+        if (item.type == MediaType.MOVIE) return null
         lockedGet(episodesByAnime, item.id)?.takeIf { it.isNotEmpty() }?.let { return@gate it }
         val src = source() ?: return@gate null
         val anime = animeFor(item)

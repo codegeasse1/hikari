@@ -4557,7 +4557,7 @@ private val ProviderType.isFamilyEngine: Boolean
         this != ProviderType.IPTV && this != ProviderType.MANGA
 
 @Composable
-private @Composable
+private
 private fun TrackerServerSearchCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
     val trackerSearchAll by remember { app.store.trackerServerSearchAllFlow() }.collectAsState(initial = true)
