@@ -162,6 +162,7 @@ import com.hikari.app.HikariApp
 import com.hikari.app.R
 import com.hikari.app.data.BackupManager
 import com.hikari.app.data.ProviderType
+import com.hikari.app.data.Ratings
 import com.hikari.app.data.TmdbLang
 import com.hikari.app.data.TrackerClient
 import com.hikari.app.data.TrackerKind
@@ -798,6 +799,8 @@ fun SettingsScreen(nav: NavHostController) {
                 SettingsFolder.APPEARANCE -> {
                     item { SettingsCard(top = 2.dp) { LanguageCard(app, appLanguage) } }
                     item { SettingsCard { TmdbLanguageCard(app, appLanguage) } }
+                    item { SettingsCard { ProviderCatalogSettingsCard(app) } }
+                    item { SettingsCard { MetadataApiKeysCard(app) } }
                     item {
                         SettingsCard {
                             Box {
@@ -3647,6 +3650,63 @@ private fun NavBarCard(app: HikariApp) {
  * own default so the titles stay as released; the explicit list is for the
  * people who want, say, Japanese titles inside an English app.
  */
+@Composable
+private fun ProviderCatalogSettingsCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    val enabled by app.store.providerCatalogsEnabledFlow().collectAsState(initial = true)
+    ListItem(
+        leadingContent = { Icon(Icons.Filled.ViewCarousel, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
+        headlineContent = { Text(tr("Provider catalogs")) },
+        supportingContent = { Text(if (enabled) tr("Show Nuvio and Stremio catalogs on Home") else tr("Use Cinemeta as the catalog fallback")) },
+        trailingContent = {
+            Switch(
+                checked = enabled,
+                onCheckedChange = { scope.launch { app.store.setProviderCatalogsEnabled(it) } },
+                modifier = Modifier.tvToggle(enabled) { scope.launch { app.store.setProviderCatalogsEnabled(it) } }
+            )
+        },
+        modifier = Modifier.fillMaxWidth()
+    )
+}
+
+@Composable
+private fun MetadataApiKeysCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    var tmdb by remember { mutableStateOf("") }
+    var mdblist by remember { mutableStateOf("") }
+    LaunchedEffect(Unit) {
+        tmdb = app.store.tmdbApiKey()
+        mdblist = app.store.mdbListApiKey()
+    }
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+        Text(tr("Metadata & ratings"), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        Text(tr("TMDB enriches metadata. MDBList adds external ratings when an IMDb id is available."),
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 4.dp, bottom = 10.dp))
+        OutlinedTextField(value = tmdb, onValueChange = { tmdb = it }, label = { Text("TMDB API key") },
+            singleLine = true, visualTransformation = PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+            modifier = Modifier.fillMaxWidth().tvTextFieldKeys(tmdb))
+        OutlinedTextField(value = mdblist, onValueChange = { mdblist = it }, label = { Text("MDBList API key") },
+            singleLine = true, visualTransformation = PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+            modifier = Modifier.fillMaxWidth().padding(top = 8.dp).tvTextFieldKeys(mdblist))
+        TextButton(onClick = {
+            scope.launch {
+                app.store.setTmdbApiKey(tmdb)
+                app.store.setMdbListApiKey(mdblist)
+                Ratings.clearCache()
+            }
+        }, modifier = Modifier.tvPress(previewPass = true, onClick = {
+            scope.launch {
+                app.store.setTmdbApiKey(tmdb)
+                app.store.setMdbListApiKey(mdblist)
+                Ratings.clearCache()
+            }
+        })) { Text(tr("Save metadata keys")) }
+    }
+}
+
 @Composable
 private fun TmdbLanguageCard(app: HikariApp, appLanguage: String) {
     val scope = rememberCoroutineScope()

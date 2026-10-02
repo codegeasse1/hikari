@@ -327,7 +327,9 @@ object TmdbResolver {
             } else {
                 ""
             }
-            for (key in API_KEYS) {
+            val personalKey = runCatching { HikariApp.instance.store.tmdbApiKey() }.getOrDefault("")
+            val keys = buildList { if (personalKey.isNotBlank()) add(personalKey); addAll(API_KEYS) }.distinct()
+            for (key in keys) {
                 val params = LinkedHashMap<String, String>(query)
                 if (lang.isNotBlank()) params["language"] = lang
                 // The adult-content switch, enforced AT THE REQUEST for a

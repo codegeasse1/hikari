@@ -1997,6 +1997,8 @@ class ContentRepository(private val manager: ProviderManager) {
         // provider produced would then be built twice, carry the SAME Lazy key,
         // and take Home down with it — a duplicated key is a crash in Compose,
         // not a warning — while its catalog was fetched twice for nothing.
+        val providerCatalogsEnabled = runCatching { HikariApp.instance.store.providerCatalogsEnabled() }.getOrDefault(true)
+        if (!providerCatalogsEnabled) runCatching { HikariApp.instance.store.ensureCinemetaAddon() }
         val active = interleaveByProviderType(
             manager.providers.value
                 .filter {
@@ -2006,7 +2008,10 @@ class ContentRepository(private val manager: ProviderManager) {
                     // nothing to play (see com.hikari.app.manga.MangaProvider).
                     it.config.enabled &&
                         it.config.type != ProviderType.MANGA &&
-                        (providerId == null || it.config.id == providerId)
+                        (providerId == null || it.config.id == providerId) &&
+                        (providerCatalogsEnabled ||
+                            (it.config.type != ProviderType.NUVIO && it.config.type != ProviderType.STREMIO) ||
+                            it.config.name.equals("Cinemeta", ignoreCase = true))
                 }
                 .distinctBy { it.config.id }
         )
@@ -2112,11 +2117,17 @@ class ContentRepository(private val manager: ProviderManager) {
     private fun homeRowsStreamingWhere(
         match: (ContentProvider) -> Boolean,
     ): Flow<List<CatalogRow>> = flow {
+        val providerCatalogsEnabled = runCatching { HikariApp.instance.store.providerCatalogsEnabled() }.getOrDefault(true)
+        if (!providerCatalogsEnabled) runCatching { HikariApp.instance.store.ensureCinemetaAddon() }
         val active = interleaveByProviderType(
             // Manga engines have their own tab, so they are not part of the Home
             // feed (see the note in [homeRows]).
             manager.providers.value.filter {
-                it.config.enabled && it.config.type != ProviderType.MANGA && match(it)
+                it.config.enabled &&
+                    it.config.type != ProviderType.MANGA && match(it) &&
+                    (providerCatalogsEnabled ||
+                        (it.config.type != ProviderType.NUVIO && it.config.type != ProviderType.STREMIO) ||
+                        it.config.name.equals("Cinemeta", ignoreCase = true))
             }
         )
         if (active.isEmpty()) {

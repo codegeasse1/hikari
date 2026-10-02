@@ -337,6 +337,9 @@ class AppStore(private val ctx: Context) {
         val TRACKER_MATCH = stringPreferencesKey("trackerMatches")
         /** What has already been pushed, so nothing is uploaded twice (JSON). */
         val TRACKER_DONE = stringPreferencesKey("trackerDone")
+        val TMDB_API_KEY = stringPreferencesKey("tmdbApiKey")
+        val MDBLIST_API_KEY = stringPreferencesKey("mdblistApiKey")
+        val PROVIDER_CATALOGS = booleanPreferencesKey("providerCatalogsEnabled")
         /** The last thing the trackers said, as a sentence, plus when. */
         val TRACKER_LAST = stringPreferencesKey("trackerLast")
         val TRACKER_LAST_AT = stringPreferencesKey("trackerLastAt")
@@ -855,6 +858,16 @@ class AppStore(private val ctx: Context) {
         store.data.map { it[K.TMDB_LANGUAGE] ?: "" }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun tmdbLanguage(): String = tmdbLanguageFlow().first()
+
+    fun tmdbApiKeyFlow(): Flow<String> = store.data.map { it[K.TMDB_API_KEY].orEmpty() }.distinctUntilChanged().flowOn(Dispatchers.Default)
+    suspend fun tmdbApiKey(): String = store.data.first()[K.TMDB_API_KEY].orEmpty()
+    suspend fun setTmdbApiKey(value: String) { write("TMDB_API_KEY") { it[K.TMDB_API_KEY] = value.trim() } }
+    fun mdbListApiKeyFlow(): Flow<String> = store.data.map { it[K.MDBLIST_API_KEY].orEmpty() }.distinctUntilChanged().flowOn(Dispatchers.Default)
+    suspend fun mdbListApiKey(): String = store.data.first()[K.MDBLIST_API_KEY].orEmpty()
+    suspend fun setMdbListApiKey(value: String) { write("MDBLIST_API_KEY") { it[K.MDBLIST_API_KEY] = value.trim() } }
+    fun providerCatalogsEnabledFlow(): Flow<Boolean> = store.data.map { it[K.PROVIDER_CATALOGS] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
+    suspend fun providerCatalogsEnabled(): Boolean = store.data.first()[K.PROVIDER_CATALOGS] ?: true
+    suspend fun setProviderCatalogsEnabled(value: Boolean) { write("PROVIDER_CATALOGS") { it[K.PROVIDER_CATALOGS] = value } }
 
     suspend fun setTmdbLanguage(mode: String) {
         write("TMDB_LANGUAGE") { it[K.TMDB_LANGUAGE] = mode.trim() }
@@ -3816,6 +3829,15 @@ class AppStore(private val ctx: Context) {
      *  [seededRepos]: a user who removes the addon keeps it removed. */
     suspend fun stremioAddonSeeded(): Boolean =
         store.data.map { it[K.STREMIO_SEEDED] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default).first()
+
+    /** Ensure keyless Stremio Cinemeta exists when provider catalogs are disabled. */
+    suspend fun ensureCinemetaAddon() {
+        val url = "https://v3-cinemeta.strem.io/manifest.json"
+        val id = com.hikari.app.providers.StremioAddon.providerIdFor(url)
+        if (providers().none { it.type == ProviderType.STREMIO && com.hikari.app.providers.StremioAddon.providerIdFor(it.url) == id }) {
+            addProvider(ProviderConfig(id = id, name = "Cinemeta", type = ProviderType.STREMIO, url = url))
+        }
+    }
 
     suspend fun markStremioAddonSeeded() {
         write("STREMIO_SEEDED") { it[K.STREMIO_SEEDED] = true }

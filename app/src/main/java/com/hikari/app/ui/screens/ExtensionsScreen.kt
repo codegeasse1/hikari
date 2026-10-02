@@ -3245,7 +3245,7 @@ fun ExtensionsScreen(nav: NavHostController? = null) {
     val repoState by vm.repoState.collectAsState()
     val bundleRepos by vm.bundleRepos.collectAsState()
     val sites by vm.sites.collectAsState()
-    val openRepo = repos.firstOrNull { it.url == openRepoUrl }
+    val openRepo = repos.firstOrNull { it.url == openRepoUrl || it.url.trimEnd('/') == openRepoUrl?.trimEnd('/') }
     val context = LocalContext.current
 
     var showSite by remember { mutableStateOf(false) }
@@ -5499,7 +5499,7 @@ private fun RepoPluginsView(
                 .padding(start = 4.dp, end = 16.dp, top = 4.dp, bottom = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            IconButton(onClick = onBack) {
+            IconButton(onClick = onBack, modifier = Modifier.tvPress(previewPass = true, onClick = onBack)) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = tr("Back"))
             }
             Column(Modifier.weight(1f)) {
@@ -5524,7 +5524,7 @@ private fun RepoPluginsView(
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.primary
             )
-            IconButton(onClick = onRefresh) {
+            IconButton(onClick = onRefresh, modifier = Modifier.tvPress(previewPass = true, onClick = onRefresh)) {
                 Icon(
                     Icons.Filled.Refresh,
                     contentDescription = tr("Refresh repo"),
@@ -5693,7 +5693,7 @@ private fun RepoPluginsView(
                         color = MaterialTheme.colorScheme.error,
                         modifier = Modifier.padding(vertical = 16.dp)
                     )
-                    TextButton(onClick = onRefresh) { Text(tr("Retry")) }
+                    TextButton(onClick = onRefresh, modifier = Modifier.tvPress(previewPass = true, onClick = onRefresh)) { Text(tr("Retry")) }
                 }
                 plugins.isEmpty() && isBundle -> item {
                         Text(

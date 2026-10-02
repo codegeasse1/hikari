@@ -3086,25 +3086,8 @@ fun DetailScreen(
                 // behind the LazyColumn. Keeping a second HeroArtwork here caused
                 // the exact duplicate-image seam visible when the episode shelf
                 // entered the viewport.
-                Box(
-                    Modifier.fillMaxSize().background(
-                        Brush.horizontalGradient(
-                            if (episodePosterStyle) {
-                                listOf(
-                                    Color.Transparent,
-                                    Color.Black.copy(alpha = 0.58f),
-                                    Color.Black.copy(alpha = 0.92f),
-                                )
-                            } else {
-                                listOf(
-                                    Color.Black.copy(alpha = 0.92f),
-                                    Color.Black.copy(alpha = 0.58f),
-                                    Color.Transparent,
-                                )
-                            }
-                        )
-                    )
-                )
+                // The full-page backdrop owns the tonal treatment; the hero-local overlay
+                // used to end at the hero boundary and create the visible color cut.
                 // Do not paint an opaque page-background strip at the bottom of
                 // the hero. The fixed cinematic backdrop must remain visible behind
                 // the episode content as the single continuous image.

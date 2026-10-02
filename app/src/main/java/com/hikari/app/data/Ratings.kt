@@ -95,6 +95,14 @@ data class TitleRating(
 )
 
 object Ratings {
+    /** Clear metadata/rating cache after credentials change. */
+    fun clearCache() {
+        memory.clear()
+        attempts.clear()
+        revisions.clear()
+        synchronized(lock) { disk = null; runCatching { cacheFile.delete() } }
+    }
+
 
     /** A day: review scores change on the order of days, not minutes. */
     private const val CACHE_TTL_MS = 24 * 60 * 60 * 1000L
@@ -207,6 +215,7 @@ object Ratings {
         // with, so the badge shows even when nothing else can name the title.
         val side = if (imdbId != null && tmdb != null) TmdbSide(null, imdbId)
         else tmdbSide(item, imdbId)
+        val mdb = side.imdbId?.let { mdbListRatings(it, item) }.orEmpty()
         val imdb = resolveImdb(item, side.imdbId)
         val want = applicableSources(item)
         val found = runSources(item, imdb, want)
@@ -214,7 +223,7 @@ object Ratings {
         val list = found.values.sortedBy { it.source.ordinal }
         memory[key] = list
         writeDisk(key, list)
-        finish(list, tmdb ?: side.badge)
+        finish(list + mdb, tmdb ?: side.badge)
     }
 
     /**
@@ -636,6 +645,39 @@ object Ratings {
         return (cached + tmdb).sortedBy { it.source.ordinal }
     }
 
+    private suspend fun mdbListRatings(imdbId: String, item: MediaItem): List<TitleRating> {
+        val key = runCatching { HikariApp.instance.store.mdbListApiKey() }.getOrDefault("").trim()
+        if (key.isBlank()) return emptyList()
+        val mediaType = if (item.type == MediaType.MOVIE) "movie" else "show"
+        val url = "https://api.mdblist.com/imdb/$mediaType/$imdbId/?apikey=" +
+            URLEncoder.encode(key, "UTF-8") + "&append_to_response=keyword"
+        val body = Http.getStringQuiet(url) ?: return emptyList()
+        return runCatching {
+            val ratings = JSONObject(body).optJSONArray("ratings") ?: return@runCatching emptyList<TitleRating>()
+            buildList {
+                for (i in 0 until ratings.length()) {
+                    val row = ratings.optJSONObject(i) ?: continue
+                    val source = row.optString("source").lowercase()
+                    val value = row.optDouble("value", Double.NaN)
+                    if (!value.isFinite()) continue
+                    val mapped = when (source) {
+                        "imdb" -> RatingSource.IMDB
+                        "tomatoes" -> RatingSource.TOMATOMETER
+                        "audience", "popcorn" -> RatingSource.POPCORN
+                        "metacritic" -> RatingSource.METACRITIC
+                        "letterboxd" -> RatingSource.LETTERBOXD
+                        "tmdb" -> RatingSource.TMDB
+                        else -> null
+                    } ?: continue
+                    val text = when (mapped) {
+                        RatingSource.LETTERBOXD, RatingSource.IMDB -> String.format(Locale.US, "%.1f", value)
+                        else -> String.format(Locale.US, "%.0f%%", value)
+                    }
+                    add(TitleRating(mapped, text, url = "https://www.mdblist.com/"))
+                }
+            }.distinctBy { it.source }
+        }.getOrDefault(emptyList())
+    }
     private fun tmdbBadge(score: Double?, votes: Int?, item: MediaItem): TitleRating? {
         // A brand-new title with a handful of votes has a meaningless average:
         // TMDB's own site hides the score below 10 votes, and so do we.
