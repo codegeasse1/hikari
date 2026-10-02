@@ -1968,7 +1968,7 @@ class ContentRepository(private val manager: ProviderManager) {
                 providerName = p.config.name,
                 title = ref.name,
                 items = items,
-                key = "\${p.config.id}|\${ref.type}|\${ref.id}",
+                key = "${p.config.id}|${ref.type}|${ref.id}",
                 catalogId = ref.id,
                 type = ref.type,
                 rawType = ref.rawType,
@@ -2000,7 +2000,7 @@ class ContentRepository(private val manager: ProviderManager) {
                         providerName = p.config.name,
                         title = c.name,
                         items = items,
-                        key = "\${p.config.id}|\${c.type}|\${c.id}",
+                        key = "${p.config.id}|${c.type}|${c.id}",
                         catalogId = c.id,
                         type = c.type,
                         rawType = c.rawType,
@@ -5567,7 +5567,6 @@ class ContentRepository(private val manager: ProviderManager) {
             onPartial?.invoke(fixed)
             if (fixed !== it) {
                 synchronized(episodeCache) { episodeCache[selKey] = fixed }
-                MetaCache.putEpisodes(epsKey, fixed)
             }
             return@withContext fixed
         }
