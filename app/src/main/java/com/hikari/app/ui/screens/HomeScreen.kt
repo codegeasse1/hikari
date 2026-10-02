@@ -111,6 +111,8 @@ import com.hikari.app.data.CoverKinds
 import androidx.compose.ui.text.style.TextOverflow
 import com.hikari.app.data.MediaItem
 import com.hikari.app.data.MediaType
+import com.hikari.app.data.TrackerKind
+import com.hikari.app.data.TrackerLibraryRepository
 import com.hikari.app.data.ProviderType
 import com.hikari.app.data.ProviderFolder
 import com.hikari.app.data.RepoProvenance
@@ -143,6 +145,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -347,8 +350,10 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
     }
 
     /** True when a stored Home pick refers to a collection, not an extension. */
+    private const val TRACKER_PREFIX = "tracker:"
     private fun isCollectionKey(key: String): Boolean = key.startsWith(COLLECTION_PREFIX)
-
+    private fun isTrackerKey(key: String): Boolean = key.startsWith(TRACKER_PREFIX)
+    private fun trackerKindOf(key: String): TrackerKind? = TrackerKind.of(key.removePrefix(TRACKER_PREFIX))
     private fun collectionIdOf(key: String): String = key.removePrefix(COLLECTION_PREFIX)
 
     fun selectProvider(id: String?) {
@@ -391,7 +396,17 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
         picks: List<String>,
         saved: List<Collection>,
     ): kotlinx.coroutines.flow.Flow<List<CatalogRow>> {
-        val extensionIds = picks.filterNot { isCollectionKey(it) }.toSet()
+        val trackerKeys = picks.filter { isTrackerKey(it) }
+        val extensionIds = picks.filterNot { isCollectionKey(it) || isTrackerKey(it) }.toSet()
+        suspend fun trackerRows(): List<CatalogRow> {
+            val app = getApplication<Application>() as HikariApp
+            return trackerKeys.flatMap { key ->
+                val kind = trackerKindOf(key) ?: return@flatMap emptyList()
+                TrackerLibraryRepository.load(app, kind.key).getOrDefault(emptyList()).map { shelf ->
+                    CatalogRow(providerId = TRACKER_PREFIX + kind.key, providerName = kind.label, title = shelf.title, items = shelf.items, key = TRACKER_PREFIX + shelf.key, catalogId = shelf.key, type = shelf.items.firstOrNull()?.type ?: MediaType.UNKNOWN, rawType = shelf.items.firstOrNull()?.rawType ?: "anime")
+                }
+            }
+        }
         return when {
             // The ordinary case, and the one that must never move: NO pick at
             // all is "All providers", which is the feed that stacked every
@@ -456,7 +471,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
         val key = if (kept.isEmpty()) "all" else kept.joinToString(",")
         // The ONE extension this pick is about, when the pick is a single
         // extension — [rows] below is then held to that extension's rows only.
-        val soloPick = kept.singleOrNull()?.takeIf { !isCollectionKey(it) }
+        val soloPick = kept.singleOrNull()?.takeIf { !isCollectionKey(it) && !isTrackerKey(it) }
         val soloName = soloPick?.let { manager.byId(it)?.config?.name }
         lastLoadedCollection = folderCollection
         val cached = homeCache[key]
@@ -708,11 +723,12 @@ fun HomeScreen(nav: NavHostController) {
         selection.size > 1 -> I18n.t("%s sources").replace("%s", selection.size.toString())
         else -> providers.firstOrNull { it.config.id == selected }?.config?.name
             ?: selectedCollection?.name
+            ?: selected?.takeIf { it.startsWith(TRACKER_PREFIX) }?.let { TrackerKind.of(it.removePrefix(TRACKER_PREFIX))?.label }
     }
     // The header's per-extension actions (translate, Cloudflare verify) and the
     // "search inside this extension?" prompt only make sense for an extension,
     // so a collection pick leaves the header in its plain "All" shape.
-    val headerSelection = if (selectedCollection != null) null else selected
+    val headerSelection = if (selectedCollection != null || selected?.startsWith(TRACKER_PREFIX) == true) null else selected
     // Continue Watching: history entries that were meaningfully started and
     // aren't within a minute of the end (those read as finished), newest first.
     // IMPORTANT: remember the Flow instances. Building `store.historyFlow()`
@@ -1605,6 +1621,7 @@ internal fun ProviderPickerSheet(
     // the sheet's callers get them without threading two more arguments through.
     val folders by remember { app.store.providerFoldersFlow() }
         .collectAsState(initial = emptyList<ProviderFolder>())
+    val connectedTrackers by remember { app.store.trackersFlow() }.collectAsState(initial = emptyList())
     var showFolderDialog by remember { mutableStateOf(false) }
     var folderName by remember { mutableStateOf("") }
     var folderToDelete by remember { mutableStateOf<ProviderFolder?>(null) }
@@ -1946,9 +1963,26 @@ internal fun ProviderPickerSheet(
                         )
                     }
                 }
-                item {
-                    PickerSectionLabel(tr("Providers"))
+                if (connectedTrackers.isNotEmpty()) {
+                    item { PickerSectionLabel(tr("Trackers")) }
+                    item(key = "trackers-parent") {
+                        PickerRow(label = tr("Trackers"), isSelected = false, multi = false, leadingIcon = Icons.Filled.List,
+                            supporting = I18n.t("%s connected").replace("%s", connectedTrackers.size.toString()),
+                            expandable = true, expanded = "__trackers__" in expanded,
+                            onToggleExpand = { expanded = if ("__trackers__" in expanded) expanded - "__trackers__" else expanded + "__trackers__" },
+                            onClick = { expanded = if ("__trackers__" in expanded) expanded - "__trackers__" else expanded + "__trackers__" })
+                    }
+                    if ("__trackers__" in expanded) {
+                        items(connectedTrackers, key = { "tracker:" + it.kind.key }) { account ->
+                            val key = TRACKER_PREFIX + account.kind.key
+                            PickerRow(label = account.kind.label, isSelected = if (multi) key in working else selection.contains(key), multi = multi,
+                                supporting = account.user.ifBlank { tr("Connected") },
+                                onLongClick = { if (!multi) { multi = true; working = (selection + key).distinct() } },
+                                onClick = { if (multi) working = if (key in working) working - key else (working + key).distinct() else onPick(key) })
+                        }
+                    }
                 }
+                item { PickerSectionLabel(tr("Providers")) }
                 // The gesture, said where the rows are. A user who has never
                 // multi-selected has no way to guess that a HOLD is what does it
                 // (the gesture exists because it was asked for by name), and a
@@ -2520,39 +2554,19 @@ internal suspend fun PointerInputScope.holdOrTap(
  *  mainUrl; Stremio/universal use the configured URL; CS3 plugins load theirs
  *  from the plugin dex. Null when unknown — the button is hidden then. */
 internal fun webUrlFor(p: ContentProvider): String? = when (p.config.type) {
-    ProviderType.STREMIO, ProviderType.UNIVERSAL ->
-        p.config.url.takeIf { it.startsWith("http://") || it.startsWith("https://") }
-    ProviderType.HIKARI ->
-        com.hikari.app.hiki.HikariRuntime.providerFor(p.config)?.mainUrl
-    // A SkyStream extension's `url` is the LOCAL plugin.js path, so the site it
-    // reads lives in its plugin.json (`domains[0]`, else `baseUrl`). Without
-    // this the globe button had no target at all for these extensions.
-    ProviderType.SKYSTREAM ->
-        com.hikari.app.skystream.SkyStreamPluginManager.siteUrlOf(p.config)
-    // Same for Aniyomi: `url` is the local .ext path, so the site comes from the
-    // extension's own source (`baseUrl`/`siteUrl`, else its source class name).
-    ProviderType.ANIYOMI ->
-        com.hikari.app.aniyomi.AniyomiExtensionManager.siteUrlOf(p.config)
-    // And a manga extension's `url` is its local .ext path too.
-    ProviderType.MANGA ->
-        com.hikari.app.manga.MangaExtensionManager.siteUrlOf(p.config)
-    ProviderType.ANYMEX, ProviderType.ANYMEX_MANGA ->
-        com.hikari.app.anymex.AnymexPluginManager.siteUrlOf(p.config)
-    ProviderType.SORA -> {
-        // Sora modules store no baseUrl; use the module's download origin if any.
-        p.config.extra?.takeIf { it.startsWith("http") }?.let { src ->
-            runCatching {
-                val u = java.net.URI(src)
-                "${u.scheme}://${u.host}/"
-            }.getOrNull()
-        }
+    ProviderType.STREMIO, ProviderType.UNIVERSAL -> p.config.url.takeIf { it.startsWith("http://") || it.startsWith("https://") }?.let { raw ->
+        runCatching { val u = java.net.URI(raw); val path = u.path.orEmpty().removeSuffix("/"); val base = if (path.endsWith("/manifest.json", true)) path.dropLast("/manifest.json".length) else path; u.scheme + "://" + u.authority + if (base.isBlank()) "/" else base }.getOrNull()
     }
+    ProviderType.HIKARI -> com.hikari.app.hiki.HikariRuntime.providerFor(p.config)?.mainUrl
+    ProviderType.SKYSTREAM -> com.hikari.app.skystream.SkyStreamPluginManager.siteUrlOf(p.config)
+    ProviderType.ANIYOMI -> com.hikari.app.aniyomi.AniyomiExtensionManager.siteUrlOf(p.config)
+    ProviderType.MANGA -> com.hikari.app.manga.MangaExtensionManager.siteUrlOf(p.config)
+    ProviderType.ANYMEX, ProviderType.ANYMEX_MANGA -> com.hikari.app.anymex.AnymexPluginManager.siteUrlOf(p.config)
+    ProviderType.SORA -> p.config.extra?.takeIf { it.startsWith("http") }?.let { src -> runCatching { val u = java.net.URI(src); u.scheme + "://" + u.host + "/" }.getOrNull() }
     ProviderType.CS3 -> runCatching {
-        val file = java.io.File(p.config.url)
-        if (!file.exists()) return@runCatching null
+        val file = java.io.File(p.config.url); if (!file.exists()) return@runCatching null
         val apis = com.hikari.app.cs3.Cs3PluginManager.apisFor(com.hikari.app.HikariApp.instance, file)
-        apis.getOrNull(p.config.id.substringAfterLast("|").toIntOrNull() ?: 0)?.mainUrl
-            ?.takeIf { it.startsWith("http") }
+        apis.getOrNull(p.config.id.substringAfterLast("|").toIntOrNull() ?: 0)?.mainUrl?.takeIf { it.startsWith("http") }
     }.getOrNull()
     else -> null
 }
