@@ -5409,6 +5409,8 @@ private fun RepoPluginsView(
     /** Probes every installed provider from this repo at once. */
     onTestAll: () -> Unit = {},
 ) {
+    val retryFocus = remember { FocusRequester() }
+    val headerRefreshFocus = remember { FocusRequester() }
     val cs3SettingsIds = rememberCs3SettingsIds(providers)
     // The repo's own search box. keiyoushi is 1396 entries: finding one by
     // scrolling is not a thing anyone can do, and this listing is the ONLY place
@@ -5524,7 +5526,13 @@ private fun RepoPluginsView(
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.primary
             )
-            IconButton(onClick = onRefresh, modifier = Modifier.tvPress(previewPass = true, onClick = onRefresh)) {
+            IconButton(
+                onClick = onRefresh,
+                modifier = Modifier
+                    .focusRequester(headerRefreshFocus)
+                    .focusProperties { if (state.error != null) down = retryFocus }
+                    .tvPress(previewPass = true, onClick = onRefresh)
+            ) {
                 Icon(
                     Icons.Filled.Refresh,
                     contentDescription = tr("Refresh repo"),
@@ -5693,7 +5701,13 @@ private fun RepoPluginsView(
                         color = MaterialTheme.colorScheme.error,
                         modifier = Modifier.padding(vertical = 16.dp)
                     )
-                    TextButton(onClick = onRefresh, modifier = Modifier.tvPress(previewPass = true, onClick = onRefresh)) { Text(tr("Retry")) }
+                    TextButton(
+                        onClick = onRefresh,
+                        modifier = Modifier
+                            .focusRequester(retryFocus)
+                            .focusProperties { up = headerRefreshFocus }
+                            .tvPress(previewPass = true, onClick = onRefresh)
+                    ) { Text(tr("Retry")) }
                 }
                 plugins.isEmpty() && isBundle -> item {
                         Text(
@@ -7099,6 +7113,7 @@ private fun RepoCard(
     // chain. The row remains the "open repo" target; Right then walks Copy →
     // Refresh → Remove instead of the spatial focus algorithm choosing another
     // row and making the actions effectively unreachable.
+    val rowFocus = remember { FocusRequester() }
     val copyFocus = remember { FocusRequester() }
     val refreshFocus = remember { FocusRequester() }
     val removeFocus = remember { FocusRequester() }
@@ -7112,6 +7127,7 @@ private fun RepoCard(
             Modifier
                 .fillMaxWidth()
                 .focusGroup()
+                .focusRequester(rowFocus)
                 .focusProperties {
                     right = copyFocus
                 }
@@ -7215,7 +7231,7 @@ private fun RepoCard(
                     .size(actionSize)
                     .focusRequester(copyFocus)
                     .focusProperties {
-                        left = FocusRequester.Default
+                        left = rowFocus
                         right = refreshFocus
                     }
                     .tvPress(previewPass = true, onClick = {
