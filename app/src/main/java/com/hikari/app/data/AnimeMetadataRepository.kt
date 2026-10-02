@@ -211,6 +211,7 @@ object AnimeMetadataRepository {
         }
         val raw = Http.getStringQuiet(url) ?: return null
         val rating = JSONObject(raw).optJSONObject("simkl")
-        return Metadata(item.title, rating?.optDouble("rating", 0.0)?.takeIf { it > 0 }, null, "Simkl")
+        val next = runCatching { simklNextEpisode(item) }.getOrNull()
+        return Metadata(item.title, rating?.optDouble("rating", 0.0)?.takeIf { it > 0 }, next, "Simkl")
     }
 }
