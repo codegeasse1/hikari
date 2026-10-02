@@ -546,6 +546,7 @@ object TrackerApi {
                     "client_id" to client.id,
                     "code_challenge" to challenge,
                     "code_challenge_method" to "S256",
+                    "scope" to "media:read media:write",
                 ),
                 contentType = FORM,
             )
@@ -738,9 +739,15 @@ object TrackerApi {
             // replaced by signing in again.
             TrackerKind.ANILIST -> return null
 
-            // Simkl access tokens from the PIN flow are long-lived and
-            // are replaced by signing in again; there is no refresh-token path.
-            TrackerKind.SIMKL -> return null
+            TrackerKind.SIMKL -> post(
+                "https://api.simkl.com/oauth2/token",
+                form(
+                    "grant_type" to "refresh_token",
+                    "refresh_token" to account.refresh,
+                    "client_id" to client.id,
+                ),
+                contentType = FORM,
+            )
         }
         val o = reply.json() ?: return null
         val token = o.optString("access_token")
