@@ -60,10 +60,21 @@ object AnimeMetadataRepository {
             return null
         }
 
+        // Sequel rows (Season 3, 2nd Season, Part 2) search as the franchise
+        // root: AniList resolves the base entry and the relation walk below
+        // collects every season. The original title is still what similarity
+        // is scored against.
+        fun stripSequel(name: String): String = name.trim()
+            .replace(Regex("""(?i)\s*[:\-–—]?\s*\bseason\s*\d+\s*$"""), "")
+            .replace(Regex("""(?i)\s*\b\d+(?:st|nd|rd|th)\s+season\s*$"""), "")
+            .replace(Regex("""(?i)\s*\b(?:part|cour)\s*\d+\s*$"""), "")
+            .replace(Regex("""(?i)\s*\bs\d{1,2}\s*$"""), "")
+            .trim()
+        val queryTitle = stripSequel(wanted).ifBlank { wanted }
         val searchQuery = "query{Page(perPage:10){media(search:\"__WANTED__\",type:ANIME){id format episodes title{userPreferred english romaji}}}}"
         val searchRaw = Http.postStringQuiet(
             "https://graphql.anilist.co",
-            JSONObject().put("query", searchQuery.replace("__WANTED__", escape(wanted))).toString()
+            JSONObject().put("query", searchQuery.replace("__WANTED__", escape(queryTitle))).toString()
         ) ?: return@withContext emptyList()
         val media = JSONObject(searchRaw).optJSONObject("data")?.optJSONObject("Page")?.optJSONArray("media")
             ?: return@withContext emptyList()
@@ -116,7 +127,35 @@ object AnimeMetadataRepository {
             }
         }
         val result = if (explicit.size >= 2) {
-            explicit.entries.sortedBy { it.key }.map { SeasonLayout(it.key, it.value) }
+            val marked = explicit.entries.sortedBy { it.key }
+            val markedMinYear = nodes.values
+                .filter { explicitSeason(it.title) != null }
+                .map { it.year }.filter { it > 0 }.minOrNull()
+            val unmarked = nodes.values
+                .filter { explicitSeason(it.title) == null }
+                .sortedWith(compareBy<Node> { it.year == 0 }.thenBy { it.year }.thenBy { it.id })
+            // Nodes without a season in their title are usually the missing
+            // early seasons (season 1 never says so): those that aired before
+            // every marked season slot in below them, later ones extend above.
+            // Without this a Season 3 row built a two-season layout that could
+            // never match the full list, leaving it flat.
+            val out = ArrayList<SeasonLayout>()
+            val earlyPool = if (markedMinYear != null) {
+                unmarked.filter { it.year in 1 until markedMinYear }
+            } else {
+                unmarked.take(1)
+            }
+            val slots = marked.minOf { it.key } - 1
+            val keptEarly = if (slots > 0) earlyPool.takeLast(minOf(slots, earlyPool.size)) else emptyList()
+            var s = marked.minOf { it.key } - keptEarly.size
+            for (n in keptEarly) out += SeasonLayout(s++, n.episodes)
+            for ((season, eps) in marked) out += SeasonLayout(season, eps)
+            var next = marked.maxOf { it.key } + 1
+            for (n in unmarked) {
+                if (n in keptEarly) continue
+                out += SeasonLayout(next++, n.episodes)
+            }
+            out.sortedBy { it.season }
         } else {
             nodes.values.sortedWith(compareBy<Node> { it.year == 0 }.thenBy { it.year }.thenBy { it.id })
                 .mapIndexed { index, node -> SeasonLayout(index + 1, node.episodes) }

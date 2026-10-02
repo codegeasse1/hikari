@@ -5453,7 +5453,10 @@ class ContentRepository(private val manager: ProviderManager) {
         // pay a cold provider again. Trusted only once it actually carries an
         // overview — a cached row that is still bare is not worth skipping the
         // enrichment for.
-        val metaKey = MetaCache.metaKey(item.uniqueId)
+        // Tracker rows were served wrong-show meta from these caches — the
+        // suffix re-keys them once so every tracker title refetches clean.
+        val metaKey = MetaCache.metaKey(item.uniqueId) +
+            if (TrackerAnimeResolver.isTrackerAnime(item)) "|trk2" else ""
         MetaCache.cachedMeta(metaKey)?.let { cached ->
             if (!cached.overview.isNullOrBlank()) {
                 synchronized(metaCache) { metaCache[item.uniqueId] = cached }
@@ -5474,7 +5477,11 @@ class ContentRepository(private val manager: ProviderManager) {
             MetaCache.putMeta(metaKey, t)
             return@withContext t
         }
-        val others = manager.providers.value.filter {
+        // Tracker anime ids belong to no Stremio addon: asking them could
+        // only return another show's meta (a numeric id read as TMDB), so
+        // tracker rows skip this pass and go straight to AniList/Simkl below.
+        val others = if (TrackerAnimeResolver.isTrackerAnime(result)) emptyList()
+        else manager.providers.value.filter {
             it.config.enabled && it.config.id != item.providerId && it.config.type == ProviderType.STREMIO
         }
         for (alt in others) {
@@ -5599,11 +5606,18 @@ class ContentRepository(private val manager: ProviderManager) {
             }
             if (cursor >= episodes.size) break
         }
-        while (cursor < episodes.size) {
-            val lastSeason = layout.last().season
-            val original = episodes[cursor++]
-            val n = out.count { it.season == lastSeason } + 1
-            out += original.copy(season = lastSeason, number = n)
+        // More episodes than the layout covers (a new season is out but the
+        // layout predates it): a whole season's worth starts a new season
+        // instead of being dumped onto the last one; a couple of stragglers
+        // still join it.
+        if (cursor < episodes.size) {
+            val remaining = episodes.size - cursor
+            val restSeason = if (remaining >= 5) layout.last().season + 1 else layout.last().season
+            var n = out.count { it.season == restSeason } + 1
+            while (cursor < episodes.size) {
+                val original = episodes[cursor++]
+                out += original.copy(season = restSeason, number = n++)
+            }
         }
         return out.takeIf { it.size == episodes.size }
     }
@@ -5681,11 +5695,19 @@ class ContentRepository(private val manager: ProviderManager) {
         // episodes, so this is a head start and not a verdict. It is also what
         // the page falls back to when every engine comes up empty (see the final
         // return), which is the "it showed episodes yesterday" case.
-        val epsKey = MetaCache.episodesKey(selKey)
+        // Same re-key as metaForInner: tracker episode caches held
+        // wrong-show lists and must refetch once.
+        val epsKey = MetaCache.episodesKey(selKey) +
+            if (TrackerAnimeResolver.isTrackerAnime(item)) "|trk2" else ""
         val cachedEps = MetaCache.cachedEpisodes(epsKey)
         val cachedSeasoned = cachedEps?.let { restoreAnimeSeasons(item, it) }
         cachedSeasoned?.let { onPartial?.invoke(it) }
-        val others = manager.providers.value.filter {
+        // Tracker anime ids belong to no Stremio addon: their meta answers
+        // nothing and the TMDB-id fallback lists another show's episodes, so
+        // tracker rows skip straight to the borrowed site list / tracker
+        // count below.
+        val others = if (TrackerAnimeResolver.isTrackerAnime(item)) emptyList()
+        else manager.providers.value.filter {
             it.config.enabled && it.config.id != item.providerId && it.config.type == ProviderType.STREMIO
         }
         // Probe the origin first for both movies and series (it owns the item's
@@ -5982,6 +6004,10 @@ class ContentRepository(private val manager: ProviderManager) {
      * gives up on any failure — names are a nicety, never a gate.
      */
     private suspend fun withRealEpisodeNames(item: MediaItem, eps: List<Episode>): List<Episode> {
+        // Tracker anime lists are tracker counts ("Episode N") or a borrowed
+        // site list — a TMDB title search here could paint another show's
+        // episode names onto them, so they keep their own names.
+        if (TrackerAnimeResolver.isTrackerAnime(item)) return eps
         if (eps.size < 3) return eps
         val numbers = eps.map { it.number }
         if (numbers.size != numbers.toSet().size) return eps

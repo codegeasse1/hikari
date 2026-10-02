@@ -22,6 +22,11 @@ import java.util.concurrent.ConcurrentHashMap
  *  2. the id is an IMDb id (`tt…`) → TMDB /find with external_source=imdb_id;
  *  3. otherwise search TMDB by title + year.
  *
+ * Two special cases: a tmdb:digits id names its TMDB row directly (no
+ * search), and a tracker anime row never falls back to a title search —
+ * Simkl exact TMDB mapping or nothing, because a fuzzy anime search has
+ * repeatedly picked an unrelated show.
+ *
  * Public TMDB API keys — nuvio providers embed their own keys, these are used
  * only for Hikari's own resolution lookups and are the same keys those
  * providers ship in their (public) source.
@@ -102,6 +107,7 @@ object TmdbResolver {
 
     private fun cacheKey(item: MediaItem): String {
         val id = item.id.trim()
+        tmdbPrefixedId(id)?.let { return "id|$it|${typeHint(item)}" }
         return when {
             id.isNotEmpty() && id.all { it.isDigit() } -> "id|$id|${typeHint(item)}"
             id.lowercase().startsWith("tt") -> "imdb|$id|${typeHint(item)}"
@@ -123,15 +129,20 @@ object TmdbResolver {
         // Tracker anime rows carry the TRACKER's numeric id (AniList/MAL/Kitsu),
         // not a TMDB id. Treating it as one resolved every anime title to an
         // unrelated TMDB entry (wrong details, wrong episodes, servers for the
-        // wrong show). Simkl maps every anime to its TMDB id exactly, so that
-        // mapping is tried first and the fuzzy title search is only the backup
-        // (it needs a year match the tracker's season entries often miss).
+        // wrong show). Simkl maps anime to its TMDB id exactly, so that
+        // mapping is the only TMDB route tracker rows get.
         if (isTrackerAnime(item)) {
             runCatching { TrackerAnimeResolver.simklTmdbRef(item) }.getOrNull()?.let { ref ->
                 if (ref.tmdbId.isNotBlank()) return Resolved(ref.tmdbId, ref.mediaType)
             }
-            return searchByTitleStrictAnime(item)
+            // No exact Simkl mapping: a TMDB title search for anime sequel /
+            // donghua titles has repeatedly picked an unrelated show (wrong
+            // details, wrong episodes, servers for the wrong title), which is
+            // worse than no mapping — tracker rows play by title search
+            // instead, so null is the honest answer here.
+            return null
         }
+        tmdbPrefixedId(id)?.let { return resolveNumericId(it, item) }
         if (id.isNotEmpty() && id.all { it.isDigit() }) {
             return resolveNumericId(id, item)
         }
@@ -141,6 +152,18 @@ object TmdbResolver {
         return searchByTitle(item)
     }
 
+    /** A tmdb:digits id names its TMDB row directly (what Stremio catalogue
+     * rows carry) — resolving it by title search instead was fuzzy work that
+     * sometimes picked the wrong show. */
+    private fun tmdbPrefixedId(id: String): String? {
+        val t = id.trim()
+        val digits = when {
+            t.startsWith("tmdb:", ignoreCase = true) -> t.substringAfter(':').trim()
+            t.startsWith("tmdb-", ignoreCase = true) -> t.substringAfter('-').trim()
+            else -> return null
+        }
+        return digits.takeIf { it.isNotEmpty() && it.all { it.isDigit() } }
+    }
     private suspend fun resolveNumericId(id: String, item: MediaItem): Resolved? {
         return when (item.type) {
             MediaType.MOVIE -> Resolved(id, "movie")
@@ -240,60 +263,6 @@ object TmdbResolver {
         return item.rawType.contains("anime", true) || item.providerId.equals("anilist", true)
     }
 
-    /**
-     * Strict anime title search: both movie and tv namespaces (anime films are
-     * TMDB movies), requiring a year match and a Japanese-origin signal, and
-     * returning null when nothing qualifies rather than a wrong show.
-     */
-    private suspend fun searchByTitleStrictAnime(item: MediaItem): Resolved? {
-        val title = item.searchTitle
-        if (title.isBlank()) return null
-        val variants = TmdbMeta.queryVariants(title)
-        if (variants.isEmpty()) return null
-        var best: Resolved? = null
-        var bestScore = 0
-        for (kind in listOf("tv", "movie")) {
-            for (v in variants) {
-                val data = apiGet("/search/$kind", mapOf("query" to v)) ?: continue
-                val arr = data.optJSONArray("results") ?: continue
-                for (i in 0 until arr.length()) {
-                    val o = arr.optJSONObject(i) ?: continue
-                    val oid = o.optString("id").trim()
-                    if (oid.isBlank() || oid == "null") continue
-                    val score = candidateScore(o, variants, item.year)
-                    if (score < 40) continue
-                    val raw = o.optString("release_date").ifBlank { o.optString("first_air_date") }
-                    val y = raw.take(4).toIntOrNull()
-                    if (item.year != null && item.year > 0 && y != null && kotlin.math.abs(y - item.year) > 1) continue
-                    val lang = o.optString("original_language").lowercase()
-                    var ja = lang == "ja"
-                    if (!ja) {
-                        val genres = o.optJSONArray("genre_ids")
-                        if (genres != null) {
-                            for (g in 0 until genres.length()) {
-                                if (genres.optInt(g) == 16) { ja = true; break }
-                            }
-                        }
-                    }
-                    if (!ja) {
-                        val names = listOf(o.optString("title"), o.optString("name"), o.optString("original_title"), o.optString("original_name"))
-                        val exact = variants.any { vv -> names.any { nn -> TmdbMeta.normalizeTitle(nn) == TmdbMeta.normalizeTitle(vv) && vv.isNotBlank() } }
-                        if (!exact) continue
-                    }
-                    if (score > bestScore) { bestScore = score; best = Resolved(oid, kind) }
-                }
-                if (bestScore >= 65) return best
-            }
-        }
-        return best
-    }
-
-    /**
-     * Last-resort resolution through IMDb's suggestion endpoint: title → tt-id
-     * → TMDB `/find`. The same endpoint [TmdbMeta] uses for artwork, and the
-     * only lookup available here that does not depend on TMDB's search index
-     * agreeing with the site's spelling of a name.
-     */
     private suspend fun searchViaImdb(item: MediaItem): Resolved? {
         val title = item.searchTitle.trim()
         if (title.isBlank()) return null

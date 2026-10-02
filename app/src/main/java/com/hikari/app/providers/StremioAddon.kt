@@ -655,6 +655,11 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
         } ?: emptyList()
 
     override suspend fun getMeta(item: MediaItem): MediaItem {
+        // Tracker anime rows carry the tracker's numeric id, which no addon
+        // can answer — and the TMDB fallback below would read those digits as
+        // a TMDB id and return an unrelated show. Tracker details come from
+        // AniList/Simkl instead (see TrackerAnimeResolver).
+        if (com.hikari.app.data.TrackerAnimeResolver.isTrackerAnime(item)) return item
         // An item from our own TMDB rows/searches: its id is a TMDB id, so the
         // addon's /meta would answer nothing. TMDB is asked instead.
         if (usesTmdbBrowse() && isTmdbId(item.id)) return TmdbBrowse.meta(item)
@@ -691,6 +696,7 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
      * back unchanged, and any failure is silent.
      */
     private suspend fun tmdbFallbackMeta(item: MediaItem): MediaItem {
+        if (com.hikari.app.data.TrackerAnimeResolver.isTrackerAnime(item)) return item
         val tmdb = tmdbIdOf(item.id) ?: return item
         if (tmdb == item.id) return item
         val full = runCatching { TmdbBrowse.meta(item.copy(id = tmdb)) }.getOrNull() ?: return item
@@ -698,6 +704,11 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
     }
 
     override suspend fun getEpisodes(item: MediaItem): List<Episode>? {
+        // Tracker anime rows carry the tracker's numeric id: no addon meta
+        // document exists for it, and the TMDB fallback below would list
+        // another show's episodes under this title. Tracker episodes come
+        // from the tracker count / borrowed site lists instead.
+        if (com.hikari.app.data.TrackerAnimeResolver.isTrackerAnime(item)) return null
         // A TMDB item's episode list comes from TMDB (the addon has no catalog
         // and would answer nothing for a TMDB id).
         if (usesTmdbBrowse() && isTmdbId(item.id)) return TmdbBrowse.episodes(item)

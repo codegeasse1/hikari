@@ -52,7 +52,11 @@ object TrackerAnimeResolver {
         if (mode != "anilist") {
             simklDetail(item)?.let { return@withContext it }
         }
-        anilistDetail(item)
+        // AniList needs no key and answers every anime by id — but only rows
+        // that CAME from AniList carry that id, so every other tracker row
+        // falls back to an AniList title search (skipped in Simkl-only mode).
+        anilistDetail(item)?.let { return@withContext it }
+        if (mode != "simkl") anilistSearchDetail(item.searchTitle) else null
     }
 
     data class TmdbRef(val tmdbId: String, val mediaType: String)
@@ -111,16 +115,49 @@ object TrackerAnimeResolver {
     }
 
     private fun simklIdFor(title: String, clientId: String): Int? {
-        if (title.isBlank()) return null
+        val q = stripSequelSuffix(title).ifBlank { title.trim() }
+        if (q.isBlank()) return null
         val raw = Http.getStringQuiet(
-            "https://api.simkl.com/search/anime?q=" + URLEncoder.encode(title, "UTF-8") +
+            "https://api.simkl.com/search/anime?q=" + URLEncoder.encode(q, "UTF-8") +
                 "&client_id=" + URLEncoder.encode(clientId, "UTF-8"),
         ) ?: return null
         val arr = runCatching { org.json.JSONArray(raw) }.getOrNull() ?: return null
         if (arr.length() == 0) return null
-        val first = arr.optJSONObject(0) ?: return null
-        return first.optJSONObject("ids")?.optInt("simkl", 0)?.takeIf { it > 0 }
-            ?: first.optInt("id", 0).takeIf { it > 0 }
+        // Simkl returns candidates in its own order — for sequel / donghua
+        // titles the first hit is not always the right show, so the best
+        // title match wins instead of blindly taking index 0.
+        var best = arr.optJSONObject(0)
+        var bestScore = -1
+        for (i in 0 until minOf(arr.length(), 10)) {
+            val o = arr.optJSONObject(i) ?: continue
+            val name = o.optString("title").trim()
+            val score = if (name.isBlank()) 0 else sequelSimilarity(q, name)
+            if (score > bestScore) {
+                bestScore = score
+                best = o
+            }
+        }
+        val pick = best ?: return null
+        return pick.optJSONObject("ids")?.optInt("simkl", 0)?.takeIf { it > 0 }
+            ?: pick.optInt("id", 0).takeIf { it > 0 }
+    }
+    private fun stripSequelSuffix(title: String): String =
+        title.trim()
+            .replace(Regex("""(?i)\s*[:\-–—]?\s*\bseason\s*\d+\s*$"""), "")
+            .replace(Regex("""(?i)\s*\b\d+(?:st|nd|rd|th)\s+season\s*$"""), "")
+            .replace(Regex("""(?i)\s*\b(?:part|cour)\s*\d+\s*$"""), "")
+            .replace(Regex("""(?i)\s*\bs\d{1,2}\s*$"""), "")
+            .trim()
+    private fun sequelSimilarity(a0: String, b0: String): Int {
+        val a = a0.lowercase().replace(Regex("""[^\p{L}\p{N}]+"""), " ").trim()
+        val b = b0.lowercase().replace(Regex("""[^\p{L}\p{N}]+"""), " ").trim()
+        if (a.isBlank() || b.isBlank()) return 0
+        if (a == b) return 100
+        if (a.contains(b) || b.contains(a)) return 90
+        val aa = a.split(" ").filter { it.length > 2 }.toSet()
+        val bb = b.split(" ").filter { it.length > 2 }.toSet()
+        if (aa.isEmpty() || bb.isEmpty()) return 0
+        return aa.intersect(bb).size * 100 / maxOf(aa.size, bb.size)
     }
 
     private suspend fun simklCountEpisodes(item: MediaItem): List<Episode>? {
@@ -161,6 +198,22 @@ object TrackerAnimeResolver {
         val media = runCatching {
             JSONObject(raw).optJSONObject("data")?.optJSONObject("Media")
         }.getOrNull() ?: return null
+        return parseAnilistMedia(media)
+    }
+    private suspend fun anilistSearchDetail(title: String): Detail? {
+        val t = title.trim()
+        if (t.isBlank()) return null
+        val query = "query{Media(search:" + JSONObject.quote(t) + ",type:ANIME){description genres startDate{year} averageScore coverImage{large} bannerImage}}"
+        val raw = Http.postStringQuiet(
+            "https://graphql.anilist.co",
+            JSONObject().put("query", query).toString(),
+        ) ?: return null
+        val media = runCatching {
+            JSONObject(raw).optJSONObject("data")?.optJSONObject("Media")
+        }.getOrNull() ?: return null
+        return parseAnilistMedia(media)
+    }
+    private fun parseAnilistMedia(media: JSONObject): Detail? {
         val overview = media.optString("description").trim()
             .replace(Regex("<br[^>]*>", RegexOption.IGNORE_CASE), "\n")
             .replace(Regex("<[^>]+>"), "")
