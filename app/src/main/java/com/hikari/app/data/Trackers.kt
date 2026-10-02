@@ -69,9 +69,9 @@ enum class TrackerKind(
     SIMKL(
         "simkl",
         "Simkl",
-        TrackerFlow.CODE,
+        TrackerFlow.PIN,
         "https://simkl.com/settings/developer",
-        true,
+        false,
         TrackerScope.ANIME_AND_VIDEO,
         "Anime, series and films in one list — no password, just a code",
     ),
