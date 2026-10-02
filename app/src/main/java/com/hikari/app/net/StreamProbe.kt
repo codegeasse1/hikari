@@ -79,6 +79,12 @@ object StreamProbe {
     private val SHARED_WAIT_MS get() = NetTuning.timeout(14_000L)
     private const val CACHE_FILE = "stream_probe_cache.json"
     private const val CACHE_MAX = 400
+    // Resolved wrapper links are often signed/short-lived (HubCloud/OxxFile and
+    // similar hosts). Keeping them forever makes the SAME server alternate
+    // between "starts instantly" and "server not responding" depending on whether
+    // the cached signed URL is still alive. Keep the wrapper-resolution cache
+    // warm, but never trust it beyond this window.
+    private const val CACHE_TTL_MS = 5 * 60 * 1000L
 
     /** Detached scope for [warmAsync] so a caller never waits on warming. */
     private val bgScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -91,6 +97,7 @@ object StreamProbe {
      *  player, so ANY earlier resolution — source search, a previous play, a
      *  previous session — makes this play start instantly). */
     private val cache = ConcurrentHashMap<String, Resolved>()
+    private val cacheAt = ConcurrentHashMap<String, Long>()
 
     /** Derived from the process-wide playback client ([PlayerHttp]) so probes
      *  and playback SHARE one connection pool: the connection this probe opened
@@ -147,7 +154,11 @@ object StreamProbe {
             obj.keys().forEach { k ->
                 val o = obj.optJSONObject(k) ?: return@forEach
                 val u = o.optString("u")
-                if (u.isNotBlank()) cache[k] = Resolved(u, o.optString("m").ifBlank { null })
+                val at = o.optLong("at", 0L)
+                if (u.isNotBlank() && at > 0L && System.currentTimeMillis() - at < CACHE_TTL_MS) {
+                    cache[k] = Resolved(u, o.optString("m").ifBlank { null })
+                    cacheAt[k] = at
+                }
             }
         }
     }
@@ -157,7 +168,8 @@ object StreamProbe {
             val f = cacheFile() ?: return
             val obj = JSONObject()
             cache.entries.toList().takeLast(CACHE_MAX).forEach { (k, v) ->
-                obj.put(k, JSONObject().put("u", v.url).put("m", v.mime ?: ""))
+                obj.put(k, JSONObject().put("u", v.url).put("m", v.mime ?: "")
+                    .put("at", cacheAt[k] ?: System.currentTimeMillis()))
             }
             f.writeText(obj.toString())
         }
@@ -167,7 +179,20 @@ object StreamProbe {
     fun cached(url: String): Resolved? {
         if (url.isBlank()) return null
         ensureLoaded()
-        return cache[url]
+        val at = cacheAt[url]
+        if (at != null && System.currentTimeMillis() - at < CACHE_TTL_MS) return cache[url]
+        cache.remove(url)
+        cacheAt.remove(url)
+        return null
+    }
+
+    /** Drop a resolved wrapper link after a playback failure so the next attempt
+     *  asks the provider/extractor for a fresh signed URL rather than replaying
+     *  the same dead resolution. */
+    fun invalidate(url: String) {
+        cache.remove(url)
+        cacheAt.remove(url)
+        badUrls.remove(url)
     }
 
     /** Resolves [url] to its playable form, or null when nothing was found (or
@@ -198,6 +223,7 @@ object StreamProbe {
                 }
                 if (resolved != null) {
                     cache[url] = resolved
+                    cacheAt[url] = System.currentTimeMillis()
                     persist()
                 }
                 runCatching { mine.complete(resolved) }
