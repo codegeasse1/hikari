@@ -744,6 +744,11 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                         }
                     }
                 }
+            }
+            // Close the IO scope before continuing with the page-level work.
+            // Without this brace all following ViewModel methods became local
+            // functions, which cascaded into hundreds of misleading unresolved
+            // references and caused the build failures from 889 onward.
             val item = _meta.value ?: base
             // The Vega picker rows (packs / quality rows) arrive on their own —
             // the page never waits for them, and pack 0 is already showing.
