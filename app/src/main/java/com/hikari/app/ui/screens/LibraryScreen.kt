@@ -53,6 +53,7 @@ import androidx.navigation.NavHostController
 import com.hikari.app.HikariApp
 import com.hikari.app.data.LibraryCategory
 import com.hikari.app.data.MediaItem
+import com.hikari.app.data.TrackerLibraryRepository
 import com.hikari.app.ui.Artwork
 import com.hikari.app.ui.PosterArt
 import com.hikari.app.ui.PosterStyle
@@ -118,6 +119,23 @@ fun LibraryScreen(nav: NavHostController, embedded: Boolean = false) {
     // The saved items the adult-content switch allows (see [NsfwGate]): the grid
     // AND its empty state read this, so hiding an adult title cannot leave a blank
     // grid under a heading that says otherwise.
+    val trackerSource by app.store.trackerLibrarySourceFlow().collectAsState(initial = "nuvio")
+    var remoteShelves by remember { mutableStateOf<List<TrackerLibraryRepository.Shelf>>(emptyList()) }
+    var remoteError by remember { mutableStateOf<String?>(null) }
+    var remoteLoading by remember { mutableStateOf(false) }
+    LaunchedEffect(trackerSource) {
+        if (trackerSource == "nuvio") {
+            remoteShelves = emptyList()
+            remoteError = null
+        } else {
+            remoteLoading = true
+            val result = TrackerLibraryRepository.load(app)
+            remoteShelves = result.getOrDefault(emptyList())
+            remoteError = result.exceptionOrNull()?.message
+            remoteLoading = false
+        }
+    }
+
     val visibleSaved = rememberVisibleItems(shown)
 
     LazyVerticalGrid(
@@ -165,6 +183,38 @@ fun LibraryScreen(nav: NavHostController, embedded: Boolean = false) {
                 }
             }
         }
+        if (trackerSource != "nuvio") {
+            item(key = "tracker-library-header", span = { GridItemSpan(maxLineSpan) }) {
+                Column(Modifier.padding(top = 4.dp, bottom = 2.dp)) {
+                    Text(tr("Tracker library"), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text(tr("Watchlists and personal lists from your connected tracker"),
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (remoteLoading) Text(tr("Loading…"), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                    else if (!remoteError.isNullOrBlank()) Text(remoteError.orEmpty(), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+                }
+            }
+            remoteShelves.forEach { shelf ->
+                item(key = "tracker-shelf-\${shelf.key}", span = { GridItemSpan(maxLineSpan) }) {
+                    Column {
+                        Text(shelf.title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                        LazyRow(
+                            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            items(shelf.items, key = { it.uniqueId }) { item ->
+                                TrackerLibraryCard(item = item, onClick = {
+                                    Routes.safeNavigate(nav, Routes.detail(
+                                        providerId = item.providerId, type = item.type, mediaId = item.id,
+                                        title = item.title, posterUrl = item.posterUrl, rawType = item.rawType,
+                                    ))
+                                })
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         if (hasManga) {
             // Followed manga, beside the video library: "My Stuff" is where the
             // things that are yours live, and a manga is one of them. Only added
@@ -408,5 +458,20 @@ private fun LibraryCard(
                 )
             }
         }
+    }
+}
+
+
+@Composable
+private fun TrackerLibraryCard(item: MediaItem, onClick: () -> Unit) {
+    Column(modifier = Modifier.width(112.dp).clickable(onClick = onClick)) {
+        PosterArt(
+            url = item.posterUrl,
+            contentDescription = item.title,
+            modifier = Modifier.fillMaxWidth().aspectRatio(0.67f).clip(RoundedCornerShape(12.dp)),
+            contentScale = ContentScale.Crop,
+        )
+        Text(item.title, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Medium,
+            maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 6.dp))
     }
 }

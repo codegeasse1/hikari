@@ -1998,7 +1998,13 @@ class ContentRepository(private val manager: ProviderManager) {
         // and take Home down with it — a duplicated key is a crash in Compose,
         // not a warning — while its catalog was fetched twice for nothing.
         val providerCatalogsEnabled = runCatching { HikariApp.instance.store.providerCatalogsEnabled() }.getOrDefault(true)
-        if (!providerCatalogsEnabled) runCatching { HikariApp.instance.store.ensureCinemetaAddon() }
+        if (!providerCatalogsEnabled) {
+            runCatching { HikariApp.instance.store.ensureCinemetaAddon() }
+            // addProvider persists first; ProviderManager only sees the new addon on refresh.
+            // Without this refresh the filter below could legitimately find zero Stremio
+            // providers, producing a blank Home when the user disabled provider catalogs.
+            runCatching { HikariApp.instance.providers.refresh() }
+        }
         val active = interleaveByProviderType(
             manager.providers.value
                 .filter {
