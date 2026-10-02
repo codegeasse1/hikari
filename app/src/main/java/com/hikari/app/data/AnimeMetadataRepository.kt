@@ -18,8 +18,7 @@ object AnimeMetadataRepository {
         val key = wanted.lowercase()
         seasonCache[key]?.let { return@withContext it }
 
-        fun escape(value: String): String =
-            value.replace("\\", "\\\\").replace(""", "\"")
+        fun escape(value: String): String = JSONObject.quote(value).removePrefix("\"").removeSuffix("\"")
         fun titleOf(o: JSONObject): String {
             val t = o.optJSONObject("title") ?: return ""
             return t.optString("userPreferred").trim().ifBlank { t.optString("english").trim() }
@@ -139,8 +138,7 @@ object AnimeMetadataRepository {
 
     private fun aniList(title: String): Metadata? {
         if (title.isBlank()) return null
-        val escaped = title.replace("\\", "\\\\").replace(""", "\"")
-        val query = "query{Media(search:\"$escaped\",type:ANIME){title{userPreferred english romaji}averageScore nextAiringEpisode{airingAt episode}}}"
+        val query = "query{Media(search:" + JSONObject.quote(title) + ",type:ANIME){title{userPreferred english romaji}averageScore nextAiringEpisode{airingAt episode}}}"
         val raw = Http.postStringQuiet("https://graphql.anilist.co", JSONObject().put("query", query).toString()) ?: return null
         val media = JSONObject(raw).optJSONObject("data")?.optJSONObject("Media") ?: return null
         val titles = media.optJSONObject("title")
