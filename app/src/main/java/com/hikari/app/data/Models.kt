@@ -268,6 +268,8 @@ data class MediaItem(
      * [com.hikari.app.data.TitleQuality].
      */
     val quality: String? = null,
+    val nextEpisodeDate: String? = null,
+    val metadataSource: String? = null,
 ) {
     val uniqueId: String get() = "$providerId|$type|$id"
 

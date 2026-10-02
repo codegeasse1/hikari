@@ -356,6 +356,13 @@ private enum class SettingsFolder(
         "TMDB enrichment, MDBList ratings & external services",
         Icons.Filled.ViewCarousel,
     ),
+    INTEGRATIONS_ANIME(
+        "integrations.anime",
+        "Anime Metadata",
+        "AniList, Simkl ratings & next-episode data",
+        Icons.Filled.AutoAwesome,
+        parent = "integrations",
+    ),
     INTEGRATIONS_TMDB(
         "integrations.tmdb",
         "TMDB Enrichment",
@@ -839,6 +846,9 @@ fun SettingsScreen(nav: NavHostController) {
                 SettingsFolder.INTEGRATIONS_MDBLIST -> {
                     item { SettingsCard(top = 2.dp) { MdbListIntegrationCard(app) } }
                     item { SettingsCard { MdbListProvidersCard(app) } }
+                }
+                SettingsFolder.INTEGRATIONS_ANIME -> {
+                    item { SettingsCard(top = 2.dp) { AnimeMetadataIntegrationCard(app) } }
                 }
                 SettingsFolder.APPEARANCE -> {
                     item { SettingsCard(top = 2.dp) { LanguageCard(app, appLanguage) } }
@@ -5909,6 +5919,25 @@ private fun TrackerServiceCard(
 }
 
 @Composable
+private fun AnimeMetadataIntegrationCard(app: HikariApp) {
+    val scope=rememberCoroutineScope()
+    val enabled by app.store.animeMetadataEnabledFlow().collectAsState(initial=true)
+    val source by app.store.animeMetadataSourceFlow().collectAsState(initial="auto")
+    var picker by remember { mutableStateOf(false) }
+    val labels=mapOf("auto" to tr("Automatic — Simkl + AniList"),"simkl" to tr("Simkl ratings + AniList airing"),"anilist" to tr("AniList metadata"))
+    Column(Modifier.padding(16.dp)) {
+        SettingsCardHeading(Icons.Filled.AutoAwesome,tr("Anime metadata"))
+        Spacer(Modifier.height(8.dp))
+        Text(tr("Use dedicated anime metadata for title, rating and next-episode release without changing which extension supplies playback."),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.height(12.dp))
+        SettingsToggle(label=tr("Enable anime metadata"),supporting=tr("Applied when Hikari resolves anime metadata; stream providers remain unchanged."),checked=enabled,onCheckedChange={scope.launch{app.store.setAnimeMetadataEnabled(it)}})
+        Spacer(Modifier.height(8.dp))
+        ChoiceRow(value=labels[source] ?: source,leadingIcon=Icons.Filled.AutoAwesome,onClick={picker=true})
+    }
+    if(picker) ChoiceDialog(title=tr("Anime metadata source"),items=labels.map{(k,v)->ChoiceItem(k,v)},selectedKey=source,onPick={scope.launch{app.store.setAnimeMetadataSource(it)}},onDismiss={picker=false})
+}
+
+@Composable
 private fun TrackersCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
     val accountsFlow = remember { app.store.trackersFlow() }
@@ -5930,6 +5959,15 @@ private fun TrackersCard(app: HikariApp) {
     Column(Modifier.padding(16.dp)) {
         SettingsCardHeading(Icons.Filled.Sync, tr("Trackers"))
         Spacer(Modifier.height(10.dp))
+        val librarySource by app.store.trackerLibrarySourceFlow().collectAsState(initial="nuvio")
+        var libraryPicker by remember { mutableStateOf(false) }
+        val libraryLabels=mapOf("nuvio" to tr("Hikari Library"),"anilist" to tr("AniList"),"mal" to tr("MyAnimeList"),"kitsu" to tr("Kitsu"),"simkl" to tr("Simkl"),"shikimori" to tr("Shikimori"),"trakt" to tr("Trakt"))
+        Text(tr("Library source"),style=MaterialTheme.typography.titleSmall,color=MaterialTheme.colorScheme.primary)
+        Text(tr("Load watchlists and personal/status lists from the connected tracker directly into Hikari."),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.height(8.dp))
+        ChoiceRow(value=libraryLabels[librarySource] ?: librarySource,leadingIcon=Icons.Filled.FolderOpen,onClick={libraryPicker=true})
+        if(libraryPicker) ChoiceDialog(title=tr("Choose library source"),items=libraryLabels.map{(key,label)->ChoiceItem(key,label,if(key=="nuvio") tr("Use Hikari's saved library") else tr("Connect this tracker first"))},selectedKey=librarySource,onPick={scope.launch{app.store.setTrackerLibrarySource(it)}},onDismiss={libraryPicker=false})
+        Spacer(Modifier.height(14.dp))
 
         for (kind in TrackerKind.entries) {
             val account = accounts.firstOrNull { it.kind == kind }

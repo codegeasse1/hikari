@@ -2017,7 +2017,7 @@ class ContentRepository(private val manager: ProviderManager) {
                         (providerId == null || it.config.id == providerId) &&
                         (providerCatalogsEnabled ||
                             (it.config.type != ProviderType.NUVIO && it.config.type != ProviderType.STREMIO) ||
-                            it.config.name.equals("Cinemeta", ignoreCase = true))
+                            (it.config.name.equals("Cinemeta", ignoreCase = true) || it.config.id.equals("cinemeta", ignoreCase = true) || it.config.id.contains("cinemeta", ignoreCase = true)))
                 }
                 .distinctBy { it.config.id }
         )
@@ -2124,7 +2124,10 @@ class ContentRepository(private val manager: ProviderManager) {
         match: (ContentProvider) -> Boolean,
     ): Flow<List<CatalogRow>> = flow {
         val providerCatalogsEnabled = runCatching { HikariApp.instance.store.providerCatalogsEnabled() }.getOrDefault(true)
-        if (!providerCatalogsEnabled) runCatching { HikariApp.instance.store.ensureCinemetaAddon() }
+        if (!providerCatalogsEnabled) {
+            runCatching { HikariApp.instance.store.ensureCinemetaAddon() }
+            runCatching { HikariApp.instance.providers.refresh() }
+        }
         val active = interleaveByProviderType(
             // Manga engines have their own tab, so they are not part of the Home
             // feed (see the note in [homeRows]).
@@ -5425,9 +5428,18 @@ class ContentRepository(private val manager: ProviderManager) {
             if (result.backdropUrl != null && result.overview != null) break
         }
         val translated = translateItem(result)
-        synchronized(metaCache) { metaCache[item.uniqueId] = translated }
-        if (translated != item) MetaCache.putMeta(metaKey, translated)
-        translated
+        val animeMeta = runCatching { AnimeMetadataRepository.enrich(HikariApp.instance, translated) }.getOrNull()
+        val finalMeta = animeMeta?.let {
+            translated.copy(
+                title = it.title ?: translated.title,
+                rating = it.rating ?: translated.rating,
+                nextEpisodeDate = it.nextEpisodeDate ?: translated.nextEpisodeDate,
+                metadataSource = it.source,
+            )
+        } ?: translated
+        synchronized(metaCache) { metaCache[item.uniqueId] = finalMeta }
+        if (finalMeta != item) MetaCache.putMeta(metaKey, finalMeta)
+        finalMeta
     }
 
     /** Episodes from the origin addon, falling back to the first other addon
