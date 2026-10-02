@@ -1944,6 +1944,72 @@ class ContentRepository(private val manager: ProviderManager) {
         return out
     }
 
+
+    private fun isTmdbHomeFallbackProvider(p: ContentProvider): Boolean =
+        p.config.type == ProviderType.NUVIO || p.config.type == ProviderType.STREMIO
+
+    /**
+     * Provider catalogs can be disabled independently of playback. A selected
+     * Nuvio/Stremio source still needs a browse surface, so use Hikari's built-in
+     * TMDB catalog pool while keeping the selected provider id on each item.
+     */
+    private suspend fun tmdbHomeRows(p: ContentProvider): List<CatalogRow> {
+        val refs = TmdbBrowse.catalogRefs(
+            p.config.name,
+            p.config.id,
+            kotlin.math.abs(p.config.id.hashCode()),
+        ).take(12)
+        return refs.mapNotNull { ref ->
+            val items = runCatching { TmdbBrowse.items(p.config.id, ref.id, 1) }
+                .getOrDefault(emptyList())
+            if (items.isEmpty()) null
+            else CatalogRow(
+                providerId = p.config.id,
+                providerName = p.config.name,
+                title = ref.name,
+                items = items,
+                key = "\${p.config.id}|\${ref.type}|\${ref.id}",
+                catalogId = ref.id,
+                type = ref.type,
+                rawType = ref.rawType,
+            )
+        }
+    }
+
+    private suspend fun homeRowsForProvider(
+        p: ContentProvider,
+        providerCatalogsEnabled: Boolean,
+        useTmdbFallback: Boolean,
+    ): List<CatalogRow> {
+        if (!providerCatalogsEnabled && useTmdbFallback && isTmdbHomeFallbackProvider(p)) {
+            return tmdbHomeRows(p)
+        }
+        val catalogs = p.homeCatalogs()
+            .distinctBy { it.type to it.id }
+            .take(24)
+        return coroutineScope {
+            catalogs.map { c ->
+                async {
+                    val items = withTimeoutOrNull(homeCatalogCeilingMs(p)) {
+                        cancellableCatching { loadCatalogPage(p, c, 1) }
+                            .getOrDefault(emptyList())
+                    }.orEmpty().distinctBy { it.uniqueId }.take(40)
+                    if (items.isEmpty()) null
+                    else CatalogRow(
+                        providerId = p.config.id,
+                        providerName = p.config.name,
+                        title = c.name,
+                        items = items,
+                        key = "\${p.config.id}|\${c.type}|\${c.id}",
+                        catalogId = c.id,
+                        type = c.type,
+                        rawType = c.rawType,
+                    )
+                }
+            }.awaitAll().filterNotNull()
+        }
+    }
+
     /** Provider id -> engine kind, the index [HomeDedupe] needs: a [CatalogRow]
      *  knows its provider's id but not which engine that provider is. */
     private fun typeIndex(providers: List<ContentProvider>): Map<String, ProviderType> =
@@ -2016,6 +2082,7 @@ class ContentRepository(private val manager: ProviderManager) {
                         it.config.type != ProviderType.MANGA &&
                         (providerId == null || it.config.id == providerId) &&
                         (providerCatalogsEnabled ||
+                            (providerId != null && isTmdbHomeFallbackProvider(it)) ||
                             (it.config.type != ProviderType.NUVIO && it.config.type != ProviderType.STREMIO) ||
                             (it.config.name.equals("Cinemeta", ignoreCase = true) || it.config.id.equals("cinemeta", ignoreCase = true) || it.config.id.contains("cinemeta", ignoreCase = true)))
                 }
@@ -2041,32 +2108,7 @@ class ContentRepository(private val manager: ProviderManager) {
                             // boots a whole JS engine before its first byte,
                             // and its own home page can fetch a dozen sections).
                             val loaded = withTimeoutOrNull(homeProviderCeilingMs(p)) {
-                                val catalogs = p.homeCatalogs()
-                                    .distinctBy { it.type to it.id }
-                                    .take(24)
-                                coroutineScope {
-                                    catalogs.map { c ->
-                                        async {
-                                            catalogGate.withPermit {
-                                                val items = withTimeoutOrNull(homeCatalogCeilingMs(p)) {
-                                                    cancellableCatching { loadCatalogPage(p, c, 1) }
-                                                        .getOrDefault(emptyList())
-                                                }.orEmpty().distinctBy { it.uniqueId }.take(40)
-                                                if (items.isEmpty()) null
-                                                else CatalogRow(
-                                                    providerId = p.config.id,
-                                                    providerName = p.config.name,
-                                                    title = c.name,
-                                                    items = items,
-                                                    key = "${p.config.id}|${c.type}|${c.id}",
-                                                    catalogId = c.id,
-                                                    type = c.type,
-                                                    rawType = c.rawType,
-                                                )
-                                            }
-                                        }
-                                    }.awaitAll().filterNotNull()
-                                }
+                                homeRowsForProvider(p, providerCatalogsEnabled, providerId != null)
                             }
                             if (loaded == null) {
                                 noteCatalogTimeout(p, homeProviderCeilingMs(p))
@@ -2095,7 +2137,10 @@ class ContentRepository(private val manager: ProviderManager) {
      * weak device still can't be flooded with requests.
      */
     fun homeRowsStreaming(providerId: String? = null): Flow<List<CatalogRow>> =
-        homeRowsStreamingWhere { providerId == null || it.config.id == providerId }
+        homeRowsStreamingWhere(
+            match = { providerId == null || it.config.id == providerId },
+            allowDisabledProviderFallback = providerId != null,
+        )
 
     /**
      * The same feed for a MULTI pick: every selected provider's catalogs, in one
@@ -2105,7 +2150,10 @@ class ContentRepository(private val manager: ProviderManager) {
      * reads exactly like a single-source one, only wider.
      */
     fun homeRowsStreamingFor(ids: Set<String>): Flow<List<CatalogRow>> =
-        homeRowsStreamingWhere { it.config.id in ids }
+        homeRowsStreamingWhere(
+            match = { it.config.id in ids },
+            allowDisabledProviderFallback = true,
+        )
 
     /**
      * The one implementation behind [homeRowsStreaming] and
@@ -2122,6 +2170,7 @@ class ContentRepository(private val manager: ProviderManager) {
      */
     private fun homeRowsStreamingWhere(
         match: (ContentProvider) -> Boolean,
+        allowDisabledProviderFallback: Boolean = false,
     ): Flow<List<CatalogRow>> = flow {
         val providerCatalogsEnabled = runCatching { HikariApp.instance.store.providerCatalogsEnabled() }.getOrDefault(true)
         if (!providerCatalogsEnabled) {
@@ -2135,6 +2184,7 @@ class ContentRepository(private val manager: ProviderManager) {
                 it.config.enabled &&
                     it.config.type != ProviderType.MANGA && match(it) &&
                     (providerCatalogsEnabled ||
+                        (allowDisabledProviderFallback && isTmdbHomeFallbackProvider(it)) ||
                         (it.config.type != ProviderType.NUVIO && it.config.type != ProviderType.STREMIO) ||
                         it.config.name.equals("Cinemeta", ignoreCase = true))
             }
@@ -2163,41 +2213,16 @@ class ContentRepository(private val manager: ProviderManager) {
                     try {
                         providerGate.withPermit {
                             val settled = withTimeoutOrNull(homeProviderCeilingMs(p)) {
-                                val catalogs = p.homeCatalogs()
-                                    .distinctBy { it.type to it.id }
-                                    .take(24)
-                                coroutineScope {
-                                    catalogs.mapIndexed { ci, c ->
-                                        async {
-                                            try {
-                                                catalogGate.withPermit {
-                                                    val items = withTimeoutOrNull(homeCatalogCeilingMs(p)) {
-                                                        cancellableCatching { loadCatalogPage(p, c, 1) }
-                                                            .getOrDefault(emptyList())
-                                                    }.orEmpty().distinctBy { it.uniqueId }.take(40)
-                                                    if (items.isNotEmpty()) {
-                                                        var row = CatalogRow(
-                                                            providerId = p.config.id,
-                                                            providerName = p.config.name,
-                                                            title = c.name,
-                                                            items = items,
-                                                            key = "${p.config.id}|${c.type}|${c.id}",
-                                                            catalogId = c.id,
-                                                            type = c.type,
-                                                            rawType = c.rawType,
-                                                        )
-                                                        row = translateRows(listOf(row)).firstOrNull() ?: row
-                                                        placed[pi * 100 + ci] = row
-                                                        version.incrementAndGet()
-                                                    }
-                                                }
-                                            } catch (e: kotlinx.coroutines.CancellationException) {
-                                                throw e
-                                            } catch (_: Throwable) {
-                                            }
-                                        }
-                                    }
-                                }.awaitAll()
+                                val rowsForProvider = homeRowsForProvider(
+                                p,
+                                providerCatalogsEnabled,
+                                allowDisabledProviderFallback,
+                            )
+                            rowsForProvider.forEachIndexed { ci, rawRow ->
+                                val row = translateRows(listOf(rawRow)).firstOrNull() ?: rawRow
+                                placed[pi * 100 + ci] = row
+                                version.incrementAndGet()
+                            }
                             }
                             if (settled == null) noteCatalogTimeout(p, homeProviderCeilingMs(p))
                         }
@@ -5492,6 +5517,39 @@ class ContentRepository(private val manager: ProviderManager) {
     private fun streamsRememberedKey(item: MediaItem, episode: Episode?): String =
         streamsRememberedKey(item, episode, vegaSelectionSuffix(item))
 
+
+    /** Restore season/local episode numbers when an anime provider flattened
+     * several AniList TV seasons into one season=1 list. Provider episode ids
+     * are kept unchanged so playback links remain owned by the source. */
+    private suspend fun restoreAnimeSeasons(item: MediaItem, episodes: List<Episode>): List<Episode> {
+        if (item.type != MediaType.SERIES || episodes.size < 20) return episodes
+        if (episodes.map { it.season }.distinct().any { it > 1 }) return episodes
+        val layout = runCatching { AnimeMetadataRepository.seasonLayout(item.searchTitle) }
+            .getOrDefault(emptyList())
+        if (layout.size < 2) return episodes
+        val expected = layout.sumOf { it.episodes }
+        val tolerance = maxOf(5, (expected * 0.20).toInt())
+        if (kotlin.math.abs(expected - episodes.size) > tolerance) return episodes
+
+        val out = ArrayList<Episode>(episodes.size)
+        var cursor = 0
+        for (bucket in layout) {
+            var local = 1
+            repeat(minOf(bucket.episodes, episodes.size - cursor)) {
+                val original = episodes[cursor++]
+                out += original.copy(season = bucket.season, number = local++)
+            }
+            if (cursor >= episodes.size) break
+        }
+        while (cursor < episodes.size) {
+            val lastSeason = layout.last().season
+            val original = episodes[cursor++]
+            val n = out.count { it.season == lastSeason } + 1
+            out += original.copy(season = lastSeason, number = n)
+        }
+        return if (out.size == episodes.size) out else episodes
+    }
+
     private suspend fun episodesForInner(
         item: MediaItem,
         onPartial: ((List<Episode>) -> Unit)? = null,
@@ -5505,10 +5563,13 @@ class ContentRepository(private val manager: ProviderManager) {
         // pack 2 never paints (or inherits) pack 1's answers.
         val selKey = item.uniqueId + vegaSelectionSuffix(item)
         synchronized(episodeCache) { episodeCache[selKey] }?.let {
-            // Re-opening the page is instant: hand the cached list straight to
-            // the caller before doing anything else.
-            onPartial?.invoke(it)
-            return@withContext it
+            val fixed = restoreAnimeSeasons(item, it)
+            onPartial?.invoke(fixed)
+            if (fixed !== it) {
+                synchronized(episodeCache) { episodeCache[selKey] = fixed }
+                MetaCache.putEpisodes(epsKey, fixed)
+            }
+            return@withContext fixed
         }
         // The list this title had last time, painted immediately while the
         // engines below are asked for the fresh one — an ongoing series gains
@@ -5517,7 +5578,8 @@ class ContentRepository(private val manager: ProviderManager) {
         // return), which is the "it showed episodes yesterday" case.
         val epsKey = MetaCache.episodesKey(selKey)
         val cachedEps = MetaCache.cachedEpisodes(epsKey)
-        cachedEps?.let { onPartial?.invoke(it) }
+        val cachedSeasoned = cachedEps?.let { restoreAnimeSeasons(item, it) }
+        cachedSeasoned?.let { onPartial?.invoke(it) }
         val others = manager.providers.value.filter {
             it.config.enabled && it.config.id != item.providerId && it.config.type == ProviderType.STREMIO
         }
@@ -5532,7 +5594,8 @@ class ContentRepository(private val manager: ProviderManager) {
                 cancellableCatching { p.getEpisodes(item) }.getOrNull() ?: emptyList()
             }) ?: emptyList()
             if (eps.isNotEmpty()) {
-                val sorted = eps.sortedWith(compareBy({ it.season }, { it.number }))
+                val restored = restoreAnimeSeasons(item, eps)
+                val sorted = restored.sortedWith(compareBy({ it.season }, { it.number }))
                 // Publish the extension's own list the MOMENT it answers, before
                 // any polish: the page must never read "Episodes (0)" over a
                 // list that already exists (see [onPartial]).
@@ -5567,9 +5630,11 @@ class ContentRepository(private val manager: ProviderManager) {
         // series".
         if (item.type == MediaType.SERIES || item.type == MediaType.UNKNOWN) {
             episodesFromExtensions(item, onPartial)?.let { list ->
+                val seasoned = restoreAnimeSeasons(item, list)
+                if (seasoned !== list) onPartial?.invoke(seasoned)
                 // Same order as above: auto-translate first, then TMDB's names in
                 // the app's chosen language (which win when they exist).
-                val translated = translateEpisodes(item.providerId, list)
+                val translated = translateEpisodes(item.providerId, seasoned)
                 if (translated !== list) onPartial?.invoke(translated)
                 val named = withRealEpisodeNames(item, translated)
                 synchronized(episodeCache) { episodeCache[selKey] = named }
@@ -5582,7 +5647,7 @@ class ContentRepository(private val manager: ProviderManager) {
         // bare null, so a series whose engine is unreachable right now still
         // shows the list it served before (the "no episodes" verdict for a
         // title that plainly has them).
-        cachedEps
+        cachedSeasoned
     }
 
     /**
