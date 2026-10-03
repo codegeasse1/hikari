@@ -72,9 +72,9 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
          *  Pure de-duplication of a burst of callers — never a verdict: an
          *  episode list that failed is asked for again a few seconds later. */
         private const val EPISODE_MISS_TTL_MS = 20_000L
-        private const val MAX_HOSTERS = 8
-        private const val MAX_VIDEOS_PER_HOSTER = 12
-        private const val MAX_STREAMS = 60
+        private const val MAX_HOSTERS = 16
+        private const val MAX_VIDEOS_PER_HOSTER = 24
+        private const val MAX_STREAMS = 150
     }
 
     /** `aniyomi|<packageName>|<sourceIndex>` → the extension it belongs to. */
@@ -292,13 +292,43 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
             // source really is keeps the episode grid, the S1E5 the user picked
             // and the cross-extension episode match all working.
             type = MediaType.SERIES,
-            posterUrl = runCatching { anime.thumbnail_url }.getOrNull()?.takeIf { it.isNotBlank() },
+            posterUrl = artUrl(runCatching { anime.thumbnail_url }.getOrNull()),
             overview = runCatching { anime.description }.getOrNull()?.takeIf { it.isNotBlank() },
             genres = runCatching { anime.getGenres() }.getOrNull().orEmpty(),
-            backdropUrl = runCatching { anime.background_url }.getOrNull()?.takeIf { it.isNotBlank() },
+            backdropUrl = artUrl(runCatching { anime.background_url }.getOrNull()),
             rawType = "aniyomi",
         )
         return item
+    }
+
+    @Volatile
+    private var artSite: String? = null
+
+    private fun artSite(): String? {
+        artSite?.let { return it }
+        return runCatching { AniyomiExtensionManager.siteUrlOf(config)?.trim()?.trimEnd('/') }
+            .getOrNull()?.takeIf { it.isNotBlank() }?.also { artSite = it }
+    }
+
+    private fun artUrl(url: String?): String? {
+        val u = url?.trim()?.takeIf { it.isNotBlank() } ?: return null
+        if (u.startsWith("http://") || u.startsWith("https://") || u.startsWith("data:") ||
+            u.startsWith("file://") || u.startsWith("content://")
+        ) return u.also { recordArt(it) }
+        val base = artSite() ?: return u
+        return (if (u.startsWith("/")) base + u else base + "/" + u).also { recordArt(it) }
+    }
+
+    private fun recordArt(url: String) {
+        if (!url.startsWith("http")) return
+        val base = artSite() ?: return
+        runCatching {
+            val host = java.net.URI(url).host?.lowercase() ?: return@runCatching
+            com.hikari.app.cs3.Cs3MainApiProvider.imageHeaders.putIfAbsent(
+                url, mapOf("Referer" to base + "/", "User-Agent" to Http.UA)
+            )
+            com.hikari.app.cs3.Cs3MainApiProvider.imageHostReferers.putIfAbsent(host, base + "/")
+        }
     }
 
     /** A cached `SAnime` for [item], or a minimal stub carrying its url — enough
@@ -632,11 +662,27 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
             val name = hoster.hosterName.takeIf { it.isNotBlank() && it != Hoster.NO_HOSTER_LIST }.orEmpty()
             for (video in videos.take(MAX_VIDEOS_PER_HOSTER)) {
                 val resolved = resolve(http, video) ?: continue
-                if (resolved.videoUrl.isBlank() || resolved.videoUrl == "null") continue
+                if (resolved.videoUrl.isBlank() || isUnresolved(resolved.videoUrl)) continue
                 out += name to resolved
             }
         }
+        if (out.isEmpty()) {
+            val direct = runCatching { http.getVideoList(episode) }.getOrElse {
+                AniyomiExtensionManager.recordError("getVideoList(episode) fallback failed", it)
+                emptyList()
+            }.let { list -> runCatching { with(http) { list.sortVideos() } }.getOrDefault(list) }
+            for (video in parseVideoUrls(http, direct).take(MAX_VIDEOS_PER_HOSTER)) {
+                val resolved = resolve(http, video) ?: continue
+                if (resolved.videoUrl.isBlank() || isUnresolved(resolved.videoUrl)) continue
+                out += "" to resolved
+            }
+        }
         return out
+    }
+
+    private fun isUnresolved(url: String): Boolean {
+        val u = url.trim()
+        return u.equals("null", true) || u.equals("undefined", true) || u.equals("none", true)
     }
 
     /**
@@ -659,9 +705,10 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
      */
     private suspend fun parseVideoUrls(http: AnimeHttpSource, videos: List<Video>): List<Video> =
         videos.map { video ->
-            if (video.videoUrl != "null") return@map video
+            val current = video.videoUrl.trim()
+            if (current.isNotEmpty() && !isUnresolved(current)) return@map video
             val url = runCatching { http.getVideoUrl(video) }.getOrNull()
-            if (url.isNullOrBlank()) video else video.copy(videoUrl = url)
+            if (url.isNullOrBlank() || isUnresolved(url)) video else video.copy(videoUrl = url)
         }
 
     /**

@@ -63,6 +63,15 @@ class UniversalScraper(override val config: ProviderConfig) : ContentProvider {
         /** Per-provider last-resort message (shown in the Detail screen's "no
          *  sources" panel, including the app-wide extraction passes). */
         val streamErrors = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+        fun imageSelectorFor(extra: String?): String? {
+            val s = runCatching { JSONObject(extra ?: "{}") }.getOrDefault(JSONObject())
+                .optJSONObject("streams") ?: return null
+            return s.optString("images").trim().takeIf { it.isNotEmpty() }
+        }
+
+        fun isImageMode(config: ProviderConfig): Boolean =
+            !imageSelectorFor(config.extra).isNullOrBlank()
     }
 
     private val conf = runCatching { JSONObject(config.extra ?: "{}") }.getOrDefault(JSONObject())
@@ -81,8 +90,34 @@ class UniversalScraper(override val config: ProviderConfig) : ContentProvider {
 
     private fun pick(scope: Element, selector: String, attr: String?): String? {
         if (selector.isBlank()) return null
-        val el = scope.select(selector).first() ?: return null
-        return if (attr != null) el.attr(attr).ifBlank { null } else el.text().trim().ifBlank { null }
+        val (css, at) = splitSel(selector)
+        if (css.isBlank()) return null
+        val el = scope.select(css).first() ?: return null
+        val a = at ?: attr ?: return el.text().trim().ifBlank { null }
+        return when {
+            a.equals("text", true) -> el.text().trim().ifBlank { null }
+            a.equals("html", true) -> el.html().trim().ifBlank { null }
+            else -> el.attr(if (a == "href" || a == "src") "abs:$a" else a).ifBlank { null }
+        }
+    }
+
+    private fun splitSel(raw: String): Pair<String, String?> {
+        val at = raw.lastIndexOf('@')
+        if (at <= 0 || at == raw.length - 1) return raw to null
+        return raw.substring(0, at) to raw.substring(at + 1)
+    }
+
+    private fun pickAttr(scope: Element, rawSel: String, defaultAttr: String): String? {
+        if (rawSel.isBlank()) return null
+        val (css, attr) = splitSel(rawSel)
+        if (css.isBlank()) return null
+        val el = scope.select(css).first() ?: return null
+        val a = attr ?: defaultAttr
+        return when {
+            a.equals("text", true) -> el.text().trim().ifBlank { null }
+            a.equals("html", true) -> el.html().trim().ifBlank { null }
+            else -> el.attr(if (a == "href" || a == "src") "abs:$a" else a).ifBlank { null }
+        }
     }
 
     private fun enc(s: String): String =
@@ -101,8 +136,8 @@ class UniversalScraper(override val config: ProviderConfig) : ContentProvider {
         for (el in doc.select(itemSel)) {
             val title = pick(el, titleSel, null) ?: continue
             if (title.isBlank()) continue
-            val href = el.select(hrefSel).first()?.attr("abs:href")
-            val poster = el.select(posterSel).first()?.attr("abs:src")
+            val href = pickAttr(el, hrefSel, "href")
+            val poster = pickAttr(el, posterSel, "src")
             val year = yearSel?.let { pick(el, it, null) }
                 ?.let { s -> s.filter { c -> c.isDigit() }.take(4).toIntOrNull() }
             out += MediaItem(
@@ -448,7 +483,7 @@ class UniversalScraper(override val config: ProviderConfig) : ContentProvider {
         val seasonDefault = e.optInt("seasonDefault", 0)
         val out = mutableListOf<Episode>()
         for (el in doc.select(itemSel)) {
-            val href = el.select(hrefSel).first()?.attr("abs:href") ?: continue
+            val href = pickAttr(el, hrefSel, "href") ?: continue
             val number = numSel?.let { pick(el, it, null) }
                 ?.let { s -> s.filter { c -> c.isDigit() }.toIntOrNull() }
                 ?: (out.size + 1)
@@ -465,9 +500,37 @@ class UniversalScraper(override val config: ProviderConfig) : ContentProvider {
         if (api != null) return getApiStreams(item, episode)
         val s = conf.optJSONObject("streams") ?: return emptyList()
         val pageUrl = episode?.id ?: item.id
+        val imagesSel = s.optString("images").trim()
+        if (imagesSel.isNotEmpty()) return findImages(pageUrl, imagesSel)
         val results = mutableListOf<StreamSource>()
         findStreams(pageUrl, s, results, 0)
         return results.distinctBy { it.url }
+    }
+
+    private suspend fun findImages(pageUrl: String, rawSel: String): List<StreamSource> {
+        val html = Http.getString(pageUrl) ?: return emptyList()
+        val doc = runCatching { Jsoup.parse(html, pageUrl) }.getOrNull() ?: return emptyList()
+        val (css, attr) = splitSel(rawSel)
+        if (css.isBlank()) return emptyList()
+        val out = ArrayList<StreamSource>()
+        for (img in doc.select(css)) {
+            val a = attr ?: "src"
+            var u = when {
+                a.equals("text", true) || a.equals("html", true) -> null
+                else -> img.attr(if (a == "src" || a == "href") "abs:$a" else a).ifBlank { null }
+            }
+            if (u.isNullOrBlank() || u.startsWith("data:")) {
+                u = img.attr("abs:data-src").ifBlank { img.attr("abs:data-lazy-src") }.ifBlank { null }
+            }
+            if (u.isNullOrBlank() || u.startsWith("data:")) continue
+            out += StreamSource(
+                name = "📖 Page " + (out.size + 1),
+                url = u,
+                headers = mapOf("Referer" to pageUrl, "User-Agent" to Http.UA),
+                pageUrl = pageUrl,
+            )
+        }
+        return out.distinctBy { it.url }
     }
 
     private suspend fun findStreams(

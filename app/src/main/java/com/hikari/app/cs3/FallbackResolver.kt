@@ -197,6 +197,9 @@ object FallbackResolver {
         if (isDoodHost(embedUrl)) {
             runCatching { doodExtract(embedUrl, raws) }
         }
+        if (isFastreamUrl(embedUrl)) {
+            runCatching { fastreamExtract(embedUrl, raws) }
+        }
         if (isRumbleUrl(embedUrl)) {
             runCatching { rumbleExtract(embedUrl, raws) }
         }
@@ -330,6 +333,41 @@ object FallbackResolver {
 
     private fun isRumbleUrl(url: String): Boolean =
         url.lowercase().contains("rumble")
+
+    private fun isFastreamUrl(url: String): Boolean =
+        url.lowercase().contains("fastream")
+
+    private suspend fun fastreamExtract(embedUrl: String, raws: MutableMap<String, RawStream>) {
+        val id = Regex("(embedapp-|emb\\.html\\?)(.*)(\\=(enc|)|\\.html)").find(embedUrl)
+            ?.groupValues?.getOrNull(2)?.trim().orEmpty()
+        if (id.isEmpty()) return
+        val body = "op=embed&file_code=" +
+            runCatching { java.net.URLEncoder.encode(id, "UTF-8") }.getOrDefault(id) + "&auto=1"
+        val resp = runCatching {
+            Http.postString(
+                "https://fastream.to/dl",
+                body,
+                mapOf("Referer" to embedUrl),
+                "application/x-www-form-urlencoded",
+            )
+        }.getOrNull()
+        if (resp.isNullOrBlank()) return
+        val text = getAndUnpack(resp)
+        for (m in M3U8_RE.findAll(text)) {
+            val u = cleanUrl(m.value) ?: continue
+            raws.putIfAbsent(
+                u,
+                RawStream(u, "https://fastream.to/", "Fastream", Qualities.Unknown.value, true)
+            )
+        }
+        for (m in MP4_RE.findAll(text)) {
+            val u = cleanUrl(m.value) ?: continue
+            raws.putIfAbsent(
+                u,
+                RawStream(u, "https://fastream.to/", "Fastream", Qualities.Unknown.value, false)
+            )
+        }
+    }
 
     private fun scanSubtitles(text: String): List<SubtitleSource> {
         val out = mutableListOf<SubtitleSource>()

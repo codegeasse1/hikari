@@ -51,6 +51,9 @@ class AnymexProvider(override val config: ProviderConfig) : ContentProvider {
             if (items.isNotEmpty()) {
                 catalogErrors.remove(config.id)
                 lastOutcome.remove(config.id)
+            } else {
+                markWall(raw)
+                if (raw.isNullOrBlank()) noteCatalogError("Empty catalogue answer — the site may be blocking or down")
             }
             items
         }
@@ -59,7 +62,9 @@ class AnymexProvider(override val config: ProviderConfig) : ContentProvider {
         withContext(Dispatchers.IO) {
             if (query.isBlank()) return@withContext emptyList()
             val mod = module() ?: return@withContext emptyList()
-            mapItems(AnymexRuntime.search(mod, config.id, query, page.coerceAtLeast(1)))
+            val raw = AnymexRuntime.search(mod, config.id, query, page.coerceAtLeast(1))
+            markWall(raw)
+            mapItems(raw)
         }
 
     override suspend fun getMeta(item: MediaItem): MediaItem = withContext(Dispatchers.IO) {
@@ -86,20 +91,21 @@ class AnymexProvider(override val config: ProviderConfig) : ContentProvider {
         val arr = d.optJSONArray("episodes")
             ?: d.optJSONArray("chapters")
             ?: d.optJSONArray("list")
+            ?: d.optJSONArray("data")
+            ?: d.optJSONArray("entries")
+            ?: d.optJSONArray("items")
             ?: return@withContext null
         val out = ArrayList<Episode>()
         for (i in 0 until minOf(arr.length(), MAX_EPISODES)) {
             val o = arr.optJSONObject(i) ?: continue
             val url = o.optString("url").ifBlank { o.optString("link") }
-                .ifBlank { o.optString("href") }.ifBlank { o.optString("id") }.trim()
+                .ifBlank { o.optString("href") }.ifBlank { o.optString("id") }
+                .ifBlank { o.optString("episodeUrl") }.trim()
             if (url.isBlank()) continue
             val name = o.optString("name").trim()
                 .ifBlank { o.optString("title").trim() }
                 .ifBlank { null }
-            val n = o.opt("number")?.toString()?.toIntOrNull()
-                ?: o.opt("episode")?.toString()?.toIntOrNull()
-                ?: o.opt("ep")?.toString()?.toIntOrNull()
-                ?: (i + 1)
+            val n = numOf(o) ?: (i + 1)
             val season = o.opt("season")?.toString()?.toIntOrNull()?.takeIf { it > 0 } ?: 1
             out += Episode(number = n, id = url, name = name, season = season)
         }
@@ -129,16 +135,20 @@ class AnymexProvider(override val config: ProviderConfig) : ContentProvider {
         val out = ArrayList<MediaItem>()
         for (i in 0 until arr.length()) {
             val o = arr.optJSONObject(i) ?: continue
-            val name = o.optString("name").trim()
+            val name = o.optString("name").ifBlank { o.optString("title") }.trim()
             if (name.isBlank()) continue
-            val link = o.optString("link").ifBlank { o.optString("url") }.trim()
+            val link = o.optString("link").ifBlank { o.optString("url") }
+                .ifBlank { o.optString("href") }.ifBlank { o.optString("id") }.trim()
             if (link.isBlank()) continue
             out += MediaItem(
                 providerId = config.id,
                 id = link,
                 title = name,
                 type = MediaType.SERIES,
-                posterUrl = o.optString("imageUrl").ifBlank { o.optString("image") }.trim().ifBlank { null },
+                posterUrl = o.optString("imageUrl").ifBlank { o.optString("image") }
+                    .ifBlank { o.optString("cover") }.ifBlank { o.optString("poster") }
+                    .ifBlank { o.optString("thumbnail") }.ifBlank { o.optString("artwork") }
+                    .ifBlank { o.optString("coverUrl") }.trim().ifBlank { null },
             )
         }
         return out
@@ -177,6 +187,19 @@ class AnymexProvider(override val config: ProviderConfig) : ContentProvider {
         if (err.isBlank()) return
         catalogErrors[config.id] = err.take(200)
         lastOutcome[config.id] = "✗ ${err.take(72)}"
+        markWall(err)
+    }
+
+    private val wallRe = Regex(
+        "\\b(403|429|503)\\b|cloudflare|just a moment|one moment, please|verify you are human|cf-chl|ddos|access denied|attention required",
+        RegexOption.IGNORE_CASE,
+    )
+
+    private fun markWall(text: String?) {
+        val t = text.orEmpty()
+        if (t.isBlank() || !wallRe.containsMatchIn(t)) return
+        val site = runCatching { AnymexPluginManager.siteUrlOf(config) }.getOrNull()
+        if (!site.isNullOrBlank()) com.hikari.app.net.CloudflareVerifier.markBlocked(site)
     }
 
     private fun firstObject(raw: String): JSONObject? {
@@ -201,6 +224,16 @@ class AnymexProvider(override val config: ProviderConfig) : ContentProvider {
         return null
     }
 
+    private fun numOf(o: JSONObject): Int? {
+        for (k in listOf("number", "episode_number", "episodeNumber", "episode", "ep", "no", "index", "num")) {
+            if (o.isNull(k)) continue
+            o.opt(k)?.toString()?.trim()?.takeIf { it.isNotEmpty() }?.let { s ->
+                s.toIntOrNull() ?: s.toFloatOrNull()?.toInt()?.takeIf { it > 0 }
+            }?.let { return it }
+        }
+        return null
+    }
+
     private fun mapVideos(raw: String): List<StreamSource> {
         val out = ArrayList<StreamSource>()
         val t = raw.trim()
@@ -217,9 +250,11 @@ class AnymexProvider(override val config: ProviderConfig) : ContentProvider {
                 when (val e = arr.opt(i)) {
                     is JSONObject -> {
                         val u = e.optString("url").ifBlank { e.optString("originalUrl") }
-                            .ifBlank { e.optString("streamUrl") }.trim()
+                            .ifBlank { e.optString("streamUrl") }.ifBlank { e.optString("file") }
+                            .ifBlank { e.optString("src") }.ifBlank { e.optString("link") }.trim()
                         if (u.isNotBlank()) {
-                            val q = e.optString("quality").trim()
+                            val q = e.optString("quality").ifBlank { e.optString("label") }
+                                .ifBlank { e.optString("resolution") }.trim()
                             val sz = e.optString("size").trim()
                             val lang = e.optString("language").ifBlank { e.optString("lang") }.trim()
                             val detail = listOfNotNull(

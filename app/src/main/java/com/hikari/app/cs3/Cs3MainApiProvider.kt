@@ -1025,6 +1025,13 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
             headers.putIfAbsent("User-Agent", com.hikari.app.net.Http.UA)
             return
         }
+        if (host.contains("fastream")) {
+            val origin = "https://$host"
+            headers.putIfAbsent("Referer", "$origin/")
+            headers.putIfAbsent("Origin", origin)
+            headers.putIfAbsent("User-Agent", com.hikari.app.net.Http.UA)
+            return
+        }
         val apex = apexOf(host)
         // CS3 JwPlayerHelper uses referer = mainUrl (e.g. https://fastream.to)
         headers.putIfAbsent("Referer", "https://$apex")

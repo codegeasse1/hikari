@@ -119,7 +119,9 @@ fun MangaScreen(nav: NavHostController) {
     val engines = remember(all) {
         all.filter { p ->
             p is MangaProvider ||
-                p.config.type == com.hikari.app.data.ProviderType.ANYMEX_MANGA
+                p.config.type == com.hikari.app.data.ProviderType.ANYMEX_MANGA ||
+                (p.config.type == com.hikari.app.data.ProviderType.UNIVERSAL &&
+                    com.hikari.app.providers.UniversalScraper.isImageMode(p.config))
         }
     }
     val engineKey = remember(engines) { engines.joinToString(",") { it.config.id } }
@@ -290,7 +292,16 @@ fun MangaScreen(nav: NavHostController) {
                         onClick = {
                             Routes.safeNavigate(
                                 nav,
-                                Routes.mangaDetail(item.providerId, item.id, item.title, item.posterUrl),
+                                if (engines.firstOrNull { it.config.id == item.providerId }?.config?.type ==
+                                    com.hikari.app.data.ProviderType.UNIVERSAL
+                                ) {
+                                    Routes.detail(
+                                        item.providerId, item.type, item.id,
+                                        item.title, item.posterUrl, item.rawType,
+                                    )
+                                } else {
+                                    Routes.mangaDetail(item.providerId, item.id, item.title, item.posterUrl)
+                                },
                             )
                         },
                     )
@@ -478,6 +489,7 @@ private fun EngineRow(
 ) {
     val providerId = engine.config.id
     val name = engine.config.name
+    val catalogRawType = if (engine.config.type == com.hikari.app.data.ProviderType.UNIVERSAL) "" else "manga"
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     // Read here (a composable position) — `tr` cannot be called from inside a
@@ -507,7 +519,7 @@ private fun EngineRow(
                         onTap = {
                             if (revealPin) onRevealPin()
                             else openCatalog(
-                                nav, providerId, name, "popular", popularLabel,
+                                nav, providerId, name, "popular", popularLabel, catalogRawType,
                             )
                         },
                     )
@@ -522,7 +534,7 @@ private fun EngineRow(
                 .tvPress(previewPass = false, onClick = {
                     if (revealPin) onRevealPin()
                     else openCatalog(
-                        nav, providerId, name, "popular", popularLabel,
+                        nav, providerId, name, "popular", popularLabel, catalogRawType,
                     )
                 })
                 .padding(start = 12.dp, top = 12.dp, bottom = 12.dp, end = 4.dp),
@@ -543,10 +555,10 @@ private fun EngineRow(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     EngineAction(popularLabel) {
-                        openCatalog(nav, providerId, name, "popular", popularLabel)
+                        openCatalog(nav, providerId, name, "popular", popularLabel, catalogRawType)
                     }
                     EngineAction(latestLabel) {
-                        openCatalog(nav, providerId, name, "latest", latestLabel)
+                        openCatalog(nav, providerId, name, "latest", latestLabel, catalogRawType)
                     }
                 }
             }
@@ -642,11 +654,14 @@ private fun openCatalog(
     providerName: String,
     catalogId: String,
     title: String,
+    rawType: String = "manga",
 ) {
     // rawType "manga" is what makes CatalogScreen open the manga detail page for
     // its items instead of the video one (see CatalogScreen). The engine itself
     // tags its catalogs that way; here it is passed explicitly because this
-    // route is built by hand.
+    // route is built by hand. Universal image scrapers are video providers that
+    // read manga sites, so their items open the video detail page (which routes
+    // image chapters to the webtoon reader).
     Routes.safeNavigate(
         nav,
         Routes.catalog(
@@ -655,7 +670,7 @@ private fun openCatalog(
             title = title,
             providerName = providerName,
             type = MediaType.SERIES,
-            rawType = "manga",
+            rawType = rawType,
         ),
     )
 }

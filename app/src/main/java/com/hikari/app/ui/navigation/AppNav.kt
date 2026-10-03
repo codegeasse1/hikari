@@ -101,6 +101,7 @@ import com.hikari.app.ui.screens.IptvScreen
 import com.hikari.app.ui.screens.LibraryScreen
 import com.hikari.app.ui.screens.MangaDetailScreen
 import com.hikari.app.ui.screens.MangaReaderScreen
+import com.hikari.app.ui.screens.ScraperReaderScreen
 import com.hikari.app.ui.screens.MangaScreen
 import com.hikari.app.ui.screens.MyStuff
 import com.hikari.app.ui.screens.MyStuffScreen
@@ -154,6 +155,7 @@ object Routes {
      */
     const val MANGA_READER =
         "manga-reader?providerId={providerId}&url={url}&chapter={chapter}&title={title}&poster={poster}"
+    const val SCRAPER_READER = "scraper-reader?key={key}&title={title}"
 
     /**
      * The Stats tab: what the user watched and read, and for how long (see
@@ -204,6 +206,11 @@ object Routes {
         val poster = posterUrl?.takeIf { it.isNotBlank() && !it.startsWith("data:") && it.length <= 600 }
         if (poster != null) s += "&poster=${Uri.encode(poster)}"
         return s
+    }
+
+    fun scraperReader(key: String, title: String): String {
+        val safeTitle = title.replace(Regex("[\\p{Cc}\\u2028\\u2029]"), " ").trim().take(200)
+        return "scraper-reader?key=${Uri.encode(key)}&title=${Uri.encode(safeTitle)}"
     }
 
     /** Opens one IPTV playlist's group list. */
@@ -1213,6 +1220,17 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
                 val title = Uri.decode(entry.arguments?.getString("title").orEmpty())
                 val poster = Uri.decode(entry.arguments?.getString("poster").orEmpty())
                 MangaReaderScreen(nav, providerId, url, chapter, title, poster)
+            }
+            composable(
+                route = Routes.SCRAPER_READER,
+                arguments = listOf(
+                    navArgument("key") { type = NavType.StringType },
+                    navArgument("title") { type = NavType.StringType; defaultValue = "" },
+                )
+            ) { entry ->
+                val key = entry.arguments?.getString("key").orEmpty()
+                val title = Uri.decode(entry.arguments?.getString("title").orEmpty())
+                ScraperReaderScreen(nav, key, title)
             }
             composable(Routes.SETTINGS) { SettingsScreen(nav) }
             composable(Routes.STATS) {

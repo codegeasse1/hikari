@@ -2611,7 +2611,8 @@ class ContentRepository(private val manager: ProviderManager) {
             } else if (origin?.config?.type == ProviderType.STREMIO || originless) {
                 // Like the real client: ask every Stremio addon plus the origin.
                 all.filter { p ->
-                    p.config.id == item.providerId || p.config.type == ProviderType.STREMIO
+                    p.config.id == item.providerId || originless ||
+                        (p.config.type == ProviderType.STREMIO && SearchScope.family(ProviderType.STREMIO))
                 }
             } else {
                 // CS3 plugin / universal scraper: only the origin can resolve
@@ -2666,7 +2667,11 @@ class ContentRepository(private val manager: ProviderManager) {
                     }
                 }
             } else if (com.hikari.app.nuvio.TmdbResolver.isLikelyResolvable(item)) {
-                all.filter { it.config.type == ProviderType.NUVIO }
+                all.filter {
+                    it.config.type == ProviderType.NUVIO &&
+                        (originless || it.config.id == item.providerId ||
+                            SearchScope.family(ProviderType.NUVIO))
+                }
                     .sortedWith(nuvioOrder(item.providerId))
             } else {
                 emptyList()
@@ -4514,6 +4519,13 @@ class ContentRepository(private val manager: ProviderManager) {
                         noteSkipped("sky-host-blocked")
                         return@filter false
                     }
+                }
+                if (originType != null && p.config.type == originType &&
+                    (onlyIds == null || p.config.id !in onlyIds) &&
+                    !SearchScope.family(p.config.type)
+                ) {
+                    noteSkipped("family(${p.config.type.groupLabel})")
+                    return@filter false
                 }
                 when (p.config.type) {
                     ProviderType.CS3,

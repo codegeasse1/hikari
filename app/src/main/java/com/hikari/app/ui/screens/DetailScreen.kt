@@ -2741,10 +2741,51 @@ fun DetailScreen(
     // you left off?" prompt now (it holds the same history and asks in-video),
     // so a tap never silently resumes and never asks twice. The saved position
     // rides along as a hint for the player's prompt.
+    val scraperImageMode = remember(providers, livePid) {
+        providers.firstOrNull { it.config.id == livePid }?.let {
+            it.config.type == ProviderType.UNIVERSAL &&
+                com.hikari.app.providers.UniversalScraper.isImageMode(it.config)
+        } == true
+    }
+    var readingScraper by remember { mutableStateOf(false) }
+    val openScraperReader: (Episode?) -> Unit = { ep ->
+        app.appScope.launch {
+            readingScraper = true
+            try {
+                val prov = providers.firstOrNull { it.config.id == livePid }
+                val item = MediaItem(
+                    providerId = livePid,
+                    id = mediaId,
+                    title = title,
+                    type = type,
+                    posterUrl = posterUrl,
+                )
+                val eps = vm.episodes.value
+                val target = ep ?: eps?.sortedWith(compareBy({ it.season }, { it.number }))?.firstOrNull()
+                val pages = prov?.getStreams(item, target).orEmpty()
+                    .filter { it.url.startsWith("http", true) }
+                if (pages.isNotEmpty()) {
+                    val key = ScraperImageStore.put(
+                        title = item.title,
+                        images = pages.map { it.url },
+                        referer = target?.id?.takeIf { it.startsWith("http", true) },
+                    )
+                    Routes.safeNavigate(nav, Routes.scraperReader(key, item.title))
+                } else {
+                    openStreams(ep, 0L, false)
+                }
+            } finally {
+                readingScraper = false
+            }
+        }
+    }
     val tryPlay: (Episode?) -> Unit = { ep ->
-        val saved = savedProgressFor(ep)
-        resumeHint = saved
-        openStreams(ep, 0L, false)
+        if (scraperImageMode) openScraperReader(ep)
+        else {
+            val saved = savedProgressFor(ep)
+            resumeHint = saved
+            openStreams(ep, 0L, false)
+        }
     }
 
     // The download buttons (the play row and every episode row). Identical to
@@ -2753,8 +2794,11 @@ fun DetailScreen(
     // chooser the moment a server is ready — so "download episode 7" reaches
     // exactly the same code path as "play episode 7, then tap Download".
     val tryDownload: (Episode?) -> Unit = { ep ->
-        resumeHint = savedProgressFor(ep)
-        openStreams(ep, 0L, true)
+        if (scraperImageMode) openScraperReader(ep)
+        else {
+            resumeHint = savedProgressFor(ep)
+            openStreams(ep, 0L, true)
+        }
     }
 
     // What the primary action button plays: the first episode with progress
@@ -2777,7 +2821,7 @@ fun DetailScreen(
         (episodes?.isNotEmpty() == true)
     val detailCanPlay = !detailIsSeries || episodes.isNullOrEmpty()
     val detailBtnEp = if (detailCanPlay) null else (resumeEp ?: sortedEps.firstOrNull())
-    val detailActionLabel = when {
+    val detailActionLabel = if (scraperImageMode) I18n.t("Read") else when {
         resumeEp != null ->
             I18n.t("Resume") + if (resumeEp.season > 1)
                 " S"+resumeEp.season+" E"+resumeEp.number else " E"+resumeEp.number
