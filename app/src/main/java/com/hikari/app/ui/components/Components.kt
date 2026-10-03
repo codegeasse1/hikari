@@ -275,12 +275,16 @@ fun HeroArtwork(
         // image floating between black). A portrait poster never reaches this
         // branch: heroModel reports wide=false for it, and the cinematic
         // blurred-fill treatment below draws it intact instead of beheading it.
+        // On television the crop is anchored to the TOP of the frame: heads
+        // live in the upper part of a backdrop, so a slightly taller backdrop
+        // loses background at the bottom instead of faces at the top (the
+        // reported home header with the head cut off).
         PosterImage(
             model = model,
             contentDescription = contentDescription,
             modifier = modifier,
             contentScale = ContentScale.Crop,
-            alignment = Alignment.Center,
+            alignment = if (TvMode.current()) Alignment.TopCenter else Alignment.Center,
         )
         return
     }

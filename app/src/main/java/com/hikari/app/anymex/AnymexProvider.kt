@@ -129,9 +129,29 @@ class AnymexProvider(override val config: ProviderConfig) : ContentProvider {
             distinct
         }
 
-    private fun mapItems(raw: String?): List<MediaItem> {
+    /**
+     * Teaches Coil image loader the site Referer for a poster host.
+     */
+private fun recordPosterReferer(url: String?, siteBase: String?) {
+            val u = url?.trim().orEmpty()
+            if (u.isBlank() || !u.startsWith("http")) return
+            val sb = siteBase?.trim()?.trimEnd('/')?.ifBlank { null }
+            val ref = if (sb != null) sb + "/" else runCatching {
+                    val h = java.net.URI(u).host ?: return
+                    "https://" + h + "/"
+                }.getOrNull() ?: return
+                runCatching {
+                    val host = java.net.URI(u).host?.lowercase() ?: return@runCatching
+                    val m = com.hikari.app.cs3.Cs3MainApiProvider.imageHostReferers
+                    m.putIfAbsent(host, ref)
+                    m.putIfAbsent("www." + host, ref)
+                }
+        }
+    
+        private fun mapItems(raw: String?): List<MediaItem> {
         if (raw.isNullOrBlank()) return emptyList()
         val arr = listArray(raw) ?: return emptyList()
+        val siteBase = runCatching { AnymexPluginManager.siteUrlOf(config) }.getOrNull()
         val out = ArrayList<MediaItem>()
         for (i in 0 until arr.length()) {
             val o = arr.optJSONObject(i) ?: continue
@@ -148,7 +168,8 @@ class AnymexProvider(override val config: ProviderConfig) : ContentProvider {
                 posterUrl = o.optString("imageUrl").ifBlank { o.optString("image") }
                     .ifBlank { o.optString("cover") }.ifBlank { o.optString("poster") }
                     .ifBlank { o.optString("thumbnail") }.ifBlank { o.optString("artwork") }
-                    .ifBlank { o.optString("coverUrl") }.trim().ifBlank { null },
+                    .ifBlank { o.optString("coverUrl") }.trim().ifBlank { null }
+                    ?.also { recordPosterReferer(it, siteBase) },
             )
         }
         return out

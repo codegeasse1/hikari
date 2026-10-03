@@ -152,7 +152,11 @@ object Artwork {
                 // unrelated film's poster — which is what put film artwork on
                 // IPTV rows. Its tile is drawn locally, offline, from the
                 // channel's own name instead ([IptvArt]).
-                val res = if (IptvMark.of(item)) {
+                // A saved TORRENT rides on an IPTV-type row but is not a
+                // live channel: it reaches TMDB like anything else, so a
+                // magnet named e.g. "Digger 2026" resolves real artwork
+                // instead of wearing a "MAG/LIVE" tile.
+                val res = if (IptvMark.of(item) && item.rawType != "torrent") {
                     runCatching { IptvArt.tile(item)?.let { Pair<String?, String?>(it, null) } }
                         .getOrNull()
                 } else {

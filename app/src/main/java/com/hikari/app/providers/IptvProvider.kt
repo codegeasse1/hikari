@@ -234,7 +234,30 @@ class IptvProvider(override val config: ProviderConfig) : ContentProvider {
 
     /** When [config.url] is a stream rather than a playlist (an m3u8/m3u link
      *  pasted straight in), that stream is the playlist's only channel. */
+    /** Display name for a saved torrent (mirrors the Add dialog's). */
+    private fun torrentName(link: String): String {
+        Regex("[?&]dn=([^&]+)").find(link)?.let { m ->
+            runCatching { java.net.URLDecoder.decode(m.groupValues[1], "UTF-8") }.getOrNull()
+                ?.trim()?.takeIf { it.isNotBlank() }?.let { return it }
+        }
+        if (!link.startsWith("magnet:", ignoreCase = true)) {
+            link.substringBefore('?').trimEnd('/').substringAfterLast('/')
+                .substringBeforeLast('.').ifBlank { null }?.let { return it }
+        }
+        val hash = Regex("btih:([a-zA-Z0-9]+)").find(link)?.groupValues?.getOrNull(1)
+        return if (hash.isNullOrBlank()) "Torrent" else "Torrent · " + hash.take(8).uppercase()
+    }
+
     private fun singleStreamChannel(): IptvChannel? {
+        // A saved torrent IS the channel: no download, no parse — the magnet
+        // (kept verbatim by the Add dialog) is what the player resolves.
+        if (com.hikari.app.data.NetworkStream.isTorrentLink(config.url)) {
+            return IptvChannel(
+                name = config.name.ifBlank { torrentName(config.url) },
+                url = config.url,
+                group = "",
+            )
+        }
         val u = selfCheckUrl
         if (!u.startsWith("http://") && !u.startsWith("https://")) return null
         val name = config.name.ifBlank {
@@ -252,6 +275,12 @@ class IptvProvider(override val config: ProviderConfig) : ContentProvider {
         val all = channels()
         if (all.isEmpty()) return emptyList()
         val out = ArrayList<CatalogRef>()
+        // A torrent is one file, not a channel list: a single shelf named
+        // after the stream, never an "All channels" shelf plus group tiles.
+        if (com.hikari.app.data.NetworkStream.isTorrentConfig(config)) {
+            out += CatalogRef(config.id, MediaType.MOVIE, ALL, all.first().name, "torrent")
+            return out
+        }
         out += CatalogRef(config.id, MediaType.MOVIE, ALL, "All channels", "channel")
         val groups = all.groupBy { IptvPlaylist.groupOf(it) }
             .entries
@@ -362,7 +391,9 @@ class IptvProvider(override val config: ProviderConfig) : ContentProvider {
         type = MediaType.MOVIE,
         posterUrl = c.logo,
         overview = IptvPlaylist.groupOf(c).takeIf { it != "Ungrouped" },
-        rawType = "channel",
+        // "torrent" keeps saved magnets out of the live-channel treatment
+        // (LIVE tile, live playback) — see Artwork and PlayerActivity.
+        rawType = if (com.hikari.app.data.NetworkStream.isTorrentLink(c.url)) "torrent" else "channel",
     )
 
     /** Re-reads the playlist on the next call. */

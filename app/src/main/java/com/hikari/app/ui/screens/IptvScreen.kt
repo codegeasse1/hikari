@@ -338,6 +338,7 @@ fun IptvScreen(nav: NavHostController) {
                         name = card.name,
                         subtitle = when {
                             card.error != null -> card.error
+                            card.torrent -> tr("Torrent")
                             card.stream -> tr("Network stream")
                             card.channels == 0 -> tr("Empty playlist")
                             else -> I18n.t("%s channels · %s groups")
@@ -638,22 +639,37 @@ private suspend fun addNetworkStream(
     link: String,
     name: String,
 ): Result<Int> = withContext(Dispatchers.IO) {
-    val url = link.trim().let {
-        if (it.startsWith("http://") || it.startsWith("https://")) it
-        else if (it.isBlank()) "" else "https://$it"
+    val trimmed = link.trim()
+    // A magnet link is complete as-is: prefixing "https://" (as before) mangles
+    // it into an unplayable https URL that then lists and plays like an IPTV
+    // channel instead of going to the torrent engine.
+    val url = if (trimmed.startsWith("magnet:", ignoreCase = true)) {
+        trimmed
+    } else if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+        trimmed
+    } else if (trimmed.isBlank()) {
+        ""
+    } else {
+        "https://$trimmed"
     }
     if (url.isBlank()) {
         return@withContext Result.failure(Exception(I18n.t("Paste a link to the stream")))
     }
     if (!NetworkStream.isStreamLink(url)) {
         return@withContext Result.failure(
-            Exception(I18n.t("That is not a link — paste a full http(s) URL")),
+            Exception(I18n.t("That is not a link — paste a full http(s) URL or magnet link")),
         )
     }
     // A stream's name cannot come from the link (a share key is not a name), so
     // the host stands in when the user did not type one.
     val display = name.trim().ifBlank {
-        NetworkStream.hostOf(url).removePrefix("www.").substringBefore('.').ifBlank { "Stream" }
+        when {
+            url.startsWith("magnet:", ignoreCase = true) -> torrentDisplayName(url)
+            url.lowercase().substringBefore('?').endsWith(".torrent") ->
+                url.substringBefore('?').trimEnd('/').substringAfterLast('/')
+                    .substringBeforeLast('.').ifBlank { "Torrent" }
+            else -> NetworkStream.hostOf(url).removePrefix("www.").substringBefore('.').ifBlank { "Stream" }
+        }
     }
     app.store.addProvider(
         ProviderConfig(
@@ -666,6 +682,22 @@ private suspend fun addNetworkStream(
     )
     app.providers.refresh()
     Result.success(1)
+}
+
+/** Display name for a pasted torrent: the magnet's own dn= name, the
+ *  .torrent file's name, or Torrent + short hash — never a URL shard like
+ *  "magnet:". */
+private fun torrentDisplayName(link: String): String {
+    Regex("[?&]dn=([^&]+)").find(link)?.let { m ->
+        runCatching { java.net.URLDecoder.decode(m.groupValues[1], "UTF-8") }.getOrNull()
+            ?.trim()?.takeIf { it.isNotBlank() }?.let { return it }
+    }
+    if (!link.startsWith("magnet:", ignoreCase = true)) {
+        link.substringBefore('?').trimEnd('/').substringAfterLast('/')
+            .substringBeforeLast('.').ifBlank { null }?.let { return it }
+    }
+    val hash = Regex("btih:([a-zA-Z0-9]+)").find(link)?.groupValues?.getOrNull(1)
+    return if (hash.isNullOrBlank()) "Torrent" else "Torrent · " + hash.take(8).uppercase()
 }
 
 /** One of the add dialog's two modes: Playlist, or a single Network stream. */
@@ -802,6 +834,9 @@ private data class IptvCard(
     /** True for a link the user added as a single NETWORK STREAM rather than a
      *  playlist: one channel, and no groups to count. */
     val stream: Boolean = false,
+    /** True when that single stream is a torrent (magnet/.torrent): shown and
+     *  played as a torrent, never grouped or badged like IPTV. */
+    val torrent: Boolean = false,
     /** True when the playlist is the app's own copy of a file the user picked
      *  from storage (under `filesDir/iptv/`) rather than a pasted link — the one
      *  case where removing the tile also deletes something. */
@@ -831,6 +866,7 @@ private suspend fun readCard(p: IptvProvider): IptvCard {
         cover = list.firstOrNull { !it.logo.isNullOrBlank() }?.logo,
         error = IptvProvider.iptvErrors[p.config.id],
         stream = NetworkStream.isStream(p.config),
+        torrent = NetworkStream.isTorrentLink(p.config.url),
         local = !p.config.url.startsWith("http"),
     )
 }

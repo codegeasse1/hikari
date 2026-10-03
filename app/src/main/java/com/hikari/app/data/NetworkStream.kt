@@ -74,6 +74,19 @@ object NetworkStream {
             u.startsWith("magnet:", ignoreCase = true)
     }
 
+    /** True for a magnet link or .torrent file: torrent-engine territory, never
+     *  to be listed, grouped, badged or played as an IPTV channel. */
+    fun isTorrentLink(url: String): Boolean {
+        val u = url.trim()
+        return u.startsWith("magnet:", ignoreCase = true) ||
+            u.lowercase().substringBefore('?').endsWith(".torrent")
+    }
+
+    /** True when [config] is a saved torrent stream (still an IPTV-type row in
+     *  storage — no migration — but handled as a torrent everywhere it shows). */
+    fun isTorrentConfig(config: ProviderConfig): Boolean =
+        config.type == ProviderType.IPTV && isTorrentLink(config.url)
+
     private val MEDIA_EXTENSIONS = listOf(
         ".m3u8", ".m3u", ".mp4", ".mkv", ".ts", ".webm", ".mpd",
         ".m4v", ".mov", ".avi", ".flv", ".mp3", ".m4a", ".aac",

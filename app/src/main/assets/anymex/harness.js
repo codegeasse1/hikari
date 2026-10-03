@@ -170,9 +170,20 @@
     var init = { method: method, headers: normHeaders(headers) };
     if (isDef(body) && method !== 'GET' && method !== 'HEAD') {
       if (typeof body === 'object') {
-        try { body = JSON.stringify(body); } catch (e) { body = String(body); }
-        if (!init.headers['content-type'] && !init.headers['Content-Type']) {
-          init.headers['content-type'] = 'application/json';
+        var ct = init.headers['content-type'] || init.headers['Content-Type'] || '';
+        if (/json/i.test(ct)) {
+          try { body = JSON.stringify(body); } catch (e) { body = String(body); }
+        } else {
+          var parts = [];
+          for (var k in body) {
+            if (!Object.prototype.hasOwnProperty.call(body, k)) continue;
+            var v = body[k];
+            if (v === undefined || v === null) continue;
+            if (typeof v === 'object') { try { v = JSON.stringify(v); } catch (e2) { v = String(v); } }
+            parts.push(encodeURIComponent(k) + '=' + encodeURIComponent(String(v)));
+          }
+          body = parts.join('&');
+          if (!ct) init.headers['content-type'] = 'application/x-www-form-urlencoded; charset=UTF-8';
         }
       }
       init.body = body;

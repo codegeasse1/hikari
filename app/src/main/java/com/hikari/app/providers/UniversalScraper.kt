@@ -121,6 +121,50 @@ class UniversalScraper(override val config: ProviderConfig) : ContentProvider {
     }
 
     private fun enc(s: String): String =
+
+    /**
+     * Image URL out of an element, lazy-load aware.
+     */
+    private fun imgAttr(scope: Element, rawSel: String): String? {
+        if (rawSel.isBlank()) return null
+        val parts = splitSel(rawSel)
+        val css = parts.first
+        val attr = parts.second
+        if (css.isBlank()) return null
+        val el = scope.select(css).first() ?: return null
+        if (attr != null && !attr.equals("src", true)) {
+            val v = el.attr(attr).trim()
+            if (v.isBlank() || v.startsWith("data:")) return null
+            return if (v.startsWith("http")) v else absUrl(v)
+        }
+        val lazy = listOf("data-src", "data-original", "data-lazy-src", "data-srcset", "srcset")
+        for (a in lazy) {
+            val v = el.attr(a).trim()
+            if (v.isBlank() || v.startsWith("data:")) continue
+            var first = v
+            if (a == "srcset" || a == "data-srcset") {
+                first = v.split(",").firstOrNull()?.trim()?.split(" ")?.firstOrNull().orEmpty()
+            }
+            if (first.isBlank() || first.startsWith("data:")) continue
+            return if (first.startsWith("http")) first else absUrl(first)
+        }
+        return el.attr("abs:src").trim().ifBlank { null }
+    }
+    /**
+     * Teaches Coil image host Referer fallback.
+     */
+    private fun recordPosterReferer(url: String?) {
+        val u = url?.trim().orEmpty()
+        if (u.isBlank() || !u.startsWith("http") || base.isBlank()) return
+        runCatching {
+            val host = java.net.URI(u).host?.lowercase() ?: return@runCatching
+            val ref = base + "/"
+            val m = com.hikari.app.cs3.Cs3MainApiProvider.imageHostReferers
+            m.putIfAbsent(host, ref)
+            m.putIfAbsent("www." + host, ref)
+        }
+    }
+
         java.net.URLEncoder.encode(s, "UTF-8").replace("+", "%20")
 
     private suspend fun scrapeList(url: String, rules: JSONObject): List<MediaItem> {
@@ -137,7 +181,7 @@ class UniversalScraper(override val config: ProviderConfig) : ContentProvider {
             val title = pick(el, titleSel, null) ?: continue
             if (title.isBlank()) continue
             val href = pickAttr(el, hrefSel, "href")
-            val poster = pickAttr(el, posterSel, "src")
+            val poster = imgAttr(el, posterSel)?.also { recordPosterReferer(it) }
             val year = yearSel?.let { pick(el, it, null) }
                 ?.let { s -> s.filter { c -> c.isDigit() }.take(4).toIntOrNull() }
             out += MediaItem(
@@ -220,7 +264,7 @@ class UniversalScraper(override val config: ProviderConfig) : ContentProvider {
         val banner = o.optString("bannerImage")
         return listOf(coverImage, cover, banner).firstOrNull {
             it.startsWith("http://") || it.startsWith("https://")
-        }
+        }?.also { recordPosterReferer(it) }
     }
 
     private fun typeOfApi(o: JSONObject): MediaType {
@@ -451,7 +495,7 @@ class UniversalScraper(override val config: ProviderConfig) : ContentProvider {
         val html = Http.getString(item.id) ?: return item
         val doc = runCatching { Jsoup.parse(html, item.id) }.getOrNull() ?: return item
         val title = pick(doc, d.optString("title"), null) ?: item.title
-        val poster = pick(doc, d.optString("poster"), "src")
+        val poster = imgAttr(doc, d.optString("poster"))?.also { recordPosterReferer(it) }
         val overview = pick(doc, d.optString("overview"), null)
         val type = typeOf(d.optString("type"))
         return MediaItem(

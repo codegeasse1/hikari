@@ -8,6 +8,7 @@ import com.hikari.app.data.ProviderConfig
 import com.hikari.app.data.StreamSource
 import com.hikari.app.manga.MangaChapter
 import com.hikari.app.manga.MangaStore
+import com.hikari.app.net.CloudflareVerifier
 import com.hikari.app.net.Http
 import com.hikari.app.providers.ContentProvider
 import kotlinx.coroutines.Dispatchers
@@ -534,6 +535,39 @@ class AnymexMangaProvider(override val config: ProviderConfig) : ContentProvider
         return m
     }
 
+    /**
+     * Teaches Coil image loader the extension site Referer for a cover host.
+     */
+    private fun recordPosterReferer(url: String?) {
+        val u = url?.trim().orEmpty()
+        if (u.isBlank() || !u.startsWith("http")) return
+        val siteBase = runCatching { AnymexPluginManager.siteUrlOf(config) }.getOrNull()
+            ?.trim()?.trimEnd('/')?.ifBlank { null }
+        val ref = if (siteBase != null) siteBase + "/" else runCatching {
+            val hh = java.net.URI(u).host ?: return
+            "https://" + hh + "/"
+        }.getOrNull() ?: return
+        runCatching {
+            val host = java.net.URI(u).host?.lowercase() ?: return@runCatching
+            val m = com.hikari.app.cs3.Cs3MainApiProvider.imageHostReferers
+            m.putIfAbsent(host, ref)
+            m.putIfAbsent("www." + host, ref)
+        }
+    }
+
+    private val wallRe = Regex(
+        "\\b(403|429|503)\\b|cloudflare|just a moment|verify you are human|cf-chl|access denied",
+        RegexOption.IGNORE_CASE,
+    )
+
+    /** Failed behind a bot wall: remember the site so Verify points at it. */
+    private fun markWall(text: String?) {
+        val t = text.orEmpty()
+        if (t.isBlank() || !wallRe.containsMatchIn(t)) return
+        val site = runCatching { AnymexPluginManager.siteUrlOf(config) }.getOrNull()
+        if (!site.isNullOrBlank()) CloudflareVerifier.markBlocked(site)
+    }
+
     private fun mapItems(raw: String?): List<MediaItem> {
         if (raw.isNullOrBlank()) {
             lastOutcome[config.id] = "✗ Empty catalog response"
@@ -545,7 +579,9 @@ class AnymexMangaProvider(override val config: ProviderConfig) : ContentProvider
             ?: runCatching {
                 val o = JSONObject(t)
                 if (o.has("ok") && !o.optBoolean("ok", true)) {
-                    lastOutcome[config.id] = "✗ " + o.optString("error").ifBlank { "catalog error" }
+                    val err = o.optString("error").ifBlank { "catalog error" }
+                    lastOutcome[config.id] = "✗ " + err
+                    markWall(err)
                     return emptyList()
                 }
                 // {ok,data:{list:[...]}} from harness, or bare {list:[...]}
@@ -572,15 +608,19 @@ class AnymexMangaProvider(override val config: ProviderConfig) : ContentProvider
             val name = o.optString("name").ifBlank { o.optString("title") }.trim()
             if (name.isBlank()) continue
             val link = o.optString("link").ifBlank { o.optString("url") }
+                .ifBlank { o.optString("href") }.ifBlank { o.optString("slug") }
                 .ifBlank { o.optString("id") }.trim()
             if (link.isBlank()) continue
+            val poster = o.optString("imageUrl").ifBlank { o.optString("image") }
+                .ifBlank { o.optString("cover") }.ifBlank { o.optString("poster") }
+                .ifBlank { o.optString("thumbnail") }.trim().ifBlank { null }
+            if (!poster.isNullOrBlank()) recordPosterReferer(poster)
             out += MediaItem(
                 providerId = config.id,
                 id = link,
                 title = name,
                 type = MediaType.SERIES,
-                posterUrl = o.optString("imageUrl").ifBlank { o.optString("image") }
-                    .ifBlank { o.optString("cover") }.trim().ifBlank { null },
+                posterUrl = poster,
             )
         }
         if (out.isNotEmpty()) lastOutcome[config.id] = "✓ ${out.size} titles"

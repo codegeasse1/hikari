@@ -9083,6 +9083,10 @@ class PlayerActivity : ComponentActivity() {
      */
     private fun isLiveSource(src: PlayerSource?): Boolean {
         if (src == null) return false
+        // A torrent saved as an IPTV row still carries an "iptv|" provider id:
+        // without this it plays as a live channel ("Reconnecting to the live
+        // stream…") instead of going to the torrent engine.
+        if (src.isTorrent) return false
         if (src.providerId.startsWith(com.hikari.app.data.IptvMark.ID_PREFIX)) return true
         return runCatching { player?.isCurrentMediaItemLive == true }.getOrDefault(false)
     }
