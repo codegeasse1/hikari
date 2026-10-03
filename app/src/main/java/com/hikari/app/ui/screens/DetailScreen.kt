@@ -3351,6 +3351,7 @@ fun DetailScreen(
                             color = Color.White, maxLines = 2, overflow = TextOverflow.Ellipsis)
                     }
                     val tvMeta = buildList {
+                        m?.rating?.takeIf { it > 0 }?.let { add("★ " + "%.1f".format(it)) }
                         m?.year?.let { add(it.toString()) }
                         if (m?.genres?.isNotEmpty() == true) add(m.genres.take(3).joinToString(" · "))
                         extras?.details?.runtimeMinutes?.let { mins ->
@@ -3390,6 +3391,30 @@ fun DetailScreen(
                             )
                         ) {
                             Icon(painter = painterResource(R.drawable.ic_download), contentDescription = tr("Download"))
+                        }
+                        // Save, mirroring the phone row's library toggle below:
+                        // the reference TV layout puts Play + Save side by
+                        // side, and the TV hero only had Play + Download.
+                        if (isSaved) {
+                            FilledTonalButton(
+                                onClick = openLibrary,
+                                modifier = Modifier.tvPress(
+                                    previewPass = true,
+                                    onClick = openLibrary,
+                                )
+                            ) {
+                                Icon(Icons.Filled.Favorite, contentDescription = null)
+                            }
+                        } else {
+                            OutlinedButton(
+                                onClick = openLibrary,
+                                modifier = Modifier.tvPress(
+                                    previewPass = true,
+                                    onClick = openLibrary,
+                                )
+                            ) {
+                                Icon(Icons.Filled.FavoriteBorder, contentDescription = tr("Save"))
+                            }
                         }
                     }
                 }

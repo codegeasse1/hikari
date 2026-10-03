@@ -29,6 +29,9 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyColumnScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
@@ -627,6 +630,8 @@ fun SettingsScreen(nav: NavHostController) {
     val indexState = rememberLazyListState()
     val folderState = rememberLazyListState()
     val subState = rememberLazyListState()
+    // Television two-pane: the left category list scrolls on its own.
+    val tvLeftState = rememberLazyListState()
     // ONE state per PAGE — the index, the open folder, and a sub-folder of it —
     // because one state cannot remember three positions. With a single state (and
     // then with two), going back from a deeper page had to scroll the page it
@@ -654,7 +659,7 @@ fun SettingsScreen(nav: NavHostController) {
     // stack. A page opened from here is not a tab switch, so back must not treat
     // it as one.
     BackHandler(
-        enabled = openSub != null || openFolder != null || showStats || showLogs ||
+        enabled = openSub != null || (openFolder != null && !isTv) || showStats || showLogs ||
             showPair || showProfiles || showPlayerControls,
     ) {
         when {
@@ -664,7 +669,7 @@ fun SettingsScreen(nav: NavHostController) {
             showPair -> showPair = false
             showProfiles -> showProfiles = false
             openSub != null -> openSub = null
-            else -> openFolder = null
+            else -> if (!isTv) openFolder = null
         }
     }
 
@@ -739,25 +744,26 @@ fun SettingsScreen(nav: NavHostController) {
         openSub = target
     }
 
-    LazyColumn(
-        state = listState,
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(
-            start = 16.dp,
-            end = 16.dp,
-            top = 16.dp,
-            // Clear of the floating taskbar (0 when there is no bar).
-            bottom = LocalTaskbarInset.current + 16.dp,
-        )
-    ) {
-        val folder = openFolder
+    // Top-level folders offered on this device — the TV left pane, and the
+    // phone index below, read the same list so the two can never disagree.
+    val tvTopFolders = remember(isTv) {
+        SettingsFolder.entries.filter { it.parent == null && (!isTv || !it.phoneOnly) }
+    }
+    // The folder page's own body, callable from either pane: the phone draws it
+    // in its one column, the television draws it in the right pane while the
+    // left pane holds the categories.
+    val settingsListBody: LazyColumnScope.() -> Unit = {
+        val folder = openFolder ?: if (isTv) tvTopFolders.firstOrNull() else null
         val sub = openSub
         if (folder != null) {
             item {
                 FolderHeader(
                     folder = sub ?: folder,
                     parentTitle = if (sub != null) folder.title else null,
-                    onBack = { if (sub != null) openSub = null else openFolder = null },
+                    // Television navigates with the left pane, so the header
+                    // back only steps out of a sub-folder — never into an
+                    // empty right pane.
+                    onBack = { if (sub != null) openSub = null else if (!isTv) openFolder = null },
                 )
             }
             when (sub ?: folder) {
@@ -1209,7 +1215,7 @@ fun SettingsScreen(nav: NavHostController) {
                     item { SettingsCard(top = 2.dp) { ClearDataCard(onClear = { showClearDataDialog = true }) } }
                 }
             }
-        } else {
+        } else if (!isTv) {
             item {
                 Column(Modifier.fillMaxWidth()) {
                     Text(
@@ -1300,6 +1306,75 @@ fun SettingsScreen(nav: NavHostController) {
             }
         }
     }
+    // Television draws the categories and the folder side by side; the phone
+    // keeps its single column. Both read the same body above.
+    if (isTv) {
+        Row(Modifier.fillMaxSize()) {
+            LazyColumn(
+                state = tvLeftState,
+                modifier = Modifier
+                    .weight(0.36f)
+                    .fillMaxHeight(),
+                contentPadding = PaddingValues(start = 16.dp, end = 8.dp, top = 16.dp, bottom = 16.dp),
+            ) {
+                item(key = "tv-left-title") {
+                    Text(
+                        tr("Settings"),
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(start = 4.dp, bottom = 6.dp),
+                    )
+                }
+                tvTopFolders.forEach { target ->
+                    item(key = "tv-left-" + target.key) {
+                        SettingsFolderRow(
+                            folder = target,
+                            top = 8.dp,
+                            selected = target == (openFolder ?: tvTopFolders.firstOrNull()),
+                            onClick = { openFolderPage(target) },
+                        )
+                    }
+                }
+                item(key = "tv-left-stats") {
+                    TvLeftRow(
+                        icon = Icons.Filled.BarChart,
+                        title = tr("Stats"),
+                        onClick = { showStats = true },
+                    )
+                }
+                item(key = "tv-left-profiles") {
+                    TvLeftRow(
+                        icon = Icons.Filled.SwitchAccount,
+                        title = tr("Profiles"),
+                        onClick = { showProfiles = true },
+                    )
+                }
+            }
+            LazyColumn(
+                state = folderState,
+                modifier = Modifier
+                    .weight(0.64f)
+                    .fillMaxHeight(),
+                contentPadding = PaddingValues(start = 8.dp, end = 16.dp, top = 16.dp, bottom = 16.dp),
+            ) {
+                settingsListBody()
+            }
+        }
+    } else {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(
+                start = 16.dp,
+                end = 16.dp,
+                top = 16.dp,
+                // Clear of the floating taskbar (0 when there is no bar).
+                bottom = LocalTaskbarInset.current + 16.dp,
+            ),
+        ) {
+            settingsListBody()
+        }
+    }
 
     if (showUpdateDialog) {
         UpdateDialog(
@@ -1369,9 +1444,15 @@ private fun FolderHeader(
 
 /** One folder on the index — and one sub-folder inside a folder page: badge,
  *  name, what is inside, and its own chevron. [top] is the gap above it, so a
- *  sub-folder row can sit tighter under its parent's heading. */
+ *  sub-folder row can sit tighter under its parent's heading. [selected] is the
+ *  television left pane's answer to "which category is open". */
 @Composable
-private fun SettingsFolderRow(folder: SettingsFolder, top: Dp = 12.dp, onClick: () -> Unit) {
+private fun SettingsFolderRow(
+    folder: SettingsFolder,
+    top: Dp = 12.dp,
+    selected: Boolean = false,
+    onClick: () -> Unit,
+) {
     GlassCard(
         onClick = onClick,
         modifier = Modifier
@@ -1390,7 +1471,9 @@ private fun SettingsFolderRow(folder: SettingsFolder, top: Dp = 12.dp, onClick: 
                 Text(
                     tr(folder.title),
                     style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold
+                    fontWeight = FontWeight.SemiBold,
+                    color = if (selected) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurface,
                 )
                 Spacer(Modifier.height(2.dp))
                 if (helpShown()) {
@@ -1401,6 +1484,42 @@ private fun SettingsFolderRow(folder: SettingsFolder, top: Dp = 12.dp, onClick: 
                     )
                 }
             }
+            Spacer(Modifier.width(10.dp))
+            Icon(
+                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = if (selected) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp)
+            )
+        }
+    }
+}
+
+/** One compact category row in the television left pane (Stats, Profiles) —
+ *  the same shape as a folder row, without a folder behind it. */
+@Composable
+private fun TvLeftRow(icon: ImageVector, title: String, onClick: () -> Unit) {
+    GlassCard(
+        onClick = onClick,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 8.dp)
+    ) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 18.dp, vertical = 16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            SettingsIconBadge(icon)
+            Spacer(Modifier.width(16.dp))
+            Text(
+                title,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f),
+            )
             Spacer(Modifier.width(10.dp))
             Icon(
                 Icons.AutoMirrored.Filled.KeyboardArrowRight,

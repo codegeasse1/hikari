@@ -1,3 +1,18 @@
+## 0.10.75
+
+Everything new and fixed since the last release (0.10.74):
+
+### Added
+
+- The TV navigation rail works like a streaming box now — it rests as compact icons, and the row the D-pad sits on expands into a labelled pill while every other row stays compact, so the current position is always visible from the sofa
+- The TV home hero is cinematic — a full-bleed backdrop with a big title, rating and meta line, overview and Play / View Details actions, with Left/Right stepping through featured titles instead of an auto-playing carousel
+- Settings on TV is two panes — categories (plus Stats and Profiles) on the left, the open folder's cards on the right, reading the same folders as the phone so the two can never disagree
+
+### Fixed
+
+- I fixed the TV detail header missing what the reference layout has — it now carries a Save button beside Play and Download (mirroring the phone row's library toggle) and the rating leads the meta line
+- I made the TV interface cheaper to draw — the new hero and rail are static gradients and plain surfaces with no blur, no glass and no auto-advance repainting, on top of the performance mode that already drops poster effects on television boxes
+
 ## 0.10.74
 
 Everything new and fixed since the last release (0.10.73):

@@ -119,6 +119,7 @@ import com.hikari.app.data.RepoProvenance
 import com.hikari.app.data.TmdbGenres
 import com.hikari.app.data.TmdbSourceType
 import com.hikari.app.data.TmdbSpec
+import com.hikari.app.tv.TvCinematicHero
 import com.hikari.app.tv.TvMode
 import com.hikari.app.tv.TvUi
 import com.hikari.app.ui.Artwork
@@ -995,19 +996,38 @@ fun HomeScreen(nav: NavHostController) {
                     }
                     if (featured.isNotEmpty()) {
                         Spacer(Modifier.height(6.dp))
-                        HeroBanner(
-                            items = featured,
-                            onClick = { item ->
-                                Routes.safeNavigate(
-                                    nav,
-                                    Routes.detail(
-                                        item.providerId, item.type, item.id,
-                                        item.title, item.posterUrl, item.rawType
+                        // Television gets the cinematic hero (static backdrop,
+                        // title, meta, Play / View Details — no auto-advance
+                        // carousel, which a 1GB box cannot afford to repaint);
+                        // the phone keeps its own banner styles.
+                        if (TvMode.current()) {
+                            TvCinematicHero(
+                                items = featured,
+                                onOpen = { item ->
+                                    Routes.safeNavigate(
+                                        nav,
+                                        Routes.detail(
+                                            item.providerId, item.type, item.id,
+                                            item.title, item.posterUrl, item.rawType
+                                        )
                                     )
-                                )
-                            },
-                            config = heroConfig,
-                        )
+                                },
+                            )
+                        } else {
+                            HeroBanner(
+                                items = featured,
+                                onClick = { item ->
+                                    Routes.safeNavigate(
+                                        nav,
+                                        Routes.detail(
+                                            item.providerId, item.type, item.id,
+                                            item.title, item.posterUrl, item.rawType
+                                        )
+                                    )
+                                },
+                                config = heroConfig,
+                            )
+                        }
                     }
                     // Genre strip: sits UNDER the hero artwork, which is where a
                     // viewer who has not decided what to watch looks next. A

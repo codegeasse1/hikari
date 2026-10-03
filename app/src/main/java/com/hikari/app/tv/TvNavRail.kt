@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -182,7 +183,7 @@ fun TvNavRail(
 
         Column(
             modifier = Modifier.fillMaxSize(),
-            horizontalAlignment = Alignment.CenterHorizontally,
+            horizontalAlignment = Alignment.Start,
         ) {
             Text(
                 "HIKARI",
@@ -190,6 +191,7 @@ fun TvNavRail(
                 fontWeight = FontWeight.Bold,
                 letterSpacing = 2.sp,
                 color = primary,
+                modifier = Modifier.padding(start = 20.dp),
             )
             Spacer(Modifier.height(14.dp))
             LazyColumn(
@@ -197,7 +199,7 @@ fun TvNavRail(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f),
-                horizontalAlignment = Alignment.CenterHorizontally,
+                horizontalAlignment = Alignment.Start,
                 // Centred while the tabs fit (the padding takes the place of the
                 // arrangement, so an overflowing strip still starts at row 1);
                 // scrollable when they do not.
@@ -220,9 +222,11 @@ fun TvNavRail(
 }
 
 /**
- * One rail destination. It is a plain `clickable` column on purpose: that is
- * what makes it focusable for the D-pad and what makes it pick up the focus
- * ring from [TvFocusProvider] — the rail needs no focus handling of its own.
+ * One rail destination. Compact icon-only by default; the row the D-pad sits on
+ * expands into a labelled pill while every other row stays a compact icon —
+ * exactly the streaming-box convention. It is a plain `clickable` row on
+ * purpose: that is what makes it focusable for the D-pad and what makes it
+ * pick up the focus ring from [TvFocusProvider].
  *
  * [slot] is the height the rail could give this row including the gap below it;
  * the row itself is sized a few dp under that so the stack keeps its rhythm at
@@ -241,42 +245,65 @@ private fun TvNavRailItem(
     val scheme = MaterialTheme.colorScheme
     val shape = RoundedCornerShape(20.dp)
     val rowHeight = (slot - 6.dp).coerceAtLeast(38.dp)
-    Column(
+    var focused by remember { mutableStateOf(false) }
+    // Only the focused row expands; the selected-but-unfocused row keeps a
+    // quiet highlight so the current tab stays identifiable without stealing
+    // the expansion that belongs to the D-pad position.
+    val expanded = focused
+    val rowWidth by androidx.compose.animation.core.animateDpAsState(
+        targetValue = if (expanded) TvUi.RAIL_ITEM_WIDTH + 76.dp else 56.dp,
+        label = "rail-expand",
+    )
+    Box(
         modifier = Modifier
-            .padding(vertical = 3.dp)
-            .width(TvUi.RAIL_ITEM_WIDTH)
+            .padding(vertical = 3.dp, horizontal = 12.dp)
+            .width(rowWidth)
             .height(rowHeight)
             .clip(shape)
             .background(
-                if (selected) scheme.primary.copy(alpha = 0.18f) else Color.Transparent
+                when {
+                    expanded -> scheme.primary.copy(alpha = 0.28f)
+                    selected -> scheme.primary.copy(alpha = 0.18f)
+                    else -> Color.Transparent
+                }
             )
             .clickable(onClick = onClick)
             // The row is what the remote walks; when it lands here the strip
-            // scrolls it into view (see TvNavRail).
-            .onFocusChanged { state -> if (state.isFocused) onFocus() }
+            // scrolls it into view (see TvNavRail) and the row expands.
+            .onFocusChanged { state ->
+                focused = state.isFocused
+                if (state.isFocused) onFocus()
+            }
             .focusRequester(requester)
             .padding(vertical = 6.dp, horizontal = 6.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
+        contentAlignment = Alignment.CenterStart,
     ) {
-        Box(contentAlignment = Alignment.Center) {
-            Icon(
-                tab.icon,
-                contentDescription = tr(tab.label),
-                tint = if (selected) scheme.primary else scheme.onSurfaceVariant,
-                modifier = Modifier.size(if (compact) 22.dp else 26.dp),
-            )
-        }
-        if (!compact) {
-            Spacer(Modifier.height(6.dp))
-            Text(
-                tr(tab.label),
-                style = MaterialTheme.typography.labelSmall,
-                textAlign = TextAlign.Center,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                color = if (selected) scheme.primary else scheme.onSurfaceVariant,
-            )
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Start,
+        ) {
+            Box(
+                modifier = Modifier.size(if (compact) 40.dp else 44.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    tab.icon,
+                    contentDescription = tr(tab.label),
+                    tint = if (selected || expanded) scheme.primary else scheme.onSurfaceVariant,
+                    modifier = Modifier.size(if (compact) 22.dp else 26.dp),
+                )
+            }
+            if (expanded) {
+                Text(
+                    tr(tab.label),
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    color = if (selected) scheme.primary else scheme.onSurface,
+                    modifier = Modifier.padding(end = 12.dp),
+                )
+            }
         }
     }
 }
