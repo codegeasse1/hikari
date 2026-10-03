@@ -5042,7 +5042,7 @@ private fun TmdbGridCard(item: MediaItem, style: PosterStyle, onClick: () -> Uni
             .clickable(onClick = onClick)
     ) {
         PosterArt(
-            model = Artwork.model(item),
+            model = if (com.hikari.app.tv.TvMode.current()) Artwork.backdropModel(item) else Artwork.model(item),
             contentDescription = item.title,
             style = style,
             rating = item.rating,
@@ -5050,7 +5050,7 @@ private fun TmdbGridCard(item: MediaItem, style: PosterStyle, onClick: () -> Uni
             item = item,
             modifier = Modifier
                 .fillMaxWidth()
-                .aspectRatio(2f / 3f),
+                .aspectRatio(if (com.hikari.app.tv.TvMode.current()) 16f / 9f else 2f / 3f),
         )
         if (style.showTitles) {
             Text(

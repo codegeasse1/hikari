@@ -4981,6 +4981,49 @@ private fun RepoBrowserView(
         }
         item { SectionHeader("Add a source") }
         item {
+            if (com.hikari.app.tv.TvMode.current()) {
+                Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    @androidx.compose.runtime.Composable fun androidx.compose.foundation.layout.RowScope.srcCard(icon: androidx.compose.ui.graphics.vector.ImageVector, title: String, sub: String, onClick: () -> Unit) {
+                        com.hikari.app.tv.TvSettingsSourceCard(icon = icon, title = title, subtitle = sub, onClick = onClick, modifier = Modifier.weight(1f))
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        srcCard(Icons.Filled.Public, tr("CloudStream repos"), tr("repo.json · CloudStream extensions"), { onOpenFolder(SourceFolder.CLOUDSTREAM) })
+                        srcCard(Icons.Filled.Extension, tr("Hikari repos"), tr("repo.json · Hikari extensions"), { onOpenFolder(SourceFolder.HIKARI) })
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        srcCard(Icons.Filled.FolderOpen, tr("Nuvio repos"), tr("manifest.json · Nuvio providers"), { onOpenFolder(SourceFolder.NUVIO) })
+                        srcCard(Icons.Filled.Extension, tr("SkyStream repos"), tr("repo.json · SkyStream extensions"), { onOpenFolder(SourceFolder.SKYSTREAM) })
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        srcCard(Icons.Filled.Extension, tr("Aniyomi repos"), tr("index.min.json · Aniyomi extensions"), { onOpenFolder(SourceFolder.ANIYOMI) })
+                        srcCard(Icons.Filled.Movie, tr("Vega repos"), tr("manifest.json · Vega providers"), { onOpenFolder(SourceFolder.VEGA) })
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        srcCard(Icons.Filled.Extension, tr("Anymex"), tr("Sora sources · Anymex extensions"), { onOpenFolder(SourceFolder.ANYMEX_HOME) })
+                        srcCard(Icons.Filled.PlayArrow, tr("Stremio addons"), tr("manifest.json · Stremio addons"), { onOpenFolder(SourceFolder.STREMIO) })
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        srcCard(Icons.Filled.LiveTv, tr("IPTV playlists"), tr("M3U / M3U8 links and files · live channels"), { onOpenFolder(SourceFolder.IPTV) })
+                        srcCard(Icons.Filled.Build, tr("Add universal scraper"), tr("JSON config · scriptable scraper"), onAddScraper)
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        srcCard(Icons.Filled.Download, tr("Install .cs3 plugin"), tr("From a URL or a local file"), onAddCs3Url)
+                        srcCard(Icons.Filled.Add, tr("Install .hiki extension"), tr("From a URL or a local file"), onAddHikiUrl)
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        srcCard(Icons.Filled.Add, tr("Install .sky extension"), tr("SkyStream plugin · from a URL or a local file"), onAddSkyStreamUrl)
+                        srcCard(Icons.Filled.Add, tr("Install Aniyomi extension (.apk)"), tr("Aniyomi extension · from a URL or a local file"), onAddAniyomiUrl)
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        srcCard(Icons.Filled.Public, tr("Add website"), tr("Opens in the ad-free web view"), onAddSite)
+                        srcCard(Icons.Filled.Folder, tr("All installed repos"), tr("All repos you've added · ") + repos.size + " total", onOpenAllRepos)
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        srcCard(Icons.Filled.Extension, tr("Installed extensions"), tr("Manage, toggle & uninstall · ") + providers.size + " installed", onOpenInstalled)
+                        Spacer(Modifier.weight(1f))
+                    }
+                }
+            } else {
             GlassCard(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -5114,6 +5157,7 @@ private fun RepoBrowserView(
                         onClick = onOpenInstalled
                     )
                 }
+            }
             }
         }
 

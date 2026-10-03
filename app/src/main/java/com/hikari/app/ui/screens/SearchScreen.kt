@@ -505,6 +505,9 @@ fun SearchScreen(
     }
 
     Column(Modifier.fillMaxSize()) {
+        if (TvMode.current()) {
+            com.hikari.app.tv.TvScreenHeader(title = tr("Search"), subtitle = if (selected.isEmpty()) tr("All providers") else if (soleName != null) soleName else tr("%s sources").replace("%s", selected.size.toString()))
+        }
         GlassSearchField(
             value = query,
             onValueChange = { vm.setQuery(it); translatedFrom = null },
@@ -1060,8 +1063,10 @@ fun SearchScreen(
                 // [com.hikari.app.ui.components.MediaRow]).
                 val gridItems = rememberVisibleItems(visible)
                 val style = rememberPosterStyle()
+                val tvSearch = TvMode.current()
+                val searchCols = if (tvSearch) 3 else TvUi.resultsColumns()
                 LazyVerticalGrid(
-                    columns = GridCells.Fixed(TvUi.resultsColumns()),
+                    columns = GridCells.Fixed(searchCols),
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f),
@@ -1075,10 +1080,19 @@ fun SearchScreen(
                     bottom = LocalTaskbarInset.current + 12.dp + tvEdge +
                         if (TvMode.current()) 28.dp else 0.dp,
                 ),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                horizontalArrangement = Arrangement.spacedBy(if (tvSearch) 14.dp else 8.dp),
+                verticalArrangement = Arrangement.spacedBy(if (tvSearch) 20.dp else 10.dp)
             ) {
                 items(gridItems, key = { it.uniqueId }) { item ->
+                    if (tvSearch) {
+                        com.hikari.app.tv.TvCinemaCard(item = item, onClick = {
+                            Routes.safeNavigate(
+                                nav,
+                                if (item.rawType == "manga") Routes.mangaDetail(item.providerId, item.id, item.title, item.posterUrl)
+                                else Routes.detail(item.providerId, item.type, item.id, item.title, item.posterUrl, item.rawType)
+                            )
+                        })
+                    } else {
                     // Show scores (Settings → App Layout) draws here too — the
                     // badge warms the ratings cache for the title and prints
                     // whatever is known. Null when the switch is off.
@@ -1143,6 +1157,7 @@ fun SearchScreen(
                                 overflow = TextOverflow.Ellipsis
                             )
                         }
+                    }
                     }
                 }
             }

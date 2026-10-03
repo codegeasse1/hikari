@@ -110,6 +110,10 @@ fun MediaRow(
     onClick: (MediaItem) -> Unit,
     onShowAll: (() -> Unit)? = null,
 ) {
+    if (TvMode.current()) {
+        com.hikari.app.tv.TvCinemaRow(title = title, providerName = providerName, items = items, onOpen = onClick, onShowAll = onShowAll)
+        return
+    }
     Column(Modifier.padding(top = 20.dp)) {
         Row(
             Modifier

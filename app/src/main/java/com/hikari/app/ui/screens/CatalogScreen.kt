@@ -540,7 +540,8 @@ fun CatalogScreen(
     // phone, which is the visible difference from the old 84dp adaptive grid
     // (four cramped columns). On a television the count is still derived from
     // the living-room cell size instead (see [TvUi.gridColumns]).
-    val columns = TvUi.gridColumns(catalogColumnsFor(LocalConfiguration.current.screenWidthDp))
+    val isTvCatalog = com.hikari.app.tv.TvMode.current()
+    val columns = if (isTvCatalog) { val w = LocalConfiguration.current.screenWidthDp; if (w >= 1400) 4 else 3 } else TvUi.gridColumns(catalogColumnsFor(LocalConfiguration.current.screenWidthDp))
     // Infinite scroll: fetch the next page when the user scrolls close to the
     // bottom. (A LaunchedEffect keyed on gridState alone never re-fires on
     // scroll — gridState is a stable object — so this watches the scroll
@@ -708,10 +709,19 @@ fun CatalogScreen(
                     horizontal = if (com.hikari.app.tv.TvMode.current()) 20.dp else 16.dp,
                     vertical = 12.dp
                 ),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalArrangement = Arrangement.spacedBy(18.dp),
+                horizontalArrangement = Arrangement.spacedBy(if (isTvCatalog) 14.dp else 12.dp),
+                verticalArrangement = Arrangement.spacedBy(if (isTvCatalog) 20.dp else 18.dp),
             ) {
                 items(uniqueItems, key = { it.uniqueId }) { item ->
+                    if (isTvCatalog) {
+                        com.hikari.app.tv.TvCinemaCard(item = item, onClick = {
+                            Routes.safeNavigate(
+                                nav,
+                                if (rawType == "manga") Routes.mangaDetail(item.providerId, item.id, item.title, item.posterUrl)
+                                else Routes.detail(item.providerId, item.type, item.id, item.title, item.posterUrl, item.rawType)
+                            )
+                        })
+                    } else {
                     CatalogCard(item, style) {
                         // A manga engine's "catalog" is its Popular/Latest list
                         // and its items are manga, not video: those open the
@@ -730,6 +740,7 @@ fun CatalogScreen(
                                 )
                             }
                         )
+                    }
                     }
                 }
                 item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) {
@@ -900,7 +911,7 @@ private fun CatalogSkeletonGrid(columns: Int, modifier: Modifier = Modifier) {
                 Box(
                     Modifier
                         .fillMaxWidth()
-                        .aspectRatio(2f / 3f)
+                        .aspectRatio(if (com.hikari.app.tv.TvMode.current()) 16f / 9f else 2f / 3f)
                         .clip(RoundedCornerShape(14.dp))
                         .background(MaterialTheme.colorScheme.surfaceVariant)
                 )

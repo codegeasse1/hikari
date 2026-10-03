@@ -3366,6 +3366,86 @@ fun DetailScreen(
                         ) { markSheet = true }
                     }
                     Spacer(Modifier.height(10.dp))
+                    if (!detailIsSeries) {
+Row(
+                        Modifier.padding(top = 12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Button(
+                            onClick = { tryPlay(detailBtnEp) },
+                            modifier = Modifier
+                                .focusRequester(playFocus)
+                                .tvPress(
+                                    previewPass = true,
+                                    onClick = { tryPlay(detailBtnEp) }
+                                )
+                        ) {
+                            Icon(Icons.Filled.PlayArrow, contentDescription = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text(detailActionLabel)
+                        }
+                        // Trailer beside Play, like the reference layout: opens
+                        // the title's own trailer instead of scrolling for it.
+                        extras?.trailers?.firstOrNull()?.let { tvTrailer ->
+                            FilledTonalButton(
+                                onClick = {
+                                    openYouTubeVideo(
+                                        context,
+                                        tvTrailer.youtubeKey,
+                                        (m?.title ?: title) + " — " + tvTrailer.name
+                                    )
+                                },
+                                modifier = Modifier.tvPress(
+                                    previewPass = true,
+                                    onClick = {
+                                        openYouTubeVideo(
+                                            context,
+                                            tvTrailer.youtubeKey,
+                                            (m?.title ?: title) + " — " + tvTrailer.name
+                                        )
+                                    }
+                                )
+                            ) {
+                                Icon(Icons.Filled.OndemandVideo, contentDescription = tr("Trailer"))
+                            }
+                        }
+                        FilledTonalButton(
+                            onClick = { tryDownload(detailBtnEp) },
+                            modifier = Modifier.tvPress(
+                                previewPass = true,
+                                onClick = { tryDownload(detailBtnEp) }
+                            )
+                        ) {
+                            Icon(painter = painterResource(R.drawable.ic_download), contentDescription = tr("Download"))
+                        }
+                        // Save, mirroring the phone row's library toggle below:
+                        // the reference TV layout puts Play + Save side by
+                        // side, and the TV hero only had Play + Download.
+                        if (isSaved) {
+                            FilledTonalButton(
+                                onClick = openLibrary,
+                                modifier = Modifier.tvPress(
+                                    previewPass = true,
+                                    onClick = openLibrary,
+                                )
+                            ) {
+                                Icon(Icons.Filled.Favorite, contentDescription = null)
+                            }
+                        } else {
+                            OutlinedButton(
+                                onClick = openLibrary,
+                                modifier = Modifier.tvPress(
+                                    previewPass = true,
+                                    onClick = openLibrary,
+                                )
+                            ) {
+                                Icon(Icons.Filled.FavoriteBorder, contentDescription = tr("Save"))
+                            }
+                        }
+                    }
+
+                    }
                     if (!heroLogo.isNullOrBlank()) {
                         AsyncImage(model = heroLogo, contentDescription = artTitle, contentScale = ContentScale.Fit,
                             modifier = Modifier.fillMaxWidth(if (episodePosterStyle) 0.62f else 0.58f).heightIn(max = 108.dp))
@@ -3401,7 +3481,8 @@ fun DetailScreen(
                     // The review-score badges BEFORE the actions: the reference
                     // TV layout leads with its ratings, and the strip used to
                     // sit below the hero in the scroll.
-                    if (showDetailRating && ratings.isNotEmpty()) {
+                    val tvCert = extras?.details?.certification?.trim()?.takeIf { it.isNotEmpty() }
+                    if (showDetailRating && (ratings.isNotEmpty() || !tvCert.isNullOrBlank())) {
                         Row(
                             Modifier
                                 .fillMaxWidth()
@@ -3411,6 +3492,11 @@ fun DetailScreen(
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             ratings.forEach { r -> RatingBadge(r) { ratingInfo = r } }
+                            if (!tvCert.isNullOrBlank()) com.hikari.app.tv.TvCertChip(tvCert)
+                        }
+                    } else if (!tvCert.isNullOrBlank()) {
+                        Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            com.hikari.app.tv.TvCertChip(tvCert)
                         }
                     }
                     if (detailIsSeries) {
@@ -3495,84 +3581,6 @@ if (!displayOverview.isNullOrBlank()) Text(displayOverview, style = MaterialThem
                         }
                     }
                     } else {
-                    // Movies lead with the actions, above the details.
-Row(
-                        Modifier.padding(top = 14.dp),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Button(
-                            onClick = { tryPlay(detailBtnEp) },
-                            modifier = Modifier
-                                .focusRequester(playFocus)
-                                .tvPress(
-                                    previewPass = true,
-                                    onClick = { tryPlay(detailBtnEp) }
-                                )
-                        ) {
-                            Icon(Icons.Filled.PlayArrow, contentDescription = null)
-                            Spacer(Modifier.width(8.dp))
-                            Text(detailActionLabel)
-                        }
-                        // Trailer beside Play, like the reference layout: opens
-                        // the title's own trailer instead of scrolling for it.
-                        extras?.trailers?.firstOrNull()?.let { tvTrailer ->
-                            FilledTonalButton(
-                                onClick = {
-                                    openYouTubeVideo(
-                                        context,
-                                        tvTrailer.youtubeKey,
-                                        (m?.title ?: title) + " — " + tvTrailer.name
-                                    )
-                                },
-                                modifier = Modifier.tvPress(
-                                    previewPass = true,
-                                    onClick = {
-                                        openYouTubeVideo(
-                                            context,
-                                            tvTrailer.youtubeKey,
-                                            (m?.title ?: title) + " — " + tvTrailer.name
-                                        )
-                                    }
-                                )
-                            ) {
-                                Icon(Icons.Filled.OndemandVideo, contentDescription = tr("Trailer"))
-                            }
-                        }
-                        FilledTonalButton(
-                            onClick = { tryDownload(detailBtnEp) },
-                            modifier = Modifier.tvPress(
-                                previewPass = true,
-                                onClick = { tryDownload(detailBtnEp) }
-                            )
-                        ) {
-                            Icon(painter = painterResource(R.drawable.ic_download), contentDescription = tr("Download"))
-                        }
-                        // Save, mirroring the phone row's library toggle below:
-                        // the reference TV layout puts Play + Save side by
-                        // side, and the TV hero only had Play + Download.
-                        if (isSaved) {
-                            FilledTonalButton(
-                                onClick = openLibrary,
-                                modifier = Modifier.tvPress(
-                                    previewPass = true,
-                                    onClick = openLibrary,
-                                )
-                            ) {
-                                Icon(Icons.Filled.Favorite, contentDescription = null)
-                            }
-                        } else {
-                            OutlinedButton(
-                                onClick = openLibrary,
-                                modifier = Modifier.tvPress(
-                                    previewPass = true,
-                                    onClick = openLibrary,
-                                )
-                            ) {
-                                Icon(Icons.Filled.FavoriteBorder, contentDescription = tr("Save"))
-                            }
-                        }
-                    }
 if (!displayOverview.isNullOrBlank()) Text(displayOverview, style = MaterialTheme.typography.bodyMedium,
                         color = Color.White.copy(alpha = 0.84f), maxLines = if (episodePosterStyle) 4 else 2, overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.fillMaxWidth().padding(top = 8.dp))

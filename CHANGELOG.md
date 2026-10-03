@@ -1,3 +1,18 @@
+## 0.10.78
+
+Everything new and fixed since the last release (0.10.77):
+
+### Added
+
+- Television is a full redesign now, not a header pass — Home shelves, Catalog, Search results, Library and collection grids all draw cinema-style 16:9 landscape cards on TV (phones unchanged), and the home hero keeps its cinematic backdrop with larger living-room section titles
+- Extensions on TV matches Settings now — the Add-a-source list is a two-column grid of large rounded Settings-style cards (icon, name, subtitle, chevron) with the same D-pad focus as the Settings panes
+- TV search opens on its own cinematic header with the active source in the subtitle, and the results grid is three-across cinema cards
+
+### Fixed
+
+- I fixed the movie detail burying Play below the ratings — on TV the Play, Trailer, Download and Save row sits right below the Mark / Watching chips for movies now, while series keep the description-first order
+- I fixed the age rating living far from the scores — PG-13, R, TV-MA and the rest draw as a chip beside the review-score badges in the TV hero for movies and series alike
+
 ## 0.10.77
 
 Everything new and fixed since the last release (0.10.76):

@@ -388,7 +388,7 @@ private fun LibraryCard(
             .clickable(onClick = onClick)
     ) {
         PosterArt(
-            model = Artwork.model(item),
+            model = if (com.hikari.app.tv.TvMode.current()) Artwork.backdropModel(item) else Artwork.model(item),
             contentDescription = item.title,
             style = style,
             rating = item.rating,
@@ -399,7 +399,7 @@ private fun LibraryCard(
             ratingAlignment = Alignment.BottomStart,
             modifier = Modifier
                 .fillMaxWidth()
-                .aspectRatio(2f / 3f),
+                .aspectRatio(if (com.hikari.app.tv.TvMode.current()) 16f / 9f else 2f / 3f),
         ) {
             Box(
                 Modifier
@@ -465,12 +465,13 @@ private fun LibraryCard(
 @Composable
 private fun TrackerLibraryCard(item: MediaItem, onClick: () -> Unit) {
     val style = rememberPosterStyle()
-    Column(modifier = Modifier.width(112.dp).clickable(onClick = onClick)) {
+    val tvLib = com.hikari.app.tv.TvMode.current()
+    Column(modifier = Modifier.width(if (tvLib) 280.dp else 112.dp).clickable(onClick = onClick)) {
         PosterArt(
-            model = Artwork.model(item),
+            model = if (com.hikari.app.tv.TvMode.current()) Artwork.backdropModel(item) else Artwork.model(item),
             contentDescription = item.title,
             style = style,
-            modifier = Modifier.fillMaxWidth().aspectRatio(0.67f).clip(RoundedCornerShape(12.dp)),
+            modifier = Modifier.fillMaxWidth().aspectRatio(if (tvLib) 16f / 9f else 0.67f).clip(RoundedCornerShape(12.dp)),
         )
         Text(item.title, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Medium,
             maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 6.dp))
