@@ -243,11 +243,11 @@ object TrackerLibraryRepository {
         // the shelf entirely. Only anime gets this fallback — anything else
         // would misread a live-action row as anime downstream.
         val simklId = ids.optInt("simkl", 0)
-        val id = if (tmdb > 0) tmdb.toString() else imdb
-            ?: if (anime) simklId.takeIf { it > 0 }?.toString() else null
-            ?: return null
+        var id: String? = if (tmdb > 0) tmdb.toString() else imdb
+        if (id == null && anime) id = simklId.takeIf { it > 0 }?.toString()
+        val finalId = id ?: return null
         val provider = if (tmdb > 0) "tmdb" else if (imdb != null) "stremio" else "simkl"
-        return MediaItem(providerId = provider, id = id,
+        return MediaItem(providerId = provider, id = finalId,
             title = o.optString("title").ifBlank { o.optString("name") }.ifBlank { "Untitled" },
             type = type, year = o.optInt("year", 0).takeIf { it > 0 },
             posterUrl = simklPoster(o.optString("poster")),
