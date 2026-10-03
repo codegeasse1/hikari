@@ -3540,7 +3540,14 @@ class ContentRepository(private val manager: ProviderManager) {
                 // line below says this happened, because a switch the user set
                 // being overridden has to be visible in the log.
                 val originRepo = origin
+                // Gated on the engine's own family switch: with "search every
+                // <engine>" off, a scoped pass asks ONLY the origin — never its
+                // siblings — even when the origin never answers. Without this
+                // the fallback below overrode the user's own switch (playing
+                // from one Hikari extension listed every sibling Hikari
+                // extension's servers) the moment the origin was slow or threw.
                 val soleTargetDead = originRepo != null && !scopeAll &&
+                    SearchScope.family(originRepo.config.type) &&
                     crossTargets.isEmpty() && passFound.isEmpty() &&
                     providerOutcome[originRepo.config.id] != "no servers" &&
                     !isHung(originRepo.config.id)

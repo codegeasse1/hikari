@@ -1,3 +1,18 @@
+## 0.10.76
+
+Everything new and fixed since the last release (0.10.75):
+
+### Added
+
+- The TV detail hero follows the reference layout now — the watch state (Watching / Watch later / Change) sits above everything, the review-score badges lead into the actions, and a Trailer button plays the title's trailer beside Play, Download and Save, for movies and series alike
+- The TV rail is slimmer and the home header packs tighter, so the catalog starts closer to the taskbar instead of behind a blank band
+
+### Fixed
+
+- I fixed servers leaking in from sibling extensions when "search every provider" is off — playing from one Hikari extension listed every other Hikari extension's servers whenever the origin was slow; the fallback that asked them now honours the engine's own family switch (Nuvio and Stremio behave exactly as before, tracker titles are untouched)
+- I fixed the TV detail header beheading poster-only titles — with no wide art the zoomed fill kept a forehead/hair strip, so it is anchored to the top now and keeps the title art and faces like the home hero does
+- I fixed the TV episode shelf floating narrow with a finger-gap above it — it spans the full width edge to edge now and sits right under the hero actions
+
 ## 0.10.75
 
 Everything new and fixed since the last release (0.10.74):

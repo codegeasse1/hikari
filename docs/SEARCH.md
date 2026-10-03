@@ -613,8 +613,10 @@ others."*
   pass's teardown, which is where every unfinished repo is already handed to the
   background sweep, adds the origin's engine family to that sweep in this case
   only: `crossTargets.isEmpty()`, `passFound.isEmpty()`, `!scopeAll`,
+  the engine's own family switch is ON ("search every <engine>"),
   `providerOutcome[origin] != "no servers"` (a real "no servers" IS an answer) and
-  the origin is not `isHung`. It logs
+  the origin is not `isHung`. With the family switch off, a scoped pass asks
+  only the origin even when the origin never answers — no sibling servers. It logs
   `familyFallback "<title>": the extension this title came from never answered
   and the scope left no other target — asking N sibling repo(s) of its <Engine>
   engine by title`, because a switch the user set being overridden has to be

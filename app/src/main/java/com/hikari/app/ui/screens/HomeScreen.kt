@@ -977,7 +977,7 @@ fun HomeScreen(nav: NavHostController) {
                             shape = RoundedCornerShape(12.dp),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(start = 12.dp, end = 12.dp, top = 8.dp)
+                                .padding(start = 12.dp, end = 12.dp, top = 4.dp)
                                 .tvTextFieldKeys(tvProvQuery),
                         )
                         TvProviderStrip(
@@ -995,7 +995,7 @@ fun HomeScreen(nav: NavHostController) {
                         )
                     }
                     if (featured.isNotEmpty()) {
-                        Spacer(Modifier.height(6.dp))
+                        Spacer(Modifier.height(2.dp))
                         // Television gets the cinematic hero (static backdrop,
                         // title, meta, Play / View Details — no auto-advance
                         // carousel, which a 1GB box cannot afford to repaint);
@@ -2229,7 +2229,7 @@ private fun TvProviderStrip(
     LazyRow(
         Modifier
             .fillMaxWidth()
-            .padding(start = 12.dp, end = 12.dp, top = 8.dp),
+            .padding(start = 12.dp, end = 12.dp, top = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

@@ -262,6 +262,11 @@ fun HeroArtwork(
     wide: Boolean,
     contentDescription: String? = null,
     modifier: Modifier = Modifier,
+    // Where the zoomed fill copy is anchored when only a portrait poster
+    // exists. Centered, a 16:9 frame keeps the poster's middle band — the
+    // forehead/hair strip of a face-forward poster. Top-anchored it keeps the
+    // title art and the faces instead.
+    fillAlignment: Alignment = Alignment.Center,
 ) {
     if (model == null) {
         Box(modifier.background(MaterialTheme.colorScheme.surfaceVariant))
@@ -304,6 +309,7 @@ fun HeroArtwork(
                     alpha = 0.55f
                 },
             contentScale = ContentScale.Crop,
+            alignment = fillAlignment,
         )
         Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.30f)))
         PosterImage(

@@ -201,7 +201,7 @@ object TvUi {
 
     /** The navigation rail's width, which is also the left inset every page
      *  keeps clear of it (see [com.hikari.app.ui.navigation.AppRoot]). */
-    val RAIL_WIDTH = 112.dp
+    val RAIL_WIDTH = 96.dp
 
     /** One tab's touch/D-pad target on the rail. */
     val RAIL_ITEM_WIDTH = 96.dp

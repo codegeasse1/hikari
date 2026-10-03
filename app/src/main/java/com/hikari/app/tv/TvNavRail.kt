@@ -251,7 +251,7 @@ private fun TvNavRailItem(
     // the expansion that belongs to the D-pad position.
     val expanded = focused
     val rowWidth by androidx.compose.animation.core.animateDpAsState(
-        targetValue = if (expanded) TvUi.RAIL_ITEM_WIDTH + 76.dp else 56.dp,
+        targetValue = if (expanded) TvUi.RAIL_ITEM_WIDTH + 76.dp else 64.dp,
         label = "rail-expand",
     )
     Box(

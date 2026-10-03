@@ -65,6 +65,7 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.OndemandVideo
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -3143,11 +3144,11 @@ fun DetailScreen(
         if (isTvLayout) {
             // TV detail is a single cinematic hero: artwork, title, metadata,
             // overview and the primary action live in the same focusable scene.
-            val tvHeight = (androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp * if (episodePosterStyle) 0.55f else 0.68f).dp
+            val tvHeight = (androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp * if (episodePosterStyle) 0.52f else 0.66f).dp
             Box(
                 Modifier
                     .fillMaxWidth()
-                    .height(tvHeight.coerceAtLeast(420.dp))
+                    .height(tvHeight.coerceAtLeast(380.dp))
                     
                     .onSizeChanged { headerPx = it.height }
             ) {
@@ -3340,9 +3341,31 @@ fun DetailScreen(
                             start = 42.dp,
                             end = 18.dp,
                             top = if (episodePosterStyle) 0.dp else 82.dp,
-                            bottom = if (episodePosterStyle) 88.dp else 0.dp,
+                            bottom = if (episodePosterStyle) 24.dp else 0.dp,
                         )
                 ) {
+                    // The watch state above everything, like the reference
+                    // layout's save row: one glance says Watching / Watch
+                    // later, and Change opens the same sheet as below.
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        if (markWatched) {
+                            MarkChip(tr("Watched"), active = true) { markSheet = true }
+                        }
+                        if (markWatching) {
+                            MarkChip(tr("Watching"), active = true) { markSheet = true }
+                        }
+                        if (markLater) {
+                            MarkChip(tr("Watch later"), active = true) { markSheet = true }
+                        }
+                        MarkChip(
+                            if (markAnything) tr("Change") else tr("Mark"),
+                            active = false,
+                        ) { markSheet = true }
+                    }
+                    Spacer(Modifier.height(10.dp))
                     if (!heroLogo.isNullOrBlank()) {
                         AsyncImage(model = heroLogo, contentDescription = artTitle, contentScale = ContentScale.Fit,
                             modifier = Modifier.fillMaxWidth(if (episodePosterStyle) 0.62f else 0.58f).heightIn(max = 108.dp))
@@ -3360,14 +3383,27 @@ fun DetailScreen(
                     }.joinToString("  ·  ")
                     if (tvMeta.isNotBlank()) Text(tvMeta, style = MaterialTheme.typography.titleSmall,
                         color = Color.White.copy(alpha = 0.92f), modifier = Modifier.padding(top = 8.dp))
+                    // The review-score badges BEFORE the actions: the reference
+                    // TV layout leads with its ratings, and the strip used to
+                    // sit below the hero in the scroll.
+                    if (showDetailRating && ratings.isNotEmpty()) {
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(top = 8.dp)
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            ratings.forEach { r -> RatingBadge(r) { ratingInfo = r } }
+                        }
+                    }
                     if (!displayOverview.isNullOrBlank()) Text(displayOverview, style = MaterialTheme.typography.bodyMedium,
-                        color = Color.White.copy(alpha = 0.84f), maxLines = if (episodePosterStyle) 5 else 3, overflow = TextOverflow.Ellipsis,
+                        color = Color.White.copy(alpha = 0.84f), maxLines = if (episodePosterStyle) 4 else 2, overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
-                    Text(detailActionLabel, style = MaterialTheme.typography.labelLarge, color = Color.White.copy(alpha = 0.72f),
-                        modifier = Modifier.padding(top = 7.dp))
                     Row(
-                        Modifier.padding(top = 18.dp),
-                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        Modifier.padding(top = 14.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Button(
@@ -3382,6 +3418,31 @@ fun DetailScreen(
                             Icon(Icons.Filled.PlayArrow, contentDescription = null)
                             Spacer(Modifier.width(8.dp))
                             Text(detailActionLabel)
+                        }
+                        // Trailer beside Play, like the reference layout: opens
+                        // the title's own trailer instead of scrolling for it.
+                        extras?.trailers?.firstOrNull()?.let { tvTrailer ->
+                            FilledTonalButton(
+                                onClick = {
+                                    openYouTubeVideo(
+                                        context,
+                                        tvTrailer.youtubeKey,
+                                        (m?.title ?: title) + " — " + tvTrailer.name
+                                    )
+                                },
+                                modifier = Modifier.tvPress(
+                                    previewPass = true,
+                                    onClick = {
+                                        openYouTubeVideo(
+                                            context,
+                                            tvTrailer.youtubeKey,
+                                            (m?.title ?: title) + " — " + tvTrailer.name
+                                        )
+                                    }
+                                )
+                            ) {
+                                Icon(Icons.Filled.OndemandVideo, contentDescription = tr("Trailer"))
+                            }
                         }
                         FilledTonalButton(
                             onClick = { tryDownload(detailBtnEp) },
@@ -3488,6 +3549,10 @@ fun DetailScreen(
                     model = tvHeroImage.first,
                     wide = tvHeroImage.second,
                     modifier = Modifier.fillMaxSize(),
+                    // A poster-only title has no wide art: the zoomed fill
+                    // copy is anchored to the TOP so the title art and faces
+                    // stay in frame instead of a forehead/hair strip.
+                    fillAlignment = Alignment.TopCenter,
                 )
                 Box(
                     Modifier.fillMaxSize().background(
@@ -3544,9 +3609,9 @@ fun DetailScreen(
                                     .fillMaxWidth()
                                     .zIndex(2f)
                                     .padding(
-                                        start = 42.dp,
-                                        end = 42.dp,
-                                        top = 18.dp,
+                                        start = 20.dp,
+                                        end = 20.dp,
+                                        top = 10.dp,
                                         bottom = 24.dp,
                                     )
                             ) {
@@ -3959,6 +4024,7 @@ fun DetailScreen(
                 // so one glance at the page answers "have I marked this?" — and the
                 // sheet (which owns the actions that are not a plain on/off: mark
                 // every episode, remove from history) opens from the same strip.
+                if (!isTvLayout) {
                 item {
                     Row(
                         Modifier
@@ -3988,6 +4054,7 @@ fun DetailScreen(
                             active = false,
                         ) { markSheet = true }
                     }
+                }
                 }
                 // "Show Details" block (Nuvio/Stremio style): the stat line
                 // (year · runtime · certification · rating) plus status/country/
