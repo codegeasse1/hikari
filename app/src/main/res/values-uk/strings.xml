@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Hikari</string>
+    <string name="settings_language_title">Мова застосунку</string>
+    <string name="settings_language_subtitle">Змінює тексти застосунку та керування плеєром</string>
+    <string name="settings_language_system">Системна типова</string>
+    <string name="player_options">Налаштування плеєра</string>
+    <string name="player_fit_video">Вписати відео</string>
+    <string name="player_fit_video_desc">Показати весь кадр</string>
+    <string name="player_crop_to_fill">Обрізати із заповненням</string>
+    <string name="player_crop_to_fill_desc">Збільшити до заповнення кадру</string>
+    <string name="player_stretch_video">Розтягнути на весь екран</string>
+    <string name="player_stretch_video_desc">Заповнити екран, ігноруючи форму</string>
+    <string name="player_rotate_screen">Повернути екран</string>
+    <string name="player_rotate_screen_desc">Повертати відео на 90°</string>
+    <string name="player_server_chooser">Вибір сервера</string>
+    <string name="player_server_on">Увімк. — вибирати сервер щоразу</string>
+    <string name="player_server_off">Вимк. — запускати найкращий сервер</string>
+    <string name="player_options_hint">Масштаб відео, поворот і автозапуск серверів.</string>
+    <string name="player_episodes">Серії</string>
+    <string name="player_source">Джерело</string>
+    <string name="player_quality">Якість</string>
+    <string name="player_audio">Аудіо</string>
+    <string name="player_subtitles">Субтитри</string>
+    <string name="player_rotate">Поворот</string>
+    <string name="player_skip_intro">Пропустити інтро</string>
+    <string name="player_enhance">Покращити</string>
+    <string name="player_tap_to_play">Торкніться, щоб відтворити</string>
+    <string name="cd_back">Назад</string>
+    <string name="cd_add_to_library">До бібліотеки</string>
+    <string name="cd_download">Завантажити</string>
+    <string name="cd_pip">Картинка в картинці</string>
+    <string name="cd_player_options">Налаштування плеєра</string>
+    <string name="cd_lock_controls">Заблокувати керування</string>
+    <string name="cd_fit_or_crop">Вписати, обрізати або розтягнути відео</string>
+</resources>
