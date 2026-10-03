@@ -3455,9 +3455,13 @@ fun DetailScreen(
     Box(Modifier.fillMaxSize()) {
         if (isTvLayout) {
             Box(Modifier.fillMaxSize()) {
+                // tvHeroImage.second is true only for genuinely wide art: a
+                // portrait poster gets the cinematic blurred-fill treatment
+                // instead of a letterboxed strip with black bars down both
+                // sides (the reported TV detail header).
                 HeroArtwork(
                     model = tvHeroImage.first,
-                    wide = true,
+                    wide = tvHeroImage.second,
                     modifier = Modifier.fillMaxSize(),
                 )
                 Box(

@@ -268,19 +268,18 @@ fun HeroArtwork(
         return
     }
     if (wide) {
-        // TV hero/detail backgrounds must preserve the complete artwork. A
-        // backdrop coming from a provider is not guaranteed to have the exact
-        // aspect ratio of the TV hero frame; Crop can therefore remove faces
-        // (the supplied TV screenshot shows the actor's nose being cut).
-        // Phone/tablet keeps the cinematic crop, while TV uses Fit so the whole
-        // source image remains visible and is letterboxed inside the frame
-        // instead of being cropped.
-        val tv = TvMode.current()
+        // The hero frame is filled edge to edge on every device
+        // (ContentScale.Crop): a real backdrop is already 16:9-ish, so the
+        // crop is negligible — while Fit letterboxes it with black bars down
+        // both sides of the frame (the reported TV header showing a narrow
+        // image floating between black). A portrait poster never reaches this
+        // branch: heroModel reports wide=false for it, and the cinematic
+        // blurred-fill treatment below draws it intact instead of beheading it.
         PosterImage(
             model = model,
             contentDescription = contentDescription,
             modifier = modifier,
-            contentScale = if (tv) ContentScale.Fit else ContentScale.Crop,
+            contentScale = ContentScale.Crop,
             alignment = Alignment.Center,
         )
         return

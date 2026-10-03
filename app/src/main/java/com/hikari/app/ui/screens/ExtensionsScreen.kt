@@ -5417,6 +5417,18 @@ private fun RepoPluginsView(
 ) {
     val retryFocus = remember { FocusRequester() }
     val headerRefreshFocus = remember { FocusRequester() }
+    // Television: park the remote on this page's Back button the moment the
+    // page opens. The focused row that opened it is disposed with the list, so
+    // without this the focus falls back to the nav rail's Home tab — and the
+    // next OK press goes Home instead of into this page (reported as
+    // "clicking a repo also clicks Home").
+    val backFocus = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+        if (!com.hikari.app.tv.TvMode.isTv) return@LaunchedEffect
+        runCatching { kotlinx.coroutines.delay(120) }
+        runCatching { backFocus.requestFocus() }
+    }
+
     val cs3SettingsIds = rememberCs3SettingsIds(providers)
     // The repo's own search box. keiyoushi is 1396 entries: finding one by
     // scrolling is not a thing anyone can do, and this listing is the ONLY place
@@ -5507,7 +5519,7 @@ private fun RepoPluginsView(
                 .padding(start = 4.dp, end = 16.dp, top = 4.dp, bottom = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            IconButton(onClick = onBack, modifier = Modifier.tvPress(previewPass = true, onClick = onBack)) {
+            IconButton(onClick = onBack, modifier = Modifier.focusRequester(backFocus).tvPress(previewPass = true, onClick = onBack)) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = tr("Back"))
             }
             Column(Modifier.weight(1f)) {
@@ -7811,6 +7823,18 @@ private fun SourceFolderView(
     onOpenFolder: (SourceFolder) -> Unit = {},
     nav: NavHostController? = null,
 ) {
+    // Television: park the remote on this page's Back button the moment the
+    // page opens. The focused row that opened it is disposed with the list, so
+    // without this the focus falls back to the nav rail's Home tab — and the
+    // next OK press goes Home instead of into this page (reported as
+    // "clicking a repo also clicks Home").
+    val backFocus = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+        if (!com.hikari.app.tv.TvMode.isTv) return@LaunchedEffect
+        runCatching { kotlinx.coroutines.delay(120) }
+        runCatching { backFocus.requestFocus() }
+    }
+
     val kind = when (folder) {
         SourceFolder.CLOUDSTREAM -> RepoKind.CS3
         SourceFolder.HIKARI -> RepoKind.HIKARI
@@ -7881,7 +7905,7 @@ private fun SourceFolderView(
                 .padding(start = 4.dp, end = 16.dp, top = 4.dp, bottom = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            IconButton(onClick = onBack) {
+            IconButton(onClick = onBack, modifier = Modifier.focusRequester(backFocus)) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = tr("Back"))
             }
             Column(Modifier.weight(1f)) {
@@ -8231,6 +8255,18 @@ private fun SourcesOverviewView(
     nav: NavHostController? = null,
 ) {
     var extFilter by remember { mutableStateOf("") }
+    // Television: park the remote on this page's Back button the moment the
+    // page opens. The focused row that opened it is disposed with the list, so
+    // without this the focus falls back to the nav rail's Home tab — and the
+    // next OK press goes Home instead of into this page (reported as
+    // "clicking a repo also clicks Home").
+    val backFocus = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+        if (!com.hikari.app.tv.TvMode.isTv) return@LaunchedEffect
+        runCatching { kotlinx.coroutines.delay(120) }
+        runCatching { backFocus.requestFocus() }
+    }
+
     val cs3SettingsIds = rememberCs3SettingsIds(providers)
     // Grouped once per filter/provider change — see the same note in
     // [InstalledExtensionsView].
@@ -8255,7 +8291,7 @@ private fun SourcesOverviewView(
                 .padding(start = 4.dp, end = 16.dp, top = 4.dp, bottom = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            IconButton(onClick = onBack) {
+            IconButton(onClick = onBack, modifier = Modifier.focusRequester(backFocus)) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = tr("Back"))
             }
             Column(Modifier.weight(1f)) {
@@ -8594,6 +8630,18 @@ private fun AllReposView(
     onRemoveRepo: (String) -> Unit,
     onRefreshRepo: (Cs3Repo) -> Unit,
 ) {
+    // Television: park the remote on this page's Back button the moment the
+    // page opens. The focused row that opened it is disposed with the list, so
+    // without this the focus falls back to the nav rail's Home tab — and the
+    // next OK press goes Home instead of into this page (reported as
+    // "clicking a repo also clicks Home").
+    val backFocus = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+        if (!com.hikari.app.tv.TvMode.isTv) return@LaunchedEffect
+        runCatching { kotlinx.coroutines.delay(120) }
+        runCatching { backFocus.requestFocus() }
+    }
+
     Column(Modifier.fillMaxSize()) {
         Row(
             Modifier
@@ -8601,7 +8649,7 @@ private fun AllReposView(
                 .padding(start = 4.dp, end = 16.dp, top = 4.dp, bottom = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            IconButton(onClick = onBack) {
+            IconButton(onClick = onBack, modifier = Modifier.focusRequester(backFocus)) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = tr("Back"))
             }
             Column(Modifier.weight(1f)) {
@@ -8709,6 +8757,18 @@ private fun InstalledExtensionsView(
     testStatus: Map<String, ProviderTest> = emptyMap(),
     onTest: (String) -> Unit = {},
 ) {
+    // Television: park the remote on this page's Back button the moment the
+    // page opens. The focused row that opened it is disposed with the list, so
+    // without this the focus falls back to the nav rail's Home tab — and the
+    // next OK press goes Home instead of into this page (reported as
+    // "clicking a repo also clicks Home").
+    val backFocus = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+        if (!com.hikari.app.tv.TvMode.isTv) return@LaunchedEffect
+        runCatching { kotlinx.coroutines.delay(120) }
+        runCatching { backFocus.requestFocus() }
+    }
+
     var extFilter by remember { mutableStateOf("") }
     // The drawable rows, grouped into one per extension (see [ProviderPacks]).
     // Built ONCE per filter/provider change rather than inside the LazyColumn's
@@ -8728,7 +8788,7 @@ private fun InstalledExtensionsView(
                 .padding(start = 4.dp, end = 16.dp, top = 4.dp, bottom = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            IconButton(onClick = onBack) {
+            IconButton(onClick = onBack, modifier = Modifier.focusRequester(backFocus)) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = tr("Back"))
             }
             Column(Modifier.weight(1f)) {
