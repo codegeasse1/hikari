@@ -974,10 +974,23 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
             if (digits.isNotEmpty() && acceptsPrefix("tmdb:")) {
                 videoIds += "tmdb:$digits" + epSuffix
             }
+            // Kitsu ids are a native Stremio namespace: anime addons answer
+            // `kitsu:<id>:season:episode` directly, while the bare digits the
+            // tracker row carries match nothing they declare.
+            if (com.hikari.app.data.TrackerAnimeResolver.isTrackerAnime(item) &&
+                item.providerId.equals("kitsu", ignoreCase = true) &&
+                (acceptsPrefix("kitsu:") || acceptsId(idPart))
+            ) {
+                val bare = idPart.substringBefore(':').trim()
+                if (bare.isNotEmpty() && bare.all { it.isDigit() } && !idPart.startsWith("kitsu:", ignoreCase = true)) {
+                    videoIds += "kitsu:$idPart"
+                }
+            }
             val imdb = when {
                 digits.isNotEmpty() && (usesTmdbBrowse() || !acceptsId(idPart)) ->
                     TmdbBrowse.imdbId(digits, kind)
-                digits.isEmpty() && !acceptsId(idPart) &&
+                digits.isEmpty() &&
+                    (com.hikari.app.data.TrackerAnimeResolver.isTrackerAnime(item) || !acceptsId(idPart)) &&
                     com.hikari.app.nuvio.TmdbResolver.isLikelyResolvable(item) ->
                     com.hikari.app.nuvio.TmdbResolver.resolve(item)?.let { resolved ->
                         // The resolved TMDB id is offered in the addon's own

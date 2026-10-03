@@ -102,20 +102,20 @@ object TrackerLibraryRepository {
         val root = JSONObject(response.body?.string().orEmpty())
         val out = ArrayList<Shelf>()
 
-        fun parse(key: String, title: String, type: MediaType) {
+        fun parse(key: String, title: String, type: MediaType, anime: Boolean = false) {
             val array = root.optJSONArray(key) ?: return
             val items = buildList {
                 for (i in 0 until array.length()) {
                     val row = array.optJSONObject(i) ?: continue
                     val item = row.optJSONObject("movie") ?: row.optJSONObject("show") ?: row.optJSONObject("anime") ?: row
-                    simklMedia(item, type)?.let(::add)
+                    simklMedia(item, type, anime)?.let(::add)
                 }
             }.distinctBy { it.uniqueId }
             if (items.isNotEmpty()) out += Shelf("simkl.$key", title, items)
         }
         parse("movies", "Simkl · Movies", MediaType.MOVIE)
         parse("tv_shows", "Simkl · TV Shows", MediaType.SERIES)
-        parse("anime", "Simkl · Anime", MediaType.SERIES)
+        parse("anime", "Simkl · Anime", MediaType.SERIES, anime = true)
         return Result.success(out)
     }
 
@@ -234,17 +234,33 @@ object TrackerLibraryRepository {
             rawType = if (provider == "tmdb") "tmdb" else if (type == MediaType.MOVIE) "movie" else "series")
     }
 
-    private fun simklMedia(o: JSONObject, type: MediaType): MediaItem? {
+    private fun simklMedia(o: JSONObject, type: MediaType, anime: Boolean = false): MediaItem? {
         val ids = o.optJSONObject("ids") ?: return null
         val tmdb = ids.optInt("tmdb", 0)
         val imdb = ids.optString("imdb").takeIf { it.startsWith("tt") }
-        val id = if (tmdb > 0) tmdb.toString() else imdb ?: return null
-        val provider = if (tmdb > 0) "tmdb" else "stremio"
+        // Anime Simkl has not mapped yet carries neither id: keep it as a
+        // tracker row (playable by title search) instead of dropping it from
+        // the shelf entirely. Only anime gets this fallback — anything else
+        // would misread a live-action row as anime downstream.
+        val simklId = ids.optInt("simkl", 0)
+        val id = if (tmdb > 0) tmdb.toString() else imdb
+            ?: if (anime) simklId.takeIf { it > 0 }?.toString() else null
+            ?: return null
+        val provider = if (tmdb > 0) "tmdb" else if (imdb != null) "stremio" else "simkl"
         return MediaItem(providerId = provider, id = id,
             title = o.optString("title").ifBlank { o.optString("name") }.ifBlank { "Untitled" },
             type = type, year = o.optInt("year", 0).takeIf { it > 0 },
-            posterUrl = o.optString("poster").takeIf { it.startsWith("http") },
-            rawType = if (provider == "tmdb") "tmdb" else if (type == MediaType.MOVIE) "movie" else "series")
+            posterUrl = simklPoster(o.optString("poster")),
+            rawType = if (provider == "tmdb") "tmdb" else if (provider == "simkl") "anime" else if (type == MediaType.MOVIE) "movie" else "series")
+    }
+
+    /** Simkl serves bare image ids, not URLs (same shape as the detail lookup
+     *  in TrackerAnimeResolver): values that already are URLs pass through. */
+    private fun simklPoster(raw: String): String? {
+        val p = raw.trim()
+        if (p.isBlank() || p == "null") return null
+        if (p.startsWith("http")) return p
+        return "https://wsrv.nl/?url=https://simkl.in/posters/" + p + "_m.webp&q=90"
     }
 
     private fun enc(value: String): String = URLEncoder.encode(value, "UTF-8")

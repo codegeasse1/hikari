@@ -135,12 +135,13 @@ object TmdbResolver {
             runCatching { TrackerAnimeResolver.simklTmdbRef(item) }.getOrNull()?.let { ref ->
                 if (ref.tmdbId.isNotBlank()) return Resolved(ref.tmdbId, ref.mediaType)
             }
-            // No exact Simkl mapping: a TMDB title search for anime sequel /
-            // donghua titles has repeatedly picked an unrelated show (wrong
-            // details, wrong episodes, servers for the wrong title), which is
-            // worse than no mapping — tracker rows play by title search
-            // instead, so null is the honest answer here.
-            return null
+            // No exact Simkl mapping (new-season anime often has none yet):
+            // fall back to an EXACT title search — exact name, matching year
+            // and a Japanese-origin signal, or nothing. Anything looser has
+            // repeatedly picked an unrelated show. This only ever feeds
+            // stream/artwork lookups by id; tracker details and episode lists
+            // never go through TMDB.
+            return searchByTitleExactAnime(item)
         }
         tmdbPrefixedId(id)?.let { return resolveNumericId(it, item) }
         if (id.isNotEmpty() && id.all { it.isDigit() }) {
@@ -152,6 +153,61 @@ object TmdbResolver {
         return searchByTitle(item)
     }
 
+    /**
+     * Exact-only anime title search for stream/artwork resolution: the
+     * candidate must match by NAME (never best-effort), agree on year, and
+     * look Japanese-origin. Returns null when nothing qualifies rather than
+     * a wrong show — a wrong id here would ask providers about another title.
+     */
+    private suspend fun searchByTitleExactAnime(item: MediaItem): Resolved? {
+        val title = item.searchTitle
+        if (title.isBlank()) return null
+        val variants = TmdbMeta.queryVariants(title).take(4)
+        if (variants.isEmpty()) return null
+        var best: Resolved? = null
+        var bestScore = 0
+        for (kind in listOf("tv", "movie")) {
+            for (v in variants) {
+                val data = apiGet("/search/$kind", mapOf("query" to v)) ?: continue
+                val arr = data.optJSONArray("results") ?: continue
+                for (i in 0 until arr.length()) {
+                    val o = arr.optJSONObject(i) ?: continue
+                    val oid = o.optString("id").trim()
+                    if (oid.isBlank() || oid == "null") continue
+                    var base = 0
+                    for (n in listOf(o.optString("title"), o.optString("name"), o.optString("original_title"), o.optString("original_name"))) {
+                        if (n.isBlank() || n == "null") continue
+                        for (vv in variants) base = maxOf(base, TmdbMeta.titleScore(vv, n))
+                    }
+                    if (base < 60) continue
+                    val raw = o.optString("release_date").ifBlank { o.optString("first_air_date") }
+                    val y = raw.take(4).toIntOrNull()
+                    if (item.year != null && item.year > 0) {
+                        if (y == null || kotlin.math.abs(y - item.year) > 1) continue
+                    }
+                    val lang = o.optString("original_language").lowercase()
+                    var ja = lang == "ja"
+                    if (!ja) {
+                        val genres = o.optJSONArray("genre_ids")
+                        if (genres != null) {
+                            for (g in 0 until genres.length()) {
+                                if (genres.optInt(g) == 16) { ja = true; break }
+                            }
+                        }
+                    }
+                    if (!ja) {
+                        val originals = listOf(o.optString("original_title"), o.optString("original_name"))
+                        ja = variants.any { vv -> originals.any { nn -> TmdbMeta.normalizeTitle(nn) == TmdbMeta.normalizeTitle(vv) && vv.isNotBlank() } }
+                    }
+                    if (!ja) continue
+                    val score = base * 100 + o.optDouble("popularity", 0.0).toInt().coerceAtMost(99)
+                    if (score > bestScore) { bestScore = score; best = Resolved(oid, kind) }
+                }
+                if (bestScore >= 6000) return best
+            }
+        }
+        return best
+    }
     /** A tmdb:digits id names its TMDB row directly (what Stremio catalogue
      * rows carry) — resolving it by title search instead was fuzzy work that
      * sometimes picked the wrong show. */
