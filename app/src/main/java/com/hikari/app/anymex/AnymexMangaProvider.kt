@@ -614,6 +614,7 @@ class AnymexMangaProvider(override val config: ProviderConfig) : ContentProvider
             val poster = o.optString("imageUrl").ifBlank { o.optString("image") }
                 .ifBlank { o.optString("cover") }.ifBlank { o.optString("poster") }
                 .ifBlank { o.optString("thumbnail") }.trim().ifBlank { null }
+                ?.takeIf { !it.startsWith("data:") }
             if (!poster.isNullOrBlank()) recordPosterReferer(poster)
             out += MediaItem(
                 providerId = config.id,

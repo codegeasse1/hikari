@@ -557,13 +557,17 @@ class UniversalScraper(override val config: ProviderConfig) : ContentProvider {
         if (css.isBlank()) return emptyList()
         val out = ArrayList<StreamSource>()
         for (img in doc.select(css)) {
-            val a = attr ?: "src"
-            var u = when {
-                a.equals("text", true) || a.equals("html", true) -> null
-                else -> img.attr(if (a == "src" || a == "href") "abs:$a" else a).ifBlank { null }
-            }
+            // Lazy-load aware, data-first: a `src` that holds a blank SVG
+            // data: placeholder (animeonline.ninja and kin) must never win
+            // over the real URL in data-src — see imgAttr above.
+            var u = img.attr("abs:data-src").ifBlank { img.attr("abs:data-lazy-src") }
+                .ifBlank { img.attr("abs:data-original") }.ifBlank { null }
             if (u.isNullOrBlank() || u.startsWith("data:")) {
-                u = img.attr("abs:data-src").ifBlank { img.attr("abs:data-lazy-src") }.ifBlank { null }
+                val a = attr ?: "src"
+                u = when {
+                    a.equals("text", true) || a.equals("html", true) -> null
+                    else -> img.attr(if (a == "src" || a == "href") "abs:$a" else a).ifBlank { null }
+                }
             }
             if (u.isNullOrBlank() || u.startsWith("data:")) continue
             out += StreamSource(
@@ -588,7 +592,7 @@ class UniversalScraper(override val config: ProviderConfig) : ContentProvider {
 
         val videoSel = s.optString("video").ifBlank { "video" }
         for (v in doc.select(videoSel)) {
-            val src = v.attr("src").ifBlank { v.attr("data-src") }
+            val src = v.attr("data-src").ifBlank { v.attr("src") }
             if (src.isNotBlank()) out += StreamSource("Direct", absUrl(src))
         }
         val m3u8Sel = s.optString("m3u8").ifBlank { "source[type*=m3u8]" }

@@ -74,7 +74,8 @@ class AnymexProvider(override val config: ProviderConfig) : ContentProvider {
         val title = d.optString("title").ifBlank { d.optString("name") }.trim()
         val overview = d.optString("description").trim().ifBlank { null }
         val genres = genresOf(d)
-        val poster = d.optString("imageUrl").ifBlank { d.optString("image") }.trim().ifBlank { null }
+        val poster = d.optString("imageUrl").ifBlank { d.optString("image") }.trim()
+            .takeIf { it.isNotBlank() && !it.startsWith("data:") }
         if (title.isBlank() && overview == null && genres.isEmpty() && poster == null) return@withContext item
         item.copy(
             title = title.ifBlank { item.title },
@@ -169,6 +170,7 @@ private fun recordPosterReferer(url: String?, siteBase: String?) {
                     .ifBlank { o.optString("cover") }.ifBlank { o.optString("poster") }
                     .ifBlank { o.optString("thumbnail") }.ifBlank { o.optString("artwork") }
                     .ifBlank { o.optString("coverUrl") }.trim().ifBlank { null }
+                    ?.takeIf { !it.startsWith("data:") }
                     ?.also { recordPosterReferer(it, siteBase) },
             )
         }

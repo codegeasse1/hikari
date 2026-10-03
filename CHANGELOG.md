@@ -1,3 +1,13 @@
+## 0.10.74
+
+Everything new and fixed since the last release (0.10.73):
+
+### Fixed
+
+- I fixed the MangaTime catalog coming up empty ("Nothing here right now") while the site itself loads — the extension path can answer with no titles even though the site is up, so Popular, Latest and search now fall back to the site's own catalog query (the same `search.searchSeries` call the extension makes) and list its titles directly, with details, chapters and pages still going through the extension unchanged
+- I fixed AnimeOnline.Ninja posters staying blank while its titles loaded — its pages keep the real poster in `data-src` and serve a blank placeholder in `src`, so every image lookup (script extensions, scrapers, video posters) reads the lazy attributes first and skips placeholder values, the anime engine re-reads the catalog it just loaded to repair posters matched by title URL, and error lines keep the full reason instead of cutting it off
+- I fixed posters failing on sites that need the verification cookie — image requests now carry the clearance the verify WebView earned, like every other request already did
+
 ## 0.10.69
 
 Everything new and fixed since the last release (0.10.68):

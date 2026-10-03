@@ -243,8 +243,32 @@
     }
   });
 
+  // Lazy-load aware, data-first: sites like animeonline.ninja serve a blank
+  // SVG data: placeholder in src and keep the real URL in data-src. Mangayomi
+  // extensions read data-src first for the same reason — src-first returned
+  // the placeholder and every poster came up blank. data: values are never
+  // real posters, so they are skipped wherever they sit.
+  function pickImg(sel) {
+    try {
+      if (!sel || !sel.length) return null;
+      var attrs = ['data-src', 'data-lazy-src', 'data-original', 'data-srcset', 'srcset', 'src'];
+      for (var i = 0; i < attrs.length; i++) {
+        var v = sel.attr(String(attrs[i]));
+        if (v === undefined || v === null) continue;
+        v = String(v).trim();
+        if (!v || v.indexOf('data:') === 0) continue;
+        if (attrs[i] === 'srcset' || attrs[i] === 'data-srcset') {
+          v = v.split(',')[0].trim().split(' ')[0].trim();
+          if (!v || v.indexOf('data:') === 0) continue;
+        }
+        return v;
+      }
+    } catch (e) {}
+    return null;
+  }
+
   Object.defineProperty(DomElement.prototype, 'getSrc', {
-    get: function () { return this.attr('src') || this.attr('data-src') || this.attr('data-lazy-src') || this.attr('data-original') || null; }
+    get: function () { return pickImg(this._sel); }
   });
 
   Object.defineProperty(DomElement.prototype, 'getHref', {
@@ -355,7 +379,7 @@
   };
 
   Object.defineProperty(DomElement.prototype, 'getImg', {
-    get: function () { return this.attr('src') || this.attr('data-src') || null; }
+    get: function () { return pickImg(this._sel); }
   });
 
   Object.defineProperty(DomElement.prototype, 'getDataSrc', {

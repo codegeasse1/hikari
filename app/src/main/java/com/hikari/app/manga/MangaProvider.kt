@@ -21,7 +21,10 @@ import eu.kanade.tachiyomi.source.online.HttpSource
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.net.URLEncoder
 import java.util.concurrent.ConcurrentHashMap
+import org.json.JSONArray
+import org.json.JSONObject
 
 /**
  * One manga engine, exposed to the rest of the app as an ordinary
@@ -73,7 +76,7 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
     }
 
     private fun <T> fail(msg: String, fallback: T): T {
-        val short = "✗ " + msg.take(72)
+        val short = "✗ " + msg.take(200)
         lastOutcome[config.id] = short
         Logs.log("Manga", "${config.name}: $msg")
         return fallback
@@ -144,6 +147,70 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
         RegexOption.IGNORE_CASE,
     )
 
+    /**
+     * True when this provider reads a MangaTime-shaped site — by its host, or
+     * by the extension class itself. The native tRPC fallback below only ever
+     * runs for those sources: its request shape is MangaTime's own
+     * `search.searchSeries` contract, not a generic manga API.
+     */
+    private fun isMangaTimeSite(): Boolean {
+        if (siteUrl().orEmpty().contains("mangatime", ignoreCase = true)) return true
+        return runCatching { source()?.javaClass?.name }.getOrNull()
+            ?.contains("mangatime", ignoreCase = true) == true
+    }
+
+    /**
+     * MangaTime's own catalog query, run directly — the exact call its
+     * extension makes (`searchSeries(page, limit 24, sortBy, "desc", query)`
+     * against `/api/trpc/search.searchSeries?batch=1&input=…`), so a source
+     * whose extension path answers empty-or-failed while the site is up still
+     * lists Popular, Latest and search. Returned as plain [SManga]s in the
+     * extension's own url shape (`/$type/$slug#$id`), so details, chapters and
+     * pages keep flowing through the extension unchanged. BLOCKING — every
+     * caller is already inside [gate] on IO.
+     */
+    private fun nativeMangaTime(ref: CatalogRef?, page: Int, query: String?): List<SManga>? {
+        val base = siteUrl()?.trim()?.trimEnd('/')?.takeIf { it.isNotBlank() } ?: return null
+        val sortBy = when {
+            !query.isNullOrBlank() -> "popularity"
+            ref?.id == CATALOG_LATEST -> "recent"
+            else -> "popularity"
+        }
+        val qJson = if (query.isNullOrBlank()) "null" else JSONObject.quote(query)
+        val input = "{\"0\":{\"json\":{\"page\":${page.coerceAtLeast(1)}," +
+            "\"limit\":24,\"sortBy\":\"$sortBy\",\"sortOrder\":\"desc\",\"query\":$qJson}}}"
+        val url = base + "/api/trpc/search.searchSeries?batch=1&input=" +
+            runCatching { URLEncoder.encode(input, "UTF-8") }.getOrNull().orEmpty()
+        val body = runCatching { com.hikari.app.net.Http.get(url) }
+            .getOrNull()?.use { r -> if (r.isSuccessful) r.body?.string() else null }
+            ?: return null
+        val json = runCatching { JSONArray(body) }.getOrNull()
+            ?.optJSONObject(0)?.optJSONObject("result")
+            ?.optJSONObject("data")?.optJSONObject("json") ?: return null
+        val results = json.optJSONArray("results") ?: return emptyList()
+        val out = ArrayList<SManga>(results.length())
+        for (i in 0 until results.length()) {
+            val o = results.optJSONObject(i) ?: continue
+            val title = o.optString("title").trim()
+            val slug = o.optString("slug").trim()
+            if (title.isBlank() || slug.isBlank()) continue
+            val type = o.optString("type").trim().ifBlank { "manga" }
+            val id = o.optString("id").trim()
+            val cover = o.optString("coverUrl").trim()
+            val thumb = when {
+                cover.startsWith("http") -> cover
+                cover.isNotBlank() -> base + "/" + cover.trimStart('/')
+                else -> null
+            }
+            out += SManga.create().apply {
+                this.title = title
+                this.url = "/$type/$slug#$id"
+                this.thumbnail_url = thumb
+            }
+        }
+        return out
+    }
+
     /** See [com.hikari.app.aniyomi.AniyomiProvider.gate]: metadata and catalogs
      *  are what the user is looking at, and a stream lookup is background
      *  work that must never queue in front of them. */
@@ -200,6 +267,16 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
             }
         }
         if (mangas == null) {
+            // The extension path failed outright. On MangaTime-shaped sources the
+            // catalog is a plain tRPC call (see nativeMangaTime) — ask the site
+            // directly before reporting the failure.
+            if (isMangaTimeSite()) {
+                val native = runCatching { nativeMangaTime(ref, page, null) }.getOrNull()
+                if (!native.isNullOrEmpty()) {
+                    lastOutcome[config.id] = "✓ ${native.size} title(s)"
+                    return@gate native.map { toItem(it, src) }
+                }
+            }
             val why = failure ?: "unknown error"
             noteWall(why)
             return@gate fail("catalog failed: $why", emptyList())
@@ -213,6 +290,17 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
         // take back to the extension's own page (the site's markup moved), rather
         // than to a Cloudflare check that was never the issue.
         if (mangas.isEmpty()) {
+            // The reported MangaTime shape: the extension answers 200 with no
+            // titles while the site itself is up. Its catalog is one tRPC query
+            // (see nativeMangaTime) — run that exact query directly. Page 1
+            // only: an empty page 2+ is the end of the list, not a failure.
+            if (page == 1 && isMangaTimeSite()) {
+                val native = runCatching { nativeMangaTime(ref, page, null) }.getOrNull()
+                if (!native.isNullOrEmpty()) {
+                    lastOutcome[config.id] = "✓ ${native.size} title(s)"
+                    return@gate native.map { toItem(it, src) }
+                }
+            }
             lastOutcome[config.id] =
                 "✗ the site answered, but ${ref.name.lowercase()} came back with no titles " +
                     "(page $page) — its markup may have changed, or the site wants a " +
@@ -250,6 +338,13 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
             }
         }
         if (found == null) {
+            if (query.isNotBlank() && isMangaTimeSite()) {
+                val native = runCatching { nativeMangaTime(null, page, query) }.getOrNull()
+                if (!native.isNullOrEmpty()) {
+                    lastOutcome[config.id] = "✓ ${native.size} result(s)"
+                    return@gate native.map { toItem(it, src) }
+                }
+            }
             val why = failure ?: "unknown error"
             noteWall(why)
             return@gate fail("search failed: $why", emptyList())

@@ -1272,6 +1272,12 @@ class HikariApp : Application() {
                         last = null
                         val builder = req.newBuilder().header("User-Agent", Http.UA)
                         headers.forEach { (k, v) -> builder.header(k, v) }
+                        if (builder.build().header("Cookie") == null) {
+                            runCatching {
+                                com.hikari.app.net.CloudflareVerifier
+                                    .clearanceFor(req.url.toString())
+                            }.getOrNull()?.let { builder.header("Cookie", it) }
+                        }
                         val response = chain.proceed(builder.build())
                         if (isUsableImage(response)) return@addInterceptor response
                         last = response

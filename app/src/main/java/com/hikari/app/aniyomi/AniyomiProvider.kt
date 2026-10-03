@@ -213,7 +213,7 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
         }
         if (page > 1 && !pageData.hasNextPage) return@gate emptyList()
         catalogErrors.remove(config.id)
-        pageData.animes.take(MAX_ITEMS_PER_ROW).map { toItem(it) }
+        repairLazyPosters(src, ref, page, pageData.animes.take(MAX_ITEMS_PER_ROW).map { toItem(it) })
     }
 
     override suspend fun search(query: String, page: Int): List<MediaItem> = gate {
@@ -235,9 +235,88 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
 
     private fun failCatalog(msg: String, failure: Throwable? = null): List<MediaItem> {
         catalogErrors[config.id] = msg
-        lastOutcome[config.id] = "✗ ${msg.take(72)}"
+        lastOutcome[config.id] = "✗ ${msg.take(200)}"
         if (failure != null) noteWall(failure)
         return emptyList()
+    }
+
+    /**
+     * Lazy-poster repair for DooPlay-theme sites (animeonline.ninja and kin).
+     *
+     * Their catalog markup serves a blank SVG `data:` placeholder in every
+     * `img[src]` and keeps the real poster in `img[data-src]`. An extension
+     * that reads `src` therefore hands out the placeholder as `thumbnail_url`
+     * (now dropped to null by [artUrl]) while the titles themselves are fine —
+     * exactly the reported "titles load, posters stay blank". Mangayomi/JS
+     * extensions read `data-src` first for the same reason (see the anymex
+     * harness `pickImg`).
+     *
+     * When most of a page came back poster-less, this re-reads the SAME
+     * catalog URL the extension itself asked for
+     * (`popularAnimeRequest`/`latestUpdatesRequest` on [AnimeHttpSource],
+     * reached by reflection because it is protected) and fills posters from
+     * `article.item .poster img[data-src]` matched by detail URL. One extra
+     * GET per poster-less page, only when needed; anything unmatched keeps
+     * whatever the extension gave.
+     */
+    private fun repairLazyPosters(
+        src: AnimeSource,
+        ref: CatalogRef,
+        page: Int,
+        items: List<MediaItem>,
+    ): List<MediaItem> {
+        if (items.isEmpty()) return items
+        if (items.count { it.posterUrl.isNullOrBlank() } < (items.size + 1) / 2) return items
+        val catalogUrl = runCatching {
+            val name = if (ref.id == "latest") "latestUpdatesRequest" else "popularAnimeRequest"
+            var c: Class<*>? = src.javaClass
+            var m: java.lang.reflect.Method? = null
+            while (c != null && m == null) {
+                m = runCatching {
+                    c.getDeclaredMethod(name, Int::class.javaPrimitiveType)
+                }.getOrNull()
+                c = c.superclass
+            }
+            m ?: return items
+            m.isAccessible = true
+            ((m.invoke(src, page) as? okhttp3.Request)?.url?.toString())
+        }.getOrNull()?.takeIf { it.isNotBlank() } ?: return items
+        val html = com.hikari.app.net.Http.getString(catalogUrl) ?: return items
+        val doc = runCatching { org.jsoup.Jsoup.parse(html, catalogUrl) }.getOrNull() ?: return items
+        val byUrl = HashMap<String, String>()
+        for (el in doc.select("article.item, div.items article, div.movies-list article, .items .item")) {
+            val img = el.selectFirst(".poster img, img") ?: continue
+            var poster = img.attr("abs:data-src").trim()
+            if (poster.isBlank() || poster.startsWith("data:")) poster = img.attr("abs:data-lazy-src").trim()
+            if (poster.isBlank() || poster.startsWith("data:")) poster = img.attr("abs:data-original").trim()
+            if (poster.isBlank() || poster.startsWith("data:")) {
+                val srcAttr = img.attr("abs:src").trim()
+                poster = if (srcAttr.startsWith("data:")) "" else srcAttr
+            }
+            if (poster.isBlank() || poster.startsWith("data:")) continue
+            val href = (el.selectFirst(".poster a[href]") ?: el.selectFirst(".data h3 a[href]")
+                ?: el.selectFirst("a[href]"))?.attr("abs:href")?.trim().orEmpty()
+            if (href.isBlank()) continue
+            byUrl[href] = poster
+            byUrl[href.trimEnd('/')] = poster
+        }
+        if (byUrl.isEmpty()) return items
+        var filled = 0
+        val out = items.map { item ->
+            if (!item.posterUrl.isNullOrBlank()) return@map item
+            val hit = byUrl[item.id] ?: byUrl[item.id.trimEnd('/')]
+                ?: byUrl.entries.firstOrNull { (k, _) ->
+                    k.endsWith(item.id.trimStart('/')) || item.id.endsWith(k.substringAfter("://").substringAfter("/"))
+                }?.value
+            if (hit.isNullOrBlank()) item
+            else {
+                filled++
+                recordArt(hit)
+                item.copy(posterUrl = hit)
+            }
+        }
+        if (filled > 0) lastOutcome[config.id] = "✓ ${items.size} title(s) ($filled posters repaired)"
+        return out
     }
 
     /**
@@ -312,7 +391,8 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
 
     private fun artUrl(url: String?): String? {
         val u = url?.trim()?.takeIf { it.isNotBlank() } ?: return null
-        if (u.startsWith("http://") || u.startsWith("https://") || u.startsWith("data:") ||
+        if (u.startsWith("data:")) return null
+        if (u.startsWith("http://") || u.startsWith("https://") ||
             u.startsWith("file://") || u.startsWith("content://")
         ) return u.also { recordArt(it) }
         val base = artSite() ?: return u
