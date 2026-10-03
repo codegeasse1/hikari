@@ -121,6 +121,7 @@ class UniversalScraper(override val config: ProviderConfig) : ContentProvider {
     }
 
     private fun enc(s: String): String =
+        java.net.URLEncoder.encode(s, "UTF-8").replace("+", "%20")
 
     /**
      * Image URL out of an element, lazy-load aware.
@@ -164,8 +165,6 @@ class UniversalScraper(override val config: ProviderConfig) : ContentProvider {
             m.putIfAbsent("www." + host, ref)
         }
     }
-
-        java.net.URLEncoder.encode(s, "UTF-8").replace("+", "%20")
 
     private suspend fun scrapeList(url: String, rules: JSONObject): List<MediaItem> {
         val html = Http.getString(url) ?: return emptyList()
