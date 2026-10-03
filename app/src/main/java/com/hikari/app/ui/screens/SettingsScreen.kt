@@ -30,8 +30,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyColumnScope
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
@@ -752,7 +751,7 @@ fun SettingsScreen(nav: NavHostController) {
     // The folder page's own body, callable from either pane: the phone draws it
     // in its one column, the television draws it in the right pane while the
     // left pane holds the categories.
-    val settingsListBody: LazyColumnScope.() -> Unit = {
+    val settingsListBody: LazyListScope.() -> Unit = {
         val folder = openFolder ?: if (isTv) tvTopFolders.firstOrNull() else null
         val sub = openSub
         if (folder != null) {
