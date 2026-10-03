@@ -54,6 +54,7 @@ import androidx.navigation.NavHostController
 import coil.compose.AsyncImage
 import com.hikari.app.data.AnimeReleaseCalendarRepository
 import com.hikari.app.data.MediaType
+import com.hikari.app.tv.tvPress
 import com.hikari.app.data.ReleaseCalendarRepository
 import com.hikari.app.ui.navigation.Routes
 import java.time.Instant
@@ -135,7 +136,7 @@ private fun CalTab(
         modifier = modifier
             .clip(RoundedCornerShape(16.dp))
             .clickable(onClick = onClick)
-            .com.hikari.app.tv.tvPress(previewPass = true, onClick = onClick),
+            .tvPress(previewPass = true, onClick = onClick),
     ) {
         Row(
             Modifier.padding(horizontal = 12.dp, vertical = 12.dp),
@@ -368,7 +369,7 @@ private fun TmdbReleaseRow(entry: ReleaseCalendarRepository.Entry, onOpen: () ->
             .fillMaxWidth()
             .clip(RoundedCornerShape(18.dp))
             .clickable(onClick = onOpen)
-            .com.hikari.app.tv.tvPress(previewPass = true, onClick = onOpen)
+            .tvPress(previewPass = true, onClick = onOpen)
             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
             .padding(10.dp),
         verticalAlignment = Alignment.CenterVertically,

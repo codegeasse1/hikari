@@ -30,6 +30,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.hikari.app.tv.tvPress
 import com.hikari.app.i18n.tr
 import com.hikari.app.ui.theme.rememberGlassTokens
 
@@ -95,7 +96,7 @@ private fun SettingsBackButton(onBack: () -> Unit) {
             .background(glass.fillTop)
             .border(1.dp, glass.border, CircleShape)
             .clickable(onClick = onBack)
-            .com.hikari.app.tv.tvPress(previewPass = true, onClick = onBack),
+            .tvPress(previewPass = true, onClick = onBack),
         contentAlignment = Alignment.Center,
     ) {
         Icon(
