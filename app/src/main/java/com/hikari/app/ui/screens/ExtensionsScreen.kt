@@ -5219,6 +5219,10 @@ private fun LazyListScope.extensionsSearchItems(
                         overflow = TextOverflow.Ellipsis
                     )
                 }
+                val jsTwin = if (isDartOnlyPlugin(p)) pluginMatches.firstOrNull { m ->
+                    m.second.url != p.url && !isDartOnlyPlugin(m.second) &&
+                        m.second.name.equals(p.name, ignoreCase = true)
+                } else null
                 PluginRow(
                     p = p,
                     installed = SourceUrls.anyKeyIn(p.url, installedUrls),
@@ -5251,6 +5255,8 @@ private fun LazyListScope.extensionsSearchItems(
                     kind = repo.kind,
                     repoUrl = repo.url,
                     repoName = repo.name,
+                    jsTwinName = jsTwin?.second?.name,
+                    onInstallJs = jsTwin?.let { t -> { onInstallPlugin(t.second, t.first.kind) } },
                 )
             }
         }
@@ -7306,6 +7312,8 @@ private fun PluginRow(
     onUpdate: (() -> Unit)? = null,
     kind: RepoKind = RepoKind.CS3,
     repoUrl: String = "",
+    jsTwinName: String? = null,
+    onInstallJs: (() -> Unit)? = null,
     /** Probe line for the Test button (download check / full probe). Null hides Test. */
     testText: String? = null,
     testOk: Boolean = false,
@@ -7438,11 +7446,23 @@ private fun PluginRow(
                 }
             }
         } else if (dartOnly) {
-            Text(
-                tr("Dart-only"),
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            if (onInstallJs != null) {
+                Button(
+                    onClick = onInstallJs,
+                    modifier = Modifier.tvPress(previewPass = true, onClick = onInstallJs),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                ) {
+                    Icon(Icons.Filled.Download, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(tr("JS version"))
+                }
+            } else {
+                Text(
+                    tr("Dart-only"),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         } else {
             Button(
                 onClick = onInstall,

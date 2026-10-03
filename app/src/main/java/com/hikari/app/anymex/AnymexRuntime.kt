@@ -5,6 +5,7 @@ import com.dokar.quickjs.QuickJs
 import com.dokar.quickjs.binding.asyncFunction
 import com.dokar.quickjs.binding.function
 import com.hikari.app.HikariApp
+import com.hikari.app.net.CloudflareVerifier
 import com.hikari.app.net.DohDns
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -142,6 +143,7 @@ object AnymexRuntime {
                 }
             )
             .dns(DohDns)
+            .addInterceptor { chain -> CloudflareVerifier.intercept(chain) }
             .build()
     }
 

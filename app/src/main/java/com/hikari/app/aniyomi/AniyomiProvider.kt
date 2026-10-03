@@ -324,10 +324,9 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
         val base = artSite() ?: return
         runCatching {
             val host = java.net.URI(url).host?.lowercase() ?: return@runCatching
-            com.hikari.app.cs3.Cs3MainApiProvider.imageHeaders.putIfAbsent(
-                url, mapOf("Referer" to base + "/", "User-Agent" to Http.UA)
-            )
-            com.hikari.app.cs3.Cs3MainApiProvider.imageHostReferers.putIfAbsent(host, base + "/")
+            com.hikari.app.cs3.Cs3MainApiProvider.imageHeaders[url] =
+                mapOf("Referer" to base + "/", "User-Agent" to Http.UA)
+            com.hikari.app.cs3.Cs3MainApiProvider.imageHostReferers[host] = base + "/"
         }
     }
 

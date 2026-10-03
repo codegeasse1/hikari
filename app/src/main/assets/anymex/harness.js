@@ -168,7 +168,15 @@
   // ---- Client ----
   function doRequest(method, url, headers, body) {
     var init = { method: method, headers: normHeaders(headers) };
-    if (isDef(body) && method !== 'GET' && method !== 'HEAD') init.body = body;
+    if (isDef(body) && method !== 'GET' && method !== 'HEAD') {
+      if (typeof body === 'object') {
+        try { body = JSON.stringify(body); } catch (e) { body = String(body); }
+        if (!init.headers['content-type'] && !init.headers['Content-Type']) {
+          init.headers['content-type'] = 'application/json';
+        }
+      }
+      init.body = body;
+    }
     return fetch(String(url), init).then(function (res) {
       return res.text().then(function (text) {
         var plain = {};

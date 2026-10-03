@@ -8329,7 +8329,7 @@ class PlayerActivity : ComponentActivity() {
         // header set we haven't found yet, would then be "the last working
         // server" and get restored on the next play. Only a source that
         // actually rendered (see onRenderedFirstFrame) is remembered.
-        if (src.isTorrent && src.infoHash != null) {
+        if (src.isTorrent && (src.infoHash != null || src.url.startsWith("magnet:", ignoreCase = true))) {
             playTorrent(index)
             return
         }

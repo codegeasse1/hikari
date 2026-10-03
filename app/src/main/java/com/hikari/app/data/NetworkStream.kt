@@ -7,6 +7,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import java.net.URLEncoder
+import java.util.IdentityHashMap
 import java.util.LinkedList
 
 /**
@@ -176,10 +177,8 @@ object NetworkStream {
     }
 
     private suspend fun resolveBounded(url: String, label: String): List<StreamSource> {
-        // Magnet / torrent URL — hand to the torrent engine as-is.
-        if (url.startsWith("magnet:", ignoreCase = true) ||
-            url.lowercase().substringBefore('?').endsWith(".torrent")
-        ) {
+        // Magnet links hand straight to the torrent engine.
+        if (url.startsWith("magnet:", ignoreCase = true)) {
             return listOf(
                 StreamSource(
                     name = label.ifBlank { "Torrent" },
@@ -192,7 +191,20 @@ object NetworkStream {
                 ),
             )
         }
-        // 1. Already a stream: nothing to resolve, and asking a CDN to prove it
+        // A .torrent FILE is not playable bytes — the player would be handed
+        // the file itself and fail. Parse it into the info hash (+ trackers)
+        // the torrent engine needs instead.
+        if (url.lowercase().substringBefore('?').endsWith(".torrent")) {
+            resolveTorrentFile(url, label)?.let { return listOf(it) }
+            return listOf(
+                StreamSource(
+                    name = label.ifBlank { "Torrent" },
+                    url = url,
+                    isTorrent = true,
+                ),
+            )
+        }
+    // 1. Already a stream: nothing to resolve, and asking a CDN to prove it
         //    would only add a round trip to every play.
         if (isDirectMedia(url)) return listOf(sourceOf(url, label))
 
@@ -249,6 +261,109 @@ object NetworkStream {
         return query.contains("type=m3u8") || query.contains("type=m3u") ||
             query.contains("format=m3u8")
     }
+
+
+    private suspend fun resolveTorrentFile(url: String, label: String): StreamSource? =
+    withContext(Dispatchers.IO) {
+        val bytes = withTimeoutOrNull(20_000) {
+            runCatching {
+                Http.fetchBytesCancellable(url, mapOf("User-Agent" to Http.UA), 20)
+            }.getOrNull()
+        } ?: return@withContext null
+        if (bytes.isEmpty() || bytes.size > 4 * 1024 * 1024) return@withContext null
+        val parsed = runCatching { parseTorrent(bytes) }.getOrNull() ?: return@withContext null
+        StreamSource(
+            name = parsed.name.ifBlank { label.ifBlank { "Torrent" } },
+            url = url,
+            isTorrent = true,
+            infoHash = parsed.infoHash,
+            trackers = parsed.trackers,
+        )
+    }
+
+private data class ParsedTorrent(
+    val infoHash: String,
+    val trackers: List<String>,
+    val name: String,
+)
+
+private fun parseTorrent(bytes: ByteArray): ParsedTorrent? {
+    val r = BReader(bytes)
+    val top = r.parse() as? Map<String, Any?> ?: return null
+    @Suppress("UNCHECKED_CAST")
+    val info = top["info"] as? Map<String, Any?> ?: return null
+    val span = r.spans[info] ?: return null
+    val digest = java.security.MessageDigest.getInstance("SHA-1")
+    digest.update(bytes, span.first, span.last - span.first + 1)
+    val hash = digest.digest().joinToString("") { "%02x".format(it) }
+    val trackers = LinkedHashSet<String>()
+    (top["announce"] as? ByteArray)?.let { trackers += String(it, Charsets.UTF_8).trim() }
+    collectTrackers(top["announce-list"], trackers)
+    val name = (info["name"] as? ByteArray)?.let { String(it, Charsets.UTF_8).trim() }.orEmpty()
+    return ParsedTorrent(
+        hash,
+        trackers.filter { it.startsWith("http") || it.startsWith("udp") },
+        name,
+    )
+}
+
+private fun collectTrackers(x: Any?, out: MutableSet<String>) {
+    when (x) {
+        is ByteArray -> out += String(x, Charsets.UTF_8).trim()
+        is List<*> -> x.forEach { collectTrackers(it, out) }
+    }
+}
+
+private class BReader(val b: ByteArray) {
+    var i = 0
+    val spans = IdentityHashMap<Any, IntRange>()
+    fun parse(): Any? {
+        if (i >= b.size) return null
+        return when (b[i].toInt().toChar()) {
+            'i' -> {
+                i++
+                val s = i
+                while (i < b.size && b[i].toInt().toChar() != 'e') i++
+                val v = String(b, s, i - s).toLongOrNull() ?: 0L
+                i++
+                v
+            }
+            'l' -> {
+                i++
+                val l = ArrayList<Any?>()
+                val start = i - 1
+                while (i < b.size && b[i].toInt().toChar() != 'e') l += parse()
+                i++
+                spans[l] = start..i - 1
+                l
+            }
+            'd' -> {
+                i++
+                val m = LinkedHashMap<String, Any?>()
+                val start = i - 1
+                while (i < b.size && b[i].toInt().toChar() != 'e') {
+                    val k = parse() as? ByteArray ?: break
+                    m[String(k, Charsets.UTF_8)] = parse()
+                }
+                i++
+                spans[m] = start..i - 1
+                m
+            }
+            else -> {
+                val cs = i
+                while (i < b.size && b[i].toInt() in '0'.code..'9'.code) i++
+                if (i >= b.size || b[i].toInt().toChar() != ':') return null
+                val n = String(b, cs, i - cs).toIntOrNull() ?: return null
+                i++
+                if (n < 0 || i + n > b.size) return null
+                val v = b.copyOfRange(i, i + n)
+                i += n
+                v
+            }
+        }
+    }
+}
+
 
     private fun isVideoMime(mime: String): Boolean {
         val m = mime.lowercase()
