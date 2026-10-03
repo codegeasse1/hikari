@@ -921,7 +921,12 @@ private fun IptvHeader(
     Row(
         Modifier
             .fillMaxWidth()
-            .padding(start = 6.dp, end = 6.dp, top = 6.dp, bottom = 2.dp),
+            .padding(
+                start = if (com.hikari.app.tv.TvMode.current()) 20.dp else 6.dp,
+                end = if (com.hikari.app.tv.TvMode.current()) 20.dp else 6.dp,
+                top = if (com.hikari.app.tv.TvMode.current()) 12.dp else 6.dp,
+                bottom = 2.dp
+            ),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (onBack != null) {
@@ -937,7 +942,8 @@ private fun IptvHeader(
         Column(Modifier.weight(1f)) {
             Text(
                 tr(title),
-                style = MaterialTheme.typography.titleLarge,
+                style = if (com.hikari.app.tv.TvMode.current()) MaterialTheme.typography.headlineSmall
+                else MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,

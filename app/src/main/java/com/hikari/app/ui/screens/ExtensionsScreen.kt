@@ -4490,8 +4490,9 @@ fun ExtensionsScreen(nav: NavHostController? = null) {
 @Composable
 private fun SectionHeader(title: String) {
     Text(
-        title.uppercase(),
-        style = MaterialTheme.typography.labelSmall,
+        if (com.hikari.app.tv.TvMode.current()) title else title.uppercase(),
+        style = if (com.hikari.app.tv.TvMode.current()) MaterialTheme.typography.titleLarge
+        else MaterialTheme.typography.labelSmall,
         fontWeight = FontWeight.SemiBold,
         letterSpacing = 1.2.sp,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -4776,7 +4777,10 @@ private fun RepoBrowserView(
                 placeholder = tr("Search extensions & sources…"),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                    .padding(
+                        horizontal = if (com.hikari.app.tv.TvMode.current()) 20.dp else 16.dp,
+                        vertical = 12.dp
+                    ),
             )
         }
         // Updates found by re-hashing every installed extension against its
@@ -4910,13 +4914,28 @@ private fun RepoBrowserView(
             )
             return@LazyColumn
         }
+        // Television opens on a cinematic header — the screen's name with its
+        // counts — instead of dropping straight into cards.
+        item(key = "tv-header") {
+            if (com.hikari.app.tv.TvMode.current()) {
+                com.hikari.app.tv.TvScreenHeader(
+                    title = tr("Extensions"),
+                    subtitle = I18n.t("%s installed").replace("%s", providers.size.toString()) +
+                        " · " + I18n.t("%s repos").replace("%s", repos.size.toString()) +
+                        " · " + I18n.t("%s enabled").replace("%s", providers.count { it.config.enabled }.toString()),
+                )
+            }
+        }
         item {
             val enabledCount = providers.count { it.config.enabled }
             GlassCard(
                 onClick = onOpenSources,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                    .padding(
+                        horizontal = if (com.hikari.app.tv.TvMode.current()) 20.dp else 16.dp,
+                        vertical = 12.dp
+                    )
             ) {
                 Row(
                     Modifier

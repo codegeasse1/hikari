@@ -3383,6 +3383,21 @@ fun DetailScreen(
                     }.joinToString("  ·  ")
                     if (tvMeta.isNotBlank()) Text(tvMeta, style = MaterialTheme.typography.titleSmall,
                         color = Color.White.copy(alpha = 0.92f), modifier = Modifier.padding(top = 8.dp))
+                    // Production, above the ratings: the reference layout's
+                    // studio row sits with the title block, not buried below.
+                    extras?.companies?.takeIf { it.isNotEmpty() }?.let { tvCompanies ->
+                        TvCompanyRow(tvCompanies) { c ->
+                            val spec = TmdbSpec(
+                                type = if (c.isNetwork) TmdbSourceType.NETWORK
+                                else TmdbSourceType.COMPANY,
+                                id = c.id,
+                                media = if (c.isNetwork) "tv" else "all",
+                                sort = "popularity.desc",
+                                title = c.name,
+                            )
+                            Routes.safeNavigate(nav, Routes.tmdbGridSpec(spec.encode(), c.name))
+                        }
+                    }
                     // The review-score badges BEFORE the actions: the reference
                     // TV layout leads with its ratings, and the strip used to
                     // sit below the hero in the scroll.
@@ -3398,7 +3413,8 @@ fun DetailScreen(
                             ratings.forEach { r -> RatingBadge(r) { ratingInfo = r } }
                         }
                     }
-                    if (!displayOverview.isNullOrBlank()) Text(displayOverview, style = MaterialTheme.typography.bodyMedium,
+                    if (detailIsSeries) {
+if (!displayOverview.isNullOrBlank()) Text(displayOverview, style = MaterialTheme.typography.bodyMedium,
                         color = Color.White.copy(alpha = 0.84f), maxLines = if (episodePosterStyle) 4 else 2, overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
                     Row(
@@ -3477,6 +3493,87 @@ fun DetailScreen(
                                 Icon(Icons.Filled.FavoriteBorder, contentDescription = tr("Save"))
                             }
                         }
+                    }} else {
+                    // Movies lead with the actions, above the details.
+Row(
+                        Modifier.padding(top = 14.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Button(
+                            onClick = { tryPlay(detailBtnEp) },
+                            modifier = Modifier
+                                .focusRequester(playFocus)
+                                .tvPress(
+                                    previewPass = true,
+                                    onClick = { tryPlay(detailBtnEp) }
+                                )
+                        ) {
+                            Icon(Icons.Filled.PlayArrow, contentDescription = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text(detailActionLabel)
+                        }
+                        // Trailer beside Play, like the reference layout: opens
+                        // the title's own trailer instead of scrolling for it.
+                        extras?.trailers?.firstOrNull()?.let { tvTrailer ->
+                            FilledTonalButton(
+                                onClick = {
+                                    openYouTubeVideo(
+                                        context,
+                                        tvTrailer.youtubeKey,
+                                        (m?.title ?: title) + " — " + tvTrailer.name
+                                    )
+                                },
+                                modifier = Modifier.tvPress(
+                                    previewPass = true,
+                                    onClick = {
+                                        openYouTubeVideo(
+                                            context,
+                                            tvTrailer.youtubeKey,
+                                            (m?.title ?: title) + " — " + tvTrailer.name
+                                        )
+                                    }
+                                )
+                            ) {
+                                Icon(Icons.Filled.OndemandVideo, contentDescription = tr("Trailer"))
+                            }
+                        }
+                        FilledTonalButton(
+                            onClick = { tryDownload(detailBtnEp) },
+                            modifier = Modifier.tvPress(
+                                previewPass = true,
+                                onClick = { tryDownload(detailBtnEp) }
+                            )
+                        ) {
+                            Icon(painter = painterResource(R.drawable.ic_download), contentDescription = tr("Download"))
+                        }
+                        // Save, mirroring the phone row's library toggle below:
+                        // the reference TV layout puts Play + Save side by
+                        // side, and the TV hero only had Play + Download.
+                        if (isSaved) {
+                            FilledTonalButton(
+                                onClick = openLibrary,
+                                modifier = Modifier.tvPress(
+                                    previewPass = true,
+                                    onClick = openLibrary,
+                                )
+                            ) {
+                                Icon(Icons.Filled.Favorite, contentDescription = null)
+                            }
+                        } else {
+                            OutlinedButton(
+                                onClick = openLibrary,
+                                modifier = Modifier.tvPress(
+                                    previewPass = true,
+                                    onClick = openLibrary,
+                                )
+                            ) {
+                                Icon(Icons.Filled.FavoriteBorder, contentDescription = tr("Save"))
+                            }
+                        }
+                    }if (!displayOverview.isNullOrBlank()) Text(displayOverview, style = MaterialTheme.typography.bodyMedium,
+                        color = Color.White.copy(alpha = 0.84f), maxLines = if (episodePosterStyle) 4 else 2, overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
                     }
                 }
             }
@@ -4064,7 +4161,7 @@ fun DetailScreen(
                     item {
                         DetailsBlock(
                             d = det,
-                            ratings = if (showDetailRating) ratings else emptyList(),
+                            ratings = if (showDetailRating && !isTvLayout) ratings else emptyList(),
                             // Even with the strip hidden the block's own rows
                             // (year, certification, director) still render, so
                             // the callback stays wired for when it comes back.
@@ -4076,7 +4173,7 @@ fun DetailScreen(
                 // that studio or network made (a TMDB entity grid; see the
                 // TmdbSourceType.COMPANY/NETWORK queries). It sits ABOVE the cast
                 // row, the order the reference client uses.
-                extras?.companies?.takeIf { it.isNotEmpty() }?.let { companies ->
+                if (!isTvLayout) extras?.companies?.takeIf { it.isNotEmpty() }?.let { companies ->
                     item {
                         ProductionRow(companies) { c ->
                             val spec = TmdbSpec(
@@ -5829,6 +5926,50 @@ private fun Hero(
  * remove a studio from the row.
  */
 @Composable
+/**
+ * The studio row for the TV hero: compact white chips (logo plate + name) in
+ * one sideways row, instead of the phone's titled logo grid below the page.
+ */
+@Composable
+private fun TvCompanyRow(
+    companies: List<CompanyRef>,
+    onClick: (CompanyRef) -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = 8.dp)
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        companies.distinctBy { (if (it.isNetwork) "n" else "c") + "|" + it.id }.forEach { c ->
+            Row(
+                Modifier
+                    .clip(RoundedCornerShape(50))
+                    .background(Color.White.copy(alpha = 0.12f))
+                    .border(1.dp, Color.White.copy(alpha = 0.28f), RoundedCornerShape(50))
+                    .clickable { onClick(c) }
+                    .padding(start = 5.dp, end = 12.dp, top = 5.dp, bottom = 5.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                CompanyLogoTile(
+                    logoUrl = c.logoUrl,
+                    name = c.name,
+                    modifier = Modifier.height(26.dp).aspectRatio(2.4f),
+                )
+                Spacer(Modifier.width(7.dp))
+                Text(
+                    c.name,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = Color.White,
+                    maxLines = 1,
+                )
+            }
+        }
+    }
+}
+
 private fun ProductionRow(
     companies: List<CompanyRef>,
     onClick: (CompanyRef) -> Unit,

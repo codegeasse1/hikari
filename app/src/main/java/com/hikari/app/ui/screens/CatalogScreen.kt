@@ -588,12 +588,21 @@ fun CatalogScreen(
                 }
             }
         }
+        // Television opens on the shared cinematic header; the phone keeps
+        // its own title block.
+        if (com.hikari.app.tv.TvMode.current()) {
+            com.hikari.app.tv.TvScreenHeader(
+                title = tr(shownName),
+                subtitle = providerName.takeIf { it.isNotBlank() },
+            )
+        }
         Column(
             Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp)
                 .padding(bottom = 6.dp)
         ) {
+            if (!com.hikari.app.tv.TvMode.current()) {
             Text(
                 tr(shownName),
                 style = MaterialTheme.typography.headlineMedium,
@@ -601,7 +610,8 @@ fun CatalogScreen(
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis
             )
-            if (providerName.isNotBlank()) {
+            }
+            if (!com.hikari.app.tv.TvMode.current() && providerName.isNotBlank()) {
                 Text(
                     providerName,
                     style = MaterialTheme.typography.bodyMedium,
@@ -694,7 +704,10 @@ fun CatalogScreen(
                 columns = GridCells.Fixed(columns),
                 state = gridState,
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+                contentPadding = PaddingValues(
+                    horizontal = if (com.hikari.app.tv.TvMode.current()) 20.dp else 16.dp,
+                    vertical = 12.dp
+                ),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                 verticalArrangement = Arrangement.spacedBy(18.dp),
             ) {

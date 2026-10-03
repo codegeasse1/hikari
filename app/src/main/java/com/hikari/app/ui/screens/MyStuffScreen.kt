@@ -331,8 +331,13 @@ private fun MyStuffStrip(sections: List<String>, current: String, onPick: (Strin
     Row(
         Modifier
             .fillMaxWidth()
-            .padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 2.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+            .padding(
+                start = if (com.hikari.app.tv.TvMode.current()) 20.dp else 16.dp,
+                end = if (com.hikari.app.tv.TvMode.current()) 20.dp else 16.dp,
+                top = if (com.hikari.app.tv.TvMode.current()) 14.dp else 12.dp,
+                bottom = 2.dp
+            ),
+        horizontalArrangement = Arrangement.spacedBy(if (com.hikari.app.tv.TvMode.current()) 10.dp else 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         // The labels are read HERE (a composable position) because `tr` is

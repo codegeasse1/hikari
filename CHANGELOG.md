@@ -1,3 +1,18 @@
+## 0.10.77
+
+Everything new and fixed since the last release (0.10.76):
+
+### Added
+
+- Every tab screen opens on the same cinematic TV header now — Extensions (with installed/repo/enabled counts), Catalog, Library strip, Search and IPTV share one large title shape with wider 20dp gutters, and section titles grow to match
+- The TV detail hero carries the studio row with the title block — compact logo chips above the ratings — for movies and series alike
+
+### Fixed
+
+- I fixed the ratings showing twice on TV — the badges live only in the hero now, and the details block below keeps its year, certification, director and writers without repeating them
+- I fixed the movie layout putting actions last — movies lead with Play, Trailer, Download and Save above the description now, while series keep the description first like before
+- I fixed the production row sitting buried below the page — it moved up just above the ratings in the hero, and the old row below is gone on TV
+
 ## 0.10.76
 
 Everything new and fixed since the last release (0.10.75):

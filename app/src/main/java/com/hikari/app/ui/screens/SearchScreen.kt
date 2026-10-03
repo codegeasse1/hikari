@@ -515,7 +515,10 @@ fun SearchScreen(
             },
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
+                .padding(
+                    horizontal = if (com.hikari.app.tv.TvMode.current()) 20.dp else 16.dp,
+                    vertical = if (com.hikari.app.tv.TvMode.current()) 10.dp else 8.dp
+                ),
             trailing = {
                 Box {
                     Box(
