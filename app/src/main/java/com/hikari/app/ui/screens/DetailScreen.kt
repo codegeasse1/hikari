@@ -3493,7 +3493,8 @@ if (!displayOverview.isNullOrBlank()) Text(displayOverview, style = MaterialThem
                                 Icon(Icons.Filled.FavoriteBorder, contentDescription = tr("Save"))
                             }
                         }
-                    }} else {
+                    }
+                    } else {
                     // Movies lead with the actions, above the details.
 Row(
                         Modifier.padding(top = 14.dp),
@@ -3571,7 +3572,8 @@ Row(
                                 Icon(Icons.Filled.FavoriteBorder, contentDescription = tr("Save"))
                             }
                         }
-                    }if (!displayOverview.isNullOrBlank()) Text(displayOverview, style = MaterialTheme.typography.bodyMedium,
+                    }
+if (!displayOverview.isNullOrBlank()) Text(displayOverview, style = MaterialTheme.typography.bodyMedium,
                         color = Color.White.copy(alpha = 0.84f), maxLines = if (episodePosterStyle) 4 else 2, overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
                     }
@@ -5925,7 +5927,6 @@ private fun Hero(
  * own surface — because the NAME is the useful part and a missing logo must not
  * remove a studio from the row.
  */
-@Composable
 /**
  * The studio row for the TV hero: compact white chips (logo plate + name) in
  * one sideways row, instead of the phone's titled logo grid below the page.
@@ -5970,6 +5971,7 @@ private fun TvCompanyRow(
     }
 }
 
+@Composable
 private fun ProductionRow(
     companies: List<CompanyRef>,
     onClick: (CompanyRef) -> Unit,
