@@ -1,3 +1,19 @@
+## 0.10.79
+
+Everything new and fixed since the last release (0.10.78):
+
+### Added
+
+- The release calendar is three tabs now — Anime (Simkl, as before), Movies and Series swipe and tap like My Stuff, with Movie / TV / TV Episode chips and a country picker for upcoming releases grouped by day like the reference
+- A remote-mouse cursor for television — the new mouse button before the Home search icon drops a D-pad-driven ring over every screen (arrows move it and the focus follows), and inside web pages OK taps the page at the ring, so the Cloudflare "I'm not a robot" checkbox can be pressed from the sofa
+- Repo pages match the redesign on TV — All Sources and every repo folder open on the cinematic header with 20dp gutters, bigger accent-tinted cards and larger back targets
+- The Home provider search is a proper search field now — rounded tonal container, accent search badge, live match count and a clear button on TV
+
+### Fixed
+
+- I fixed the Settings folder back button doing nothing on TV — with no sub-folder open it left Settings instead of sitting dead, and it answers the remote like every other TV control now
+- I fixed tapping a calendar release going nowhere useful — the + button opens the title's detail page, which resolves servers through the installed addons
+
 ## 0.10.78
 
 Everything new and fixed since the last release (0.10.77):

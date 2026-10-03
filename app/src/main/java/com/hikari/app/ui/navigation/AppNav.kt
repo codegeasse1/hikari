@@ -113,6 +113,7 @@ import com.hikari.app.ui.screens.TmdbGridScreen
 import com.hikari.app.ui.theme.HikariThemeMode
 import com.hikari.app.ui.theme.rememberGlassTokens
 import com.hikari.app.tv.TvMode
+import com.hikari.app.tv.TvMouseCursorOverlay
 import com.hikari.app.tv.TvNavRail
 import com.hikari.app.tv.TvUi
 import androidx.compose.runtime.collectAsState
@@ -1365,5 +1366,9 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
                 modifier = Modifier.align(Alignment.CenterStart),
             )
         }
+        // Remote-mouse cursor (Home header toggle): a D-pad-driven pointer
+        // over every screen, so a Cloudflare checkbox and any other
+        // hard-to-focus target stays reachable from the sofa.
+        TvMouseCursorOverlay()
     }
 }

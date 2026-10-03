@@ -43,6 +43,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.ExpandLess
@@ -52,6 +53,7 @@ import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Mouse
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AlertDialog
@@ -943,6 +945,8 @@ fun HomeScreen(nav: NavHostController) {
                         onVerify = openVerify,
                         overlay = false,
                         onSettings = openSettings,
+                        onMouse = { com.hikari.app.tv.MouseMode.toggle() },
+                        mouseOn = com.hikari.app.tv.MouseMode.enabled,
                     )
                     // Television: the provider strip sits under the header like
                     // CloudStream's — every extension one OK-press away, hold
@@ -961,23 +965,50 @@ fun HomeScreen(nav: NavHostController) {
                             textStyle = MaterialTheme.typography.bodyMedium,
                             placeholder = {
                                 Text(
-                                    tr("Search providers…"),
+                                    if (tvProvQuery.isBlank()) tr("Search providers…")
+                                    else tr("%s of %s").replaceFirst("%s", stripProviders.size.toString()).replaceFirst("%s", activeProviders.size.toString()),
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             },
                             leadingIcon = {
-                                Icon(
-                                    Icons.Filled.Search,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.size(18.dp),
-                                )
+                                Box(
+                                    Modifier
+                                        .size(34.dp)
+                                        .clip(CircleShape)
+                                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Icon(
+                                        Icons.Filled.Search,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                }
                             },
-                            shape = RoundedCornerShape(12.dp),
+                            trailingIcon = if (tvProvQuery.isNotBlank()) {
+                                {
+                                    IconButton(onClick = { tvProvQuery = "" }) {
+                                        Icon(
+                                            Icons.Filled.Close,
+                                            contentDescription = tr("Clear"),
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.size(18.dp),
+                                        )
+                                    }
+                                }
+                            } else null,
+                            shape = RoundedCornerShape(20.dp),
+                            colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = MaterialTheme.colorScheme.primary,
+                                unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
+                                focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                                unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.30f),
+                            ),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(start = 12.dp, end = 12.dp, top = 4.dp)
+                                .padding(start = 20.dp, end = 20.dp, top = 6.dp)
                                 .tvTextFieldKeys(tvProvQuery),
                         )
                         TvProviderStrip(
@@ -2636,6 +2667,8 @@ private fun HomeHeader(
     onTranslate: () -> Unit,
     onVerify: () -> Unit,
     overlay: Boolean,
+    onMouse: () -> Unit = {},
+    mouseOn: Boolean = false,
     /** Non-null only while the Settings tab is switched off in the bottom bar
      *  (Settings → Taskbar buttons): the bar then has no way into Settings, so
      *  this gear keeps the screen reachable instead of locking the user out. */
@@ -2666,6 +2699,19 @@ private fun HomeHeader(
                 color = subtitleColor,
                 modifier = Modifier.padding(horizontal = 8.dp)
             )
+        }
+        // Remote mouse: a D-pad-driven cursor over every screen, for the
+        // Cloudflare "I'm not a robot" checkbox and any other target the
+        // focus walk cannot land on. Television only.
+        if (TvMode.current()) {
+            IconButton(onClick = onMouse) {
+                Icon(
+                    Icons.Filled.Mouse,
+                    contentDescription = tr("Mouse cursor"),
+                    tint = if (mouseOn) accent else iconTint,
+                    modifier = Modifier.size(if (mouseOn) 26.dp else 24.dp),
+                )
+            }
         }
         IconButton(onClick = onSearch) {
             Icon(Icons.Filled.Search, contentDescription = tr("Search"), tint = iconTint)

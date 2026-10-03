@@ -80,6 +80,15 @@ class WebViewActivity : ComponentActivity() {
     private lateinit var progressBar: ProgressBar
     private lateinit var videoChip: TextView
     private lateinit var rootView: LinearLayout
+    private var contentFrame: FrameLayout? = null
+    // Remote-mouse cursor (Home header toggle): a D-pad-driven ring over the
+    // page. Arrows move it, OK taps the page AT the ring by dispatching a real
+    // touch to the WebView — so a Cloudflare "I'm not a robot" checkbox and
+    // any other target can be pressed from the sofa.
+    private var mouseMode = false
+    private var cursorView: View? = null
+    private var cursorX = 0f
+    private var cursorY = 0f
     private val detectedVideos = LinkedHashSet<String>()
     private var pageUrl: String? = null
     private var pageTitle: String = ""
@@ -375,7 +384,9 @@ class WebViewActivity : ComponentActivity() {
             addView(content, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         }
         setContentView(rootView)
-
+        contentFrame = rootView.getChildAt(1) as? FrameLayout
+        mouseMode = com.hikari.app.tv.MouseMode.enabled
+        if (mouseMode) showCursor(center = true)
         // Draggable ⋯ pill: it floats over the site (top-right by default) and
         // can cover a site's search/header button, so let the user drag it
         // anywhere along the top edge. A plain tap still opens the menu.
@@ -996,6 +1007,7 @@ class WebViewActivity : ComponentActivity() {
         menu.menu.add(0, 8, 8, "\u21A9 Undo last block")
         menu.menu.add(0, 9, 9, "\u2715 Clear all blocks")
         if (translateEnabled) menu.menu.add(0, 10, 10, "\u2716 Translation off")
+        menu.menu.add(0, 12, 12, if (mouseMode) "\u2716 Mouse cursor off" else "\u2316 Mouse cursor on")
         menu.setOnMenuItemClickListener { item ->
             when (item.itemId) {
                 1 -> if (webView.canGoBack()) webView.goBack()
@@ -1027,6 +1039,7 @@ class WebViewActivity : ComponentActivity() {
                     Toast.makeText(this, I18n.t("Translation off"), Toast.LENGTH_SHORT).show()
                 }
                 11 -> allowBlockedRedirect()
+                12 -> toggleMouse()
             }
             true
         }
@@ -1048,6 +1061,89 @@ class WebViewActivity : ComponentActivity() {
      * navigation — and any a page makes while it loads — already sees the entry
      * (see RedirectAllow for why that ordering matters).
      */
+    private fun toggleMouse() {
+        mouseMode = !mouseMode
+        com.hikari.app.tv.MouseMode.enabled = mouseMode
+        if (mouseMode) {
+            showCursor(center = true)
+            Toast.makeText(this, I18n.t("Mouse on — arrows move the ring, OK taps the page"), Toast.LENGTH_SHORT).show()
+        } else {
+            hideCursor()
+        }
+    }
+
+    private fun cursorStep(): Int = dp(44)
+
+    private fun showCursor(center: Boolean) {
+        val frame = contentFrame ?: return
+        hideCursor()
+        val ring = android.graphics.drawable.GradientDrawable().apply {
+            shape = android.graphics.drawable.GradientDrawable.OVAL
+            setStroke(dp(3), 0xFFFF5252.toInt())
+            setColor(android.graphics.Color.TRANSPARENT)
+        }
+        val size = dp(52)
+        val v = View(this).apply { background = ring }
+        if (center) {
+            cursorX = (frame.width / 2f).takeIf { it > 0 } ?: dp(400).toFloat()
+            cursorY = (frame.height / 3f).takeIf { it > 0 } ?: dp(400).toFloat()
+        }
+        cursorX = cursorX.coerceIn(0f, (frame.width - size).coerceAtLeast(0).toFloat())
+        cursorY = cursorY.coerceIn(0f, (frame.height - size).coerceAtLeast(0).toFloat())
+        frame.addView(v, FrameLayout.LayoutParams(size, size).apply {
+            leftMargin = cursorX.toInt()
+            topMargin = cursorY.toInt()
+        })
+        cursorView = v
+    }
+
+    private fun hideCursor() {
+        cursorView?.let { runCatching { contentFrame?.removeView(it) } }
+        cursorView = null
+    }
+
+    private fun moveCursor(dx: Int, dy: Int) {
+        val frame = contentFrame ?: return
+        val v = cursorView ?: run { showCursor(center = true); return }
+        val size = dp(52)
+        cursorX = (cursorX + dx * cursorStep()).coerceIn(0f, (frame.width - size).coerceAtLeast(0).toFloat())
+        cursorY = (cursorY + dy * cursorStep()).coerceIn(0f, (frame.height - size).coerceAtLeast(0).toFloat())
+        (v.layoutParams as? FrameLayout.LayoutParams)?.let { lp ->
+            lp.leftMargin = cursorX.toInt()
+            lp.topMargin = cursorY.toInt()
+            v.layoutParams = lp
+        }
+    }
+
+    private fun tapCursor() {
+        val v = cursorView ?: return
+        val size = dp(52) / 2f
+        val x = cursorX + size
+        val y = cursorY + size
+        val down = android.os.SystemClock.uptimeMillis()
+        val downEv = android.view.MotionEvent.obtain(down, down, android.view.MotionEvent.ACTION_DOWN, x, y, 0)
+        val upEv = android.view.MotionEvent.obtain(down, down + 90, android.view.MotionEvent.ACTION_UP, x, y, 0)
+        runCatching { webView.dispatchTouchEvent(downEv) }
+        runCatching { webView.dispatchTouchEvent(upEv) }
+        downEv.recycle()
+        upEv.recycle()
+    }
+
+    override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
+        if (mouseMode && event.action == android.view.KeyEvent.ACTION_DOWN) {
+            when (event.keyCode) {
+                android.view.KeyEvent.KEYCODE_DPAD_UP -> { moveCursor(0, -1); return true }
+                android.view.KeyEvent.KEYCODE_DPAD_DOWN -> { moveCursor(0, 1); return true }
+                android.view.KeyEvent.KEYCODE_DPAD_LEFT -> { moveCursor(-1, 0); return true }
+                android.view.KeyEvent.KEYCODE_DPAD_RIGHT -> { moveCursor(1, 0); return true }
+                android.view.KeyEvent.KEYCODE_DPAD_CENTER,
+                android.view.KeyEvent.KEYCODE_ENTER,
+                android.view.KeyEvent.KEYCODE_NUMPAD_ENTER -> { tapCursor(); return true }
+            }
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
     private fun allowBlockedRedirect() {
         val url = lastBlockedRedirectUrl ?: return
         // The list names HOSTS or words; a link with no host (a data:/blob:

@@ -94,7 +94,8 @@ private fun SettingsBackButton(onBack: () -> Unit) {
             .clip(CircleShape)
             .background(glass.fillTop)
             .border(1.dp, glass.border, CircleShape)
-            .clickable(onClick = onBack),
+            .clickable(onClick = onBack)
+            .com.hikari.app.tv.tvPress(previewPass = true, onClick = onBack),
         contentAlignment = Alignment.Center,
     ) {
         Icon(

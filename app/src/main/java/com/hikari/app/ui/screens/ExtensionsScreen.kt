@@ -7202,7 +7202,10 @@ private fun RepoCard(
         onClick = if (com.hikari.app.tv.TvMode.current()) null else onClick,
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 6.dp)
+            .padding(
+                horizontal = if (com.hikari.app.tv.TvMode.current()) 20.dp else 16.dp,
+                vertical = if (com.hikari.app.tv.TvMode.current()) 8.dp else 6.dp
+            )
     ) {
         Row(
             Modifier
@@ -7212,29 +7215,36 @@ private fun RepoCard(
                 .focusProperties {
                     right = copyFocus
                 }
-                .padding(horizontal = 12.dp, vertical = 8.dp)
+                .padding(
+                    horizontal = if (com.hikari.app.tv.TvMode.current()) 16.dp else 12.dp,
+                    vertical = if (com.hikari.app.tv.TvMode.current()) 14.dp else 8.dp
+                )
                 .tvPress(previewPass = false, onClick = onClick),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box(
                 Modifier
-                    .size(40.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                    .size(if (com.hikari.app.tv.TvMode.current()) 52.dp else 40.dp)
+                    .clip(RoundedCornerShape(if (com.hikari.app.tv.TvMode.current()) 16.dp else 10.dp))
+                    .background(
+                        if (com.hikari.app.tv.TvMode.current()) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+                        else MaterialTheme.colorScheme.surfaceVariant
+                    ),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
                     Icons.Filled.FolderOpen,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(22.dp)
+                    modifier = Modifier.size(if (com.hikari.app.tv.TvMode.current()) 28.dp else 22.dp)
                 )
             }
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(
                     repo.name,
-                    style = MaterialTheme.typography.titleSmall,
+                    style = if (com.hikari.app.tv.TvMode.current()) MaterialTheme.typography.titleMedium else MaterialTheme.typography.titleSmall,
+                    fontWeight = if (com.hikari.app.tv.TvMode.current()) FontWeight.Bold else FontWeight.Medium,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.fillMaxWidth()
@@ -7962,16 +7972,34 @@ private fun SourceFolderView(
     }
 
     Column(Modifier.fillMaxSize()) {
+        if (com.hikari.app.tv.TvMode.current()) {
+            com.hikari.app.tv.TvScreenHeader(title = tr(title), subtitle = tr(subtitle))
+        }
         Row(
             Modifier
                 .fillMaxWidth()
-                .padding(start = 4.dp, end = 16.dp, top = 4.dp, bottom = 4.dp),
+                .padding(
+                    start = if (com.hikari.app.tv.TvMode.current()) 8.dp else 4.dp,
+                    end = if (com.hikari.app.tv.TvMode.current()) 20.dp else 16.dp,
+                    top = 4.dp,
+                    bottom = 4.dp
+                ),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            IconButton(onClick = onBack, modifier = Modifier.focusRequester(backFocus)) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = tr("Back"))
+            IconButton(
+                onClick = onBack,
+                modifier = Modifier
+                    .focusRequester(backFocus)
+                    .size(if (com.hikari.app.tv.TvMode.current()) 48.dp else 40.dp)
+            ) {
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = tr("Back"),
+                    modifier = Modifier.size(if (com.hikari.app.tv.TvMode.current()) 26.dp else 24.dp)
+                )
             }
             Column(Modifier.weight(1f)) {
+                if (!com.hikari.app.tv.TvMode.current()) {
                 Text(
                     title,
                     style = MaterialTheme.typography.titleMedium,
@@ -7985,6 +8013,15 @@ private fun SourceFolderView(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+                } else {
+                Text(
+                    tr("Browse & manage"),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                }
             }
             Text(
                 when (folder) {
@@ -8706,22 +8743,44 @@ private fun AllReposView(
     }
 
     Column(Modifier.fillMaxSize()) {
+        if (com.hikari.app.tv.TvMode.current()) {
+            com.hikari.app.tv.TvScreenHeader(
+                title = tr("All sources"),
+                subtitle = I18n.t(if (repos.size == 1) "%s repo added" else "%s repos added").replace("%s", repos.size.toString())
+            )
+        }
         Row(
             Modifier
                 .fillMaxWidth()
-                .padding(start = 4.dp, end = 16.dp, top = 4.dp, bottom = 4.dp),
+                .padding(
+                    start = if (com.hikari.app.tv.TvMode.current()) 8.dp else 4.dp,
+                    end = if (com.hikari.app.tv.TvMode.current()) 20.dp else 16.dp,
+                    top = 4.dp,
+                    bottom = 4.dp
+                ),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            IconButton(onClick = onBack, modifier = Modifier.focusRequester(backFocus)) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = tr("Back"))
+            IconButton(
+                onClick = onBack,
+                modifier = Modifier
+                    .focusRequester(backFocus)
+                    .size(if (com.hikari.app.tv.TvMode.current()) 48.dp else 40.dp)
+            ) {
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = tr("Back"),
+                    modifier = Modifier.size(if (com.hikari.app.tv.TvMode.current()) 26.dp else 24.dp)
+                )
             }
             Column(Modifier.weight(1f)) {
+                if (!com.hikari.app.tv.TvMode.current()) {
                 Text(tr("All installed repos"), style = MaterialTheme.typography.titleMedium)
                 Text(
                     I18n.t(if (repos.size == 1) "%s repo added" else "%s repos added").replace("%s", repos.size.toString()),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                }
             }
         }
         HorizontalDivider()

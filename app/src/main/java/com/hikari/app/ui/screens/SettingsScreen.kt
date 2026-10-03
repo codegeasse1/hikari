@@ -760,9 +760,9 @@ fun SettingsScreen(nav: NavHostController) {
                     folder = sub ?: folder,
                     parentTitle = if (sub != null) folder.title else null,
                     // Television navigates with the left pane, so the header
-                    // back only steps out of a sub-folder — never into an
-                    // empty right pane.
-                    onBack = { if (sub != null) openSub = null else if (!isTv) openFolder = null },
+                    // back steps out of a sub-folder — and out of Settings
+                    // itself at the top level, instead of doing nothing.
+                    onBack = { if (sub != null) openSub = null else if (!isTv) openFolder = null else nav.popBackStack() },
                 )
             }
             when (sub ?: folder) {
