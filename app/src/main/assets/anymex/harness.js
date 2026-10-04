@@ -166,6 +166,41 @@
   }
 
   // ---- Client ----
+  // Per-call fetch accounting: when a catalogue/search call ends with an
+  // EMPTY list, the caller can tell "the site answered fine but listed
+  // nothing" (end of pages, no results) apart from "every request failed"
+  // (dead site, moved paths, blocking) and say so honestly instead of the
+  // generic "no titles" line. Reset at the start of every __anymexCall.
+  g.__anymexFetchStats = { ok: 0, fail: 0, lastStatus: 0, deadSite: false };
+  var DEAD_SITE_RE = /account suspended|account.*(suspended|terminated)|domain.*(parked|for sale|expired)|this site can.t be reached|404 not found/i;
+  function noteFetch(status, bodyText) {
+    try {
+      if (status >= 200 && status < 300) { g.__anymexFetchStats.ok++; }
+      else {
+        g.__anymexFetchStats.fail++;
+        if (status) g.__anymexFetchStats.lastStatus = status;
+      }
+      if (bodyText && DEAD_SITE_RE.test(String(bodyText).slice(0, 4000))) {
+        g.__anymexFetchStats.deadSite = true;
+      }
+    } catch (e) {}
+  }
+  function noteFetchError() {
+    try { g.__anymexFetchStats.fail++; } catch (e) {}
+  }
+  function describeFetchFailure() {
+    try {
+      var st = g.__anymexFetchStats || { ok: 0, fail: 0, lastStatus: 0, deadSite: false };
+      if (st.ok > 0 || st.fail === 0) return null;
+      if (st.deadSite) {
+        return 'the site itself looks dead — its pages say the account is suspended or the domain is parked/expired';
+      }
+      if (st.lastStatus) {
+        return 'the site answered HTTP ' + st.lastStatus + ' to every request — its pages may have moved, or it blocks the app';
+      }
+      return 'every request to the site failed — it may be down, moved, or blocking the app';
+    } catch (e) { return null; }
+  }
   function doRequest(method, url, headers, body) {
     var init = { method: method, headers: normHeaders(headers) };
     if (isDef(body) && method !== 'GET' && method !== 'HEAD') {
@@ -196,8 +231,15 @@
             res.headers.forEach(function (v, k) { plain[String(k).toLowerCase()] = v; });
           }
         } catch (e) {}
+        try { noteFetch(res.status, text); } catch (e2) {}
         return { body: text, code: res.status, status: res.status, headers: plain, url: res.url || String(url) };
+      }, function (e) {
+        try { noteFetchError(); } catch (e2) {}
+        throw e;
       });
+    }, function (e) {
+      try { noteFetchError(); } catch (e2) {}
+      throw e;
     });
   }
 
@@ -293,7 +335,19 @@
   DomElement.prototype.attr = function (name) {
     try {
       if (!this._sel || !this._sel.length) return null;
-      var v = this._sel.attr(String(name));
+      var key = String(name);
+      var v = this._sel.attr(key);
+      // Lazy-load aware `src`: themes that defer images leave src empty or a
+      // data: placeholder and keep the real URL in data-src — returning that
+      // raw would blank every poster, so fall through the same chain getSrc
+      // uses. A data:-only result is returned as-is; the Kotlin side already
+      // refuses data: art, so it degrades to "no poster", never a blank tile.
+      if (key.toLowerCase() === 'src' &&
+          (v === undefined || v === null || v === '' ||
+           (typeof v === 'string' && v.indexOf('data:') === 0))) {
+        var lazy = pickImg(this._sel);
+        if (lazy !== undefined && lazy !== null && lazy !== '') v = lazy;
+      }
       return v === undefined ? null : v;
     } catch (e) { return null; }
   };
@@ -578,6 +632,10 @@
   // Any top-level const foo = [{name, baseUrl, ...}] declares the source.
   // Repos name it freely (mangayomiSources, kegaretaSauces, ...), so the first
   // array whose item looks like a source entry wins, then the host listing.
+  // NOTE: `const`/`let` at top level do NOT become properties of globalThis —
+  // Object.getOwnPropertyNames misses them entirely — but they ARE visible by
+  // name through the scope chain, so the known spellings are probed with
+  // eval/typeof as well (a missing name never throws this way).
   function declaredSource() {
     try {
       if (Array.isArray(g.mangayomiSources) && g.mangayomiSources.length) {
@@ -588,6 +646,21 @@
         }
         if (!src.lang) src.lang = 'en';
         return src;
+      }
+    } catch (e) {}
+    try {
+      var lexNames = ['kegaretaSauces', 'animeSources', 'mangaSources', 'animeSauces', 'mangaSauces', 'sources'];
+      for (var li = 0; li < lexNames.length; li++) {
+        var found = null;
+        try {
+          if (eval('typeof ' + lexNames[li]) !== 'undefined') found = eval(lexNames[li]);
+        } catch (eLex) { found = null; }
+        if (Array.isArray(found) && found.length && found[0] && typeof found[0] === 'object' &&
+            (found[0].baseUrl || found[0].name)) {
+          var lex = Object.assign({}, found[0]);
+          if (!lex.lang) lex.lang = 'en';
+          return lex;
+        }
       }
     } catch (e) {}
     try {
@@ -679,6 +752,7 @@
   // detail answers are plain objects; both land as data either way.
   g.__anymexCall = function (fnName, argsJson) {
     try {
+      try { g.__anymexFetchStats = { ok: 0, fail: 0, lastStatus: 0, deadSite: false }; } catch (e0) {}
       var ext = extension();
       if (!ext) { done({ ok: false, error: 'module does not define DefaultExtension' }); return; }
       var fn = ext[String(fnName)];
@@ -715,6 +789,20 @@
         .then(function () { return fn.apply(ext, args); })
         .then(function (r) {
           if (r === undefined || r === null) { done({ ok: true, data: null }); return; }
+          // An empty catalogue/search answer after nothing but failed fetches
+          // is not "no titles" — it is a dead/moved/blocking site. Say so
+          // while the evidence is still here; the Kotlin side only sees the
+          // final JSON. Lists that fetched fine (or never fetched) pass
+          // through untouched, so genuine end-of-pages stays quiet.
+          try {
+            var catalogFn = (fnName === 'getPopular' || fnName === 'getLatestUpdates' || fnName === 'search');
+            var emptyList = (r && !Array.isArray(r) && Array.isArray(r.list) && r.list.length === 0) ||
+              (Array.isArray(r) && r.length === 0);
+            if (catalogFn && emptyList) {
+              var why = describeFetchFailure();
+              if (why) { done({ ok: false, error: why }); return; }
+            }
+          } catch (e5) {}
           if (typeof r === 'string') {
             var t = r.trim();
             if (t.charAt(0) === '{' || t.charAt(0) === '[') {

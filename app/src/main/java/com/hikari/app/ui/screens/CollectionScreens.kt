@@ -5050,8 +5050,10 @@ private fun TmdbGridCard(item: MediaItem, style: PosterStyle, onClick: () -> Uni
             rating = item.rating,
             imdb = badge,
             item = item,
-            contentScale = if (cinema && hero != null && !hero.second) ContentScale.Fit else ContentScale.Crop,
-            imageAlignment = if (cinema && hero != null && !hero.second) Alignment.TopCenter else Alignment.Center,
+            // Cinema is always a full-bleed 16:9 crop anchored at the top —
+            // never a letterboxed Fit with blank sides.
+            contentScale = ContentScale.Crop,
+            imageAlignment = if (cinema) Alignment.TopCenter else Alignment.Center,
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(if (cinema) 16f / 9f else 2f / 3f),

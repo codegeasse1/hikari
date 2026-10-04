@@ -113,13 +113,12 @@ fun TvCinemaCard(
   modifier: Modifier = Modifier,
   cardWidth: androidx.compose.ui.unit.Dp = 280.dp,
 ) {
-  // Genuinely wide art fills the frame; a portrait poster must NOT be
-  // centre-cropped into it — the crop kept the middle strip and beheaded the
-  // subject. Portrait art is drawn whole (Fit, anchored top) over a dimmed
-  // crop of itself, so the frame stays full-bleed without cutting anyone off.
+  // A cinema card is ALWAYS a full-bleed 16:9 crop: genuinely wide art fills
+  // the frame, and a portrait poster is cropped into it anchored at the TOP
+  // (faces/title art, never the middle hair strip). No letterbox, no dark
+  // side bars — a narrow poster floating between blanks is never the look.
   val hero = Artwork.heroModel(item)
   val art = hero.first
-  val wide = hero.second
   Column(
     modifier.width(cardWidth).clip(RoundedCornerShape(14.dp)).clickable(onClick = onClick).tvPress(previewPass = true, onClick = onClick),
   ) {
@@ -128,12 +127,7 @@ fun TvCinemaCard(
       contentAlignment = Alignment.Center,
     ) {
       Icon(Icons.Filled.Movie, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f), modifier = Modifier.size(28.dp))
-      if (wide) {
-        AsyncImage(model = art, contentDescription = item.title, modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(14.dp)), contentScale = ContentScale.Crop)
-      } else {
-        Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).background(Color.Black.copy(alpha = 0.55f)))
-        AsyncImage(model = art, contentDescription = item.title, modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(14.dp)), contentScale = ContentScale.Fit, alignment = Alignment.TopCenter)
-      }
+      AsyncImage(model = art, contentDescription = item.title, modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(14.dp)), contentScale = ContentScale.Crop, alignment = Alignment.TopCenter)
       item.rating?.takeIf { it > 0 }?.let { r ->
         Surface(color = Color.Black.copy(alpha = 0.65f), shape = RoundedCornerShape(8.dp), modifier = Modifier.align(Alignment.TopEnd).padding(8.dp)) {
           Text("★ " + "%.1f".format(r), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = Color(0xFFFFC107), modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp))

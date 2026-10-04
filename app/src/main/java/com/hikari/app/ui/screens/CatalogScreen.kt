@@ -848,12 +848,14 @@ private fun CatalogCard(item: MediaItem, style: PosterStyle, onClick: () -> Unit
                 modifier = Modifier.size(26.dp),
             )
             if (cinema && hero != null && !hero.second) {
-                Box(Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.55f)))
+                // Portrait art in a cinema frame: a full-bleed 16:9 crop
+                // anchored at the top (faces/title art stay in frame). Never
+                // a letterboxed Fit with blank sides.
                 AsyncImage(
                     model = hero.first,
                     contentDescription = item.title,
                     modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Fit,
+                    contentScale = ContentScale.Crop,
                     alignment = Alignment.TopCenter
                 )
             } else {

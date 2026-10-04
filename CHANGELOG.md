@@ -1,3 +1,14 @@
+## 0.10.82
+
+Everything new and fixed since the last release (0.10.81):
+
+### Fixed
+
+- I fixed cinema cards showing a narrow poster floating between blank sides — every cinema frame on phone and TV is a full-bleed 16:9 crop again, anchored at the top so faces and title art stay in frame instead of blank bars
+- I fixed the detail header reducing a full-character poster to a strip of hair — the side layout's band now shows the whole poster adaptively instead of a cropped middle slice
+- I fixed Fastream still failing — a bare Fastream link handed to the resolver now gets the full /dl handshake instead of nothing, unrecognised /dl answers are probed as media, and the player itself sends the site-root Referer its hotlink check wants no matter which path the source arrived through
+- I fixed Anymex extensions dying with the generic "no titles" line — lazy-loaded poster attributes resolve through data-src, catalogue calls report what the site actually did (dead domain, HTTP status, script error) instead of overwriting it with the generic line, and later empty pages stay quiet as end-of-catalogue
+
 ## 0.10.81
 
 Everything new and fixed since the last release (0.10.80):
