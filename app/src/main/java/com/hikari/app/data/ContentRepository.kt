@@ -122,6 +122,23 @@ object SearchScope {
     @Volatile
     var exceptions: Set<String> = emptySet()
 
+    /** Tracker rows: the "search every engine" switch for tracker library
+     *  titles (Settings → Trackers), mirrored from the store like everything
+     *  above because the scope filter reads it synchronously. */
+    @Volatile
+    var trackerSearchAll: Boolean = true
+
+    /** Tracker rows: which engine families a tracker title may be searched
+     *  through (mirrored from `AppStore.trackerEngineFamiliesFlow`). */
+    @Volatile
+    var trackerFamilies: Set<String> = setOf("NUVIO", "STREMIO")
+
+    /** Tracker rows: the individually picked extensions a tracker title may
+     *  be searched through (mirrored from
+     *  `AppStore.trackerProviderIdsFlow`). */
+    @Volatile
+    var trackerProviders: Set<String> = emptySet()
+
     /** True when [id] is one of the extension ids marked as an exception. */
     fun isException(id: String?): Boolean = id != null && id in exceptions
 }
@@ -2483,11 +2500,9 @@ class ContentRepository(private val manager: ProviderManager) {
             "anilist", "simkl", "mal", "kitsu", "shikimori", "trakt"
         )
         if (trackerBacked) {
-            val on = runCatching { HikariApp.instance.store.trackerServerSearchAll() }.getOrDefault(true)
-            if (!on) return emptySet()
-            val families = runCatching { HikariApp.instance.store.trackerEngineFamilies() }
-                .getOrDefault(setOf(ProviderType.NUVIO.name, ProviderType.STREMIO.name))
-            val selected = runCatching { HikariApp.instance.store.trackerProviderIds() }.getOrDefault(emptySet())
+            if (!SearchScope.trackerSearchAll) return emptySet()
+            val families = SearchScope.trackerFamilies
+            val selected = SearchScope.trackerProviders
             return all.filter { it.config.enabled && (it.config.type.name in families || it.config.id in selected) }
                 .map { it.config.id }.toSet()
         }

@@ -219,7 +219,11 @@ private fun heroFrame(aspect: Float, horizontalInsets: Float = 0f, scale: Float 
         return if (s >= 1f) {
             Modifier.fillMaxWidth().aspectRatio(aspect / s)
         } else {
-            Modifier.fillMaxWidth(s, Alignment.CenterHorizontally).aspectRatio(aspect)
+            // Narrower AND shorter, centred: symmetric side padding in place of
+            // a width fraction (this Compose version's fillMaxWidth takes no
+            // alignment), so the card shrinks towards the middle of the page.
+            val side = ((width - horizontalInsets) * (1f - s) / 2f).dp
+            Modifier.fillMaxWidth().padding(horizontal = side).aspectRatio(aspect)
         }
     }
     val height = androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp

@@ -65,15 +65,8 @@ object AnymexHomepage {
             if (segments.any { it in SKIP_SEGMENTS }) continue
             if (segments.any { it.endsWith(".css") || it.endsWith(".js") || it.endsWith(".xml") }) continue
             val img = a.selectFirst("img")
-            val poster = img?.let { el ->
-                el.attr("abs:data-lazy-src").ifBlank { el.attr("abs:data-src") }
-                    .ifBlank { el.attr("abs:data-original") }
-                    .ifBlank { el.attr("abs:src") }
-                    .trim().takeIf { it.startsWith("http") && !it.startsWith("data:") }
-            }
-            val title = (img?.attr("alt")?.trim().orEmpty()
-                .ifBlank { img?.attr("title")?.trim().orEmpty() }
-                .ifBlank { a.text().trim() })
+            val poster = if (img == null) null else posterOf(img)
+            val title = titleOf(a, img)
                 .replace(Regex("\\s+"), " ")
             if (title.length < 2) continue
             if (poster == null && title.length < 4) continue
@@ -87,5 +80,30 @@ object AnymexHomepage {
             )
         }
         return out
+    }
+
+    /**
+     * The card image, first lazy-src spellings first. Plain calls on a
+     * non-null element, the way the other scrapers read attributes — no
+     * nullable chains, whose inferred types the compiler cannot resolve
+     * against this jsoup build.
+     */
+    private fun posterOf(img: org.jsoup.nodes.Element): String? {
+        val src = img.attr("abs:data-lazy-src").ifBlank { img.attr("abs:data-src") }
+            .ifBlank { img.attr("abs:data-original") }
+            .ifBlank { img.attr("abs:src") }
+            .trim()
+        return src.takeIf { it.startsWith("http") && !it.startsWith("data:") }
+    }
+
+    /** The card title: the image's alt/title text, else the link's own text. */
+    private fun titleOf(a: org.jsoup.nodes.Element, img: org.jsoup.nodes.Element?): String {
+        if (img != null) {
+            val alt = img.attr("alt").trim()
+            if (alt.isNotBlank()) return alt
+            val label = img.attr("title").trim()
+            if (label.isNotBlank()) return label
+        }
+        return a.text().trim()
     }
 }

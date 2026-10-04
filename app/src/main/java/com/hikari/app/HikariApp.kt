@@ -554,6 +554,27 @@ class HikariApp : Application() {
                 com.hikari.app.data.SearchScope.exceptions = it
             }
         }
+        // Tracker rows (Settings → Trackers): the same mirrors for the scope
+        // filter — a tracker title opened from the library must never have to
+        // await DataStore to know which engines it may ask.
+        appScope.launch {
+            runCatching { com.hikari.app.data.SearchScope.trackerSearchAll = store.trackerServerSearchAll() }
+            store.trackerServerSearchAllFlow().collect {
+                com.hikari.app.data.SearchScope.trackerSearchAll = it
+            }
+        }
+        appScope.launch {
+            runCatching { com.hikari.app.data.SearchScope.trackerFamilies = store.trackerEngineFamilies() }
+            store.trackerEngineFamiliesFlow().collect {
+                com.hikari.app.data.SearchScope.trackerFamilies = it
+            }
+        }
+        appScope.launch {
+            runCatching { com.hikari.app.data.SearchScope.trackerProviders = store.trackerProviderIds() }
+            store.trackerProviderIdsFlow().collect {
+                com.hikari.app.data.SearchScope.trackerProviders = it
+            }
+        }
         // Player UI skin (Settings → Player → Player UI): mirrored into
         // PlayerSkins because PlayerActivity is a View-based screen that has to
         // know the value synchronously while its controller is being inflated.

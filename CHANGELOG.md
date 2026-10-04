@@ -1,3 +1,11 @@
+## 0.10.86
+
+Everything new and fixed since the last release (0.10.85):
+
+### Fixed
+
+- I fixed the 0.10.85 build failing to compile — the scope filter read the tracker switches off the main thread, one query string interpolated instead of escaping, the header slider used a width call this Compose version does not have, and the homepage scraper chained nullable attribute reads the compiler cannot resolve
+
 ## 0.10.85
 
 Everything new and fixed since the last release (0.10.84):

@@ -144,7 +144,7 @@ object TrackerLibraryRepository {
         return Result.success(out)
     }
     private suspend fun aniListCollection(app: HikariApp, account: com.hikari.app.data.TrackerAccount, type: String): JSONArray? {
-        val query = "query($name:String){MediaListCollection(userName: $name,type:"+type+"){lists{name entries{media{id title{userPreferred english romaji} coverImage{large} startDate{year} averageScore nextAiringEpisode{airingAt episode}}}}}}"
+        val query = "query(\$name:String){MediaListCollection(userName: \$name,type:"+type+"){lists{name entries{media{id title{userPreferred english romaji} coverImage{large} startDate{year} averageScore nextAiringEpisode{airingAt episode}}}}}}"
         // AniList's MediaListCollection is user-specific. The access token
         // must be sent as a Bearer token; without it a connected account can still
         // return an empty/unauthorized collection.
