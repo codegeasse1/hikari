@@ -255,16 +255,12 @@ fun PosterImage(
 /**
  * Artwork for a wide hero/banner frame.
  *
- * [wide] art (a real backdrop, 16:9-ish) is cropped to fill the frame with the
- * TOP edge kept, so a slightly taller backdrop loses its bottom rather than
- * the top of the frame.
- *
- * A PORTRAIT poster in that same frame must not simply be cropped: filling a
- * 16:9 box with a 2:3 poster keeps only the middle ~38% of the image, which
- * slices the top of the frame off (the "the banner is cut / the head is
- * chopped off" report). Instead the poster is shown the way streaming apps do
- * it — a dimmed, zoomed copy of itself fills the frame behind, and the whole
- * poster is drawn intact at the right edge, in front of it.
+ * EVERYTHING fills the frame edge to edge (ContentScale.Crop): a real 16:9
+ * backdrop loses almost nothing, and a portrait poster is cropped into the
+ * frame anchored near the TOP so faces and title art stay in frame instead of
+ * the poster's middle hair strip. Letterboxing (Fit on a dark wash) is gone:
+ * a narrow poster floating between blank sides is what the cinema look must
+ * never show.
  */
 @Composable
 fun HeroArtwork(
@@ -272,61 +268,20 @@ fun HeroArtwork(
     wide: Boolean,
     contentDescription: String? = null,
     modifier: Modifier = Modifier,
-    // Where the zoomed fill copy is anchored when only a portrait poster
-    // exists. Centered, a 16:9 frame keeps the poster's middle band — the
-    // forehead/hair strip of a face-forward poster. Top-anchored it keeps the
-    // title art and the faces instead.
+    // Kept for call compatibility; the fill is always a top-anchored crop now.
     fillAlignment: Alignment = Alignment.Center,
 ) {
     if (model == null) {
         Box(modifier.background(MaterialTheme.colorScheme.surfaceVariant))
         return
     }
-    if (wide) {
-        // The hero frame is filled edge to edge on every device
-        // (ContentScale.Crop): a real backdrop is already 16:9-ish, so the
-        // crop is negligible — while Fit letterboxes it with black bars down
-        // both sides of the frame (the reported TV header showing a narrow
-        // image floating between black). A portrait poster never reaches this
-        // branch: heroModel reports wide=false for it, and the cinematic
-        // blurred-fill treatment below draws it intact instead of beheading it.
-        // On television the crop is anchored to the TOP of the frame: heads
-        // live in the upper part of a backdrop, so a slightly taller backdrop
-        // loses background at the bottom instead of faces at the top (the
-        // reported home header with the head cut off).
-        PosterImage(
-            model = model,
-            contentDescription = contentDescription,
-            modifier = modifier,
-            contentScale = ContentScale.Crop,
-            alignment = if (TvMode.current()) Alignment.TopCenter else BiasAlignment(0f, -0.6f),
-        )
-        return
-    }
-    Box(modifier) {
-        // No zoomed-fill copy behind the poster: the cropped giant behind the
-        // art is what read as beheaded faces and blurry sides, so the frame
-        // is a plain dark wash and the whole poster stands intact on it,
-        // nudged a touch down from the top so heads sit inside the frame.
-        Box(
-            Modifier.fillMaxSize().background(
-                Brush.verticalGradient(
-                    0f to Color.Black.copy(alpha = 0.72f),
-                    1f to Color.Black.copy(alpha = 0.88f),
-                )
-            )
-        )
-        PosterImage(
-            model = model,
-            contentDescription = contentDescription,
-            modifier = Modifier
-                .align(Alignment.Center)
-                .fillMaxHeight()
-                .aspectRatio(2f / 3f),
-            contentScale = ContentScale.Fit,
-            alignment = fillAlignment,
-        )
-    }
+    PosterImage(
+        model = model,
+        contentDescription = contentDescription,
+        modifier = modifier,
+        contentScale = ContentScale.Crop,
+        alignment = if (TvMode.current()) Alignment.TopCenter else BiasAlignment(0f, -0.6f),
+    )
 }
 
 @Composable

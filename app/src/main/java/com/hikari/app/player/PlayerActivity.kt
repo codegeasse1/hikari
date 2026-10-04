@@ -8704,7 +8704,7 @@ class PlayerActivity : ComponentActivity() {
             probeDialog = showGlassProgress(src.name, "Preparing stream…", cancelable = false)
         }
         lifecycleScope.launch {
-            val clean = sanitizeHeaders(src.headers)
+            val clean = withKnownHotlinkReferer(src.url, sanitizeHeaders(src.headers))
             val headers = when (headerVariant) {
                 1 -> clean.filterKeys { !it.equals("Referer", ignoreCase = true) }
                 2 -> emptyMap()
@@ -8839,7 +8839,7 @@ class PlayerActivity : ComponentActivity() {
         // media3 surfaces as a fatal playback error even though the stream is
         // fine. Sanitizing here means a sloppy extension can never crash the
         // player, now or in the future.
-        val cleanHeaders = sanitizeHeaders(src.headers)
+        val cleanHeaders = withKnownHotlinkReferer(src.url, sanitizeHeaders(src.headers))
         val sourceHeaders = when (headerVariant) {
             1 -> cleanHeaders.filterKeys { !it.equals("Referer", ignoreCase = true) }
             2 -> emptyMap()
@@ -10953,6 +10953,18 @@ class PlayerActivity : ComponentActivity() {
             val c = sanitizeHeaderValue(v)
             if (c.isBlank()) null else k to c
         }.toMap()
+
+    /** A Fastream stream without a Referer is a guaranteed 403: the signed URL
+     *  lives on a numbered CDN host but the hotlink check wants the site root
+     *  (the same rule Cs3MainApiProvider/FallbackResolver apply on their own
+     *  paths). Sources arriving from any OTHER path (Stremio addons, external
+     *  resolvers) bypass those, so the player fills the gap itself. An
+     *  explicitly set Referer is never overridden. */
+    private fun withKnownHotlinkReferer(url: String, h: Map<String, String>): Map<String, String> {
+        if (h.keys.any { it.equals("Referer", ignoreCase = true) }) return h
+        if (url.contains("fastream", ignoreCase = true)) return h + ("Referer" to "https://fastream.to/")
+        return h
+    }
 
     /**
      * Shows the full-screen title-card cover: the title's backdrop with its

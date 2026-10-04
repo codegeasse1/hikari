@@ -5856,10 +5856,16 @@ private fun Hero(
                 .fillMaxWidth()
                 .height(214.dp),
         ) {
+            // The band behind the standing poster shows the WHOLE portrait
+            // (Fit on a dark wash) — a Crop here kept only the middle strip,
+            // which is what reduced a full-character poster to a strip of hair
+            // and accessories. Wide art still fills edge to edge.
             PosterArt(
                 model = image.first,
                 contentDescription = meta?.title,
                 style = rememberPosterStyle(),
+                contentScale = if (image.second) ContentScale.Crop else ContentScale.Fit,
+                imageAlignment = Alignment.TopCenter,
                 modifier = Modifier.fillMaxSize(),
             )
             Box(

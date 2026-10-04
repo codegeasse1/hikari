@@ -122,6 +122,23 @@ object FallbackResolver {
             }
         }
 
+        // The page URL itself may BE the embed (an extension handing a bare
+        // fastream/dood/rumble link to the extractor bridge, or a video page
+        // whose only server is one): the dances below also run against it, so
+        // a host that needs its own handshake (Fastream's /dl POST) never
+        // reports "no playable sources" while the same link plays elsewhere.
+        if (raws.isEmpty()) {
+            if (isFastreamUrl(pageUrl)) {
+                runCatching { withTimeoutOrNull(12_000) { fastreamExtract(pageUrl, raws) } }
+            }
+            if (isDoodHost(pageUrl)) {
+                runCatching { withTimeoutOrNull(12_000) { doodExtract(pageUrl, raws) } }
+            }
+            if (isRumbleUrl(pageUrl)) {
+                runCatching { withTimeoutOrNull(12_000) { rumbleExtract(pageUrl, raws) } }
+            }
+        }
+
         // Some pages embed the stream directly (no iframes) — scan the video
         // page itself too, and let the jar registry have a crack at it.
         if (raws.isEmpty()) {
@@ -411,6 +428,19 @@ object FallbackResolver {
                 u,
                 RawStream(u, "https://fastream.to/", "Fastream", Qualities.Unknown.value, false)
             )
+        }
+        for (m in TXT_RE.findAll(text)) {
+            val u = cleanUrl(m.value) ?: continue
+            raws.putIfAbsent(
+                u,
+                RawStream(u, "https://fastream.to/", "Fastream", Qualities.Unknown.value, true)
+            )
+        }
+        if (raws.isEmpty()) {
+            // The /dl answer carries the stream in a shape the patterns miss
+            // (JSON-escaped file URLs, extensionless HLS variants): probe the
+            // promising URLs directly and keep the ones that answer as media.
+            runCatching { probeCandidates(text, "https://fastream.to/", raws) }
         }
     }
 

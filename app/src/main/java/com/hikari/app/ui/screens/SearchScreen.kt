@@ -1134,18 +1134,14 @@ fun SearchScreen(
                                 .clip(RoundedCornerShape(10.dp))
                         ) {
                             if (phoneCinema && hero != null && !hero.second) {
-                                AsyncImage(
-                                    model = hero.first,
-                                    contentDescription = null,
-                                    modifier = Modifier.fillMaxSize(),
-                                    contentScale = ContentScale.Crop,
-                                    alpha = 0.45f
-                                )
+                                // Portrait art in a cinema frame: a full-bleed
+                                // 16:9 crop anchored at the top — never a
+                                // letterboxed Fit with blank sides.
                                 AsyncImage(
                                     model = hero.first,
                                     contentDescription = item.title,
                                     modifier = Modifier.fillMaxSize(),
-                                    contentScale = ContentScale.Fit,
+                                    contentScale = ContentScale.Crop,
                                     alignment = Alignment.TopCenter
                                 )
                             } else {

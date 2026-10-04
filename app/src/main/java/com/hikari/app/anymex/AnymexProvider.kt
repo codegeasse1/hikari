@@ -69,10 +69,18 @@ class AnymexProvider(override val config: ProviderConfig) : ContentProvider {
             }
             markWall(first)
             markWall(second)
-            if (first.isNullOrBlank() && second.isNullOrBlank()) {
-                noteCatalogError("Empty catalogue answer — the site may be blocking or down")
-            } else if (retry.isEmpty() && items.isEmpty()) {
-                noteCatalogError("The site returned no titles for this catalogue")
+            // Page 2+ coming back empty is just the end of the catalogue, not
+            // a failure — and a specific engine error already recorded (a dead
+            // site, an HTTP status, a script error) must never be overwritten
+            // by the generic line below: that overwrite is what hid every real
+            // cause behind "no titles".
+            if (page > 1) return@withContext retry
+            if (!catalogErrors.containsKey(config.id)) {
+                if (first.isNullOrBlank() && second.isNullOrBlank()) {
+                    noteCatalogError("Empty catalogue answer — the site may be blocking or down")
+                } else if (retry.isEmpty() && items.isEmpty()) {
+                    noteCatalogError("The site returned no titles for this catalogue")
+                }
             }
             retry
         }
