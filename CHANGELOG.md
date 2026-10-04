@@ -1,3 +1,12 @@
+## 0.10.83
+
+Everything new and fixed since the last release (0.10.82):
+
+### Fixed
+
+- I fixed My Stuff crashing the moment it opened — every tracker shelf carried the same list key, so two shelves collided and the grid threw; each shelf has its own key now
+- I fixed the internet subtitle search freezing into "Hikari isn't responding" — every site and addon was fetched on the main thread, so one slow site held the whole panel past the timeout; the fetches run concurrently in the background now and only the progress repaint touches the main thread, with extra taps ignored while a search is in flight
+
 ## 0.10.82
 
 Everything new and fixed since the last release (0.10.81):

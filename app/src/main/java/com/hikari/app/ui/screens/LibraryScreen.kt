@@ -193,8 +193,8 @@ fun LibraryScreen(nav: NavHostController, embedded: Boolean = false) {
                     else if (!remoteError.isNullOrBlank()) Text(remoteError.orEmpty(), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
                 }
             }
-            remoteShelves.forEach { shelf ->
-                item(key = "tracker-shelf-\${shelf.key}", span = { GridItemSpan(maxLineSpan) }) {
+            remoteShelves.forEachIndexed { shelfIndex, shelf ->
+                item(key = "tracker-shelf-${shelf.key}-$shelfIndex", span = { GridItemSpan(maxLineSpan) }) {
                     Column {
                         Text(shelf.title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                         LazyRow(
