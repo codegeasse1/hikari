@@ -7287,6 +7287,7 @@ class PlayerActivity : ComponentActivity() {
         }
 
         fun runSearch() {
+            if (!searchBtn.isEnabled) return
             val typed = input.text.toString().trim()
             if (typed.isBlank()) {
                 setStatus(I18n.t("Type a title to search for"))
@@ -7371,18 +7372,22 @@ class PlayerActivity : ComponentActivity() {
                     AppMediaItem(providerId = "", id = "", title = query, type = MediaType.MOVIE)
                 }
                 // Every source at once, each with its own ceiling: one dead site
-                // costs its own timeout and nothing else.
+                // costs its own timeout and nothing else. The fetches run on IO
+                // because site.search and subtitlesForDetailed do network — on
+                // the main thread they froze the panel into an ANR ("Hikari
+                // isn't responding"). Only the progress repaint hops back to
+                // Main, since it touches views.
                 coroutineScope {
-                    for (site in sites) launch {
+                    for (site in sites) launch(Dispatchers.IO) {
                         val got = runCatching {
                             withTimeoutOrNull(SITE_SUBTITLE_MS) { site.search(q) }
                         }.getOrNull()
                         if (got == null) failures.add(site.name)
                         else siteTracks.addAll(got)
                         counts[site.name] = got?.size ?: 0
-                        runCatching { render(query, false) }
+                        withContext(Dispatchers.Main) { runCatching { render(query, false) } }
                     }
-                    for (addon in addons) launch {
+                    for (addon in addons) launch(Dispatchers.IO) {
                         val lookup = runCatching {
                             withTimeoutOrNull(ADDON_SUBTITLE_MS) {
                                 addon.subtitlesForDetailed(addonItem, episode)
@@ -7395,7 +7400,7 @@ class PlayerActivity : ComponentActivity() {
                             addonTracks.addAll(lookup.tracks)
                         }
                         counts[addon.config.name] = lookup?.tracks?.size ?: 0
-                        runCatching { render(query, false) }
+                        withContext(Dispatchers.Main) { runCatching { render(query, false) } }
                     }
                 }
                 if (isFinishing || isDestroyed) return@launch
