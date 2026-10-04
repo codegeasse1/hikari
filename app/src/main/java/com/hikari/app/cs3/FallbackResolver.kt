@@ -403,37 +403,49 @@ object FallbackResolver {
         val code = id.trim().takeIf { it.isNotEmpty() } ?: return
         val body = "op=embed&file_code=" +
             runCatching { java.net.URLEncoder.encode(code, "UTF-8") }.getOrDefault(code) + "&auto=1"
+        // The /dl handshake can set session cookies the CDN then wants back on
+        // the playlist request — CloudStream's client jar carries them
+        // automatically, but the player uses its own data source, so they are
+        // captured here and attached to every Fastream link below.
+        var cookie = ""
         val resp = runCatching {
-            Http.postString(
+            Http.post(
                 "https://fastream.to/dl",
                 body,
                 // CloudStream's own Fastream extractor posts with the embed
                 // page as Referer and NO Origin — matching it exactly.
                 mapOf("Referer" to embedUrl),
                 "application/x-www-form-urlencoded",
-            )
+            ).use { r ->
+                val setCookies = r.headers("Set-Cookie")
+                cookie = setCookies.mapNotNull { c ->
+                    c.substringBefore(";").trim().takeIf { it.contains("=") }
+                }.distinct().joinToString("; ")
+                if (r.isSuccessful) r.body?.string() else null
+            }
         }.getOrNull()
         if (resp.isNullOrBlank()) return
+        val fastHeaders = if (cookie.isNotBlank()) mapOf("Cookie" to cookie) else emptyMap()
         val text = getAndUnpack(resp)
         for (m in M3U8_RE.findAll(text)) {
             val u = cleanUrl(m.value) ?: continue
             raws.putIfAbsent(
                 u,
-                RawStream(u, "https://fastream.to/", "Fastream", Qualities.Unknown.value, true)
+                RawStream(u, "https://fastream.to/", "Fastream", Qualities.Unknown.value, true, fastHeaders)
             )
         }
         for (m in MP4_RE.findAll(text)) {
             val u = cleanUrl(m.value) ?: continue
             raws.putIfAbsent(
                 u,
-                RawStream(u, "https://fastream.to/", "Fastream", Qualities.Unknown.value, false)
+                RawStream(u, "https://fastream.to/", "Fastream", Qualities.Unknown.value, false, fastHeaders)
             )
         }
         for (m in TXT_RE.findAll(text)) {
             val u = cleanUrl(m.value) ?: continue
             raws.putIfAbsent(
                 u,
-                RawStream(u, "https://fastream.to/", "Fastream", Qualities.Unknown.value, true)
+                RawStream(u, "https://fastream.to/", "Fastream", Qualities.Unknown.value, true, fastHeaders)
             )
         }
         if (raws.isEmpty()) {

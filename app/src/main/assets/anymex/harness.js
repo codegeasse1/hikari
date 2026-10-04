@@ -637,15 +637,28 @@
   // name through the scope chain, so the known spellings are probed with
   // eval/typeof as well (a missing name never throws this way).
   function declaredSource() {
+    // Standard name first (see the lexical-binding note on extension()).
     try {
-      if (Array.isArray(g.mangayomiSources) && g.mangayomiSources.length) {
-        var src = Object.assign({}, g.mangayomiSources[0]);
+      var std = bareGlobal('mangayomiSources');
+      if (Array.isArray(std) && std.length) {
+        var src = Object.assign({}, std[0]);
         // Multi-lang packages omit singular lang — default en so API queries work.
         if (!src.lang && Array.isArray(src.langs) && src.langs.length) {
           src.lang = src.langs.indexOf('en') >= 0 ? 'en' : src.langs[0];
         }
         if (!src.lang) src.lang = 'en';
         return src;
+      }
+    } catch (e) {}
+    try {
+      if (Array.isArray(g.mangayomiSources) && g.mangayomiSources.length) {
+        var srcG = Object.assign({}, g.mangayomiSources[0]);
+        // Multi-lang packages omit singular lang — default en so API queries work.
+        if (!srcG.lang && Array.isArray(srcG.langs) && srcG.langs.length) {
+          srcG.lang = srcG.langs.indexOf('en') >= 0 ? 'en' : srcG.langs[0];
+        }
+        if (!srcG.lang) srcG.lang = 'en';
+        return srcG;
       }
     } catch (e) {}
     try {
@@ -675,11 +688,26 @@
   }
 
   // ---- extension instance ----
+  // NOTE: a top-level `class DefaultExtension` / `const mangayomiSources` does
+  // NOT become a property of globalThis (lexical bindings live in the global
+  // declarative record, not on the global object), so `globalThis.X` lookups
+  // and Object.getOwnPropertyNames scans miss EVERY normally-written module.
+  // The bare NAME still resolves through the scope chain, so it is read with
+  // eval (a missing name throws ReferenceError, caught below) before falling
+  // back to the globalThis property (for `var`-declared or assigned shapes).
+  function bareGlobal(name) {
+    try {
+      if (eval('typeof ' + name) === 'undefined') return undefined;
+      return eval(name);
+    } catch (e) { return undefined; }
+  }
   function extension() {
     if (g.__anymexExt) return g.__anymexExt;
     try {
-      if (typeof g.DefaultExtension !== 'function') return null;
-      g.__anymexExt = new g.DefaultExtension(declaredSource() || {});
+      var Ctor = bareGlobal('DefaultExtension');
+      if (typeof Ctor !== 'function') Ctor = g.DefaultExtension;
+      if (typeof Ctor !== 'function') return null;
+      g.__anymexExt = new Ctor(declaredSource() || {});
       return g.__anymexExt;
     } catch (e) { return null; }
   }
@@ -689,10 +717,12 @@
   g.__anymexSourceMeta = function () {
     try {
       var s = declaredSource() || {};
-      if (typeof g.DefaultExtension === 'function') {
+      var Ctor = bareGlobal('DefaultExtension');
+      if (typeof Ctor !== 'function') Ctor = g.DefaultExtension;
+      if (typeof Ctor === 'function') {
         var cap = null;
         try {
-          var probe = new g.DefaultExtension(s);
+          var probe = new Ctor(s);
           var hasVideo = typeof probe.getVideoList === 'function';
           var hasPages = typeof probe.getPageList === 'function';
           if (hasVideo || hasPages) cap = !hasVideo && hasPages;

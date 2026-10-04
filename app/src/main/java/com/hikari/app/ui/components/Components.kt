@@ -280,7 +280,7 @@ fun HeroArtwork(
         contentDescription = contentDescription,
         modifier = modifier,
         contentScale = ContentScale.Crop,
-        alignment = if (TvMode.current()) Alignment.TopCenter else BiasAlignment(0f, -0.6f),
+        alignment = if (TvMode.current()) Alignment.TopCenter else BiasAlignment(0f, -0.65f),
     )
 }
 

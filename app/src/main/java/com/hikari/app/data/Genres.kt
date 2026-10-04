@@ -345,4 +345,62 @@ object Genres {
         if (key.isEmpty()) return emptyList()
         return ANIME_KEYWORDS[key] ?: listOf(key)
     }
+
+    private val ALIASES: Map<String, String> = mapOf(
+        "accion" to "action",
+        "avventura" to "adventure",
+        "aventura" to "adventure",
+        "abenteuer" to "adventure",
+        "animacion" to "animation",
+        "animazione" to "animation",
+        "comedia" to "comedy",
+        "commedia" to "comedy",
+        "comedie" to "comedy",
+        "krimi" to "crime",
+        "crimen" to "crime",
+        "terror" to "horror",
+        "horreur" to "horror",
+        "fantasia" to "fantasy",
+        "fantasie" to "fantasy",
+        "fantastique" to "fantasy",
+        "ciencia ficcion" to "science fiction",
+        "sciencefiction" to "science fiction",
+        "scifi" to "science fiction",
+        "sci fi" to "science fiction",
+        "misterio" to "mystery",
+        "mystere" to "mystery",
+        "romance" to "romance",
+        "drame" to "drama",
+        "thriller" to "thriller",
+        "suspenso" to "thriller",
+        "guerra" to "war",
+        "western" to "western",
+        "oestern" to "western",
+    )
+
+    fun normalize(s: String): String {
+        var t = s.trim().lowercase()
+        t = runCatching {
+            java.text.Normalizer.normalize(t, java.text.Normalizer.Form.NFD)
+                .replace(Regex("\\p{Mn}+"), "")
+        }.getOrDefault(t)
+        t = t.replace("&", " and ").replace("+", " plus ")
+        t = t.replace(Regex("[^a-z0-9 ]+"), " ").replace(Regex("\\s+"), " ").trim()
+        if (t == "sci fi and fantasy" || t == "sci fi fantasy") return "science fiction fantasy"
+        if (t == "action and adventure") return "action adventure"
+        if (t == "war and politics") return "war politics"
+        return ALIASES[t] ?: t
+    }
+
+    fun matches(tag: String, query: String): Boolean {
+        val q = normalize(query)
+        if (q.isEmpty()) return true
+        val t = normalize(tag)
+        if (t.isEmpty()) return false
+        if (t.contains(q) || q.contains(t)) return true
+        val qt = q.split(" ").filter { it.length > 2 }.toSet()
+        val tt = t.split(" ").filter { it.length > 2 }.toSet()
+        if (qt.isNotEmpty() && tt.isNotEmpty() && qt.intersect(tt).isNotEmpty()) return true
+        return false
+    }
 }

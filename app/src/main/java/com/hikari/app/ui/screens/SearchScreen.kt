@@ -1538,7 +1538,7 @@ private fun MediaItem.passesSearchFilter(
     genres: Set<String>,
 ): Boolean {
     if (years.isNotEmpty() && (year == null || year !in years)) return false
-    if (genres.isNotEmpty() && this.genres.none { it.trim().lowercase() in genres }) return false
+    if (genres.isNotEmpty() && genres.none { q -> this.genres.any { g -> com.hikari.app.data.Genres.matches(g, q) } }) return false
     return when (kind) {
         SearchKindFilter.ALL -> true
         SearchKindFilter.MOVIES -> type != MediaType.SERIES && !looksAnime()

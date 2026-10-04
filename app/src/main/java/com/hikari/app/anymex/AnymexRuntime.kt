@@ -362,7 +362,9 @@ object AnymexRuntime {
                 val meta = qjs.evaluate<Any?>(
                     "(function () {" +
                         " try {" +
-                        "  if (typeof globalThis.DefaultExtension !== 'function') return JSON.stringify({ ok: false, error: 'no DefaultExtension' });" +
+                        "  var earlyExt = null; try { earlyExt = globalThis.__anymexExtGet && globalThis.__anymexExtGet(); } catch (eX) {}" +
+                        "  var hasCtor = false; try { hasCtor = (typeof DefaultExtension === 'function') || (typeof globalThis.DefaultExtension === 'function'); } catch (eH) {}" +
+                        "  if (!hasCtor && !earlyExt) return JSON.stringify({ ok: false, error: 'no DefaultExtension' });" +
                         "  var s = null;" +
                         "  try {" +
                         "    if (Array.isArray(globalThis.mangayomiSources) && globalThis.mangayomiSources.length) s = globalThis.mangayomiSources[0];" +
