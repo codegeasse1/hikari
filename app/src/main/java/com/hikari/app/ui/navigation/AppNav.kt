@@ -57,6 +57,13 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.focus.FocusDirection
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
@@ -1005,13 +1012,36 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
         // home" action. Extension installation can briefly create/finish a
         // WebView-backed activity on some plugin paths; never let that global
         // request tear the user out of the Extensions tab while an extension
-        // repo/install flow is active.
+        // repo/install flow is active. Consumed after handling so a stale
+        // request can never bounce a later repo tap back to Home.
         if (homeRequest > 0 && tabRoute != Routes.EXTENSIONS) {
             Routes.navigateTab(nav, Routes.HOME)
         }
+        if (homeRequest > 0) {
+            app.homeTabRequest.value = 0
+        }
     }
 
-    Box(Modifier.fillMaxSize().nestedScroll(barScroll).padding(tvEdge)) {
+    // Remote-mouse drive at the ROOT: the cursor overlay is a sibling of the
+    // content, never in the focus path, so its own preview handler never fired
+    // and the arrows sat dead. The root Box is every key's ancestor, so its
+    // preview sees the D-pad first. KeyDown only — holds repeat as KeyDown on
+    // these boxes and answering KeyUp too double-stepped the cursor.
+    val mouseFocus = LocalFocusManager.current
+    val mouseDrive = Modifier.onPreviewKeyEvent { event ->
+        if (!com.hikari.app.tv.MouseMode.enabled) return@onPreviewKeyEvent false
+        if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+        val step = com.hikari.app.tv.MouseMode.STEP
+        when (event.key) {
+            Key.DirectionUp -> { com.hikari.app.tv.MouseMode.move(0f, -step); mouseFocus.moveFocus(FocusDirection.Up); true }
+            Key.DirectionDown -> { com.hikari.app.tv.MouseMode.move(0f, step); mouseFocus.moveFocus(FocusDirection.Down); true }
+            Key.DirectionLeft -> { com.hikari.app.tv.MouseMode.move(-step, 0f); mouseFocus.moveFocus(FocusDirection.Left); true }
+            Key.DirectionRight -> { com.hikari.app.tv.MouseMode.move(step, 0f); mouseFocus.moveFocus(FocusDirection.Right); true }
+            else -> false
+        }
+    }
+
+    Box(Modifier.fillMaxSize().nestedScroll(barScroll).padding(tvEdge).then(mouseDrive)) {
         // The page backdrop, drawn here rather than by the Scaffold so the
         // translucent cards have something to be glass OVER (the Scaffold below
         // is transparent for exactly that reason).

@@ -541,7 +541,9 @@ fun CatalogScreen(
     // (four cramped columns). On a television the count is still derived from
     // the living-room cell size instead (see [TvUi.gridColumns]).
     val isTvCatalog = com.hikari.app.tv.TvMode.current()
-    val columns = if (isTvCatalog) { val w = LocalConfiguration.current.screenWidthDp; if (w >= 1400) 4 else 3 } else TvUi.gridColumns(catalogColumnsFor(LocalConfiguration.current.screenWidthDp))
+    // Phone cinema cards are 16:9 and need room: two columns, not three.
+    val phoneCinema = !isTvCatalog && rememberPosterStyle().isCinema(false)
+    val columns = if (isTvCatalog) { val w = LocalConfiguration.current.screenWidthDp; if (w >= 1400) 4 else 3 } else if (phoneCinema) 2 else TvUi.gridColumns(catalogColumnsFor(LocalConfiguration.current.screenWidthDp))
     // Infinite scroll: fetch the next page when the user scrolls close to the
     // bottom. (A LaunchedEffect keyed on gridState alone never re-fires on
     // scroll — gridState is a stable object — so this watches the scroll
@@ -825,9 +827,11 @@ private fun CatalogCard(item: MediaItem, style: PosterStyle, onClick: () -> Unit
     val shape = RoundedCornerShape(style.corner.dp)
     val cinema = style.isCinema(com.hikari.app.tv.TvMode.current())
     val hero = if (cinema) Artwork.heroModel(item) else null
+    // No clip on the outer Column: the artwork's own rounding used to extend
+    // over the title/year lines and cut their edges. Only the image Box below
+    // is rounded.
     Column(
         Modifier
-            .clip(shape)
             .clickable(onClick = onClick)
     ) {
         Box(

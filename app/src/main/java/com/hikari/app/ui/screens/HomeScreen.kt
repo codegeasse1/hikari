@@ -2890,20 +2890,16 @@ private class BrowseCursor(
     var exhausted: Boolean = false,
 )
 
-/** True when [item] belongs to the genre [name]: a genre tag containing the
- *  name (either direction — "Science Fiction" matches a "Sci-Fi" ask poorly,
- *  but a tag match in either direction covers the common spellings), or a
- *  title carrying the word itself. Items with no tags at all never match: a
- *  site scraper that tags nothing cannot answer a genre question, and saying
- *  so (the overlay's empty state) beats a wall of unfiltered posters. */
+/** True when [item] belongs to the genre [name]: matched through
+ *  [Genres.matches] so accented and translated tags count ("Acción" answers an
+ *  "Action" tap, "Ciencia ficción" a "Science Fiction" one). Items with no tags
+ *  at all never match: a site scraper that tags nothing cannot answer a genre
+ *  question, and saying so (the overlay's empty state) beats a wall of
+ *  unfiltered posters. */
 private fun homeGenreKeep(item: MediaItem, name: String): Boolean {
-    val q = name.trim().lowercase()
-    if (q.isEmpty()) return true
-    if (item.genres.any { g ->
-        val t = g.trim().lowercase()
-        t.isNotEmpty() && (t.contains(q) || q.contains(t))
-    }) return true
-    return false
+    if (name.trim().isEmpty()) return true
+    if (item.genres.any { g -> com.hikari.app.data.Genres.matches(g, name) }) return true
+    return com.hikari.app.data.Genres.matches(item.title, name)
 }
 
 @Composable
@@ -3096,8 +3092,11 @@ private fun HomeSearchOverlay(
             var browseMoreLoading by remember { mutableStateOf(false) }
             var browseDone by remember { mutableStateOf(false) }
             val browseScope = rememberCoroutineScope()
-            LaunchedEffect(kindKey, providerIds) {
-                if (kindKey == HOME_KIND_ALL || providerIds.isEmpty()) {
+            // A genre narrowing ALSO sweeps the catalogues — even with an empty
+            // query and the "All" kind, which used to show only the loaded feed
+            // rows (one screenful) and never asked the catalogues at all.
+            LaunchedEffect(kindKey, genre, providerIds) {
+                if ((kindKey == HOME_KIND_ALL && genre.isBlank()) || providerIds.isEmpty()) {
                     browseItems = emptyList()
                     browseAnimeIds = emptySet()
                     browseCursors = emptyList()
@@ -3161,7 +3160,7 @@ private fun HomeSearchOverlay(
              */
             fun loadMoreBrowse() {
                 if (browseMoreLoading || browseDone) return
-                if (kindKey == HOME_KIND_ALL || providerIds.isEmpty()) return
+                if (kindKey == HOME_KIND_ALL && genre.isBlank() || providerIds.isEmpty()) return
                 val pending = browseCursors.filterNot { it.exhausted }
                 if (pending.isEmpty()) {
                     browseDone = true

@@ -1,3 +1,16 @@
+## 0.10.84
+
+Everything new and fixed since the last release (0.10.83):
+
+### Fixed
+
+- I fixed genre taps showing nothing — a genre picked with an empty search never asked the catalogues, only the titles already on screen; the catalogue sweep runs for genre narrowings too now, and matching ignores accents and language ("Acción" answers "Action", "Ciencia ficción" answers "Science Fiction") in Home, the overlay and the Search filters alike
+- I fixed Anymex extensions reporting no titles — the capability check and the install inspection only saw the extension class when it hung off the global object, which normally-written modules never do; both read it through the scope chain now, like catalogue calls already did
+- I fixed the TV mouse arrows doing nothing — the cursor overlay sat beside the focused content so its key handler never fired; the arrows are driven at the root now, on key-down only, and the overlay just draws the ring
+- I fixed TV taps bouncing back to Home — the WebView's go-home request was never consumed, so a stale request could yank a later repo open back to Home; it is cleared after handling, and every Extensions sub-page parks the remote on its own Back button
+- I fixed Fastream failing after a good lookup — session cookies set by the /dl handshake never reached the player, so the CDN's playlist request fell over; they are captured and sent with the stream now
+- I fixed poster cropping — cinema art sits a touch higher so faces stay in frame, phone cinema grids are two wide columns, and the card rounding no longer bites into the title and year lines
+
 ## 0.10.83
 
 Everything new and fixed since the last release (0.10.82):

@@ -119,15 +119,18 @@ fun TvCinemaCard(
   // side bars — a narrow poster floating between blanks is never the look.
   val hero = Artwork.heroModel(item)
   val art = hero.first
+  // No clip on the outer Column: the corner curve used to reach down into the
+  // title/year lines and bite their edges off. Only the artwork itself is
+  // rounded (see the image Box below).
   Column(
-    modifier.width(cardWidth).clip(RoundedCornerShape(14.dp)).clickable(onClick = onClick).tvPress(previewPass = true, onClick = onClick),
+    modifier.width(cardWidth).clickable(onClick = onClick).tvPress(previewPass = true, onClick = onClick),
   ) {
     Box(
       Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.surfaceVariant),
       contentAlignment = Alignment.Center,
     ) {
       Icon(Icons.Filled.Movie, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f), modifier = Modifier.size(28.dp))
-      AsyncImage(model = art, contentDescription = item.title, modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(14.dp)), contentScale = ContentScale.Crop, alignment = Alignment.TopCenter)
+      AsyncImage(model = art, contentDescription = item.title, modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(14.dp)), contentScale = ContentScale.Crop, alignment = BiasAlignment(0f, -0.65f))
       item.rating?.takeIf { it > 0 }?.let { r ->
         Surface(color = Color.Black.copy(alpha = 0.65f), shape = RoundedCornerShape(8.dp), modifier = Modifier.align(Alignment.TopEnd).padding(8.dp)) {
           Text("★ " + "%.1f".format(r), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = Color(0xFFFFC107), modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp))
@@ -152,7 +155,7 @@ fun TvVerticalCard(
 ) {
   val art = Artwork.model(item)
   Column(
-    modifier.width(cardWidth).clip(RoundedCornerShape(14.dp)).clickable(onClick = onClick).tvPress(previewPass = true, onClick = onClick),
+    modifier.width(cardWidth).clickable(onClick = onClick).tvPress(previewPass = true, onClick = onClick),
   ) {
     Box(
       Modifier.fillMaxWidth().aspectRatio(2f / 3f).clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.surfaceVariant),

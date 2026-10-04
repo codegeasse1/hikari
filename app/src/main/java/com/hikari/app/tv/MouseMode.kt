@@ -21,6 +21,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
@@ -42,28 +44,18 @@ object MouseMode {
     xFrac = (xFrac + dx).coerceIn(0.02f, 0.98f)
     yFrac = (yFrac + dy).coerceIn(0.05f, 0.95f)
   }
+
+  const val STEP = 0.035f
 }
 
 @Composable
 fun TvMouseCursorOverlay(modifier: Modifier = Modifier) {
   if (!MouseMode.enabled) return
   val density = LocalDensity.current
-  val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
-  Box(
-    modifier
-      .fillMaxSize()
-      .onPreviewKeyEvent { event ->
-        if (!MouseMode.enabled) return@onPreviewKeyEvent false
-        val step = 0.035f
-        when (event.key) {
-          Key.DirectionUp -> { MouseMode.move(0f, -step); focusManager.moveFocus(androidx.compose.ui.focus.FocusDirection.Up); true }
-          Key.DirectionDown -> { MouseMode.move(0f, step); focusManager.moveFocus(androidx.compose.ui.focus.FocusDirection.Down); true }
-          Key.DirectionLeft -> { MouseMode.move(-step, 0f); focusManager.moveFocus(androidx.compose.ui.focus.FocusDirection.Left); true }
-          Key.DirectionRight -> { MouseMode.move(step, 0f); focusManager.moveFocus(androidx.compose.ui.focus.FocusDirection.Right); true }
-          else -> false
-        }
-      },
-  ) {
+  // Draw-only: arrow keys are driven by the root handler in AppNav (a sibling
+  // overlay never sits in the focus path, so its own preview handler never
+  // fired and the cursor sat dead).
+  Box(modifier.fillMaxSize()) {
     androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxSize()) {
       val px = with(density) { (maxWidth * MouseMode.xFrac).toPx() }
       val py = with(density) { (maxHeight * MouseMode.yFrac).toPx() }
