@@ -204,16 +204,28 @@ fun MediaRow(
  *
  * [aspect] is width/height, and [horizontalInsets] is the width the card's own
  * padding takes off the screen (a carousel's peek-in, for example).
+ *
+ * [scale] is Home's featured-banner size (Settings → App Layout → Featured
+ * banner → Header size), 0.5–1.5: the card's width AND height scale together —
+ * one slider for the whole header. Below 100% the card narrows (centred) and
+ * shortens; above, it keeps full width and grows taller.
  */
 @Composable
-private fun heroFrame(aspect: Float, horizontalInsets: Float = 0f): Modifier {
+private fun heroFrame(aspect: Float, horizontalInsets: Float = 0f, scale: Float = 1f): Modifier {
     val width = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp.toFloat()
     val natural = (width - horizontalInsets) / aspect
-    if (!TvMode.current()) return Modifier.fillMaxWidth().aspectRatio(aspect)
+    val s = scale.coerceIn(0.5f, 1.5f)
+    if (!TvMode.current()) {
+        return if (s >= 1f) {
+            Modifier.fillMaxWidth().aspectRatio(aspect / s)
+        } else {
+            Modifier.fillMaxWidth(s, Alignment.CenterHorizontally).aspectRatio(aspect)
+        }
+    }
     val height = androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp
     return Modifier
         .fillMaxWidth()
-        .height(natural.coerceAtMost(height * 0.52f).dp)
+        .height((natural * s).coerceAtMost(height * 0.52f * s).dp)
 }
 
 /**
@@ -280,7 +292,7 @@ fun HeroArtwork(
         contentDescription = contentDescription,
         modifier = modifier,
         contentScale = ContentScale.Crop,
-        alignment = if (TvMode.current()) Alignment.TopCenter else BiasAlignment(0f, -0.65f),
+        alignment = com.hikari.app.ui.Artwork.CINEMA_ALIGNMENT,
     )
 }
 
@@ -546,6 +558,7 @@ data class HeroConfig(
     val showOverview: Boolean = true,
     val showRating: Boolean = true,
     val showMeta: Boolean = true,
+    val scale: Float = 1f,
 )
 
 /** The featured banner, in whichever shape [config] asks for. */
@@ -606,7 +619,7 @@ private fun HeroCarousel(
             }
         }
     }
-    val frame = heroFrame(16f / 9f, horizontalInsets = 40f)
+    val frame = heroFrame(16f / 9f, horizontalInsets = 40f, scale = config.scale)
     Column(modifier.fillMaxWidth()) {
         HorizontalPager(
             state = pagerState,
@@ -769,7 +782,7 @@ private fun HeroStaticCard(
     Column(modifier.fillMaxWidth()) {
         Box(
             Modifier
-                .then(heroFrame(16f / 9f, horizontalInsets = 40f))
+                .then(heroFrame(16f / 9f, horizontalInsets = 40f, scale = config.scale))
                 .clip(RoundedCornerShape(20.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant)
                 .clickable { onClick(item) }
@@ -955,7 +968,7 @@ private fun HeroSpotlight(
 ) {
     val pagerState = rememberPagerState { items.size }
     HeroAutoAdvance(pagerState, items.size, 7000L)
-    val frame = heroFrame(3f / 2f)
+    val frame = heroFrame(3f / 2f, scale = config.scale)
     Column(modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
         HorizontalPager(
             state = pagerState,
@@ -1086,7 +1099,7 @@ private fun HeroCompact(
             Box(
                 Modifier
                     .fillMaxWidth()
-                    .height(148.dp)
+                    .height((148f * config.scale.coerceIn(0.5f, 1.5f)).dp)
                     .clickable { onClick(item) }
             ) {
                 HeroArtwork(
@@ -1230,7 +1243,7 @@ private fun HeroShowcase(
                         rating = item.rating,
                         imdb = heroScore,
                         modifier = Modifier
-                            .width(96.dp)
+                            .width((96f * config.scale.coerceIn(0.5f, 1.5f)).dp)
                             .aspectRatio(2f / 3f),
                     )
                     Spacer(Modifier.width(12.dp))

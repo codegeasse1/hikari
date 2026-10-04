@@ -754,12 +754,15 @@ fun HomeScreen(nav: NavHostController) {
     val heroOverview by heroOverviewFlow.collectAsState(initial = true)
     val heroRating by heroRatingFlow.collectAsState(initial = true)
     val heroMeta by heroMetaFlow.collectAsState(initial = true)
-    val heroConfig = remember(heroStyle, heroOverview, heroRating, heroMeta) {
+    val heroScaleFlow = remember { app.store.heroScaleFlow() }
+    val heroScale by heroScaleFlow.collectAsState(initial = 100)
+    val heroConfig = remember(heroStyle, heroOverview, heroRating, heroMeta, heroScale) {
         HeroConfig(
             style = heroStyle,
             showOverview = heroOverview,
             showRating = heroRating,
             showMeta = heroMeta,
+            scale = (heroScale.coerceIn(50, 150)) / 100f,
         )
     }
     val continueEntries = remember(history) {
@@ -1034,8 +1037,8 @@ fun HomeScreen(nav: NavHostController) {
                         if (TvMode.current()) {
                             TvCinematicHero(
                                 items = featured,
-                                onOpen = { item ->
-                                    Routes.safeNavigate(
+                                scale = heroConfig.scale,
+                                onOpen = { item ->                                    Routes.safeNavigate(
                                         nav,
                                         Routes.detail(
                                             item.providerId, item.type, item.id,

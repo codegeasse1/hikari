@@ -102,6 +102,33 @@ fun ProfilesScreen(app: HikariApp, onBack: () -> Unit) {
     var deleteTarget by remember { mutableStateOf<Profiles.Profile?>(null) }
     var typed by remember { mutableStateOf("") }
     var status by remember { mutableStateOf("") }
+    // The app-lock gate over this page: when an app lock is set, creating,
+    // renaming, deleting or SWITCHING a profile asks for the lock's password
+    // first — otherwise anyone holding the unlocked phone could open or change
+    // a profile that is not theirs. The pending action runs only after the
+    // password verifies; nothing about the password is kept.
+    var gateOpen by remember { mutableStateOf(false) }
+    var gatePassword by remember { mutableStateOf("") }
+    var gateWrong by remember { mutableStateOf(false) }
+    var gateBusy by remember { mutableStateOf(false) }
+    var gateSecret by remember { mutableStateOf("") }
+    var pendingGate by remember { mutableStateOf<(() -> Unit)?>(null) }
+
+    fun askGate(action: () -> Unit) {
+        scope.launch {
+            val on = runCatching { app.store.appLock() }.getOrDefault(false)
+            val secret = runCatching { app.store.appLockSecret() }.getOrDefault("")
+            if (on && secret.isNotBlank()) {
+                pendingGate = action
+                gateSecret = secret
+                gatePassword = ""
+                gateWrong = false
+                gateOpen = true
+            } else {
+                action()
+            }
+        }
+    }
     // What each profile holds, read from its own snapshot (the active one is read
     // from the live store instead — its snapshot is only as fresh as the last
     // switch away from it).
@@ -188,8 +215,10 @@ fun ProfilesScreen(app: HikariApp, onBack: () -> Unit) {
                             label = tr("Save this setup as a profile"),
                             enabled = !busy,
                         ) {
-                            typed = msgDefaultName
-                            naming = true
+                            askGate {
+                                typed = msgDefaultName
+                                naming = true
+                            }
                         }
                     }
                 }
@@ -205,19 +234,23 @@ fun ProfilesScreen(app: HikariApp, onBack: () -> Unit) {
                     // left the picker would be an empty page describing a
                     // feature with nothing in it.
                     canDelete = profiles.size > 1,
-                    onOpen = { switchTo(profile) },
+                    onOpen = { askGate { switchTo(profile) } },
                     onRename = {
-                        typed = profile.name
-                        renameTarget = profile
+                        askGate {
+                            typed = profile.name
+                            renameTarget = profile
+                        }
                     },
-                    onDelete = { deleteTarget = profile },
+                    onDelete = { askGate { deleteTarget = profile } },
                 )
             }
             item(key = "profiles-new") {
                 GlassCard(
                     onClick = {
-                        typed = ""
-                        naming = true
+                        askGate {
+                            typed = ""
+                            naming = true
+                        }
                     },
                     modifier = Modifier.fillMaxWidth(),
                 ) {
@@ -382,6 +415,46 @@ fun ProfilesScreen(app: HikariApp, onBack: () -> Unit) {
             },
         )
     }
+
+    if (gateOpen) {
+        ProfileLockDialog(
+            value = gatePassword,
+            onValueChange = {
+                gatePassword = it
+                gateWrong = false
+            },
+            wrong = gateWrong,
+            busy = gateBusy,
+            onUnlock = {
+                if (gateBusy) return@ProfileLockDialog
+                gateBusy = true
+                val pw = gatePassword
+                val sec = gateSecret
+                val run = pendingGate
+                scope.launch {
+                    val ok = withContext(Dispatchers.IO) {
+                        com.hikari.app.lock.AppLock.verify(pw, sec)
+                    }
+                    gateBusy = false
+                    if (ok) {
+                        gateOpen = false
+                        gatePassword = ""
+                        pendingGate = null
+                        run?.invoke()
+                    } else {
+                        gateWrong = true
+                    }
+                }
+            },
+            onDismiss = {
+                if (!gateBusy) {
+                    gateOpen = false
+                    gatePassword = ""
+                    pendingGate = null
+                }
+            },
+        )
+    }
 }
 
 /**
@@ -491,6 +564,60 @@ private fun ProfileRow(
             }
         }
     }
+}
+
+/** The app-lock password prompt that guards creating, renaming, deleting and
+ *  opening a profile. The password itself is never stored — it is verified
+ *  against the lock's derivation and dropped (see
+ *  [com.hikari.app.lock.AppLock]). */
+@Composable
+private fun ProfileLockDialog(
+    value: String,
+    onValueChange: (String) -> Unit,
+    wrong: Boolean,
+    busy: Boolean,
+    onUnlock: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(tr("Enter your app-lock password")) },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = value,
+                    onValueChange = onValueChange,
+                    singleLine = true,
+                    label = { Text(tr("Password")) },
+                    visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                    isError = wrong,
+                    supportingText = {
+                        if (wrong) {
+                            Text(
+                                tr("Wrong password — try again."),
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth().tvTextFieldKeys(value),
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    tr("Only the person who set this password can create, change or open a profile."),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(enabled = value.isNotBlank() && !busy, onClick = onUnlock) {
+                Text(if (busy) tr("Checking…") else tr("Unlock"))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(tr("Cancel")) }
+        },
+    )
 }
 
 /** One name field, used for creating a profile and for renaming one. */

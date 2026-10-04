@@ -70,9 +70,23 @@ class AnymexMangaProvider(override val config: ProviderConfig) : ContentProvider
             val native = nativeCatalog(ref.id, p)
             if (native.isNotEmpty()) {
                 lastOutcome[config.id] = "✓ ${native.size} titles (native)"
-            } else {
-                lastOutcome[config.id] = lastOutcome[config.id] ?: "✗ empty catalog"
+                return@withContext native
             }
+            // Same stale-paths fallback as the video engine (see
+            // AnymexHomepage) — but never for the known sites, whose native
+            // API paths answer for them and whose homepage cards the native
+            // detail calls could not open. Only on a recorded failure, and
+            // only on page 1, which is the only page a front page has.
+            if (p == 1 && !isMangaDex() && !isWebtoons() && !isComick() &&
+                lastOutcome[config.id]?.startsWith("✗") == true
+            ) {
+                val home = runCatching { AnymexHomepage.titles(config) }.getOrDefault(emptyList())
+                if (home.isNotEmpty()) {
+                    lastOutcome[config.id] = "✓ ${home.size} titles (homepage)"
+                    return@withContext home
+                }
+            }
+            lastOutcome[config.id] = lastOutcome[config.id] ?: "✗ empty catalog"
             native
         }
 

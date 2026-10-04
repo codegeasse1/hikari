@@ -5050,10 +5050,12 @@ private fun TmdbGridCard(item: MediaItem, style: PosterStyle, onClick: () -> Uni
             rating = item.rating,
             imdb = badge,
             item = item,
-            // Cinema is always a full-bleed 16:9 crop anchored at the top —
-            // never a letterboxed Fit with blank sides.
+            // Cinema is always a full-bleed 16:9 crop anchored exactly like the
+            // home rail (see Artwork.CINEMA_ALIGNMENT) — never a letterboxed
+            // Fit with blank sides, never a centred crop that beheads the
+            // same poster the rail shows fine.
             contentScale = ContentScale.Crop,
-            imageAlignment = if (cinema) Alignment.TopCenter else Alignment.Center,
+            imageAlignment = if (cinema) com.hikari.app.ui.Artwork.CINEMA_ALIGNMENT else Alignment.Center,
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(if (cinema) 16f / 9f else 2f / 3f),

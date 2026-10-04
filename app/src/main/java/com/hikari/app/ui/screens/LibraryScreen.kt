@@ -203,10 +203,19 @@ fun LibraryScreen(nav: NavHostController, embedded: Boolean = false) {
                         ) {
                             items(shelf.items, key = { it.uniqueId }) { item ->
                                 TrackerLibraryCard(item = item, onClick = {
-                                    Routes.safeNavigate(nav, Routes.detail(
-                                        providerId = item.providerId, type = item.type, mediaId = item.id,
-                                        title = item.title, posterUrl = item.posterUrl, rawType = item.rawType,
-                                    ))
+                                    // Manga rows (AniList / MAL / Kitsu /
+                                    // Shikimori / Simkl manga shelves) open in
+                                    // the manga section: the title is searched
+                                    // across every installed manga engine, and
+                                    // the match opens from there.
+                                    if (item.rawType == "manga") {
+                                        Routes.safeNavigate(nav, Routes.mangaSearch(item.title))
+                                    } else {
+                                        Routes.safeNavigate(nav, Routes.detail(
+                                            providerId = item.providerId, type = item.type, mediaId = item.id,
+                                            title = item.title, posterUrl = item.posterUrl, rawType = item.rawType,
+                                        ))
+                                    }
                                 })
                             }
                         }

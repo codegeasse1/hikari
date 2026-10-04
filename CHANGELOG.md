@@ -1,3 +1,20 @@
+## 0.10.85
+
+Everything new and fixed since the last release (0.10.84):
+
+### Fixed
+
+- I fixed the same poster framing differently everywhere — the Home rail showed it perfectly while Show All, search, collections and the detail banner each cropped it their own way; every cinema frame now uses the one shared crop anchor, so a poster's heads stay in frame on all of them
+- I fixed Fastream failing after a good lookup — the signed stream URLs are bound to the embed page that minted them, so they now carry that page as their Referer (the way CloudStream's own extractor sends it) instead of the site root that the CDN rejects
+- I fixed servers leaking across the scope switches — remembered and cached server lists outlived the lookup they were gathered under, so a sibling extension's servers showed up even with its family switch off; every read of those lists is now filtered to the current scope, for every engine family
+- I fixed Anymex catalogues reporting the site moved when it is alive — when an extension's own catalogue paths 404 but its site loads (the globe view proves it), the front page is scraped for title cards so the catalogue shows titles instead of the error
+- I added manga to the tracker libraries — AniList, MyAnimeList, Kitsu, Shikimori and Simkl manga lists now show as their own shelves, and tapping one searches it across every installed manga engine
+
+### New
+
+- I added a Header size slider to Settings → App Layout → Featured banner — one slider for the whole Home header image, in single-percent steps from 50% to 150%, so it can be shrunk when it eats the page or grown when it is the page
+- I put the Profiles page behind the app-lock password — creating, renaming, deleting or opening a profile now asks for the same password the app lock uses, so only the person who set it can touch the setups
+
 ## 0.10.84
 
 Everything new and fixed since the last release (0.10.83):

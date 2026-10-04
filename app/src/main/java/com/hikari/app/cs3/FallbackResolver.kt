@@ -192,10 +192,14 @@ object FallbackResolver {
         // anything still missing — a link that arrived with no headers at all
         // keeps the old behaviour exactly.
         val headers = LinkedHashMap<String, String>(r.headers)
-        // Fastream's check wants the site root, never the numbered CDN host
-        // the signed URL lives on (see Cs3MainApiProvider.enrichHotlinkHeaders).
+        // Fastream's check wants the page that minted the signed URL — the
+        // embed page CloudStream itself sends (see fastreamExtract) — never
+        // the numbered CDN host the URL lives on. The site root is only the
+        // last resort for a link that arrived with no referer at all.
         if (r.url.contains("fastream", true)) {
-            headers["Referer"] = "https://fastream.to/"
+            val ref = r.referer.takeIf { it.contains("fastream", true) }
+                ?: "https://fastream.to/"
+            headers["Referer"] = ref
             headers.remove("Origin")
         } else {
             headers.putIfAbsent("Referer", r.referer)
@@ -426,33 +430,38 @@ object FallbackResolver {
         }.getOrNull()
         if (resp.isNullOrBlank()) return
         val fastHeaders = if (cookie.isNotBlank()) mapOf("Cookie" to cookie) else emptyMap()
+        // CloudStream's own Fastream extractor hands the player the EMBED page
+        // as Referer (see JwPlayerHelper's urlset fallback: `referer = url`),
+        // not the site root — the signed CDN URL is bound to the page that
+        // minted it, and the site root alone 403s. Every link below carries
+        // the embed page it was extracted from.
         val text = getAndUnpack(resp)
         for (m in M3U8_RE.findAll(text)) {
             val u = cleanUrl(m.value) ?: continue
             raws.putIfAbsent(
                 u,
-                RawStream(u, "https://fastream.to/", "Fastream", Qualities.Unknown.value, true, fastHeaders)
+                RawStream(u, embedUrl, "Fastream", Qualities.Unknown.value, true, fastHeaders)
             )
         }
         for (m in MP4_RE.findAll(text)) {
             val u = cleanUrl(m.value) ?: continue
             raws.putIfAbsent(
                 u,
-                RawStream(u, "https://fastream.to/", "Fastream", Qualities.Unknown.value, false, fastHeaders)
+                RawStream(u, embedUrl, "Fastream", Qualities.Unknown.value, false, fastHeaders)
             )
         }
         for (m in TXT_RE.findAll(text)) {
             val u = cleanUrl(m.value) ?: continue
             raws.putIfAbsent(
                 u,
-                RawStream(u, "https://fastream.to/", "Fastream", Qualities.Unknown.value, true, fastHeaders)
+                RawStream(u, embedUrl, "Fastream", Qualities.Unknown.value, true, fastHeaders)
             )
         }
         if (raws.isEmpty()) {
             // The /dl answer carries the stream in a shape the patterns miss
             // (JSON-escaped file URLs, extensionless HLS variants): probe the
             // promising URLs directly and keep the ones that answer as media.
-            runCatching { probeCandidates(text, "https://fastream.to/", raws) }
+            runCatching { probeCandidates(text, embedUrl, raws) }
         }
     }
 

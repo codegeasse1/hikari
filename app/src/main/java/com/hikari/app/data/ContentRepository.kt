@@ -2463,7 +2463,63 @@ class ContentRepository(private val manager: ProviderManager) {
     fun recentlyFoundStreams(item: MediaItem, episode: Episode?): List<StreamSource> {
         val record = streamsRemembered[streamsRememberedKey(item, episode)] ?: return emptyList()
         if (System.currentTimeMillis() - record.at >= REMEMBERED_STREAMS_TTL_MS) return emptyList()
-        return record.list
+        return filterToScope(item, record.list)
+    }
+
+    /**
+     * Provider ids the current Server-search scope allows for [item], or null
+     * when everything is allowed. Mirrors the target rules in [streamsForInner]
+     * (origin, the per-engine family switches, exceptions, tracker choices):
+     * remembered/cached server lists outlive the scope they were gathered
+     * under, so every read of one is filtered through this — otherwise a wider
+     * earlier lookup leaks its sibling-engine servers into a lookup whose own
+     * switches say "only this extension". A blank provider id cannot be
+     * attributed and is always kept.
+     */
+    fun scopeAllowedIds(item: MediaItem): Set<String>? {
+        val all = manager.providers.value.filter { it.config.enabled }
+        val origin = manager.byId(item.providerId)
+        val trackerBacked = item.providerId.lowercase() in setOf(
+            "anilist", "simkl", "mal", "kitsu", "shikimori", "trakt"
+        )
+        if (trackerBacked) {
+            val on = runCatching { HikariApp.instance.store.trackerServerSearchAll() }.getOrDefault(true)
+            if (!on) return emptySet()
+            val families = runCatching { HikariApp.instance.store.trackerEngineFamilies() }
+                .getOrDefault(setOf(ProviderType.NUVIO.name, ProviderType.STREMIO.name))
+            val selected = runCatching { HikariApp.instance.store.trackerProviderIds() }.getOrDefault(emptySet())
+            return all.filter { it.config.enabled && (it.config.type.name in families || it.config.id in selected) }
+                .map { it.config.id }.toSet()
+        }
+        val originIsIptv = com.hikari.app.data.IptvMark.of(item)
+        val originIsException = originIsIptv || SearchScope.isException(item.providerId)
+        if (!originIsException && SearchScope.allExtensions) return null
+        val out = HashSet<String>()
+        if (origin != null && origin.config.enabled) {
+            out += origin.config.id
+            if (SearchScope.family(origin.config.type)) {
+                all.filter { it.config.type == origin.config.type }.forEach { out += it.config.id }
+            }
+            if (origin.config.type == ProviderType.NUVIO && SearchScope.nuvioFamily) {
+                all.filter { it.config.type == ProviderType.NUVIO }.forEach { out += it.config.id }
+            }
+            if (origin.config.type == ProviderType.STREMIO && SearchScope.stremioFamily) {
+                all.filter { it.config.type == ProviderType.STREMIO }.forEach { out += it.config.id }
+            }
+        } else if (!originIsIptv) {
+            all.filter { it.config.type == ProviderType.STREMIO }.forEach { out += it.config.id }
+            if (com.hikari.app.nuvio.TmdbResolver.isLikelyResolvable(item)) {
+                all.filter { it.config.type == ProviderType.NUVIO }.forEach { out += it.config.id }
+            }
+        }
+        if (!originIsException) out += SearchScope.exceptions
+        return out
+    }
+
+    /** Keeps only the servers the current scope allows for [item] (see [scopeAllowedIds]). */
+    fun filterToScope(item: MediaItem, list: List<StreamSource>): List<StreamSource> {
+        val allowed = scopeAllowedIds(item) ?: return list
+        return list.filter { it.providerId.isBlank() || it.providerId in allowed }
     }
 
     /**
@@ -3748,7 +3804,12 @@ class ContentRepository(private val manager: ProviderManager) {
             // that played a minute ago cannot disappear by being unlucky.
             if (remembered != null) {
                 val have = finalResult.mapTo(HashSet<String>()) { it.infoHash ?: it.url }
-                val extra = remembered.list.filterNot { (it.infoHash ?: it.url) in have }
+                // Scoped: the remembered list may hold sibling-engine servers a
+                // wider earlier lookup gathered — they must not re-enter a pass
+                // whose own switches say "only this extension" (see
+                // [filterToScope]).
+                val extra = filterToScope(item, remembered.list)
+                    .filterNot { (it.infoHash ?: it.url) in have }
                 if (extra.isNotEmpty()) {
                     val fresh = finalResult.size
                     finalResult = finalResult + extra

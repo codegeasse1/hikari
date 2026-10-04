@@ -3346,6 +3346,15 @@ private fun HeroBannerCard(app: HikariApp) {
     val metaFlow = remember { app.store.heroMetaFlow() }
     val meta by metaFlow.collectAsState(initial = true)
     var pickerOpen by remember { mutableStateOf(false) }
+    // The header's own size (Settings → App Layout → Featured banner): one
+    // slider for the whole banner, width and height together — smaller when it
+    // eats the page, bigger when it is the page. Held locally while the finger
+    // is on it and written when the drag ends, in SINGLE-percent steps
+    // (50%…150%), because "a bit smaller" is not a 10% jump.
+    val scaleFlow = remember { app.store.heroScaleFlow() }
+    val scale by scaleFlow.collectAsState(initial = 100)
+    var scaleSlider by remember { mutableStateOf(scale.toFloat()) }
+    LaunchedEffect(scale) { scaleSlider = scale.toFloat() }
 
     Column(Modifier.padding(16.dp)) {
         SettingsCardHeading(Icons.Filled.ViewCarousel, tr("Featured banner"))
@@ -3355,6 +3364,30 @@ private fun HeroBannerCard(app: HikariApp) {
             leadingIcon = Icons.Filled.ViewCarousel,
             onClick = { pickerOpen = true },
         )
+        Spacer(Modifier.height(14.dp))
+        SettingsSlider(
+            label = tr("Header size"),
+            value = scaleSlider,
+            valueText = scaleSlider.roundToInt().toString() + "%",
+            valueRange = 50f..150f,
+            // 101 single-percent positions between 50% and 150% (100 gaps): the
+            // slider moves one point at a time — 101, 102, 103 — instead of
+            // leaping in tens.
+            steps = 99,
+            onValueChange = { v -> scaleSlider = v.roundToInt().toFloat().coerceIn(50f, 150f) },
+            onValueChangeFinished = {
+                val pct = scaleSlider.roundToInt().coerceIn(50, 150)
+                scaleSlider = pct.toFloat()
+                scope.launch { runCatching { app.store.setHeroScale(pct) } }
+            },
+        )
+        if (!LocalHideHelp.current) {
+        Text(
+            tr("How big the Home header image is drawn — slide left to shrink it, right to grow it"),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        }
         Spacer(Modifier.height(8.dp))
         SettingsToggle(
             label = tr("Plot line"),

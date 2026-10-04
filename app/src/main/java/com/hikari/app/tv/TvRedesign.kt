@@ -131,7 +131,7 @@ fun TvCinemaCard(
       contentAlignment = Alignment.Center,
     ) {
       Icon(Icons.Filled.Movie, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f), modifier = Modifier.size(28.dp))
-      AsyncImage(model = art, contentDescription = item.title, modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(14.dp)), contentScale = ContentScale.Crop, alignment = BiasAlignment(0f, -0.65f))
+      AsyncImage(model = art, contentDescription = item.title, modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(14.dp)), contentScale = ContentScale.Crop, alignment = Artwork.CINEMA_ALIGNMENT)
       item.rating?.takeIf { it > 0 }?.let { r ->
         Surface(color = Color.Black.copy(alpha = 0.65f), shape = RoundedCornerShape(8.dp), modifier = Modifier.align(Alignment.TopEnd).padding(8.dp)) {
           Text("★ " + "%.1f".format(r), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = Color(0xFFFFC107), modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp))

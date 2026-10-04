@@ -69,6 +69,21 @@ class AnymexProvider(override val config: ProviderConfig) : ContentProvider {
             }
             markWall(first)
             markWall(second)
+            // The extension's own catalogue paths went stale but the site is
+            // alive (the globe loads it fine): scrape the front page for
+            // title cards instead of reporting "its pages may have moved".
+            // Only when the engine recorded a real failure — a merely empty
+            // catalogue (a search-only source, the end of the pages) is a
+            // legitimate answer and is left alone — and only on page 1, which
+            // is the only page a front page has.
+            if (page == 1 && catalogErrors.containsKey(config.id)) {
+                val home = runCatching { AnymexHomepage.titles(config) }.getOrDefault(emptyList())
+                if (home.isNotEmpty()) {
+                    catalogErrors.remove(config.id)
+                    lastOutcome[config.id] = "✓ ${home.size} titles (homepage)"
+                    return@withContext home
+                }
+            }
             // Page 2+ coming back empty is just the end of the catalogue, not
             // a failure — and a specific engine error already recorded (a dead
             // site, an HTTP status, a script error) must never be overwritten

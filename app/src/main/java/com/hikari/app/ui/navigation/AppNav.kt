@@ -156,6 +156,16 @@ object Routes {
     const val MANGA_DETAIL =
         "manga-detail?providerId={providerId}&url={url}&title={title}&poster={poster}"
     /**
+     * The Manga tab with a search already typed: a tracker manga shelf opens
+     * this, so the title is searched across every installed manga engine and
+     * the user picks the match to open. A destination of its own (rather than
+     * a parameter on [MANGA]) so back returns to the shelf it came from.
+     */
+    const val MANGA_SEARCH = "manga-search?q={q}"
+    /** Base path of [MANGA_SEARCH] — mapped back onto the Manga tab for the
+     *  bottom bar, the same way the scoped video search maps onto Search. */
+    const val MANGA_SEARCH_BASE = "manga-search"
+    /**
      * The reader. A destination of its own rather than a mode of the detail
      * screen, so the system back button returns to the chapter list, the page
      * survives a rotation, and the whole page list travels in the route exactly
@@ -219,6 +229,13 @@ object Routes {
     fun scraperReader(key: String, title: String): String {
         val safeTitle = title.replace(Regex("[\\p{Cc}\\u2028\\u2029]"), " ").trim().take(200)
         return "scraper-reader?key=${Uri.encode(key)}&title=${Uri.encode(safeTitle)}"
+    }
+
+    /** Opens the Manga tab with [query] already searched across every
+     *  installed manga engine. Tracker manga shelves land here. */
+    fun mangaSearch(query: String): String {
+        val q = query.replace(Regex("[\\p{Cc}\\u2028\\u2029]"), " ").trim().take(200)
+        return "manga-search?q=${Uri.encode(q)}"
     }
 
     /** Opens one IPTV playlist's group list. */
@@ -411,6 +428,7 @@ object Routes {
         val base = route?.substringBefore('?') ?: return null
         return when (base) {
             SEARCH_QUERY_BASE -> SEARCH
+            MANGA_SEARCH_BASE -> MANGA
             // History and Downloads are sections of the ONE merged taskbar
             // button ("My Stuff"), so they highlight it and keep the bar on
             // screen exactly as the scoped search route highlights Search.
@@ -1220,6 +1238,15 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
             composable(Routes.TELEGRAM) { TelegramScreen(nav) }
             // ---- Manga (the off-by-default tab, its detail page and reader) ----
             composable(Routes.MANGA) { MangaScreen(nav) }
+            composable(
+                route = Routes.MANGA_SEARCH,
+                arguments = listOf(
+                    navArgument("q") { type = NavType.StringType; defaultValue = "" },
+                )
+            ) { entry ->
+                val q = Uri.decode(entry.arguments?.getString("q").orEmpty())
+                MangaScreen(nav, initialQuery = q)
+            }
             composable(
                 route = Routes.MANGA_DETAIL,
                 arguments = listOf(

@@ -33,6 +33,17 @@ import org.json.JSONObject
  */
 object Artwork {
 
+    /**
+     * The ONE crop anchor every 16:9 cinema frame uses — the home rail, Show
+     * All grids, search grids, collection grids and the detail banner. Near the
+     * top so faces and title art stay in frame, a touch below pure top so a
+     * tall sky does not eat the whole frame. Every site that crops wide art
+     * must use this; a second anchor anywhere is the "same poster looks
+     * different here" bug.
+     */
+    val CINEMA_ALIGNMENT: androidx.compose.ui.Alignment =
+        androidx.compose.ui.BiasAlignment(0f, -0.65f)
+
     private class Entry(val poster: String?, val backdrop: String?, val at: Long)
 
     private const val MISS_TTL_MS = 3L * 24L * 60L * 60L * 1000L

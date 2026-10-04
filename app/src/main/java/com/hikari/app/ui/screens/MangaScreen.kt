@@ -109,7 +109,7 @@ import kotlinx.coroutines.withContext
  * buttons, and [com.hikari.app.data.AppStore.mangaTabFlow].
  */
 @Composable
-fun MangaScreen(nav: NavHostController) {
+fun MangaScreen(nav: NavHostController, initialQuery: String = "") {
     val context = LocalContext.current
     val app = context.applicationContext as HikariApp
     val all by app.providers.providers.collectAsState()
@@ -135,7 +135,12 @@ fun MangaScreen(nav: NavHostController) {
     val pinned by pinnedFlow.collectAsState(initial = emptySet())
     var pinReveal by remember { mutableStateOf<String?>(null) }
 
-    var query by rememberSaveable { mutableStateOf("") }
+    var query by rememberSaveable(initialQuery) { mutableStateOf(initialQuery) }
+    // A tracker manga shelf lands here with the title already typed: apply a
+    // fresh query argument (a second tap re-uses this page with new args).
+    LaunchedEffect(initialQuery) {
+        if (initialQuery.isNotBlank() && initialQuery != query) query = initialQuery
+    }
     // Which engine's own lists to browse / search: "" means every installed one.
     var enginePick by rememberSaveable { mutableStateOf("") }
     // The filter over the installed engines under "Browse" — separate from the

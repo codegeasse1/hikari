@@ -527,6 +527,10 @@ class AppStore(private val ctx: Context) {
         val HERO_OVERVIEW = booleanPreferencesKey("heroOverview")
         val HERO_RATING = booleanPreferencesKey("heroRating")
         val HERO_META = booleanPreferencesKey("heroMeta")
+        /** How big Home's featured banner is drawn, as a percentage of its
+         *  default size (see [DEFAULT_HERO_SCALE]) — one slider for the whole
+         *  header, smaller or bigger. */
+        val HERO_SCALE = intPreferencesKey("heroScale")
         /** How the detail page's header art is laid out — see
          *  [com.hikari.app.ui.screens.DetailHeroStyles]. */
         val DETAIL_HERO_STYLE = stringPreferencesKey("detailHeroStyle")
@@ -1169,6 +1173,8 @@ class AppStore(private val ctx: Context) {
 
         /** Home's featured banner shape ([HeroStyles]). */
         const val DEFAULT_HERO_STYLE = com.hikari.app.ui.components.HeroStyles.SHOWCASE
+        /** 100% = the size the featured banner has always been drawn at. */
+        const val DEFAULT_HERO_SCALE = 100
 
     /** The detail page's header art ([DetailHeroStyles]). */
     const val DEFAULT_DETAIL_HERO_STYLE = com.hikari.app.ui.screens.DetailHeroStyles.SIDE
@@ -1337,6 +1343,19 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setHeroMeta(on: Boolean) {
         write("HERO_META") { it[K.HERO_META] = on }
+    }
+
+    /** Home's featured banner size, in percent of its default (see
+     *  [DEFAULT_HERO_SCALE]). Clamped, because it scales the card's width and
+     *  height together: past the top of the range the card would outgrow the
+     *  screen it sits on. */
+    fun heroScaleFlow(): Flow<Int> =
+        store.data.map { (it[K.HERO_SCALE] ?: DEFAULT_HERO_SCALE).coerceIn(50, 150) }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun heroScale(): Int = heroScaleFlow().first()
+
+    suspend fun setHeroScale(percent: Int) {
+        write("HERO_SCALE") { it[K.HERO_SCALE] = percent.coerceIn(50, 150) }
     }
 
     /** How the detail page's header art is laid out. */

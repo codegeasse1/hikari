@@ -194,6 +194,11 @@ class CatalogViewModel(
             ProviderType.CS3 -> com.hikari.app.cs3.Cs3MainApiProvider.catalogErrors[p.config.id]
             ProviderType.VEGA -> com.hikari.app.providers.vega.VegaProvider.catalogErrors[p.config.id]
             ProviderType.HIKARI -> com.hikari.app.providers.HikariProviderAdapter.catalogErrors[p.config.id]
+            ProviderType.ANYMEX -> com.hikari.app.anymex.AnymexProvider.catalogErrors[p.config.id]
+                ?: com.hikari.app.anymex.AnymexProvider.lastOutcome[p.config.id]
+            ProviderType.ANYMEX_MANGA -> com.hikari.app.anymex.AnymexMangaProvider.lastOutcome[p.config.id]
+            ProviderType.SORA -> com.hikari.app.sora.SoraProvider.catalogErrors[p.config.id]
+                ?: com.hikari.app.sora.SoraProvider.lastOutcome[p.config.id]
             else -> null
         }
         return raw?.takeIf { it.isNotBlank() && !it.startsWith("✓") && !it.startsWith("✔") }
@@ -853,21 +858,26 @@ private fun CatalogCard(item: MediaItem, style: PosterStyle, onClick: () -> Unit
             )
             if (cinema && hero != null && !hero.second) {
                 // Portrait art in a cinema frame: a full-bleed 16:9 crop
-                // anchored at the top (faces/title art stay in frame). Never
-                // a letterboxed Fit with blank sides.
+                // anchored exactly like every other cinema frame (see
+                // Artwork.CINEMA_ALIGNMENT). Never a letterboxed Fit with
+                // blank sides.
                 AsyncImage(
                     model = hero.first,
                     contentDescription = item.title,
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop,
-                    alignment = Alignment.TopCenter
+                    alignment = com.hikari.app.ui.Artwork.CINEMA_ALIGNMENT
                 )
             } else {
                 AsyncImage(
                     model = if (cinema) hero?.first else Artwork.model(item),
                     contentDescription = item.title,
                     modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop
+                    contentScale = ContentScale.Crop,
+                    // Wide art in a cinema frame crops exactly like the home
+                    // rail does — a centred crop here is what beheaded the
+                    // same poster Show All shows after the rail showed it fine.
+                    alignment = if (cinema) com.hikari.app.ui.Artwork.CINEMA_ALIGNMENT else Alignment.Center
                 )
             }
             if (badge != null) {

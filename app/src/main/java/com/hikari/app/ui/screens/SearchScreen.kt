@@ -1102,9 +1102,11 @@ fun SearchScreen(
                     // badge warms the ratings cache for the title and prints
                     // whatever is known. Null when the switch is off.
                     val badge = rememberPosterScore(item, style)
+                    // Not clipped to the card rounding: the curve cut into
+                    // the title's edges at high corner values (see
+                    // CatalogCard). Only the artwork Box below is rounded.
                     Column(
                         Modifier
-                            .clip(RoundedCornerShape(10.dp))
                             .clickable {
                                 Routes.safeNavigate(
                                     nav,
@@ -1135,21 +1137,22 @@ fun SearchScreen(
                         ) {
                             if (phoneCinema && hero != null && !hero.second) {
                                 // Portrait art in a cinema frame: a full-bleed
-                                // 16:9 crop anchored at the top — never a
-                                // letterboxed Fit with blank sides.
+                                // 16:9 crop anchored exactly like every other
+                                // cinema frame (see Artwork.CINEMA_ALIGNMENT).
                                 AsyncImage(
                                     model = hero.first,
                                     contentDescription = item.title,
                                     modifier = Modifier.fillMaxSize(),
                                     contentScale = ContentScale.Crop,
-                                    alignment = Alignment.TopCenter
+                                    alignment = com.hikari.app.ui.Artwork.CINEMA_ALIGNMENT
                                 )
                             } else {
                                 AsyncImage(
                                     model = if (phoneCinema) hero?.first else Artwork.model(item),
                                     contentDescription = item.title,
                                     modifier = Modifier.fillMaxSize(),
-                                    contentScale = ContentScale.Crop
+                                    contentScale = ContentScale.Crop,
+                                    alignment = if (phoneCinema) com.hikari.app.ui.Artwork.CINEMA_ALIGNMENT else Alignment.Center
                                 )
                             }
                             if (badge != null) {

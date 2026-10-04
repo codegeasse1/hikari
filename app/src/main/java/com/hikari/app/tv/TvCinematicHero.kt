@@ -62,6 +62,7 @@ fun TvCinematicHero(
     items: List<MediaItem>,
     onOpen: (MediaItem) -> Unit,
     modifier: Modifier = Modifier,
+    scale: Float = 1f,
 ) {
     if (items.isEmpty()) return
     var index by remember(items) { mutableIntStateOf(0) }
@@ -70,7 +71,7 @@ fun TvCinematicHero(
     val scheme = MaterialTheme.colorScheme
     val bg = scheme.background
     BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
-        val h = ((maxHeight * 0.52f).value).coerceIn(300f, 520f).dp
+        val h = (((maxHeight * 0.52f).value * scale.coerceIn(0.5f, 1.5f)).coerceIn(160f, 720f)).dp
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -99,7 +100,7 @@ fun TvCinematicHero(
                 contentDescription = item.title,
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop,
-                alignment = Alignment.TopCenter,
+                alignment = com.hikari.app.ui.Artwork.CINEMA_ALIGNMENT,
             )
             Box(
                 Modifier

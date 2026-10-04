@@ -982,12 +982,25 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             // "hit" is exactly the bug that made the next taps of the same title
             // fail instantly instead of searching.
             if (!force && fresh && cached.list.isNotEmpty()) {
-                com.hikari.app.data.Logs.log(
-                    "Search",
-                    "cache hit \"${item.title}\" (fresh) → ${cached.list.size} servers",
-                )
-                _liveStreams.value = cached.list
-                return StreamLookup(cached.list, complete = true)
+                // Scoped to the current Server-search switches: the cache is
+                // keyed by title, not by scope, so a wider earlier lookup's
+                // sibling-engine servers must not serve a scope that says
+                // "only this extension" (see ContentRepository.filterToScope).
+                val scoped = repo.filterToScope(item, cached.list)
+                if (scoped.isEmpty()) {
+                    com.hikari.app.data.Logs.log(
+                        "Search",
+                        "cache hit \"${item.title}\" (fresh) → ${cached.list.size} servers, " +
+                            "none inside the current scope — re-extracting",
+                    )
+                } else {
+                    com.hikari.app.data.Logs.log(
+                        "Search",
+                        "cache hit \"${item.title}\" (fresh) → ${scoped.size} servers",
+                    )
+                    _liveStreams.value = scoped
+                    return StreamLookup(scoped, complete = true)
+                }
             }
             // Stale or forced: the signed links in there are very likely dead.
             // They are deliberately NOT put on the live feed — whatever lands
@@ -1155,7 +1168,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 // waiting whatever the live feed already produced, explicitly
                 // marked "not a verdict", so a joiner/retry asks again instead of
                 // being told this title has no servers.
-                val partial = cached?.list?.takeIf { it.isNotEmpty() }
+                val partial = cached?.list?.takeIf { it.isNotEmpty() }?.let { repo.filterToScope(item, it) }?.takeIf { it.isNotEmpty() }
                     ?: _liveStreams.value.takeIf { it.isNotEmpty() }
                     ?: emptyList()
                 val early = StreamLookup(partial, complete = false)
@@ -1175,7 +1188,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 // list first, else the live feed. The cache is deliberately NOT
                 // rewritten, so its old timestamp stands and the next lookup
                 // tries the providers again instead of trusting a dead list.
-                val fallback = cached?.list?.takeIf { it.isNotEmpty() }
+                val fallback = cached?.list?.takeIf { it.isNotEmpty() }?.let { repo.filterToScope(item, it) }?.takeIf { it.isNotEmpty() }
                     ?: _liveStreams.value.takeIf { it.isNotEmpty() }
                 if (fallback != null) {
                     // This list IS this title's server list as far as the user
@@ -5859,13 +5872,15 @@ private fun Hero(
             // The band behind the standing poster shows the WHOLE portrait
             // (Fit on a dark wash) — a Crop here kept only the middle strip,
             // which is what reduced a full-character poster to a strip of hair
-            // and accessories. Wide art still fills edge to edge.
+            // and accessories. Wide art fills edge to edge with the same crop
+            // anchor as every cinema frame (see Artwork.CINEMA_ALIGNMENT), so
+            // the banner matches the rail's card for the same title.
             PosterArt(
                 model = image.first,
                 contentDescription = meta?.title,
                 style = rememberPosterStyle(),
                 contentScale = if (image.second) ContentScale.Crop else ContentScale.Fit,
-                imageAlignment = Alignment.TopCenter,
+                imageAlignment = if (image.second) Artwork.CINEMA_ALIGNMENT else Alignment.TopCenter,
                 modifier = Modifier.fillMaxSize(),
             )
             Box(

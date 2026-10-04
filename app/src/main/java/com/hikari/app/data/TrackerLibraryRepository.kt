@@ -102,13 +102,13 @@ object TrackerLibraryRepository {
         val root = JSONObject(response.body?.string().orEmpty())
         val out = ArrayList<Shelf>()
 
-        fun parse(key: String, title: String, type: MediaType, anime: Boolean = false) {
+        fun parse(key: String, title: String, type: MediaType, anime: Boolean = false, manga: Boolean = false) {
             val array = root.optJSONArray(key) ?: return
             val items = buildList {
                 for (i in 0 until array.length()) {
                     val row = array.optJSONObject(i) ?: continue
-                    val item = row.optJSONObject("movie") ?: row.optJSONObject("show") ?: row.optJSONObject("anime") ?: row
-                    simklMedia(item, type, anime)?.let(::add)
+                    val item = row.optJSONObject("movie") ?: row.optJSONObject("show") ?: row.optJSONObject("anime") ?: row.optJSONObject("manga") ?: row
+                    simklMedia(item, type, anime, manga)?.let(::add)
                 }
             }.distinctBy { it.uniqueId }
             if (items.isNotEmpty()) out += Shelf("simkl.$key", title, items)
@@ -116,14 +116,35 @@ object TrackerLibraryRepository {
         parse("movies", "Simkl · Movies", MediaType.MOVIE)
         parse("tv_shows", "Simkl · TV Shows", MediaType.SERIES)
         parse("anime", "Simkl · Anime", MediaType.SERIES, anime = true)
+        parse("manga", "Simkl · Manga", MediaType.SERIES, manga = true)
         return Result.success(out)
     }
 
 
     private suspend fun loadAniList(app: HikariApp): Result<List<Shelf>> {
         val account=app.store.trackers().firstOrNull{it.kind==TrackerKind.ANILIST}
-            ?: return Result.failure(IllegalStateException("Connect AniList in Settings → Trackers first."))
-        val query = "query(\$name:String){MediaListCollection(userName: \$name,type:ANIME){lists{name entries{media{id title{userPreferred english romaji} coverImage{large} startDate{year} averageScore nextAiringEpisode{airingAt episode}}}}}}"
+            ?: return Result.failure(IllegalStateException("Connect AniList in Settings \u2192 Trackers first."))
+        val out=ArrayList<Shelf>()
+        // Anime lists, then manga lists: a tracker that also holds manga shows
+        // both — manga rows carry rawType "manga", which is what sends their
+        // tap to the manga engines instead of the video detail page.
+        val animeLists=aniListCollection(app, account, "ANIME")
+            ?: return Result.failure(IllegalStateException("AniList did not return a library."))
+        for(i in 0 until animeLists.length()){
+            val l=animeLists.optJSONObject(i)?:continue;val name=l.optString("name").ifBlank{"AniList"};val a=l.optJSONArray("entries")?:JSONArray()
+            val items=buildList{for(j in 0 until a.length())aniListMedia(a.optJSONObject(j)?.optJSONObject("media"))?.let(::add)}.distinctBy{it.uniqueId}
+            if(items.isNotEmpty())out+=Shelf("anilist."+i+"."+name,name,items)
+        }
+        val mangaLists=aniListCollection(app, account, "MANGA") ?: JSONArray()
+        for(i in 0 until mangaLists.length()){
+            val l=mangaLists.optJSONObject(i)?:continue;val name=l.optString("name").ifBlank{"AniList Manga"};val a=l.optJSONArray("entries")?:JSONArray()
+            val items=buildList{for(j in 0 until a.length())aniListMedia(a.optJSONObject(j)?.optJSONObject("media"), manga=true)?.let(::add)}.distinctBy{it.uniqueId}
+            if(items.isNotEmpty())out+=Shelf("anilist.manga."+i+"."+name,name,items)
+        }
+        return Result.success(out)
+    }
+    private suspend fun aniListCollection(app: HikariApp, account: com.hikari.app.data.TrackerAccount, type: String): JSONArray? {
+        val query = "query($name:String){MediaListCollection(userName: $name,type:"+type+"){lists{name entries{media{id title{userPreferred english romaji} coverImage{large} startDate{year} averageScore nextAiringEpisode{airingAt episode}}}}}}"
         // AniList's MediaListCollection is user-specific. The access token
         // must be sent as a Bearer token; without it a connected account can still
         // return an empty/unauthorized collection.
@@ -138,16 +159,10 @@ object TrackerLibraryRepository {
                 "Accept" to "application/json",
                 "Content-Type" to "application/json",
             ),
-        ) ?: return Result.failure(IllegalStateException("AniList did not return a library."))
-
-        val lists=JSONObject(raw).optJSONObject("data")?.optJSONObject("MediaListCollection")?.optJSONArray("lists")?:JSONArray()
-        val out=ArrayList<Shelf>()
-        for(i in 0 until lists.length()){
-            val l=lists.optJSONObject(i)?:continue;val name=l.optString("name").ifBlank{"AniList"};val a=l.optJSONArray("entries")?:JSONArray()
-            val items=buildList{for(j in 0 until a.length())aniListMedia(a.optJSONObject(j)?.optJSONObject("media"))?.let(::add)}.distinctBy{it.uniqueId}
-            if(items.isNotEmpty())out+=Shelf("anilist."+i+"."+name,name,items)
-        }
-        return Result.success(out)
+        ) ?: return null
+        return runCatching {
+            JSONObject(raw).optJSONObject("data")?.optJSONObject("MediaListCollection")?.optJSONArray("lists")?:JSONArray()
+        }.getOrDefault(JSONArray())
     }
     private suspend fun anilistUser(app: HikariApp, account: com.hikari.app.data.TrackerAccount): String {
         if (account.user.isNotBlank()) return account.user
@@ -169,6 +184,14 @@ object TrackerLibraryRepository {
             val items=buildList{for(i in 0 until a.length())malMedia(a.optJSONObject(i)?.optJSONObject("node"))?.let(::add)}
             if(items.isNotEmpty())out+=Shelf("mal."+status,label,items)
         }
+        // Manga lists live on a separate endpoint with their own statuses.
+        val mangaStatuses=listOf("reading" to "Reading","plan_to_read" to "Plan to Read","completed" to "Completed","on_hold" to "On Hold","dropped" to "Dropped")
+        for((status,label) in mangaStatuses){
+            val raw=Http.getStringQuiet("https://api.myanimelist.net/v2/users/@me/mangalist?status="+status+"&limit=1000&fields=id,title,main_picture,start_date,mean",mapOf("Authorization" to "Bearer "+account.token))?:continue
+            val a=JSONObject(raw).optJSONArray("data")?:continue
+            val items=buildList{for(i in 0 until a.length())malMedia(a.optJSONObject(i)?.optJSONObject("node"), manga=true)?.let(::add)}
+            if(items.isNotEmpty())out+=Shelf("mal.manga."+status,"Manga · "+label,items)
+        }
         return Result.success(out)
     }
     private suspend fun loadKitsu(app:HikariApp):Result<List<Shelf>>{
@@ -187,7 +210,26 @@ object TrackerLibraryRepository {
             val item=MediaItem("kitsu",o.optString("id"),aa.optString("canonicalTitle").ifBlank{"Untitled"},MediaType.SERIES,aa.optJSONObject("posterImage")?.optString("original"),rawType="anime",rating=score,metadataSource="Kitsu")
             groups.getOrPut(at.optString("status").ifBlank{"unknown"}){ArrayList()}.add(item)
         }
-        return Result.success(groups.map { entry -> val status = entry.key; Shelf("kitsu."+status, "Kitsu · "+status.replace('_',' ').replaceFirstChar{it.uppercase()}, entry.value) })
+        val shelves=ArrayList<Shelf>(groups.map { entry -> val status = entry.key; Shelf("kitsu."+status, "Kitsu · "+status.replace('_',' ').replaceFirstChar{it.uppercase()}, entry.value) })
+        // Manga entries live beside the anime ones, keyed the same way but
+        // including manga instead of anime.
+        runCatching {
+            val mraw=Http.getStringQuiet("https://kitsu.io/api/edge/users/"+enc(account.userId)+"/library-entries?page%5Blimit%5D=500&include=manga",mapOf("Authorization" to "Bearer "+account.token))
+            if(!mraw.isNullOrBlank()){
+                val mroot=JSONObject(mraw);val mdata=mroot.optJSONArray("data")?:JSONArray();val minc=mroot.optJSONArray("included")?:JSONArray();val manga=HashMap<String,JSONObject>()
+                for(i in 0 until minc.length()){val o=minc.optJSONObject(i)?:continue;if(o.optString("type")=="manga")manga[o.optString("id")]=o}
+                val mgroups=linkedMapOf<String,MutableList<MediaItem>>()
+                for(i in 0 until mdata.length()){
+                    val e=mdata.optJSONObject(i)?:continue;val at=e.optJSONObject("attributes")?:continue
+                    val rel=e.optJSONObject("relationships")?.optJSONObject("manga")?.optJSONObject("data");val o=rel?.optString("id")?.let{manga[it]}?:continue;val aa=o.optJSONObject("attributes")?:continue
+                    val score=at.optDouble("ratingTwenty",0.0).takeIf{it>0}?.div(2.0)
+                    val item=MediaItem("kitsu",o.optString("id"),aa.optString("canonicalTitle").ifBlank{"Untitled"},MediaType.SERIES,aa.optJSONObject("posterImage")?.optString("original"),rawType="manga",rating=score,metadataSource="Kitsu")
+                    mgroups.getOrPut(at.optString("status").ifBlank{"unknown"}){ArrayList()}.add(item)
+                }
+                mgroups.forEach { entry -> val status = entry.key; shelves += Shelf("kitsu.manga."+status, "Kitsu · Manga · "+status.replace('_',' ').replaceFirstChar{it.uppercase()}, entry.value) }
+            }
+        }
+        return Result.success(shelves)
     }
     private suspend fun loadShikimori(app:HikariApp):Result<List<Shelf>>{
         val account=app.store.trackers().firstOrNull{it.kind==TrackerKind.SHIKIMORI}
@@ -203,21 +245,26 @@ object TrackerLibraryRepository {
             val a=JSONArray(raw);val items=buildList{for(i in 0 until a.length())shikiMedia(a.optJSONObject(i)?.optJSONObject("anime"))?.let(::add)}
             if(items.isNotEmpty())out+=Shelf("shikimori."+status,"Shikimori · "+label,items)
         }
+        for((status,label) in statuses){
+            val raw=Http.getStringQuiet("https://shikimori.one/api/user_rates?user_id="+uid+"&target_type=Manga&status="+status+"&limit=50&page=1",mapOf("Authorization" to "Bearer "+account.token))?:continue
+            val a=JSONArray(raw);val items=buildList{for(i in 0 until a.length())shikiMedia(a.optJSONObject(i)?.optJSONObject("manga"), manga=true)?.let(::add)}
+            if(items.isNotEmpty())out+=Shelf("shikimori.manga."+status,"Shikimori · Manga · "+label,items)
+        }
         return Result.success(out)
     }
-    private fun aniListMedia(o:JSONObject?):MediaItem?{
+    private fun aniListMedia(o:JSONObject?, manga: Boolean = false):MediaItem?{
         if(o==null)return null;val id=o.optInt("id",0);if(id<=0)return null;val t=o.optJSONObject("title")
         val title=t?.optString("userPreferred").orEmpty().ifBlank{t?.optString("english").orEmpty()}.ifBlank{t?.optString("romaji").orEmpty()}.ifBlank{"Untitled"}
         val next=o.optJSONObject("nextAiringEpisode")?.optLong("airingAt",0L)?.takeIf{it>0}?.let{java.time.Instant.ofEpochSecond(it).toString()}
-        return MediaItem("anilist",id.toString(),title,MediaType.SERIES,o.optJSONObject("coverImage")?.optString("large"),o.optJSONObject("startDate")?.optInt("year",0)?.takeIf{it>0},rawType="anime",rating=o.optDouble("averageScore",0.0).takeIf{it>0}?.div(10.0),nextEpisodeDate=next,metadataSource="AniList")
+        return MediaItem("anilist",id.toString(),title,MediaType.SERIES,o.optJSONObject("coverImage")?.optString("large"),o.optJSONObject("startDate")?.optInt("year",0)?.takeIf{it>0},rawType=if(manga)"manga" else "anime",rating=o.optDouble("averageScore",0.0).takeIf{it>0}?.div(10.0),nextEpisodeDate=next,metadataSource="AniList")
     }
-    private fun malMedia(o:JSONObject?):MediaItem?{
+    private fun malMedia(o:JSONObject?, manga: Boolean = false):MediaItem?{
         if(o==null)return null;val id=o.optInt("id",0);if(id<=0)return null
-        return MediaItem("mal",id.toString(),o.optJSONObject("title")?.optString("title").orEmpty().ifBlank{"Untitled"},MediaType.SERIES,o.optJSONObject("main_picture")?.optString("large"),o.optString("start_date").take(4).toIntOrNull(),rawType="anime",rating=o.optDouble("mean",0.0).takeIf{it>0},metadataSource="MyAnimeList")
+        return MediaItem("mal",id.toString(),o.optJSONObject("title")?.optString("title").orEmpty().ifBlank{"Untitled"},MediaType.SERIES,o.optJSONObject("main_picture")?.optString("large"),o.optString("start_date").take(4).toIntOrNull(),rawType=if(manga)"manga" else "anime",rating=o.optDouble("mean",0.0).takeIf{it>0},metadataSource="MyAnimeList")
     }
-    private fun shikiMedia(o:JSONObject?):MediaItem?{
+    private fun shikiMedia(o:JSONObject?, manga: Boolean = false):MediaItem?{
         if(o==null)return null;val id=o.optInt("id",0);if(id<=0)return null
-        return MediaItem("shikimori",id.toString(),o.optString("name").ifBlank{"Untitled"},MediaType.SERIES,o.optString("image").takeIf{it.startsWith("http")},o.optString("aired_on").take(4).toIntOrNull(),rawType="anime",metadataSource="Shikimori")
+        return MediaItem("shikimori",id.toString(),o.optString("name").ifBlank{"Untitled"},MediaType.SERIES,o.optString("image").takeIf{it.startsWith("http")},o.optString("aired_on").take(4).toIntOrNull(),rawType=if(manga)"manga" else "anime",metadataSource="Shikimori")
     }
     private fun traktItem(row: JSONObject?, type: MediaType): MediaItem? =
         row?.let { traktMedia(it.optJSONObject("movie") ?: it.optJSONObject("show") ?: return@let null, type) }
@@ -234,7 +281,7 @@ object TrackerLibraryRepository {
             rawType = if (provider == "tmdb") "tmdb" else if (type == MediaType.MOVIE) "movie" else "series")
     }
 
-    private fun simklMedia(o: JSONObject, type: MediaType, anime: Boolean = false): MediaItem? {
+    private fun simklMedia(o: JSONObject, type: MediaType, anime: Boolean = false, manga: Boolean = false): MediaItem? {
         val ids = o.optJSONObject("ids") ?: return null
         val tmdb = ids.optInt("tmdb", 0)
         val imdb = ids.optString("imdb").takeIf { it.startsWith("tt") }
@@ -242,16 +289,18 @@ object TrackerLibraryRepository {
         // tracker row (playable by title search) instead of dropping it from
         // the shelf entirely. Only anime gets this fallback — anything else
         // would misread a live-action row as anime downstream.
+        // Manga rows get the same treatment (a Simkl manga id instead): a
+        // manga entry must never fall through to the anime path.
         val simklId = ids.optInt("simkl", 0)
         var id: String? = if (tmdb > 0) tmdb.toString() else imdb
-        if (id == null && anime) id = simklId.takeIf { it > 0 }?.toString()
+        if (id == null && (anime || manga)) id = simklId.takeIf { it > 0 }?.toString()
         val finalId = id ?: return null
         val provider = if (tmdb > 0) "tmdb" else if (imdb != null) "stremio" else "simkl"
         return MediaItem(providerId = provider, id = finalId,
             title = o.optString("title").ifBlank { o.optString("name") }.ifBlank { "Untitled" },
             type = type, year = o.optInt("year", 0).takeIf { it > 0 },
             posterUrl = simklPoster(o.optString("poster")),
-            rawType = if (provider == "tmdb") "tmdb" else if (provider == "simkl") "anime" else if (type == MediaType.MOVIE) "movie" else "series")
+            rawType = if (manga) "manga" else if (provider == "tmdb") "tmdb" else if (provider == "simkl") "anime" else if (type == MediaType.MOVIE) "movie" else "series")
     }
 
     /** Simkl serves bare image ids, not URLs (same shape as the detail lookup
