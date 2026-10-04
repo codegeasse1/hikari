@@ -848,13 +848,7 @@ private fun CatalogCard(item: MediaItem, style: PosterStyle, onClick: () -> Unit
                 modifier = Modifier.size(26.dp),
             )
             if (cinema && hero != null && !hero.second) {
-                AsyncImage(
-                    model = hero.first,
-                    contentDescription = null,
-                    modifier = Modifier.fillMaxSize().alpha(0.45f),
-                    contentScale = ContentScale.Crop
-                )
-                Box(Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.25f)))
+                Box(Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.55f)))
                 AsyncImage(
                     model = hero.first,
                     contentDescription = item.title,

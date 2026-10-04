@@ -1,3 +1,19 @@
+## 0.10.81
+
+Everything new and fixed since the last release (0.10.80):
+
+### Fixed
+
+- I fixed season-tied tracker matches giving up — when several seasons tie (Jade Dynasty Season 4 against Jade Dynasty and Jade Dynasty Final), the raw title now breaks the tie instead of reporting no confident match, a watched episode that cannot fit inside a candidate's total no longer matches the wrong season, tracker searches also try the title's other spellings (Zhu Xian and friends), and the history report says each line once
+- I fixed private Telegram channels showing nothing — a channel the account is in now resolves through the joined-chat index (its supergroup's own handle) instead of the public lookup only, so its videos list and play like any other chat
+- I fixed Fastream still failing — the /dl post now matches CloudStream's own extractor exactly (embed page as Referer, no Origin), packed player configs with either packer signature unpack, and unicode-escaped stream URLs are decoded before scanning so the player never gets a truncated link
+- I removed Mangayomi repo adding — its index never serves a catalogue any installed extension can list, so the folder, the add button and the seeded index are gone while installed extensions keep working
+- I fixed Anymex extensions loading empty catalogues — Home now shows their real reason instead of the generic message, an extension's own headers() are honoured on every request like upstream AnymeX does, and catalogue/search/detail/video shapes match the reference bridge
+- I fixed subtitle addons appearing as browsable extensions — subtitle-only addons (OpenSubtitles v3, SubDL) answer no search and no catalogue anywhere, only inside the player
+- I fixed the player's subtitle search freezing — a failing result row can no longer kill the whole search, the panel always lands on either results or an honest error, the sync shift re-asserts the picked track instead of hiding it, and the Sync row says plainly that shifting moves downloaded subtitles while stream-built tracks stay as they are
+- I fixed backup restores failing — files from older backups are accepted when they carry the backup's own keys, and one unreadable setting no longer fails the whole restore
+- I fixed cinema cards and detail headers cutting heads off — portrait art in a wide frame no longer sits on a cropped zoomed copy of itself, wide banners anchor near the top so faces stay in frame, and a detail page with no wide art automatically uses the side layout instead of a cropped banner
+
 ## 0.10.80
 
 Everything new and fixed since the last release (0.10.79):

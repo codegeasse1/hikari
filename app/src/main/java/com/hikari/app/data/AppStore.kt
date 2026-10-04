@@ -4151,10 +4151,16 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
     suspend fun restorePreferences(records: List<PrefRecord>): Int {
         val travelling = records.filterNot { DeviceLocal.contains(it.key) }
         if (travelling.isEmpty()) return 0
+        // One unreadable record (a key this build no longer knows, a value of
+        // an unexpected shape) must not fail the whole restore — the report
+        // below says how many actually landed instead of claiming them all.
+        var applied = 0
         write("the restored backup") { prefs ->
-            for (r in travelling) applyRecord(prefs, r)
+            for (r in travelling) {
+                runCatching { applyRecord(prefs, r) }.onSuccess { applied++ }
+            }
         }
-        return travelling.size
+        return applied
     }
 
     /**

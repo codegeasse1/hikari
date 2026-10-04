@@ -131,8 +131,7 @@ fun TvCinemaCard(
       if (wide) {
         AsyncImage(model = art, contentDescription = item.title, modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(14.dp)), contentScale = ContentScale.Crop)
       } else {
-        AsyncImage(model = art, contentDescription = null, modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(14.dp)).alpha(0.45f), contentScale = ContentScale.Crop)
-        Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).background(Color.Black.copy(alpha = 0.25f)))
+        Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).background(Color.Black.copy(alpha = 0.55f)))
         AsyncImage(model = art, contentDescription = item.title, modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(14.dp)), contentScale = ContentScale.Fit, alignment = Alignment.TopCenter)
       }
       item.rating?.takeIf { it > 0 }?.let { r ->

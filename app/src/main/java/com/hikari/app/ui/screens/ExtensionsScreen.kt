@@ -7929,7 +7929,7 @@ private fun SourceFolderView(
         SourceFolder.SORA -> "Sora repos" to "AnymeX script index · Sora sources"
         SourceFolder.ANYMEX -> "Anymex repos" to "index.json · Anymex / Kegareta"
         SourceFolder.MANGAYOMI -> "Mangayomi repos" to "index.json · Mangayomi extensions"
-        SourceFolder.ANYMEX_HOME -> "Anymex" to "Sora · Anymex · Mangayomi"
+        SourceFolder.ANYMEX_HOME -> "Anymex" to "Sora · Anymex"
         SourceFolder.STREMIO -> "Stremio addons" to "manifest.json · Stremio addons"
         SourceFolder.IPTV -> "IPTV playlists" to "M3U / M3U8 links and files · your channels"
     }
@@ -7948,11 +7948,8 @@ private fun SourceFolderView(
         SourceFolder.IPTV -> "IPTV"
     }
     val folderRepos = when (folder) {
-        SourceFolder.MANGAYOMI -> repos.filter {
-            it.kind == RepoKind.ANYMEX && isMangayomiRepo(it)
-        }
-        SourceFolder.ANYMEX -> repos.filter {
-            it.kind == RepoKind.ANYMEX && !isMangayomiRepo(it)
+        SourceFolder.MANGAYOMI, SourceFolder.ANYMEX -> repos.filter {
+            it.kind == RepoKind.ANYMEX
         }
         else -> if (kind != null) repos.filter { it.kind == kind } else emptyList()
     }
@@ -8091,8 +8088,10 @@ private fun SourceFolderView(
             )
         ) {
             if (folder == SourceFolder.ANYMEX_HOME) {
-                // Three sub-areas so Sora / Anymex / Mangayomi indexes stay
-                // separate — user opens the one they want, then adds repos there.
+                // Two sub-areas so Sora / Anymex indexes stay separate —
+                // user opens the one they want, then adds repos there.
+// (Mangayomi repo adding was removed: its index never serves a catalogue
+                // any installed extension can list.)
                 item {
                     Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
                         Text(
@@ -8114,15 +8113,10 @@ private fun SourceFolderView(
                             onClick = { onOpenFolder(SourceFolder.ANYMEX) },
                         )
                         SourceDivider()
-                        SourceActionRow(
-                            icon = Icons.Filled.FolderOpen,
-                            title = tr("Mangayomi"),
-                            subtitle = tr("Official Mangayomi extension indexes"),
-                            onClick = { onOpenFolder(SourceFolder.MANGAYOMI) },
-                        )
+                        // (Mangayomi folder removed — its repos list under Anymex now.)
                     }
                 }
-                // Repos live inside Sora / Anymex / Mangayomi — not listed here.
+                // Repos live inside Sora / Anymex — not listed here.
                 val scriptRepos = emptyList<Cs3Repo>()
                 // Installed Sora/Anymex sources belong under "Installed extensions",
                 // not mixed into this folder's repo list (users were seeing
@@ -8305,7 +8299,7 @@ private fun SourceFolderView(
                 SourceFolder.IPTV -> "Add IPTV playlist"
                 SourceFolder.SORA -> "Add Sora repo"
                 SourceFolder.ANYMEX -> "Add Anymex repo"
-                SourceFolder.MANGAYOMI -> "Add Mangayomi repo"
+                SourceFolder.MANGAYOMI -> "Add Anymex repo"
                 SourceFolder.ANYMEX_HOME -> "Add Anymex / Sora repo"
                 else -> "Add repo"
             },

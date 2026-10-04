@@ -35,7 +35,7 @@ import kotlin.math.min
 object FallbackResolver {
 
     private val PACKED_REGEX = Regex(
-        """eval\s*\(\s*function\s*\(\s*p\s*,\s*a\s*,\s*c\s*,\s*k\s*,\s*e\s*,\s*d\s*\)\s*\{[\s\S]*?return p\}\s*\(\s*'([\s\S]*?)'\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*'([\s\S]*?)'\.split\s*\(\s*'\s*\|\s*'\s*\)\s*\)\s*\)""",
+        """eval\s*\(\s*function\s*\(\s*p\s*,\s*a\s*,\s*c\s*,\s*k\s*,\s*e\s*,\s*[dr]\s*\)\s*\{[\s\S]*?return p\}\s*\(\s*'([\s\S]*?)'\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*'([\s\S]*?)'\.split\s*\(\s*'\s*\|\s*'\s*\)\s*\)\s*\)""",
         RegexOption.IGNORE_CASE
     )
 
@@ -233,9 +233,18 @@ object FallbackResolver {
     }
 
     private fun getAndUnpack(html: String): String {
-        val unpacked = unpackPacked(html)
+        var text = html.replace("\\/", "/")
+        // Unicode escapes inside packed code cut URL regexes short,
+        // (a packed file URL stops matching at the first backslash), handing
+        // the player a truncated URL that fails as "Server failed".
+        text = runCatching {
+            Regex("\\\\u([0-9a-fA-F]{4})").replace(text) { m ->
+                runCatching { m.groupValues[1].toInt(16).toChar().toString() }.getOrDefault(m.value)
+            }
+        }.getOrDefault(text)
+        val unpacked = unpackPacked(text)
         if (!unpacked.isNullOrEmpty()) return unpacked
-        return html.replace("\\/", "/").replace("\\u002F", "/")
+        return text
     }
 
     private suspend fun scanForUrls(text: String, referer: String, raws: MutableMap<String, RawStream>) {
@@ -381,7 +390,9 @@ object FallbackResolver {
             Http.postString(
                 "https://fastream.to/dl",
                 body,
-                mapOf("Referer" to embedUrl, "Origin" to "https://fastream.to"),
+                // CloudStream's own Fastream extractor posts with the embed
+                // page as Referer and NO Origin — matching it exactly.
+                mapOf("Referer" to embedUrl),
                 "application/x-www-form-urlencoded",
             )
         }.getOrNull()

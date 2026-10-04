@@ -51,16 +51,14 @@ object AnymexPluginManager {
             "Kegareta Manga",
             "Anymex/Mangayomi JS manga extensions (kegareta-sauces)",
         ),
-        Triple(
-            "https://raw.githubusercontent.com/kodjodevf/mangayomi-extensions/main/index.json",
-            "Mangayomi Extensions",
-            "Official Mangayomi multi-type extension index",
-        ),
+        // (Mangayomi repo adding was removed — its index never serves a
+        // catalogue any installed extension can list. Kept installs keep
+        // working; nothing new is seeded from here.)
     )
 
     suspend fun seedDefaults(context: Context, store: AppStore) {
         // Drop known-dead indexes that still sit in older installs (404 HTML).
-        val deadHints = listOf("miraienoki", "anymex anime", "anymex manga")
+        val deadHints = listOf("miraienoki", "anymex anime", "anymex manga", "kodjodevf/mangayomi", "mangayomi-extensions")
         runCatching {
             store.repos()
                 .filter { r ->

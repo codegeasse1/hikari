@@ -2483,6 +2483,7 @@ private fun TelegramChannelVideos(
         if (Td.isSignedIn()) {
             val chat = withContext(Dispatchers.IO) {
                 runCatching { Td.publicChat(channel) }.getOrNull()
+                    ?: runCatching { Td.joinedChat(channel) }.getOrNull()
             }
             if (chat != null) {
                 tdChatId = chat.first

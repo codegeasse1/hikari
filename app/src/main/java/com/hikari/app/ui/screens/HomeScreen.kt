@@ -2820,6 +2820,9 @@ private fun engineFailureReason(providerId: String): String? =
         ?: com.hikari.app.nuvio.NuvioScraper.catalogErrors[providerId]
         ?: com.hikari.app.skystream.SkyStreamProvider.catalogErrors[providerId]
         ?: com.hikari.app.aniyomi.AniyomiProvider.catalogErrors[providerId]
+        ?: com.hikari.app.anymex.AnymexProvider.catalogErrors[providerId]
+        ?: com.hikari.app.providers.vega.VegaProvider.catalogErrors[providerId]
+        ?: com.hikari.app.sora.SoraProvider.catalogErrors[providerId]
         ?: com.hikari.app.manga.MangaProvider.lastOutcome[providerId]
             ?.takeIf { !it.startsWith("✓") && !it.startsWith("✔") }
 

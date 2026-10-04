@@ -6894,6 +6894,19 @@ class PlayerActivity : ComponentActivity() {
             syncValue.text = syncLabel(subtitleOffsetMs)
             subsPrefs.edit().putLong("sub_offset", subtitleOffsetMs).apply()
             attachExternalSubtitles()
+            // A shift only re-times downloaded subtitle files — a track that
+            // is baked into the stream itself cannot be moved, so adjusting
+            // Sync while one of those plays used to look like "sync does
+            // nothing". Say so instead of moving nothing in silence.
+            if (subtitleOffsetMs != 0L && pickText != null &&
+                !(pickText?.label?.startsWith(USER_SUB_PREFIX) == true)
+            ) {
+                Toast.makeText(
+                    this,
+                    I18n.t("Sync moves downloaded subtitles — this one is part of the stream"),
+                    Toast.LENGTH_LONG,
+                ).show()
+            }
         }
         val posValue = valueLabel("${(subtitlePosition * 100).toInt()}%")
         fun applyPos() {
@@ -7367,7 +7380,7 @@ class PlayerActivity : ComponentActivity() {
                         if (got == null) failures.add(site.name)
                         else siteTracks.addAll(got)
                         counts[site.name] = got?.size ?: 0
-                        render(query, false)
+                        runCatching { render(query, false) }
                     }
                     for (addon in addons) launch {
                         val lookup = runCatching {
@@ -7382,13 +7395,15 @@ class PlayerActivity : ComponentActivity() {
                             addonTracks.addAll(lookup.tracks)
                         }
                         counts[addon.config.name] = lookup?.tracks?.size ?: 0
-                        render(query, false)
+                        runCatching { render(query, false) }
                     }
                 }
                 if (isFinishing || isDestroyed) return@launch
                 setBusy(false)
                 searchDone = true
-                render(query, true)
+                runCatching { render(query, true) }.onFailure {
+                    setStatus(I18n.t("Something went wrong showing the results — try again."))
+                }
             }
         }
         searchBtn.setOnClickListener { runSearch() }
@@ -9065,6 +9080,13 @@ class PlayerActivity : ComponentActivity() {
                 // by applyStickyPicks from onTracksChanged.
                 p.setMediaItem(mediaItemWithSubtitles(src, configs), false)
                 p.prepare()
+                // The rebuild drops the live text override for a beat — the
+                // "subtitle hid itself when I touched Sync" report — so the
+                // remembered pick is re-asserted once the new item is ready.
+                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(
+                    { applyStickyPicks(C.TRACK_TYPE_TEXT) },
+                    800L,
+                )
             } catch (t: Throwable) {
                 android.util.Log.e("HikariPlayer", "subtitle attach failed", t)
             }

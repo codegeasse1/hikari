@@ -215,6 +215,17 @@
       var merged = {};
       var d = this.defaultHeaders || {};
       for (var a in d) merged[a] = d[a];
+      try {
+        var xh = g.__anymexExtHeaders || {};
+        for (var x in xh) {
+          if (!Object.prototype.hasOwnProperty.call(xh, x)) continue;
+          var clash = false;
+          for (var mk in merged) {
+            if (String(mk).toLowerCase() === String(x).toLowerCase()) { clash = true; break; }
+          }
+          if (!clash) merged[x] = xh[x];
+        }
+      } catch (e) {}
       var e = normHeaders(headers);
       for (var b in e) merged[b] = e[b];
       return doRequest(m.toUpperCase(), url, merged, body);
@@ -674,7 +685,33 @@
       if (typeof fn !== 'function') { done({ ok: false, error: 'module does not implement ' + fnName }); return; }
       var args = JSON.parse(argsJson || '[]');
       if (!Array.isArray(args)) args = [args];
+      // Upstream parity (AnymeXExtensionRuntimeBridge DartExtensionService):
+      // an extension may declare its own request headers (Referer, custom UA,
+      // Cloudflare-cookie helpers) via headers() or getHeader(baseUrl). Those
+      // used to be silently dropped, so every request a header-dependent site
+      // got carried only the defaults and its catalog came back empty.
+      function extBaseUrl() {
+        try {
+          var s = (ext && ext.source) || {};
+          return String(s.baseUrl || s.url || '');
+        } catch (e) { return ''; }
+      }
+      function collectExtHeaders() {
+        try {
+          var f = null;
+          if (ext && typeof ext.headers === 'function') f = ext.headers;
+          else if (ext && typeof ext.getHeader === 'function') {
+            f = function () { return ext.getHeader(extBaseUrl()); };
+          }
+          if (!f) return null;
+          return Promise.resolve(f.call(ext)).then(function (h) {
+            try { g.__anymexExtHeaders = normHeaders(h); } catch (e) {}
+            return null;
+          }, function () { return null; });
+        } catch (e) { return null; }
+      }
       Promise.resolve()
+        .then(function () { return collectExtHeaders(); })
         .then(function () { return fn.apply(ext, args); })
         .then(function (r) {
           if (r === undefined || r === null) { done({ ok: true, data: null }); return; }

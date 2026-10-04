@@ -223,7 +223,9 @@ object BackupManager {
             ?: return@withContext Report(false, "Could not read that file.")
         val root = runCatching { JSONObject(text) }.getOrNull()
             ?: return@withContext Report(false, "That file is not a Hikari backup.")
-        if (root.optString("format") != FORMAT) {
+        val legacy = root.optString("format").isBlank() &&
+            (root.has("prefs") || root.has("files") || root.has("profiles"))
+        if (root.optString("format") != FORMAT && !legacy) {
             return@withContext Report(false, "That file is not a Hikari backup.")
         }
         val version = root.optInt("version", 0)

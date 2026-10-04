@@ -573,6 +573,11 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
     }
 
     override suspend fun search(query: String, page: Int): List<MediaItem> {
+        // A subtitles-only addon (OpenSubtitles v3, SubDL) has no titles to
+        // offer — its catalogues are already empty (see [catalogs]), but its
+        // search path still answered, so its name kept appearing beside real
+        // results it can never play. It answers inside the player instead.
+        if (runCatching { isSubtitleOnly() }.getOrDefault(false)) return emptyList()
         val out = mutableListOf<MediaItem>()
         for (c in catalogs().distinctBy { it.id }) {
             if (TmdbBrowse.isOurCatalog(c.id)) continue

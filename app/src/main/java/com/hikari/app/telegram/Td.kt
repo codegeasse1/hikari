@@ -1026,6 +1026,41 @@ object Td {
     suspend fun publicChatId(username: String): Long? = publicChat(username)?.first
 
     /**
+     * A channel the account is IN, by its @handle — including PRIVATE ones.
+     * [publicChat] only ever answers for public channels (it is Telegram's
+     * anonymous "look this up"), so a private channel the user joined
+     * resolved to nothing and its videos never listed. This asks TDLib's own
+     * joined-chat index instead ([TdApi.SearchChats] searches the title AND
+     * username of chats the account knows) and keeps the hit whose active
+     * username is the handle — a title match alone is not enough, since
+     * several chats can share a name.
+     */
+    suspend fun joinedChat(username: String): Pair<Long, String>? {
+        val name = handleOf(username) ?: return null
+        val found = query(TdApi.SearchChats(name, null, 20)) as? TdApi.Chats ?: return null
+        val ids = found.chatIds?.toList().orEmpty().take(12)
+        if (ids.isEmpty()) return null
+        var titleHit: Pair<Long, String>? = null
+        for (id in ids) {
+            val chat = query(TdApi.GetChat(id)) as? TdApi.Chat ?: continue
+            // Usernames live on the supergroup in this TDLib, not on the chat
+            // (channels are supergroups) — a private channel the user joined
+            // still carries its handle there when it has one.
+            val sgId = (chat.type as? TdApi.ChatTypeSupergroup)?.supergroupId ?: 0L
+            val handles = if (sgId != 0L) {
+                val sg = query(TdApi.GetSupergroup(sgId)) as? TdApi.Supergroup
+                sg?.usernames?.activeUsernames?.toList().orEmpty() +
+                    sg?.usernames?.disabledUsernames?.toList().orEmpty()
+            } else emptyList()
+            if (handles.any { it.equals(name, ignoreCase = true) }) return chat.id to chat.title
+            if (titleHit == null && chat.title.equals(name, ignoreCase = true)) {
+                titleHit = chat.id to chat.title
+            }
+        }
+        return titleHit
+    }
+
+    /**
      * The id AND the title of a public channel or group by its name, resolved
      * without joining it ([publicChatId] plus the name Telegram knows it by).
      *

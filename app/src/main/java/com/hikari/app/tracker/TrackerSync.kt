@@ -49,7 +49,7 @@ object TrackerSync {
         historyKey: String,
         force: Boolean = false,
     ): List<String> = withContext(Dispatchers.IO) {
-        val notes = ArrayList<String>()
+        var notes: List<String> = ArrayList()
         val accounts = runCatching { store.trackers() }.getOrDefault(emptyList())
         if (accounts.isEmpty()) return@withContext notes
         if (!force && !runCatching { store.trackerSync() }.getOrDefault(true)) return@withContext notes
@@ -106,6 +106,7 @@ object TrackerSync {
         // sentence is not written twice either — a title nothing can match is
         // still unmatched on the next flush, and that must not mean a DataStore
         // write every five seconds for the rest of the episode.
+        val notes = notes.distinct()
         val summary = notes.joinToString("\n")
         if (notes.any { !it.endsWith("already reported") } &&
             runCatching { store.trackerLast() }.getOrDefault("") != summary
@@ -159,13 +160,43 @@ object TrackerSync {
             .sortedByDescending { it.score }
         if (usable.isEmpty()) return null
         val agreeing = usable.filter { kindAgrees(media, it.category) }
-        val pool = agreeing.ifEmpty { usable }
+        val pool = (agreeing.ifEmpty { usable }).filterNot { seasonMismatch(media, it) }
+        if (pool.isEmpty()) return null
         val top = pool.first()
         if (top.score < TRACKER_AUTO_THRESHOLD) return null
-        val rival = pool.firstOrNull { it.id != top.id && it.score >= top.score - 0.02 }
-        if (rival != null) return null
+        val rivals = pool.filter { it.id != top.id && it.score >= top.score - 0.02 }
+        if (rivals.isNotEmpty()) {
+            // Several seasons of one show all tie here (every sequel tail
+            // strips to the same base, e.g. "Jade Dynasty Season 4" against
+            // "Jade Dynasty" and "Jade Dynasty Final"). The unstripped score
+            // still separates them — "Final" outscores the bare base title —
+            // so the raw title decides instead of reporting no match.
+            val ranked = pool.sortedWith(
+                compareByDescending<TrackerMatch> { it.score }
+                    .thenByDescending { com.hikari.app.data.matchScore(media.title, it.title, media.year, it.year) }
+                    .thenByDescending { coversEpisode(media, it) },
+            )
+            val winner = ranked.first()
+            val runnerUp = ranked.firstOrNull { it.id != winner.id }
+            if (runnerUp != null && runnerUp.score >= winner.score - 0.02 &&
+                com.hikari.app.data.matchScore(media.title, runnerUp.title, media.year, runnerUp.year) >=
+                com.hikari.app.data.matchScore(media.title, winner.title, media.year, winner.year)
+            ) return null
+            return winner
+        }
         return top
     }
+
+    /** True when the candidate's episode total proves it is a DIFFERENT season:
+     *  the watched episode number cannot exist inside it (e.g. episode 697 of
+     *  a 272-episode entry). Reporting that as a match marks the wrong show
+     *  watched, so it is excluded before any scoring. */
+    private fun seasonMismatch(media: TrackerMedia, c: TrackerMatch): Boolean =
+        !media.movie && media.episode > 0 && c.total > 0 && media.episode > c.total
+
+    /** True when the watched episode fits inside the candidate's total. */
+    private fun coversEpisode(media: TrackerMedia, c: TrackerMatch): Boolean =
+        media.movie || media.episode <= 0 || c.total <= 0 || media.episode <= c.total
 
     /** Does the service's kind for this entry match what is being watched? */
     private fun kindAgrees(media: TrackerMedia, category: String): Boolean {
@@ -240,7 +271,7 @@ object TrackerSync {
         } else {
             "Reported $reported of the last ${minOf(limit, watched.size)} watched titles:"
         }
-        val body = notes.take(40).joinToString("\n")
+        val body = notes.distinct().take(40).joinToString("\n")
         val text = head + if (body.isBlank()) "" else "\n" + body
         runCatching { store.setTrackerLast(text) }
         return text

@@ -5764,7 +5764,15 @@ private fun Hero(
     val image = meta?.let { Artwork.heroModel(it) }
         ?: (PosterLoader.model(fallbackPoster) to false)
     val posterModel = PosterLoader.model(fallbackPoster)
-    when (DetailHeroStyles.normalize(style)) {
+    // Adaptive: WIDE with only a portrait poster can never fill 16:9 without
+    // cropping it, so it becomes the SIDE layout on its own — poster intact
+    // on the left, art behind — instead of a beheaded banner.
+    val adaptive = if (DetailHeroStyles.normalize(style) == DetailHeroStyles.WIDE && !image.second) {
+        DetailHeroStyles.SIDE
+    } else {
+        style
+    }
+    when (DetailHeroStyles.normalize(adaptive)) {
         DetailHeroStyles.PLAIN -> Box(Modifier.fillMaxWidth()) {
             IconButton(onClick = onBack, modifier = Modifier.padding(4.dp)) {
                 Icon(
@@ -5784,7 +5792,7 @@ private fun Hero(
                 model = image.first,
                 contentDescription = meta?.title,
                 style = rememberPosterStyle(),
-                contentScale = if (image.second) ContentScale.Crop else ContentScale.Crop,
+                contentScale = if (image.second) ContentScale.Crop else ContentScale.Fit,
                 modifier = Modifier.fillMaxSize(),
             )
             Box(
@@ -5814,19 +5822,12 @@ private fun Hero(
                 .aspectRatio(16f / 10f),
             contentAlignment = Alignment.Center,
         ) {
-            // A scaled, dimmed copy of the very same art fills the frame, so a
-            // portrait poster is never cropped and there is still no hard edge.
-            PosterArt(
-                model = posterModel ?: image.first,
-                contentDescription = null,
-                style = rememberPosterStyle(),
-                modifier = Modifier
+            // A plain dark wash fills the frame — the zoomed copy behind the
+            // poster is what read as cropped faces and blurry sides.
+            Box(
+                Modifier
                     .fillMaxSize()
-                    .graphicsLayer {
-                        scaleX = 1.3f
-                        scaleY = 1.3f
-                        alpha = 0.42f
-                    },
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
             )
             Box(
                 Modifier

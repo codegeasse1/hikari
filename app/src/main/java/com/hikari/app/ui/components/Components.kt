@@ -58,6 +58,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.BiasAlignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
@@ -298,37 +299,32 @@ fun HeroArtwork(
             contentDescription = contentDescription,
             modifier = modifier,
             contentScale = ContentScale.Crop,
-            alignment = if (TvMode.current()) Alignment.TopCenter else Alignment.Center,
+            alignment = if (TvMode.current()) Alignment.TopCenter else BiasAlignment(0f, -0.6f),
         )
         return
     }
     Box(modifier) {
-        // Backdrop fill: the poster itself, scaled past the frame edges and
-        // dimmed, so the banner keeps an image behind the text without any
-        // hard crop line. (Not Modifier.blur — it is a no-op below API 31, and
-        // a scaled, dimmed copy looks the same everywhere.)
-        PosterImage(
-            model = model,
-            contentDescription = null,
-            modifier = Modifier
-                .fillMaxSize()
-                .graphicsLayer {
-                    scaleX = 1.35f
-                    scaleY = 1.35f
-                    alpha = 0.55f
-                },
-            contentScale = ContentScale.Crop,
-            alignment = fillAlignment,
+        // No zoomed-fill copy behind the poster: the cropped giant behind the
+        // art is what read as beheaded faces and blurry sides, so the frame
+        // is a plain dark wash and the whole poster stands intact on it,
+        // nudged a touch down from the top so heads sit inside the frame.
+        Box(
+            Modifier.fillMaxSize().background(
+                Brush.verticalGradient(
+                    0f to Color.Black.copy(alpha = 0.72f),
+                    1f to Color.Black.copy(alpha = 0.88f),
+                )
+            )
         )
-        Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.30f)))
         PosterImage(
             model = model,
             contentDescription = contentDescription,
             modifier = Modifier
-                .align(Alignment.CenterEnd)
+                .align(Alignment.Center)
                 .fillMaxHeight()
                 .aspectRatio(2f / 3f),
             contentScale = ContentScale.Fit,
+            alignment = fillAlignment,
         )
     }
 }

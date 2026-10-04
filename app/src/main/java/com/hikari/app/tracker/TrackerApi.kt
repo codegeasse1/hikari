@@ -852,7 +852,18 @@ object TrackerApi {
             .replace(Regex("""(?i)\s*\bs\d{1,2}\s*$"""), "")
             .replace(Regex("""(?i)\s*\(\d{4}\)\s*$"""), "")
             .trim()
-        return if (stripped.isNotBlank() && !stripped.equals(t, true)) listOf(t, stripped) else listOf(t)
+        val out = ArrayList<String>()
+        out.add(t)
+        if (stripped.isNotBlank() && !stripped.equals(t, true)) out.add(stripped)
+        // The tracker's spelling is rarely the extension's (pinyin vs
+        // English: "Zhu Xian" vs "Jade Dynasty"). The alias forms are scored
+        // already, but some services never return the entry for the base
+        // title — so its other spellings are searched too.
+        for (v in com.hikari.app.data.titleVariants(t)) {
+            if (out.none { it.equals(v, true) }) out.add(v)
+            if (out.size >= 5) break
+        }
+        return out
     }
 
     private suspend fun graphql(token: String?, query: String, variables: JSONObject? = null): Reply {
