@@ -51,11 +51,18 @@ class AnymexMangaProvider(override val config: ProviderConfig) : ContentProvider
                 }
             }
             val mod = module() ?: return@withContext emptyList()
-            val raw = when (ref.id) {
+            val firstRaw = when (ref.id) {
                 CATALOG_LATEST -> AnymexRuntime.latest(mod, config.id, p)
                 else -> AnymexRuntime.popular(mod, config.id, p)
             }
-            val fromJs = mapItems(raw)
+            val fromJs = mapItems(firstRaw).ifEmpty {
+                mapItems(
+                    when (ref.id) {
+                        CATALOG_LATEST -> AnymexRuntime.popular(mod, config.id, p)
+                        else -> AnymexRuntime.latest(mod, config.id, p)
+                    }
+                )
+            }
             if (fromJs.isNotEmpty()) {
                 lastOutcome[config.id] = "✓ ${fromJs.size} titles (js)"
                 return@withContext fromJs

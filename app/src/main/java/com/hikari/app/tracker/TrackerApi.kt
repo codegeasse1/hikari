@@ -6,6 +6,8 @@ import com.hikari.app.data.TrackerKind
 import com.hikari.app.data.TrackerMatch
 import com.hikari.app.data.TrackerMedia
 import com.hikari.app.data.matchScore
+import com.hikari.app.data.matchScoreAny
+import com.hikari.app.data.titleVariants
 import com.hikari.app.net.Http
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -832,6 +834,27 @@ object TrackerApi {
 
     // -------------------------------------------------------------------- AniList
 
+    /**
+     * What the services are actually asked for: the title as-is, plus the
+     * sequel tail taken off ("Jade Dynasty Season 4" → "Jade Dynasty").
+     * Tracker search boxes match synonyms server-side, but a season/movie
+     * suffix still narrows some of them to nothing — and the alias forms
+     * ([titleVariants]) are scored, not searched, since each service already
+     * answers a base title with all of its spellings.
+     */
+    private fun searchQueries(title: String): List<String> {
+        val t = title.trim()
+        if (t.isEmpty()) return emptyList()
+        val stripped = t
+            .replace(Regex("""(?i)\s*[:\-–—]?\s*\bseason\s*\d{1,2}\s*$"""), "")
+            .replace(Regex("""(?i)\s*\b\d+(?:st|nd|rd|th)\s+season\s*$"""), "")
+            .replace(Regex("""(?i)\s*\b(?:part|cour|movie|film)\s*\d*\s*$"""), "")
+            .replace(Regex("""(?i)\s*\bs\d{1,2}\s*$"""), "")
+            .replace(Regex("""(?i)\s*\(\d{4}\)\s*$"""), "")
+            .trim()
+        return if (stripped.isNotBlank() && !stripped.equals(t, true)) listOf(t, stripped) else listOf(t)
+    }
+
     private suspend fun graphql(token: String?, query: String, variables: JSONObject? = null): Reply {
         val body = JSONObject().apply {
             put("query", query)
@@ -852,35 +875,42 @@ object TrackerApi {
                   format
                   seasonYear
                   title { romaji english native }
+                  synonyms
                 }
               }
             }
         """.trimIndent()
-        val reply = graphql(token, query, JSONObject().put("search", title))
-        val list = reply.json()?.optJSONObject("data")?.optJSONObject("Page")?.optJSONArray("media")
-            ?: return emptyList()
-        val out = ArrayList<TrackerMatch>(list.length())
-        for (i in 0 until list.length()) {
-            val m = list.optJSONObject(i) ?: continue
-            val titles = m.optJSONObject("title")
-            val names = listOfNotNull(
-                titles?.optString("romaji"),
-                titles?.optString("english"),
-                titles?.optString("native"),
-            ).filter { it.isNotBlank() }
-            val best = names.map { it to matchScore(title, it, media.year, m.optInt("seasonYear", 0)) }
-                .maxByOrNull { it.second }
-            if (best == null) continue
-            out.add(
-                TrackerMatch(
-                    id = m.optInt("id", 0).toString(),
-                    title = names.firstOrNull().orEmpty(),
-                    total = m.optInt("episodes", 0),
-                    category = m.optString("format"),
-                    score = best.second,
-                    year = m.optInt("seasonYear", 0),
+        val seen = HashSet<Int>()
+        val out = ArrayList<TrackerMatch>()
+        for (q in searchQueries(title)) {
+            val reply = graphql(token, query, JSONObject().put("search", q))
+            val list = reply.json()?.optJSONObject("data")?.optJSONObject("Page")?.optJSONArray("media")
+                ?: continue
+            for (i in 0 until list.length()) {
+                val m = list.optJSONObject(i) ?: continue
+                val id = m.optInt("id", 0)
+                if (id <= 0 || !seen.add(id)) continue
+                val titles = m.optJSONObject("title")
+                val names = listOfNotNull(
+                    titles?.optString("romaji"),
+                    titles?.optString("english"),
+                    titles?.optString("native"),
+                ).filter { it.isNotBlank() } + (0 until (m.optJSONArray("synonyms")?.length() ?: 0))
+                    .mapNotNull { m.optJSONArray("synonyms")?.optString(it)?.takeIf { s -> s.isNotBlank() } }
+                val best = names.map { it to matchScoreAny(title, it, media.year, m.optInt("seasonYear", 0)) }
+                    .maxByOrNull { it.second }
+                if (best == null) continue
+                out.add(
+                    TrackerMatch(
+                        id = id.toString(),
+                        title = names.firstOrNull().orEmpty(),
+                        total = m.optInt("episodes", 0),
+                        category = m.optString("format"),
+                        score = best.second,
+                        year = m.optInt("seasonYear", 0),
+                    )
                 )
-            )
+            }
         }
         return out.sortedByDescending { it.score }
     }
@@ -930,30 +960,35 @@ object TrackerApi {
         // `nsfw=true` so a title the user is watching is not invisible in the
         // search: the adult-content switch already governs what Hikari shows,
         // and this call is about the title they are watching right now.
-        val url = "https://api.myanimelist.net/v2/anime" +
-            "?q=${enc(title)}&limit=12&nsfw=true" +
-            "&fields=id,title,alternative_titles,num_episodes,start_date,media_type"
-        val reply = get(url, malHeaders(token))
-        val arr = reply.json()?.optJSONArray("data") ?: return emptyList()
-        val out = ArrayList<TrackerMatch>(arr.length())
-        for (i in 0 until arr.length()) {
-            val node = arr.optJSONObject(i)?.optJSONObject("node") ?: continue
-            val name = node.optString("title")
-            val alt = node.optJSONObject("alternative_titles")
-            val names = listOfNotNull(name, alt?.optString("en"), alt?.optString("ja"))
-                .filter { it.isNotBlank() } + synopsisTitles(alt)
-            val year = node.optString("start_date").take(4).toIntOrNull() ?: 0
-            val best = names.map { it to matchScore(title, it, media.year, year) }.maxByOrNull { it.second }
-            out.add(
-                TrackerMatch(
-                    id = node.optInt("id", 0).toString(),
-                    title = name,
-                    total = node.optInt("num_episodes", 0),
-                    category = node.optString("media_type"),
-                    score = best?.second ?: 0.0,
-                    year = year,
+        val out = ArrayList<TrackerMatch>()
+        val seen = HashSet<Int>()
+        for (q in searchQueries(title)) {
+            val url = "https://api.myanimelist.net/v2/anime" +
+                "?q=${enc(q)}&limit=12&nsfw=true" +
+                "&fields=id,title,alternative_titles,num_episodes,start_date,media_type"
+            val reply = get(url, malHeaders(token))
+            val arr = reply.json()?.optJSONArray("data") ?: continue
+            for (i in 0 until arr.length()) {
+                val node = arr.optJSONObject(i)?.optJSONObject("node") ?: continue
+                val nid = node.optInt("id", 0)
+                if (nid <= 0 || !seen.add(nid)) continue
+                val name = node.optString("title")
+                val alt = node.optJSONObject("alternative_titles")
+                val names = listOfNotNull(name, alt?.optString("en"), alt?.optString("ja"))
+                    .filter { it.isNotBlank() } + synopsisTitles(alt)
+                val year = node.optString("start_date").take(4).toIntOrNull() ?: 0
+                val best = names.map { it to matchScoreAny(title, it, media.year, year) }.maxByOrNull { it.second }
+                out.add(
+                    TrackerMatch(
+                        id = nid.toString(),
+                        title = name,
+                        total = node.optInt("num_episodes", 0),
+                        category = node.optString("media_type"),
+                        score = best?.second ?: 0.0,
+                        year = year,
+                    )
                 )
-            )
+            }
         }
         return out.sortedByDescending { it.score }
     }
@@ -1000,30 +1035,35 @@ object TrackerApi {
     }
 
     private suspend fun kitsuSearch(token: String, title: String, media: TrackerMedia): List<TrackerMatch> {
-        val url = "https://kitsu.io/api/edge/anime?filter[text]=${enc(title)}&page[limit]=12"
-        val reply = get(url, kitsuHeaders(token))
-        val arr = reply.json()?.optJSONArray("data") ?: return emptyList()
-        val out = ArrayList<TrackerMatch>(arr.length())
-        for (i in 0 until arr.length()) {
-            val node = arr.optJSONObject(i) ?: continue
-            val attrs = node.optJSONObject("attributes") ?: continue
-            val names = (attrs.optJSONObject("titles")?.let { t ->
-                t.keys().asSequence()
-                    .mapNotNull { t.optString(it).takeIf { s -> s.isNotBlank() } }
-                    .toList()
-            } ?: emptyList()) + listOfNotNull(attrs.optString("canonicalTitle").takeIf { it.isNotBlank() })
-            val year = attrs.optString("startDate").take(4).toIntOrNull() ?: 0
-            val best = names.map { it to matchScore(title, it, media.year, year) }.maxByOrNull { it.second }
-            out.add(
-                TrackerMatch(
-                    id = node.optString("id"),
-                    title = attrs.optString("canonicalTitle"),
+        val out = ArrayList<TrackerMatch>()
+        val seen = HashSet<String>()
+        for (q in searchQueries(title)) {
+            val url = "https://kitsu.io/api/edge/anime?filter[text]=${enc(q)}&page[limit]=12"
+            val reply = get(url, kitsuHeaders(token))
+            val arr = reply.json()?.optJSONArray("data") ?: continue
+            for (i in 0 until arr.length()) {
+                val node = arr.optJSONObject(i) ?: continue
+                val nid = node.optString("id")
+                if (nid.isBlank() || !seen.add(nid)) continue
+                val attrs = node.optJSONObject("attributes") ?: continue
+                val names = (attrs.optJSONObject("titles")?.let { t ->
+                    t.keys().asSequence()
+                        .mapNotNull { t.optString(it).takeIf { s -> s.isNotBlank() } }
+                        .toList()
+                } ?: emptyList()) + listOfNotNull(attrs.optString("canonicalTitle").takeIf { it.isNotBlank() })
+                val year = attrs.optString("startDate").take(4).toIntOrNull() ?: 0
+                val best = names.map { it to matchScoreAny(title, it, media.year, year) }.maxByOrNull { it.second }
+                out.add(
+                    TrackerMatch(
+                        id = nid,
+                        title = attrs.optString("canonicalTitle"),
                     total = attrs.optInt("episodeCount", 0),
                     category = attrs.optString("subtype"),
                     score = best?.second ?: 0.0,
                     year = year,
+                    )
                 )
-            )
+            }
         }
         return out.sortedByDescending { it.score }
     }
@@ -1127,33 +1167,38 @@ object TrackerApi {
     }
 
     private suspend fun shikimoriSearch(title: String, media: TrackerMedia): List<TrackerMatch> {
-        val url = "https://shikimori.one/api/animes?search=${enc(title)}&limit=12&order=popularity"
-        val arr = get(
-            url,
-            mapOf(
-                "Accept" to "application/json",
-                "User-Agent" to "Hikari/" + com.hikari.app.BuildConfig.VERSION_NAME,
-            ),
-        ).array() ?: return emptyList()
-        val out = ArrayList<TrackerMatch>(arr.length())
-        for (i in 0 until arr.length()) {
-            val o = arr.optJSONObject(i) ?: continue
-            val names = listOfNotNull(
-                o.optString("name").takeIf { it.isNotBlank() },
-                o.optString("russian").takeIf { it.isNotBlank() },
-            )
-            val year = o.optString("aired_on").take(4).toIntOrNull() ?: 0
-            val best = names.map { it to matchScore(title, it, media.year, year) }.maxByOrNull { it.second }
-            out.add(
-                TrackerMatch(
-                    id = o.optInt("id", 0).toString(),
-                    title = names.firstOrNull().orEmpty(),
-                    total = o.optInt("episodes", 0),
-                    category = o.optString("kind"),
-                    score = best?.second ?: 0.0,
-                    year = year,
+        val out = ArrayList<TrackerMatch>()
+        val seen = HashSet<Int>()
+        for (q in searchQueries(title)) {
+            val url = "https://shikimori.one/api/animes?search=${enc(q)}&limit=12&order=popularity"
+            val arr = get(
+                url,
+                mapOf(
+                    "Accept" to "application/json",
+                    "User-Agent" to "Hikari/" + com.hikari.app.BuildConfig.VERSION_NAME,
+                ),
+            ).array() ?: continue
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                val nid = o.optInt("id", 0)
+                if (nid <= 0 || !seen.add(nid)) continue
+                val names = listOfNotNull(
+                    o.optString("name").takeIf { it.isNotBlank() },
+                    o.optString("russian").takeIf { it.isNotBlank() },
                 )
-            )
+                val year = o.optString("aired_on").take(4).toIntOrNull() ?: 0
+                val best = names.map { it to matchScoreAny(title, it, media.year, year) }.maxByOrNull { it.second }
+                out.add(
+                    TrackerMatch(
+                        id = nid.toString(),
+                        title = names.firstOrNull().orEmpty(),
+                        total = o.optInt("episodes", 0),
+                        category = o.optString("kind"),
+                        score = best?.second ?: 0.0,
+                        year = year,
+                    )
+                )
+            }
         }
         return out.sortedByDescending { it.score }
     }
@@ -1233,29 +1278,31 @@ object TrackerApi {
         }
         val out = ArrayList<TrackerMatch>()
         val seen = HashSet<String>()
-        for (path in paths) {
-            val arr = get(
-                "https://api.simkl.com/search/$path?client_id=${enc(clientId)}&q=${enc(title)}&extended=full",
-                mapOf("simkl-api-key" to clientId, "Accept" to "application/json"),
-            ).array() ?: continue
-            for (i in 0 until arr.length()) {
-                val o = arr.optJSONObject(i) ?: continue
-                val id = o.optJSONObject("ids")?.optInt("simkl", 0) ?: 0
-                if (id <= 0 || !seen.add(id.toString())) continue
-                val name = o.optString("title")
-                val year = o.optInt("year", 0)
-                out.add(
-                    TrackerMatch(
-                        id = id.toString(),
-                        title = name,
-                        total = o.optInt("total_episodes", o.optInt("ep_count", 0)),
-                        // The path the result came from is what tells the push
-                        // which Simkl collection to write into.
-                        category = if (path == "anime") "anime" else o.optString("type", path),
-                        score = matchScore(title, name, media.year, year),
-                        year = year,
+        for (query in searchQueries(title)) {
+            for (path in paths) {
+                val arr = get(
+                    "https://api.simkl.com/search/$path?client_id=${enc(clientId)}&q=${enc(query)}&extended=full",
+                    mapOf("simkl-api-key" to clientId, "Accept" to "application/json"),
+                ).array() ?: continue
+                for (i in 0 until arr.length()) {
+                    val o = arr.optJSONObject(i) ?: continue
+                    val id = o.optJSONObject("ids")?.optInt("simkl", 0) ?: 0
+                    if (id <= 0 || !seen.add(id.toString())) continue
+                    val name = o.optString("title")
+                    val year = o.optInt("year", 0)
+                    out.add(
+                        TrackerMatch(
+                            id = id.toString(),
+                            title = name,
+                            total = o.optInt("total_episodes", o.optInt("ep_count", 0)),
+                            // The path the result came from is what tells the push
+                            // which Simkl collection to write into.
+                            category = if (path == "anime") "anime" else o.optString("type", path),
+                            score = matchScoreAny(title, name, media.year, year),
+                            year = year,
+                        )
                     )
-                )
+                }
             }
         }
         return out.sortedByDescending { it.score }
@@ -1382,26 +1429,31 @@ object TrackerApi {
         // is why the player's own type is what picks the endpoint here.
         val kinds = if (media.movie) listOf("movie", "show") else listOf("show", "movie")
         val out = ArrayList<TrackerMatch>()
-        for (kind in kinds) {
-            val arr = get(
-                "https://api.trakt.tv/search/$kind?query=${enc(title)}&limit=12&extended=full",
-                traktHeaders(clientId, token),
-            ).array() ?: continue
-            for (i in 0 until arr.length()) {
-                val entry = arr.optJSONObject(i) ?: continue
-                val node = entry.optJSONObject(kind) ?: continue
-                val name = node.optString("title")
-                val year = node.optInt("year", 0)
-                out.add(
-                    TrackerMatch(
-                        id = node.optJSONObject("ids")?.optInt("trakt", 0)?.toString() ?: "",
-                        title = name,
-                        total = node.optInt("aired_episodes", 0),
-                        category = kind,
-                        score = matchScore(title, name, media.year, year),
-                        year = year,
+        val seen = HashSet<String>()
+        for (query in searchQueries(title)) {
+            for (kind in kinds) {
+                val arr = get(
+                    "https://api.trakt.tv/search/$kind?query=${enc(query)}&limit=12&extended=full",
+                    traktHeaders(clientId, token),
+                ).array() ?: continue
+                for (i in 0 until arr.length()) {
+                    val entry = arr.optJSONObject(i) ?: continue
+                    val node = entry.optJSONObject(kind) ?: continue
+                    val tid = node.optJSONObject("ids")?.optInt("trakt", 0) ?: 0
+                    if (tid <= 0 || !seen.add(kind + tid)) continue
+                    val name = node.optString("title")
+                    val year = node.optInt("year", 0)
+                    out.add(
+                        TrackerMatch(
+                            id = tid.toString(),
+                            title = name,
+                            total = node.optInt("aired_episodes", 0),
+                            category = kind,
+                            score = matchScoreAny(title, name, media.year, year),
+                            year = year,
+                        )
                     )
-                )
+                }
             }
         }
         return out.sortedByDescending { it.score }

@@ -1,3 +1,19 @@
+## 0.10.80
+
+Everything new and fixed since the last release (0.10.79):
+
+### Added
+
+- Poster type is a choice now — Settings → App Layout → Poster styling → Poster type offers Auto (cinema cards on TV, posters on phone, as before), Cinema 16:9 everywhere and Vertical 2:3 everywhere, and every shelf, catalog, search and collection grid on both layouts follows it
+
+### Fixed
+
+- I fixed cinema cards beheading portrait posters — a card with no wide art draws the whole poster (top-anchored) over a dimmed full-bleed wash instead of centre-cropping it, on TV and on phones using cinema mode alike
+- I fixed the Movies calendar listing 1959–1989 films and the Series tab filing 2011/2019 shows under 2026 — the adult-content gate re-asks upcoming as a dateless discover query, so that query is pinned to the next 90 days, old films are filtered no matter which endpoint answered, and the airing lists are one honest "On the air now" / "Airing today" bucket instead of fabricated dates
+- I fixed tracker sync giving up on sequel and alias titles — searches run with the season/movie tail off too, AniList answers are scored with their synonyms, and scoring knows the same-show spellings (Jade Dynasty ↔ Zhu Xian Final, Battle Through the Heavens ↔ Fights Break Sphere ↔ Doupo Cangqiong, Renegade Immortal Movie 2 ↔ Renegade Immortal Movie), while distinct shows like Naruto and Shippuden still stay apart
+- I fixed Fastream (Pelispedia) links 403ing while CloudStream plays them — the player sent the numbered CDN host as Referer/Origin instead of the site root, so Fastream gets the site root with no Origin exactly like CloudStream, the fallback keeps every header the jar extractor attached, and its own Fastream resolver finally matches /embed-CODE.html links
+- I fixed Mangayomi/Anymex extensions with a half-implemented catalogue call showing nothing — Popular falls back to Latest and vice versa on anime and manga alike, with a clearer reason when the site truly returns no titles (Dart-only entries still need the Mangayomi app and stay refused at install)
+
 ## 0.10.79
 
 Everything new and fixed since the last release (0.10.78):

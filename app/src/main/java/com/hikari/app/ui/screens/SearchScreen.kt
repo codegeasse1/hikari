@@ -1085,13 +1085,18 @@ fun SearchScreen(
             ) {
                 items(gridItems, key = { it.uniqueId }) { item ->
                     if (tvSearch) {
-                        com.hikari.app.tv.TvCinemaCard(item = item, onClick = {
+                        val go = {
                             Routes.safeNavigate(
                                 nav,
                                 if (item.rawType == "manga") Routes.mangaDetail(item.providerId, item.id, item.title, item.posterUrl)
                                 else Routes.detail(item.providerId, item.type, item.id, item.title, item.posterUrl, item.rawType)
                             )
-                        })
+                        }
+                        if (style.isCinema(true)) {
+                            com.hikari.app.tv.TvCinemaCard(item = item, onClick = go)
+                        } else {
+                            com.hikari.app.tv.TvVerticalCard(item = item, onClick = go)
+                        }
                     } else {
                     // Show scores (Settings → App Layout) draws here too — the
                     // badge warms the ratings cache for the title and prints
@@ -1120,18 +1125,37 @@ fun SearchScreen(
                                 )
                             }
                     ) {
+                        val phoneCinema = style.isCinema(false)
+                        val hero = if (phoneCinema) Artwork.heroModel(item) else null
                         Box(
                             Modifier
                                 .fillMaxWidth()
-                                .aspectRatio(2f / 3f)
+                                .aspectRatio(if (phoneCinema) 16f / 9f else 2f / 3f)
                                 .clip(RoundedCornerShape(10.dp))
                         ) {
-                            AsyncImage(
-                                model = Artwork.model(item),
-                                contentDescription = item.title,
-                                modifier = Modifier.fillMaxSize(),
-                                contentScale = ContentScale.Crop
-                            )
+                            if (phoneCinema && hero != null && !hero.second) {
+                                AsyncImage(
+                                    model = hero.first,
+                                    contentDescription = null,
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentScale = ContentScale.Crop,
+                                    alpha = 0.45f
+                                )
+                                AsyncImage(
+                                    model = hero.first,
+                                    contentDescription = item.title,
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentScale = ContentScale.Fit,
+                                    alignment = Alignment.TopCenter
+                                )
+                            } else {
+                                AsyncImage(
+                                    model = if (phoneCinema) hero?.first else Artwork.model(item),
+                                    contentDescription = item.title,
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentScale = ContentScale.Crop
+                                )
+                            }
                             if (badge != null) {
                                 RatingBadge(
                                     text = badge,

@@ -5034,6 +5034,8 @@ fun TmdbGridScreen(
 @Composable
 private fun TmdbGridCard(item: MediaItem, style: PosterStyle, onClick: () -> Unit) {
     val badge = rememberPosterScore(item, style)
+    val cinema = style.isCinema(com.hikari.app.tv.TvMode.current())
+    val hero = if (cinema) Artwork.heroModel(item) else null
     Column(
         Modifier
             // Not clipped to the poster rounding: at high corner values the
@@ -5042,15 +5044,17 @@ private fun TmdbGridCard(item: MediaItem, style: PosterStyle, onClick: () -> Uni
             .clickable(onClick = onClick)
     ) {
         PosterArt(
-            model = if (com.hikari.app.tv.TvMode.current()) Artwork.backdropModel(item) else Artwork.model(item),
+            model = if (cinema) hero?.first else Artwork.model(item),
             contentDescription = item.title,
             style = style,
             rating = item.rating,
             imdb = badge,
             item = item,
+            contentScale = if (cinema && hero != null && !hero.second) ContentScale.Fit else ContentScale.Crop,
+            imageAlignment = if (cinema && hero != null && !hero.second) Alignment.TopCenter else Alignment.Center,
             modifier = Modifier
                 .fillMaxWidth()
-                .aspectRatio(if (com.hikari.app.tv.TvMode.current()) 16f / 9f else 2f / 3f),
+                .aspectRatio(if (cinema) 16f / 9f else 2f / 3f),
         )
         if (style.showTitles) {
             Text(

@@ -110,7 +110,12 @@ fun MediaRow(
     onClick: (MediaItem) -> Unit,
     onShowAll: (() -> Unit)? = null,
 ) {
+    val style = rememberPosterStyle()
     if (TvMode.current()) {
+        com.hikari.app.tv.TvCinemaRow(title = title, providerName = providerName, items = items, onOpen = onClick, onShowAll = onShowAll, vertical = !style.isCinema(true))
+        return
+    }
+    if (style.isCinema(false)) {
         com.hikari.app.tv.TvCinemaRow(title = title, providerName = providerName, items = items, onOpen = onClick, onShowAll = onShowAll)
         return
     }
@@ -158,7 +163,7 @@ fun MediaRow(
         // subscriptions to the same preferences, all re-mapping on every
         // settings write and all allocating inside the scroll path. One read per
         // row is the same look with a fraction of the work.
-        val style = rememberPosterStyle()
+        // (Read once at the top of MediaRow and shared by every card below.)
         // A row's items come from an extension, and an extension is free to
         // list the same title twice (or to hand back two entries that share an
         // id). Compose does not warn about a duplicated key — it throws, taking

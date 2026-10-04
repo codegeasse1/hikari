@@ -651,7 +651,7 @@ fun CatalogScreen(
             // grid keeps the shape it is about to have, instead of a lone
             // spinner that says nothing about what is coming.
             Box(Modifier.fillMaxSize()) {
-                CatalogSkeletonGrid(columns = columns)
+                CatalogSkeletonGrid(columns = columns, cinema = rememberPosterStyle().isCinema(com.hikari.app.tv.TvMode.current()))
                 // The spinner, on its own, cannot say WHY nothing is arriving —
                 // and ten seconds in, the usual answer is a Cloudflare check the
                 // site wants a browser to pass (see [VerificationNudge]). The
@@ -714,13 +714,23 @@ fun CatalogScreen(
             ) {
                 items(uniqueItems, key = { it.uniqueId }) { item ->
                     if (isTvCatalog) {
-                        com.hikari.app.tv.TvCinemaCard(item = item, onClick = {
-                            Routes.safeNavigate(
-                                nav,
-                                if (rawType == "manga") Routes.mangaDetail(item.providerId, item.id, item.title, item.posterUrl)
-                                else Routes.detail(item.providerId, item.type, item.id, item.title, item.posterUrl, item.rawType)
-                            )
-                        })
+                        if (style.isCinema(true)) {
+                            com.hikari.app.tv.TvCinemaCard(item = item, onClick = {
+                                Routes.safeNavigate(
+                                    nav,
+                                    if (rawType == "manga") Routes.mangaDetail(item.providerId, item.id, item.title, item.posterUrl)
+                                    else Routes.detail(item.providerId, item.type, item.id, item.title, item.posterUrl, item.rawType)
+                                )
+                            })
+                        } else {
+                            com.hikari.app.tv.TvVerticalCard(item = item, onClick = {
+                                Routes.safeNavigate(
+                                    nav,
+                                    if (rawType == "manga") Routes.mangaDetail(item.providerId, item.id, item.title, item.posterUrl)
+                                    else Routes.detail(item.providerId, item.type, item.id, item.title, item.posterUrl, item.rawType)
+                                )
+                            })
+                        }
                     } else {
                     CatalogCard(item, style) {
                         // A manga engine's "catalog" is its Popular/Latest list
@@ -813,6 +823,8 @@ private fun CatalogCard(item: MediaItem, style: PosterStyle, onClick: () -> Unit
     // never wanted badges pays nothing.
     val badge = rememberPosterScore(item, style)
     val shape = RoundedCornerShape(style.corner.dp)
+    val cinema = style.isCinema(com.hikari.app.tv.TvMode.current())
+    val hero = if (cinema) Artwork.heroModel(item) else null
     Column(
         Modifier
             .clip(shape)
@@ -821,7 +833,7 @@ private fun CatalogCard(item: MediaItem, style: PosterStyle, onClick: () -> Unit
         Box(
             Modifier
                 .fillMaxWidth()
-                .aspectRatio(2f / 3f)
+                .aspectRatio(if (cinema) 16f / 9f else 2f / 3f)
                 .clip(shape)
                 .background(MaterialTheme.colorScheme.surfaceVariant),
             contentAlignment = Alignment.Center,
@@ -835,12 +847,29 @@ private fun CatalogCard(item: MediaItem, style: PosterStyle, onClick: () -> Unit
                 tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.40f),
                 modifier = Modifier.size(26.dp),
             )
-            AsyncImage(
-                model = Artwork.model(item),
-                contentDescription = item.title,
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop
-            )
+            if (cinema && hero != null && !hero.second) {
+                AsyncImage(
+                    model = hero.first,
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxSize().alpha(0.45f),
+                    contentScale = ContentScale.Crop
+                )
+                Box(Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.25f)))
+                AsyncImage(
+                    model = hero.first,
+                    contentDescription = item.title,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Fit,
+                    alignment = Alignment.TopCenter
+                )
+            } else {
+                AsyncImage(
+                    model = if (cinema) hero?.first else Artwork.model(item),
+                    contentDescription = item.title,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop
+                )
+            }
             if (badge != null) {
                 RatingBadge(
                     text = badge,
@@ -887,7 +916,7 @@ private fun CatalogCard(item: MediaItem, style: PosterStyle, onClick: () -> Unit
  * float for the whole grid).
  */
 @Composable
-private fun CatalogSkeletonGrid(columns: Int, modifier: Modifier = Modifier) {
+private fun CatalogSkeletonGrid(columns: Int, modifier: Modifier = Modifier, cinema: Boolean = com.hikari.app.tv.TvMode.current()) {
     val transition = rememberInfiniteTransition(label = "catalog-skeleton")
     val pulse by transition.animateFloat(
         initialValue = 0.30f,
@@ -911,7 +940,7 @@ private fun CatalogSkeletonGrid(columns: Int, modifier: Modifier = Modifier) {
                 Box(
                     Modifier
                         .fillMaxWidth()
-                        .aspectRatio(if (com.hikari.app.tv.TvMode.current()) 16f / 9f else 2f / 3f)
+                        .aspectRatio(if (cinema) 16f / 9f else 2f / 3f)
                         .clip(RoundedCornerShape(14.dp))
                         .background(MaterialTheme.colorScheme.surfaceVariant)
                 )

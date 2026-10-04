@@ -998,10 +998,6 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
     // where it was least likely to succeed. See the CHANGELOG.
 
     /**
-     * Ensure Referer + Origin for hosts that hotlink-protect HLS (Fastream 403
-     * was the reported case: CloudStream plays the same URL with these headers).
-     */
-    /**
      * CloudStream player (CS3IPlayer) only injects `referer` from ExtractorLink
      * — it does NOT force Origin or Sec-Fetch-*. Forcing those was 403'ing
      * Fastream/Streamwish while the same m3u8 played in CloudStream.
@@ -1026,9 +1022,15 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
             return
         }
         if (host.contains("fastream")) {
-            val origin = "https://$host"
-            headers.putIfAbsent("Referer", "$origin/")
-            headers.putIfAbsent("Origin", origin)
+            // The signed stream lives on a numbered CDN host (s40.fastream.to,
+            // s41.fastream.to, …) but the hotlink check expects the SITE the
+            // embed came from — CloudStream's own player sends
+            // `Referer: https://fastream.to/` and no Origin at all. Sending the
+            // CDN host itself as Referer/Origin (what the apex-agnostic code
+            // did) is exactly the 403 in the report: the same URL plays in
+            // CloudStream and fails here.
+            headers.putIfAbsent("Referer", "https://fastream.to/")
+            headers.remove("Origin")
             headers.putIfAbsent("User-Agent", com.hikari.app.net.Http.UA)
             return
         }

@@ -299,6 +299,79 @@ fun matchScore(wanted: String, candidate: String, wantedYear: Int = 0, candidate
 const val TRACKER_AUTO_THRESHOLD = 0.9
 
 /**
+ * The sequel tail stripped off a normalised title, so two season markers for
+ * the same show compare equal: "jade dynasty season 4" and "jade dynasty
+ * final" are both "jade dynasty", while "naruto" and "naruto shippuden" stay
+ * apart ("shippuden" is a distinctive subtitle, not a generic marker).
+ */
+fun sequelBase(normalized: String): String {
+    var s = " " + normalized.trim() + " "
+    s = s.replace(Regex("\\b(movie|film|ova|ona|oad|special|specials|part|cour|season|s)\\s*\\d{1,2}\\b"), " ")
+    s = s.replace(Regex("\\b(final|finale|season finale|last season|the final|the finale)\\b(\\s*\\d{1,2})?\\s*$"), " ")
+    s = s.replace(Regex("\\b(movie|film|ova|ona|oad|special)\\s*$"), " ")
+    return s.trim().replace(Regex("\\s+"), " ")
+}
+
+/**
+ * Known same-show spellings, keyed by any of their forms: donghua especially
+ * ship under several names at once (a pinyin title, an English title and a
+ * loose translation), and an extension's spelling is rarely the tracker's.
+ */
+private val TITLE_ALIASES = listOf(
+    setOf("doupo cangqiong", "battle through heavens", "fights break sphere", "fight sphere"),
+    setOf("zhu xian", "jade dynasty"),
+    setOf("xian ni", "renegade immortal"),
+    setOf("a record of mortal journey to immortality", "a mortal journey to immortality"),
+    setOf("one hundred thousand years of qi refining", "lian qi shi wan nian"),
+    setOf("wu dong qian kun", "martial master", "martial universe"),
+    setOf("against gods", "against god", "ni tian xie shen"),
+    setOf("against sky supreme", "against the sky supreme"),
+    setOf("stellar transformations", "stars transformation", "xing chen bian"),
+    setOf("link click", "shiguang dailiren"),
+)
+
+/** Every spelling of [title] worth searching and scoring: the title itself,
+ *  its sequel-stripped base, and any known alias forms. */
+fun titleVariants(title: String): List<String> {
+    val out = LinkedHashSet<String>()
+    val n = normalizeTitle(title)
+    if (n.isNotBlank()) out.add(n)
+    val base = sequelBase(n)
+    if (base.isNotBlank()) out.add(base)
+    for (alias in TITLE_ALIASES) {
+        if (alias.any { n == it || n.contains(it) || base == it }) {
+            for (form in alias) {
+                if (form.isNotBlank()) out.add(form.trim())
+            }
+            break
+        }
+    }
+    return out.toList()
+}
+
+/**
+ * [matchScore], but against every known spelling of both sides: the best
+ * pairing wins, with one guardrail — a pairing that only matches after the
+ * sequel tail is stripped ([sequelBase]) scores 0.95, above
+ * [TRACKER_AUTO_THRESHOLD] yet below an exact match, so "Jade Dynasty Season
+ * 4" finds "Jade Dynasty Final" while "Naruto" still cannot claim "Naruto
+ * Shippuden" (no generic marker is stripped there, so it stays at 0.85).
+ */
+fun matchScoreAny(wanted: String, candidate: String, wantedYear: Int = 0, candidateYear: Int = 0): Double {
+    var best = matchScore(wanted, candidate, wantedYear, candidateYear)
+    val wb = sequelBase(normalizeTitle(wanted))
+    val cb = sequelBase(normalizeTitle(candidate))
+    if (wb.isNotBlank() && wb == cb) best = maxOf(best, 0.95)
+    for (w in titleVariants(wanted)) {
+        for (c in titleVariants(candidate)) {
+            if (w == c) return 1.0
+            best = maxOf(best, matchScore(w, c, wantedYear, candidateYear))
+        }
+    }
+    return best.coerceIn(0.0, 1.0)
+}
+
+/**
  * The stored shape of the tracker rows — plain JSON, so a row written by an
  * older build (or restored from a backup) is read as far as it goes instead of
  * throwing the whole list away. A row that cannot be read is skipped, never

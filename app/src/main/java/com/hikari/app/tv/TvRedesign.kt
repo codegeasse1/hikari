@@ -27,9 +27,9 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -113,7 +113,13 @@ fun TvCinemaCard(
   modifier: Modifier = Modifier,
   cardWidth: androidx.compose.ui.unit.Dp = 280.dp,
 ) {
-  val art = remember(item.providerId, item.id) { Artwork.backdropModel(item) }
+  // Genuinely wide art fills the frame; a portrait poster must NOT be
+  // centre-cropped into it — the crop kept the middle strip and beheaded the
+  // subject. Portrait art is drawn whole (Fit, anchored top) over a dimmed
+  // crop of itself, so the frame stays full-bleed without cutting anyone off.
+  val hero = Artwork.heroModel(item)
+  val art = hero.first
+  val wide = hero.second
   Column(
     modifier.width(cardWidth).clip(RoundedCornerShape(14.dp)).clickable(onClick = onClick).tvPress(previewPass = true, onClick = onClick),
   ) {
@@ -122,7 +128,45 @@ fun TvCinemaCard(
       contentAlignment = Alignment.Center,
     ) {
       Icon(Icons.Filled.Movie, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f), modifier = Modifier.size(28.dp))
-      AsyncImage(model = art, contentDescription = item.title, modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(14.dp)), contentScale = ContentScale.Crop)
+      if (wide) {
+        AsyncImage(model = art, contentDescription = item.title, modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(14.dp)), contentScale = ContentScale.Crop)
+      } else {
+        AsyncImage(model = art, contentDescription = null, modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(14.dp)).alpha(0.45f), contentScale = ContentScale.Crop)
+        Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).background(Color.Black.copy(alpha = 0.25f)))
+        AsyncImage(model = art, contentDescription = item.title, modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(14.dp)), contentScale = ContentScale.Fit, alignment = Alignment.TopCenter)
+      }
+      item.rating?.takeIf { it > 0 }?.let { r ->
+        Surface(color = Color.Black.copy(alpha = 0.65f), shape = RoundedCornerShape(8.dp), modifier = Modifier.align(Alignment.TopEnd).padding(8.dp)) {
+          Text("★ " + "%.1f".format(r), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = Color(0xFFFFC107), modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp))
+        }
+      }
+    }
+    Text(item.title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 8.dp, start = 2.dp, end = 2.dp))
+    val sub = buildList {
+      item.year?.let { add(it.toString()) }
+      if (item.genres.isNotEmpty()) add(item.genres.first())
+    }.joinToString(" • ")
+    Text(sub.ifBlank { " " }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 2.dp, end = 2.dp))
+  }
+}
+
+@Composable
+fun TvVerticalCard(
+  item: MediaItem,
+  onClick: () -> Unit,
+  modifier: Modifier = Modifier,
+  cardWidth: androidx.compose.ui.unit.Dp = 150.dp,
+) {
+  val art = Artwork.model(item)
+  Column(
+    modifier.width(cardWidth).clip(RoundedCornerShape(14.dp)).clickable(onClick = onClick).tvPress(previewPass = true, onClick = onClick),
+  ) {
+    Box(
+      Modifier.fillMaxWidth().aspectRatio(2f / 3f).clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.surfaceVariant),
+      contentAlignment = Alignment.Center,
+    ) {
+      Icon(Icons.Filled.Movie, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f), modifier = Modifier.size(28.dp))
+      AsyncImage(model = art, contentDescription = item.title, modifier = Modifier.fillMaxWidth().aspectRatio(2f / 3f).clip(RoundedCornerShape(14.dp)), contentScale = ContentScale.Crop)
       item.rating?.takeIf { it > 0 }?.let { r ->
         Surface(color = Color.Black.copy(alpha = 0.65f), shape = RoundedCornerShape(8.dp), modifier = Modifier.align(Alignment.TopEnd).padding(8.dp)) {
           Text("★ " + "%.1f".format(r), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = Color(0xFFFFC107), modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp))
@@ -145,6 +189,7 @@ fun TvCinemaRow(
   items: List<MediaItem>,
   onOpen: (MediaItem) -> Unit,
   onShowAll: (() -> Unit)? = null,
+  vertical: Boolean = false,
 ) {
   if (items.isEmpty()) return
   Column(Modifier.padding(top = 22.dp)) {
@@ -160,7 +205,8 @@ fun TvCinemaRow(
       val seen = LinkedHashSet<String>()
       val unique = items.filter { it.uniqueId.let { k -> if (seen.add(k)) true else false } }
       items(unique, key = { it.uniqueId }) { item ->
-        TvCinemaCard(item = item, onClick = { onOpen(item) })
+        if (vertical) TvVerticalCard(item = item, onClick = { onOpen(item) })
+        else TvCinemaCard(item = item, onClick = { onOpen(item) })
       }
     }
   }

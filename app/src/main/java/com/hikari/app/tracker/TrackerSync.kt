@@ -9,7 +9,7 @@ import com.hikari.app.data.TrackerMatch
 import com.hikari.app.data.TrackerMedia
 import com.hikari.app.data.TrackerStore
 import com.hikari.app.data.TRACKER_AUTO_THRESHOLD
-import com.hikari.app.data.matchScore
+import com.hikari.app.data.matchScoreAny
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -80,7 +80,7 @@ object TrackerSync {
             // The cached match, when there is one, saves a search — and it is
             // only trusted while it still looks like the same title.
             val cached = matches[TrackerStore.matchKey(kind, media.title)]
-                ?.takeIf { matchScore(media.title, it.title, media.year, it.year) >= TRACKER_AUTO_THRESHOLD }
+                ?.takeIf { matchScoreAny(media.title, it.title, media.year, it.year) >= TRACKER_AUTO_THRESHOLD }
             val match = cached ?: resolve(store, client, live, media)
             if (match == null) {
                 notes += "${kind.label}: no confident match for \"${media.title}\""

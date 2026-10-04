@@ -62,6 +62,9 @@ object FallbackResolver {
         val name: String,
         val quality: Int,
         val isM3u8: Boolean,
+        /** Headers the jar extractor attached to its own link (Referer,
+         *  Origin, Cookie, …) — carried to the player untouched. */
+        val headers: Map<String, String> = emptyMap(),
     )
 
     /** Resolve every embed on a plugin video page into playable StreamSources.
@@ -167,10 +170,24 @@ object FallbackResolver {
         raws: Map<String, RawStream>,
         subs: List<SubtitleSource>,
     ): List<StreamSource> = raws.values.map { r ->
+        // The extractor's own headers first (a jar extractor that names an
+        // Origin/Cookie earned it), then the guaranteed Referer + UA on top of
+        // anything still missing — a link that arrived with no headers at all
+        // keeps the old behaviour exactly.
+        val headers = LinkedHashMap<String, String>(r.headers)
+        // Fastream's check wants the site root, never the numbered CDN host
+        // the signed URL lives on (see Cs3MainApiProvider.enrichHotlinkHeaders).
+        if (r.url.contains("fastream", true)) {
+            headers["Referer"] = "https://fastream.to/"
+            headers.remove("Origin")
+        } else {
+            headers.putIfAbsent("Referer", r.referer)
+        }
+        headers.putIfAbsent("User-Agent", Http.UA)
         StreamSource(
             name = r.name,
             url = r.url,
-            headers = mapOf("Referer" to r.referer, "User-Agent" to Http.UA),
+            headers = headers,
             subtitles = subs.distinctBy { it.url },
             isM3u8 = r.isM3u8 || r.url.contains(".m3u8", true) || r.url.contains("master.txt", true),
         )
@@ -294,9 +311,16 @@ object FallbackResolver {
         val q = Qualities.getStringByInt(l.quality)
         val base = l.name.ifBlank { streamNameFor(u) }
         val name = if (q.isNotBlank() && !base.contains(q, ignoreCase = true)) "$base $q" else base
+        val carried = LinkedHashMap<String, String>()
+        runCatching {
+            l.headers?.forEach { (k, v) ->
+                val c = v.filter { it.code < 128 }
+                if (k.isNotBlank() && c.isNotBlank()) carried[k] = c
+            }
+        }
         raws.putIfAbsent(
             u,
-            RawStream(u, l.referer?.takeIf { it.isNotBlank() } ?: pageUrl, name, l.quality, l.isM3u8)
+            RawStream(u, l.referer?.takeIf { it.isNotBlank() } ?: pageUrl, name, l.quality, l.isM3u8, carried)
         )
     }
 
@@ -306,6 +330,7 @@ object FallbackResolver {
     private fun streamNameFor(url: String): String {
         val h = url.lowercase()
         return when {
+            h.contains("fastream") -> "Fastream"
             h.contains("rumble") || h.contains("rmbl.ws") || h.contains("rumble.cloud") -> "Rumble"
             h.contains("ok.ru") || h.contains("odnoklassniki") || h.contains("okcdn") -> "OkRuSSL"
             h.contains("dailymotion") || h.contains("dai.ly") -> "Dailymotion"
@@ -338,16 +363,25 @@ object FallbackResolver {
         url.lowercase().contains("fastream")
 
     private suspend fun fastreamExtract(embedUrl: String, raws: MutableMap<String, RawStream>) {
-        val id = Regex("(embedapp-|emb\\.html\\?)(.*)(\\=(enc|)|\\.html)").find(embedUrl)
-            ?.groupValues?.getOrNull(2)?.trim().orEmpty()
-        if (id.isEmpty()) return
+        // Every Fastream embed shape in the wild: /embed-CODE.html (the common
+        // one — the old pattern never matched it, so this whole function was a
+        // no-op for most Fastream embeds), /e/CODE, /embedapp-CODE,
+        // /emb.html?CODE and ?id=/file_code= links.
+        val id = Regex("""embedapp-([^/?#&.]+)""").find(embedUrl)?.groupValues?.getOrNull(1)
+            ?: Regex("""/e/([^/?#&.]+)""").find(embedUrl)?.groupValues?.getOrNull(1)
+            ?: Regex("""embed-([^/?#&.]+?)(?:\.html)?(?:[?#]|$)""").find(embedUrl)?.groupValues?.getOrNull(1)
+            ?: Regex("""[?&](?:id|file_code|file)=([^&#]+)""").find(embedUrl)?.groupValues?.getOrNull(1)
+            ?: Regex("""(embedapp-|emb\.html\?)(.*)(\=(enc|)|\.html)""").find(embedUrl)
+                ?.groupValues?.getOrNull(2)
+            ?: return
+        val code = id.trim().takeIf { it.isNotEmpty() } ?: return
         val body = "op=embed&file_code=" +
-            runCatching { java.net.URLEncoder.encode(id, "UTF-8") }.getOrDefault(id) + "&auto=1"
+            runCatching { java.net.URLEncoder.encode(code, "UTF-8") }.getOrDefault(code) + "&auto=1"
         val resp = runCatching {
             Http.postString(
                 "https://fastream.to/dl",
                 body,
-                mapOf("Referer" to embedUrl),
+                mapOf("Referer" to embedUrl, "Origin" to "https://fastream.to"),
                 "application/x-www-form-urlencoded",
             )
         }.getOrNull()

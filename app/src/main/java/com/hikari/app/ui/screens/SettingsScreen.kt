@@ -189,6 +189,7 @@ import com.hikari.app.ui.AuraColors
 import com.hikari.app.ui.LoadingEffects
 import com.hikari.app.ui.LoadingStyles
 import com.hikari.app.ui.PosterEffects
+import com.hikari.app.ui.PosterTypes
 import com.hikari.app.ui.components.ChoiceDialog
 import com.hikari.app.ui.components.ChoiceItem
 import com.hikari.app.ui.components.ChoiceRow
@@ -447,7 +448,7 @@ private enum class SettingsFolder(
     LAYOUT_POSTER(
         "layout.poster",
         "Poster styling",
-        "Blur, corners, titles & score badges",
+        "Poster type, blur, corners, titles & score badges",
         Icons.Filled.Wallpaper,
         parent = "layout",
     ),
@@ -2541,6 +2542,9 @@ private fun PosterStyleCard(app: HikariApp) {
     val auraFlow = remember { app.store.posterAuraColorFlow() }
     val auraColor by auraFlow.collectAsState(initial = AuraColors.THEME)
     var effectPicker by remember { mutableStateOf(false) }
+    val posterTypeFlow = remember { app.store.posterTypeFlow() }
+    val posterType by posterTypeFlow.collectAsState(initial = PosterTypes.AUTO)
+    var typePicker by remember { mutableStateOf(false) }
     // The chosen treatments, translated PART BY PART (a combination read back as
     // one English sentence could not be translated).
     val effectNames = PosterEffects.ALL
@@ -2580,6 +2584,15 @@ private fun PosterStyleCard(app: HikariApp) {
             },
             leadingIcon = Icons.Filled.AutoAwesome,
             onClick = { effectPicker = true },
+        )
+        // Which shape catalogue cards take, on this device and the other one:
+        // cinema 16:9 everywhere, vertical 2:3 everywhere, or the old split
+        // (cinema on TV, posters on phone).
+        ChoiceRow(
+            value = tr(PosterTypes.label(posterType)),
+            supporting = tr(PosterTypes.description(posterType)),
+            leadingIcon = Icons.Filled.AspectRatio,
+            onClick = { typePicker = true },
         )
         // The aura ring's own colour, offered only while that ring is on: a
         // colour row for a ring that is not being drawn would be noise.
@@ -2701,6 +2714,20 @@ private fun PosterStyleCard(app: HikariApp) {
             onDismiss = { effectPicker = false },
             footnote = "Tick as many as you like. They are drawn together on every poster, " +
                 "and \"None\" clears them all.",
+        )
+    }
+
+    if (typePicker) {
+        ChoiceDialog(
+            title = tr("Poster type"),
+            items = PosterTypes.ALL.map {
+                ChoiceItem(it, tr(PosterTypes.label(it)), tr(PosterTypes.description(it)))
+            },
+            selectedKey = posterType,
+            onPick = { pick ->
+                scope.launch { runCatching { app.store.setPosterType(pick) } }
+            },
+            onDismiss = { typePicker = false },
         )
     }
 }

@@ -43,19 +43,38 @@ class AnymexProvider(override val config: ProviderConfig) : ContentProvider {
     override suspend fun getCatalog(ref: CatalogRef, page: Int): List<MediaItem> =
         withContext(Dispatchers.IO) {
             val mod = module() ?: return@withContext emptyList()
-            val raw = when (ref.id) {
+            val first = when (ref.id) {
                 CATALOG_LATEST -> AnymexRuntime.latest(mod, config.id, page.coerceAtLeast(1))
                 else -> AnymexRuntime.popular(mod, config.id, page.coerceAtLeast(1))
             }
-            val items = mapItems(raw)
+            val items = mapItems(first)
             if (items.isNotEmpty()) {
                 catalogErrors.remove(config.id)
                 lastOutcome.remove(config.id)
-            } else {
-                markWall(raw)
-                if (raw.isNullOrBlank()) noteCatalogError("Empty catalogue answer — the site may be blocking or down")
+                return@withContext items
             }
-            items
+            // Plenty of scripts only implement ONE of the two catalogue calls
+            // well (the other answers empty or "not implemented") — trying the
+            // sibling before reporting an empty catalogue is what makes those
+            // extensions list titles instead of a blank page.
+            val second = when (ref.id) {
+                CATALOG_LATEST -> AnymexRuntime.popular(mod, config.id, page.coerceAtLeast(1))
+                else -> AnymexRuntime.latest(mod, config.id, page.coerceAtLeast(1))
+            }
+            val retry = mapItems(second)
+            if (retry.isNotEmpty()) {
+                catalogErrors.remove(config.id)
+                lastOutcome.remove(config.id)
+                return@withContext retry
+            }
+            markWall(first)
+            markWall(second)
+            if (first.isNullOrBlank() && second.isNullOrBlank()) {
+                noteCatalogError("Empty catalogue answer — the site may be blocking or down")
+            } else if (retry.isEmpty() && items.isEmpty()) {
+                noteCatalogError("The site returned no titles for this catalogue")
+            }
+            retry
         }
 
     override suspend fun search(query: String, page: Int): List<MediaItem> =

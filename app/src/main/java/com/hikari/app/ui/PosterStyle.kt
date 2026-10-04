@@ -185,6 +185,39 @@ object PosterEffects {
  * [rememberPosterStyle] and renders through [PosterArt], so a change in Settings
  * is visible on the very next frame everywhere at once.
  */
+/**
+ * Which shape catalogue cards take — Settings → App Layout → Poster styling →
+ * Poster type.
+ *
+ *  - [AUTO]    televisions draw cinema 16:9 landscape cards, phones draw
+ *              vertical 2:3 posters — what every screen did before the choice
+ *              existed, so a stored value always wins and nobody's layout
+ *              changes on update;
+ *  - [CINEMA]  16:9 everywhere, phones included;
+ *  - [VERTICAL] 2:3 everywhere, televisions included.
+ */
+object PosterTypes {
+    const val AUTO = "auto"
+    const val CINEMA = "cinema"
+    const val VERTICAL = "vertical"
+
+    val ALL = listOf(AUTO, CINEMA, VERTICAL)
+
+    fun normalize(key: String?): String = if (key != null && key in ALL) key else AUTO
+
+    fun label(key: String): String = when (normalize(key)) {
+        CINEMA -> "Cinema 16:9"
+        VERTICAL -> "Vertical 2:3"
+        else -> "Auto"
+    }
+
+    fun description(key: String): String = when (normalize(key)) {
+        CINEMA -> "Wide landscape cards on phones and TVs alike"
+        VERTICAL -> "Tall poster cards on phones and TVs alike"
+        else -> "Cinema cards on TV, posters on phone"
+    }
+}
+
 data class PosterStyle(
     /** Blur radius in dp for the coloured halo behind the art (0 = none). */
     val blur: Int = 0,
@@ -215,9 +248,18 @@ data class PosterStyle(
     val glowY: Float = 0.14f,
     /** How hard that light burns, 0-100. */
     val glowStrength: Int = 55,
+    /** Which shape catalogue cards take (see [PosterTypes]). */
+    val posterType: String = PosterTypes.AUTO,
 ) {
     /** True when [key] is one of the treatments this card wears. */
     fun has(key: String): Boolean = key in effects
+
+    /** True when catalogue cards are drawn 16:9 landscape on this device. */
+    fun isCinema(isTv: Boolean): Boolean = when (PosterTypes.normalize(posterType)) {
+        PosterTypes.CINEMA -> true
+        PosterTypes.VERTICAL -> false
+        else -> isTv
+    }
 }
 
 /** The live poster style, collected from the store. Remembered flows, so the
@@ -239,7 +281,7 @@ fun rememberPosterStyle(): PosterStyle {
     val auraFlow = remember { app.store.posterAuraColorFlow() }
     val glowPointFlow = remember { app.store.posterGlowPointFlow() }
     val glowStrengthFlow = remember { app.store.posterGlowStrengthFlow() }
-    // Television performance mode (Settings → TV & Remote): a TV stick is
+    val posterTypeFlow = remember { app.store.posterTypeFlow() }    // Television performance mode (Settings → TV & Remote): a TV stick is
     // decoding 1080p with a chip a phone would have called slow, so while it is
     // on the expensive per-poster work is dropped — the animated treatments and
     // the blurred halo behind each card — and the posters are drawn plain.
@@ -264,6 +306,7 @@ fun rememberPosterStyle(): PosterStyle {
     val auraColor by auraFlow.collectAsState(initial = AuraColors.THEME)
     val glowPoint by glowPointFlow.collectAsState(initial = 0.5f to 0.14f)
     val glowStrength by glowStrengthFlow.collectAsState(initial = 55)
+    val posterType by posterTypeFlow.collectAsState(initial = PosterTypes.AUTO)
     return PosterStyle(
         blur = if (perf) 0 else blur.coerceIn(0, 24),
         corner = corner.coerceIn(0, 28),
@@ -280,6 +323,7 @@ fun rememberPosterStyle(): PosterStyle {
         // is not drawing treatments at all (the set above is empty then) — the
         // zero is belt and braces for any card that asks for it directly.
         glowStrength = if (perf) 0 else glowStrength.coerceIn(0, 100),
+        posterType = PosterTypes.normalize(posterType),
     )
 }
 

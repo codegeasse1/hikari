@@ -559,6 +559,9 @@ class AppStore(private val ctx: Context) {
          *  [com.hikari.app.ui.AuraColors]. "theme" (the default) follows the app
          *  accent, which is what the ring always drew. */
         val POSTER_AURA_COLOR = stringPreferencesKey("posterAuraColor")
+        /** Which shape catalogue cards take — see
+         *  [com.hikari.app.ui.PosterTypes]. */
+        val POSTER_TYPE = stringPreferencesKey("posterType")
     /** Where a poster's edge light stands, as fractions of the card — see
      *  [com.hikari.app.ui.PosterEffects.LIT]. */
     val POSTER_GLOW_X = floatPreferencesKey("posterGlowX")
@@ -1428,6 +1431,20 @@ class AppStore(private val ctx: Context) {
     suspend fun setPosterAuraColor(key: String) {
         write("POSTER_AURA_COLOR") {
             it[K.POSTER_AURA_COLOR] = com.hikari.app.ui.AuraColors.normalize(key)
+        }
+    }
+
+    /** Which shape catalogue cards take (see [com.hikari.app.ui.PosterTypes]). */
+    fun posterTypeFlow(): Flow<String> =
+        store.data.map {
+            com.hikari.app.ui.PosterTypes.normalize(it[K.POSTER_TYPE])
+        }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun posterType(): String = posterTypeFlow().first()
+
+    suspend fun setPosterType(key: String) {
+        write("POSTER_TYPE") {
+            it[K.POSTER_TYPE] = com.hikari.app.ui.PosterTypes.normalize(key)
         }
     }
 
