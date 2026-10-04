@@ -106,7 +106,7 @@ object TrackerSync {
         // sentence is not written twice either — a title nothing can match is
         // still unmatched on the next flush, and that must not mean a DataStore
         // write every five seconds for the rest of the episode.
-        val notes = notes.distinct()
+        notes = notes.distinct()
         val summary = notes.joinToString("\n")
         if (notes.any { !it.endsWith("already reported") } &&
             runCatching { store.trackerLast() }.getOrDefault("") != summary
