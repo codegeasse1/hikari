@@ -52,6 +52,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -181,6 +182,7 @@ import com.hikari.app.net.DohDns
 import com.hikari.app.net.NetTuning
 import com.hikari.app.net.Updater
 import com.hikari.app.player.EnhancePreset
+import com.hikari.app.player.CustomEnhancePreset
 import com.hikari.app.player.PlayerSkins
 import com.hikari.app.ui.AppIconManager
 import com.hikari.app.ui.AppIconVariants
@@ -7288,14 +7290,19 @@ private fun VideoEnhanceCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
     val presetFlow = remember { app.store.enhancePresetFlow() }
     val presetKey by presetFlow.collectAsState(initial = EnhancePreset.DEFAULT.key)
+    val customsFlow = remember { app.store.customEnhanceFlow() }
+    val customs by customsFlow.collectAsState(initial = emptyList())
     var menuOpen by remember { mutableStateOf(false) }
+    var editorOpen by remember { mutableStateOf(false) }
+    var editing by remember { mutableStateOf<CustomEnhancePreset?>(null) }
+    val activeCustom = customs.firstOrNull { it.key() == presetKey }
     val preset = EnhancePreset.fromKey(presetKey)
 
     SettingsSection(
         id = "player.enhance",
         icon = Icons.Filled.AutoAwesome,
         title = tr("Video enhance"),
-        summary = tr(preset.label),
+        summary = tr(activeCustom?.displayName() ?: preset.label),
     ) {
         Box {
             Row(
@@ -7310,14 +7317,14 @@ private fun VideoEnhanceCard(app: HikariApp) {
                 Column(Modifier.weight(1f)) {
                     Text(tr("Preset"), style = MaterialTheme.typography.titleSmall)
                     Text(
-                        preset.desc,
+                        activeCustom?.summary() ?: tr(preset.desc),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
                 Spacer(Modifier.width(10.dp))
                 Text(
-                    preset.label,
+                    activeCustom?.displayName() ?: tr(preset.label),
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.primary
@@ -7331,9 +7338,39 @@ private fun VideoEnhanceCard(app: HikariApp) {
             }
         }
         Spacer(Modifier.height(8.dp))
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            if (customs.size < 12) {
+                OutlinedButton(
+                    onClick = {
+                        editing = null
+                        editorOpen = true
+                    },
+                    shape = GlassShape,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text(tr("New custom preset"))
+                }
+            }
+            if (activeCustom != null) {
+                OutlinedButton(
+                    onClick = {
+                        editing = activeCustom
+                        editorOpen = true
+                    },
+                    shape = GlassShape,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text(tr("Edit custom preset"))
+                }
+            }
+        }
+        if (customs.size < 12 || activeCustom != null) Spacer(Modifier.height(8.dp))
     }
 
-    // Eight presets with a description each: a glass page of choices beats a
+    // Built-ins plus the user's own presets: a glass page of choices beats a
     // wall of a Material dropdown menu, and it matches every other "pick one"
     // setting in the app.
     if (menuOpen) {
@@ -7341,8 +7378,10 @@ private fun VideoEnhanceCard(app: HikariApp) {
             title = tr("Video enhance"),
             items = EnhancePreset.entries.map {
                 ChoiceItem(it.key, tr(it.label), tr(it.desc))
+            } + customs.map {
+                ChoiceItem(it.key(), it.displayName(), tr("Custom preset") + " · " + it.summary())
             },
-            selectedKey = preset.key,
+            selectedKey = activeCustom?.key() ?: preset.key,
             onPick = { pick ->
                 scope.launch {
                     runCatching {
@@ -7356,6 +7395,144 @@ private fun VideoEnhanceCard(app: HikariApp) {
             onDismiss = { menuOpen = false },
         )
     }
+
+    if (editorOpen) {
+        CustomEnhanceEditorDialog(
+            app = app,
+            existing = editing,
+            customs = customs,
+            activeKey = presetKey,
+            onDismiss = { editorOpen = false },
+        )
+    }
+}
+
+/**
+ * Builds or edits one custom enhance preset: a name plus the five grading
+ * sliders (brightness, saturation, contrast, gamma, hue). Saving selects the
+ * preset straight away; deleting falls back to Natural when it was active.
+ * Gamma is a midtone lift — media3 has no true gamma curve, and the dialog
+ * says so under the slider.
+ */
+@Composable
+private fun CustomEnhanceEditorDialog(
+    app: HikariApp,
+    existing: CustomEnhancePreset?,
+    customs: List<CustomEnhancePreset>,
+    activeKey: String,
+    onDismiss: () -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    var name by remember { mutableStateOf(existing?.name ?: "") }
+    var brightness by remember { mutableStateOf(existing?.brightness ?: 0) }
+    var saturation by remember { mutableStateOf(existing?.saturation ?: 0) }
+    var contrast by remember { mutableStateOf(existing?.contrast ?: 0) }
+    var gamma by remember { mutableStateOf(existing?.gamma ?: 0) }
+    var hue by remember { mutableStateOf(existing?.hue ?: 0) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(tr(if (existing == null) "New custom preset" else "Edit custom preset")) },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it.take(24) },
+                    label = { Text(tr("Name")) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(4.dp))
+                CustomEnhanceSliderRow(tr("Brightness"), brightness, -100, 100) { brightness = it }
+                CustomEnhanceSliderRow(tr("Saturation"), saturation, -100, 100) { saturation = it }
+                CustomEnhanceSliderRow(tr("Contrast"), contrast, -100, 100) { contrast = it }
+                CustomEnhanceSliderRow(tr("Gamma"), gamma, -100, 100) { gamma = it }
+                Text(
+                    tr("Gamma is a midtone lift — media3 has no true gamma curve."),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                CustomEnhanceSliderRow(tr("Hue"), hue, -180, 180) { hue = it }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                val clean = CustomEnhancePreset.cleanName(name).ifBlank { "Custom" }
+                val preset = (existing ?: CustomEnhancePreset(id = CustomEnhancePreset.newId(), name = clean))
+                    .copy(
+                        name = clean,
+                        brightness = brightness,
+                        saturation = saturation,
+                        contrast = contrast,
+                        gamma = gamma,
+                        hue = hue,
+                    )
+                val list = customs.toMutableList()
+                val at = list.indexOfFirst { it.id == preset.id }
+                if (at >= 0) list[at] = preset else list += preset
+                scope.launch {
+                    runCatching {
+                        app.store.setCustomEnhanceList(list)
+                        app.store.setEnhancePreset(preset.key())
+                        app.store.setEnhanceChosen(true)
+                    }
+                }
+                onDismiss()
+            }) {
+                Text(tr("Save"))
+            }
+        },
+        dismissButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                if (existing != null) {
+                    TextButton(onClick = {
+                        scope.launch {
+                            runCatching {
+                                app.store.setCustomEnhanceList(customs.filterNot { it.id == existing.id })
+                                if (activeKey == existing.key()) {
+                                    app.store.setEnhancePreset(EnhancePreset.NATURAL.key)
+                                }
+                            }
+                        }
+                        onDismiss()
+                    }) {
+                        Text(tr("Delete"))
+                    }
+                }
+                TextButton(onClick = onDismiss) {
+                    Text(tr("Cancel"))
+                }
+            }
+        },
+    )
+}
+
+@Composable
+private fun CustomEnhanceSliderRow(
+    title: String,
+    value: Int,
+    min: Int,
+    max: Int,
+    onChange: (Int) -> Unit,
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            title,
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.weight(1f)
+        )
+        Text(
+            (if (value >= 0) "+" else "") + value,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+    Slider(
+        value = value.toFloat(),
+        onValueChange = { onChange(it.roundToInt().coerceIn(min, max)) },
+        valueRange = min.toFloat()..max.toFloat(),
+        modifier = Modifier.fillMaxWidth()
+    )
 }
 
 // ---- Accent colours (Appearance & Theme folder) ----

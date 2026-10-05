@@ -1,3 +1,13 @@
+## 0.10.87
+
+Everything new and fixed since the last release (0.10.86):
+
+### Fixed
+
+- I fixed the player Enhance menu having nowhere to keep your own look — there is a Create custom preset row now, with the five sliders the filter panels use (brightness, saturation, contrast, gamma, hue) applied live to the picture while they move; your presets sit in the same menu and in Settings → Player → Video enhance, travel with your setup to another device, and gamma is an honest midtone lift because media3 has no true gamma curve
+- I fixed anime episodes showing twice when an extension lists sub and dub separately — the One Piece run of I'm Luffy! / I'm Luffy! (Dub) pairs is one row per episode again, the folded dub streams are still reachable from the player's Audio sheet as Sub/Dub rows that switch without losing your place, and only rows that strip down to the same name ever fold so genuinely different same-numbered episodes keep their own rows
+- I fixed the 123AV-style Anymex categories showing blank cards, wrong details and no videos — relative posters, links and stream URLs are resolved against the site now, the extension's own filter lists are exposed as browsable catalogues (Most viewed today, Recent Update and every category), imageless navigation links no longer open as titles, and a bare one-word catalogue title no longer resolves to an unrelated TMDB entry (Today is not the NBC morning show)
+
 ## 0.10.86
 
 Everything new and fixed since the last release (0.10.85):

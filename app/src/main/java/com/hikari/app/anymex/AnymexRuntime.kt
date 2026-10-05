@@ -340,6 +340,30 @@ object AnymexRuntime {
     suspend fun search(moduleFile: File, providerId: String, query: String, page: Int): String =
         run(moduleFile, providerId, "search", "[${quote(query)}, $page, []]", CATALOG_TIMEOUT_MS)
 
+    /**
+     * The extension's category/sort filters (`getFilterList`) — the
+     * "Categories" a video site exposes (123AV's Recommended/Censored/… list
+     * and its Recent Update / Most viewed today / … sorts). Empty when the
+     * module does not implement it.
+     */
+    suspend fun filterList(moduleFile: File, providerId: String): String =
+        run(moduleFile, providerId, "getFilterList", "[]", CALL_TIMEOUT_MS)
+
+    /**
+     * An empty-query search with one filter answered ([filtersJson] is a JSON
+     * array of `{type, state, values:[{name, value}]}` in Mangayomi's own
+     * shape) — what a filter category lists when opened.
+     */
+    suspend fun searchFiltered(
+        moduleFile: File,
+        providerId: String,
+        filtersJson: String,
+        page: Int,
+    ): String = run(
+        moduleFile, providerId, "search",
+        "[\"\", $page, $filtersJson]", CATALOG_TIMEOUT_MS,
+    )
+
     suspend fun detail(moduleFile: File, providerId: String, url: String): String =
         run(moduleFile, providerId, "getDetail", "[${quote(url)}]", CATALOG_TIMEOUT_MS)
 

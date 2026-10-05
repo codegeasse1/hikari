@@ -1804,6 +1804,7 @@ class ContentRepository(private val manager: ProviderManager) {
             }
             val took = (System.currentTimeMillis() - at) / 1000
             if (got.isNotEmpty()) {
+                val combined = supplementDubSubVariants(p, item, episode, got, fullTimeoutMs)
                 providerOutcome.remove(p.config.id)
                 // Where a wait went, for the calls that took one: the extension,
                 // and the number of seconds its own answer cost. This is the one
@@ -1816,10 +1817,10 @@ class ContentRepository(private val manager: ProviderManager) {
                         p.config.name.ifBlank { p.config.id } +
                             " [${p.config.type.groupLabel}]" +
                             (if (isOrigin) " (this title's own extension)" else "") +
-                            ": ${got.size} server(s) in ${took}s (attempt $attempt/$maxAttempts)",
+                            ": ${combined.size} server(s) in ${took}s (attempt $attempt/$maxAttempts)",
                     )
                 }
-                return got
+                return combined
             }
             if (timedOut) lastWhy = "no answer in ${took}s"
             if (attempt >= maxAttempts) {
@@ -1882,6 +1883,44 @@ class ContentRepository(private val manager: ProviderManager) {
                     " — asking again with the full ${fullTimeoutMs / 1000}s budget",
             )
         }
+    }
+
+    /**
+     * Pulls folded-away dub/sub sibling rows back into the server list.
+     *
+     * The episode list shows ONE row per episode number (see [EpisodeDubSub]),
+     * but the folded rows each own a different stream URL on the ORIGIN
+     * extension — only it is asked (a sibling variant id is meaningless to any
+     * other provider), and only as a supplement: the primary answer stands on
+     * its own, each sibling gets a bounded ask with no retry, and every
+     * sibling stream is tagged "(Dub)"/"(Sub)" when its own name does not
+     * already say so, which is the shape the player's Audio sheet offers as
+     * switchable language rows (keeping the position in the film).
+     */
+    private suspend fun supplementDubSubVariants(
+        p: ContentProvider,
+        item: MediaItem,
+        episode: Episode?,
+        primary: List<StreamSource>,
+        budgetMs: Long,
+    ): List<StreamSource> {
+        if (episode == null || p.config.id != item.providerId) return primary
+        val siblings = EpisodeDubSub.siblingVariants(item.uniqueId, episode)
+        if (siblings.isEmpty()) return primary
+        val seen = HashSet<String>(primary.size + siblings.size)
+        primary.forEach { seen.add(it.url) }
+        val out = ArrayList(primary)
+        for (sib in siblings) {
+            val kind = EpisodeDubSub.audioKindOf(sib) ?: continue
+            val extra = withTimeoutOrNull(minOf(budgetMs, 30_000L)) {
+                cancellableCatching { p.getStreams(item, sib) }.getOrDefault(emptyList())
+            }.orEmpty()
+            for (s in extra) {
+                if (!seen.add(s.url)) continue
+                out += s.copy(name = EpisodeDubSub.tagStream(s.name, kind))
+            }
+        }
+        return out
     }
 
     /**
@@ -5634,6 +5673,7 @@ class ContentRepository(private val manager: ProviderManager) {
         // an Aniyomi stream lookup walks up to eight hosters, which is the
         // reported "~15 seconds for the episode list".
         val got = episodesForInner(item, onPartial)
+            ?.let { EpisodeDubSub.mergedFor(item.uniqueId, it) }
         if (!got.isNullOrEmpty()) return@interactive got
         // Tracker anime with no borrowable list: build the correct numbered
         // list (Bangumi numbering for donghua, Simkl counts for every anime,
@@ -5824,9 +5864,13 @@ class ContentRepository(private val manager: ProviderManager) {
             val answers = coroutineScope {
                 targets.mapIndexed { index, p ->
                     async(Dispatchers.IO) {
-                        val eps = withTimeoutOrNull(episodesForTimeoutMs(p)) {
+                        val raw = withTimeoutOrNull(episodesForTimeoutMs(p)) {
                             cancellableCatching { p.getEpisodes(item) }.getOrNull().orEmpty()
                         }.orEmpty()
+                        // Dub/sub pairs fold here, per provider, so even the
+                        // immediate partial paint shows one row per episode
+                        // (see [EpisodeDubSub]).
+                        val eps = EpisodeDubSub.mergedFor(item.uniqueId, raw)
                         if (eps.isNotEmpty()) {
                             val restored = restoreAnimeSeasons(item, eps)
                             val sorted = restored.sortedWith(compareBy({ it.season }, { it.number }))
@@ -5852,9 +5896,10 @@ class ContentRepository(private val manager: ProviderManager) {
             }
         } else {
             for (p in ordered) {
-                val eps = (withTimeoutOrNull(episodesForTimeoutMs(p)) {
+                val raw = (withTimeoutOrNull(episodesForTimeoutMs(p)) {
                     cancellableCatching { p.getEpisodes(item) }.getOrNull() ?: emptyList()
                 }) ?: emptyList()
+                val eps = EpisodeDubSub.mergedFor(item.uniqueId, raw)
                 if (eps.isNotEmpty()) {
                     val restored = restoreAnimeSeasons(item, eps)
                     val sorted = restored.sortedWith(compareBy({ it.season }, { it.number }))
@@ -5919,8 +5964,9 @@ class ContentRepository(private val manager: ProviderManager) {
         // Nothing fresh. Hand back the disk cache when there is one instead of a
         // bare null, so a series whose engine is unreachable right now still
         // shows the list it served before (the "no episodes" verdict for a
-        // title that plainly has them).
-        cachedSeasoned
+        // title that plainly has them). Folded for dub/sub pairs too, so a
+        // disk cache written before merging still paints one row per episode.
+        cachedSeasoned?.let { EpisodeDubSub.mergedFor(item.uniqueId, it) }
     }
 
     /**
@@ -6078,7 +6124,8 @@ class ContentRepository(private val manager: ProviderManager) {
             cancellableCatching { p.getEpisodes(match) }.getOrNull()
         } ?: return null
         if (eps.size < 2) return null
-        return eps.sortedWith(compareBy({ it.season }, { it.number }))
+        return EpisodeDubSub.mergedFor(item.uniqueId, eps)
+            .sortedWith(compareBy({ it.season }, { it.number }))
     }
 
     /**

@@ -69,7 +69,12 @@ object AnymexHomepage {
             val title = titleOf(a, img)
                 .replace(Regex("\\s+"), " ")
             if (title.length < 2) continue
-            if (poster == null && title.length < 4) continue
+            // Cards without any image are the site's own navigation
+            // ("Today", "Genres", "DMCA"…) — not titles. Letting one through
+            // used to open a section page as if it were a video, whose
+            // detail then resolved to whatever TMDB guessed from the bare
+            // word ("Today" → the NBC morning show).
+            if (poster == null) continue
             seen += href
             out += MediaItem(
                 providerId = config.id,

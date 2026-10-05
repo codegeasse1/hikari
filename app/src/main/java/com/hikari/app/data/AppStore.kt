@@ -109,6 +109,11 @@ class AppStore(private val ctx: Context) {
          *  [com.hikari.app.HikariApp] and [com.hikari.app.ui.screens.SettingsScreen]. */
         val PLAYER_ENHANCE_CHOSEN = booleanPreferencesKey("playerEnhanceChosen")
         val PLAYER_ENHANCE_UNSUPPORTED = booleanPreferencesKey("playerEnhanceUnsupported")
+    /** The user's own enhance presets, as a JSON array (see
+     *  [com.hikari.app.player.CustomEnhancePreset]). Deliberately NOT in
+     *  [DeviceLocal]: these are the user's grading looks, not a device
+     *  capability, so they travel with the setup like every other look choice. */
+    val PLAYER_ENHANCE_CUSTOMS = stringPreferencesKey("playerEnhanceCustoms")
         val UI_SCALE_ENABLED = booleanPreferencesKey("uiScaleEnabled")
         val UI_SCALE_PERCENT = intPreferencesKey("uiScalePercent")
         val HISTORY = stringPreferencesKey("history")
@@ -3329,6 +3334,21 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
 
     suspend fun setEnhancePreset(key: String) {
         write("PLAYER_ENHANCE") { it[K.PLAYER_ENHANCE] = key }
+    }
+
+    /** The user's own enhance presets (see
+     *  [com.hikari.app.player.CustomEnhancePreset]). */
+    fun customEnhanceFlow(): Flow<List<com.hikari.app.player.CustomEnhancePreset>> =
+        store.data.map { prefs ->
+            com.hikari.app.player.CustomEnhancePreset.listFromJson(prefs[K.PLAYER_ENHANCE_CUSTOMS])
+        }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun customEnhanceList(): List<com.hikari.app.player.CustomEnhancePreset> =
+        customEnhanceFlow().first()
+
+    suspend fun setCustomEnhanceList(list: List<com.hikari.app.player.CustomEnhancePreset>) {
+        val raw = com.hikari.app.player.CustomEnhancePreset.listToJson(list)
+        write("PLAYER_ENHANCE_CUSTOMS") { it[K.PLAYER_ENHANCE_CUSTOMS] = raw }
     }
 
     /** True once the user has picked a video-enhance preset themselves. The

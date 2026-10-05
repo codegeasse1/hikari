@@ -46,6 +46,7 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
+import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -58,6 +59,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.C
+import androidx.media3.common.Effect
 import androidx.media3.common.Format
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
@@ -1553,10 +1555,11 @@ class PlayerActivity : ComponentActivity() {
             applyControlLayout()
         }
         lifecycleScope.launch {
-            enhancePresetKey = EnhancePreset.fromKey(
-                runCatching { (applicationContext as HikariApp).store.enhancePreset() }
-                    .getOrNull()
-            ).key
+            val store = (applicationContext as HikariApp).store
+            customEnhanceList = runCatching { store.customEnhanceList() }.getOrDefault(emptyList())
+            enhancePresetKey = sanitizeEnhanceKey(
+                runCatching { store.enhancePreset() }.getOrNull()
+            )
             // A device that once refused the effects pipeline is remembered, so
             // the player never arms it again (arming on such a device failed
             // every play, not just the one where a preset was picked).
@@ -4150,6 +4153,10 @@ class PlayerActivity : ComponentActivity() {
     // ---- Video enhance (Settings → Player → Video enhance) -----------------
 
     private var enhancePresetKey: String = EnhancePreset.DEFAULT.key
+    /** The user's own presets, loaded with the active key at startup. */
+    private var customEnhanceList: List<CustomEnhancePreset> = emptyList()
+    /** The preset being built in the editor — resolvable before it is saved. */
+    private var editorDraft: CustomEnhancePreset? = null
     private var appliedEnhanceKey: String? = null
     private var appliedEnhanceHdr: Boolean? = null
 
@@ -4177,17 +4184,66 @@ class PlayerActivity : ComponentActivity() {
      * it), so the HDR part of a preset is dropped automatically — a 4K HDR
      * stream can never be broken by picking a preset.
      */
+    /** Menu key for the "Create custom preset" row (see [showEnhanceMenu]). */
+    private val ENHANCE_CREATE_KEY = "__create_custom__"
+
+    /** One slider row of the custom-preset editor. */
+    private class EnhanceSlider(
+        val title: String,
+        val min: Int,
+        val max: Int,
+        val get: (CustomEnhancePreset) -> Int,
+        val set: (CustomEnhancePreset, Int) -> CustomEnhancePreset,
+    )
+
+    private fun enhanceSliderText(value: Int): String =
+        (if (value >= 0) "+" else "") + value
+
+    private fun customEnhanceOf(key: String): CustomEnhancePreset? {
+        if (!CustomEnhancePreset.isCustomKey(key)) return null
+        if (editorDraft?.key() == key) return editorDraft
+        return customEnhanceList.firstOrNull { it.key() == key }
+    }
+
+    /** The GPU effect list for an enhance key (built-in or custom). */
+    private fun enhanceEffects(key: String, hdr: Boolean): List<Effect> =
+        customEnhanceOf(key)?.effects(hdr) ?: EnhancePreset.fromKey(key).effects(hdr)
+
+    /** True when the key means "no grading": Natural, or a custom preset with
+     *  every slider neutral. An unknown custom key (preset deleted elsewhere)
+     *  also reads as Natural, so it can never arm a pipeline for nothing. */
+    private fun enhanceIsNatural(key: String): Boolean =
+        if (CustomEnhancePreset.isCustomKey(key)) {
+            customEnhanceOf(key)?.isNeutral() ?: true
+        } else {
+            EnhancePreset.fromKey(key) == EnhancePreset.NATURAL
+        }
+
+    private fun enhanceLabel(key: String): String =
+        customEnhanceOf(key)?.displayName() ?: EnhancePreset.fromKey(key).label
+
+    /** A stored key that still names something real (a built-in, or a custom
+     *  preset that still exists) — anything else falls back to Natural. */
+    private fun sanitizeEnhanceKey(key: String?): String {
+        if (key.isNullOrBlank()) return EnhancePreset.DEFAULT.key
+        if (CustomEnhancePreset.isCustomKey(key)) {
+            return if (customEnhanceList.any { it.key() == key }) key
+            else EnhancePreset.DEFAULT.key
+        }
+        return EnhancePreset.fromKey(key).key
+    }
+
     private fun applyVideoEnhance(force: Boolean = false) {
         val p = player ?: return
-        val preset = EnhancePreset.fromKey(enhancePresetKey)
+        val key = enhancePresetKey
         val hdr = isCurrentVideoHdr()
-        if (!force && preset.key == appliedEnhanceKey && hdr == appliedEnhanceHdr) return
-        appliedEnhanceKey = preset.key
+        if (!force && key == appliedEnhanceKey && hdr == appliedEnhanceHdr) return
+        appliedEnhanceKey = key
         appliedEnhanceHdr = hdr
         // Nothing to apply and no pipeline to apply it to: skip the call
         // entirely, so Natural can never drag an unused GL pass into playback.
-        if (preset == EnhancePreset.NATURAL && !videoSinkArmed) return
-        runCatching { p.setVideoEffects(preset.effects(hdr)) }
+        if (enhanceIsNatural(key) && !videoSinkArmed) return
+        runCatching { p.setVideoEffects(enhanceEffects(key, hdr)) }
             .onFailure {
                 enhanceUnsupported = true
                 com.hikari.app.data.Logs.logError("Player", "video effects unavailable", it)
@@ -4214,9 +4270,17 @@ class PlayerActivity : ComponentActivity() {
         return false
     }
 
-    private fun setEnhancePreset(preset: EnhancePreset) {
-        enhancePresetKey = preset.key
-        val needsPipeline = preset != EnhancePreset.NATURAL
+    private fun setEnhancePreset(preset: EnhancePreset) = setEnhanceKey(preset.key)
+
+    /**
+     * Applies an enhance key — a built-in preset key or `custom:<id>` — and
+     * remembers it as the user's own choice (see [HikariApp.syncTvEnhance]).
+     */
+    private fun setEnhanceKey(key: String) {
+        enhancePresetKey = key
+        editorDraft = null
+        val label = enhanceLabel(key)
+        val needsPipeline = !enhanceIsNatural(key)
         val p = player
         if (needsPipeline && !enhanceUnsupported && !videoSinkArmed &&
             p != null && currentIndex in sources.indices
@@ -4226,81 +4290,324 @@ class PlayerActivity : ComponentActivity() {
             // later (the factory is only consulted while it is being enabled).
             // Re-open the SAME source with the pipeline armed, keeping the
             // position in the film, so the preset actually reaches the screen.
-            val position = p.currentPosition
-            if (position > 2_000L) {
-                startPositionMs = position
-                seekPending = true
-            }
-            // Let onTracksChanged re-apply the exact SDR/HDR effect list once
-            // the new player knows the tracks.
-            appliedEnhanceKey = null
-            appliedEnhanceHdr = null
-            noSubsRetry = false
-            com.hikari.app.data.Logs.log(
-                "Player",
-                "arming video effects pipeline for ${preset.key} (reopening current source)"
-            )
-            Toast.makeText(this, I18n.t("Applying %s…").replace("%s", preset.label), Toast.LENGTH_SHORT).show()
-            playSource(currentIndex)
-            lifecycleScope.launch {
-                runCatching {
-                    val s = (applicationContext as HikariApp).store
-                    s.setEnhancePreset(preset.key)
-                    // The user has now chosen this themselves: HikariApp's TV
-                    // layout must stop forcing Natural from here on
-                    // (see [HikariApp.syncTvEnhance]).
-                    s.setEnhanceChosen(true)
-                }
-            }
+            armPipelineForKey(key, label)
+            persistEnhanceKey(key)
             return
         }
         applyVideoEnhance(force = true)
-        if (enhanceUnsupported && preset != EnhancePreset.NATURAL) {
+        if (enhanceUnsupported && needsPipeline) {
             Toast.makeText(
                 this,
                 I18n.t("This device can't apply video effects — the preset was skipped."),
                 Toast.LENGTH_SHORT
             ).show()
         } else if (needsPipeline) {
-            Toast.makeText(this, I18n.t("%s applied").replace("%s", preset.label), Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, I18n.t("%s applied").replace("%s", label), Toast.LENGTH_SHORT).show()
         }
+        persistEnhanceKey(key)
+    }
+
+    private fun persistEnhanceKey(key: String) {
         lifecycleScope.launch {
             runCatching {
                 val s = (applicationContext as HikariApp).store
-                s.setEnhancePreset(preset.key)
-                // See the other call site: this is the user's own pick.
+                s.setEnhancePreset(key)
+                // The user has now chosen this themselves: HikariApp's TV
+                // layout must stop forcing Natural from here on
+                // (see [HikariApp.syncTvEnhance]).
                 s.setEnhanceChosen(true)
             }
         }
     }
 
-    /** The Enhance button's menu: every preset, with the active one ticked. */
+    /** Re-opens the SAME source with the effects pipeline armed, keeping the
+     *  position in the film. Lets onTracksChanged re-apply the exact SDR/HDR
+     *  effect list once the new player knows the tracks. Shared by
+     *  [setEnhanceKey] and the custom-preset editor's live preview. */
+    private fun armPipelineForKey(key: String, label: String) {
+        val p = player ?: return
+        val position = p.currentPosition
+        if (position > 2_000L) {
+            startPositionMs = position
+            seekPending = true
+        }
+        appliedEnhanceKey = null
+        appliedEnhanceHdr = null
+        noSubsRetry = false
+        com.hikari.app.data.Logs.log(
+            "Player",
+            "arming video effects pipeline for $key (reopening current source)"
+        )
+        Toast.makeText(this, I18n.t("Applying %s…").replace("%s", label), Toast.LENGTH_SHORT).show()
+        playSource(currentIndex)
+    }
+
+    /** The Enhance button's menu: every preset, with the active one ticked —
+     *  plus the user's own presets and the row that builds one. Tapping the
+     *  active custom preset again opens it for editing. */
     private fun showEnhanceMenu() {
-        val presets = EnhancePreset.entries
-        val current = EnhancePreset.fromKey(enhancePresetKey)
+        val customs = customEnhanceList
+        val current = enhancePresetKey
+        val keys = ArrayList<String>(EnhancePreset.entries.size + customs.size + 1)
+        val options = ArrayList<GlassOption>(keys.size)
+        for (p in EnhancePreset.entries) {
+            keys += p.key
+            options += GlassOption(
+                label = p.label,
+                sub = p.desc,
+                iconRes = R.drawable.ic_enhance,
+                marker = RowMarker.ICON,
+                selected = p.key == current,
+            )
+        }
+        for (c in customs) {
+            keys += c.key()
+            options += GlassOption(
+                label = c.displayName(),
+                sub = c.summary(),
+                badge = I18n.t("Custom"),
+                iconRes = R.drawable.ic_enhance,
+                marker = RowMarker.ICON,
+                selected = c.key() == current,
+            )
+        }
+        keys += ENHANCE_CREATE_KEY
+        options += GlassOption(
+            label = I18n.t("Create custom preset"),
+            sub = I18n.t("Brightness, saturation, contrast, gamma and hue sliders"),
+            iconRes = R.drawable.ic_enhance,
+            marker = RowMarker.ICON,
+            chevron = true,
+        )
         showGlassMenu(
             I18n.t("Video enhance"),
-            presets.map { p ->
-                GlassOption(
-                    label = p.label,
-                    sub = p.desc,
-                    iconRes = R.drawable.ic_enhance,
-                    marker = RowMarker.ICON,
-                    selected = p == current,
-                )
-            },
+            options,
             hint = if (enhanceUnsupported) {
                 "Not available on this device — its video pipeline refused " +
                     "media3's effects engine, so Natural is used instead."
+            } else if (customs.isNotEmpty()) {
+                "Realtime colour grading of the video itself. " +
+                    "Natural applies nothing at all. Tap a custom preset to " +
+                    "apply it — tap it again to edit or delete it."
             } else {
                 "Realtime colour grading of the video itself. " +
                     "Natural applies nothing at all."
             },
             iconRes = R.drawable.ic_enhance,
         ) { which ->
-            val picked = presets.getOrNull(which) ?: return@showGlassMenu
-            setEnhancePreset(picked)
+            val key = keys.getOrNull(which) ?: return@showGlassMenu
+            if (key == ENHANCE_CREATE_KEY) {
+                showCustomEnhanceEditor(null)
+                return@showGlassMenu
+            }
+            if (CustomEnhancePreset.isCustomKey(key)) {
+                if (key == enhancePresetKey) {
+                    showCustomEnhanceEditor(customs.firstOrNull { it.key() == key })
+                } else {
+                    setEnhanceKey(key)
+                }
+                return@showGlassMenu
+            }
+            setEnhancePreset(EnhancePreset.fromKey(key))
         }
+    }
+
+    /**
+     * The custom-preset editor: a name plus the five grading sliders, applied
+     * LIVE to the picture while they move (the pipeline is armed on the first
+     * touch when it is not up yet, exactly like picking a preset). Save keeps
+     * the preset and selects it; Delete removes it (falling back to Natural
+     * when it was the active one); Cancel/back restores whatever was active
+     * before the editor opened.
+     */
+    private fun showCustomEnhanceEditor(existing: CustomEnhancePreset?) {
+        val density = resources.displayMetrics.density
+        val previousKey = enhancePresetKey
+        var draft = existing?.copy() ?: CustomEnhancePreset(id = CustomEnhancePreset.newId(), name = "")
+        var settled = false
+        val dialog = Dialog(this, android.R.style.Theme_Translucent_NoTitleBar)
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(
+                (14 * density).toInt(), (4 * density).toInt(),
+                (14 * density).toInt(), (6 * density).toInt()
+            )
+        }
+        val nameInput = EditText(this).apply {
+            hint = I18n.t("Preset name")
+            setText(draft.name)
+            setTextColor(0xFFFFFFFF.toInt())
+            setHintTextColor(0xFF8A94A6.toInt())
+            isSingleLine = true
+            textSize = 15f
+        }
+        content.addView(
+            nameInput,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = (10 * density).toInt() }
+        )
+        val defs = listOf(
+            EnhanceSlider(I18n.t("Brightness"), -100, 100, { it.brightness }) { p, v -> p.copy(brightness = v) },
+            EnhanceSlider(I18n.t("Saturation"), -100, 100, { it.saturation }) { p, v -> p.copy(saturation = v) },
+            EnhanceSlider(I18n.t("Contrast"), -100, 100, { it.contrast }) { p, v -> p.copy(contrast = v) },
+            EnhanceSlider(I18n.t("Gamma"), -100, 100, { it.gamma }) { p, v -> p.copy(gamma = v) },
+            EnhanceSlider(I18n.t("Hue"), -180, 180, { it.hue }) { p, v -> p.copy(hue = v) },
+        )
+        for (def in defs) {
+            val valueView: TextView
+            val row = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            val head = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = android.view.Gravity.CENTER_VERTICAL
+            }
+            head.addView(TextView(this).apply {
+                text = def.title
+                dpText(12f)
+                includeFontPadding = false
+                setTextColor(0xFFE8EDF5.toInt())
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            valueView = TextView(this).apply {
+                dpText(12f)
+                includeFontPadding = false
+                setTextColor(0xFF9AA5B5.toInt())
+            }
+            head.addView(valueView)
+            row.addView(head)
+            val bar = android.widget.SeekBar(this).apply {
+                max = def.max - def.min
+                progress = def.get(draft) - def.min
+            }
+            valueView.text = enhanceSliderText(def.get(draft))
+            bar.setOnSeekBarChangeListener(object : android.widget.SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(bar: android.widget.SeekBar?, progress: Int, fromUser: Boolean) {
+                    if (!fromUser) return
+                    draft = def.set(draft, (progress + def.min).coerceIn(def.min, def.max))
+                    valueView.text = enhanceSliderText(def.get(draft))
+                    previewCustom(draft)
+                }
+                override fun onStartTrackingTouch(bar: android.widget.SeekBar?) {}
+                override fun onStopTrackingTouch(bar: android.widget.SeekBar?) {}
+            })
+            row.addView(bar, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = (2 * density).toInt()
+                bottomMargin = (8 * density).toInt()
+            })
+            content.addView(row)
+        }
+        fun restore() {
+            if (settled) return
+            settled = true
+            editorDraft = null
+            enhancePresetKey = previousKey
+            applyVideoEnhance(force = true)
+        }
+        val buttons = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
+        }
+        fun button(label: String, onClick: () -> Unit): TextView =
+            TextView(this).apply {
+                text = label
+                dpText(13f)
+                includeFontPadding = false
+                gravity = android.view.Gravity.CENTER
+                setTextColor(0xFFFFFFFF.toInt())
+                setPadding((10 * density).toInt(), (10 * density).toInt(), (10 * density).toInt(), (10 * density).toInt())
+                background = androidx.core.content.ContextCompat.getDrawable(
+                    this@PlayerActivity, R.drawable.circle_glass_ripple
+                )
+                isClickable = true
+                isFocusable = true
+                setOnClickListener { onClick() }
+            }
+        if (existing != null) {
+            buttons.addView(button(I18n.t("Delete")) {
+                val list = customEnhanceList.filterNot { it.id == draft.id }
+                settled = true
+                editorDraft = null
+                customEnhanceList = list
+                lifecycleScope.launch {
+                    runCatching { (applicationContext as HikariApp).store.setCustomEnhanceList(list) }
+                }
+                dialog.dismiss()
+                enhancePresetKey = if (previousKey == draft.key()) EnhancePreset.NATURAL.key else previousKey
+                applyVideoEnhance(force = true)
+                Toast.makeText(this, I18n.t("Custom preset deleted"), Toast.LENGTH_SHORT).show()
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = (6 * density).toInt()
+            })
+        }
+        buttons.addView(button(I18n.t("Cancel")) {
+            restore()
+            dialog.dismiss()
+        }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+            marginEnd = (6 * density).toInt()
+        })
+        buttons.addView(button(I18n.t("Save")) {
+            val name = CustomEnhancePreset.cleanName(nameInput.text?.toString().orEmpty())
+            draft = draft.copy(name = name.ifBlank { I18n.t("Custom") })
+            val list = customEnhanceList.toMutableList()
+            val at = list.indexOfFirst { it.id == draft.id }
+            if (at >= 0) {
+                list[at] = draft
+            } else {
+                if (list.size >= 12) {
+                    Toast.makeText(this, I18n.t("Preset list is full (12) — delete one first."), Toast.LENGTH_SHORT).show()
+                    return@button
+                }
+                list += draft
+            }
+            settled = true
+            editorDraft = null
+            customEnhanceList = list.toList()
+            lifecycleScope.launch {
+                runCatching { (applicationContext as HikariApp).store.setCustomEnhanceList(list) }
+            }
+            dialog.dismiss()
+            setEnhanceKey(draft.key())
+        }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        content.addView(buttons)
+        val scroll = ScrollView(this).apply {
+            addView(content)
+            isFillViewport = true
+        }
+        com.hikari.app.ui.AppFonts.applyToViewTree(scroll, com.hikari.app.ui.AppFonts.appTypeface(this))
+        // A definite box, not shrink-to-content: five slider rows plus the
+        // name field plus the buttons never fit a wrapped panel on a small
+        // phone, and the content then scrolls inside the box.
+        presentGlass(
+            dialog,
+            I18n.t("Custom preset"),
+            scroll,
+            0f,
+            if (existing == null) I18n.t("Name it, move the sliders — the picture updates live. Save keeps it.")
+            else I18n.t("Move the sliders — the picture updates live. Save keeps it."),
+            R.drawable.ic_enhance,
+            fillFractionX = 0.92f,
+            fillFractionY = 0.8f,
+        )
+        // AFTER presentGlass owns the dialog: restore the previous preset on
+        // EVERY close path the editor does not own (back, the ✕, tap-outside).
+        // Save/Delete mark [settled], so this only ever undoes a preview.
+        dialog.setOnCancelListener { restore() }
+        dialog.setOnDismissListener { restore() }
+    }
+
+    /** Applies an unsaved editor draft to the picture (see [showCustomEnhanceEditor]). */
+    private fun previewCustom(draft: CustomEnhancePreset) {
+        editorDraft = draft
+        enhancePresetKey = draft.key()
+        val p = player
+        if (!draft.isNeutral() && !enhanceUnsupported && !videoSinkArmed &&
+            p != null && currentIndex in sources.indices
+        ) {
+            armPipelineForKey(draft.key(), draft.displayName())
+            return
+        }
+        applyVideoEnhance(force = true)
     }
 
     /**
@@ -8229,6 +8536,7 @@ class PlayerActivity : ComponentActivity() {
     private val audioLangWords = listOf(
         "hindi", "tamil", "telugu", "malayalam", "kannada", "bengali", "marathi",
         "punjabi", "gujarati", "bhojpuri", "urdu", "english", "original", "multi",
+        "sub", "dub", "subbed", "dubbed",
     )
 
     /** Tokens a name may carry after its audio marker ("1080p", "Dub") — skipped
@@ -8245,7 +8553,7 @@ class PlayerActivity : ComponentActivity() {
      *  "Hindi" — or a server named "TamilBlasters · Server 1" — never reads as
      *  an audio variant. */
     private fun audioTagOf(name: String): String? {
-        Regex("""[\(\[]([^\)\]]*?(?:audio|dub)[^\)\]]*?)[\)\]]""", RegexOption.IGNORE_CASE)
+        Regex("""[\(\[]([^\)\]]*?(?:audio|dub|sub)[^\)\]]*?)[\)\]]""", RegexOption.IGNORE_CASE)
             .find(name)?.let { return it.groupValues[1].trim() }
         val tokens = name.split(Regex("[\\s\u00B7|\\-_/]+")).filter { it.isNotBlank() }
         for (i in tokens.indices.reversed()) {
@@ -8995,10 +9303,9 @@ class PlayerActivity : ComponentActivity() {
         // of the preset is handed over because the stream's colour transfer is
         // not known until prepare() has run; onTracksChanged refines it to the
         // exact SDR/HDR effect list a moment later.
-        val armPreset = EnhancePreset.fromKey(enhancePresetKey)
-        if (armPreset != EnhancePreset.NATURAL && !enhanceUnsupported) {
+        if (!enhanceIsNatural(enhancePresetKey) && !enhanceUnsupported) {
             runCatching {
-                player.setVideoEffects(armPreset.effects(hdr = true))
+                player.setVideoEffects(enhanceEffects(enhancePresetKey, hdr = true))
                 videoSinkArmed = true
             }.onFailure {
                 videoSinkArmed = false

@@ -57,7 +57,7 @@ object TmdbResolver {
         path.startsWith("/search") || path.startsWith("/find") ||
             path.contains("alternative_titles") || path.contains("external_ids")
 
-    private val cacheFile get() = File(HikariApp.instance.filesDir, "nuvio/tmdb-cache.json")
+    private val cacheFile get() = File(HikariApp.instance.filesDir, "nuvio/tmdb-cache-v2.json")
 
     private val memory = ConcurrentHashMap<String, Resolved>()
 
@@ -265,6 +265,15 @@ object TmdbResolver {
      * a different show.
      */
     private suspend fun searchByTitle(item: MediaItem): Resolved? {
+        // A bare generic word from a site-scraped catalogue ("Today",
+        // "News", "Live") exact-matches an unrelated TMDB entry (the NBC
+        // morning show, …) with a top score — and the detail page then wears
+        // that show's overview, companies, trailers and ratings. A
+        // single-token title that short, with no year to corroborate it and
+        // no TMDB/tracker id behind it, is refused outright: losing the
+        // enrichment on the rare real one-word short title is invisible next
+        // to wearing another show's whole identity.
+        if (isGenericShortTitle(item)) return null
         // The original name first: a title the app renamed for display (TMDB
         // language) still has to be looked up by the name TMDB indexes it under.
         val title = item.searchTitle
@@ -354,6 +363,27 @@ object TmdbResolver {
         }
         val tt = bestId ?: return null
         return runCatching { resolveImdb(tt, item) }.getOrNull()
+    }
+
+    /** True when [item] is a site-scraped extension row whose whole title is one
+     *  short word (see [searchByTitle]): nothing a real catalogue title looks
+     *  like, everything a nav-link card looks like. TMDB rows, tracker rows
+     *  and any id that already names a TMDB/IMDb entry never qualify — only a
+     *  blind name search could misfire on those. */
+    private fun isGenericShortTitle(item: MediaItem): Boolean {
+        if (item.providerId.equals("tmdb", true)) return false
+        if (item.providerId.lowercase() in setOf("anilist", "simkl", "mal", "kitsu", "shikimori", "trakt")) return false
+        val id = item.id.trim()
+        if (id.isEmpty()) return false
+        if (id.all { it.isDigit() }) return false
+        if (id.lowercase().startsWith("tt") && id.length >= 8) return false
+        if (id.startsWith("tmdb:", true) || id.startsWith("tmdb-", true)) return false
+        if (item.year != null && item.year > 0) return false
+        val variants = TmdbMeta.queryVariants(item.searchTitle)
+        if (variants.isEmpty()) return true
+        return variants.all { v ->
+            TmdbMeta.normalizeTitle(v).replace(" ", "").length <= 5
+        }
     }
 
     /** Name-match score for one search result against every title variant. */
