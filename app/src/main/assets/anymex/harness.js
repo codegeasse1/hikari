@@ -232,7 +232,21 @@
           }
         } catch (e) {}
         try { noteFetch(res.status, text); } catch (e2) {}
-        return { body: text, code: res.status, status: res.status, headers: plain, url: res.url || String(url) };
+        var finalUrl = '';
+        try { finalUrl = res.url || String(url); } catch (e3) { finalUrl = String(url); }
+        var statusText = '';
+        try { statusText = res.statusText || ''; } catch (e4) {}
+        // Upstream parity (AnymeXExtensionRuntimeBridge Response.toJson):
+        // scripts read res.statusCode (not just code/status) and res.request.url,
+        // so both shapes ride along — a missing statusCode used to read as
+        // undefined and kill video extraction a step later.
+        return {
+          body: text, code: res.status, status: res.status, statusCode: res.status,
+          statusText: statusText, reasonPhrase: statusText,
+          headers: plain, url: finalUrl,
+          isRedirect: false, persistentConnection: true,
+          request: { url: finalUrl, method: method, headers: {} },
+        };
       }, function (e) {
         try { noteFetchError(); } catch (e2) {}
         throw e;
@@ -303,7 +317,7 @@
   // real posters, so they are skipped wherever they sit.
   function pickImg(sel) {
     try {
-      if (!sel || !sel.length) return null;
+      if (!sel || !sel.length) return '';
       var attrs = ['data-src', 'data-lazy-src', 'data-original', 'data-srcset', 'srcset', 'src'];
       for (var i = 0; i < attrs.length; i++) {
         var v = sel.attr(String(attrs[i]));
@@ -317,7 +331,7 @@
         return v;
       }
     } catch (e) {}
-    return null;
+    return '';
   }
 
   Object.defineProperty(DomElement.prototype, 'getSrc', {
@@ -334,7 +348,11 @@
 
   DomElement.prototype.attr = function (name) {
     try {
-      if (!this._sel || !this._sel.length) return null;
+      // Upstream parity (AnymeXExtensionRuntimeBridge ele_attr): a missing
+      // element or attribute answers "" — never null, never a throw — so one
+      // changed card on a video page cannot kill the whole extraction the way
+      // `selectFirst(...).attr(...)` on null used to.
+      if (!this._sel || !this._sel.length) return '';
       var key = String(name);
       var v = this._sel.attr(key);
       // Lazy-load aware `src`: themes that defer images leave src empty or a
@@ -348,7 +366,7 @@
         var lazy = pickImg(this._sel);
         if (lazy !== undefined && lazy !== null && lazy !== '') v = lazy;
       }
-      return v === undefined ? null : v;
+      return (v === undefined || v === null) ? '' : v;
     } catch (e) { return null; }
   };
 
@@ -376,11 +394,11 @@
 
   DomElement.prototype.selectFirst = function (css) {
     try {
-      if (!this._sel || !cheerio) return null;
+      if (!this._sel || !cheerio) return wrap(null);
       var found = this._sel.find ? this._sel.find(String(css)) : cheerio(String(css), this._sel);
-      if (!found || !found.length) return null;
+      if (!found || !found.length) return wrap(null);
       return wrap(found.first());
-    } catch (e) { return null; }
+    } catch (e) { return wrap(null); }
   };
 
   function wrapAll(found) {
@@ -418,28 +436,33 @@
   Object.defineProperty(DomElement.prototype, 'previousElementSibling', {
     get: function () {
       try {
-        if (!this._sel || !cheerio) return null;
+        if (!this._sel || !cheerio) return wrap(null);
         var p = this._sel.prev();
-        if (!p || !p.length) return null;
+        if (!p || !p.length) return wrap(null);
         return wrap(p.first());
-      } catch (e) { return null; }
+      } catch (e) { return wrap(null); }
     }
   });
 
   Object.defineProperty(DomElement.prototype, 'nextElementSibling', {
     get: function () {
       try {
-        if (!this._sel || !cheerio) return null;
+        if (!this._sel || !cheerio) return wrap(null);
         var n = this._sel.next();
-        if (!n || !n.length) return null;
+        if (!n || !n.length) return wrap(null);
         return wrap(n.first());
-      } catch (e) { return null; }
+      } catch (e) { return wrap(null); }
     }
   });
 
   DomElement.prototype.hasAttr = function (name) {
     try {
-      return this.attr(String(name)) !== null;
+      var key = String(name);
+      if (this._sel && this._sel.length && typeof this._sel.is === 'function') {
+        try { return !!this._sel.is('[' + key + ']'); } catch (eIs) {}
+      }
+      var vv = this.attr(key);
+      return typeof vv === 'string' ? vv !== '' : vv !== null && vv !== undefined;
     } catch (e) { return false; }
   };
 
@@ -448,7 +471,7 @@
   });
 
   Object.defineProperty(DomElement.prototype, 'getDataSrc', {
-    get: function () { return this.attr('data-src') || null; }
+    get: function () { return this.attr('data-src') || ''; }
   });
 
   Object.defineProperty(DomElement.prototype, 'innerHtml', {
@@ -496,11 +519,11 @@
     };
     doc.selectFirst = function (css) {
       try {
-        if (!root) return null;
+        if (!root) return wrap(null);
         var found = root(String(css));
-        if (!found || !found.length) return null;
+        if (!found || !found.length) return wrap(null);
         return wrap(found.first());
-      } catch (e) { return null; }
+      } catch (e) { return wrap(null); }
     };
     doc.getElementsByClassName = function (name) {
       try {
@@ -516,30 +539,30 @@
     };
     doc.getElementById = function (id) {
       try {
-        if (!root) return null;
+        if (!root) return wrap(null);
         var found = root('[id="' + String(id).replace(/"/g, '') + '"]');
-        if (!found || !found.length) return null;
+        if (!found || !found.length) return wrap(null);
         return wrap(found.first());
-      } catch (e) { return null; }
+      } catch (e) { return wrap(null); }
     };
     Object.defineProperty(doc, 'body', {
       get: function () {
         try {
-          if (!root) return null;
+          if (!root) return wrap(null);
           var b = root('body');
-          if (!b || !b.length) return null;
+          if (!b || !b.length) return wrap(null);
           return wrap(b.first());
-        } catch (e) { return null; }
+        } catch (e) { return wrap(null); }
       }
     });
     Object.defineProperty(doc, 'head', {
       get: function () {
         try {
-          if (!root) return null;
+          if (!root) return wrap(null);
           var h = root('head');
-          if (!h || !h.length) return null;
+          if (!h || !h.length) return wrap(null);
           return wrap(h.first());
-        } catch (e) { return null; }
+        } catch (e) { return wrap(null); }
       }
     });
     return doc;
@@ -734,11 +757,27 @@
   };
 
   g.parseDates = function (value, format, locale) {
+    // Upstream parity (MBridge.parseDates): the documented mangayomi helper
+    // takes a LIST of date strings and answers a list of epoch millis. A lone
+    // value keeps the old scalar answer.
+    function one(v) {
+      try {
+        var tt = Date.parse(String(v == null ? '' : v).trim());
+        if (!isNaN(tt)) return tt;
+      } catch (e) {}
+      return 0;
+    }
     try {
-      var tt = Date.parse(String(value));
-      if (!isNaN(tt)) return tt;
-    } catch (e) {}
-    return 0;
+      if (Array.isArray(value)) {
+        var out = [];
+        for (var i = 0; i < value.length; i++) {
+          var s = String(value[i] == null ? '' : value[i]).trim();
+          if (s) out.push(one(s));
+        }
+        return out;
+      }
+      return one(value);
+    } catch (e) { return Array.isArray(value) ? [] : 0; }
   };
 
   function extractViaHost(url, quality) {
@@ -767,6 +806,170 @@
     g.MP4Upload.prototype.extract = function (url, quality) { return extractViaHost(url, quality); };
   }
   if (typeof g.Mp4Upload !== 'function') g.Mp4Upload = g.MP4Upload;
+
+  // ---- upstream crypto + packer helpers ----
+  // Mirrors of AnymeXExtensionRuntimeBridge's JsUtils/MBridge JS globals, so
+  // extensions that decrypt (gogo-style AES), deobfuscate (jsfuck passwords)
+  // or unpack (eval-packed embeds) inside getVideoList run here exactly as
+  // they do in the AnymeX app — where a missing global used to be a
+  // ReferenceError that killed the whole video list.
+  var __anymexAlpha = {
+    52: '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOP',
+    54: '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQR',
+    62: '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ',
+    95: ' !"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~'
+  };
+  function __anymexUnbase(word, base) {
+    try {
+      if (base >= 2 && base <= 36) {
+        var n = parseInt(String(word), base);
+        return isNaN(n) ? 0 : n;
+      }
+      var alpha = __anymexAlpha[base];
+      if (!alpha) return 0;
+      var val = 0;
+      var s = String(word);
+      for (var i = 0; i < s.length; i++) {
+        var at = alpha.indexOf(s.charAt(s.length - 1 - i));
+        if (at < 0) at = 0;
+        val += Math.pow(base, i) * at;
+      }
+      return val;
+    } catch (e) { return 0; }
+  }
+  function __anymexUnpackAll(scriptBlock) {
+    var out = [];
+    try {
+      var src = String(scriptBlock == null ? '' : scriptBlock);
+      if (!/eval[(]function[(]p,a,c,k,e,[r|d]?/i.test(src)) return out;
+      var re = /[}][(]'(.*)', *(\d+), *(\d+), *'(.*?)'[.]split[(]'[|]'[)]/gi;
+      var m;
+      while ((m = re.exec(src)) !== null) {
+        var payload = m[1];
+        var radix = parseInt(m[2], 10) || 10;
+        var count = parseInt(m[3], 10) || 0;
+        var symtab = String(m[4]).split('|');
+        if (!symtab || symtab.length !== count) continue;
+        var unpacked = String(payload).replace(/\b\w+\b/g, function (word) {
+          var idx = __anymexUnbase(word, radix);
+          if (idx < 0 || idx >= symtab.length) return word;
+          var rep = symtab[idx];
+          return rep === '' ? word : rep;
+        });
+        out.push(unpacked);
+      }
+    } catch (e) {}
+    return out;
+  }
+  if (typeof g.unpackJs !== 'function') {
+    g.unpackJs = function (packedJS) {
+      try {
+        var all = __anymexUnpackAll(packedJS);
+        return all.length ? all[0] : '';
+      } catch (e) { return ''; }
+    };
+  }
+  if (typeof g.unpackJsAndCombine !== 'function') {
+    g.unpackJsAndCombine = function (scriptBlock) {
+      try {
+        var all = __anymexUnpackAll(scriptBlock);
+        return all.length ? all.join(' ') : '';
+      } catch (e) { return ''; }
+    };
+  }
+  if (typeof g.encryptAESCryptoJS !== 'function') {
+    g.encryptAESCryptoJS = function (plainText, passphrase) {
+      var c = g.CryptoJS;
+      var cipher = c.AES.encrypt(
+        String(plainText == null ? '' : plainText).trim(),
+        String(passphrase == null ? '' : passphrase).trim()
+      );
+      return cipher.toString();
+    };
+  }
+  if (typeof g.decryptAESCryptoJS !== 'function') {
+    g.decryptAESCryptoJS = function (encrypted, passphrase) {
+      var c = g.CryptoJS;
+      var dec = c.AES.decrypt(
+        String(encrypted == null ? '' : encrypted).trim(),
+        String(passphrase == null ? '' : passphrase).trim()
+      );
+      return dec.toString(c.enc.Utf8);
+    };
+  }
+  if (typeof g.cryptoHandler !== 'function') {
+    // MBridge.cryptoHandler mirror: raw AES-CBC (key/iv straight UTF-8, like
+    // encrypt.Key.fromUtf8 / IV.fromUtf8), base64 ciphertext. Any failure
+    // answers the input back, exactly as upstream's catch does.
+    g.cryptoHandler = function (text, iv, secretKeyString, encrypt) {
+      try {
+        var c = g.CryptoJS;
+        var key = c.enc.Utf8.parse(String(secretKeyString == null ? '' : secretKeyString));
+        var ivW = c.enc.Utf8.parse(String(iv == null ? '' : iv));
+        if (encrypt) {
+          return c.AES.encrypt(String(text == null ? '' : text), key, {
+            iv: ivW, mode: c.mode.CBC, padding: c.pad.Pkcs7
+          }).ciphertext.toString(c.enc.Base64);
+        }
+        var params = c.lib.CipherParams.create({
+          ciphertext: c.enc.Base64.parse(String(text == null ? '' : text))
+        });
+        return c.AES.decrypt(params, key, {
+          iv: ivW, mode: c.mode.CBC, padding: c.pad.Pkcs7
+        }).toString(c.enc.Utf8);
+      } catch (e) { return String(text == null ? '' : text); }
+    };
+  }
+  if (typeof g.deobfuscateJsPassword !== 'function') {
+    g.deobfuscateJsPassword = function (inputString) {
+      var s = String(inputString == null ? '' : inputString);
+      function closingAt(openingIndex) {
+        var open = s[openingIndex];
+        var close = open === '[' ? ']' : ')';
+        var counter = 0;
+        for (var i = openingIndex; i < s.length; i++) {
+          if (s[i] === open) counter++;
+          if (s[i] === close) counter--;
+          if (counter === 0) return i;
+          if (counter < 0) return -1;
+        }
+        return -1;
+      }
+      var idx = 0;
+      var buf = '';
+      while (idx < s.length) {
+        var chr = s[idx];
+        if (chr !== '[' && chr !== '(') { idx++; continue; }
+        var closingIndex = closingAt(idx);
+        if (closingIndex < 0) throw new Error('unbalanced brackets');
+        if (chr === '[') {
+          var sub = s.substring(idx, closingIndex);
+          var hits = sub.match(/!\+\[\]/g);
+          var digit = hits ? hits.length : 0;
+          if (digit === 0) {
+            var zeroes = sub.match(/\+\[\]/g);
+            buf += (zeroes && zeroes.length === 1) ? '0' : '-';
+          } else if (digit >= 1 && digit <= 9) {
+            buf += String(digit);
+          } else {
+            buf += '-';
+          }
+        } else {
+          buf += '.';
+          if (s[closingIndex + 1] === '[') {
+            var skip = closingAt(closingIndex + 1);
+            idx = (skip < 0 ? closingIndex : skip) + 1;
+            continue;
+          }
+        }
+        idx = closingIndex + 1;
+      }
+      return buf;
+    };
+  }
+  if (typeof g.evaluateJavascriptViaWebview !== 'function') {
+    g.evaluateJavascriptViaWebview = function () { return Promise.resolve(''); };
+  }
 
   function describeError(e) {
     if (e === undefined || e === null) return 'unknown error';

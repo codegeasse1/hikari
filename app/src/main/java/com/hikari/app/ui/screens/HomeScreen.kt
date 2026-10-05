@@ -144,6 +144,9 @@ import com.hikari.app.ui.navigation.Routes
 import com.hikari.app.providers.ContentProvider
 import com.hikari.app.web.WebViewActivity
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -151,6 +154,10 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import com.hikari.app.tv.tvPress
@@ -3070,8 +3077,27 @@ private fun HomeSearchOverlay(
             // One tap narrows what is already here: the typed results AND the
             // loaded feed behind them are cut by the same rule, so the chips
             // never disagree with the grid below them.
-            val shownResults = remember(results, kindKey, genre) {
-                results.filter { homeKindKeep(it, kindKey) && homeGenreKeep(it, genre) }
+            //
+            // Genre enrichment state first (used below): catalogue cards carry
+            // no genre tags (only each title's own detail page names them), so
+            // the genre chip above can never match an extension title on tags
+            // alone. Untagged titles are checked against their own details a
+            // few at a time; matches join the grid as their genres land, and
+            // every verdict is remembered for the session so scrolling never
+            // re-asks.
+            var enrichedGenres by remember { mutableStateOf<Map<String, List<String>>>(emptyMap()) }
+            var checkedIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+            var checkingCount by remember { mutableStateOf(0) }
+            var checksUsed by remember { mutableStateOf(0) }
+            val triageMutex = remember { Mutex() }
+            fun withTags(item: MediaItem): MediaItem {
+                val extra = enrichedGenres[item.uniqueId]
+                if (extra.isNullOrEmpty()) return item
+                return item.copy(genres = (item.genres + extra).distinct())
+            }
+            val shownResults = remember(results, enrichedGenres, kindKey, genre) {
+                results.map { withTags(it) }
+                    .filter { homeKindKeep(it, kindKey) && homeGenreKeep(it, genre) }
                     .distinctBy { it.uniqueId }
             }
             // An empty query with a kind browses the provider's CATALOGUES, not
@@ -3154,6 +3180,55 @@ private fun HomeSearchOverlay(
                     browseLoading = false
                 }
             }
+            // The genre check itself: every untagged title in the loaded pools
+            // gets its detail read (that is where an extension names genres)
+            // six at a time, oldest pool first, until the session budget is
+            // spent. A title whose detail names nothing is still marked
+            // checked, so it is never asked twice.
+            LaunchedEffect(feedItems, browseItems, results, genre, providerIds) {
+                if (genre.isBlank() || providerIds.isEmpty()) {
+                    checkingCount = 0
+                    return@LaunchedEffect
+                }
+                val pool = (feedItems + browseItems + results).distinctBy { it.uniqueId }
+                val budget = (240 - checksUsed).coerceAtLeast(0)
+                val todo = if (budget <= 0) emptyList()
+                else pool.filter { it.genres.isEmpty() && it.uniqueId !in checkedIds }.take(budget)
+                if (todo.isEmpty()) {
+                    checkingCount = 0
+                    return@LaunchedEffect
+                }
+                triageMutex.withLock {
+                    try {
+                        checkingCount = todo.size
+                        val byProvider = app.providers.providers.value
+                            .filter { it.config.enabled && it.config.id in providerIds }
+                            .associateBy { it.config.id }
+                        val gate = Semaphore(6)
+                        val verdicts = coroutineScope {
+                            todo.map { item ->
+                                async(Dispatchers.IO) {
+                                    gate.withPermit {
+                                        val p = byProvider[item.providerId]
+                                        val tags = if (p == null) emptyList()
+                                        else runCatching { p.getMeta(item) }.getOrNull()?.genres.orEmpty()
+                                        item.uniqueId to tags
+                                    }
+                                }
+                            }.awaitAll()
+                        }
+                        val fresh = verdicts.filter { it.second.isNotEmpty() }.toMap()
+                        if (fresh.isNotEmpty()) enrichedGenres = enrichedGenres + fresh
+                        checkedIds = checkedIds + verdicts.map { it.first }
+                        checksUsed += verdicts.size
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (_: Throwable) {
+                    } finally {
+                        checkingCount = 0
+                    }
+                }
+            }
             /**
              * The next pages of the kind browser: a few catalogues per round,
              * appended under what is already on screen. A catalogue that
@@ -3210,9 +3285,9 @@ private fun HomeSearchOverlay(
                     }
                 }
             }
-            val blankShown = remember(feedItems, browseItems, browseAnimeIds, kindKey, genre) {
+            val blankShown = remember(feedItems, browseItems, browseAnimeIds, enrichedGenres, kindKey, genre) {
                 if (kindKey == HOME_KIND_ALL && genre.isBlank()) emptyList()
-                else (feedItems + browseItems).filter { item ->
+                else (feedItems + browseItems).map { withTags(it) }.filter { item ->
                     val kindOk = when (kindKey) {
                         HOME_KIND_ALL -> true
                         HOME_KIND_ANIME -> item.looksAnime() || item.uniqueId in browseAnimeIds
@@ -3220,6 +3295,16 @@ private fun HomeSearchOverlay(
                     }
                     kindOk && homeGenreKeep(item, genre)
                 }.distinctBy { it.uniqueId }
+            }
+            // Searching from inside the genre narrowing searches the loaded
+            // genre list too: a typed title that is already on this grid shows
+            // up even when the site's own search would not tag it back.
+            val poolHits = remember(blankShown, applied) {
+                if (applied.isBlank()) emptyList()
+                else blankShown.filter { it.title.contains(applied, ignoreCase = true) }
+            }
+            val combinedResults = remember(poolHits, shownResults) {
+                (poolHits + shownResults).distinctBy { it.uniqueId }
             }
             if (!LocalHideHelp.current) {
                 Text(
@@ -3238,7 +3323,7 @@ private fun HomeSearchOverlay(
                     action = null,
                 )
                 applied.isBlank() -> {
-                    if (blankShown.isEmpty() && browseLoading) {
+                    if (blankShown.isEmpty() && (browseLoading || (genre.isNotBlank() && checkingCount > 0))) {
                         Box(
                             Modifier.fillMaxSize(),
                             contentAlignment = Alignment.Center,
@@ -3258,7 +3343,9 @@ private fun HomeSearchOverlay(
                         Column(Modifier.fillMaxSize()) {
                             Text(
                                 I18n.t("%s titles").replace("%s", blankShown.size.toString()) +
-                                    if (browseLoading || browseMoreLoading || !browseDone) "…" else "",
+                                    if (browseLoading || browseMoreLoading || !browseDone ||
+                                        (genre.isNotBlank() && checkingCount > 0)
+                                    ) "…" else "",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
@@ -3296,11 +3383,11 @@ private fun HomeSearchOverlay(
                         }
                     }
                 }
-                results.isEmpty() && searching -> Box(
+                combinedResults.isEmpty() && searching -> Box(
                     Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center,
                 ) { CircularProgressIndicator() }
-                shownResults.isEmpty() && !searching -> EmptyState(
+                combinedResults.isEmpty() && !searching -> EmptyState(
                     title = tr("No matches"),
                     subtitle = I18n.t("%s has no \"%s\" of that kind — or its site is not answering.")
                         .replace("%s", label).replace("%s", applied),
@@ -3314,7 +3401,7 @@ private fun HomeSearchOverlay(
                     // crash in Compose, so repeats are dropped before the grid is
                     // built — the same treatment the feed and the catalog page
                     // give their own lists.
-                    val unique = rememberVisibleItems(shownResults)
+                    val unique = rememberVisibleItems(combinedResults)
                     LazyVerticalGrid(
                         columns = GridCells.Adaptive(minSize = TvUi.gridMinFor(96)),
                         modifier = Modifier.fillMaxSize(),

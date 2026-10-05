@@ -11,7 +11,11 @@ import com.hikari.app.net.Http
 import com.hikari.app.net.StreamProbe
 import com.hikari.app.providers.ContentProvider
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -308,7 +312,17 @@ class AnymexProvider(override val config: ProviderConfig) : ContentProvider {
             val epUrl = absUrl(cleanLink(epRel), siteBase()).ifBlank { epRel }
             val raw = AnymexRuntime.videos(mod, config.id, epUrl)
                 ?: return@withContext fail("✗ No playable sources for this title.")
-            val out = mapVideos(raw, siteBase())
+            val answered = mapVideos(raw, siteBase())
+            if (answered.isEmpty()) return@withContext fail("✗ No playable sources for this title.")
+            // Playing logic (AnymeX app parity + one step further): an
+            // extension that answers EMBED pages instead of files (watch,
+            // player and embed links the extension itself did not extract)
+            // used to hand those pages straight to the player, where every
+            // one failed. When nothing in the answer looks directly playable,
+            // each link goes through the same universal extraction engine
+            // every other embed in the app goes through — so a video page that
+            // AnymeX plays via its own extractors plays here too.
+            val out = resolveEmbeds(answered)
             if (out.isEmpty()) return@withContext fail("✗ No playable sources for this title.")
             streamErrors.remove(config.id)
             lastOutcome[config.id] = "✓ ${out.size} source${if (out.size == 1) "" else "s"} in " +
@@ -602,8 +616,70 @@ private fun recordPosterReferer(url: String?, siteBase: String?) {
         )
     }
 
-    private fun genresOf(d: JSONObject): List<String> {
-        val g = d.opt("genre") ?: d.opt("genres") ?: return emptyList()
+    private val directRe = Regex(
+        "\\.(m3u8|mpd|mp4|mkv|avi|webm|mov|m4v|ts)([?#]|$)",
+        RegexOption.IGNORE_CASE,
+    )
+
+    private fun looksDirect(u: String): Boolean {
+        val t = u.trim()
+        if (t.startsWith("magnet:", true)) return true
+        return directRe.containsMatchIn(t)
+    }
+
+    /**
+     * Embed fan-out for [getStreams]: when the extension's answer holds no
+     * directly playable file, every http(s) link is offered to the universal
+     * extraction engine (fetch the page, unpack its player config, scan for
+     * HLS/MP4, run the host dances, then the jar's extractor registry) with
+     * the answer's own Referer attached. Links that resolve keep the
+     * extension's identity and gain its server label; links that do not stay
+     * on the list untouched, so an unresolvable answer degrades to exactly
+     * what the extension printed instead of an empty failure.
+     */
+    private suspend fun resolveEmbeds(found: List<StreamSource>): List<StreamSource> {
+        if (found.any { looksDirect(it.url) }) return found
+        val cands = found.filter { it.url.startsWith("http", true) }.take(8)
+        if (cands.isEmpty()) return found
+        val cracked = coroutineScope {
+            cands.map { s ->
+                async {
+                    val ref = s.headers.entries
+                        .firstOrNull { it.key.equals("Referer", true) }?.value
+                    val got = runCatching {
+                        withTimeoutOrNull(25_000) {
+                            com.hikari.app.cs3.FallbackResolver.resolveEmbedUrl(s.url, ref)
+                        }.orEmpty()
+                    }.getOrDefault(emptyList())
+                    s to got
+                }
+            }.awaitAll()
+        }
+        val merged = ArrayList<StreamSource>(found.size)
+        val seen = HashSet<String>()
+        for ((s, got) in cracked) {
+            if (got.isEmpty()) {
+                if (seen.add(s.url)) merged += s
+                continue
+            }
+            for (r in got) {
+                val u = r.url.trim()
+                if (u.isEmpty() || !seen.add(u)) continue
+                val label = r.name.ifBlank { s.name }
+                merged += r.copy(
+                    name = if (label.isBlank() || r.name.contains(s.name, true)) r.name
+                    else "${r.name} · ${s.name}",
+                    provider = "Anymex",
+                    providerId = config.id,
+                    providerName = config.name,
+                )
+            }
+        }
+        for (s in found) if (seen.add(s.url)) merged += s
+        return merged
+    }
+
+    private fun genresOf(d: JSONObject): List<String> {        val g = d.opt("genre") ?: d.opt("genres") ?: return emptyList()
         return when (g) {
             is JSONArray -> (0 until g.length()).mapNotNull { g.optString(it).trim().ifBlank { null } }
             is String -> g.split(",").map { it.trim() }.filter { it.isNotBlank() }

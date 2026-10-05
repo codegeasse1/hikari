@@ -208,6 +208,10 @@ object AnymexRuntime {
                 inFlight.decrementAndGet()
             }
         }
+        // The AES/MD5/HMAC/PBKDF2 natives behind boot.js's CryptoJS — without
+        // these every extension-side CryptoJS.AES call throws, killing video
+        // extraction for any host using encrypted streams.
+        com.hikari.app.nuvio.NuvioCryptoBridge.bindAll(qjs)
 
         qjs.evaluateCached("boot.js", bootJs)
         qjs.evaluateCached(

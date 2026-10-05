@@ -1,3 +1,13 @@
+## 0.10.88
+
+Everything new and fixed since the last release (0.10.87):
+
+### Fixed
+
+- I fixed Anymex videos answering "No playable sources" while the AnymeX app plays the same titles — the extension runtime now matches the AnymeX app's own bridge call for call: a missing page element answers empty instead of throwing the whole video list away (one changed card on a video page no longer kills every server), fetch answers carry the statusCode/request shape scripts read, and the packer, AES-CryptoJS, jsfuck-password and date-list helpers extensions decrypt and unpack embeds with are all present, backed by real AES in the engine where they used to hit a missing bridge
+- I fixed embed answers never becoming playable — when an extension's video list holds no directly playable file, every link now goes through the universal extraction engine with the answer's own Referer attached, keeping the extension's server label, so watch/player/embed links the extension did not extract itself still resolve to something the player can start
+- I fixed the Home genre "Only this extension" screen showing nothing for extensions like 1Shows and 123AV — catalogue cards never carry genre tags (only each title's detail page names them), so the screen now reads those details a few titles at a time and matching titles join the grid as their genres land, with a running count while it checks; typing in the search box above now also matches the titles already on that genre grid, not just the site's own search
+
 ## 0.10.87
 
 Everything new and fixed since the last release (0.10.86):
