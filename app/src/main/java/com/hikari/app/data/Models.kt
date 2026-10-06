@@ -304,6 +304,11 @@ data class Episode(
     val overview: String? = null,
     /** First-air/release date as the provider printed it ("1999-10-20"). */
     val released: String? = null,
+    /** TMDB's own vote average for this episode (the "Rated: 6.0" line the
+     *  reference clients print under each episode title). */
+    val rating: Double? = null,
+    /** Episode runtime in minutes (the "25m" beside the rating). */
+    val runtime: Int? = null,
 )
 
 /** One cast member from TMDB's `credits` — the detail page's Cast row. */

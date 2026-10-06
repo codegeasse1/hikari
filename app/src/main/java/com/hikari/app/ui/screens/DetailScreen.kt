@@ -7280,6 +7280,24 @@ private fun EpisodeRow(
                 overflow = TextOverflow.Ellipsis
             )
             val aired = formatEpisodeDate(ep.released)
+            val ratedLine = buildString {
+                ep.rating?.takeIf { it > 0.0 }?.let {
+                    append(tr("Rated: %s").replace("%s", String.format(java.util.Locale.US, "%.1f", it)))
+                }
+                ep.runtime?.takeIf { it > 0 }?.let {
+                    if (isNotEmpty()) append("  ")
+                    append("${it}m")
+                }
+            }.takeIf { it.isNotBlank() }
+            if (!ratedLine.isNullOrBlank()) {
+                Text(
+                    ratedLine,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
             if (!aired.isNullOrBlank()) {
                 Text(
                     aired,

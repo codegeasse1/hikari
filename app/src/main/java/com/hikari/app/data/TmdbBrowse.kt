@@ -301,6 +301,8 @@ object TmdbBrowse {
                         season = n,
                         overview = e.optString("overview").ifBlank { null },
                         released = e.optString("air_date").ifBlank { null },
+                        rating = e.optDouble("vote_average", 0.0).takeIf { it > 0.0 },
+                        runtime = e.optInt("runtime", -1).takeIf { it > 0 },
                     )
                 }
             }

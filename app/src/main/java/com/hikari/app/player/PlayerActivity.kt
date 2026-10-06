@@ -929,6 +929,20 @@ class PlayerActivity : ComponentActivity() {
     private var pickText: TrackPick? = null
     private var pickAudio: TrackPick? = null
 
+    /**
+     * Cross-server audio: the video keeps playing from the current server
+     * while a second, audio-only ExoPlayer decodes another server's stream
+     * for its sound (Hindi audio under an English server's 4K picture, …).
+     * [dualAudioOn] is the feature switch (Audio sheet toggle, persisted);
+     * [dualPlayer]/[dualAudioIndex] is the live pairing, kept in sync with
+     * the video player in [syncDualAudio] and torn down whenever the video
+     * server changes (see [playSource]) or the player exits.
+     */
+    private var dualAudioOn = false
+    private var dualPlayer: ExoPlayer? = null
+    private var dualAudioIndex = -1
+    private var dualSyncTask: Runnable? = null
+
     /** The user chose "Off" in the subtitle sheet. */
     private var textOff = false
 
@@ -1600,6 +1614,11 @@ class PlayerActivity : ComponentActivity() {
             externalPlayerRow = runCatching {
                 (applicationContext as HikariApp).store.playerExternalButton()
             }.getOrDefault(true)
+        }
+        lifecycleScope.launch {
+            dualAudioOn = runCatching {
+                (applicationContext as HikariApp).store.dualAudio()
+            }.getOrDefault(false)
         }
         lifecycleScope.launch {
             iconOnlyControls = runCatching {
@@ -4177,6 +4196,15 @@ class PlayerActivity : ComponentActivity() {
     private var customEnhanceList: List<CustomEnhancePreset> = emptyList()
     /** The preset being built in the editor — resolvable before it is saved. */
     private var editorDraft: CustomEnhancePreset? = null
+    /** While true, an effects-pipeline rebuild re-opens the SAME source
+     *  silently: no loading cover, no probe, no failover (see
+     *  [rebuildPlayerForEffects]). */
+    private var silentEffectsRebuild = false
+    /** The editor already armed the pipeline once this session, so further
+     *  slider moves are cheap effect-list swaps, not rebuilds. */
+    private var previewArmedOnce = false
+    /** Trailing live-preview apply for slider drags (see [schedulePreview]). */
+    private var previewTask: Runnable? = null
     private var appliedEnhanceKey: String? = null
     private var appliedEnhanceHdr: Boolean? = null
 
@@ -4345,7 +4373,34 @@ class PlayerActivity : ComponentActivity() {
      *  effect list once the new player knows the tracks. Shared by
      *  [setEnhanceKey] and the custom-preset editor's live preview. */
     private fun armPipelineForKey(key: String, label: String) {
+        if (player == null || currentIndex !in sources.indices) return
+        com.hikari.app.data.Logs.log(
+            "Player",
+            "arming video effects pipeline for $key (reopening current source)"
+        )
+        Toast.makeText(this, I18n.t("Applying %s…").replace("%s", label), Toast.LENGTH_SHORT).show()
+        rebuildPlayerForEffects()
+    }
+
+    /**
+     * The silent half of [armPipelineForKey]: re-opens the SAME already-probed
+     * source URL directly, without the probe/failover machinery a normal
+     * [playSource] runs. Re-resolving is what turned a colour tweak into
+     * buffering and, on single-use signed links, into "server failing" — the
+     * URL ExoPlayer already plays needs no second opinion. Position is kept,
+     * and no loading cover is shown (see [silentEffectsRebuild]).
+     */
+    private fun rebuildPlayerForEffects() {
         val p = player ?: return
+        if (currentIndex !in sources.indices) return
+        val src = sources[currentIndex]
+        // Torrents resolve through their own engine (see [playTorrent]) — a
+        // direct rebuild would hand ExoPlayer a magnet it cannot play, so
+        // those keep the normal route.
+        if (src.isTorrent && (src.infoHash != null || src.url.startsWith("magnet:", ignoreCase = true))) {
+            playSource(currentIndex)
+            return
+        }
         val position = p.currentPosition
         if (position > 2_000L) {
             startPositionMs = position
@@ -4354,12 +4409,12 @@ class PlayerActivity : ComponentActivity() {
         appliedEnhanceKey = null
         appliedEnhanceHdr = null
         noSubsRetry = false
-        com.hikari.app.data.Logs.log(
-            "Player",
-            "arming video effects pipeline for $key (reopening current source)"
-        )
-        Toast.makeText(this, I18n.t("Applying %s…").replace("%s", label), Toast.LENGTH_SHORT).show()
-        playSource(currentIndex)
+        silentEffectsRebuild = true
+        try {
+            playDirectInner(currentIndex)
+        } finally {
+            silentEffectsRebuild = false
+        }
     }
 
     /** The Enhance button's menu: every preset, with the active one ticked —
@@ -4445,6 +4500,11 @@ class PlayerActivity : ComponentActivity() {
         val previousKey = enhancePresetKey
         var draft = existing?.copy() ?: CustomEnhancePreset(id = CustomEnhancePreset.newId(), name = "")
         var settled = false
+        // Fresh session: the first slider touch may arm the pipeline once
+        // (see [applyPreviewNow]); a leftover flag would skip the arm and the
+        // preview would silently do nothing.
+        previewArmedOnce = false
+        cancelPreview()
         val dialog = Dialog(this, android.R.style.Theme_Translucent_NoTitleBar)
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -4504,10 +4564,14 @@ class PlayerActivity : ComponentActivity() {
                     if (!fromUser) return
                     draft = def.set(draft, (progress + def.min).coerceIn(def.min, def.max))
                     valueView.text = enhanceSliderText(def.get(draft))
-                    previewCustom(draft)
+                    editorDraft = draft
+                    enhancePresetKey = draft.key()
+                    schedulePreview(draft)
                 }
                 override fun onStartTrackingTouch(bar: android.widget.SeekBar?) {}
-                override fun onStopTrackingTouch(bar: android.widget.SeekBar?) {}
+                override fun onStopTrackingTouch(bar: android.widget.SeekBar?) {
+                    applyPreviewNow(draft)
+                }
             })
             row.addView(bar, LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
@@ -4520,6 +4584,7 @@ class PlayerActivity : ComponentActivity() {
         fun restore() {
             if (settled) return
             settled = true
+            cancelPreview()
             editorDraft = null
             enhancePresetKey = previousKey
             applyVideoEnhance(force = true)
@@ -4547,6 +4612,7 @@ class PlayerActivity : ComponentActivity() {
             buttons.addView(button(I18n.t("Delete")) {
                 val list = customEnhanceList.filterNot { it.id == draft.id }
                 settled = true
+                cancelPreview()
                 editorDraft = null
                 customEnhanceList = list
                 lifecycleScope.launch {
@@ -4581,6 +4647,7 @@ class PlayerActivity : ComponentActivity() {
                 list += draft
             }
             settled = true
+            cancelPreview()
             editorDraft = null
             customEnhanceList = list.toList()
             lifecycleScope.launch {
@@ -4595,9 +4662,11 @@ class PlayerActivity : ComponentActivity() {
             isFillViewport = true
         }
         com.hikari.app.ui.AppFonts.applyToViewTree(scroll, com.hikari.app.ui.AppFonts.appTypeface(this))
-        // A definite box, not shrink-to-content: five slider rows plus the
-        // name field plus the buttons never fit a wrapped panel on a small
-        // phone, and the content then scrolls inside the box.
+        // A definite but SMALL box, not shrink-to-content and not full-screen:
+        // five slider rows plus the name field plus the buttons never fit a
+        // wrapped panel on a small phone (so the content scrolls inside the
+        // box), while the video stays visible around it — the sliders are
+        // judged against the live picture, which a full-screen panel hides.
         presentGlass(
             dialog,
             I18n.t("Custom preset"),
@@ -4606,8 +4675,9 @@ class PlayerActivity : ComponentActivity() {
             if (existing == null) I18n.t("Name it, move the sliders — the picture updates live. Save keeps it.")
             else I18n.t("Move the sliders — the picture updates live. Save keeps it."),
             R.drawable.ic_enhance,
-            fillFractionX = 0.92f,
-            fillFractionY = 0.8f,
+            fillFractionX = 0.78f,
+            fillFractionY = 0.55f,
+            dimAmount = 0.30f,
         )
         // AFTER presentGlass owns the dialog: restore the previous preset on
         // EVERY close path the editor does not own (back, the ✕, tap-outside).
@@ -4616,15 +4686,37 @@ class PlayerActivity : ComponentActivity() {
         dialog.setOnDismissListener { restore() }
     }
 
-    /** Applies an unsaved editor draft to the picture (see [showCustomEnhanceEditor]). */
-    private fun previewCustom(draft: CustomEnhancePreset) {
-        editorDraft = draft
-        enhancePresetKey = draft.key()
-        val p = player
+    /** Queues a live preview a beat out: a drag fires dozens of progress
+     *  ticks a second, and every tick used to rebuild the GL effect list —
+     *  the stutter behind "the video starts buffering while I move a slider".
+     *  The trailing apply lands 180ms after the finger stops; lifting the
+     *  finger applies instantly (see onStopTrackingTouch below). */
+    private fun schedulePreview(draft: CustomEnhancePreset) {
+        previewTask?.let { bufferingWatchdog.removeCallbacks(it) }
+        val task = Runnable { applyPreviewNow(draft) }
+        previewTask = task
+        bufferingWatchdog.postDelayed(task, 180L)
+    }
+
+    private fun cancelPreview() {
+        previewTask?.let { bufferingWatchdog.removeCallbacks(it) }
+        previewTask = null
+    }
+
+    /** One live-preview apply: at most ONE silent pipeline re-arm per editor
+     *  session, never while the video itself is still loading (restarting a
+     *  source that has not rendered yet is what tripped the failover and read
+     *  as "server failing" — the draft is simply remembered and lands with
+     *  the first frame instead). */
+    private fun applyPreviewNow(draft: CustomEnhancePreset) {
+        previewTask = null
+        if (player == null) return
+        if (!renderedFirstFrame) return
         if (!draft.isNeutral() && !enhanceUnsupported && !videoSinkArmed &&
-            p != null && currentIndex in sources.indices
+            currentIndex in sources.indices && !previewArmedOnce
         ) {
-            armPipelineForKey(draft.key(), draft.displayName())
+            previewArmedOnce = true
+            rebuildPlayerForEffects()
             return
         }
         applyVideoEnhance(force = true)
@@ -5239,6 +5331,9 @@ class PlayerActivity : ComponentActivity() {
          */
         fillFractionX: Float = 0f,
         fillFractionY: Float = 0f,
+        /** How much the video behind the panel is dimmed (the custom-preset
+         *  editor passes a light one so the live picture stays judgeable). */
+        dimAmount: Float = 0.65f,
     ): TextView? {
         val density = resources.displayMetrics.density
         // The halo is where the curved pane's neon blooms. A flat panel (every
@@ -5574,7 +5669,7 @@ class PlayerActivity : ComponentActivity() {
                     else Gravity.END or Gravity.CENTER_VERTICAL
                 )
             } else setGravity(Gravity.CENTER)
-            setDimAmount(if (tvSheet) 0.50f else 0.65f)
+            setDimAmount(if (tvSheet) 0.50f else dimAmount)
             addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
         }
 
@@ -8507,6 +8602,19 @@ class PlayerActivity : ComponentActivity() {
             Toast.makeText(this, I18n.t("No separate audio tracks on this stream"), Toast.LENGTH_SHORT).show()
             return
         }
+        // The dual-server audio switch lives here, as its own last row: with
+        // it on, tapping an audio server below asks Audio-only vs Audio+video
+        // (see [showDualAudioChoice]) instead of switching servers outright.
+        val dualToggleIndex = options.size
+        options.add(
+            GlassOption(
+                label = I18n.t("Dual-server audio"),
+                sub = if (dualAudioOn) I18n.t("On — a server below plays only its sound")
+                else I18n.t("Off — a server switch moves picture and sound together"),
+                badge = if (dualAudioOn) I18n.t("On") else I18n.t("Off"),
+                selected = dualAudioOn,
+            )
+        )
         showGlassMenu(
             I18n.t("Audio"),
             options,
@@ -8514,14 +8622,25 @@ class PlayerActivity : ComponentActivity() {
             else I18n.t("Pick a language \u2014 some servers carry the audio."),
             iconRes = R.drawable.ic_audio,
         ) { which ->
-            variantMap[which]?.let { switchAudioVariant(it); return@showGlassMenu }
+            if (which == dualToggleIndex) {
+                toggleDualAudio()
+                return@showGlassMenu
+            }
+            variantMap[which]?.let {
+                if (dualAudioOn) showDualAudioChoice(it) else switchAudioVariant(it)
+                return@showGlassMenu
+            }
             if (which == 0) {
+                stopDualAudio()
                 pickAudio = null
                 p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
                     .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
                     .build()
             } else {
                 val (group, ti) = indexMap[which] ?: return@showGlassMenu
+                // An in-stream track is the video server's own sound: any
+                // cross-server pairing ends with this pick.
+                stopDualAudio()
                 val format = group.mediaTrackGroup.getFormat(ti)
                 // Remember the LANGUAGE, not the TrackGroup: the group is
                 // replaced when the provider subtitles are attached, the
@@ -8623,6 +8742,7 @@ class PlayerActivity : ComponentActivity() {
      *  keeping the position in the film (and the remembered subtitle pick). */
     private fun switchAudioVariant(index: Int) {
         if (index == currentIndex || index !in sources.indices) return
+        stopDualAudio()
         val position = player?.currentPosition ?: 0L
         if (position > 2_000L) {
             // Same film, same place: an audio change must not restart it.
@@ -8633,6 +8753,187 @@ class PlayerActivity : ComponentActivity() {
         val name = sources[index].name
         playSource(index)
         Toast.makeText(this, I18n.t("Switching audio \u2014 %s").replace("%s", name), Toast.LENGTH_SHORT).show()
+    }
+
+    /** True when the server at [srcIndex] can take part in a dual-audio
+     *  pairing: torrents resolve through their own engine, protected streams
+     *  need their own DRM session, and local files have no second URL — none
+     *  of those can be decoded twice side by side. */
+    private fun dualAudioUsable(srcIndex: Int): Boolean {
+        val s = sources.getOrNull(srcIndex) ?: return false
+        if (s.local || s.torrentStream || s.drm != null) return false
+        if (s.isTorrent && (s.infoHash != null || s.url.startsWith("magnet:", ignoreCase = true))) return false
+        return s.url.startsWith("http", ignoreCase = true)
+    }
+
+    /**
+     * Starts cross-server audio: the video keeps playing from the current
+     * server while a second, audio-only ExoPlayer decodes [audioIndex]'s
+     * stream for its sound. The video player is muted so the two never talk
+     * over each other, and [syncDualAudio] keeps the pair together.
+     */
+    private fun startDualAudio(audioIndex: Int) {
+        val primary = player ?: return
+        if (audioIndex !in sources.indices || audioIndex == currentIndex) return
+        if (!dualAudioUsable(currentIndex) || !dualAudioUsable(audioIndex)) {
+            Toast.makeText(
+                this,
+                I18n.t("Dual audio needs two normal streams — that server can't be mixed."),
+                Toast.LENGTH_SHORT,
+            ).show()
+            return
+        }
+        stopDualAudio()
+        try {
+            val src = sources[audioIndex]
+            val cleanHeaders = withKnownHotlinkReferer(src.url, sanitizeHeaders(src.headers))
+            val ua = cleanHeaders["User-Agent"]?.takeIf { it.isNotBlank() } ?: Http.UA
+            val audioFactory = OkHttpDataSource.Factory(client)
+                .setUserAgent(ua)
+                .setDefaultRequestProperties(cleanHeaders)
+            val mediaFactory = DefaultMediaSourceFactory(DefaultDataSource.Factory(this, audioFactory))
+                .setLoadErrorHandlingPolicy(RetryFriendlyLoadErrorPolicy())
+            val dual = ExoPlayer.Builder(this)
+                .setMediaSourceFactory(mediaFactory)
+                .setLoadControl(buildLoadControl())
+                .setAudioAttributes(
+                    androidx.media3.common.AudioAttributes.Builder()
+                        .setUsage(C.USAGE_MEDIA)
+                        .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+                        .build(),
+                    /* handleAudioFocus = */ false,
+                )
+                .build()
+            dual.trackSelectionParameters = dual.trackSelectionParameters.buildUpon()
+                .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, true)
+                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                .build()
+            val itemBuilder = MediaItem.Builder().setUri(src.url)
+            mainMimeOf(src)?.let { itemBuilder.setMimeType(it) }
+            dual.setMediaItem(itemBuilder.build())
+            dual.playWhenReady = primary.playWhenReady
+            dual.prepare()
+            val pos = primary.currentPosition
+            if (pos > 0L) dual.seekTo(pos)
+            dualPlayer = dual
+            dualAudioIndex = audioIndex
+            runCatching { primary.volume = 0f }
+            startDualSync()
+            Toast.makeText(
+                this,
+                I18n.t("Dual audio — sound from %s").replace("%s", src.name),
+                Toast.LENGTH_SHORT,
+            ).show()
+        } catch (t: Throwable) {
+            stopDualAudio()
+            Toast.makeText(
+                this,
+                I18n.t("Dual audio failed: %s").replace("%s", rootMessage(t)),
+                Toast.LENGTH_SHORT,
+            ).show()
+        }
+    }
+
+    /** Ends a dual-audio pairing and gives the video player its sound back. */
+    private fun stopDualAudio() {
+        dualSyncTask?.let { bufferingWatchdog.removeCallbacks(it) }
+        dualSyncTask = null
+        dualPlayer?.let { runCatching { it.release() } }
+        dualPlayer = null
+        dualAudioIndex = -1
+        runCatching { player?.volume = 1f }
+    }
+
+    /** The 1s heartbeat that keeps a dual-audio pair together: play/pause
+     *  follows the video, and a drift beyond ~0.8s is re-seeked. */
+    private fun startDualSync() {
+        dualSyncTask?.let { bufferingWatchdog.removeCallbacks(it) }
+        val task = object : Runnable {
+            override fun run() {
+                syncDualAudio()
+                if (dualPlayer != null) bufferingWatchdog.postDelayed(this, 1000L)
+                else dualSyncTask = null
+            }
+        }
+        dualSyncTask = task
+        bufferingWatchdog.postDelayed(task, 1000L)
+    }
+
+    private fun syncDualAudio() {
+        val primary = player ?: return
+        val dual = dualPlayer ?: return
+        try {
+            if (dual.playWhenReady != primary.playWhenReady) {
+                dual.playWhenReady = primary.playWhenReady
+            }
+            val diff = primary.currentPosition - dual.currentPosition
+            if (primary.isPlaying) {
+                if (diff > 800L || diff < -800L) dual.seekTo(primary.currentPosition)
+            } else {
+                if (dual.isPlaying) dual.pause()
+                if (diff > 1500L || diff < -1500L) dual.seekTo(primary.currentPosition)
+            }
+        } catch (_: Throwable) {
+        }
+    }
+
+    /** Flips the feature switch (the Audio sheet's own toggle) and re-opens
+     *  the sheet so the server rows immediately show what the new state does. */
+    private fun toggleDualAudio() {
+        dualAudioOn = !dualAudioOn
+        val on = dualAudioOn
+        lifecycleScope.launch {
+            runCatching { (applicationContext as HikariApp).store.setDualAudio(on) }
+        }
+        if (!on) {
+            stopDualAudio()
+            Toast.makeText(this, I18n.t("Dual-server audio off"), Toast.LENGTH_SHORT).show()
+        } else {
+            Toast.makeText(
+                this,
+                I18n.t("Dual-server audio on — pick a server for its sound"),
+                Toast.LENGTH_SHORT,
+            ).show()
+        }
+        showAudioDialog(waitedForTracks = true)
+    }
+
+    /**
+     * The Audio-only vs Audio+video question: with dual-server audio on,
+     * tapping an audio server asks whether its SOUND should play under the
+     * current video, or the player should switch to that server entirely.
+     */
+    private fun showDualAudioChoice(audioIndex: Int) {
+        if (audioIndex == currentIndex) {
+            stopDualAudio()
+            return
+        }
+        val audioName = sources.getOrNull(audioIndex)?.name.orEmpty()
+        val videoName = sources.getOrNull(currentIndex)?.name.orEmpty()
+        showGlassMenu(
+            I18n.t("Use sound from %s").replace("%s", audioName),
+            listOf(
+                GlassOption(
+                    I18n.t("Audio only"),
+                    I18n.t("Keep this video — take only the sound from the other server"),
+                    iconRes = R.drawable.ic_audio,
+                    marker = RowMarker.ICON,
+                ),
+                GlassOption(
+                    I18n.t("Audio + video"),
+                    I18n.t("Switch to that server completely"),
+                    iconRes = R.drawable.ic_server,
+                    marker = RowMarker.ICON,
+                ),
+            ),
+            hint = if (videoName.isNotBlank()) {
+                I18n.t("Video keeps playing from %s.").replace("%s", videoName)
+            } else null,
+            iconRes = R.drawable.ic_audio,
+        ) { which ->
+            if (which == 0) startDualAudio(audioIndex)
+            else switchAudioVariant(audioIndex)
+        }
     }
 
     /** Resets the per-server header walk, so the next attempt starts from the
@@ -8650,6 +8951,9 @@ class PlayerActivity : ComponentActivity() {
             showError(I18n.t("No more servers to try."), false)
             return
         }
+        // A new video server ends any cross-server audio pairing: the sound
+        // belonged to the previous picture (see [startDualAudio]).
+        stopDualAudio()
         if (index != currentIndex) {
             headerVariant = 0
             // A DIFFERENT server: the one attempt at a restart it is allowed
@@ -9132,11 +9436,16 @@ class PlayerActivity : ComponentActivity() {
         // playing" was reading.
         val coverName = sourceBadge.ifBlank { "server" }
         coverPlaybackLine = I18n.t("Starting %s…").replace("%s", coverName)
-        if (loadingBanner?.visibility != View.VISIBLE && loadingSpinner?.visibility != View.VISIBLE) {
-            showLoadingCover()
-        } else {
-            loadingStatus?.text = coverPlaybackLine
-            loadingSpinnerStatus?.text = coverPlaybackLine
+        // An effects-pipeline re-arm (see [rebuildPlayerForEffects]) re-opens
+        // the SAME already-playing source: no cover, no spinner, playback just
+        // continues with the grade applied.
+        if (!silentEffectsRebuild) {
+            if (loadingBanner?.visibility != View.VISIBLE && loadingSpinner?.visibility != View.VISIBLE) {
+                showLoadingCover()
+            } else {
+                loadingStatus?.text = coverPlaybackLine
+                loadingSpinnerStatus?.text = coverPlaybackLine
+            }
         }
 
         player?.let { old ->
@@ -9290,6 +9599,10 @@ class PlayerActivity : ComponentActivity() {
         }
         player.addListener(listener)
         playerView?.player = player
+        // A dual-audio pairing survives an effects-pipeline re-arm (which
+        // bypasses [playSource]): the rebuilt video player is muted again here
+        // so the two never talk over each other.
+        if (dualPlayer != null) runCatching { player.volume = 0f }
 
         // Start the video IMMEDIATELY, without subtitles. A broken/expired
         // subtitle URL must never kill playback (some providers emit subtitle
@@ -10900,6 +11213,7 @@ class PlayerActivity : ComponentActivity() {
         // while playback is paused (or before it has started).
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             playHint?.visibility = if (isPlaying) View.GONE else View.VISIBLE
+            syncDualAudio()
         }
 
         override fun onPlayerStateChanged(playWhenReady: Boolean, playbackState: Int) {
@@ -12509,6 +12823,7 @@ class PlayerActivity : ComponentActivity() {
      * the C.WAKE_MODE_NETWORK above), so only a finishing activity is silenced.
      */
     private fun silencePlaybackForExit() {
+        stopDualAudio()
         val p = player ?: return
         runCatching { p.volume = 0f }
         runCatching { p.playWhenReady = false }
@@ -12566,6 +12881,7 @@ class PlayerActivity : ComponentActivity() {
         hudHideTask?.let { hudHandler.removeCallbacks(it) }
         hudHideTask = null
         SlowNetTip.onPlaybackEnd()
+        stopDualAudio()
         watchdogTask?.let { bufferingWatchdog.removeCallbacks(it) }
         watchdogTask = null
         liveReconnectTask?.let { bufferingWatchdog.removeCallbacks(it) }

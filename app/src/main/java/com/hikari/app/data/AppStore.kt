@@ -366,6 +366,7 @@ class AppStore(private val ctx: Context) {
         /** The "Play in external player" row in the player's options menu
          *  (ON by default; Settings → Player hides it). */
         val PLAYER_EXTERNAL_BUTTON = booleanPreferencesKey("playerExternalButton")
+        val PLAYER_DUAL_AUDIO = booleanPreferencesKey("playerDualAudio")
         /** Size of player icons when the text labels are hidden, in dp. */
         val PLAYER_ICON_SIZE = intPreferencesKey("playerIconSize")
         /** Use the large left-side TV menu for player panels. */
@@ -3257,6 +3258,17 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
 
     suspend fun setPlayerExternalButton(on: Boolean) {
         write("PLAYER_EXTERNAL_BUTTON") { it[K.PLAYER_EXTERNAL_BUTTON] = on }
+    }
+
+    /** Whether the player's Audio sheet offers cross-server audio (video from
+     *  one server, audio from another). Toggled inside the player itself. */
+    fun dualAudioFlow(): Flow<Boolean> =
+        store.data.map { it[K.PLAYER_DUAL_AUDIO] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun dualAudio(): Boolean = dualAudioFlow().first()
+
+    suspend fun setDualAudio(on: Boolean) {
+        write("PLAYER_DUAL_AUDIO") { it[K.PLAYER_DUAL_AUDIO] = on }
     }
 
     /** Size of player icons when the text labels are hidden (20–44dp). */

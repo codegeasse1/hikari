@@ -99,6 +99,8 @@ object EpisodeDubSub {
                 image = group.firstNotNullOfOrNull { it.image },
                 overview = group.firstNotNullOfOrNull { it.overview?.ifBlank { null } },
                 released = group.firstNotNullOfOrNull { it.released?.ifBlank { null } },
+                rating = group.firstNotNullOfOrNull { it.rating },
+                runtime = group.firstNotNullOfOrNull { it.runtime },
             )
         }
         out.sortWith(compareBy({ it.season }, { it.number }))

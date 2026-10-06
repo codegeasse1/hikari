@@ -172,6 +172,8 @@ object MetaCache {
                     season = e.optInt("season", 1),
                     overview = e.stringOrNull("overview"),
                     released = e.stringOrNull("released"),
+                    rating = if (e.isNull("rating")) null else e.optDouble("rating").takeIf { it > 0.0 },
+                    runtime = if (e.isNull("runtime")) null else e.optInt("runtime").takeIf { it > 0 },
                 )
             }.getOrNull()
         }
@@ -191,6 +193,8 @@ object MetaCache {
                     put("season", e.season)
                     e.overview?.let { put("overview", it) }
                     e.released?.let { put("released", it) }
+                    e.rating?.let { put("rating", it) }
+                    e.runtime?.let { put("runtime", it) }
                 }
             )
         }

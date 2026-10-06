@@ -1,3 +1,15 @@
+## 0.10.90
+
+Everything new and fixed since the last release (0.10.89):
+
+### Fixed
+
+- I fixed tapping a genre like Action sitting on a spinner for 4-5 minutes — the screen used to read every shelf's first page plus every title's detail page before showing anything. It now paints the first shelf instantly, streams the rest in behind the grid, checks genres in small batches whose matches join as they land, and only pages deeper shelves when you scroll to the tail, with a live "Checking N titles" count while it works
+- I fixed episode rows missing the rating and runtime the reference app shows — rows now print a "Rated: 6.0 25m" line over the air date wherever TMDB supplies the numbers, carried through the dub/sub merge and the episode cache so it survives reopening the title
+- I fixed the custom enhance preset editor covering the whole video — the panel is a smaller box with a lighter dim now, so the picture stays visible around it while brightness, contrast and the rest move
+- I fixed moving a custom enhance slider restarting playback into buffering and sometimes "server failing" — the preview used to re-resolve the stream on every touch. It now re-opens the same already-playing URL at most once per editor session with no loading cover and no re-resolve, slider ticks apply through a debounced effect swap, and nothing restarts at all until the video is actually playing
+- I added cross-server audio — the player's Audio sheet has a Dual-server audio toggle, and with it on, tapping an audio server asks Audio only (Hindi sound under the English server's high-quality picture, kept in sync and pausing/seeking together) or Audio + video (a full switch to that server)
+
 ## 0.10.89
 
 Everything new and fixed since the last release (0.10.88):
