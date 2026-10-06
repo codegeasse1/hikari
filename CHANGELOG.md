@@ -1,3 +1,14 @@
+## 0.10.93
+
+Everything new and fixed since the last release (0.10.92):
+
+### Fixed
+
+- I fixed moving an enhance slider freezing the video for good — every finger tick swapped the whole effect list, and on a heavy stream (4K) re-creating that chain stalls the decoder into a freeze that never recovers. Sliders now only update their labels while dragging and apply once on finger lift (one swap per gesture), and a stall watchdog follows every apply: a video that is supposedly playing but never advances gets its chain re-created once, which un-freezes it
+- I fixed episode rows still showing no description on long-running shows — the TMDB details read fetched every season one by one with no stop condition, so a show with many seasons blew the 15-second budget and the entire fill was thrown away. The read now stops as soon as every wanted episode is covered, so a single-season list usually costs one season read
+- I fixed tapping Next/Previous taking forever on the loading box when the server chooser is on — the switch waited for the whole cross-extension sweep before showing anything. It now asks the title's own extension first (seconds, not minutes), plays or lists those servers at once, and the full sweep keeps enriching the list live behind the open chooser without ever moving what is already there
+- I fixed the detail header showing a 9:16 poster with blank bars on both sides — the backdrop band behind the standing poster now always fills edge to edge (wide art crops as before, a portrait crops anchored at the top under a dark wash), so every detail screen reads 16:9
+
 ## 0.10.92
 
 Everything new and fixed since the last release (0.10.91):

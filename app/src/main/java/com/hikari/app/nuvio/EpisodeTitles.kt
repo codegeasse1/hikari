@@ -315,7 +315,7 @@ object EpisodeTitles {
                 }
             }
             val season = TmdbMeta.seasonHint(title)
-            val found = showDetails(title, year, season, lang) ?: emptyMap()
+            val found = showDetails(title, year, season, lang, numbers) ?: emptyMap()
             detailsCache[key] = DetailsEntry(System.currentTimeMillis(), found)
             found
         }
@@ -323,12 +323,15 @@ object EpisodeTitles {
     /** TMDB's id for [title], resolved exactly the way [show] resolves it —
      *  query variants, name match required, popularity tie-break — then every
      *  season read the way [names] reads them, collecting the details of each
-     *  episode keyed by absolute number. */
+     *  episode keyed by absolute number. Stops as soon as every wanted number
+     *  is covered: without that a long-running show's dozen season reads blow
+     *  the caller's budget and the whole fill is lost (see [details]). */
     private suspend fun showDetails(
         title: String,
         year: Int?,
         season: Int?,
         language: String,
+        want: Set<Int>,
     ): Map<Int, EpDetail>? {
         val variants = TmdbMeta.queryVariants(title)
         if (variants.isEmpty()) return null
@@ -404,6 +407,7 @@ object EpisodeTitles {
             if (season != null) continue
             running = maxOf(running, out.keys.maxOrNull() ?: 0)
             if (out.size >= MAX_EPISODES) break
+            if (want.isNotEmpty() && want.all { out.containsKey(it) }) break
         }
         return out
     }

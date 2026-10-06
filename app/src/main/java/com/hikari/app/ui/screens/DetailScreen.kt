@@ -5873,17 +5873,16 @@ private fun Hero(
                 .fillMaxWidth()
                 .height(214.dp),
         ) {
-            // The band behind the standing poster shows the WHOLE portrait
-            // (Fit on a dark wash) — a Crop here kept only the middle strip,
-            // which is what reduced a full-character poster to a strip of hair
-            // and accessories. Wide art fills edge to edge with the same crop
-            // anchor as every cinema frame (see Artwork.CINEMA_ALIGNMENT), so
-            // the banner matches the rail's card for the same title.
+            // The band behind the standing poster ALWAYS fills edge to edge in
+            // 16:9: wide art crops as before, and a portrait poster is cropped
+            // (anchored top, so heads survive) under a dark wash instead of
+            // sitting Fit with blank bars on both sides. The band is backdrop
+            // decor — the standing poster beside it keeps the art intact.
             PosterArt(
                 model = image.first,
                 contentDescription = meta?.title,
                 style = rememberPosterStyle(),
-                contentScale = if (image.second) ContentScale.Crop else ContentScale.Fit,
+                contentScale = ContentScale.Crop,
                 imageAlignment = if (image.second) Artwork.CINEMA_ALIGNMENT else Alignment.TopCenter,
                 modifier = Modifier.fillMaxSize(),
                 onImageError = { heroBackdropDead = true },

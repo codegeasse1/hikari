@@ -4237,7 +4237,6 @@ class PlayerActivity : ComponentActivity() {
     /** The editor already armed the pipeline once this session, so further
      *  slider moves are cheap effect-list swaps, not rebuilds. */
     private var previewArmedOnce = false
-    /** Trailing live-preview apply for slider drags (see [schedulePreview]). */
     private var previewTask: Runnable? = null
     private var appliedEnhanceKey: String? = null
     private var appliedEnhanceHdr: Boolean? = null
@@ -4631,14 +4630,18 @@ class PlayerActivity : ComponentActivity() {
             bar.setOnSeekBarChangeListener(object : android.widget.SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(bar: android.widget.SeekBar?, progress: Int, fromUser: Boolean) {
                     if (!fromUser) return
+                    // Labels move with the finger; the pipeline is touched only
+                    // on finger LIFT (see onStopTrackingTouch). Every tick used
+                    // to swap the effect list, and on a heavy stream (4K) each
+                    // swap re-creates the whole GL chain — a drag wedged the
+                    // video into a stall it never left. One swap per gesture.
                     draft = def.set(draft, (progress + def.min).coerceIn(def.min, def.max))
                     valueView.text = enhanceSliderText(def.get(draft))
-                    editorDraft = draft
-                    enhancePresetKey = draft.key()
-                    schedulePreview(draft)
                 }
                 override fun onStartTrackingTouch(bar: android.widget.SeekBar?) {}
                 override fun onStopTrackingTouch(bar: android.widget.SeekBar?) {
+                    editorDraft = draft
+                    enhancePresetKey = draft.key()
                     applyPreviewNow(draft)
                 }
             })
@@ -4755,28 +4758,22 @@ class PlayerActivity : ComponentActivity() {
         dialog.setOnDismissListener { restore() }
     }
 
-    /** Queues a live preview a beat out: a drag fires dozens of progress
-     *  ticks a second, and every tick used to rebuild the GL effect list —
-     *  the stutter behind "the video starts buffering while I move a slider".
-     *  The trailing apply lands 180ms after the finger stops; lifting the
-     *  finger applies instantly (see onStopTrackingTouch below). */
-    private fun schedulePreview(draft: CustomEnhancePreset) {
-        previewTask?.let { bufferingWatchdog.removeCallbacks(it) }
-        val task = Runnable { applyPreviewNow(draft) }
-        previewTask = task
-        bufferingWatchdog.postDelayed(task, 180L)
-    }
+    /** A preview-apply stalled the video (see [watchPreviewStall]). */
+    private var previewWatchGen = 0
 
     private fun cancelPreview() {
         previewTask?.let { bufferingWatchdog.removeCallbacks(it) }
         previewTask = null
+        previewWatchGen++
     }
 
-    /** One live-preview apply: at most ONE silent pipeline re-arm per editor
-     *  session, never while the video itself is still loading (restarting a
-     *  source that has not rendered yet is what tripped the failover and read
-     *  as "server failing" — the draft is simply remembered and lands with
-     *  the first frame instead). */
+    /** One live-preview apply, on finger lift only: at most ONE silent
+     *  pipeline re-arm per editor session, never while the video itself is
+     *  still loading (restarting a source that has not rendered yet is what
+     *  tripped the failover and read as "server failing" — the draft is simply
+     *  remembered and lands with the first frame instead). A stall watchdog
+     *  ([watchPreviewStall]) follows every apply, so a swap that wedges the
+     *  chain heals itself instead of freezing the video. */
     private fun applyPreviewNow(draft: CustomEnhancePreset) {
         previewTask = null
         if (player == null) return
@@ -4789,6 +4786,35 @@ class PlayerActivity : ComponentActivity() {
             return
         }
         applyVideoEnhance(force = true)
+        watchPreviewStall()
+    }
+
+    /**
+     * The stall watchdog for a preview apply: 3s after the swap, a video that
+     * is supposedly playing but has not advanced is a wedged effect chain
+     * (seen on heavy 4K streams where re-creating the GL chain stalls the
+     * decoder). Re-applying the same list re-creates the chain once, which
+     * un-wedges it — the alternative the user reported was a video "stuck"
+     * until the player was reopened. Skipped while paused, buffering or
+     * already moved on, so ordinary network stalls are never blamed on the
+     * preset.
+     */
+    private fun watchPreviewStall() {
+        val token = ++previewWatchGen
+        val p = player ?: return
+        val pos0 = p.currentPosition
+        bufferingWatchdog.postDelayed({
+            if (token != previewWatchGen) return@postDelayed
+            val q = player ?: return@postDelayed
+            if (!q.isPlaying || q.playbackState != Player.STATE_READY) return@postDelayed
+            if (q.currentPosition - pos0 >= 1000L) return@postDelayed
+            runCatching {
+                q.setVideoEffects(effectiveEnhanceEffects(enhancePresetKey, isCurrentVideoHdr()))
+            }
+            Toast.makeText(
+                this, I18n.t("Preview stalled the video — re-applied it"), Toast.LENGTH_SHORT
+            ).show()
+        }, 3000L)
     }
 
     /**
@@ -6101,21 +6127,71 @@ class PlayerActivity : ComponentActivity() {
         applyLiveEpisode(ep)
         autoplayRunning = fromAutoplay
         var cancelled = false
-        val dialog = if (fromAutoplay) {
-            Toast.makeText(this, I18n.t("Loading next episode…"), Toast.LENGTH_SHORT).show()
-            null
+        var dialog: Dialog? = null
+        fun dismissDialog() {
+            dialog?.let { runCatching { it.dismiss() } }
+            dialog = null
+        }
+        if (!fromAutoplay) {
+            Toast.makeText(this, I18n.t("Loading episode…"), Toast.LENGTH_SHORT).show()
+            // The fast path below usually answers in seconds; the progress box
+            // only comes up when it takes longer than a beat, so a quick Next
+            // never flashes a dialog at all.
+            lifecycleScope.launch {
+                delay(1500)
+                if (gen == episodeSwitchGen && !cancelled && dialog == null && !isFinishing && !isDestroyed) {
+                    dialog = showGlassProgress(
+                        "Loading episode",
+                        "Finding servers for this episode…",
+                        cancelable = true,
+                    ) { cancelled = true }
+                }
+            }
         } else {
-            showGlassProgress(
-                "Loading episode",
-                "Finding servers for this episode…",
-                cancelable = true,
-            ) { cancelled = true }
+            Toast.makeText(this, I18n.t("Loading next episode…"), Toast.LENGTH_SHORT).show()
         }
         lifecycleScope.launch {
+            // FAST: the title's own extension resolves its own episode ids in
+            // seconds; the full cross-extension pass is what takes a minute.
+            val fast = runCatching { repo.originStreams(item, ep) }.getOrDefault(emptyList())
+            if (gen != episodeSwitchGen || cancelled) {
+                dismissDialog()
+                if (gen == episodeSwitchGen) autoplayRunning = false
+                return@launch
+            }
+            if (fast.isNotEmpty()) {
+                dismissDialog()
+                adoptEpisodeStreams(item, ep, fast.map { it.toPlayerSource() }, fromAutoplay)
+                // ENRICH in the background: the full pass appends servers the
+                // origin never had (append-only, so playback and the open
+                // chooser are never disturbed — see [appendSources]).
+                lifecycleScope.launch {
+                    val full = runCatching {
+                        repo.streamsFor(item, ep) { prog ->
+                            if (gen == episodeSwitchGen) {
+                                withContext(Dispatchers.Main) { appendSources(prog) }
+                            }
+                        }
+                    }.getOrNull().orEmpty()
+                    if (gen == episodeSwitchGen) {
+                        withContext(Dispatchers.Main) { appendSources(full) }
+                        autoplayRunning = false
+                    }
+                }
+                return@launch
+            }
+            // The origin had nothing fast: the full pass, with the box up.
+            if (!fromAutoplay && dialog == null && !cancelled) {
+                dialog = showGlassProgress(
+                    "Loading episode",
+                    "Finding servers for this episode…",
+                    cancelable = true,
+                ) { cancelled = true }
+            }
             val streams = runCatching { repo.streamsFor(item, ep) }.getOrNull().orEmpty()
-            dialog?.let { runCatching { it.dismiss() } }
+            dismissDialog()
             if (cancelled) {
-                autoplayRunning = false
+                if (gen == episodeSwitchGen) autoplayRunning = false
                 return@launch
             }
             // Superseded: the user picked another episode while this search ran.
@@ -6127,44 +6203,83 @@ class PlayerActivity : ComponentActivity() {
                 ).show()
                 return@launch
             }
-            // Same as the detail page's search: the server names are the only
-            // quality data the app gets, and the poster's quality badge reads it
-            // back (see [com.hikari.app.data.TitleQuality]).
-            runCatching { com.hikari.app.data.TitleQuality.remember(item, streams) }
-            // The origin session's servers belong to the episode we just left —
-            // stop appending them, and stop restoring its remembered server.
-            liveStreamsJob?.cancel()
-            liveStreamsJob = null
-            liveStatusJob?.cancel()
-            liveStatusJob = null
-            liveSessionId = null
-            // Adopt the new episode (top-bar episode line + watch-history key).
-            applyLiveEpisode(ep)
-            // A fresh episode starts fresh: no resume position, no remembered
-            // server, and no memory of the old episode's failed URLs.
-            startPositionMs = 0L
-            seekPending = false
-            resumeHintMs = 0L
-            resumeHintDurMs = 0L
-            refreshAttempts = 0
-            noSubsRetry = false
-            resetHeaderWalk()
-            triedUrls.clear()
-            sources = streams.map { it.toPlayerSource() }
-            notifySourcesChanged()
-            currentIndex = 0
-            // An autoplay advance always plays directly: popping a server
-            // chooser over the credits is not "automatic" in any sense.
-            // "Don't play directly" applies to an in-player episode switch too:
-            // this is a brand-new server list, so it gets its own chooser
-            // instead of auto-starting on the first server.
-            if (fromAutoplay || !shouldAskServer()) {
-                playSource(0)
-            } else {
-                startChooserShown = false
-                showServerChooser(startMode = true)
-            }
+            adoptEpisodeStreams(item, ep, streams.map { it.toPlayerSource() }, fromAutoplay)
             autoplayRunning = false
+        }
+    }
+
+    /**
+     * Adopts a freshly searched episode's servers: drops the old episode's
+     * live session, moves history and the top bar onto the new episode, and
+     * either starts immediately or opens the server chooser (which then fills
+     * further as the background enrich lands — see [appendSources]).
+     */
+    private fun adoptEpisodeStreams(
+        item: AppMediaItem,
+        ep: Episode,
+        playerSources: List<PlayerSource>,
+        fromAutoplay: Boolean,
+    ) {
+        if (playerSources.isEmpty()) return
+        // Same as the detail page's search: the server names are the only
+        // quality data the app gets, and the poster's quality badge reads it
+        // back (see [com.hikari.app.data.TitleQuality]).
+        runCatching { com.hikari.app.data.TitleQuality.remember(item, playerSources.map { it.toStreamSource() }) }
+        // The origin session's servers belong to the episode we just left —
+        // stop appending them, and stop restoring its remembered server.
+        liveStreamsJob?.cancel()
+        liveStreamsJob = null
+        liveStatusJob?.cancel()
+        liveStatusJob = null
+        liveSessionId = null
+        // Adopt the new episode (top-bar episode line + watch-history key).
+        applyLiveEpisode(ep)
+        // A fresh episode starts fresh: no resume position, no remembered
+        // server, and no memory of the old episode's failed URLs.
+        startPositionMs = 0L
+        seekPending = false
+        resumeHintMs = 0L
+        resumeHintDurMs = 0L
+        refreshAttempts = 0
+        noSubsRetry = false
+        resetHeaderWalk()
+        triedUrls.clear()
+        sources = playerSources
+        notifySourcesChanged()
+        currentIndex = 0
+        // An autoplay advance always plays directly: popping a server
+        // chooser over the credits is not "automatic" in any sense.
+        // "Don't play directly" applies to an in-player episode switch too:
+        // this is a brand-new server list, so it gets its own chooser
+        // instead of auto-starting on the first server.
+        if (fromAutoplay || !shouldAskServer()) {
+            playSource(0)
+        } else {
+            startChooserShown = false
+            showServerChooser(startMode = true)
+        }
+    }
+
+    /**
+     * Merges a background server batch into the current list, append-only:
+     * unseen URLs join the tail, everything already there (and its index)
+     * never moves — so playback in flight and an open chooser are undisturbed
+     * while the enrich pass lands more servers behind them.
+     */
+    private fun appendSources(cumulative: List<com.hikari.app.data.StreamSource>) {
+        if (cumulative.isEmpty()) return
+        val seen = HashSet<String>(sources.size + cumulative.size)
+        for (s in sources) seen.add(s.url)
+        val out = sources.toMutableList()
+        var added = false
+        for (s in cumulative) {
+            if (!seen.add(s.url)) continue
+            out += s.toPlayerSource()
+            added = true
+        }
+        if (added) {
+            sources = out
+            notifySourcesChanged()
         }
     }
 

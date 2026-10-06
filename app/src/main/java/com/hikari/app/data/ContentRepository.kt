@@ -2451,6 +2451,33 @@ class ContentRepository(private val manager: ProviderManager) {
         onProgress: (suspend (List<StreamSource>) -> Unit)? = null,
     ): List<StreamSource> = streamsForOutcome(item, episode, onProgress).servers
 
+    /**
+     * The title's OWN extension, asked alone with a short budget — the fast
+     * path behind an in-player episode switch. It resolves its own episode ids
+     * in seconds while the full cross-extension pass takes much longer, so a
+     * Next/Previous tap can play (or list) its servers without waiting for the
+     * whole sweep. Empty when the origin is missing, off, or slower than the
+     * budget: the caller then runs the full pass. Sequential with that pass,
+     * never parallel — two concurrent calls on one plugin instance corrupt its
+     * state (see [gated]).
+     */
+    suspend fun originStreams(
+        item: MediaItem,
+        episode: Episode?,
+        budgetMs: Long = 12_000L,
+    ): List<StreamSource> {
+        val origin = manager.byId(item.providerId) ?: return emptyList()
+        if (!origin.config.enabled) return emptyList()
+        val got = if (origin.config.type == ProviderType.NUVIO) {
+            com.hikari.app.nuvio.NuvioRuntime.withBackgroundSlot {
+                detached(budgetMs) { fetchStreams(origin, item, episode) }
+            }
+        } else {
+            detached(budgetMs) { fetchStreams(origin, item, episode) }
+        }
+        return got.orEmpty()
+    }
+
     /** [streamsFor] plus "did this lookup actually finish?" — see [StreamLookup].
      *  Never throws: a lookup that dies is reported as `complete = false`, so the
      *  caller can ask again instead of telling the user there is nothing. */
