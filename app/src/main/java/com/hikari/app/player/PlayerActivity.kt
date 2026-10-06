@@ -74,6 +74,7 @@ import androidx.media3.datasource.DataSourceException
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.HttpDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
+import androidx.media3.effect.HslAdjustment
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
@@ -1020,6 +1021,18 @@ class PlayerActivity : ComponentActivity() {
     private var externalSubLauncher: ActivityResultLauncher<Array<String>>? = null
 
     private var torrentDialog: Dialog? = null
+    /** The in-flight torrent resolve, if any: a new server abandons the old
+     *  one (see [playSource]), so a late answer can never pop its dialog over
+     *  — or hijack playback back to — a server the user already left. */
+    private var torrentJob: Job? = null
+
+    /** Drops the "starting torrent engine" box wherever it is: called on
+     *  every new playback attempt and on the first rendered frame, so it can
+     *  never sit stuck over a video that is already playing. */
+    private fun dismissTorrentDialog() {
+        torrentDialog?.let { runCatching { it.dismiss() } }
+        torrentDialog = null
+    }
 
     /** Shown while an extension-less / container-unknown stream URL is probed
      *  to discover its real mime/URL before ExoPlayer sees it. */
@@ -4257,6 +4270,23 @@ class PlayerActivity : ComponentActivity() {
     private fun enhanceEffects(key: String, hdr: Boolean): List<Effect> =
         customEnhanceOf(key)?.effects(hdr) ?: EnhancePreset.fromKey(key).effects(hdr)
 
+    /**
+     * The effect list that keeps the pipeline exactly as [key] wants it. A
+     * plain Natural hands over nothing (no GL pass at all) — unless the user
+     * owns custom presets, in which case it hands over a visual no-op: the
+     * pipeline stays ARMED so the editor's sliders apply live with zero
+     * rebuilds, while the picture is pixel-identical to Natural (see the
+     * pre-arm in [playDirectInner]).
+     */
+    private fun effectiveEnhanceEffects(key: String, hdr: Boolean): List<Effect> {
+        if (!enhanceIsNatural(key)) return enhanceEffects(key, hdr)
+        return if (customEnhanceList.any { !it.isNeutral() }) {
+            listOf(HslAdjustment.Builder().build())
+        } else {
+            emptyList()
+        }
+    }
+
     /** True when the key means "no grading": Natural, or a custom preset with
      *  every slider neutral. An unknown custom key (preset deleted elsewhere)
      *  also reads as Natural, so it can never arm a pipeline for nothing. */
@@ -4291,7 +4321,7 @@ class PlayerActivity : ComponentActivity() {
         // Nothing to apply and no pipeline to apply it to: skip the call
         // entirely, so Natural can never drag an unused GL pass into playback.
         if (enhanceIsNatural(key) && !videoSinkArmed) return
-        runCatching { p.setVideoEffects(enhanceEffects(key, hdr)) }
+        runCatching { p.setVideoEffects(effectiveEnhanceEffects(key, hdr)) }
             .onFailure {
                 enhanceUnsupported = true
                 com.hikari.app.data.Logs.logError("Player", "video effects unavailable", it)
@@ -8954,6 +8984,9 @@ class PlayerActivity : ComponentActivity() {
         // A new video server ends any cross-server audio pairing: the sound
         // belonged to the previous picture (see [startDualAudio]).
         stopDualAudio()
+        // ...and abandons a torrent resolve for the previous server with it.
+        torrentJob?.cancel()
+        torrentJob = null
         if (index != currentIndex) {
             headerVariant = 0
             // A DIFFERENT server: the one attempt at a restart it is allowed
@@ -9017,17 +9050,19 @@ class PlayerActivity : ComponentActivity() {
         val src = sources[index]
         errorPanel?.visibility = View.GONE
 
-        torrentDialog?.let { runCatching { it.dismiss() } }
-        torrentDialog = null
+        torrentJob?.cancel()
+        torrentJob = null
+        dismissTorrentDialog()
 
-        lifecycleScope.launch {
+        var self: Job? = null
+        self = lifecycleScope.launch {
             // Shown only if the resolve is still running after a beat: a warm
             // engine answers fast and the user never sees a dialog at all, while
             // a cold start still explains the wait. Cancellable — backing out
             // abandons the resolve with it instead of parking the player.
             val slowJob = launch {
-                kotlinx.coroutines.delay(1200)
-                if (isActive && torrentDialog == null) {
+                delay(1200)
+                if (isActive && torrentDialog == null && currentIndex == index && torrentJob === self) {
                     torrentDialog = showGlassProgress(
                         "Torrent stream",
                         "Starting torrent engine…\nFirst play can take a few seconds.",
@@ -9041,10 +9076,18 @@ class PlayerActivity : ComponentActivity() {
                 Result.failure(t)
             }
             slowJob.cancel()
-            torrentDialog?.let { runCatching { it.dismiss() } }
-            torrentDialog = null
+            dismissTorrentDialog()
+            // Superseded (a newer server abandoned this resolve, see
+            // [torrentJob]): a late answer changes nothing — no dialog, no
+            // failover, and no hijack back to this server.
+            if (torrentJob !== self) return@launch
+            torrentJob = null
 
             res.onSuccess { playable ->
+                // The player moved on while this resolved (see [torrentJob]):
+                // converting a stale row now would rewrite a server list the
+                // new playback may already be reading.
+                if (currentIndex != index) return@onSuccess
                 // TorrServer's /stream/<file>?…&play endpoint serves the torrent
                 // file as RAW BYTES (progressive download with Range support) —
                 // NOT an HLS manifest. Forcing isM3u8 made ExoPlayer parse the
@@ -9071,6 +9114,7 @@ class PlayerActivity : ComponentActivity() {
                 playDirect(index)
             }
             res.onFailure { e ->
+                if (currentIndex != index) return@onFailure
                 val msg = rootMessage(e)
                 val hasNext = currentIndex + 1 < sources.size
                 if (hasNext) {
@@ -9082,6 +9126,7 @@ class PlayerActivity : ComponentActivity() {
                 }
             }
         }
+        torrentJob = self
     }
 
     /** Builds a magnet and asks the CloudStream runtime's Torrent engine to
@@ -9428,6 +9473,9 @@ class PlayerActivity : ComponentActivity() {
             badgeSource?.visibility = View.VISIBLE
         }
         errorPanel?.visibility = View.GONE
+        // Any new attempt clears a stuck torrent box with it (see
+        // [dismissTorrentDialog]).
+        dismissTorrentDialog()
         // From here the cover describes the PLAYBACK attempt, not the
         // background search: which server is being started, and then what
         // happens to it (see [coverPlaybackLine]). Without this the cover kept
@@ -9631,14 +9679,23 @@ class PlayerActivity : ComponentActivity() {
         // effect from the very first frame has to be handed over right here —
         // this is exactly why the presets used to do nothing at all.
         //
-        // Natural deliberately arms NOTHING: media3 then copies every decoded
-        // frame straight to the surface, with no GL pass. The HDR-safe variant
-        // of the preset is handed over because the stream's colour transfer is
-        // not known until prepare() has run; onTracksChanged refines it to the
-        // exact SDR/HDR effect list a moment later.
-        if (!enhanceIsNatural(enhancePresetKey) && !enhanceUnsupported) {
+        // The pipeline is armed up front not only for a non-neutral preset but
+        // whenever the user owns custom presets at all: opening the editor can
+        // then never need a rebuild, so its sliders adjust the live picture
+        // with zero restarts, zero rebuffering and zero server re-resolves
+        // (see [applyPreviewNow]). The stand-in is a visual no-op, so Natural
+        // still shows the picture exactly as the server sent it.
+        //
+        // Without custom presets Natural arms NOTHING: media3 then copies every
+        // decoded frame straight to the surface, with no GL pass. The HDR-safe
+        // variant of the preset is handed over because the stream's colour
+        // transfer is not known until prepare() has run; onTracksChanged
+        // refines it to the exact SDR/HDR effect list a moment later.
+        val warmForPreview = !enhanceIsNatural(enhancePresetKey) ||
+            customEnhanceList.any { !it.isNeutral() }
+        if (warmForPreview && !enhanceUnsupported) {
             runCatching {
-                player.setVideoEffects(enhanceEffects(enhancePresetKey, hdr = true))
+                player.setVideoEffects(effectiveEnhanceEffects(enhancePresetKey, hdr = true))
                 videoSinkArmed = true
             }.onFailure {
                 videoSinkArmed = false
@@ -11197,6 +11254,9 @@ class PlayerActivity : ComponentActivity() {
             liveStartRetries = 0
             liveStartRetryIndex = -1
             hideLoadingBanner()
+            // A picture is rendering: no "starting" box of any kind may sit
+            // over it (see [dismissTorrentDialog]).
+            dismissTorrentDialog()
             // Playback actually started — persist this server + the header
             // variant that got us here, so the next replay of this video jumps
             // straight onto it (no re-probe, no header trial-and-error).

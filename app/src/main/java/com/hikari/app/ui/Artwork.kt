@@ -111,8 +111,10 @@ object Artwork {
      * lookups this reads [revision], so a hero swaps to the real backdrop the
      * moment its lookup lands.
      */
-    fun heroModel(item: MediaItem): Pair<Any?, Boolean> {
-        item.backdropUrl?.takeIf { it.isNotBlank() }?.let { return PosterLoader.model(it) to true }
+    fun heroModel(item: MediaItem, skipExtensionBackdrop: Boolean = false): Pair<Any?, Boolean> {
+        if (!skipExtensionBackdrop) {
+            item.backdropUrl?.takeIf { it.isNotBlank() }?.let { return PosterLoader.model(it) to true }
+        }
         backdrop(item)?.let { return PosterLoader.model(it) to true }
         item.posterUrl?.takeIf { it.isNotBlank() }?.let { return PosterLoader.model(it) to false }
         return PosterLoader.model(poster(item)) to false

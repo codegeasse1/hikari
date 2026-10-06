@@ -272,4 +272,139 @@ object EpisodeTitles {
         }
         return Names(english, generic)
     }
+    /**
+     * Full episode details keyed by ABSOLUTE episode number (the same
+     * re-basing [names] uses, so the keys line up with it). Lets the detail
+     * page fill in what a site-scraped episode list never carries — the
+     * description, air date, rating and runtime the reference clients print
+     * under every episode — without ever overwriting the site's own data.
+     */
+    class EpDetail(
+        val season: Int,
+        val number: Int,
+        val overview: String?,
+        val released: String?,
+        val rating: Double?,
+        val runtime: Int?,
+        val image: String?,
+    )
+
+    private const val DETAILS_TTL_MS = 30 * 60 * 1000L
+    private const val IMG_BASE = "https://image.tmdb.org/t/p/w500"
+
+    private class DetailsEntry(val at: Long, val details: Map<Int, EpDetail>)
+
+    private val detailsCache = ConcurrentHashMap<String, DetailsEntry>()
+
+    suspend fun details(
+        title: String,
+        year: Int?,
+        numbers: Set<Int>,
+        language: String? = null,
+    ): Map<Int, EpDetail> =
+        withContext(Dispatchers.IO) {
+            if (!runCatching { com.hikari.app.HikariApp.instance.store.tmdbEnabled() && com.hikari.app.HikariApp.instance.store.tmdbModule("episodes") }.getOrDefault(true)) return@withContext emptyMap()
+            if (title.isBlank() || numbers.isEmpty()) return@withContext emptyMap()
+            val lang = language?.trim().orEmpty().ifBlank { LANGUAGE }
+            val key = "d|" + title.trim().lowercase() + "|" + (year ?: 0) + "|" + lang
+            detailsCache[key]?.let {
+                if (it.details.isNotEmpty() ||
+                    System.currentTimeMillis() - it.at < DETAILS_TTL_MS
+                ) {
+                    return@withContext it.details
+                }
+            }
+            val season = TmdbMeta.seasonHint(title)
+            val found = showDetails(title, year, season, lang) ?: emptyMap()
+            detailsCache[key] = DetailsEntry(System.currentTimeMillis(), found)
+            found
+        }
+
+    /** TMDB's id for [title], resolved exactly the way [show] resolves it —
+     *  query variants, name match required, popularity tie-break — then every
+     *  season read the way [names] reads them, collecting the details of each
+     *  episode keyed by absolute number. */
+    private suspend fun showDetails(
+        title: String,
+        year: Int?,
+        season: Int?,
+        language: String,
+    ): Map<Int, EpDetail>? {
+        val variants = TmdbMeta.queryVariants(title)
+        if (variants.isEmpty()) return null
+        var hit: JSONObject? = null
+        var bestScore = 0
+        for (v in variants) {
+            val results = TmdbResolver.apiGet("/search/tv", mapOf("query" to v, "language" to language))
+                ?.optJSONArray("results") ?: continue
+            for (i in 0 until results.length()) {
+                val o = results.optJSONObject(i) ?: continue
+                val base = maxOf(
+                    TmdbMeta.titleScore(v, o.optString("name")),
+                    TmdbMeta.titleScore(v, o.optString("original_name")),
+                )
+                if (base == 0) continue
+                val y = o.optString("first_air_date").take(4).toIntOrNull()
+                val yearBonus = if (year != null && y != null) {
+                    if (y == year) 20 else if (Math.abs(y - year) <= 1) 5 else 0
+                } else {
+                    0
+                }
+                val popTier = minOf(99, (o.optDouble("popularity", 0.0) / 2).toInt())
+                val score = base * 10_000 + yearBonus * 100 + popTier
+                if (score > bestScore) {
+                    bestScore = score
+                    hit = o
+                }
+            }
+            if (bestScore >= 400_000) break
+        }
+        val chosen = hit ?: return null
+        val id = chosen.optInt("id")
+        if (id <= 0) return null
+        val obj = TmdbResolver.apiGet("/tv/$id", mapOf("language" to language)) ?: chosen
+        val seasons = obj.optJSONArray("seasons") ?: return emptyMap()
+        val rows = (0 until seasons.length()).mapNotNull { i ->
+            val s = seasons.optJSONObject(i) ?: return@mapNotNull null
+            val n = s.optInt("season_number")
+            if (n > 0 && s.optInt("episode_count") > 0) n else null
+        }
+        val picked = if (season != null) rows.filter { it == season } else rows.take(MAX_SEASONS)
+        if (picked.isEmpty()) return emptyMap()
+        val out = HashMap<Int, EpDetail>()
+        var running = 0
+        for (sn in picked) {
+            val sd = TmdbResolver.apiGet("/tv/$id/season/$sn", mapOf("language" to language)) ?: continue
+            val eps = sd.optJSONArray("episodes") ?: continue
+            val list = ArrayList<EpDetail>()
+            for (i in 0 until eps.length()) {
+                val e = eps.optJSONObject(i) ?: continue
+                val en = e.optInt("episode_number")
+                if (en <= 0) continue
+                val still = e.optString("still_path").trim()
+                    .takeIf { it.isNotBlank() && it != "null" }?.let { IMG_BASE + it }
+                list += EpDetail(
+                    season = sn,
+                    number = en,
+                    overview = e.optString("overview").trim().takeIf { it.isNotBlank() && it != "null" },
+                    released = e.optString("air_date").trim().take(10).takeIf { it.isNotBlank() },
+                    rating = e.optDouble("vote_average", 0.0).takeIf { it > 0.0 },
+                    runtime = e.optInt("runtime", -1).takeIf { it > 0 },
+                    image = still,
+                )
+            }
+            if (list.isEmpty()) continue
+            val first = list.first().number
+            val start = if (season != null) first else maxOf(first, running + 1)
+            for (d in list) {
+                val abs = start + (d.number - first)
+                if (abs !in 1..4000) continue
+                if (!out.containsKey(abs)) out[abs] = d
+            }
+            if (season != null) continue
+            running = maxOf(running, out.keys.maxOrNull() ?: 0)
+            if (out.size >= MAX_EPISODES) break
+        }
+        return out
+    }
 }

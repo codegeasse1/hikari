@@ -5889,10 +5889,7 @@ class ContentRepository(private val manager: ProviderManager) {
                 val translated = translateEpisodes(item.providerId, sorted)
                 if (translated !== sorted) onPartial?.invoke(translated)
                 val named = withRealEpisodeNames(item, translated)
-                synchronized(episodeCache) { episodeCache[selKey] = named }
-                MetaCache.putEpisodes(epsKey, named)
-                if (named !== translated) onPartial?.invoke(named)
-                return@withContext named
+                return@withContext finishEpisodes(item, selKey, epsKey, named, translated, onPartial)
             }
         } else {
             for (p in ordered) {
@@ -5907,10 +5904,7 @@ class ContentRepository(private val manager: ProviderManager) {
                     val translated = translateEpisodes(item.providerId, sorted)
                     if (translated !== sorted) onPartial?.invoke(translated)
                     val named = withRealEpisodeNames(item, translated)
-                    synchronized(episodeCache) { episodeCache[selKey] = named }
-                    MetaCache.putEpisodes(epsKey, named)
-                    if (named !== translated) onPartial?.invoke(named)
-                    return@withContext named
+                    return@withContext finishEpisodes(item, selKey, epsKey, named, translated, onPartial)
                 }
             }
         }
@@ -5937,10 +5931,7 @@ class ContentRepository(private val manager: ProviderManager) {
                 val translated = translateEpisodes(item.providerId, seasoned)
                 if (translated !== list) onPartial?.invoke(translated)
                 val named = withRealEpisodeNames(item, translated)
-                synchronized(episodeCache) { episodeCache[selKey] = named }
-                MetaCache.putEpisodes(epsKey, named)
-                if (named !== translated) onPartial?.invoke(named)
-                return@withContext named
+                return@withContext finishEpisodes(item, selKey, epsKey, named, translated, onPartial)
             }
         }
         // Tracker anime with no borrowable site list: Bangumi tracks donghua
@@ -5955,10 +5946,7 @@ class ContentRepository(private val manager: ProviderManager) {
                     val translated = translateEpisodes(item.providerId, list)
                     if (translated !== list) onPartial?.invoke(translated)
                     val named = withRealEpisodeNames(item, translated)
-                    synchronized(episodeCache) { episodeCache[selKey] = named }
-                    MetaCache.putEpisodes(epsKey, named)
-                    if (named !== translated) onPartial?.invoke(named)
-                    return@withContext named
+                    return@withContext finishEpisodes(item, selKey, epsKey, named, translated, onPartial)
                 }
         }
         // Nothing fresh. Hand back the disk cache when there is one instead of a
@@ -6185,6 +6173,73 @@ class ContentRepository(private val manager: ProviderManager) {
             if (replacement != null && replacement != raw) {
                 changed = true
                 e.copy(name = replacement)
+            } else {
+                e
+            }
+        }
+        return if (changed) out else eps
+    }
+
+    /**
+     * The final step of every fresh episode list: names first
+     * ([withRealEpisodeNames]), then the details a site list never carries.
+     * Caches, persists and publishes the finished list.
+     */
+    private suspend fun finishEpisodes(
+        item: MediaItem,
+        selKey: String,
+        epsKey: String,
+        named: List<Episode>,
+        translated: List<Episode>,
+        onPartial: ((List<Episode>) -> Unit)?,
+    ): List<Episode> {
+        val filled = backfillEpisodeDetails(item, named)
+        synchronized(episodeCache) { episodeCache[selKey] = filled }
+        MetaCache.putEpisodes(epsKey, filled)
+        if (filled !== translated) onPartial?.invoke(filled)
+        return filled
+    }
+
+    /**
+     * Fills the blanks of a site-scraped episode list from TMDB — the
+     * description, air date, rating and runtime the reference clients print
+     * under every episode — matched by episode number
+     * ([com.hikari.app.nuvio.EpisodeTitles.details]). Only blanks are filled:
+     * the extension's own name, image and dates always win, and a show TMDB
+     * cannot resolve keeps exactly what its source gave it.
+     */
+    private suspend fun backfillEpisodeDetails(item: MediaItem, eps: List<Episode>): List<Episode> {
+        if (eps.isEmpty() || TrackerAnimeResolver.isTrackerAnime(item)) return eps
+        if (eps.all {
+                !it.overview.isNullOrBlank() && !it.released.isNullOrBlank() &&
+                    it.rating != null && it.runtime != null
+            }
+        ) {
+            return eps
+        }
+        val numbers = eps.map { it.number }
+        if (numbers.size != numbers.toSet().size) return eps
+        val language = com.hikari.app.nuvio.TmdbResolver.contentLanguage.takeIf { it.isNotBlank() }
+        val map = withTimeoutOrNull(15_000) {
+            com.hikari.app.nuvio.EpisodeTitles.details(item.searchTitle, item.year, numbers.toSet(), language)
+        } ?: return eps
+        if (map.isEmpty()) return eps
+        val singleSeason = eps.map { it.season }.toSet().size == 1
+        var changed = false
+        val out = eps.map { e ->
+            val d = if (singleSeason) map[e.number]
+            else map.values.firstOrNull { it.season == e.season && it.number == e.number }
+            if (d == null) return@map e
+            val ov = if (e.overview.isNullOrBlank()) d.overview else e.overview
+            val rel = if (e.released.isNullOrBlank()) d.released else e.released
+            val ra = e.rating ?: d.rating
+            val ru = e.runtime ?: d.runtime
+            val im = if (e.image.isNullOrBlank()) d.image else e.image
+            if (ov != e.overview || rel != e.released || ra != e.rating ||
+                ru != e.runtime || im != e.image
+            ) {
+                changed = true
+                e.copy(overview = ov, released = rel, rating = ra, runtime = ru, image = im)
             } else {
                 e
             }

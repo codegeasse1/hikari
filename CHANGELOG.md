@@ -1,3 +1,14 @@
+## 0.10.91
+
+Everything new and fixed since the last release (0.10.90):
+
+### Fixed
+
+- I fixed episode rows missing their description, air date, rating and runtime when the list comes from an extension — the page now fills every blank from TMDB matched by episode number (the extension's own names, images and dates always win, and a show TMDB cannot resolve keeps what its source gave it), so extension rows read exactly like the reference app's, and the filled rows are cached for the next open
+- I fixed the detail header sitting half-blank on some extensions — a backdrop URL that fails to load (hotlink-guarded CDN, expired signed link) now falls back to the looked-up wide art and then the poster once the failure is certain, instead of leaving a black band
+- I fixed the "Torrent stream" box sticking over a video that is already playing — a stale resolve can no longer pop its dialog over, or hijack playback back to, a server you already left (its job is abandoned with the server and its late answer is ignored), and any new attempt plus the first rendered frame clears the box outright
+- I fixed moving an enhance slider restarting the video into buffering — the effects pipeline is now armed before playback whenever you own custom presets (with a visual no-op that keeps Natural pixel-identical), so every slider move is a cheap live effect swap: zero restarts, zero rebuffering, zero server re-resolves
+
 ## 0.10.90
 
 Everything new and fixed since the last release (0.10.89):

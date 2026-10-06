@@ -525,6 +525,9 @@ fun PosterArt(
      *  passes nothing and gets no tags. */
     item: MediaItem? = null,
     overlay: @Composable BoxScope.() -> Unit = {},
+    /** Fires when the main artwork is definitively dead (see [PosterImage]):
+     *  the detail hero uses it to fall back to looked-up art. */
+    onImageError: (() -> Unit)? = null,
 ) {
     val shape = style.shape()
     val badges = rememberPosterBadges(item, style)
@@ -723,6 +726,7 @@ fun PosterArt(
                 modifier = Modifier.fillMaxSize(),
                 contentScale = contentScale,
                 alignment = imageAlignment,
+                onFinalError = onImageError,
             )
             if (spotlighted) {
                 // Darkens the foot of the art, which is what makes the card look

@@ -5774,7 +5774,11 @@ private fun Hero(
     // an extension left blank still gets a real banner here. The wide/poster
     // distinction matters: a portrait poster is never centre-cropped into a
     // 16:9 frame (that is what cut the art off).
-    val image = meta?.let { Artwork.heroModel(it) }
+    // A dead extension backdrop (hotlink-guarded CDN, expired signed URL)
+    // falls back to the looked-up art once Coil proves it dead, instead of
+    // sitting black for the whole visit (see [onImageError]).
+    var heroBackdropDead by remember(meta?.uniqueId) { mutableStateOf(false) }
+    val image = meta?.let { Artwork.heroModel(it, skipExtensionBackdrop = heroBackdropDead) }
         ?: (PosterLoader.model(fallbackPoster) to false)
     val posterModel = PosterLoader.model(fallbackPoster)
     // Adaptive: WIDE with only a portrait poster can never fill 16:9 without
@@ -5882,6 +5886,7 @@ private fun Hero(
                 contentScale = if (image.second) ContentScale.Crop else ContentScale.Fit,
                 imageAlignment = if (image.second) Artwork.CINEMA_ALIGNMENT else Alignment.TopCenter,
                 modifier = Modifier.fillMaxSize(),
+                onImageError = { heroBackdropDead = true },
             )
             Box(
                 Modifier
@@ -5924,6 +5929,7 @@ private fun Hero(
                 model = image.first,
                 wide = image.second,
                 modifier = Modifier.fillMaxSize(),
+                onFinalError = { heroBackdropDead = true },
             )
             Box(
                 Modifier

@@ -248,6 +248,10 @@ fun PosterImage(
     modifier: Modifier = Modifier,
     contentScale: ContentScale = ContentScale.Crop,
     alignment: Alignment = Alignment.Center,
+    /** Fires once the retries are exhausted and the image is definitively
+     *  dead (a hotlink-guarded CDN, an expired signed URL). Callers that
+     *  have a fallback model swap to it here. */
+    onFinalError: (() -> Unit)? = null,
 ) {
     var attempt by remember(model) { mutableIntStateOf(0) }
     val scope = rememberCoroutineScope()
@@ -263,6 +267,8 @@ fun PosterImage(
                     delay(700L * (attempt + 1))
                     attempt++
                 }
+            } else {
+                onFinalError?.invoke()
             }
         },
     )
@@ -286,6 +292,7 @@ fun HeroArtwork(
     modifier: Modifier = Modifier,
     // Kept for call compatibility; the fill is always a top-anchored crop now.
     fillAlignment: Alignment = Alignment.Center,
+    onFinalError: (() -> Unit)? = null,
 ) {
     if (model == null) {
         Box(modifier.background(MaterialTheme.colorScheme.surfaceVariant))
@@ -297,6 +304,7 @@ fun HeroArtwork(
         modifier = modifier,
         contentScale = ContentScale.Crop,
         alignment = com.hikari.app.ui.Artwork.CINEMA_ALIGNMENT,
+        onFinalError = onFinalError,
     )
 }
 
