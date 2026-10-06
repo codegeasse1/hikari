@@ -6214,7 +6214,7 @@ class PlayerActivity : ComponentActivity() {
      * either starts immediately or opens the server chooser (which then fills
      * further as the background enrich lands — see [appendSources]).
      */
-    private fun adoptEpisodeStreams(
+    private suspend fun adoptEpisodeStreams(
         item: AppMediaItem,
         ep: Episode,
         playerSources: List<PlayerSource>,
