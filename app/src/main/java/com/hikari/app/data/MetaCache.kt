@@ -170,6 +170,8 @@ object MetaCache {
                     name = e.stringOrNull("name"),
                     image = e.stringOrNull("image"),
                     season = e.optInt("season", 1),
+                    overview = e.stringOrNull("overview"),
+                    released = e.stringOrNull("released"),
                 )
             }.getOrNull()
         }
@@ -187,6 +189,8 @@ object MetaCache {
                     e.name?.let { put("name", it) }
                     e.image?.let { put("image", it) }
                     put("season", e.season)
+                    e.overview?.let { put("overview", it) }
+                    e.released?.let { put("released", it) }
                 }
             )
         }

@@ -2896,9 +2896,13 @@ private class BrowseCursor(
     val providerId: String,
     val ref: CatalogRef,
     val isAnimeCat: Boolean,
-    var nextPage: Int = 2,
+    var nextPage: Int = 1,
     var exhausted: Boolean = false,
 )
+
+/** Hard ceiling for one kind/genre browse session: the shelves drain until
+ *  they are dry or this many titles are in, whichever comes first. */
+private const val BROWSE_ITEM_CAP = 3000
 
 /** True when [item] belongs to the genre [name]: matched through
  *  [Genres.matches] so accented and translated tags count ("Acción" answers an
@@ -3144,28 +3148,34 @@ private fun HomeSearchOverlay(
                         val animeIds = HashSet<String>()
                         val cursors = ArrayList<BrowseCursor>()
                         for (p in targets) {
-                            val cats = runCatching { p.homeCatalogs() }.getOrDefault(emptyList()).take(8)
-                            for (ref in cats) {
+                            // The FULL catalogue list, not just Home's head rows:
+                            // a genre sweep that only ever reads Popular/Latest
+                            // can never reach "lots of results". Page 1 of the
+                            // first shelves paints immediately; every shelf gets
+                            // a cursor, and the chain below drinks all of them
+                            // dry (see [loadMoreBrowse]).
+                            val cats = runCatching { p.catalogs() }.getOrDefault(emptyList())
+                            for ((ci, ref) in cats.withIndex()) {
                                 val isAnimeCat = ref.id.contains("anime", true) ||
                                     ref.name.contains("anime", true) ||
                                     ref.rawType.equals("anime", true)
-                                val page = runCatching {
-                                    ContentRepository.loadCatalogPage(p, ref, 1)
-                                }.getOrDefault(emptyList())
-                                for (m in page) {
-                                    val small = m.shrinkPoster()
-                                    if (acc.none { it.uniqueId == small.uniqueId }) acc.add(small)
-                                    if (isAnimeCat) animeIds.add(small.uniqueId)
-                                    if (acc.size >= 400) break
+                                val cursor = BrowseCursor(p.config.id, ref, isAnimeCat)
+                                if (ci < 10 && acc.size < 600) {
+                                    val page = runCatching {
+                                        ContentRepository.loadCatalogPage(p, ref, 1)
+                                    }.getOrDefault(emptyList())
+                                    for (m in page) {
+                                        val small = m.shrinkPoster()
+                                        if (acc.none { it.uniqueId == small.uniqueId }) acc.add(small)
+                                        if (isAnimeCat) animeIds.add(small.uniqueId)
+                                        if (acc.size >= 600) break
+                                    }
+                                    cursor.nextPage = 2
                                 }
-                                // Page 1 landed (or answered empty): either way
-                                // this catalogue's cursor starts at page 2 — an
-                                // empty first page still gets its cursor, and the
-                                // first load-more round retires it.
-                                cursors.add(BrowseCursor(p.config.id, ref, isAnimeCat))
-                                if (acc.size >= 400) break
+                                cursors.add(cursor)
+                                if (acc.size >= 600) break
                             }
-                            if (acc.size >= 400) break
+                            if (acc.size >= 600) break
                         }
                         Triple(acc.toList(), animeIds.toSet(), cursors.toList())
                     }
@@ -3182,7 +3192,7 @@ private fun HomeSearchOverlay(
             }
             // The genre check itself: every untagged title in the loaded pools
             // gets its detail read (that is where an extension names genres)
-            // six at a time, oldest pool first, until the session budget is
+            // eight at a time, oldest pool first, until the session budget is
             // spent. A title whose detail names nothing is still marked
             // checked, so it is never asked twice.
             LaunchedEffect(feedItems, browseItems, results, genre, providerIds) {
@@ -3191,7 +3201,7 @@ private fun HomeSearchOverlay(
                     return@LaunchedEffect
                 }
                 val pool = (feedItems + browseItems + results).distinctBy { it.uniqueId }
-                val budget = (240 - checksUsed).coerceAtLeast(0)
+                val budget = (1500 - checksUsed).coerceAtLeast(0)
                 val todo = if (budget <= 0) emptyList()
                 else pool.filter { it.genres.isEmpty() && it.uniqueId !in checkedIds }.take(budget)
                 if (todo.isEmpty()) {
@@ -3204,7 +3214,7 @@ private fun HomeSearchOverlay(
                         val byProvider = app.providers.providers.value
                             .filter { it.config.enabled && it.config.id in providerIds }
                             .associateBy { it.config.id }
-                        val gate = Semaphore(6)
+                        val gate = Semaphore(8)
                         val verdicts = coroutineScope {
                             todo.map { item ->
                                 async(Dispatchers.IO) {
@@ -3234,7 +3244,9 @@ private fun HomeSearchOverlay(
              * appended under what is already on screen. A catalogue that
              * answers empty is retired; when every cursor is retired the list
              * is genuinely finished ([browseDone]) and the grid stops asking.
-             * Guarded, so scroll events cannot stack rounds.
+             * Guarded, so scroll events cannot stack rounds — and self-chaining,
+             * so the shelves keep draining to their real end (unlimited paging)
+             * instead of stopping after the pages a scroll happened to ask for.
              */
             fun loadMoreBrowse() {
                 if (browseMoreLoading || browseDone) return
@@ -3254,7 +3266,7 @@ private fun HomeSearchOverlay(
                             .associateBy { it.config.id }
                         val fresh = ArrayList<MediaItem>()
                         val freshAnime = HashSet<String>()
-                        for (c in pending.take(4)) {
+                        for (c in pending.take(6)) {
                             val p = byId[c.providerId]
                             if (p == null) {
                                 c.exhausted = true
@@ -3283,7 +3295,37 @@ private fun HomeSearchOverlay(
                     } finally {
                         browseMoreLoading = false
                     }
+                    // The chain: another round follows on its own until every
+                    // shelf is dry or the session cap lands — a genre with
+                    // hundreds of titles keeps arriving without any scrolling.
+                    // [browseScope] dies with the overlay, so leaving the
+                    // screen stops the chain; a changed kind/genre/provider set
+                    // rebuilds the cursors, which makes this round's guard fail.
+                    if (!browseDone && browseItems.size >= BROWSE_ITEM_CAP) {
+                        browseDone = true
+                    }
+                    if (!browseDone && browseCursors.any { !it.exhausted } &&
+                        !(kindKey == HOME_KIND_ALL && genre.isBlank()) && providerIds.isNotEmpty()
+                    ) {
+                        delay(1200)
+                        loadMoreBrowse()
+                    }
                 }
+            }
+            // Starts the self-chaining drain once the first shelves have
+            // painted: without this the deeper pages only arrive when the user
+            // scrolls. Waits out the initial scan first, so an early round can
+            // never see empty cursors and declare the list finished.
+            LaunchedEffect(kindKey, genre, providerIds) {
+                if ((kindKey == HOME_KIND_ALL && genre.isBlank()) || providerIds.isEmpty()) {
+                    return@LaunchedEffect
+                }
+                var waits = 0
+                while (browseLoading && waits < 120) {
+                    delay(500)
+                    waits++
+                }
+                loadMoreBrowse()
             }
             val blankShown = remember(feedItems, browseItems, browseAnimeIds, enrichedGenres, kindKey, genre) {
                 if (kindKey == HOME_KIND_ALL && genre.isBlank()) emptyList()
@@ -3345,7 +3387,11 @@ private fun HomeSearchOverlay(
                                 I18n.t("%s titles").replace("%s", blankShown.size.toString()) +
                                     if (browseLoading || browseMoreLoading || !browseDone ||
                                         (genre.isNotBlank() && checkingCount > 0)
-                                    ) "…" else "",
+                                    ) {
+                                        "…" + if (genre.isNotBlank() && checkingCount > 0) {
+                                            " · " + checkingCount.toString()
+                                        } else ""
+                                    } else "",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),

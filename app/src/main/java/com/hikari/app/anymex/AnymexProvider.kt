@@ -296,7 +296,18 @@ class AnymexProvider(override val config: ProviderConfig) : ContentProvider {
                 .ifBlank { null }
             val n = numOf(o) ?: (i + 1)
             val season = o.opt("season")?.toString()?.toIntOrNull()?.takeIf { it > 0 } ?: 1
-            out += Episode(number = n, id = url, name = name, season = season)
+            out += Episode(
+                number = n,
+                id = url,
+                name = name,
+                season = season,
+                overview = o.optString("description")
+                    .ifBlank { o.optString("synopsis") }
+                    .ifBlank { o.optString("overview") }
+                    .ifBlank { o.optString("plot") }
+                    .trim().ifBlank { null },
+                released = episodeDateOf(o),
+            )
         }
         out.ifEmpty { null }
     }
@@ -509,8 +520,29 @@ private fun recordPosterReferer(url: String?, siteBase: String?) {
         return null
     }
 
-    private fun numOf(o: JSONObject): Int? {
-        for (k in listOf("number", "episode_number", "episodeNumber", "episode", "ep", "no", "index", "num")) {
+    /** Air date for an episode entry: extensions print either a date
+     *  ("1999-10-20…") or millis ("957139200000" — mangayomi dateUpload).
+     *  Millis are folded back to yyyy-MM-dd; anything unparseable is left
+     *  out rather than printed raw. */
+    private fun episodeDateOf(o: JSONObject): String? {
+        val raw = o.optString("date")
+            .ifBlank { o.optString("released") }
+            .ifBlank { o.optString("air_date") }
+            .ifBlank { o.optString("dateUpload") }
+            .trim()
+            .ifBlank { return null }
+        if (raw.all { it.isDigit() }) {
+            val ms = raw.toLongOrNull() ?: return null
+            if (ms <= 0) return null
+            return runCatching {
+                java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+                    .format(java.util.Date(ms))
+            }.getOrNull()
+        }
+        return raw.take(10).ifBlank { null }
+    }
+
+    private fun numOf(o: JSONObject): Int? {        for (k in listOf("number", "episode_number", "episodeNumber", "episode", "ep", "no", "index", "num")) {
             if (o.isNull(k)) continue
             o.opt(k)?.toString()?.trim()?.takeIf { it.isNotEmpty() }?.let { s ->
                 s.toIntOrNull() ?: s.toFloatOrNull()?.toInt()?.takeIf { it > 0 }

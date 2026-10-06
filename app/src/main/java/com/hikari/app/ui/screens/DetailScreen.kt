@@ -7207,6 +7207,21 @@ private fun EpisodePosterCard(
     }
 }
 
+/** "1999-10-20" (or a longer stamp starting with it) printed the way the
+ *  reference clients print it — "October 20, 1999". Anything else passes
+ *  through untouched; blank in, null out. */
+private fun formatEpisodeDate(raw: String?): String? {
+    val t = raw?.trim().orEmpty()
+    if (t.isBlank()) return null
+    val head = t.take(10)
+    if (!Regex("""\d{4}-\d{2}-\d{2}""").matches(head)) return t
+    return runCatching {
+        val parsed = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).parse(head)
+            ?: return t
+        java.text.SimpleDateFormat("MMMM d, yyyy", java.util.Locale.US).format(parsed)
+    }.getOrNull() ?: t
+}
+
 @Composable
 private fun EpisodeRow(
     ep: Episode,
@@ -7226,7 +7241,7 @@ private fun EpisodeRow(
             .clickable(onClick = onClick)
             .tvPress(previewPass = false, onClick = onClick)
             .padding(horizontal = (16f * s).dp, vertical = (8f * s).dp),
-        verticalAlignment = Alignment.CenterVertically
+        verticalAlignment = Alignment.Top
     ) {
         val thumb = PosterLoader.model(ep.image?.takeIf { it.isNotBlank() } ?: fallbackImage)
         if (thumb != null) {
@@ -7254,14 +7269,37 @@ private fun EpisodeRow(
             }
         }
         Spacer(Modifier.width((12f * s).dp))
-        Text(
-            ep.name?.ifBlank { tr("Episode %s").replace("%s", ep.number.toString()) }
-                ?: tr("Episode %s").replace("%s", ep.number.toString()),
-            style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.weight(1f),
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
+        Column(Modifier.weight(1f)) {
+            Text(
+                ep.number.toString() + ". " + (
+                    ep.name?.ifBlank { tr("Episode %s").replace("%s", ep.number.toString()) }
+                        ?: tr("Episode %s").replace("%s", ep.number.toString())
+                    ),
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            val aired = formatEpisodeDate(ep.released)
+            if (!aired.isNullOrBlank()) {
+                Text(
+                    aired,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            if (!ep.overview.isNullOrBlank()) {
+                Text(
+                    ep.overview!!.trim(),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(top = (2f * s).dp)
+                )
+            }
+        }
         Icon(
             Icons.Filled.PlayArrow,
             contentDescription = null,

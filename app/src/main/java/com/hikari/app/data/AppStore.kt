@@ -363,6 +363,9 @@ class AppStore(private val ctx: Context) {
         val PLAYER_HOLD_SPEED = intPreferencesKey("playerHoldSpeed")
         /** Show player pills as icons without their text labels. */
         val PLAYER_ICON_ONLY = booleanPreferencesKey("playerIconOnly")
+        /** The "Play in external player" row in the player's options menu
+         *  (ON by default; Settings → Player hides it). */
+        val PLAYER_EXTERNAL_BUTTON = booleanPreferencesKey("playerExternalButton")
         /** Size of player icons when the text labels are hidden, in dp. */
         val PLAYER_ICON_SIZE = intPreferencesKey("playerIconSize")
         /** Use the large left-side TV menu for player panels. */
@@ -3244,6 +3247,16 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
 
     suspend fun setPlayerIconOnly(on: Boolean) {
         write("PLAYER_ICON_ONLY") { it[K.PLAYER_ICON_ONLY] = on }
+    }
+
+    /** Whether the player's options menu offers "Play in external player". */
+    fun playerExternalButtonFlow(): Flow<Boolean> =
+        store.data.map { it[K.PLAYER_EXTERNAL_BUTTON] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun playerExternalButton(): Boolean = playerExternalButtonFlow().first()
+
+    suspend fun setPlayerExternalButton(on: Boolean) {
+        write("PLAYER_EXTERNAL_BUTTON") { it[K.PLAYER_EXTERNAL_BUTTON] = on }
     }
 
     /** Size of player icons when the text labels are hidden (20–44dp). */

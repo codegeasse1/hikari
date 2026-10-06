@@ -752,6 +752,8 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
                         .let { if (season > 1) "S$season E$ep · $it" else it },
                     image = v.optString("thumbnail").ifBlank { null },
                     season = season,
+                    overview = v.optString("overview").ifBlank { null },
+                    released = v.optString("released").take(10).ifBlank { null },
                 )
             }
             if (out.isNotEmpty()) return out.sortedWith(compareBy({ it.season }, { it.number }))

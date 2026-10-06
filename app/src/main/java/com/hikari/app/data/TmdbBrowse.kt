@@ -299,6 +299,8 @@ object TmdbBrowse {
                         name = e.optString("name").ifBlank { "Episode $number" },
                         image = image(e.optString("still_path"), IMG),
                         season = n,
+                        overview = e.optString("overview").ifBlank { null },
+                        released = e.optString("air_date").ifBlank { null },
                     )
                 }
             }

@@ -298,6 +298,12 @@ data class Episode(
      *  Lets the detail screen group a multi-season show into a season picker
      *  instead of dumping every episode of every season into one flat list. */
     val season: Int = 1,
+    /** What this episode is about (TMDB/stremio overviews, extension
+     *  descriptions) — the detail rows print it under the title so a
+     *  mid-list episode can be recognised without playing it. */
+    val overview: String? = null,
+    /** First-air/release date as the provider printed it ("1999-10-20"). */
+    val released: String? = null,
 )
 
 /** One cast member from TMDB's `credits` — the detail page's Cast row. */

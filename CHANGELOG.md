@@ -1,3 +1,13 @@
+## 0.10.89
+
+Everything new and fixed since the last release (0.10.88):
+
+### Fixed
+
+- I fixed the Home genre screen stopping after the first page or two — a genre like Action showed ~25 titles while the extension holds hundreds. The sweep now reads the extension's FULL catalogue list instead of Home's head rows, and every shelf keeps paging on its own until it answers empty (no scrolling needed), up to a 3000-title session cap; the genre check behind the grid grew with it, so matching titles keep joining while it works, and the count tells how many titles are still being checked
+- I fixed episode rows showing a bare title with no way to tell mid-list episodes apart — rows now print the episode number, the air date and the episode's own description (TMDB, Stremio and extension overviews all flow into the row), so finding the episode you were watching no longer means playing each one
+- I added hand-off to an external player — the player options menu has a "Play in external player" row that sends the playing video (correct format, title and Referer attached) to VLC or any installed player, pausing Hikari first so the two never talk over each other, and Settings → Player → External player hides the row when you never use it
+
 ## 0.10.88
 
 Everything new and fixed since the last release (0.10.87):

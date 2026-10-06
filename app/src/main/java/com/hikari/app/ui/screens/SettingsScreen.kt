@@ -779,6 +779,8 @@ fun SettingsScreen(nav: NavHostController) {
                     item { SettingsCard { PlayerUiCard(app) } }
                     item { SettingsCard { HoldToFastForwardCard(app) } }
                     item { SettingsCard { PlayerIconLabelsCard(app) } }
+
+                    item { SettingsCard { ExternalPlayerCard(app) } }
                     item { SettingsCard { TvPlayerPanelsCard(app) } }
                     item { SettingsCard { VolumeBoostCard(app) } }
                     item { SettingsCard { SubtitlesDefaultCard(app) } }
@@ -3645,6 +3647,29 @@ private fun PlayerIconLabelsCard(app: HikariApp) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+    }
+}
+
+/**
+ * Whether the player's options menu (the top-bar gear) offers "Play in
+ * external player" — the row that hands the current stream to VLC & co.
+ */
+@Composable
+private fun ExternalPlayerCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    val flow = remember { app.store.playerExternalButtonFlow() }
+    val on by flow.collectAsState(initial = true)
+
+    Column(Modifier.padding(16.dp)) {
+        SettingsCardHeading(Icons.Filled.OpenInNew, tr("External player"))
+        SettingsToggle(
+            label = tr("Show the external-player row"),
+            supporting = tr("Offers the playing video to VLC and other installed players from the player options menu. Turn it off to hide the row."),
+            checked = on,
+            onCheckedChange = { value ->
+                scope.launch { runCatching { app.store.setPlayerExternalButton(value) } }
+            },
+        )
     }
 }
 

@@ -890,6 +890,9 @@ class PlayerActivity : ComponentActivity() {
     private var holdFastSpeed = 2f
     /** Player pill labels can be hidden while retaining their icons. */
     private var iconOnlyControls = false
+    /** The gear menu's "Play in external player" row (Settings → Player can
+     *  hide it). ON until the answer lands, like the other player switches. */
+    private var externalPlayerRow = true
     /** Size of icon-only player controls, in dp. */
     private var iconOnlySizeDp = 24
     /** Large left-side TV panels are opt-in from Settings → Player. */
@@ -1432,7 +1435,18 @@ class PlayerActivity : ComponentActivity() {
                             iconRes = R.drawable.ic_codec, marker = RowMarker.ICON,
                             selected = codecOverlay != null,
                         ),
-                    ),
+                    ) + if (externalPlayerRow) {
+                        // Hand-off to VLC & co: the last row, so the existing
+                        // rows keep their indices whether it shows or not.
+                        listOf(
+                            GlassOption(
+                                I18n.t("Play in external player"),
+                                I18n.t("Hand this video to VLC or another installed player"),
+                                iconRes = R.drawable.ic_external, marker = RowMarker.ICON,
+                                chevron = true,
+                            ),
+                        )
+                    } else emptyList(),
                     hint = getString(R.string.player_options_hint),
                     iconRes = R.drawable.ic_settings,
                 ) { which ->
@@ -1473,6 +1487,7 @@ class PlayerActivity : ComponentActivity() {
                             openOptions()
                         }
                         7 -> showCodecOverlay()
+                        8 -> openExternalPlayer()
                     }
                 }
             }
@@ -1580,6 +1595,11 @@ class PlayerActivity : ComponentActivity() {
             holdFastSpeed = runCatching {
                 (applicationContext as HikariApp).store.playerHoldSpeed()
             }.getOrDefault(2f).coerceIn(2f, 4f)
+        }
+        lifecycleScope.launch {
+            externalPlayerRow = runCatching {
+                (applicationContext as HikariApp).store.playerExternalButton()
+            }.getOrDefault(true)
         }
         lifecycleScope.launch {
             iconOnlyControls = runCatching {
@@ -11656,6 +11676,59 @@ class PlayerActivity : ComponentActivity() {
             spin.animate().alpha(0f).setDuration(320L).withEndAction {
                 spin.visibility = View.GONE
             }.start()
+        }
+    }
+
+    /**
+     * Hands the playing video to an installed player (VLC & co) through
+     * ACTION_VIEW. Torrents, downloads-in-progress and DRM sources stay inside
+     * Hikari — no outside player could start them. The in-house player is
+     * paused first so the two never talk over each other; the external player
+     * starts from the beginning.
+     */
+    private fun openExternalPlayer() {
+        val src = sources.getOrNull(currentIndex)
+        val url = src?.url.orEmpty()
+        if (src == null || url.isBlank()) {
+            Toast.makeText(this, I18n.t("Nothing is playing yet"), Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (src.isTorrent || url.startsWith("magnet:", true)) {
+            Toast.makeText(this, I18n.t("Torrents play inside Hikari"), Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (src.drm != null) {
+            Toast.makeText(this, I18n.t("Protected videos play inside Hikari"), Toast.LENGTH_SHORT).show()
+            return
+        }
+        try {
+            runCatching { player?.pause() }
+            val ext = url.substringBefore('?').substringAfterLast('.', "").lowercase()
+            val mime = when {
+                url.contains(".m3u8", true) -> "application/x-mpegURL"
+                url.contains(".mpd", true) -> "application/dash+xml"
+                ext == "mp4" || ext == "m4v" || ext == "mov" -> "video/mp4"
+                ext == "mkv" -> "video/x-matroska"
+                ext == "avi" -> "video/x-msvideo"
+                ext == "webm" -> "video/webm"
+                else -> "video/*"
+            }
+            val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
+                setDataAndType(Uri.parse(url), mime)
+                intent.getStringExtra("title")?.takeIf { it.isNotBlank() }?.let {
+                    putExtra("title", it)
+                }
+                src.headers.entries.firstOrNull { it.key.equals("Referer", true) }?.value
+                    ?.takeIf { it.isNotBlank() }?.let { putExtra("Referer", it) }
+                src.headers.entries.firstOrNull { it.key.equals("User-Agent", true) }?.value
+                    ?.takeIf { it.isNotBlank() }?.let { putExtra("User-Agent", it) }
+                addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(intent)
+        } catch (e: android.content.ActivityNotFoundException) {
+            Toast.makeText(this, I18n.t("No video player is installed for this"), Toast.LENGTH_SHORT).show()
+        } catch (_: Throwable) {
+            Toast.makeText(this, I18n.t("Could not open the external player"), Toast.LENGTH_SHORT).show()
         }
     }
 

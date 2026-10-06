@@ -97,6 +97,8 @@ object EpisodeDubSub {
             out += primary.copy(
                 name = cleanName ?: primary.name,
                 image = group.firstNotNullOfOrNull { it.image },
+                overview = group.firstNotNullOfOrNull { it.overview?.ifBlank { null } },
+                released = group.firstNotNullOfOrNull { it.released?.ifBlank { null } },
             )
         }
         out.sortWith(compareBy({ it.season }, { it.number }))
