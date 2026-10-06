@@ -367,6 +367,10 @@ class AppStore(private val ctx: Context) {
          *  (ON by default; Settings → Player hides it). */
         val PLAYER_EXTERNAL_BUTTON = booleanPreferencesKey("playerExternalButton")
         val PLAYER_DUAL_AUDIO = booleanPreferencesKey("playerDualAudio")
+        /** Autoplay the next episode when one ends inside the player (ON by
+         *  default, like the reference clients; the player's own pill toggles
+         *  it). */
+        val PLAYER_AUTOPLAY = booleanPreferencesKey("playerAutoplayNext")
         /** Size of player icons when the text labels are hidden, in dp. */
         val PLAYER_ICON_SIZE = intPreferencesKey("playerIconSize")
         /** Use the large left-side TV menu for player panels. */
@@ -3269,6 +3273,17 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
 
     suspend fun setDualAudio(on: Boolean) {
         write("PLAYER_DUAL_AUDIO") { it[K.PLAYER_DUAL_AUDIO] = on }
+    }
+
+    /** Whether the player advances to the next episode by itself when one ends
+     *  (the Autoplay pill toggles it). */
+    fun autoplayNextFlow(): Flow<Boolean> =
+        store.data.map { it[K.PLAYER_AUTOPLAY] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun autoplayNext(): Boolean = autoplayNextFlow().first()
+
+    suspend fun setAutoplayNext(on: Boolean) {
+        write("PLAYER_AUTOPLAY") { it[K.PLAYER_AUTOPLAY] = on }
     }
 
     /** Size of player icons when the text labels are hidden (20–44dp). */

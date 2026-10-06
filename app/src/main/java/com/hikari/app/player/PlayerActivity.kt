@@ -683,6 +683,9 @@ class PlayerActivity : ComponentActivity() {
     private var qualityBtn: TextView? = null
     private var sourcesBtn: TextView? = null
     private var episodesBtn: TextView? = null
+    private var prevEpBtn: TextView? = null
+    private var nextEpBtn: TextView? = null
+    private var autoplayBtn: TextView? = null
     private var subsBtn: TextView? = null
     private var audioBtn: TextView? = null
     private var errorPanel: View? = null
@@ -1275,6 +1278,9 @@ class PlayerActivity : ComponentActivity() {
         qualityBtn = findViewById(R.id.quality_btn)
         sourcesBtn = findViewById(R.id.sources_btn)
         episodesBtn = findViewById(R.id.episodes_btn)
+        prevEpBtn = findViewById(R.id.prev_ep_btn)
+        nextEpBtn = findViewById(R.id.next_ep_btn)
+        autoplayBtn = findViewById(R.id.autoplay_btn)
         subsBtn = findViewById(R.id.subs_btn)
         audioBtn = findViewById(R.id.audio_btn)
         lockBtn = findViewById(R.id.lock_btn)
@@ -1395,6 +1401,12 @@ class PlayerActivity : ComponentActivity() {
         // series — it stays hidden otherwise, so it is never a dead button.
         episodesBtn?.visibility = View.GONE
         episodesBtn?.setOnClickListener { showEpisodesDialog() }
+        prevEpBtn?.visibility = View.GONE
+        prevEpBtn?.setOnClickListener { stepEpisode(-1) }
+        nextEpBtn?.visibility = View.GONE
+        nextEpBtn?.setOnClickListener { stepEpisode(1) }
+        autoplayBtn?.visibility = View.GONE
+        autoplayBtn?.setOnClickListener { toggleAutoplay() }
         subsBtn?.setOnClickListener { showSubsDialog() }
         audioBtn?.setOnClickListener { showAudioDialog() }
         findViewById<ImageButton>(R.id.download_btn)?.setOnClickListener { showDownloadDialog() }
@@ -1632,6 +1644,12 @@ class PlayerActivity : ComponentActivity() {
             dualAudioOn = runCatching {
                 (applicationContext as HikariApp).store.dualAudio()
             }.getOrDefault(false)
+        }
+        lifecycleScope.launch {
+            autoplayNextOn = runCatching {
+                (applicationContext as HikariApp).store.autoplayNext()
+            }.getOrDefault(true)
+            updateAutoplayPill()
         }
         lifecycleScope.launch {
             iconOnlyControls = runCatching {
@@ -1932,12 +1950,14 @@ class PlayerActivity : ComponentActivity() {
             }
         }
 
-        // Reveal the Episodes pill only when we know the title and it is a
+        // Reveal the episode pills only when we know the title and it is a
         // series — a movie (or playback with no provider context) has no
-        // episode list to show, so the pill stays hidden rather than dead.
-        episodesBtn?.visibility =
-            if (favouriteItem != null && favouriteItem?.type != MediaType.MOVIE) View.VISIBLE
-            else View.GONE
+        // episode list to show, so the pills stay hidden rather than dead.
+        val seriesKnown = favouriteItem != null && favouriteItem?.type != MediaType.MOVIE
+        episodesBtn?.visibility = if (seriesKnown) View.VISIBLE else View.GONE
+        prevEpBtn?.visibility = if (seriesKnown) View.VISIBLE else View.GONE
+        nextEpBtn?.visibility = if (seriesKnown) View.VISIBLE else View.GONE
+        autoplayBtn?.visibility = if (seriesKnown) View.VISIBLE else View.GONE
 
         sources = runCatching {
             val arr = JSONArray(intent.getStringExtra("sources").orEmpty())
@@ -3502,7 +3522,8 @@ class PlayerActivity : ComponentActivity() {
     /** Every labelled pill in the control bar (accent ones included), so the
      *  Player UI skin can restyle the whole row in one pass. */
     private val pillIds = intArrayOf(
-        R.id.speed_btn, R.id.episodes_btn, R.id.sources_btn, R.id.quality_btn,
+        R.id.speed_btn, R.id.episodes_btn, R.id.prev_ep_btn, R.id.next_ep_btn,
+        R.id.autoplay_btn, R.id.sources_btn, R.id.quality_btn,
         R.id.audio_btn, R.id.subs_btn, R.id.rotate_btn, R.id.skip_btn, R.id.enhance_btn
     )
 
@@ -4220,6 +4241,24 @@ class PlayerActivity : ComponentActivity() {
     private var previewTask: Runnable? = null
     private var appliedEnhanceKey: String? = null
     private var appliedEnhanceHdr: Boolean? = null
+    /** The episode actually playing, which an in-player switch moves forward.
+     *  [currentEpisode] only ever knows the launch intent, so everything
+     *  episode-scoped (subtitles, stats, next/previous) reads this instead —
+     *  otherwise every such feature keeps pointing at the episode the player
+     *  was opened on after a switch. */
+    private var liveEpisode: Episode? = null
+    /** In-player episode switches, newest wins: a slow search for an earlier
+     *  pick must never overwrite a later one (see [switchToEpisode]). */
+    private var episodeSwitchGen = 0
+    /** The title's episode list as the player last saw it (the Episodes dialog
+     *  refreshes it). Next/Previous/autoplay step through it in ROW order, so
+     *  duplicate-numbered rows advance one row at a time like the detail page. */
+    private var playerEpisodes: List<Episode> = emptyList()
+    /** Advance to the next episode by itself on natural end (Autoplay pill). */
+    private var autoplayNextOn = true
+    /** An autoplay advance is in flight — a second ENDED event must not stack
+     *  another one behind it. */
+    private var autoplayRunning = false
 
     /** Set when the device/stream refused the effects pipeline, so the menu can
      *  say so instead of silently doing nothing. */
@@ -4272,19 +4311,19 @@ class PlayerActivity : ComponentActivity() {
 
     /**
      * The effect list that keeps the pipeline exactly as [key] wants it. A
-     * plain Natural hands over nothing (no GL pass at all) — unless the user
-     * owns custom presets, in which case it hands over a visual no-op: the
-     * pipeline stays ARMED so the editor's sliders apply live with zero
-     * rebuilds, while the picture is pixel-identical to Natural (see the
-     * pre-arm in [playDirectInner]).
+     * plain Natural hands over a visual no-op: the pipeline stays ARMED from
+     * the very first frame, so the editor's sliders (and any preset pick)
+     * apply live with zero rebuilds, while the picture is pixel-identical to
+     * Natural. Arming only "when the user owns custom presets" was tried and
+     * reverted: the customs load AFTER playback starts, so the check ran on an
+     * empty list, and a first-time preset author owns none by definition — both
+     * cases re-opened the source on the first slider touch (buffering, and
+     * death on single-use signed links). One always-on no-op pass is cheaper
+     * than a single rebuild.
      */
     private fun effectiveEnhanceEffects(key: String, hdr: Boolean): List<Effect> {
         if (!enhanceIsNatural(key)) return enhanceEffects(key, hdr)
-        return if (customEnhanceList.any { !it.isNeutral() }) {
-            listOf(HslAdjustment.Builder().build())
-        } else {
-            emptyList()
-        }
+        return listOf(HslAdjustment.Builder().build())
     }
 
     /** True when the key means "no grading": Natural, or a custom preset with
@@ -6006,6 +6045,10 @@ class PlayerActivity : ComponentActivity() {
                 Toast.makeText(this@PlayerActivity, I18n.t("No episode list available"), Toast.LENGTH_SHORT).show()
                 return@launch
             }
+            // Remembered for Previous/Next/autoplay, so those never refetch.
+            playerEpisodes = eps
+            val liveId = liveEpisode?.id ?: historyEntry?.episodeId
+            val liveNumber = liveEpisode?.number ?: historyEntry?.episodeNumber
             val options = eps.map { ep ->
                 val number = when {
                     ep.season > 1 && ep.number > 0 -> "S${ep.season} E${ep.number}"
@@ -6020,7 +6063,12 @@ class PlayerActivity : ComponentActivity() {
                         number.isNotBlank() -> number
                         else -> "Episode"
                     },
-                    selected = ep.id == historyEntry?.episodeId,
+                    selected = if (liveId != null) {
+                        (liveId.isNotBlank() && ep.id == liveId && ep.number == liveNumber) ||
+                            (liveId.isBlank() && ep.number == liveNumber)
+                    } else {
+                        ep.id == historyEntry?.episodeId
+                    },
                 )
             }
             showGlassMenu(
@@ -6036,22 +6084,44 @@ class PlayerActivity : ComponentActivity() {
 
     /** Switches playback to [ep] in place: fetches that episode's servers, stops
      *  the previous episode's live session, adopts the new episode's history key
-     *  and starts on the first server. Shows a cancellable progress dialog while
-     *  the providers search. */
-    private fun switchToEpisode(ep: Episode) {
+     *  and starts on the first server.
+     *
+     *  The pick applies IMMEDIATELY (top bar, subtitles, stats all follow it
+     *  while the servers are still being searched), and every switch takes a
+     *  generation: a slow search for an earlier pick that lands after a later
+     *  pick is dropped instead of hijacking playback back to the wrong episode.
+     *  An autoplay advance plays directly; a manual pick follows the user's
+     *  "ask before playing" choice. Shows a cancellable progress dialog while
+     *  the providers search (a quiet toast for autoplay). */
+    private fun switchToEpisode(ep: Episode, fromAutoplay: Boolean = false) {
         val item = favouriteItem ?: return
         val repo = contentRepo
+        val gen = ++episodeSwitchGen
+        liveEpisode = ep
+        applyLiveEpisode(ep)
+        autoplayRunning = fromAutoplay
         var cancelled = false
-        val dialog = showGlassProgress(
-            "Loading episode",
-            "Finding servers for this episode…",
-            cancelable = true,
-        ) { cancelled = true }
+        val dialog = if (fromAutoplay) {
+            Toast.makeText(this, I18n.t("Loading next episode…"), Toast.LENGTH_SHORT).show()
+            null
+        } else {
+            showGlassProgress(
+                "Loading episode",
+                "Finding servers for this episode…",
+                cancelable = true,
+            ) { cancelled = true }
+        }
         lifecycleScope.launch {
             val streams = runCatching { repo.streamsFor(item, ep) }.getOrNull().orEmpty()
-            runCatching { dialog.dismiss() }
-            if (cancelled) return@launch
+            dialog?.let { runCatching { it.dismiss() } }
+            if (cancelled) {
+                autoplayRunning = false
+                return@launch
+            }
+            // Superseded: the user picked another episode while this search ran.
+            if (gen != episodeSwitchGen) return@launch
             if (streams.isEmpty()) {
+                autoplayRunning = false
                 Toast.makeText(
                     this@PlayerActivity, I18n.t("No servers found for this episode"), Toast.LENGTH_SHORT
                 ).show()
@@ -6083,16 +6153,138 @@ class PlayerActivity : ComponentActivity() {
             sources = streams.map { it.toPlayerSource() }
             notifySourcesChanged()
             currentIndex = 0
+            // An autoplay advance always plays directly: popping a server
+            // chooser over the credits is not "automatic" in any sense.
             // "Don't play directly" applies to an in-player episode switch too:
             // this is a brand-new server list, so it gets its own chooser
             // instead of auto-starting on the first server.
-            if (shouldAskServer()) {
+            if (fromAutoplay || !shouldAskServer()) {
+                playSource(0)
+            } else {
                 startChooserShown = false
                 showServerChooser(startMode = true)
-            } else {
-                playSource(0)
             }
+            autoplayRunning = false
         }
+    }
+
+    /** Moves one row forward ([delta] = +1) or back (-1) in the title's episode
+     *  list without leaving the player. Rows, not numbers: a provider that
+     *  lists every episode twice steps twin-to-twin, exactly like tapping the
+     *  rows themselves in the Episodes dialog. */
+    private fun stepEpisode(delta: Int) {
+        val item = favouriteItem ?: return
+        if (item.type == MediaType.MOVIE) return
+        val cached = playerEpisodes
+        if (cached.isEmpty()) {
+            Toast.makeText(this, I18n.t("Loading episodes…"), Toast.LENGTH_SHORT).show()
+            lifecycleScope.launch {
+                val eps = runCatching { contentRepo.episodesFor(item) }.getOrNull().orEmpty()
+                if (eps.isEmpty()) {
+                    Toast.makeText(
+                        this@PlayerActivity, I18n.t("No episode list available"), Toast.LENGTH_SHORT
+                    ).show()
+                    return@launch
+                }
+                playerEpisodes = eps
+                stepIn(eps, delta)
+            }
+            return
+        }
+        stepIn(cached, delta)
+    }
+
+    private fun stepIn(eps: List<Episode>, delta: Int) {
+        val at = indexOfLive(eps)
+        if (at < 0) {
+            Toast.makeText(
+                this, I18n.t("Open Episodes to pick one — the list changed"), Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
+        val to = eps.getOrNull(at + delta)
+        if (to == null) {
+            Toast.makeText(
+                this,
+                I18n.t(if (delta > 0) "This is the last episode" else "This is the first episode"),
+                Toast.LENGTH_SHORT,
+            ).show()
+            return
+        }
+        switchToEpisode(to)
+    }
+
+    /** This player's episode as a row index: exact id first, then
+     *  season+number, then bare number. -1 when the list no longer holds it. */
+    private fun indexOfLive(eps: List<Episode>): Int {
+        val live = currentEpisode() ?: return -1
+        if (live.id.isNotBlank()) {
+            eps.indexOfFirst { it.id == live.id }.takeIf { it >= 0 }?.let { return it }
+        }
+        eps.indexOfFirst { it.season == live.season && it.number == live.number }
+            .takeIf { it >= 0 }?.let { return it }
+        return eps.indexOfFirst { it.number == live.number }
+    }
+
+    /** The Autoplay pill: advance to the next episode by itself when one ends. */
+    private fun toggleAutoplay() {
+        autoplayNextOn = !autoplayNextOn
+        updateAutoplayPill()
+        lifecycleScope.launch {
+            runCatching { (applicationContext as HikariApp).store.setAutoplayNext(autoplayNextOn) }
+        }
+        Toast.makeText(
+            this,
+            I18n.t(
+                if (autoplayNextOn) "Autoplay on — the next episode starts itself"
+                else "Autoplay off"
+            ),
+            Toast.LENGTH_SHORT,
+        ).show()
+    }
+
+    private fun updateAutoplayPill() {
+        val v = findViewById<TextView>(R.id.autoplay_btn) ?: return
+        val label = getString(
+            if (autoplayNextOn) R.string.player_autoplay_on else R.string.player_autoplay_off
+        )
+        v.text = label
+        // The icon-only pass restores this map's text, so it must follow the
+        // toggle — otherwise the first icon-only flip shows a stale state.
+        originalPillLabels[R.id.autoplay_btn] = label
+    }
+
+    /** A video that played to its real end advances itself when autoplay is on.
+     *  Movies, live channels and the last episode stay put; an already-running
+     *  advance (or a switch the user just made) wins over a second ENDED event. */
+    private fun onPlaybackEnded() {
+        if (isFinishing || isDestroyed) return
+        if (!autoplayNextOn || autoplayRunning) return
+        val item = favouriteItem ?: return
+        if (item.type == MediaType.MOVIE) return
+        if (runCatching { isLiveSource(sources.getOrNull(currentIndex)) }.getOrDefault(false)) return
+        val cached = playerEpisodes
+        if (cached.isEmpty()) {
+            lifecycleScope.launch {
+                val eps = runCatching { contentRepo.episodesFor(item) }.getOrNull().orEmpty()
+                if (eps.isEmpty()) return@launch
+                playerEpisodes = eps
+                advanceFrom(eps)
+            }
+            return
+        }
+        advanceFrom(cached)
+    }
+
+    private fun advanceFrom(eps: List<Episode>) {
+        if (!autoplayNextOn || autoplayRunning) return
+        if (isFinishing || isDestroyed) return
+        val at = indexOfLive(eps)
+        if (at < 0) return
+        // Last episode: stay on the end screen, nothing to advance to.
+        val next = eps.getOrNull(at + 1) ?: return
+        Toast.makeText(this, I18n.t("Playing next episode…"), Toast.LENGTH_SHORT).show()
+        switchToEpisode(next, fromAutoplay = true)
     }
 
     /** The Source pill: the same grouped picker, dismissible without a pick. */
@@ -8082,6 +8274,13 @@ class PlayerActivity : ComponentActivity() {
      * "load from internet" search have to ask for exactly the same thing.
      */
     private fun currentEpisode(): Episode? {
+        liveEpisode?.let { return it }
+        return intentEpisode()
+    }
+
+    /** The episode the player was OPENED on, from the launch intent. Never
+     *  moves; [currentEpisode] prefers [liveEpisode] once a switch lands. */
+    private fun intentEpisode(): Episode? {
         val number = intent.getIntExtra("histEpisodeNumber", 0)
         if (number <= 0) return null
         return Episode(
@@ -9675,25 +9874,20 @@ class PlayerActivity : ComponentActivity() {
         // is being ENABLED, from the effect list present at that instant
         // (MediaCodecVideoRenderer.onEnabled); a setVideoEffects() call made
         // afterwards is silently dropped when the renderer was enabled without
-        // one. prepare() is what enables it, so a preset that should be in
-        // effect from the very first frame has to be handed over right here —
-        // this is exactly why the presets used to do nothing at all.
+        // one. prepare() is what enables it, so the pipeline has to be handed
+        // over right here — this is exactly why the presets used to do nothing
+        // at all.
         //
-        // The pipeline is armed up front not only for a non-neutral preset but
-        // whenever the user owns custom presets at all: opening the editor can
-        // then never need a rebuild, so its sliders adjust the live picture
-        // with zero restarts, zero rebuffering and zero server re-resolves
-        // (see [applyPreviewNow]). The stand-in is a visual no-op, so Natural
-        // still shows the picture exactly as the server sent it.
+        // The pipeline is armed for EVERY source, even plain Natural: slider
+        // moves and preset picks then only ever swap effect lists live — zero
+        // restarts, zero rebuffering, zero server re-resolves (see
+        // [applyPreviewNow]). The stand-in is a visual no-op, so Natural still
+        // shows the picture exactly as the server sent it.
         //
-        // Without custom presets Natural arms NOTHING: media3 then copies every
-        // decoded frame straight to the surface, with no GL pass. The HDR-safe
-        // variant of the preset is handed over because the stream's colour
-        // transfer is not known until prepare() has run; onTracksChanged
+        // The HDR-safe variant of the preset is handed over because the stream's
+        // colour transfer is not known until prepare() has run; onTracksChanged
         // refines it to the exact SDR/HDR effect list a moment later.
-        val warmForPreview = !enhanceIsNatural(enhancePresetKey) ||
-            customEnhanceList.any { !it.isNeutral() }
-        if (warmForPreview && !enhanceUnsupported) {
+        if (!enhanceUnsupported) {
             runCatching {
                 player.setVideoEffects(effectiveEnhanceEffects(enhancePresetKey, hdr = true))
                 videoSinkArmed = true
@@ -11277,6 +11471,10 @@ class PlayerActivity : ComponentActivity() {
         }
 
         override fun onPlayerStateChanged(playWhenReady: Boolean, playbackState: Int) {
+            if (playbackState == Player.STATE_ENDED) {
+                onPlaybackEnded()
+                return
+            }
             if (playbackState == Player.STATE_READY) {
                 // Duration badge (total runtime) — known once media is ready.
                 val durBadge = formatDurationBadge(this@PlayerActivity.player?.duration ?: 0L)

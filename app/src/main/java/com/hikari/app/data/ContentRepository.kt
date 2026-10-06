@@ -5954,7 +5954,18 @@ class ContentRepository(private val manager: ProviderManager) {
         // shows the list it served before (the "no episodes" verdict for a
         // title that plainly has them). Folded for dub/sub pairs too, so a
         // disk cache written before merging still paints one row per episode.
-        cachedSeasoned?.let { EpisodeDubSub.mergedFor(item.uniqueId, it) }
+        // A cached list written before details existed gets the same backfill
+        // a fresh list gets, and is written back filled so the next open skips
+        // the wait.
+        val merged = cachedSeasoned?.let { EpisodeDubSub.mergedFor(item.uniqueId, it) }
+            ?: return@withContext null
+        val filled = backfillEpisodeDetails(item, merged)
+        if (filled !== merged) {
+            synchronized(episodeCache) { episodeCache[selKey] = filled }
+            MetaCache.putEpisodes(epsKey, filled)
+            onPartial?.invoke(filled)
+        }
+        filled
     }
 
     /**
@@ -6139,8 +6150,11 @@ class ContentRepository(private val manager: ProviderManager) {
         // episode names onto them, so they keep their own names.
         if (TrackerAnimeResolver.isTrackerAnime(item)) return eps
         if (eps.size < 3) return eps
-        val numbers = eps.map { it.number }
-        if (numbers.size != numbers.toSet().size) return eps
+        // Duplicate numbers (a provider listing every episode twice, whose
+        // twins the dub/sub merge deliberately keeps) must not block the
+        // lookup: TMDB is asked for each number once and every twin takes the
+        // same name.
+        val numbers = eps.map { it.number }.toSet()
         // The episode-name lookup keys off the show's ORIGINAL name (a display
         // title localized by the app's TMDB language is not what the wiki knows
         // it as).
@@ -6158,7 +6172,7 @@ class ContentRepository(private val manager: ProviderManager) {
         // real English title is still not the language the user chose.
         if (language == null && !needNames) return eps
         val names = withTimeoutOrNull(12_000) {
-            EpisodeTitles.lookup(showName, item.year, numbers.toSet(), language)
+            EpisodeTitles.lookup(showName, item.year, numbers, language)
         } ?: return eps
         if (names.isEmpty()) return eps
         var changed = false
@@ -6217,11 +6231,12 @@ class ContentRepository(private val manager: ProviderManager) {
         ) {
             return eps
         }
-        val numbers = eps.map { it.number }
-        if (numbers.size != numbers.toSet().size) return eps
+        // Same duplicate-number rule as [withRealEpisodeNames]: twins share one
+        // TMDB row and each twin gets the same details filled in.
+        val numbers = eps.map { it.number }.toSet()
         val language = com.hikari.app.nuvio.TmdbResolver.contentLanguage.takeIf { it.isNotBlank() }
         val map = withTimeoutOrNull(15_000) {
-            com.hikari.app.nuvio.EpisodeTitles.details(item.searchTitle, item.year, numbers.toSet(), language)
+            com.hikari.app.nuvio.EpisodeTitles.details(item.searchTitle, item.year, numbers, language)
         } ?: return eps
         if (map.isEmpty()) return eps
         val singleSeason = eps.map { it.season }.toSet().size == 1

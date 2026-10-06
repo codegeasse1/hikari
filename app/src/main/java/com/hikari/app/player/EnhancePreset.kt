@@ -16,9 +16,9 @@ import androidx.media3.effect.RgbAdjustment
  *
  * Two things are deliberate here:
  *
- *  - Natural is the default and applies NOTHING. The enhancement pipeline costs
- *    a GL pass per frame, so it stays off until the user asks for it (and
- *    turning it off removes the pipeline again).
+ *  - Natural is the default and applies NOTHING visible: the armed pipeline
+ *    carries a no-op so the picture stays pixel-identical, while sliders and
+ *    preset picks apply live without ever re-opening the source.
  *
  *  - Colour grading is built from [HslAdjustment] wherever possible, because
  *    the matrix-based effects ([Brightness], [RgbAdjustment]) assert that the

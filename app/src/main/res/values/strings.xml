@@ -18,6 +18,10 @@
     <string name="player_server_off">Off — start on the best server</string>
     <string name="player_options_hint">Video fit, rotation, and whether servers start on their own.</string>
     <string name="player_episodes">Episodes</string>
+    <string name="player_prev_episode">Prev</string>
+    <string name="player_next_episode">Next</string>
+    <string name="player_autoplay_on">Autoplay: On</string>
+    <string name="player_autoplay_off">Autoplay: Off</string>
     <string name="player_source">Source</string>
     <string name="player_quality">Quality</string>
     <string name="player_audio">Audio</string>

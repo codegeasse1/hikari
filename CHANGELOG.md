@@ -1,3 +1,18 @@
+## 0.10.92
+
+Everything new and fixed since the last release (0.10.91):
+
+### Fixed
+
+- I fixed episode rows still missing their description, air date, rating and runtime on the exact lists that needed them — a provider that lists every episode twice failed the "duplicate numbers" guard, so the TMDB fill never ran on those lists at all. Twins now share one lookup and each gets the same details filled in, and a disk-cached list written before details existed gets filled and written back too
+- I fixed moving an enhance slider restarting the video into buffering for good — two real causes, not one: the saved presets load after playback starts so the arm check ran on an empty list, and a first-time preset author owns no saved presets by definition. The effects pipeline is now always armed before playback with a no-op that keeps Natural pixel-identical, so every slider move and preset pick is a live effect swap with zero restarts and zero re-resolves
+- I fixed switching episodes inside the player landing on the wrong episode — the pick now applies instantly to the top bar, subtitles and history, and every switch takes a generation so a slow search for an earlier pick can never overwrite a later one
+
+### Added
+
+- I added Previous and Next pills to the player for series, stepping through the episode list in row order without leaving the player, with an honest "first/last episode" stop at either end
+- I added an Autoplay pill to the player (on by default) — with it on, the next episode starts itself when one ends; autoplay always plays directly instead of popping a server chooser over the credits
+
 ## 0.10.91
 
 Everything new and fixed since the last release (0.10.90):

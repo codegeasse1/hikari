@@ -313,6 +313,24 @@
               android:text="@string/player_episodes" />
 
           <TextView
+              android:id="@+id/prev_ep_btn"
+              style="@style/HikariPill"
+              android:drawableStart="@drawable/ic_prev_ep"
+              android:text="@string/player_prev_episode" />
+
+          <TextView
+              android:id="@+id/next_ep_btn"
+              style="@style/HikariPill"
+              android:drawableStart="@drawable/ic_next_ep"
+              android:text="@string/player_next_episode" />
+
+          <TextView
+              android:id="@+id/autoplay_btn"
+              style="@style/HikariPill"
+              android:drawableStart="@drawable/ic_autoplay"
+              android:text="@string/player_autoplay_on" />
+
+          <TextView
               android:id="@+id/sources_btn"
               style="@style/HikariPill.Accent"
               android:drawableStart="@drawable/ic_server"
