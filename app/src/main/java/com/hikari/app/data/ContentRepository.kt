@@ -1893,9 +1893,12 @@ class ContentRepository(private val manager: ProviderManager) {
      * extension — only it is asked (a sibling variant id is meaningless to any
      * other provider), and only as a supplement: the primary answer stands on
      * its own, each sibling gets a bounded ask with no retry, and every
-     * sibling stream is tagged "(Dub)"/"(Sub)" when its own name does not
-     * already say so, which is the shape the player's Audio sheet offers as
-     * switchable language rows (keeping the position in the film).
+     * sibling stream is tagged "(Dub)"/"(Sub)" when its own audio is known —
+     * or "(Audio 2)" style when the rows named none — which is the shape the
+     * player's Audio sheet offers as switchable language rows (keeping the
+     * position in the film). The primary streams get the same treatment, so
+     * the sheet can offer both sides even when the extension tags nothing
+     * itself.
      */
     private suspend fun supplementDubSubVariants(
         p: ContentProvider,
@@ -1905,20 +1908,38 @@ class ContentRepository(private val manager: ProviderManager) {
         budgetMs: Long,
     ): List<StreamSource> {
         if (episode == null || p.config.id != item.providerId) return primary
+        val group = EpisodeDubSub.variantsFor(item.uniqueId, episode.season, episode.number)
+        if (group.size < 2) return primary
         val siblings = EpisodeDubSub.siblingVariants(item.uniqueId, episode)
         if (siblings.isEmpty()) return primary
+        // The merged row's own name is cleaned of markers, so the audio each
+        // ORIGINAL row names is read off the registered group instead.
+        val kindOfId = group.associate { it.id to EpisodeDubSub.audioKindOf(it) }
         val seen = HashSet<String>(primary.size + siblings.size)
         primary.forEach { seen.add(it.url) }
         val out = ArrayList(primary)
-        for (sib in siblings) {
-            val kind = EpisodeDubSub.audioKindOf(sib) ?: continue
+        for ((sibIndex, sib) in siblings.withIndex()) {
             val extra = withTimeoutOrNull(minOf(budgetMs, 30_000L)) {
                 cancellableCatching { p.getStreams(item, sib) }.getOrDefault(emptyList())
             }.orEmpty()
+            if (extra.isEmpty()) continue
+            var kind = kindOfId[sib.id]
+            if (kind == null) {
+                kind = extra.mapNotNull { EpisodeDubSub.kindOfStream(it.name, it.url) }
+                    .distinct()
+                    .singleOrNull()
+            }
+            if (kind == null) kind = "Audio ${sibIndex + 2}"
             for (s in extra) {
                 if (!seen.add(s.url)) continue
                 out += s.copy(name = EpisodeDubSub.tagStream(s.name, kind))
             }
+        }
+        if (out.size == primary.size) return primary
+        val primaryKind = kindOfId[episode.id] ?: "Audio 1"
+        for (i in primary.indices) {
+            val s = out[i]
+            if (!EpisodeDubSub.isTagged(s.name)) out[i] = s.copy(name = "${s.name} ($primaryKind)")
         }
         return out
     }
@@ -5832,10 +5853,68 @@ class ContentRepository(private val manager: ProviderManager) {
 
 
 
+    /**
+     * Episode details only ever move FORWARD within one lookup.
+     *
+     * The page paints the disk-cached list first (it already carries the
+     * description, air date, rating and runtime the last fill found), and the
+     * fresh provider lists that land afterwards carry none of that — so each
+     * one used to wipe what was on screen, and when the closing TMDB fill
+     * found nothing the details stayed gone. Every list published by
+     * [episodesForInner] passes through [carry], which fills each row's blanks
+     * from the richest version of that (season, number) seen so far. Names are
+     * never carried: translation and the TMDB name pass improve names as the
+     * lookup progresses, and carrying them backwards would undo that.
+     */
+    private class EpisodeDetailMemory {
+        private val known = HashMap<Pair<Int, Int>, Episode>()
+
+        fun carry(next: List<Episode>): List<Episode> {
+            if (next.isEmpty()) return next
+            var changed = false
+            val out = ArrayList<Episode>(next.size)
+            for (e in next) {
+                val key = e.season to e.number
+                val prev = known[key]
+                if (prev != null && prev !== e) {
+                    val merged = e.copy(
+                        overview = e.overview.takeIf { !it.isNullOrBlank() } ?: prev.overview,
+                        released = e.released.takeIf { !it.isNullOrBlank() } ?: prev.released,
+                        rating = e.rating ?: prev.rating,
+                        runtime = e.runtime ?: prev.runtime,
+                        image = e.image.takeIf { !it.isNullOrBlank() } ?: prev.image,
+                    )
+                    if (merged != e) {
+                        changed = true
+                        known[key] = merged
+                        out += merged
+                        continue
+                    }
+                } else if (prev == null) {
+                    known[key] = e
+                }
+                if (prev !== e) known[key] = e
+                out += e
+            }
+            return if (changed) out else next
+        }
+    }
+
     private suspend fun episodesForInner(
         item: MediaItem,
         onPartial: ((List<Episode>) -> Unit)? = null,
     ): List<Episode>? = withContext(Dispatchers.IO) {
+        // Every list published below goes through here, so a fresh-but-bare
+        // provider list can never wipe the details the cached list already
+        // painted (see [EpisodeDetailMemory]). The enriched list is returned
+        // as well, so each stage builds on the richest rows so far and the
+        // finished list the cache stores keeps what it carried.
+        val detailMem = EpisodeDetailMemory()
+        val publish: (List<Episode>) -> List<Episode> = { list ->
+            val enriched = detailMem.carry(list)
+            onPartial?.invoke(enriched)
+            enriched
+        }
         // UNKNOWN used to bail out entirely — Sora/Anymex catalog rows were
         // typed that way and the detail page never asked extractEpisodes, so
         // every series looked like a movie (Play only, no episode list).
@@ -5846,7 +5925,7 @@ class ContentRepository(private val manager: ProviderManager) {
         val selKey = item.uniqueId + vegaSelectionSuffix(item)
         synchronized(episodeCache) { episodeCache[selKey] }?.let {
             val fixed = restoreAnimeSeasons(item, it)
-            onPartial?.invoke(fixed)
+            publish(fixed)
             if (fixed !== it) {
                 synchronized(episodeCache) { episodeCache[selKey] = fixed }
             }
@@ -5863,7 +5942,7 @@ class ContentRepository(private val manager: ProviderManager) {
             if (TrackerAnimeResolver.isTrackerAnime(item)) "|trk2" else ""
         val cachedEps = MetaCache.cachedEpisodes(epsKey)
         val cachedSeasoned = cachedEps?.let { restoreAnimeSeasons(item, it) }
-        cachedSeasoned?.let { onPartial?.invoke(it) }
+        cachedSeasoned?.let { publish(it) }
         // Tracker anime ids belong to no Stremio addon: their meta answers
         // nothing and the TMDB-id fallback lists another show's episodes, so
         // tracker rows skip straight to the borrowed site list / tracker
@@ -5900,8 +5979,7 @@ class ContentRepository(private val manager: ProviderManager) {
                         val eps = EpisodeDubSub.mergedFor(item.uniqueId, raw)
                         if (eps.isNotEmpty()) {
                             val restored = restoreAnimeSeasons(item, eps)
-                            val sorted = restored.sortedWith(compareBy({ it.season }, { it.number }))
-                            onPartial?.invoke(sorted)
+                            val sorted = publish(restored.sortedWith(compareBy({ it.season }, { it.number })))
                             Triple(index, p, sorted)
                         } else {
                             null
@@ -5913,10 +5991,9 @@ class ContentRepository(private val manager: ProviderManager) {
                 val originIndex = answers.firstOrNull { it.first == 0 }
                 val winner = originIndex ?: answers.minByOrNull { it.first }!!
                 val sorted = winner.third
-                val translated = translateEpisodes(item.providerId, sorted)
-                if (translated !== sorted) onPartial?.invoke(translated)
+                val translated = publish(translateEpisodes(item.providerId, sorted))
                 val named = withRealEpisodeNames(item, translated)
-                return@withContext finishEpisodes(item, selKey, epsKey, named, translated, onPartial)
+                return@withContext finishEpisodes(item, selKey, epsKey, named, publish)
             }
         } else {
             for (p in ordered) {
@@ -5926,12 +6003,10 @@ class ContentRepository(private val manager: ProviderManager) {
                 val eps = EpisodeDubSub.mergedFor(item.uniqueId, raw)
                 if (eps.isNotEmpty()) {
                     val restored = restoreAnimeSeasons(item, eps)
-                    val sorted = restored.sortedWith(compareBy({ it.season }, { it.number }))
-                    onPartial?.invoke(sorted)
-                    val translated = translateEpisodes(item.providerId, sorted)
-                    if (translated !== sorted) onPartial?.invoke(translated)
+                    val sorted = publish(restored.sortedWith(compareBy({ it.season }, { it.number })))
+                    val translated = publish(translateEpisodes(item.providerId, sorted))
                     val named = withRealEpisodeNames(item, translated)
-                    return@withContext finishEpisodes(item, selKey, epsKey, named, translated, onPartial)
+                    return@withContext finishEpisodes(item, selKey, epsKey, named, publish)
                 }
             }
         }
@@ -5950,15 +6025,13 @@ class ContentRepository(private val manager: ProviderManager) {
         // That is the reported "some aniyomi extension shows no episode on
         // series".
         if (item.type == MediaType.SERIES || item.type == MediaType.UNKNOWN) {
-            episodesFromExtensions(item, onPartial)?.let { list ->
-                val seasoned = restoreAnimeSeasons(item, list)
-                if (seasoned !== list) onPartial?.invoke(seasoned)
+            episodesFromExtensions(item, { publish(it) })?.let { list ->
+                val seasoned = publish(restoreAnimeSeasons(item, publish(list)))
                 // Same order as above: auto-translate first, then TMDB's names in
                 // the app's chosen language (which win when they exist).
-                val translated = translateEpisodes(item.providerId, seasoned)
-                if (translated !== list) onPartial?.invoke(translated)
+                val translated = publish(translateEpisodes(item.providerId, seasoned))
                 val named = withRealEpisodeNames(item, translated)
-                return@withContext finishEpisodes(item, selKey, epsKey, named, translated, onPartial)
+                return@withContext finishEpisodes(item, selKey, epsKey, named, publish)
             }
         }
         // Tracker anime with no borrowable site list: Bangumi tracks donghua
@@ -5968,12 +6041,10 @@ class ContentRepository(private val manager: ProviderManager) {
         if (TrackerAnimeResolver.isTrackerAnime(item)) {
             runCatching { TrackerAnimeResolver.trackerEpisodes(item) }.getOrNull()
                 ?.takeIf { it.isNotEmpty() }?.let { raw ->
-                    val list = restoreAnimeSeasons(item, raw)
-                    onPartial?.invoke(list)
-                    val translated = translateEpisodes(item.providerId, list)
-                    if (translated !== list) onPartial?.invoke(translated)
+                    val list = publish(restoreAnimeSeasons(item, raw))
+                    val translated = publish(translateEpisodes(item.providerId, list))
                     val named = withRealEpisodeNames(item, translated)
-                    return@withContext finishEpisodes(item, selKey, epsKey, named, translated, onPartial)
+                    return@withContext finishEpisodes(item, selKey, epsKey, named, publish)
                 }
         }
         // Nothing fresh. Hand back the disk cache when there is one instead of a
@@ -5986,13 +6057,13 @@ class ContentRepository(private val manager: ProviderManager) {
         // the wait.
         val merged = cachedSeasoned?.let { EpisodeDubSub.mergedFor(item.uniqueId, it) }
             ?: return@withContext null
-        val filled = backfillEpisodeDetails(item, merged)
-        if (filled !== merged) {
-            synchronized(episodeCache) { episodeCache[selKey] = filled }
-            MetaCache.putEpisodes(epsKey, filled)
-            onPartial?.invoke(filled)
+        val filled = backfillEpisodeDetails(item, publish(merged))
+        val out = publish(filled)
+        if (out !== merged) {
+            synchronized(episodeCache) { episodeCache[selKey] = out }
+            MetaCache.putEpisodes(epsKey, out)
         }
-        filled
+        out
     }
 
     /**
@@ -6177,10 +6248,10 @@ class ContentRepository(private val manager: ProviderManager) {
         // episode names onto them, so they keep their own names.
         if (TrackerAnimeResolver.isTrackerAnime(item)) return eps
         if (eps.size < 3) return eps
-        // Duplicate numbers (a provider listing every episode twice, whose
-        // twins the dub/sub merge deliberately keeps) must not block the
-        // lookup: TMDB is asked for each number once and every twin takes the
-        // same name.
+        // Duplicate numbers (a provider listing episodes twice under names the
+        // merge keeps separate, e.g. different-language audio labels) must not
+        // block the lookup: TMDB is asked for each number once and every twin
+        // takes the same name.
         val numbers = eps.map { it.number }.toSet()
         // The episode-name lookup keys off the show's ORIGINAL name (a display
         // title localized by the app's TMDB language is not what the wiki knows
@@ -6231,14 +6302,13 @@ class ContentRepository(private val manager: ProviderManager) {
         selKey: String,
         epsKey: String,
         named: List<Episode>,
-        translated: List<Episode>,
-        onPartial: ((List<Episode>) -> Unit)?,
+        publish: (List<Episode>) -> List<Episode>,
     ): List<Episode> {
-        val filled = backfillEpisodeDetails(item, named)
-        synchronized(episodeCache) { episodeCache[selKey] = filled }
-        MetaCache.putEpisodes(epsKey, filled)
-        if (filled !== translated) onPartial?.invoke(filled)
-        return filled
+        val filled = backfillEpisodeDetails(item, publish(named))
+        val out = publish(filled)
+        synchronized(episodeCache) { episodeCache[selKey] = out }
+        MetaCache.putEpisodes(epsKey, out)
+        return out
     }
 
     /**

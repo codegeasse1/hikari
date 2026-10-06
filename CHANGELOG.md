@@ -1,3 +1,13 @@
+## 0.10.94
+
+Everything new and fixed since the last release (0.10.93):
+
+### Fixed
+
+- I fixed episode descriptions showing for a second and then vanishing — the page paints the cached list first (which already has its descriptions) and every fresh provider list after it carried none, wiping what was on screen, and when the closing details fill found nothing they stayed gone. Details now only ever move forward: every list carries forward the richest description, air date, rating, runtime and still seen so far, and the finished list the cache stores keeps what it carried
+- I fixed sub and dub episodes showing as two separate rows — an extension listing both releases under the exact same episode name now folds into one row universally, and the player's Audio sheet offers each side: Sub/Dub when the rows or their servers say so, numbered Audio 1/2 when they name nothing, with the position kept when switching
+- I fixed the TV detail screen burying the title under the buttons — movies and series both now read title first, then the Mark row, then the Play line, with everything else unchanged below
+
 ## 0.10.93
 
 Everything new and fixed since the last release (0.10.92):

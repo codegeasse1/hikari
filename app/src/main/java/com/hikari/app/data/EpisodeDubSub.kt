@@ -15,8 +15,13 @@ package com.hikari.app.data
  *
  * Merging is deliberately conservative: a group only folds when every row
  * strips down to the SAME base name once dub/sub/audio markers are removed.
- * Two genuinely different episodes that happen to share a number ("Part 1" /
- * "Part 2") keep their own rows — folding those would hide content.
+ * Two genuinely different episodes that happen to share a number but are
+ * called DIFFERENT things ("Part 1" / "Part 2", a Hindi-audio label versus a
+ * Tamil-audio one) keep their own rows — folding those would hide content.
+ * Rows that call the episode by the exact SAME name with no marker telling
+ * them apart (an extension listing its sub and dub releases as two identical
+ * rows) always fold: they are the same episode twice, and the player's Audio
+ * sheet offers each audio.
  */
 object EpisodeDubSub {
 
@@ -83,8 +88,14 @@ object EpisodeDubSub {
             if (!hasMarker) {
                 val ids = group.map { it.id }.distinct()
                 if (ids.size != 1) {
-                    out += group
-                    continue
+                    val names = group.map { (it.name ?: "").trim() }
+                        .filter { it.isNotEmpty() }
+                        .map { it.lowercase() }
+                        .distinct()
+                    if (names.size > 1) {
+                        out += group
+                        continue
+                    }
                 }
             }
             val primary = group.firstOrNull { audioKindOf(it) == "Sub" }
@@ -138,6 +149,31 @@ object EpisodeDubSub {
         if (group.size < 2) return emptyList()
         val primaryKind = audioKindOf(primary)
         return group.filter { it.id != primary.id || audioKindOf(it) != primaryKind }
+    }
+
+    /**
+     * The audio a STREAM's own name or url advertises ("…/dub/…", "… (DUB)").
+     * Used when a folded-away episode row names no audio itself: its servers
+     * usually still say which side they carry.
+     */
+    fun kindOfStream(name: String, url: String): String? {
+        val text = (name + " " + url).trim()
+        if (text.isBlank()) return null
+        if (dubRe.containsMatchIn(text)) return "Dub"
+        if (subRe.containsMatchIn(text)) return "Sub"
+        return null
+    }
+
+    /** True when a server name already carries an audio tag the Audio sheet reads. */
+    fun isTagged(name: String): Boolean {
+        if (name.isBlank()) return false
+        bracketAudioRe.findAll(name).any { m ->
+            val inner = m.groupValues[1]
+            inner.contains("audio", ignoreCase = true) ||
+                dubRe.containsMatchIn(inner) ||
+                subRe.containsMatchIn(inner)
+        }.let { if (it) return true }
+        return audioKindOf(Episode(number = 0, id = name, name = name)) != null
     }
 
     /**
