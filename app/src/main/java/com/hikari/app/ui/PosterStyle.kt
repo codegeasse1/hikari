@@ -524,10 +524,11 @@ fun PosterArt(
      *  that is not a catalogue item (a cast portrait, a collection tile) simply
      *  passes nothing and gets no tags. */
     item: MediaItem? = null,
-    overlay: @Composable BoxScope.() -> Unit = {},
     /** Fires when the main artwork is definitively dead (see [PosterImage]):
-     *  the detail hero uses it to fall back to looked-up art. */
+     *  the detail hero uses it to fall back to looked-up art. Placed before
+     *  [overlay] so the trailing content lambda keeps binding to [overlay]. */
     onImageError: (() -> Unit)? = null,
+    overlay: @Composable BoxScope.() -> Unit = {},
 ) {
     val shape = style.shape()
     val badges = rememberPosterBadges(item, style)
