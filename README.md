@@ -15,6 +15,9 @@ Modern Material 3 UI, HLS/DASH playback with per-source headers and subtitles, b
 Need help, found a bug, or want to request a feature? Join the **Hikari Telegram group** — the fastest way to reach me and get support:
 
 - **Telegram:** <https://t.me/CodegeasseHikari>
+- Telegram channel: https://t.me/DiscussionHikari
+- Discord: https://discord.gg/FR3FZ6wgF
+- Reddit: https://www.reddit.com/r/HikariApp/
 
 Everyone is welcome — post your questions, bug reports, and feature requests there and I'll help you out.
 
