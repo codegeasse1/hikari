@@ -10031,7 +10031,6 @@ class PlayerActivity : ComponentActivity() {
         player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
             .setMaxVideoSize(Int.MAX_VALUE, Int.MAX_VALUE)
             .setMaxVideoBitrate(Int.MAX_VALUE)
-            .setAllowVideoNonSeamlessAdaptiveness(true)
             .build()
         player.addListener(listener)
         playerView?.player = player
