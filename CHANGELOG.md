@@ -1,3 +1,14 @@
+## 0.10.98
+
+Everything new and fixed since the last release (0.10.97):
+
+### Fixed
+
+- I fixed anime metadata showing Chinese titles and missing descriptions by removing the AniList/Simkl/Bangumi layer entirely — all titles, episodes, seasons and details now come from TMDB like everything else
+- I fixed flat episode lists never splitting into seasons — the split used to need 20+ episodes and skipped every Chinese-titled show, so a 19-episode list stayed as one season; every series list with 8+ episodes is now cut per TMDB's own season counts on all extensions
+- I fixed the series download button downloading one episode with no choice — it now offers Select episodes and Download all, with a server picker once and every episode queued from that same server
+- I added download via external manager — the download sheet has an External manager row that hands the stream URL to 1DM or any other download app
+
 ## 0.10.97
 
 Everything new and fixed since the last release (0.10.96):

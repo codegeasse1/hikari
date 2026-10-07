@@ -12711,6 +12711,10 @@ class PlayerActivity : ComponentActivity() {
                     I18n.t("Phone storage"), I18n.t("Saved to your device's Downloads folder"),
                     iconRes = R.drawable.ic_download, marker = RowMarker.ICON, chevron = true,
                 ),
+                GlassOption(
+                    I18n.t("External manager"), I18n.t("Open in 1DM or another download app"),
+                    iconRes = R.drawable.ic_download, marker = RowMarker.ICON, chevron = true,
+                ),
             ),
             message = (if (label.isBlank()) "" else "$label\n") +
                 I18n.t("Where do you want to save this video?"),
@@ -12721,7 +12725,8 @@ class PlayerActivity : ComponentActivity() {
             },
         ) { which ->
             picked = true
-            chooseQualityThenDownload(if (which == 0) DownloadKind.OFFLINE else DownloadKind.EXPORT)
+            if (which == 2) openInExternalManager()
+            else chooseQualityThenDownload(if (which == 0) DownloadKind.OFFLINE else DownloadKind.EXPORT)
         }
     }
 
@@ -12905,6 +12910,26 @@ class PlayerActivity : ComponentActivity() {
         ).show()
         // A download picked from outside the player is done: hand the user back
         // rather than leaving them on a player that is playing nothing.
+        leaveAfterDownloadPick()
+    }
+
+    private fun openInExternalManager() {
+        val src = sources.getOrNull(currentIndex)
+        if (src == null || src.url.isBlank() || src.isTorrent || src.torrentStream) {
+            leaveAfterDownloadPick()
+            return
+        }
+        runCatching {
+            val uri = android.net.Uri.parse(src.url)
+            val view = android.content.Intent(android.content.Intent.ACTION_VIEW, uri)
+            view.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            view.addCategory(android.content.Intent.CATEGORY_BROWSABLE)
+            startActivity(android.content.Intent.createChooser(view, src.url.substringAfterLast("/").take(80)))
+        }.onFailure {
+            runCatching {
+                Toast.makeText(this, I18n.t("No app can open this link."), Toast.LENGTH_SHORT).show()
+            }
+        }
         leaveAfterDownloadPick()
     }
 

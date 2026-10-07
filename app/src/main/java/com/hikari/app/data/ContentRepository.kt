@@ -5797,8 +5797,9 @@ class ContentRepository(private val manager: ProviderManager) {
         // Tracker anime with no borrowable list: build the correct numbered
         // list (Bangumi numbering for donghua, Simkl counts for every anime,
         // AniList/MyAnimeList counts otherwise) instead of Episodes (0).
-        TrackerAnimeResolver.trackerEpisodes(item)
+        val trk = TrackerAnimeResolver.trackerEpisodes(item)
             ?: TrackerAnimeResolver.fallbackEpisodes(item)
+        if (trk != null) restoreAnimeSeasons(item, trk) else null
     }
 
     /**
@@ -5910,13 +5911,8 @@ class ContentRepository(private val manager: ProviderManager) {
      *  Provider episode ids are kept unchanged so playback links remain owned
      *  by the source. */
     private suspend fun restoreAnimeSeasons(item: MediaItem, episodes: List<Episode>): List<Episode> {
-        if (item.type != MediaType.SERIES || episodes.size < 20) return episodes
+        if (item.type != MediaType.SERIES || episodes.size < 8) return episodes
         if (episodes.map { it.season }.distinct().any { it > 1 }) return episodes
-        val aniLayout = runCatching { AnimeMetadataRepository.seasonLayout(item.searchTitle) }
-            .getOrDefault(emptyList())
-        splitFlatEpisodes(episodes, aniLayout)?.let { return it }
-        val cjk = Regex("[一-鿿぀-ヿ가-힯㐀-䶿豈-﫿]")
-        if (cjk.containsMatchIn(item.searchTitle)) return episodes
         val tmdbLayout = runCatching { tmdbSeasonLayout(item) }.getOrDefault(emptyList())
         splitFlatEpisodes(episodes, tmdbLayout)?.let { return it }
         return episodes
@@ -6318,17 +6314,7 @@ class ContentRepository(private val manager: ProviderManager) {
         // titles, so "Episode N" tracker counts and mechanical site labels
         // become real names even where TMDB never runs (see below).
         val anilistNamed = animeEpisodeNames(item, eps)
-        // Tracker anime lists are tracker counts ("Episode N") or a borrowed
-        // site list — a TMDB title search here could paint another show's
-        // episode names onto them, so they keep their own names.
-        if (TrackerAnimeResolver.isTrackerAnime(item)) return anilistNamed
         if (eps.size < 3) return anilistNamed
-        // "AniList only" never asks TMDB for anime rows: AniList's names stand.
-        val animeMode = AnimeMetadataRepository.normalizeMode(
-            runCatching { com.hikari.app.HikariApp.instance.store.animeMetadataSource() }.getOrDefault("anilist_simkl")
-        )
-        val animeRow = AnimeMetadataRepository.isAnimeItem(item, manager.byId(item.providerId)?.config?.type)
-        if (animeRow && animeMode == "anilist") return anilistNamed
         // Duplicate numbers (a provider listing episodes twice under names the
         // merge keeps separate, e.g. different-language audio labels) must not
         // block the lookup: TMDB is asked for each number once and every twin
@@ -6381,44 +6367,7 @@ class ContentRepository(private val manager: ProviderManager) {
      * wider modes run this; "Simkl only" skips it.
      */
     private suspend fun animeEpisodeNames(item: MediaItem, eps: List<Episode>): List<Episode> {
-        if (eps.size < 3) return eps
-        if (!runCatching { com.hikari.app.HikariApp.instance.store.animeMetadataEnabled() }.getOrDefault(true)) return eps
-        val mode = AnimeMetadataRepository.normalizeMode(
-            runCatching { com.hikari.app.HikariApp.instance.store.animeMetadataSource() }.getOrDefault("anilist_simkl")
-        )
-        if (!AnimeMetadataRepository.includesAnilist(mode)) return eps
-        if (!AnimeMetadataRepository.isAnimeItem(item, manager.byId(item.providerId)?.config?.type) && !TrackerAnimeResolver.isTrackerAnime(item)) return eps
-        val full = withTimeoutOrNull(12_000) {
-            AnimeMetadataRepository.animeFull(item.searchTitle)
-        }
-        val byNumber = full?.episodes.orEmpty().associate { it.number to it }
-        val showName = item.searchTitle
-        val cjk = Regex("[\\u3040-\\u30ff\\u3400-\\u4dbf\\u4e00-\\u9fff\\uf900-\\ufaff]")
-        val bang = if (cjk.containsMatchIn(showName) || cjk.containsMatchIn(item.originalTitle)) {
-            withTimeoutOrNull(12_000) {
-                com.hikari.app.nuvio.BangumiMeta.episodes(
-                    showName,
-                    item.originalTitle.trim().takeIf { it.isNotBlank() },
-                    item.year,
-                    TmdbMeta.seasonHint(showName),
-                )
-            }.orEmpty().associate { it.number to it }
-        } else emptyMap()
-        if (byNumber.isEmpty() && bang.isEmpty()) return eps
-        var changed = false
-        val out = eps.map { e ->
-            val candidate = byNumber[e.number]?.title?.takeIf { !it.isNullOrBlank() }
-                ?: bang[e.number]?.name?.takeIf { !it.isNullOrBlank() }
-                ?: return@map e
-            val raw = e.name
-            val upgrade = raw.isNullOrBlank() ||
-                EpisodeTitles.looksMechanical(raw, showName) ||
-                EpisodeTitles.needsEnglish(raw, showName)
-            if (!upgrade || candidate == raw) return@map e
-            changed = true
-            e.copy(name = candidate)
-        }
-        return if (changed) out else eps
+        return eps
     }
 
     /**
@@ -6433,7 +6382,8 @@ class ContentRepository(private val manager: ProviderManager) {
         named: List<Episode>,
         publish: (List<Episode>) -> List<Episode>,
     ): List<Episode> {
-        val filled = backfillEpisodeDetails(item, publish(named))
+        val restored = restoreAnimeSeasons(item, named)
+        val filled = backfillEpisodeDetails(item, publish(restored))
         val out = publish(filled)
         synchronized(episodeCache) { episodeCache[selKey] = out }
         MetaCache.putEpisodes(epsKey, out)
@@ -6450,24 +6400,7 @@ class ContentRepository(private val manager: ProviderManager) {
      */
     private suspend fun backfillEpisodeDetails(item: MediaItem, eps: List<Episode>): List<Episode> {
         if (eps.isEmpty()) return eps
-        val trackerAnime = TrackerAnimeResolver.isTrackerAnime(item)
-        val anime = trackerAnime || AnimeMetadataRepository.isAnimeItem(item, manager.byId(item.providerId)?.config?.type)
-        val mode = AnimeMetadataRepository.normalizeMode(
-            runCatching { com.hikari.app.HikariApp.instance.store.animeMetadataSource() }.getOrDefault("anilist_simkl")
-        )
-        var list = eps
-        // Anime rows take AniList stills first (the only per-episode art
-        // AniList carries) — in every mode but "Simkl only".
-        if (anime && AnimeMetadataRepository.includesAnilist(mode) &&
-            runCatching { com.hikari.app.HikariApp.instance.store.animeMetadataEnabled() }.getOrDefault(true)
-        ) {
-            list = fillAnimeStills(item, list)
-        }
-        // ...then TMDB's descriptions the way it always did. Tracker rows only
-        // get the TMDB pass in "full" (AniList + Simkl + TMDB) mode, and
-        // "AniList only" never asks TMDB for anime rows at all.
-        if (trackerAnime && mode != "full") return list
-        if (anime && mode == "anilist") return list
+        val list = eps
         if (list.all {
                 !it.overview.isNullOrBlank() && !it.released.isNullOrBlank() &&
                     it.rating != null && it.runtime != null
@@ -6512,21 +6445,7 @@ class ContentRepository(private val manager: ProviderManager) {
      * upgrade rules; this only patches what is still missing artwork.
      */
     private suspend fun fillAnimeStills(item: MediaItem, eps: List<Episode>): List<Episode> {
-        if (eps.none { it.image.isNullOrBlank() }) return eps
-        val full = withTimeoutOrNull(12_000) {
-            AnimeMetadataRepository.animeFull(item.searchTitle)
-        } ?: return eps
-        if (full.episodes.isEmpty()) return eps
-        val byNumber = full.episodes.associate { it.number to it }
-        var changed = false
-        val out = eps.map { e ->
-            val img = byNumber[e.number]?.image
-            if (e.image.isNullOrBlank() && !img.isNullOrBlank()) {
-                changed = true
-                e.copy(image = img)
-            } else e
-        }
-        return if (changed) out else eps
+        return eps
     }
 
     // ---- Per-extension auto-translate (app content → English) ----

@@ -186,6 +186,45 @@ import java.util.UUID
 class DetailViewModel(app: Application) : AndroidViewModel(app) {
     private val manager = (app as HikariApp).providers
     private val repo = ContentRepository(manager)
+    suspend fun serversForBatch(item: MediaItem, episode: Episode): List<StreamSource> {
+        val origin = runCatching { repo.originStreams(item, episode, 15000L) }.getOrDefault(emptyList())
+        val playable = origin.filter { !it.isTorrent && !it.externalUrl && it.ytId.isNullOrBlank() && it.url.startsWith("http", true) }
+        if (playable.isNotEmpty()) return playable
+        return runCatching { repo.streamsFor(item, episode) }.getOrDefault(emptyList()).filter { !it.isTorrent && !it.externalUrl && it.ytId.isNullOrBlank() && it.url.startsWith("http", true) }
+    }
+    suspend fun enqueueBatch(ctx: android.content.Context, item: MediaItem, episodes: List<Episode>, chosen: StreamSource): Int {
+        var done = 0
+        for (ep in episodes) {
+            val servers = runCatching { serversForBatch(item, ep) }.getOrDefault(emptyList())
+            if (servers.isEmpty()) continue
+            val src = servers.firstOrNull { it.name == chosen.name && it.providerId == chosen.providerId }
+                ?: servers.firstOrNull { it.providerId == chosen.providerId }
+                ?: servers.firstOrNull { it.name == chosen.name }
+                ?: servers[0]
+            if (src.url.isBlank()) continue
+            val label = if (ep.season > 1) "S" + ep.season + " E" + ep.number else "E" + ep.number
+            val task = com.hikari.app.download.DownloadTask(
+                id = com.hikari.app.download.DownloadTask.idFor(item.providerId.ifBlank { "detail" }, item.id, ep.id, com.hikari.app.download.DownloadKind.OFFLINE),
+                title = item.title.ifBlank { "Video" },
+                episodeLabel = label,
+                poster = item.posterUrl,
+                providerId = item.providerId,
+                mediaId = item.id,
+                episodeId = ep.id,
+                sourceName = src.name,
+                url = src.url,
+                headers = src.headers,
+                isM3u8 = src.isM3u8 || src.url.substringBefore("?").lowercase().contains(".m3u8"),
+                subtitles = src.subtitles,
+                kind = com.hikari.app.download.DownloadKind.OFFLINE,
+                status = com.hikari.app.download.DownloadStatus.QUEUED,
+                createdAt = System.currentTimeMillis()
+            )
+            runCatching { com.hikari.app.download.DownloadsRepository.enqueue(ctx, task) }
+            done++
+        }
+        return done
+    }
 
     /** Installed extensions (names for the per-provider diagnostics shown in
      *  the sources sheet's empty state). */
@@ -2888,6 +2927,175 @@ fun DetailScreen(
         else -> emptySet()
     }
     val openLibrary: () -> Unit = { librarySheet = true }
+    var showDlChoice by remember { mutableStateOf(false) }
+    var showDlSelect by remember { mutableStateOf(false) }
+    var showDlServer by remember { mutableStateOf(false) }
+    var dlChecked by remember { mutableStateOf(setOf<String>()) }
+    var dlTargets by remember { mutableStateOf(listOf<Episode>()) }
+    var dlServers by remember { mutableStateOf(listOf<StreamSource>()) }
+    var dlBusy by remember { mutableStateOf(false) }
+    var dlMsg by remember { mutableStateOf<String?>(null) }
+    val batchItem = m ?: savedItem
+    fun dlLabel(e: Episode): String {
+        val base = if (e.season > 1) "S" + e.season + " E" + e.number else "E" + e.number
+        val nm = e.name?.trim().orEmpty()
+        return if (nm.isBlank()) base else base + " - " + nm.take(60)
+    }
+    fun resolveFirstServer(eps: List<Episode>) {
+        if (eps.isEmpty() || dlBusy) return
+        dlTargets = eps
+        showDlChoice = false
+        showDlSelect = false
+        scope.launch {
+            dlBusy = true
+            dlMsg = "Finding servers for " + dlLabel(eps[0]) + "..."
+            val servers = runCatching { vm.serversForBatch(batchItem, eps[0]) }.getOrDefault(emptyList())
+            dlBusy = false
+            if (servers.isEmpty()) {
+                dlMsg = null
+                runCatching { android.widget.Toast.makeText(context, "No downloadable server found.", android.widget.Toast.LENGTH_SHORT).show() }
+            } else {
+                dlMsg = null
+                dlServers = servers
+                showDlServer = true
+            }
+        }
+    }
+    fun confirmDlServer(srv: StreamSource) {
+        showDlServer = false
+        val eps = dlTargets
+        if (eps.isEmpty()) return
+        scope.launch {
+            dlBusy = true
+            val done = runCatching {
+                var n = 0
+                for ((idx, ep) in eps.withIndex()) {
+                    dlMsg = "Queueing " + (idx + 1) + "/" + eps.size + " (" + dlLabel(ep) + ")..."
+                    val servers = runCatching { vm.serversForBatch(batchItem, ep) }.getOrDefault(emptyList())
+                    if (servers.isEmpty()) continue
+                    val src = servers.firstOrNull { it.name == srv.name && it.providerId == srv.providerId }
+                        ?: servers.firstOrNull { it.providerId == srv.providerId }
+                        ?: servers.firstOrNull { it.name == srv.name }
+                        ?: servers[0]
+                    if (src.url.isBlank()) continue
+                    val label = if (ep.season > 1) "S" + ep.season + " E" + ep.number else "E" + ep.number
+                    val task = com.hikari.app.download.DownloadTask(
+                        id = com.hikari.app.download.DownloadTask.idFor(batchItem.providerId.ifBlank { "detail" }, batchItem.id, ep.id, com.hikari.app.download.DownloadKind.OFFLINE),
+                        title = batchItem.title.ifBlank { "Video" },
+                        episodeLabel = label,
+                        poster = batchItem.posterUrl,
+                        providerId = batchItem.providerId,
+                        mediaId = batchItem.id,
+                        episodeId = ep.id,
+                        sourceName = src.name,
+                        url = src.url,
+                        headers = src.headers,
+                        isM3u8 = src.isM3u8 || src.url.substringBefore("?").lowercase().contains(".m3u8"),
+                        subtitles = src.subtitles,
+                        kind = com.hikari.app.download.DownloadKind.OFFLINE,
+                        status = com.hikari.app.download.DownloadStatus.QUEUED,
+                        createdAt = System.currentTimeMillis()
+                    )
+                    runCatching { com.hikari.app.download.DownloadsRepository.enqueue(context, task) }
+                    n++
+                }
+                n
+            }.getOrDefault(0)
+            dlBusy = false
+            dlMsg = null
+            runCatching { android.widget.Toast.makeText(context, if (done > 0) "Queued " + done + " download" + (if (done == 1) "" else "s") + " from " + srv.name else "No episodes could be queued.", android.widget.Toast.LENGTH_LONG).show() }
+        }
+    }
+    val openDlChoice: () -> Unit = {
+        if (batchItem.type == MediaType.SERIES && sortedEps.size > 1) showDlChoice = true
+        else tryDownload(detailBtnEp)
+    }
+    if (showDlChoice) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { if (!dlBusy) showDlChoice = false },
+            title = { androidx.compose.material3.Text("Download episodes") },
+            text = { androidx.compose.material3.Text(sortedEps.size.toString() + " episodes. Pick specific ones or grab everything from one server.") },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = { dlChecked = sortedEps.map { it.id }.toSet(); showDlChoice = false; showDlSelect = true }) { androidx.compose.material3.Text("Select episodes") }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = { resolveFirstServer(sortedEps.toList()) }, enabled = !dlBusy) { androidx.compose.material3.Text("Download all") }
+            }
+        )
+    }
+    if (showDlSelect) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { if (!dlBusy) showDlSelect = false },
+            title = { androidx.compose.material3.Text("Select episodes") },
+            text = {
+                Column(Modifier.heightIn(max = 420.dp)) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        androidx.compose.material3.TextButton(onClick = { dlChecked = sortedEps.map { it.id }.toSet() }) { androidx.compose.material3.Text("All") }
+                        androidx.compose.material3.TextButton(onClick = { dlChecked = emptySet() }) { androidx.compose.material3.Text("None") }
+                    }
+                    LazyColumn(Modifier.fillMaxWidth()) {
+                        items(sortedEps, key = { it.id }) { ep ->
+                            val on = dlChecked.contains(ep.id)
+                            Row(Modifier.fillMaxWidth().clickable { dlChecked = if (on) dlChecked - ep.id else dlChecked + ep.id }.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                androidx.compose.material3.Checkbox(checked = on, onCheckedChange = { c -> dlChecked = if (c) dlChecked + ep.id else dlChecked - ep.id })
+                                Spacer(Modifier.width(8.dp))
+                                androidx.compose.material3.Text(dlLabel(ep), maxLines = 2)
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                androidx.compose.material3.TextButton(
+                    onClick = {
+                        val picked = sortedEps.filter { dlChecked.contains(it.id) }
+                        if (picked.isEmpty()) {
+                            runCatching { android.widget.Toast.makeText(context, "Select at least one episode.", android.widget.Toast.LENGTH_SHORT).show() }
+                        } else resolveFirstServer(picked)
+                    },
+                    enabled = !dlBusy && dlChecked.isNotEmpty()
+                ) { androidx.compose.material3.Text("Download (" + dlChecked.size + ")") }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = { showDlSelect = false }, enabled = !dlBusy) { androidx.compose.material3.Text("Cancel") }
+            }
+        )
+    }
+    if (showDlServer) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { if (!dlBusy) showDlServer = false },
+            title = { androidx.compose.material3.Text("Pick server (" + dlTargets.size + " episodes)") },
+            text = {
+                LazyColumn(Modifier.heightIn(max = 420.dp).fillMaxWidth()) {
+                    items(dlServers, key = { it.providerId + "|" + it.name + "|" + it.url }) { srv ->
+                        Column(Modifier.fillMaxWidth().clickable(enabled = !dlBusy) { confirmDlServer(srv) }.padding(vertical = 8.dp)) {
+                            androidx.compose.material3.Text(srv.name, maxLines = 1)
+                            val sub = listOf(srv.providerName, srv.details).filter { it.isNotBlank() }.joinToString(" - ")
+                            if (sub.isNotBlank()) androidx.compose.material3.Text(sub, maxLines = 1, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = { showDlServer = false }, enabled = !dlBusy) { androidx.compose.material3.Text("Cancel") }
+            }
+        )
+    }
+    if (dlBusy) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = {},
+            title = { androidx.compose.material3.Text("Preparing downloads") },
+            text = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    androidx.compose.material3.CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 3.dp)
+                    Spacer(Modifier.width(12.dp))
+                    androidx.compose.material3.Text(dlMsg ?: "Working...")
+                }
+            },
+            confirmButton = {}
+        )
+    }
 
     if (librarySheet) {
         CategoryPickerSheet(
@@ -3213,10 +3421,10 @@ fun DetailScreen(
                             }
                         }
                         FilledTonalButton(
-                            onClick = { tryDownload(detailBtnEp) },
+                            onClick = { openDlChoice() },
                             modifier = Modifier.tvPress(
                                 previewPass = true,
-                                onClick = { tryDownload(detailBtnEp) }
+                                onClick = { openDlChoice() }
                             )
                         ) {
                             Icon(painter = painterResource(R.drawable.ic_download), contentDescription = tr("Download"))
@@ -4024,7 +4232,7 @@ fun DetailScreen(
                         // `openDownload`). The episode rows below offer the same
                         // per episode; this one also covers a movie, whose only
                         // affordance is this row.
-                        FilledTonalButton(onClick = { tryDownload(btnEp) }) {
+                        FilledTonalButton(onClick = { openDlChoice() }) {
                             Icon(
                                 painter = painterResource(R.drawable.ic_download),
                                 contentDescription = tr("Download"),

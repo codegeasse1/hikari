@@ -47,27 +47,8 @@ object TrackerAnimeResolver {
         null
     }
 
-    suspend fun detail(item: MediaItem): Detail? = withContext(Dispatchers.IO) {
-        if (!isTrackerAnime(item)) return@withContext null
-        if (!runCatching { HikariApp.instance.store.animeMetadataEnabled() }.getOrDefault(true)) return@withContext null
-        val mode = AnimeMetadataRepository.normalizeMode(
-            runCatching { HikariApp.instance.store.animeMetadataSource() }.getOrDefault("anilist_simkl")
-        )
-        // AniList needs no key and answers every anime by id — but only rows
-        // that CAME from AniList carry that id, so every other tracker row
-        // falls back to an AniList title search (skipped in Simkl-only mode).
-        // Both sides run in PARALLEL with AniList winning: one slow source
-        // never holds the detail page hostage for the other.
-        return@withContext coroutineScope {
-            val sim = if (mode == "anilist") null
-            else async { runCatching { simklDetail(item) }.getOrNull() }
-            val ani = if (mode == "simkl") null
-            else async {
-                runCatching { anilistDetail(item) }.getOrNull()
-                    ?: runCatching { anilistSearchDetail(item.searchTitle) }.getOrNull()
-            }
-            ani?.await() ?: sim?.await()
-        }
+        suspend fun detail(item: MediaItem): Detail? {
+        return null
     }
 
     data class TmdbRef(val tmdbId: String, val mediaType: String)
@@ -184,18 +165,8 @@ object TrackerAnimeResolver {
 
     private val cjk = Regex("[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 
-    private suspend fun bangumiEpisodes(item: MediaItem): List<Episode>? {
-        val title = item.searchTitle
-        if (title.isBlank()) return null
-        val original = item.originalTitle.trim().takeIf { it.isNotBlank() && cjk.containsMatchIn(it) }
-        if (!cjk.containsMatchIn(title) && original == null) return null
-        val hint = TmdbMeta.seasonHint(title)
-        val eps = runCatching { BangumiMeta.episodes(title, original, item.year, hint) }.getOrNull()
-            .orEmpty()
-        if (eps.isEmpty()) return null
-        return eps.sortedBy { it.number }.map { e ->
-            Episode(number = e.number, id = item.id + "#e" + e.number, name = e.name?.takeIf { it.isNotBlank() }, season = 1)
-        }
+        private suspend fun bangumiEpisodes(item: MediaItem): List<Episode>? {
+        return null
     }
 
     private suspend fun anilistDetail(item: MediaItem): Detail? {
