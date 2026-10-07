@@ -13,6 +13,7 @@ data class IptvChannel(
     val logo: String? = null,
     val group: String = "",
     val tvgId: String? = null,
+    val language: String = "",
 )
 
 /**
@@ -58,6 +59,7 @@ object IptvPlaylist {
         val logo: String?,
         val group: String,
         val tvgId: String?,
+        val language: String,
     )
 
     /**
@@ -109,12 +111,15 @@ object IptvPlaylist {
                                 .ifBlank { attrs["logo-small"].orEmpty() },
                             base,
                         )
-                        pending = Pending(name, logo, group, attrs["tvg-id"]?.takeIf { it.isNotBlank() })
+                        val lang = attrs["tvg-language"].orEmpty()
+                            .ifBlank { attrs["language"].orEmpty() }
+                            .trim()
+                        pending = Pending(name, logo, group, attrs["tvg-id"]?.takeIf { it.isNotBlank() }, lang)
                     }
                     // The group can also sit on its own line AFTER the #EXTINF.
                     upper.startsWith("#EXTGRP:") -> {
                         val g = line.substringAfter(':').trim()
-                        if (g.isNotBlank()) pending = (pending ?: Pending(null, null, "", null)).copy(group = g)
+                        if (g.isNotBlank()) pending = (pending ?: Pending(null, null, "", null, "")).copy(group = g)
                     }
                     // #EXTM3U/#EXTVLCOPT/#KODIPROP/#EXT-X-…: not channels.
                 }
@@ -133,6 +138,7 @@ object IptvPlaylist {
                 logo = pending?.logo,
                 group = pending?.group.orEmpty().trim(),
                 tvgId = pending?.tvgId,
+                language = pending?.language.orEmpty().trim(),
             )
             pending = null
             if (out.size >= max) break
@@ -143,6 +149,84 @@ object IptvPlaylist {
     /** The group a channel is listed under, with the playlists that declare no
      *  group at all collected in one place. */
     fun groupOf(c: IptvChannel): String = c.group.ifBlank { "Ungrouped" }
+
+    /** Grouping modes for a playlist page (see the IPTV tab): "groups" is the
+     *  playlist's own `group-title` sections, "language" buckets channels by
+     *  spoken language, "category" by what they show. */
+    fun normalizeGroupMode(mode: String?): String =
+        if (mode == "language" || mode == "category") mode else "groups"
+
+    /** The tile a channel belongs to under [mode] (see [normalizeGroupMode]). */
+    fun groupKey(c: IptvChannel, mode: String): String = when (normalizeGroupMode(mode)) {
+        "language" -> languageOf(c)
+        "category" -> categoryOf(c)
+        else -> groupOf(c)
+    }
+
+    /** Spoken language of a channel: the playlist's own `tvg-language` first,
+     *  then a name match (Hindi, English, Tamil, Spanish, …), else Others. */
+    fun languageOf(c: IptvChannel): String {
+        normalizeLanguage(c.language)?.let { return it }
+        val n = " " + c.name.lowercase() + " " + c.group.lowercase() + " "
+        for ((label, keys) in LANGUAGE_KEYS) {
+            for (k in keys) if (n.contains(" " + k + " ") || n.contains(k + " ")) return label
+        }
+        return "Others"
+    }
+
+    /** What a channel shows: Kids, News, Sports, Movies, Music, Entertainment,
+     *  Documentary, Religious or Others — matched from its group and name, so
+     *  a playlist with no useful `group-title` still sorts into shelves. */
+    fun categoryOf(c: IptvChannel): String {
+        val n = " " + c.group.lowercase() + " " + c.name.lowercase() + " "
+        for ((label, keys) in CATEGORY_KEYS) {
+            for (k in keys) if (n.contains(k)) return label
+        }
+        return if (c.group.isNotBlank()) c.group else "Others"
+    }
+
+    private fun normalizeLanguage(raw: String): String? {
+        val v = raw.trim().lowercase()
+        if (v.isEmpty()) return null
+        for ((label, keys) in LANGUAGE_KEYS) {
+            if (v == label.lowercase() || v in keys) return label
+        }
+        return raw.trim().replaceFirstChar { it.uppercase() }.takeIf { it.isNotBlank() }
+    }
+
+    private val LANGUAGE_KEYS: List<Pair<String, List<String>>> = listOf(
+        "Hindi" to listOf("hindi", "hin"),
+        "English" to listOf("english", "eng"),
+        "Tamil" to listOf("tamil", "tam"),
+        "Telugu" to listOf("telugu", "tel"),
+        "Malayalam" to listOf("malayalam", "mal"),
+        "Kannada" to listOf("kannada", "kan"),
+        "Punjabi" to listOf("punjabi", "pun", "panjabi"),
+        "Bengali" to listOf("bengali", "beng", "bangla"),
+        "Marathi" to listOf("marathi", "mar"),
+        "Gujarati" to listOf("gujarati", "guj"),
+        "Urdu" to listOf("urdu", "urd"),
+        "Spanish" to listOf("spanish", "espanol", "español", "spa"),
+        "French" to listOf("french", "francais", "français", "fra", "fre"),
+        "German" to listOf("german", "deutsch", "deu", "ger"),
+        "Italian" to listOf("italian", "italiano", "ita"),
+        "Portuguese" to listOf("portuguese", "portugues", "por"),
+        "Arabic" to listOf("arabic", "ara"),
+        "Turkish" to listOf("turkish", "tur"),
+        "Russian" to listOf("russian", "rus"),
+        "Persian" to listOf("persian", "farsi", "iran"),
+    )
+
+    private val CATEGORY_KEYS: List<Pair<String, List<String>>> = listOf(
+        "Kids" to listOf("kid", "cartoon", "toon", "pogo", "chutti", "chintu", "nick", "disney junior", "baby"),
+        "News" to listOf("news", "aaj tak", "ndtv", "republic", "bbc", "cnn", "abp", "zee news", "headline"),
+        "Sports" to listOf("sport", "espn", "star sports", "cricket", "football", "tennis", "f1 ", "wwe"),
+        "Movies" to listOf("movie", "cinema", "film", "hbo", "star movies", "sony max", "zee cinema", "24/7"),
+        "Music" to listOf("music", "mtv", "vh1", "9x", "sangeet", "radio mirchi", "song"),
+        "Documentary" to listOf("discovery", "nat geo", "national geographic", "history", "animal planet", "docu"),
+        "Religious" to listOf("sanskar", "aarti", "bhakti", "god ", "spiritual", "quran", "bible"),
+        "Entertainment" to listOf("entertainment", "star plus", "zee tv", "colors", "sony sab", "sab tv", "comedy", "serial", "drama", "starplus"),
+    )
 
     /**
      * Turns a playlist's `tvg-logo` value into a URL that can actually be

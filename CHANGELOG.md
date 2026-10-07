@@ -1,3 +1,17 @@
+## 0.10.96
+
+Everything new and fixed since the last release (0.10.95):
+
+### Fixed
+
+- I fixed the anime metadata choices existing in code but never appearing on screen — Integrations now has a real Anime Metadata page offering Simkl only, AniList only, AniList + Simkl, and AniList + Simkl + TMDB
+- I fixed the player stepping down quality on heavy codecs — nothing is ever degraded now: no rendition changes, no resolution caps, not even with battery saver on, with uncapped adaptive selection, hardware-first decoders plus software fallback, and a deep buffer so 4K/8K plays at its own quality
+- I fixed Server search having no per-extension control while Tracker servers did — every family row (Nuvio, Stremio, Hikari, CloudStream, Anymex, Aniyomi and the rest) now has its own scrollable Choose extensions box, and the search honors exactly the extensions kept selected when a family switch is off
+- I fixed Play giving no scope choice — Playback start has a new Ask where to play option, so Play asks between This extension only and My selected servers, with the whole lookup (not just the list) running narrow for that one tap
+- I fixed IPTV playlists offering only group-title sections — a playlist page can now group by Groups, Language (Hindi, English, Tamil, Spanish and more, from tvg-language or the name) or Category (Kids, News, Sports, Movies, Music, Entertainment, Documentary, Religious)
+- I fixed torrent entries in the IPTV tab opening like grouped folders — a saved torrent now goes straight to its channels and plays directly, with no All channels/Ungrouped tiles in the way
+- I fixed double-tap seek flashing the whole player controls — left/right double-tap now just skips 10s with the seek indicator and leaves the controls exactly as they were
+
 ## 0.10.95
 
 Everything new and fixed since the last release (0.10.94):

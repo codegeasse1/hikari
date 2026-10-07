@@ -1841,6 +1841,11 @@ fun DetailScreen(
     // server either — the chooser should come up the moment servers exist.
     val askServerFlow = remember { app.store.askServerOnPlayFlow() }
     val askServerOnPlay by askServerFlow.collectAsState(initial = false)
+    val playScopeAskOn by remember { app.store.playScopeAskFlow() }.collectAsState(initial = false)
+    var scopeAskShow by remember { mutableStateOf(false) }
+    var scopeAskPending by remember { mutableStateOf<Triple<Episode?, Long, Boolean>?>(null) }
+    var scopeAskArmed by remember { mutableStateOf(false) }
+    var pendingNarrowTo by remember { mutableStateOf<String?>(null) }
     // Servers the player must know about before it starts. 1 = "as soon as the
     // first server is found" (the default).
     val startAfterServers = if (playWaitServers) playMinServers else 1
@@ -2025,7 +2030,16 @@ fun DetailScreen(
             ?.firstOrNull()
     }
 
-    val openStreams: (Episode?, Long, Boolean) -> Unit = { ep, startPos, wantsDownload ->
+    val openStreams: (Episode?, Long, Boolean) -> Unit = openStreamsCall@{ ep, startPos, wantsDownload ->
+        if (playScopeAskOn && !wantsDownload && !scopeAskArmed) {
+            pendingNarrowTo = null
+            scopeAskPending = Triple(ep, startPos, wantsDownload)
+            scopeAskShow = true
+            return@openStreamsCall
+        }
+        scopeAskArmed = false
+        val narrowTo = pendingNarrowTo
+        pendingNarrowTo = null
         // Open the PLAYER on the very first frame of the tap (Nuvio/Stremio
         // style). The player has its own title-card screen, so instead of the
         // detail page sitting on a spinner for several seconds while the first
@@ -2132,7 +2146,8 @@ fun DetailScreen(
         var problemNote: String? = null
         val playableEvery = { list: List<StreamSource> ->
             val basic = list.filter { s ->
-                s.ytId == null && !s.externalUrl && (s.url.isNotBlank() || s.isTorrent)
+                s.ytId == null && !s.externalUrl && (s.url.isNotBlank() || s.isTorrent) &&
+                    (narrowTo == null || s.providerId.isBlank() || s.providerId == narrowTo)
             }
                 // Every server the providers returned is offered, in full. A
                 // "needs a browser check" record is NOT used to hold anything
@@ -4582,6 +4597,33 @@ fun DetailScreen(
 
     ratingInfo?.let { info ->
         RatingDetailDialog(info) { ratingInfo = null }
+    }
+
+    if (scopeAskShow) {
+        val originName = providers.firstOrNull { it.config.id == livePid }?.config?.name?.ifBlank { null } ?: livePid
+        ChoiceDialog(
+            title = tr("Where should playback search?"),
+            items = listOf(
+                com.hikari.app.ui.components.ChoiceItem(key = "origin", label = tr("This extension only"), supporting = originName),
+                com.hikari.app.ui.components.ChoiceItem(key = "selected", label = tr("My selected servers"), supporting = tr("Your Server search choices")),
+            ),
+            selectedKey = null,
+            onPick = { key ->
+                if (key == "origin") {
+                    com.hikari.app.data.SearchScope.oneShotOriginOnly = livePid
+                    pendingNarrowTo = livePid
+                } else {
+                    com.hikari.app.data.SearchScope.oneShotOriginOnly = null
+                    pendingNarrowTo = null
+                }
+                scopeAskArmed = true
+                scopeAskShow = false
+                val pending = scopeAskPending
+                scopeAskPending = null
+                if (pending != null) openStreams(pending.first, pending.second, pending.third)
+            },
+            onDismiss = { scopeAskShow = false; scopeAskPending = null },
+        )
     }
 
     if (showSheet) {

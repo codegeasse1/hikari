@@ -122,6 +122,37 @@ object SearchScope {
     @Volatile
     var exceptions: Set<String> = emptySet()
 
+    /** Server-search picks for one Nuvio provider family row being OFF: only
+     *  these installed Nuvio ids are asked for a Nuvio title (mirrored from
+     *  `AppStore.searchNuvioIdsFlow`). Empty with the family on means the
+     *  whole family, which is the default. */
+    @Volatile
+    var searchNuvioIds: Set<String> = emptySet()
+
+    /** Server-search picks for one Stremio addon family row being OFF (see
+     *  [searchNuvioIds]). */
+    @Volatile
+    var searchStremioIds: Set<String> = emptySet()
+
+    /** Server-search picks for the per-engine family rows being OFF: only
+     *  these installed ids of that engine are asked (see [searchNuvioIds]). */
+    @Volatile
+    var searchFamilyIds: Set<String> = emptySet()
+
+    /** One-tap "this extension only" choice from Play (Settings → Playback &
+     *  Servers → Playback start → "Ask where to play"): the provider id the
+     *  NEXT lookup must restrict itself to. Consumed by [streamsForInner] the
+     *  moment that pass starts, so exactly one lookup runs narrow. */
+    @Volatile
+    var oneShotOriginOnly: String? = null
+
+    /** The picked ids that apply to [type] when its family switch is off. */
+    fun pickedIdsFor(type: ProviderType): Set<String> = when (type) {
+        ProviderType.NUVIO -> searchNuvioIds
+        ProviderType.STREMIO -> searchStremioIds
+        else -> searchFamilyIds
+    }
+
     /** Tracker rows: the "search every engine" switch for tracker library
      *  titles (Settings → Trackers), mirrored from the store like everything
      *  above because the scope filter reads it synchronously. */
@@ -2595,23 +2626,39 @@ class ContentRepository(private val manager: ProviderManager) {
         }
         val originIsIptv = com.hikari.app.data.IptvMark.of(item)
         val originIsException = originIsIptv || SearchScope.isException(item.providerId)
-        if (!originIsException && SearchScope.allExtensions) return null
+        val oneShot = SearchScope.oneShotOriginOnly?.takeIf { it == item.providerId }
+        if (oneShot == null && !originIsException && SearchScope.allExtensions) return null
         val out = HashSet<String>()
         if (origin != null && origin.config.enabled) {
             out += origin.config.id
-            if (SearchScope.family(origin.config.type)) {
-                all.filter { it.config.type == origin.config.type }.forEach { out += it.config.id }
-            }
-            if (origin.config.type == ProviderType.NUVIO && SearchScope.nuvioFamily) {
-                all.filter { it.config.type == ProviderType.NUVIO }.forEach { out += it.config.id }
-            }
-            if (origin.config.type == ProviderType.STREMIO && SearchScope.stremioFamily) {
-                all.filter { it.config.type == ProviderType.STREMIO }.forEach { out += it.config.id }
+            if (oneShot == null) {
+                if (SearchScope.family(origin.config.type)) {
+                    all.filter { it.config.type == origin.config.type }.forEach { out += it.config.id }
+                } else {
+                    val picked = SearchScope.pickedIdsFor(origin.config.type)
+                    all.filter { it.config.type == origin.config.type && it.config.id in picked }.forEach { out += it.config.id }
+                }
+                if (origin.config.type == ProviderType.NUVIO && SearchScope.nuvioFamily) {
+                    all.filter { it.config.type == ProviderType.NUVIO }.forEach { out += it.config.id }
+                }
+                if (origin.config.type == ProviderType.STREMIO && SearchScope.stremioFamily) {
+                    all.filter { it.config.type == ProviderType.STREMIO }.forEach { out += it.config.id }
+                }
             }
         } else if (!originIsIptv) {
-            all.filter { it.config.type == ProviderType.STREMIO }.forEach { out += it.config.id }
+            val stremioPicked = SearchScope.searchStremioIds
+            if (SearchScope.stremioFamily || stremioPicked.isEmpty()) {
+                all.filter { it.config.type == ProviderType.STREMIO }.forEach { out += it.config.id }
+            } else {
+                all.filter { it.config.type == ProviderType.STREMIO && it.config.id in stremioPicked }.forEach { out += it.config.id }
+            }
             if (com.hikari.app.nuvio.TmdbResolver.isLikelyResolvable(item)) {
-                all.filter { it.config.type == ProviderType.NUVIO }.forEach { out += it.config.id }
+                val nuvioPicked = SearchScope.searchNuvioIds
+                if (SearchScope.nuvioFamily || nuvioPicked.isEmpty()) {
+                    all.filter { it.config.type == ProviderType.NUVIO }.forEach { out += it.config.id }
+                } else {
+                    all.filter { it.config.type == ProviderType.NUVIO && it.config.id in nuvioPicked }.forEach { out += it.config.id }
+                }
             }
         }
         if (!originIsException) out += SearchScope.exceptions
@@ -2703,6 +2750,9 @@ class ContentRepository(private val manager: ProviderManager) {
             // every other provider's".
             val originIsIptv = IptvMark.of(item)
             val originIsException = originIsIptv || SearchScope.isException(item.providerId)
+            val oneShotNarrow = SearchScope.oneShotOriginOnly
+                .takeIf { it == item.providerId }
+                ?.also { SearchScope.oneShotOriginOnly = null }
             val trackerTargets = if (trackerBacked) {
                 val on = runCatching { HikariApp.instance.store.trackerServerSearchAll() }.getOrDefault(true)
                 if (!on) emptySet() else {
@@ -2714,19 +2764,21 @@ class ContentRepository(private val manager: ProviderManager) {
                 }
             } else emptySet()
             val scopeAll = if (trackerBacked) false else when {
+                oneShotNarrow != null -> false
                 originIsException -> false
                 else -> SearchScope.allExtensions
             }
             val exceptions = when {
+                oneShotNarrow != null -> emptySet()
                 originIsException -> emptySet()
                 trackerBacked -> trackerTargets
                 else -> SearchScope.exceptions
             }
             // Read once, like the two above: one lookup must never be
             // half-scoped (see docs/SEARCH.md). "Search every Nuvio provider".
-            val nuvioFamily = SearchScope.nuvioFamily
+            val nuvioFamily = oneShotNarrow == null && SearchScope.nuvioFamily
             // Read once too: "Search every Stremio addon".
-            val stremioFamily = SearchScope.stremioFamily
+            val stremioFamily = oneShotNarrow == null && SearchScope.stremioFamily
             // THE APP'S OWN CATALOGUE IS NOT AN EXTENSION.
             //
             // A title browsed from Home / Search / Collections / a nuvio
@@ -2819,6 +2871,12 @@ class ContentRepository(private val manager: ProviderManager) {
                             it.config.type == ProviderType.NUVIO &&
                                 (!trackerBacked || it.config.id in trackerTargets)
                         }.sortedWith(nuvioOrder(item.providerId))
+                    originIsNuvio ->
+                        all.filter {
+                            it.config.type == ProviderType.NUVIO &&
+                                it.config.id in SearchScope.searchNuvioIds &&
+                                (!trackerBacked || it.config.id in trackerTargets)
+                        }.sortedWith(nuvioOrder(item.providerId))
                     exceptions.isEmpty() -> emptyList()
                     else -> all.filter {
                         it.config.type == ProviderType.NUVIO && it.config.id in exceptions
@@ -2845,6 +2903,9 @@ class ContentRepository(private val manager: ProviderManager) {
             val originIsStremio = origin?.config?.type == ProviderType.STREMIO
             val stremioTargets = if (!scopeAll && originIsStremio && stremioFamily) {
                 all.filter { it.config.type == ProviderType.STREMIO }
+                    .sortedWith(stremioOrder(item.providerId))
+            } else if (!scopeAll && originIsStremio) {
+                all.filter { it.config.type == ProviderType.STREMIO && it.config.id in SearchScope.searchStremioIds }
                     .sortedWith(stremioOrder(item.providerId))
             } else {
                 emptyList()
@@ -2927,10 +2988,13 @@ class ContentRepository(private val manager: ProviderManager) {
             // siblings must not be asked by the cross pass either, or "only the
             // extension the title was opened from" would be a lie — they would
             // just arrive a wave later.
-            val sameEngine = if (origin == null || !SearchScope.family(origin.config.type)) {
+            val sameEngine = if (origin == null || oneShotNarrow != null) {
                 emptyList()
-            } else {
+            } else if (SearchScope.family(origin.config.type)) {
                 crossTargets.filter { it.config.type == origin.config.type }
+            } else {
+                val picked = SearchScope.pickedIdsFor(origin.config.type)
+                crossTargets.filter { it.config.type == origin.config.type && it.config.id in picked }
             }
             // The sibling repos left out BY the family switch are not lost when
             // the scope switch is ON or exception repos are in force: they fall

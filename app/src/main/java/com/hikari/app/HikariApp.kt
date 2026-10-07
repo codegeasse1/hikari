@@ -558,6 +558,24 @@ class HikariApp : Application() {
         // filter — a tracker title opened from the library must never have to
         // await DataStore to know which engines it may ask.
         appScope.launch {
+            runCatching { com.hikari.app.data.SearchScope.searchNuvioIds = store.searchNuvioIds() }
+            store.searchNuvioIdsFlow().collect {
+                com.hikari.app.data.SearchScope.searchNuvioIds = it
+            }
+        }
+        appScope.launch {
+            runCatching { com.hikari.app.data.SearchScope.searchStremioIds = store.searchStremioIds() }
+            store.searchStremioIdsFlow().collect {
+                com.hikari.app.data.SearchScope.searchStremioIds = it
+            }
+        }
+        appScope.launch {
+            runCatching { com.hikari.app.data.SearchScope.searchFamilyIds = store.searchFamilyIds() }
+            store.searchFamilyIdsFlow().collect {
+                com.hikari.app.data.SearchScope.searchFamilyIds = it
+            }
+        }
+        appScope.launch {
             runCatching { com.hikari.app.data.SearchScope.trackerSearchAll = store.trackerServerSearchAll() }
             store.trackerServerSearchAllFlow().collect {
                 com.hikari.app.data.SearchScope.trackerSearchAll = it

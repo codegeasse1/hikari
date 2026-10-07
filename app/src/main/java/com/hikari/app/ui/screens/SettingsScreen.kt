@@ -358,7 +358,7 @@ private enum class SettingsFolder(
     INTEGRATIONS(
         "integrations",
         "Integrations",
-        "TMDB enrichment, MDBList ratings & external services",
+        "TMDB enrichment, MDBList ratings, anime metadata & more",
         Icons.Filled.ViewCarousel,
     ),
     INTEGRATIONS_TMDB(
@@ -373,6 +373,13 @@ private enum class SettingsFolder(
         "MDBList Ratings",
         "External IMDb, TMDB, Rotten Tomatoes & more",
         Icons.Filled.Star,
+        parent = "integrations",
+    ),
+    INTEGRATIONS_ANIME(
+        "integrations.anime",
+        "Anime Metadata",
+        "AniList-first titles, episodes & next-airing",
+        Icons.Filled.AutoAwesome,
         parent = "integrations",
     ),    // The user's own catalogs (Collections) live here rather than under
     // Appearance & Theme: they are something the user CREATES and manages — like the
@@ -850,6 +857,9 @@ fun SettingsScreen(nav: NavHostController) {
                 SettingsFolder.INTEGRATIONS_MDBLIST -> {
                     item { SettingsCard(top = 2.dp) { MdbListIntegrationCard(app) } }
                     item { SettingsCard { MdbListProvidersCard(app) } }
+                }
+                SettingsFolder.INTEGRATIONS_ANIME -> {
+                    item { SettingsCard(top = 2.dp) { AnimeMetadataIntegrationCard(app) } }
                 }
                 SettingsFolder.APPEARANCE -> {
                     item { SettingsCard(top = 2.dp) { LanguageCard(app, appLanguage) } }
@@ -4540,12 +4550,14 @@ private fun PlaybackStartCard(app: HikariApp) {
     var minServers by remember { mutableStateOf(2f) }
     var askServer by remember { mutableStateOf(false) }
     var failoverAsk by remember { mutableStateOf(true) }
+    var scopeAsk by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         waitServers = app.store.playWaitServers()
         minServers = app.store.playMinServers().toFloat()
         askServer = app.store.askServerOnPlay()
         failoverAsk = app.store.failoverAskOnFailure()
+        scopeAsk = app.store.playScopeAsk()
     }
 
     fun persist(wait: Boolean) {
@@ -4721,6 +4733,37 @@ private fun PlaybackStartCard(app: HikariApp) {
                 )
             }
         }
+        Spacer(Modifier.height(14.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    tr("Ask where to play"),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    if (scopeAsk) {
+                        tr("On — Play asks: this extension or my selected servers")
+                    } else {
+                        tr("Off — Play uses your server-search choices directly")
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Switch(
+                checked = scopeAsk,
+                onCheckedChange = {
+                    scopeAsk = it
+                    scope.launch { runCatching { app.store.setPlayScopeAsk(it) } }
+                },
+                // See [Modifier.tvToggle].
+                modifier = Modifier.tvToggle(scopeAsk) {
+                    scopeAsk = it
+                    scope.launch { runCatching { app.store.setPlayScopeAsk(it) } }
+                },
+            )
+        }
     }
 }
 
@@ -4847,6 +4890,28 @@ private fun TrackerServerSearchCard(app: HikariApp) {
 }
 
 @Composable
+private fun ServerFamilyChoiceRow(
+    groupLabel: String,
+    engineIds: Set<String>,
+    familyOn: Boolean,
+    pickedIds: Set<String>,
+    onOpen: () -> Unit,
+) {
+    val kept = if (familyOn) engineIds else pickedIds.intersect(engineIds)
+    ChoiceRow(
+        value = when {
+            engineIds.isEmpty() -> tr("No %s extensions installed").replace("%s", groupLabel)
+            kept.isEmpty() -> tr("Choose %s extensions").replace("%s", groupLabel)
+            familyOn -> tr("All %s extensions (%s)").replace("%s", groupLabel).replace("%s", engineIds.size.toString())
+            else -> kept.size.toString() + " " + groupLabel
+        },
+        supporting = tr("Tap to choose individual %s extensions").replace("%s", groupLabel),
+        leadingIcon = Icons.Filled.Extension,
+        onClick = onOpen,
+    )
+}
+
+@Composable
 private fun ServerSearchCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
     val flow = remember { app.store.searchAllExtensionsFlow() }
@@ -4865,6 +4930,10 @@ private fun ServerSearchCard(app: HikariApp) {
     // AppStore.stremioSearchAllFlow / SearchScope.stremioFamily.
     val stremioFlow = remember { app.store.stremioSearchAllFlow() }
     val stremioAll by stremioFlow.collectAsState(initial = true)
+    val nuvioIds by remember { app.store.searchNuvioIdsFlow() }.collectAsState(initial = emptySet())
+    val stremioIds by remember { app.store.searchStremioIdsFlow() }.collectAsState(initial = emptySet())
+    val familyIds by remember { app.store.searchFamilyIdsFlow() }.collectAsState(initial = emptySet())
+    var serverPickerEngine by remember { mutableStateOf<ProviderType?>(null) }
     val exceptionOnFlow = remember { app.store.searchExceptionOnFlow() }
     val exceptionOn by exceptionOnFlow.collectAsState(initial = false)
     val exceptionIdsFlow = remember { app.store.searchExceptionIdsFlow() }
@@ -4957,6 +5026,15 @@ private fun ServerSearchCard(app: HikariApp) {
 
         Spacer(Modifier.height(10.dp))
 
+        ServerFamilyChoiceRow(
+            groupLabel = ProviderType.NUVIO.groupLabel,
+            engineIds = installedEnabled.filter { it.config.type == ProviderType.NUVIO }.map { it.config.id }.toSet(),
+            familyOn = nuvioAll,
+            pickedIds = nuvioIds,
+            onOpen = { serverPickerEngine = ProviderType.NUVIO },
+        )
+        Spacer(Modifier.height(10.dp))
+
         // ---- The Stremio family ----
         // The addon twin of the nuvio switch above: a title opened FROM a
         // Stremio addon is asked in every other installed Stremio addon, because
@@ -4975,6 +5053,15 @@ private fun ServerSearchCard(app: HikariApp) {
                 scope.launch { runCatching { app.store.setStremioSearchAll(on) } }
             },
         )
+
+        ServerFamilyChoiceRow(
+            groupLabel = ProviderType.STREMIO.groupLabel,
+            engineIds = installedEnabled.filter { it.config.type == ProviderType.STREMIO }.map { it.config.id }.toSet(),
+            familyOn = stremioAll,
+            pickedIds = stremioIds,
+            onOpen = { serverPickerEngine = ProviderType.STREMIO },
+        )
+        Spacer(Modifier.height(10.dp))
 
         // ---- Every OTHER engine's family ----
         // The same switch as the two above, one row per engine the user actually
@@ -5006,6 +5093,14 @@ private fun ServerSearchCard(app: HikariApp) {
                 onCheckedChange = { value ->
                     scope.launch { runCatching { app.store.setEngineFamily(type, value) } }
                 },
+            )
+            Spacer(Modifier.height(6.dp))
+            ServerFamilyChoiceRow(
+                groupLabel = type.groupLabel,
+                engineIds = installedEnabled.filter { it.config.type == type }.map { it.config.id }.toSet(),
+                familyOn = on,
+                pickedIds = familyIds,
+                onOpen = { serverPickerEngine = type },
             )
         }
 
@@ -5221,6 +5316,59 @@ private fun ServerSearchCard(app: HikariApp) {
                     }
                 }
             },
+        )
+    }
+
+    val spe = serverPickerEngine
+    if (spe != null) {
+        val list = installedEnabled.filter { it.config.type == spe }.sortedBy { it.config.name.ifBlank { it.config.id }.lowercase() }
+        val ids = list.map { it.config.id }.toSet()
+        val on = when (spe) {
+            ProviderType.NUVIO -> nuvioAll
+            ProviderType.STREMIO -> stremioAll
+            else -> spe.name in families
+        }
+        val selected = if (on) ids else when (spe) {
+            ProviderType.NUVIO -> nuvioIds.intersect(ids)
+            ProviderType.STREMIO -> stremioIds.intersect(ids)
+            else -> familyIds.intersect(ids)
+        }
+        suspend fun setServerFamily(t: ProviderType, v: Boolean) {
+            when (t) {
+                ProviderType.NUVIO -> app.store.setNuvioSearchAll(v)
+                ProviderType.STREMIO -> app.store.setStremioSearchAll(v)
+                else -> app.store.setEngineFamily(t, v)
+            }
+        }
+        MultiChoiceDialog(
+            title = spe.groupLabel + " " + tr("servers"),
+            items = list.map { ChoiceItem(key = it.config.id, label = it.config.name.ifBlank { it.config.id }, supporting = it.config.type.groupLabel) },
+            selectedKeys = selected,
+            onToggle = { id ->
+                scope.launch {
+                    val next = selected.toMutableSet()
+                    if (!next.add(id)) next.remove(id)
+                    if (next.size == ids.size && ids.isNotEmpty()) {
+                        runCatching { setServerFamily(spe, true) }
+                        when (spe) {
+                            ProviderType.NUVIO -> runCatching { app.store.setSearchNuvioIds(nuvioIds - ids) }
+                            ProviderType.STREMIO -> runCatching { app.store.setSearchStremioIds(stremioIds - ids) }
+                            else -> runCatching { app.store.setSearchFamilyIds(familyIds - ids) }
+                        }
+                    } else {
+                        runCatching { setServerFamily(spe, false) }
+                        when (spe) {
+                            ProviderType.NUVIO -> runCatching { app.store.setSearchNuvioIds((nuvioIds - ids) + next) }
+                            ProviderType.STREMIO -> runCatching { app.store.setSearchStremioIds((stremioIds - ids) + next) }
+                            else -> runCatching { app.store.setSearchFamilyIds((familyIds - ids) + next) }
+                        }
+                    }
+                }
+            },
+            onDismiss = { serverPickerEngine = null },
+            searchable = true,
+            searchPlaceholder = tr("Search %s extensions").replace("%s", spe.groupLabel),
+            footnote = tr("Scrollable list — tap again to unselect. Only the extensions you keep selected are searched when the family switch above is off."),
         )
     }
 }

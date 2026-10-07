@@ -82,6 +82,18 @@ class IptvProvider(override val config: ProviderConfig) : ContentProvider {
         /** The catalog id of one group's shelf. */
         fun catalogIdForGroup(group: String): String = GROUP_PREFIX + group
 
+        /** Shelves the IPTV tab builds for its language/category views (see
+         *  [IptvPlaylist.groupKey]): read by [getCatalog], never offered on
+         *  Home, so the tab can bucket channels without a second code path. */
+        private const val LANG_PREFIX = "iptv-lang:"
+        private const val CAT_PREFIX = "iptv-cat:"
+
+        /** The catalog id of one language bucket's shelf. */
+        fun catalogIdForLanguage(language: String): String = LANG_PREFIX + language
+
+        /** The catalog id of one category bucket's shelf. */
+        fun catalogIdForCategory(category: String): String = CAT_PREFIX + category
+
         /**
          * Drops everything remembered about a removed playlist — its last
          * failure, its channel count and the "read at" stamp. The provider row
@@ -299,6 +311,8 @@ class IptvProvider(override val config: ProviderConfig) : ContentProvider {
         val list = when {
             ref.id == ALL -> all
             ref.id.startsWith(GROUP_PREFIX) -> groupChannels(all, ref.id.removePrefix(GROUP_PREFIX))
+            ref.id.startsWith(LANG_PREFIX) -> all.filter { IptvPlaylist.languageOf(it) == ref.id.removePrefix(LANG_PREFIX) }
+            ref.id.startsWith(CAT_PREFIX) -> all.filter { IptvPlaylist.categoryOf(it) == ref.id.removePrefix(CAT_PREFIX) }
             else -> emptyList()
         }
         if (list.isEmpty()) return emptyList()

@@ -349,7 +349,21 @@ fun IptvScreen(nav: NavHostController) {
                         badge = if (card.error != null) tr("Didn't load") else null,
                         onRemove = { removeTarget = card },
                     ) {
-                        Routes.safeNavigate(nav, Routes.iptvPlaylist(card.id))
+                        if (card.torrent) {
+                            Routes.safeNavigate(
+                                nav,
+                                Routes.catalog(
+                                    providerId = card.id,
+                                    catalogId = IptvProvider.CATALOG_ALL,
+                                    title = card.name,
+                                    providerName = card.name,
+                                    type = MediaType.MOVIE,
+                                    rawType = "torrent",
+                                ),
+                            )
+                        } else {
+                            Routes.safeNavigate(nav, Routes.iptvPlaylist(card.id))
+                        }
                     }
                 }
             }
@@ -735,16 +749,19 @@ fun IptvPlaylistScreen(nav: NavHostController, providerId: String) {
     }
     val shapeFlow = remember { app.store.iptvShapeFlow() }
     val shape by shapeFlow.collectAsState(initial = TileShapes.POSTER)
+    val groupModeFlow = remember { app.store.iptvGroupModeFlow() }
+    val groupMode by groupModeFlow.collectAsState(initial = "groups")
     val scope = rememberCoroutineScope()
 
     var groups by remember(providerId) { mutableStateOf<List<IptvGroupTile>?>(null) }
-    LaunchedEffect(providerId) {
+    LaunchedEffect(providerId, playlist, groupMode) {
         if (playlist == null) {
             groups = emptyList()
             return@LaunchedEffect
         }
-        groups = withContext(Dispatchers.IO) { readGroups(playlist) }
+        groups = withContext(Dispatchers.IO) { readGroups(playlist, groupMode) }
     }
+    val isTorrent = playlist != null && NetworkStream.isTorrentLink(playlist.config.url)
 
     val loaded = groups
     Column(Modifier.fillMaxSize()) {
@@ -752,9 +769,14 @@ fun IptvPlaylistScreen(nav: NavHostController, providerId: String) {
             title = playlist?.displayName ?: tr("IPTV"),
             subtitle = when {
                 loaded == null -> tr("Reading the playlist…")
-                else -> I18n.t("%s channels in %s groups")
-                    .replace("%s", loaded.sumOf { it.count }.toString())
-                    .replace("%s", loaded.size.toString())
+                else -> I18n.t("%s channels in %s %s")
+                    .replaceFirst("%s", loaded.sumOf { it.count }.toString())
+                    .replaceFirst("%s", loaded.size.toString())
+                    .replaceFirst("%s", when (IptvPlaylist.normalizeGroupMode(groupMode)) {
+                        "language" -> tr("languages")
+                        "category" -> tr("categories")
+                        else -> tr("groups")
+                    })
             },
             onBack = { nav.popBackStack() },
             shape = shape,
@@ -762,9 +784,65 @@ fun IptvPlaylistScreen(nav: NavHostController, providerId: String) {
             onSearch = playlist?.let { p -> { Routes.safeNavigate(nav, Routes.searchInProvider(p.config.id)) } },
             onAdd = null,
         )
+        if (!isTorrent) {
+            com.hikari.app.ui.components.ChoiceRow(
+                value = tr("Grouped by: %s").replace("%s", when (IptvPlaylist.normalizeGroupMode(groupMode)) {
+                    "language" -> tr("Language")
+                    "category" -> tr("Category")
+                    else -> tr("Groups")
+                }),
+                supporting = tr("Group this playlist by its sections, language or category"),
+                leadingIcon = Icons.Filled.FolderOpen,
+                onClick = {
+                    val next = when (IptvPlaylist.normalizeGroupMode(groupMode)) {
+                        "groups" -> "language"
+                        "language" -> "category"
+                        else -> "groups"
+                    }
+                    scope.launch { app.store.setIptvGroupMode(next) }
+                },
+                modifier = Modifier.padding(horizontal = 12.dp),
+            )
+        }
         if (loaded == null) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
+            }
+            return@Column
+        }
+        if (isTorrent && playlist != null) {
+            LazyVerticalGrid(
+                columns = GridCells.Adaptive(minSize = tileMinFor(shape)),
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(
+                    start = 12.dp,
+                    end = 12.dp,
+                    top = 4.dp,
+                    bottom = LocalTaskbarInset.current + 24.dp,
+                ),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                item {
+                    IptvTile(
+                        cover = null,
+                        name = playlist.displayName,
+                        subtitle = tr("Torrent — plays directly"),
+                        shape = shape,
+                    ) {
+                        Routes.safeNavigate(
+                            nav,
+                            Routes.catalog(
+                                providerId = providerId,
+                                catalogId = IptvProvider.CATALOG_ALL,
+                                title = playlist.displayName,
+                                providerName = playlist.displayName,
+                                type = MediaType.MOVIE,
+                                rawType = "torrent",
+                            ),
+                        )
+                    }
+                }
             }
             return@Column
         }
@@ -878,18 +956,21 @@ private suspend fun readCard(p: IptvProvider): IptvCard {
  * [IptvProvider.catalogIdForGroup]), so a tile links straight to the same paged
  * catalog the provider would hand Home — no second code path to keep in step.
  */
-private suspend fun readGroups(p: IptvProvider): List<IptvGroupTile> {
+private suspend fun readGroups(p: IptvProvider, mode: String): List<IptvGroupTile> {
     val list = runCatching {
         withTimeoutOrNull(60_000L) { p.channels() }
     }.getOrNull().orEmpty()
     if (list.isEmpty()) return emptyList()
+    val m = IptvPlaylist.normalizeGroupMode(mode)
     val out = ArrayList<IptvGroupTile>()
-    out += IptvGroupTile(
-        name = I18n.t("All channels"),
-        catalogId = IptvProvider.CATALOG_ALL,
-        count = list.size,
-    )
-    list.groupBy { IptvPlaylist.groupOf(it) }
+    if (m == "groups") {
+        out += IptvGroupTile(
+            name = I18n.t("All channels"),
+            catalogId = IptvProvider.CATALOG_ALL,
+            count = list.size,
+        )
+    }
+    list.groupBy { IptvPlaylist.groupKey(it, m) }
         .entries
         .sortedWith(
             compareByDescending<Map.Entry<String, List<com.hikari.app.data.IptvChannel>>> { it.value.size }
@@ -898,7 +979,11 @@ private suspend fun readGroups(p: IptvProvider): List<IptvGroupTile> {
         .forEach { (group, channels) ->
             out += IptvGroupTile(
                 name = group,
-                catalogId = IptvProvider.catalogIdForGroup(group),
+                catalogId = when (m) {
+                    "language" -> IptvProvider.catalogIdForLanguage(group)
+                    "category" -> IptvProvider.catalogIdForCategory(group)
+                    else -> IptvProvider.catalogIdForGroup(group)
+                },
                 count = channels.size,
             )
         }

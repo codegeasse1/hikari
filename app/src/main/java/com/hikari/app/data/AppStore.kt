@@ -615,6 +615,11 @@ class AppStore(private val ctx: Context) {
          *  Default OFF for every engine — see [engineFamiliesFlow] and
          *  [com.hikari.app.data.SearchScope.engineFamilies]. */
         val SEARCH_FAMILY_TYPES = stringSetPreferencesKey("searchFamilyTypes")
+        val SEARCH_NUVIO_IDS = stringSetPreferencesKey("searchNuvioIds")
+        val SEARCH_STREMIO_IDS = stringSetPreferencesKey("searchStremioIds")
+        val SEARCH_FAMILY_IDS = stringSetPreferencesKey("searchFamilyIds")
+        val PLAY_SCOPE_ASK = booleanPreferencesKey("playScopeAsk")
+        val IPTV_GROUP_MODE = stringPreferencesKey("iptvGroupMode")
          val TRACKER_SERVER_SEARCH_ALL = booleanPreferencesKey("trackerServerSearchAll")
          val TRACKER_NUVIO_SEARCH_ALL = booleanPreferencesKey("trackerNuvioSearchAll")
          val TRACKER_STREMIO_SEARCH_ALL = booleanPreferencesKey("trackerStremioSearchAll")
@@ -1693,6 +1698,51 @@ class AppStore(private val ctx: Context) {
         }
     }
 
+    fun searchNuvioIdsFlow(): Flow<Set<String>> =
+        store.data.map { it[K.SEARCH_NUVIO_IDS] ?: emptySet() }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun searchNuvioIds(): Set<String> = searchNuvioIdsFlow().first()
+
+    suspend fun setSearchNuvioIds(ids: kotlin.collections.Collection<String>) {
+        write("SEARCH_NUVIO_IDS") { it[K.SEARCH_NUVIO_IDS] = ids.toSet() }
+    }
+
+    fun searchStremioIdsFlow(): Flow<Set<String>> =
+        store.data.map { it[K.SEARCH_STREMIO_IDS] ?: emptySet() }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun searchStremioIds(): Set<String> = searchStremioIdsFlow().first()
+
+    suspend fun setSearchStremioIds(ids: kotlin.collections.Collection<String>) {
+        write("SEARCH_STREMIO_IDS") { it[K.SEARCH_STREMIO_IDS] = ids.toSet() }
+    }
+
+    fun searchFamilyIdsFlow(): Flow<Set<String>> =
+        store.data.map { it[K.SEARCH_FAMILY_IDS] ?: emptySet() }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun searchFamilyIds(): Set<String> = searchFamilyIdsFlow().first()
+
+    suspend fun setSearchFamilyIds(ids: kotlin.collections.Collection<String>) {
+        write("SEARCH_FAMILY_IDS") { it[K.SEARCH_FAMILY_IDS] = ids.toSet() }
+    }
+
+    fun playScopeAskFlow(): Flow<Boolean> =
+        store.data.map { it[K.PLAY_SCOPE_ASK] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun playScopeAsk(): Boolean = playScopeAskFlow().first()
+
+    suspend fun setPlayScopeAsk(ask: Boolean) {
+        write("PLAY_SCOPE_ASK") { it[K.PLAY_SCOPE_ASK] = ask }
+    }
+
+    fun iptvGroupModeFlow(): Flow<String> =
+        store.data.map { normalizeIptvGroupMode(it[K.IPTV_GROUP_MODE]) }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun iptvGroupMode(): String = iptvGroupModeFlow().first()
+
+    suspend fun setIptvGroupMode(mode: String) {
+        write("IPTV_GROUP_MODE") { it[K.IPTV_GROUP_MODE] = normalizeIptvGroupMode(mode) }
+    }
+
     /**
      * Are the "exception extensions" in force?
      *
@@ -2281,6 +2331,9 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
     /** Shape of the IPTV tab's tiles ([TileShapes] key; poster by default). */
     fun iptvShapeFlow(): Flow<String> =
         store.data.map { TileShapes.normalize(it[K.IPTV_SHAPE]) }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    fun normalizeIptvGroupMode(mode: String?): String =
+        if (mode == "language" || mode == "category") mode else "groups"
 
     suspend fun setIptvShape(shape: String) {
         write("IPTV_SHAPE") { it[K.IPTV_SHAPE] = TileShapes.normalize(shape) }
