@@ -342,11 +342,10 @@ object SoraRuntime {
             val v = obj.opt(key) ?: continue
             val d = if (v is JSONObject) JSONObject(v.toString()) else JSONObject()
             d.put("key", key)
-            if (d.optString("type").isBlank()) d.put("type", when (v) {
-                is Boolean -> "switch"
-                is JSONArray -> "multi_select"
-                else -> "edit_text"
-            })
+            if (d.optString("type").isBlank()) {
+                val kind = if (v is Boolean) "switch" else if (v is JSONArray) "multi_select" else "edit_text"
+                d.put("type", kind)
+            }
             applyStored(d, key, stored)
             out.put(d)
         }
