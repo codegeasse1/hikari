@@ -90,6 +90,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import com.hikari.app.tv.tvTextFieldKeys
@@ -210,21 +211,23 @@ fun PairScreen(app: HikariApp, onBack: () -> Unit) {
             }
             guestStatus = I18n.t("Found %s — downloading…")
                 .replace("%s", resolved.deviceName.ifBlank { resolved.label })
-            val bytes = runCatching { PairClient.download(resolved) }.getOrElse { e ->
+            val bundle = withContext(Dispatchers.IO) { File(context.cacheDir, "pair/received.json") }
+            val received = runCatching { PairClient.downloadTo(resolved, bundle) }.getOrElse { e ->
                 busy = false
                 guestStatus = e.message ?: I18n.t("The transfer failed")
                 return@launch
             }
             guestStatus = I18n.t("Downloaded %s — restoring…")
-                .replace("%s", "${bytes.size / 1024} KB")
+                .replace("%s", "${received / 1024} KB")
             val result = runCatching {
-                withContext(Dispatchers.IO) { BackupManager.restore(app, bytes) }
+                withContext(Dispatchers.IO) { bundle.inputStream().buffered().use { BackupManager.restoreStream(app, it) } }
             }.getOrElse { e ->
                 busy = false
                 guestStatus = I18n.t("The restore failed")
                 report = BackupManager.Report(false, I18n.t("The restore failed"), e.message.orEmpty())
                 return@launch
             }
+            runCatching { bundle.delete() }
             busy = false
             report = result
             guestStatus = result.message

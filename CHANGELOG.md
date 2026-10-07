@@ -1,3 +1,12 @@
+## 0.11.01
+
+Everything new and fixed since the last release (0.11.00):
+
+### Fixed
+
+- I fixed tracker catalogue episodes showing bare Episode 1 rows with no titles, descriptions, dates or artwork while every extension showed full details — tracker episode lists now enrich through the same TMDB path plus exact tracker sources (AniList streaming episodes, Simkl TMDB mapping with sequel-season support, prequel offsets, Jikan air dates), while the TMDB-id shortcut no longer reads a tracker id as a TMDB id so another show's episodes can never leak in
+- I fixed Backup & Restore failing with a ~300 MB allocation OOM — the backup now streams straight to a file instead of assembling one giant string in memory, the restore parses as a stream with staged file commits, the CloudStream import is size-capped, and Pair & sync streams its bundle from disk both ways so large setups transfer
+
 ## 0.11.00
 
 Everything new and fixed since the last release (0.10.99):

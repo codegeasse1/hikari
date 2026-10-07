@@ -5,6 +5,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import java.io.File
 import java.net.DatagramPacket
 import java.util.concurrent.TimeUnit
 
@@ -87,12 +88,16 @@ object PairClient {
         }
 
     /**
-     * Fetches the other device's setup. Throws [PairException] with a sentence
-     * for every failure the user can cause (wrong code, nothing listening, the
-     * two devices on different networks).
+     * Fetches the other device's setup into [dest], streaming so a large setup
+     * never sits in memory whole ([MAX_BUNDLE_BYTES] still caps what a guest
+     * will accept). Returns the byte count. Throws [PairException] with a
+     * sentence for every failure the user can cause (wrong code, nothing
+     * listening, the two devices on different networks).
      */
-    suspend fun download(target: PairTarget): ByteArray = withContext(Dispatchers.IO) {
+    suspend fun downloadTo(target: PairTarget, dest: File): Long = withContext(Dispatchers.IO) {
         if (target.host.isBlank()) throw PairException("No address to connect to")
+        dest.parentFile?.mkdirs()
+        val tmp = File(dest.parentFile, dest.name + ".part")
         val client = OkHttpClient.Builder()
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(180, TimeUnit.SECONDS)
@@ -115,22 +120,34 @@ object PairClient {
                 val body = response.body
                 val length = body.contentLength()
                 if (length > MAX_BUNDLE_BYTES) throw PairException("That transfer is too large")
-                val bytes = body.bytes()
-                if (bytes.size.toLong() > MAX_BUNDLE_BYTES) {
-                    throw PairException("That transfer is too large")
+                var total = 0L
+                (body.byteStream() ?: throw PairException("The transfer failed")).use { src ->
+                    java.io.FileOutputStream(tmp).buffered(64 * 1024).use { out ->
+                        val buf = ByteArray(64 * 1024)
+                        while (true) {
+                            val n = src.read(buf)
+                            if (n < 0) break
+                            total += n
+                            if (total > MAX_BUNDLE_BYTES) throw PairException("That transfer is too large")
+                            out.write(buf, 0, n)
+                        }
+                    }
                 }
+                if (dest.exists()) dest.delete()
+                tmp.renameTo(dest)
                 Logs.log(
                     "Pair",
-                    "received ${bytes.size / 1024} KB from ${target.label} in " +
+                    "received ${total / 1024} KB from ${target.label} in " +
                         "${System.currentTimeMillis() - started}ms",
                 )
-                bytes
+                total
             }
         } catch (e: PairException) {
+            runCatching { tmp.delete() }
             throw e
         } catch (e: Exception) {
-            Logs.logError("Pair", "download failed from ${target.label}", e)
-            throw PairException(explain(e))
+            runCatching { tmp.delete() }
+            throw PairException(explain(e) + (e.message?.takeIf { it.isNotBlank() }?.let { ": $it" }.orEmpty()))
         }
     }
 

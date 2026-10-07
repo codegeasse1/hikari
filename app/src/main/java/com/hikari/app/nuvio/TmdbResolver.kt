@@ -164,6 +164,13 @@ object TmdbResolver {
         if (title.isBlank()) return null
         val variants = TmdbMeta.queryVariants(title).take(4)
         if (variants.isEmpty()) return null
+        // A row that names its season ("… Season 3") is a SEQUEL entry: its
+        // year is that season's, while TMDB's first_air_date is the series
+        // premiere (S1) — so the year gate below can never pass for it, and
+        // every sequel-season tracker row resolved to nothing (bare
+        // "Episode N" rows with no names or descriptions). The exact-name plus
+        // Japanese-origin gates stay, so this still never maps a wrong show.
+        val sequelRow = TmdbMeta.seasonHint(title) != null
         var best: Resolved? = null
         var bestScore = 0
         for (kind in listOf("tv", "movie")) {
@@ -182,7 +189,7 @@ object TmdbResolver {
                     if (base < 60) continue
                     val raw = o.optString("release_date").ifBlank { o.optString("first_air_date") }
                     val y = raw.take(4).toIntOrNull()
-                    if (item.year != null && item.year > 0) {
+                    if (!sequelRow && item.year != null && item.year > 0) {
                         if (y == null || kotlin.math.abs(y - item.year) > 1) continue
                     }
                     val lang = o.optString("original_language").lowercase()

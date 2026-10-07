@@ -6091,9 +6091,18 @@ class ContentRepository(private val manager: ProviderManager) {
         // straight from TMDB by id — one parallel read, no scrape, no title
         // search. This is exactly the Nuvio fast path, for every engine.
         if (cachedSeasoned == null && (item.type == MediaType.SERIES || item.type == MediaType.UNKNOWN)) {
-            val tmdbId = item.id.trim().takeIf { it.isNotEmpty() && it.all { c -> c.isDigit() } }
-                ?: runCatching { com.hikari.app.nuvio.TmdbResolver.resolve(item) }.getOrNull()
+            // A tracker row's numeric id is the TRACKER's id (AniList/MAL),
+            // not a TMDB id — reading it raw would list another show's
+            // episodes with full details. Tracker rows only ever resolve
+            // through the exact tracker-aware path below.
+            val tmdbId = if (TrackerAnimeResolver.isTrackerAnime(item)) {
+                runCatching { com.hikari.app.nuvio.TmdbResolver.resolve(item) }.getOrNull()
                     ?.takeIf { it.mediaType.equals("tv", true) }?.tmdbId?.toIntOrNull()?.takeIf { it > 0 }?.toString()
+            } else {
+                item.id.trim().takeIf { it.isNotEmpty() && it.all { c -> c.isDigit() } }
+                    ?: runCatching { com.hikari.app.nuvio.TmdbResolver.resolve(item) }.getOrNull()
+                        ?.takeIf { it.mediaType.equals("tv", true) }?.tmdbId?.toIntOrNull()?.takeIf { it > 0 }?.toString()
+            }
             if (!tmdbId.isNullOrBlank() && tmdbId.all { c -> c.isDigit() }) {
                 val direct = runCatching {
                     withTimeoutOrNull(6_000) {
@@ -6523,7 +6532,7 @@ class ContentRepository(private val manager: ProviderManager) {
      * Fills the blanks of a site-scraped episode list from TMDB — the
      * description, air date, rating and runtime the reference clients print
      * under every episode — matched by episode number
-     * ([com.hikari.app.nuvio.EpisodeTitles.details]). Only blanks are filled:
+     * ([EpisodeTitles.details]). Only blanks are filled:
      * the extension's own name, image and dates always win, and a show TMDB
      * cannot resolve keeps exactly what its source gave it.
      */

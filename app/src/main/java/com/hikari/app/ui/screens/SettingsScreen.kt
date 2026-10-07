@@ -217,6 +217,7 @@ import com.hikari.app.ui.DISCORD_INVITE_URL
 import com.hikari.app.ui.REDDIT_COMMUNITY_URL
 import com.hikari.app.ui.openCommunity
 import com.hikari.app.ui.openTelegram
+import java.io.File
 import com.hikari.app.ui.theme.HikariAccent
 import com.hikari.app.ui.theme.HikariThemeMode
 import com.hikari.app.ui.theme.inkOn
@@ -6840,11 +6841,10 @@ private fun BackupCard(app: HikariApp, onPair: () -> Unit) {
         status = ""
         scope.launch {
             val result = runCatching {
-                val bytes = withContext(Dispatchers.IO) {
-                    context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                withContext(Dispatchers.IO) {
+                    context.contentResolver.openInputStream(uri)?.use { BackupManager.restoreStream(app, it) }
+                        ?: BackupManager.Report(false, "Could not read that file.")
                 }
-                if (bytes == null) BackupManager.Report(false, "Could not read that file.")
-                else BackupManager.restore(app, bytes)
             }.getOrElse { BackupManager.Report(false, "Backup failed.", it.message.orEmpty()) }
             report(result)
         }
@@ -6861,7 +6861,7 @@ private fun BackupCard(app: HikariApp, onPair: () -> Unit) {
         scope.launch {
             val result = runCatching {
                 val bytes = withContext(Dispatchers.IO) {
-                    context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                    context.contentResolver.openInputStream(uri)?.use { BackupManager.readCapped(it, 32L * 1024L * 1024L) }
                 }
                 if (bytes == null) BackupManager.Report(false, "Could not read that file.")
                 else BackupManager.restoreCloudStream(app, bytes)
@@ -6875,18 +6875,24 @@ private fun BackupCard(app: HikariApp, onPair: () -> Unit) {
         status = ""
         scope.launch {
             val result = runCatching {
-                val bytes = BackupManager.export(app)
                 val name = BackupManager.fileName()
-                val saved = withContext(Dispatchers.IO) {
-                    BackupManager.saveToDownloads(context, bytes, name)
+                val tmp = withContext(Dispatchers.IO) {
+                    val f = File(context.cacheDir, "outbox/" + name)
+                    BackupManager.exportToFile(app, f)
+                    f
                 }
+                val saved = withContext(Dispatchers.IO) {
+                    BackupManager.saveToDownloads(context, tmp, name)
+                }
+                val kb = withContext(Dispatchers.IO) { (tmp.length() + 1023) / 1024 }
+                runCatching { tmp.delete() }
                 if (saved == null) {
                     BackupManager.Report(false, "Could not save the backup.")
                 } else {
                     BackupManager.Report(
                         true,
                         savedPrefix + "/" + saved,
-                        "${(bytes.size + 1023) / 1024} KB · " +
+                        "${kb} KB · " +
                             "${app.providers.providers.value.size} sources",
                     )
                 }

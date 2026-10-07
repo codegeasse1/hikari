@@ -3,6 +3,12 @@ package com.hikari.app.data
 import android.content.Context
 import android.os.Build
 import android.util.Base64
+import android.util.JsonReader
+import android.util.JsonWriter
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.InputStream
 import com.hikari.app.BuildConfig
 import com.hikari.app.HikariApp
 import com.hikari.app.net.ExtensionVerifyGuard
@@ -92,37 +98,114 @@ object BackupManager {
     /** Builds the backup. Runs the file walk on IO; throws only on something
      *  genuinely broken (the caller reports it). */
     suspend fun export(app: HikariApp): ByteArray = withContext(Dispatchers.IO) {
-        val root = JSONObject()
-        root.put("format", FORMAT)
-        root.put("version", FORMAT_VERSION)
-        root.put("app", BuildConfig.VERSION_NAME)
-        root.put("code", BuildConfig.VERSION_CODE)
-        root.put("createdAt", System.currentTimeMillis())
-
-        val prefs = JSONArray()
-        for (r in app.store.snapshotPreferences()) {
-            prefs.put(
-                JSONObject().apply {
-                    put("key", r.key)
-                    put("type", r.type)
-                    put("value", r.value ?: JSONObject.NULL)
-                }
-            )
+        val tmp = File(app.cacheDir, "outbox/backup-tmp.json")
+        exportToFile(app, tmp)
+        try {
+            tmp.readBytes()
+        } finally {
+            runCatching { tmp.delete() }
         }
-        root.put("prefs", prefs)
+    }
 
-        val files = JSONArray()
-        for ((rel, bytes) in collectFiles(app.filesDir)) {
-            files.put(
-                JSONObject().apply {
-                    put("path", rel)
-                    put("data", Base64.encodeToString(bytes, Base64.NO_WRAP))
+    /**
+     * Writes the backup straight to [dest] as it is built, instead of
+     * assembling the whole file in memory first. The old [export] built one
+     * giant string for the entire backup — with a large extension set that
+     * single allocation reached ~300 MB and the backup died with
+     * \"Failed to allocate … byte allocation … until OOM\". Here the JSON
+     * streams out through [JsonWriter] and no allocation is ever bigger than
+     * one extension file (capped by [MAX_FILE_BYTES]), so a backup of any
+     * real size completes. The format on disk is byte-for-byte what [export]
+     * used to produce, so old and new files restore through the same code.
+     */
+    suspend fun exportToFile(app: HikariApp, dest: File): Long = withContext(Dispatchers.IO) {
+        dest.parentFile?.mkdirs()
+        val tmp = File(dest.parentFile, dest.name + ".part")
+        java.io.FileOutputStream(tmp).buffered(32 * 1024).use { raw ->
+            JsonWriter(raw.writer(Charsets.UTF_8)).use { w ->
+                w.setIndent("")
+                w.beginObject()
+                w.name("format").value(FORMAT)
+                w.name("version").value(FORMAT_VERSION.toLong())
+                w.name("app").value(BuildConfig.VERSION_NAME)
+                w.name("code").value(BuildConfig.VERSION_CODE.toLong())
+                w.name("createdAt").value(System.currentTimeMillis())
+                w.name("prefs").beginArray()
+                for (r in app.store.snapshotPreferences()) {
+                    w.beginObject()
+                    w.name("key").value(r.key)
+                    w.name("type").value(r.type)
+                    w.name("value")
+                    when (r.type) {
+                        "s" -> if (r.value == null) w.nullValue() else w.value(r.value as String)
+                        "b" -> if (r.value == null) w.nullValue() else w.value((r.value as Boolean))
+                        "i", "l" -> if (r.value == null) w.nullValue() else w.value((r.value as Number).toLong())
+                        "f", "d" -> if (r.value == null) w.nullValue() else w.value((r.value as Number).toDouble())
+                        "ss" -> {
+                            val list = r.value as? List<*> ?: (r.value as? Set<*>)?.toList()
+                            if (list == null) {
+                                w.nullValue()
+                            } else {
+                                w.beginArray()
+                                for (s in list) w.value(s?.toString())
+                                w.endArray()
+                            }
+                        }
+                        "bin" -> if (r.value == null) w.nullValue() else w.value(r.value as String)
+                        else -> w.nullValue()
+                    }
+                    w.endObject()
                 }
-            )
+                w.endArray()
+                w.name("files").beginArray()
+                for ((rel, bytes) in collectFiles(app.filesDir)) {
+                    w.beginObject()
+                    w.name("path").value(rel)
+                    w.name("data").value(Base64.encodeToString(bytes, Base64.NO_WRAP))
+                    w.endObject()
+                }
+                w.endArray()
+                w.name("profiles").beginObject()
+                val profiles = exportProfiles(app.filesDir)
+                val profileNames = runCatching {
+                    val list = ArrayList<String>()
+                    val keys = profiles.keys()
+                    while (keys.hasNext()) list.add(keys.next() as String)
+                    list
+                }.getOrDefault(emptyList())
+                for (name in profileNames) {
+                    // Raw JSON embedded as-is: profiles.prettyPrint-free text,
+                    // so jsonValue keeps the stored snapshot verbatim.
+                    w.name(name).jsonValue(profiles.optString(name))
+                }
+                w.endObject()
+                w.endObject()
+            }
         }
-        root.put("files", files)
-        root.put("profiles", exportProfiles(app.filesDir))
-        root.toString().toByteArray(Charsets.UTF_8)
+        if (dest.exists()) dest.delete()
+        tmp.renameTo(dest)
+        dest.length()
+    }
+
+    /**
+     * Reads [input] with a cap, for files that must be small (a CloudStream
+     * backup is a settings dump, never media). Null when the stream is empty
+     * or runs past [maxBytes] — the caller reports that instead of letting an
+     * arbitrary picked file grow without limit.
+     */
+    fun readCapped(input: InputStream, maxBytes: Long): ByteArray? {
+        val out = ByteArrayOutputStream()
+        val buf = ByteArray(32 * 1024)
+        var total = 0L
+        while (true) {
+            val n = input.read(buf)
+            if (n < 0) break
+            total += n
+            if (total > maxBytes) return null
+            out.write(buf, 0, n)
+        }
+        val bytes = out.toByteArray()
+        return bytes.takeIf { it.isNotEmpty() }
     }
 
     /**
@@ -209,54 +292,162 @@ object BackupManager {
 
     // ------------------------------------------------------------ restore --
 
+    suspend fun restore(app: HikariApp, bytes: ByteArray): Report =
+        restoreStream(app, ByteArrayInputStream(bytes))
+
     /**
-     * Applies a backup file: preferences first (so the source list is right when
-     * the extensions land), then the extension files, then the in-memory copies
-     * of the settings that are read once at startup instead of per use.
-     *
-     * Returns a [Report]; it never throws, because every failure here is
-     * something the user must be told in plain words ("that file is not a Hikari
-     * backup") rather than a crash or an empty screen.
+     * Applies a backup file read as a stream — the restore half of the OOM
+     * fix (see [exportToFile]): the old code parsed the entire file into one
+     * JSONObject, which needed the whole ~300 MB in memory twice over and
+     * failed the same way the backup did. Here prefs and profiles (small)
+     * collect in memory while each extension file streams straight to a
+     * temp file beside its target; nothing is committed until the whole
+     * stream has parsed and the format version has checked out, so a
+     * corrupt/truncated file can never leave half-written extensions behind.
      */
-    suspend fun restore(app: HikariApp, bytes: ByteArray): Report = withContext(Dispatchers.IO) {
-        val text = runCatching { String(bytes, Charsets.UTF_8) }.getOrNull()
-            ?: return@withContext Report(false, "Could not read that file.")
-        val root = runCatching { JSONObject(text) }.getOrNull()
-            ?: return@withContext Report(false, "That file is not a Hikari backup.")
-        val legacy = root.optString("format").isBlank() &&
-            (root.has("prefs") || root.has("files") || root.has("profiles"))
-        if (root.optString("format") != FORMAT && !legacy) {
+    suspend fun restoreStream(app: HikariApp, input: InputStream): Report = withContext(Dispatchers.IO) {
+        val records = ArrayList<PrefRecord>()
+        var deviceLocal = 0
+        var format: String? = null
+        var version = -1
+        var fromApp = ""
+        var fromCode = 0
+        var sawSections = false
+        var written = 0
+        var skipped = 0
+        val staged = ArrayList<Pair<File, File>>()
+        val profileTexts = HashMap<String, String>()
+        fun cleanup() {
+            for ((_, tmp) in staged) runCatching { tmp.delete() }
+            staged.clear()
+        }
+        try {
+            JsonReader(input.reader(Charsets.UTF_8)).use { r ->
+                r.beginObject()
+                while (r.hasNext()) {
+                    when (r.nextName()) {
+                        "format" -> format = r.nextStringOrSkip()
+                        "version" -> version = try { r.nextInt() } catch (t: Throwable) { runCatching { r.skipValue() }; -1 }
+                        "app" -> fromApp = r.nextStringOrSkip().orEmpty()
+                        "code" -> fromCode = try { r.nextInt() } catch (t: Throwable) { runCatching { r.skipValue() }; 0 }
+                        "createdAt" -> runCatching { r.skipValue() }
+                        "prefs" -> {
+                            sawSections = true
+                            try {
+                                r.beginArray()
+                                while (r.hasNext()) {
+                                    r.beginObject()
+                                    var key = ""
+                                    var type = ""
+                                    var value: Any? = null
+                                    while (r.hasNext()) {
+                                        when (r.nextName()) {
+                                            "key" -> key = r.nextStringOrSkip().orEmpty()
+                                            "type" -> type = r.nextStringOrSkip().orEmpty()
+                                            "value" -> value = r.readPrefValue(type)
+                                            else -> r.skipValue()
+                                        }
+                                    }
+                                    r.endObject()
+                                    if (key.isBlank()) continue
+                                    if (AppStore.DeviceLocal.contains(key)) {
+                                        deviceLocal++
+                                        continue
+                                    }
+                                    records.add(PrefRecord(key, type, value))
+                                }
+                                r.endArray()
+                            } catch (t: Throwable) {
+                                runCatching { r.skipValue() }
+                            }
+                        }
+                        "files" -> {
+                            sawSections = true
+                            try {
+                                r.beginArray()
+                                while (r.hasNext()) {
+                                    r.beginObject()
+                                    var rel = ""
+                                    var data: String? = null
+                                    while (r.hasNext()) {
+                                        when (r.nextName()) {
+                                            "path" -> rel = r.nextStringOrSkip().orEmpty()
+                                            "data" -> data = r.nextStringOrSkip()
+                                            else -> r.skipValue()
+                                        }
+                                    }
+                                    r.endObject()
+                                    if (!allowedPath(rel)) {
+                                        skipped++
+                                        continue
+                                    }
+                                    val bytes = runCatching { Base64.decode(data.orEmpty(), Base64.NO_WRAP) }.getOrNull()
+                                    if (bytes == null || bytes.isEmpty() || bytes.size.toLong() > MAX_FILE_BYTES) {
+                                        skipped++
+                                        continue
+                                    }
+                                    val target = File(app.filesDir, rel)
+                                    target.parentFile?.mkdirs()
+                                    val tmp = File(target.parentFile, target.name + ".restore-part")
+                                    if (runCatching { tmp.writeBytes(bytes) }.isFailure) {
+                                        runCatching { tmp.delete() }
+                                        skipped++
+                                        continue
+                                    }
+                                    staged.add(target to tmp)
+                                }
+                                r.endArray()
+                            } catch (t: Throwable) {
+                                runCatching { r.skipValue() }
+                            }
+                        }
+                        "profiles" -> {
+                            sawSections = true
+                            try {
+                                r.beginObject()
+                                while (r.hasNext()) {
+                                    val name = r.nextName()
+                                    if (name != "registry.json" && !PROF_SNAP_RE.matches(name)) {
+                                        r.skipValue()
+                                        continue
+                                    }
+                                    val obj = r.readJsonObject()
+                                    if (obj == null) continue
+                                    profileTexts[name] = obj.toString()
+                                }
+                                r.endObject()
+                            } catch (t: Throwable) {
+                                runCatching { r.skipValue() }
+                            }
+                        }
+                        else -> runCatching { r.skipValue() }
+                    }
+                }
+                r.endObject()
+            }
+        } catch (t: Throwable) {
+            cleanup()
+            return@withContext Report(false, "That file is not a Hikari backup.", t.message.orEmpty())
+        }
+        val legacy = format.isNullOrBlank() && sawSections
+        if (!format.isNullOrBlank() && format != FORMAT && !legacy) {
+            cleanup()
             return@withContext Report(false, "That file is not a Hikari backup.")
         }
-        val version = root.optInt("version", 0)
+        if (!sawSections) {
+            cleanup()
+            return@withContext Report(false, "That file is not a Hikari backup.")
+        }
         if (version > FORMAT_VERSION) {
+            cleanup()
             return@withContext Report(
                 false,
                 "That backup was made by a newer Hikari (format $version). Update the app first.",
             )
         }
-
-        val records = ArrayList<PrefRecord>()
-        // Device-local records are counted but not queued: the store refuses them
-        // regardless (see [AppStore.DeviceLocal], which is where the rule and the
-        // list live), and counting them here is what lets the report below say
-        // that they were left alone rather than silently reporting fewer
-        // settings than the file holds.
-        var deviceLocal = 0
-        val prefsArr = root.optJSONArray("prefs")
-        for (i in 0 until (prefsArr?.length() ?: 0)) {
-            val o = prefsArr?.optJSONObject(i) ?: continue
-            val key = o.optString("key")
-            if (key.isBlank()) continue
-            if (AppStore.DeviceLocal.contains(key)) {
-                deviceLocal++
-                continue
-            }
-            val raw = o.opt("value")
-            records.add(PrefRecord(key, o.optString("type"), if (raw == null || raw == JSONObject.NULL) null else raw))
-        }
         var applied = 0
         runCatching { applied = app.store.restorePreferences(records) }.onFailure {
+            cleanup()
             return@withContext Report(false, "Could not restore your settings.", it.message.orEmpty())
         }
         if (deviceLocal > 0) {
@@ -265,38 +456,28 @@ object BackupManager {
                 "kept $deviceLocal device-local setting(s) of this device's own (app lock / layout)",
             )
         }
-
-        var written = 0
-        var skipped = 0
-        val filesArr = root.optJSONArray("files")
-        val fromApp = root.optString("app").ifBlank { "another Hikari" }
-        for (i in 0 until (filesArr?.length() ?: 0)) {
-            val o = filesArr?.optJSONObject(i) ?: continue
-            val rel = o.optString("path")
-            if (!allowedPath(rel)) {
+        val fromName = fromApp.ifBlank { "another Hikari" }
+        for ((target, tmp) in staged) {
+            val ok = runCatching {
+                if (target.exists() && !target.delete()) false else tmp.renameTo(target)
+            }.getOrDefault(false)
+            if (ok) written++ else {
+                runCatching { tmp.delete() }
                 skipped++
-                continue
             }
-            val data = runCatching { Base64.decode(o.optString("data"), Base64.NO_WRAP) }.getOrNull()
-            if (data == null || data.isEmpty() || data.size.toLong() > MAX_FILE_BYTES) {
-                skipped++
-                continue
-            }
-            val target = File(app.filesDir, rel)
-            target.parentFile?.mkdirs()
-            if (runCatching { target.writeBytes(data) }.isSuccess) written++ else skipped++
         }
-
-        val profilesLine = restoreProfiles(app.filesDir, root.optJSONObject("profiles"))
-
+        staged.clear()
+        val profilesObj = JSONObject().apply {
+            for ((k, v) in profileTexts) put(k, v)
+        }
+        val profilesLine = restoreProfiles(app.filesDir, profilesObj)
         refreshLiveState(app)
-
         val detail = "settings: $applied" +
             (if (profilesLine.isNotBlank()) " · " + profilesLine else "") +
             (if (deviceLocal > 0) " · device-local kept: $deviceLocal" else "") +
             " · files: $written" +
             (if (skipped > 0) " · skipped: $skipped" else "") +
-            " · from $fromApp " + root.optInt("code", 0)
+            " · from $fromName $fromCode"
         Logs.log("Backup", "restore ok — $detail")
         Report(
             true,
@@ -304,6 +485,81 @@ object BackupManager {
             detail,
         )
     }
+
+    private fun JsonReader.nextStringOrSkip(): String? {
+        return try {
+            nextString()
+        } catch (t: Throwable) {
+            runCatching { skipValue() }
+            null
+        }
+    }
+
+    private fun JsonReader.readPrefValue(type: String): Any? {
+        return try {
+            if (peek() == android.util.JsonToken.NULL) {
+                nextNull()
+                return null
+            }
+            when (type) {
+                "ss" -> {
+                    beginArray()
+                    val list = ArrayList<String>()
+                    while (hasNext()) {
+                        list.add(if (peek() == android.util.JsonToken.NULL) { nextNull(); "" } else nextString())
+                    }
+                    endArray()
+                    list
+                }
+                "i", "l" -> try {
+                    nextLong()
+                } catch (t: Throwable) {
+                    nextDouble().toLong()
+                }
+                "f", "d" -> try {
+                    nextDouble()
+                } catch (t: Throwable) {
+                    nextLong().toDouble()
+                }
+                "b" -> nextBoolean()
+                else -> nextString()
+            }
+        } catch (t: Throwable) {
+            null
+        }
+    }
+
+    private fun JsonReader.readJsonObject(): JSONObject? {
+        fun readAny(r: JsonReader): Any? = when (r.peek()) {
+            android.util.JsonToken.BEGIN_OBJECT -> {
+                r.beginObject()
+                val o = JSONObject()
+                while (r.hasNext()) o.put(r.nextName(), readAny(r) ?: JSONObject.NULL)
+                r.endObject()
+                o
+            }
+            android.util.JsonToken.BEGIN_ARRAY -> {
+                r.beginArray()
+                val a = JSONArray()
+                while (r.hasNext()) a.put(readAny(r) ?: JSONObject.NULL)
+                r.endArray()
+                a
+            }
+            android.util.JsonToken.STRING -> r.nextString()
+            android.util.JsonToken.NUMBER -> r.nextDouble()
+            android.util.JsonToken.BOOLEAN -> r.nextBoolean()
+            else -> {
+                r.skipValue()
+                null
+            }
+        }
+        return readAny(this) as? JSONObject
+    }
+
+    /** Kept for callers on the old signature: a small in-memory backup
+     *  restores through the same streaming path (see [restoreStream]). */
+    suspend fun restore(app: HikariApp, bytes: ByteArray): Report =
+        restoreStream(app, ByteArrayInputStream(bytes))
 
     // ------------------------------------------- CloudStream backup import --
 
@@ -607,8 +863,8 @@ object BackupManager {
      * (see its header: an insert without `RELATIVE_PATH` is refused on Android
      * 11+, which is why this export could never save either).
      */
-    fun saveToDownloads(context: Context, bytes: ByteArray, name: String): String? =
-        DownloadsSaver.saveBytes(context, bytes, name, "application/json")
+    fun saveToDownloads(context: Context, file: File, name: String): String? =
+        DownloadsSaver.save(context, file, name, "application/json")
             .getOrNull()
             ?.substringAfterLast('/')
 }

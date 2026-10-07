@@ -9,7 +9,6 @@ import com.hikari.app.data.Logs
 import fi.iki.elonen.NanoHTTPD
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.io.ByteArrayInputStream
 import java.io.IOException
 import java.net.DatagramPacket
 import java.net.DatagramSocket
@@ -34,12 +33,13 @@ import java.net.SocketTimeoutException
  * otherwise anyone on the Wi-Fi could read the secret off the server that is
  * guarding it.
  *
- * The payload is [BackupManager.export] — the same bytes as "Back up Hikari
- * data", built ONCE at [start] and then served from memory. Building it per
- * request would walk the whole extension directory again for a file that cannot
- * have changed (the user is looking at the pairing screen), and a phone that is
- * being dragged through a 30 MB export on every retry is how a pairing times
- * out. [served] counts the handovers so the screen can say that it worked.
+ * The payload is [BackupManager.exportToFile] — the same bytes as "Back up Hikari
+ * data", built ONCE at [start] into a temp file and then streamed from disk per
+ * request. Holding it in memory instead capped pairing at the same ~300 MB
+ * wall that broke Backup & Restore (see [BackupManager.exportToFile]), and
+ * building it per request would walk the whole extension directory again for a
+ * file that cannot have changed (the user is looking at the pairing screen).
+ * [served] counts the handovers so the screen can say that it worked.
  */
 class PairHost(private val app: HikariApp) {
 
@@ -48,7 +48,7 @@ class PairHost(private val app: HikariApp) {
         val host: String,
         val port: Int,
         val code: String,
-        val payloadBytes: Int,
+        val payloadBytes: Long,
     ) {
         val reachable: Boolean get() = host.isNotBlank()
 
@@ -81,6 +81,9 @@ class PairHost(private val app: HikariApp) {
 
     val running: Boolean get() = server != null
 
+    @Volatile
+    private var payloadFile: java.io.File? = null
+
     /**
      * Builds the payload, opens a port and starts listening. Throws only when
      * there is nothing to serve or no port to serve it on; every other failure
@@ -88,17 +91,19 @@ class PairHost(private val app: HikariApp) {
      */
     suspend fun start(): Session = withContext(Dispatchers.IO) {
         stop()
-        val payload = BackupManager.export(app)
-        val opened = openServer(payload)
+        val file = java.io.File(app.cacheDir, "pair/bundle.json")
+        val bytes = BackupManager.exportToFile(app, file)
+        payloadFile = file
+        val opened = openServer(file, bytes)
         val session = Session(
             host = PairProtocol.localIpv4().orEmpty(),
             port = opened.listenPort,
             code = opened.code,
-            payloadBytes = payload.size,
+            payloadBytes = bytes,
         )
         Logs.log(
             "Pair",
-            "hosting on ${session.host}:${session.port} · ${payload.size / 1024} KB · " +
+            "hosting on ${session.host}:${session.port} · ${bytes / 1024} KB · " +
                 "code ${session.code}",
         )
         startBeacon(session.port, session.code)
@@ -114,11 +119,11 @@ class PairHost(private val app: HikariApp) {
      * for the user. The port that actually opened travels in the QR and in the
      * beacon's reply, so the guest never has to know about the walk.
      */
-    private fun openServer(payload: ByteArray): Server {
+    private fun openServer(payload: java.io.File, payloadBytes: Long): Server {
         val code = PairProtocol.newCode()
         var last: IOException? = null
         for (offset in 0 until 20) {
-            val candidate = Server(PairProtocol.DEFAULT_PORT + offset, code, payload) { guest ->
+            val candidate = Server(PairProtocol.DEFAULT_PORT + offset, code, payload, payloadBytes) { guest ->
                 served++
                 lastGuest = guest
                 Logs.log("Pair", "setup sent to $guest")
@@ -205,6 +210,8 @@ class PairHost(private val app: HikariApp) {
     fun stop() {
         server?.let { runCatching { it.stop() } }
         server = null
+        runCatching { payloadFile?.delete() }
+        payloadFile = null
         beacon?.interrupt()
         beacon = null
         runCatching { beaconSocket?.close() }
@@ -239,7 +246,8 @@ class PairHost(private val app: HikariApp) {
         /** The pairing code this server accepts. Read by [PairHost.start] to
          *  build the QR payload and the beacon filter, so it is not private. */
         val code: String,
-        private val payload: ByteArray,
+        private val payload: java.io.File,
+        private val payloadBytes: Long,
         private val onServed: (String) -> Unit,
     ) : NanoHTTPD(listenPort) {
 
@@ -262,8 +270,8 @@ class PairHost(private val app: HikariApp) {
                         NanoHTTPD.newFixedLengthResponse(
                             NanoHTTPD.Response.Status.OK,
                             "application/json",
-                            ByteArrayInputStream(payload),
-                            payload.size.toLong(),
+                            payload.inputStream(),
+                            payloadBytes,
                         )
                     }
                 }
