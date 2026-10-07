@@ -579,7 +579,6 @@ private fun SettingsSection(
     }
 }
 
-@Composable
 /** One settings-search hit: where it lives and what opens it. */
 private data class SettingsSearchEntry(
     val key: String,
@@ -658,6 +657,7 @@ private fun searchSettings(rawQuery: String): List<SettingsSearchEntry> {
     )).take(30)
 }
 
+@Composable
 fun SettingsScreen(nav: NavHostController) {
     val context = LocalContext.current
     val app = context.applicationContext as HikariApp
