@@ -6090,7 +6090,11 @@ class ContentRepository(private val manager: ProviderManager) {
         // row, a remapped TMDB row, a cached one) reads its full episode list
         // straight from TMDB by id — one parallel read, no scrape, no title
         // search. This is exactly the Nuvio fast path, for every engine.
-        if (cachedSeasoned == null && (item.type == MediaType.SERIES || item.type == MediaType.UNKNOWN)) {
+        // Tracker rows skip this shortcut: their TMDB path is the staged
+        // tracker lookup below (alias bridge, 10s budget, immediate base
+        // paint), so a slow generic resolve can never hold the first paint
+        // hostage past its 6s timeout.
+        if (!TrackerAnimeResolver.isTrackerAnime(item) && cachedSeasoned == null && (item.type == MediaType.SERIES || item.type == MediaType.UNKNOWN)) {
             // A tracker row's numeric id is the TRACKER's id (AniList/MAL),
             // not a TMDB id — reading it raw would list another show's
             // episodes with full details. Tracker rows only ever resolve
@@ -6196,6 +6200,33 @@ class ContentRepository(private val manager: ProviderManager) {
             }
         }
 
+        // Tracker rows resolve here — BEFORE the 50-second extension borrow
+        // sweep — so the first paint lands in a second or two: the numbered
+        // base list the moment the count is known, then the TMDB enrichment
+        // replacing it when it lands (10 seconds total). An enriched tracker
+        // list returns immediately; a still-bare one falls through to the
+        // borrowed site list below, which paints over the base when it
+        // arrives instead of the base clobbering it.
+        var trkStaged: List<Episode>? = null
+        if (TrackerAnimeResolver.isTrackerAnime(item) && (item.type == MediaType.SERIES || item.type == MediaType.UNKNOWN)) {
+            val got = runCatching {
+                TrackerAnimeResolver.trackerEpisodesStaged(item) { base ->
+                    val list = publish(restoreAnimeSeasons(item, base))
+                    publish(translateEpisodes(item.providerId, list))
+                }
+            }.getOrNull()?.takeIf { it.isNotEmpty() }
+            trkStaged = got
+            if (got != null && got.any { e ->
+                    (!e.name.isNullOrBlank() && !EpisodeTitles.isGeneric(e.name)) || !e.overview.isNullOrBlank()
+                }) {
+                val list = publish(restoreAnimeSeasons(item, got))
+                val translated = publish(translateEpisodes(item.providerId, list))
+                val out = publish(translated)
+                synchronized(episodeCache) { episodeCache[selKey] = out }
+                MetaCache.putEpisodes(epsKey, out)
+                return@withContext out
+            }
+        }
         // Last resort, for ANY series whose own list came back empty: borrow the
         // episode list from an installed extension that scrapes it from its
         // site. Those lists come straight from the source site, so they are the
@@ -6228,13 +6259,12 @@ class ContentRepository(private val manager: ProviderManager) {
         // AniList / Jikan enrichment replaces it when it lands, within 10
         // seconds total — past that the base list stands as-is.
         if (TrackerAnimeResolver.isTrackerAnime(item)) {
-            val staged = runCatching {
-                TrackerAnimeResolver.trackerEpisodesStaged(item) { base ->
-                    val list = publish(restoreAnimeSeasons(item, base))
-                    publish(translateEpisodes(item.providerId, list))
-                }
-            }.getOrNull()
-            staged?.takeIf { it.isNotEmpty() }?.let { raw ->
+            // Reuses the staged lookup from above (its base list already
+            // painted while the borrow sweep ran). The sweep came back empty,
+            // so whatever the staged pass produced goes through the normal
+            // TMDB name + detail passes for one more chance at real titles —
+            // and the base list itself when even those miss, never Episodes 0.
+            trkStaged?.takeIf { it.isNotEmpty() }?.let { raw ->
                     val list = publish(restoreAnimeSeasons(item, raw))
                     val translated = publish(translateEpisodes(item.providerId, list))
                     val named = withRealEpisodeNames(item, translated)

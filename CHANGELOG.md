@@ -4,7 +4,7 @@ Everything new and fixed since the last release (0.11.02):
 
 ### Fixed
 
-- I fixed tracker catalogue episodes still showing bare Episode 1 rows or sitting on Loading episodes forever — the AniList episode-count query was malformed so the count never resolved, and airing shows with no announced total resolved to nothing at all. The count now uses a correct query with an airing-schedule fallback, the numbered list paints the moment the count is known, and the TMDB, AniList and Jikan enrichment keeps filling titles, descriptions, dates and artwork in the background for up to 10 seconds, so a series with episodes never reads as Episodes 0 again
+- I fixed tracker catalogue episodes still showing bare Episode 1 rows or sitting on Loading episodes forever — the AniList episode-count query was malformed so the count never resolved, airing shows with no announced total resolved to nothing at all, and the tracker lookup ran after a 50-second extension sweep. The count now uses a correct query with an airing-schedule fallback, tracker rows resolve before the sweep so the numbered list paints in a second or two, the TMDB, AniList and Jikan enrichment replaces it within 10 seconds when found, and a still-bare list falls through to the borrowed site-scraped list — a series with episodes never reads as Episodes 0 again
 - I fixed the episode size slider doing nothing on the cinematic poster cards — the scale only applied to one TV row and was forced off on phones entirely. It now grows the poster cards, the list rows and their text on TV and phone alike
 
 ## 0.11.02
