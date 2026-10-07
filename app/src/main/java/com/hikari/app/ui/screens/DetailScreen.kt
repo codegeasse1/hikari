@@ -7381,6 +7381,20 @@ private fun EpisodePosterCard(
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.padding(start = (2f * s).dp, top = (5f * s).dp, end = (2f * s).dp)
         )
+        // The TV grid never printed descriptions — only titles — so a TV
+        // episode told the user nothing about itself. Gated by the same
+        // Settings → TV switch as the list rows.
+        val showDescription = HikariApp.instance.store.episodeDescriptionFlow().collectAsState(initial = true).value
+        if (showDescription && !ep.overview.isNullOrBlank()) {
+            Text(
+                ep.overview!!.trim(),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(start = (2f * s).dp, top = (2f * s).dp, end = (2f * s).dp)
+            )
+        }
     }
 }
 
@@ -7484,7 +7498,8 @@ private fun EpisodeRow(
                     overflow = TextOverflow.Ellipsis
                 )
             }
-            if (!ep.overview.isNullOrBlank()) {
+            val showDescription = HikariApp.instance.store.episodeDescriptionFlow().collectAsState(initial = true).value
+            if (showDescription && !ep.overview.isNullOrBlank()) {
                 Text(
                     ep.overview!!.trim(),
                     style = MaterialTheme.typography.bodySmall,

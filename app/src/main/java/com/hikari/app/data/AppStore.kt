@@ -377,6 +377,9 @@ class AppStore(private val ctx: Context) {
         val PLAYER_TV_PANELS = booleanPreferencesKey("playerTvPanels")
         /** Size of TV episode rows/cards as a percentage of the default size. */
         val TV_EPISODE_SIZE = intPreferencesKey("tvEpisodeSize")
+        /** Show the episode description under the episode title (ON by
+         *  default; Settings → TV). Off shows titles only, on phone and TV. */
+        val EPISODE_DESCRIPTION = booleanPreferencesKey("episodeDescription")
         /**
          * The player's volume BOOSTER: +6 dB (2× the amplitude) applied to the
          * audio session by an `android.media.audiofx.LoudnessEnhancer`, so a
@@ -3371,6 +3374,17 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
 
     suspend fun setTvEpisodeSize(size: Int) {
         write("TV_EPISODE_SIZE") { it[K.TV_EPISODE_SIZE] = size.coerceIn(80, 160) }
+    }
+
+    /** Whether episode rows print the description under the title (ON by
+     *  default — an episode row without its description is just a number). */
+    fun episodeDescriptionFlow(): Flow<Boolean> =
+        store.data.map { it[K.EPISODE_DESCRIPTION] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun episodeDescription(): Boolean = episodeDescriptionFlow().first()
+
+    suspend fun setEpisodeDescription(on: Boolean) {
+        write("EPISODE_DESCRIPTION") { it[K.EPISODE_DESCRIPTION] = on }
     }
 
     /**

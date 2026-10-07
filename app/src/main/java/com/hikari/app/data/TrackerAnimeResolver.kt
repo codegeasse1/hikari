@@ -8,7 +8,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import java.net.URLEncoder
 
@@ -59,24 +61,77 @@ object TrackerAnimeResolver {
         runCatching { anilistSearchDetail(item.searchTitle) }.getOrNull()
     }
 
-    private val streamCache = java.util.concurrent.ConcurrentHashMap<Int, Pair<Long, Map<Int, StreamEp>>>()
-    private val malCache = java.util.concurrent.ConcurrentHashMap<Int, Pair<Long, Int>>()
-    private val offsetCache = java.util.concurrent.ConcurrentHashMap<Int, Pair<Long, Int?>>()
+    private val showCache = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, AnilistShow?>>()
+    private val tmdbIdCache = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, Int?>>()
     private val jikanCache = java.util.concurrent.ConcurrentHashMap<Int, Pair<Long, Map<Int, JikanEp>>>()
-    private val anilistIdCache = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, Int?>>()
     private const val DAY_MS = 24 * 60 * 60 * 1000L
 
     private class StreamEp(val name: String?, val thumbnail: String?)
     private class JikanEp(val name: String?, val aired: String?, val score: Double?)
+    private class Prequel(val id: Int, val count: Int)
+    private class AnilistShow(
+        val id: Int,
+        val malId: Int?,
+        val aliases: Set<String>,
+        val english: String?,
+        val streams: Map<Int, StreamEp>,
+        val prequels: List<Prequel>,
+    )
+    private class TmdbMaps(val names: EpisodeTitles.Names?, val details: Map<Int, EpisodeTitles.EpDetail>, val offset: Int)
 
     private fun fresh(at: Long): Boolean = System.currentTimeMillis() - at < DAY_MS
 
     private suspend fun enrichEpisodes(item: MediaItem, eps: List<Episode>): List<Episode> {
         if (eps.isEmpty()) return eps
-        var out = tmdbFill(item, eps)
-        out = streamingFill(item, out)
-        out = jikanFill(item, out)
-        return out
+        if (eps.none { EpisodeTitles.isGeneric(it.name) || it.overview.isNullOrBlank() || it.image.isNullOrBlank() }) return eps
+        return try {
+            supervisorScope {
+                val want = eps.map { it.number }.toSet()
+                val showD = async(Dispatchers.IO) {
+                    withTimeoutOrNull(12_000) { runCatching { anilistShowFor(item) }.getOrNull() }
+                }
+                val tmdbD = async(Dispatchers.IO) {
+                    withTimeoutOrNull(25_000) {
+                        val show = showD.await()
+                        runCatching { tmdbMaps(item, want, show) }.getOrNull()
+                    }
+                }
+                val jikanD = async(Dispatchers.IO) {
+                    withTimeoutOrNull(20_000) {
+                        runCatching { jikanMap(item, showD.await()) }.getOrNull().orEmpty()
+                    }
+                }
+                val show = showD.await()
+                var out = eps
+                val tm = tmdbD.await()
+                if (tm != null && (tm.names != null || tm.details.isNotEmpty())) {
+                    out = out.map { e ->
+                        val a = e.number + tm.offset
+                        val nm = tm.names?.english?.get(a) ?: tm.names?.generic?.get(a)
+                        val d = tm.details[a]
+                        filled(e, nm, d?.overview, d?.released, d?.rating, d?.runtime, d?.image)
+                    }
+                }
+                if (show != null && show.streams.isNotEmpty()) {
+                    out = out.map { e ->
+                        val s = show.streams[e.number] ?: return@map e
+                        val nn = if (!s.name.isNullOrBlank() && EpisodeTitles.isGeneric(e.name)) s.name else null
+                        val im = if (e.image.isNullOrBlank()) s.thumbnail else e.image
+                        if (nn == null && im == e.image) e else e.copy(name = nn ?: e.name, image = im)
+                    }
+                }
+                val jmap = jikanD.await().orEmpty()
+                if (jmap.isNotEmpty()) {
+                    out = out.map { e ->
+                        val j = jmap[e.number] ?: return@map e
+                        filled(e, j.name, null, j.aired, j.score, null, null)
+                    }
+                }
+                out
+            }
+        } catch (t: Throwable) {
+            eps
+        }
     }
 
     private fun filled(e: Episode, name: String?, overview: String?, released: String?, rating: Double?, runtime: Int?, image: String?): Episode {
@@ -90,12 +145,9 @@ object TrackerAnimeResolver {
         return e.copy(name = nn ?: e.name, overview = ov, released = rel, rating = ra, runtime = ru, image = im)
     }
 
-    private suspend fun tmdbFill(item: MediaItem, eps: List<Episode>): List<Episode> {
-        val tmdbId = runCatching { simklTmdbRef(item) }.getOrNull()?.tmdbId?.toIntOrNull()?.takeIf { it > 0 }
-            ?: runCatching { com.hikari.app.nuvio.TmdbResolver.resolve(item) }.getOrNull()
-                ?.takeIf { it.mediaType.equals("tv", true) }?.tmdbId?.toIntOrNull()?.takeIf { it > 0 }
-            ?: return eps
-        val tv = com.hikari.app.nuvio.TmdbResolver.apiGet("/tv/" + tmdbId, emptyMap()) ?: return eps
+    private suspend fun tmdbMaps(item: MediaItem, want: Set<Int>, show: AnilistShow?): TmdbMaps? {
+        val tmdbId = trackerTmdbId(item, show) ?: return null
+        val tv = TmdbResolver.apiGet("/tv/" + tmdbId, emptyMap()) ?: return null
         val seasonsArr = tv.optJSONArray("seasons")
         val tmdbSeasons = (0 until (seasonsArr?.length() ?: 0)).mapNotNull { i ->
             val s = seasonsArr?.optJSONObject(i)
@@ -103,94 +155,128 @@ object TrackerAnimeResolver {
             val c = s?.optInt("episode_count", 0) ?: 0
             if (n > 0 && c > 0) n to c else null
         }.toMap()
-        if (tmdbSeasons.isEmpty()) return eps
-        val want = eps.map { it.number }.toSet()
+        if (tmdbSeasons.isEmpty()) return null
         val hint = TmdbMeta.seasonHint(item.searchTitle)
         if (hint != null) {
             val c = tmdbSeasons[hint]
-            if (c != null && kotlin.math.abs(c - eps.size) <= maxOf(3, (eps.size * 0.25).toInt())) {
+            if (c != null && kotlin.math.abs(c - want.size) <= maxOf(3, (want.size * 0.25).toInt())) {
                 val names = runCatching { EpisodeTitles.lookupForId(tmdbId, want, hint) }.getOrNull()
                 val details = runCatching { EpisodeTitles.detailsForId(tmdbId, want, hint) }.getOrNull().orEmpty()
-                if ((names == null || names.isEmpty()) && details.isEmpty()) return eps
-                return eps.map { e ->
-                    val nm = names?.english?.get(e.number) ?: names?.generic?.get(e.number)
-                    val d = details[e.number]
-                    filled(e, nm, d?.overview, d?.released, d?.rating, d?.runtime, d?.image)
-                }
+                if ((names == null || names.isEmpty()) && details.isEmpty()) return null
+                return TmdbMaps(names, details, 0)
             }
         }
-        val offset = prequelOffset(item) ?: return eps
+        val offset = prequelOffset(show) ?: return null
         val abs = want.map { it + offset }.toSet()
         val names = runCatching { EpisodeTitles.lookupForId(tmdbId, abs, null) }.getOrNull()
         val details = runCatching { EpisodeTitles.detailsForId(tmdbId, abs, null) }.getOrNull().orEmpty()
-        if ((names == null || names.isEmpty()) && details.isEmpty()) return eps
-        return eps.map { e ->
-            val a = e.number + offset
-            val nm = names?.english?.get(a) ?: names?.generic?.get(a)
-            val d = details[a]
-            filled(e, nm, d?.overview, d?.released, d?.rating, d?.runtime, d?.image)
-        }
+        if ((names == null || names.isEmpty()) && details.isEmpty()) return null
+        return TmdbMaps(names, details, offset)
     }
 
-    private suspend fun streamingFill(item: MediaItem, eps: List<Episode>): List<Episode> {
-        if (eps.none { EpisodeTitles.isGeneric(it.name) || it.image.isNullOrBlank() }) return eps
-        val anilistId = (if (item.providerId.equals("anilist", true)) item.id.toIntOrNull()?.takeIf { it > 0 } else null)
-            ?: anilistIdForTitle(item.searchTitle) ?: return eps
-        val streams = anilistStreams(anilistId)
-        if (streams.isEmpty()) return eps
-        var changed = false
-        val out = eps.map { e ->
-            val s = streams[e.number] ?: return@map e
-            val nn = if (!s.name.isNullOrBlank() && EpisodeTitles.isGeneric(e.name)) s.name else null
-            val im = if (e.image.isNullOrBlank()) s.thumbnail else e.image
-            if (nn == null && im == e.image) return@map e
-            changed = true
-            e.copy(name = nn ?: e.name, image = im)
-        }
-        return if (changed) out else eps
+    private suspend fun trackerTmdbId(item: MediaItem, show: AnilistShow?): Int? {
+        val key = item.providerId.lowercase() + "|" + item.id
+        tmdbIdCache[key]?.let { if (fresh(it.first)) return it.second }
+        val id = runCatching { simklTmdbRef(item) }.getOrNull()?.tmdbId?.toIntOrNull()?.takeIf { it > 0 }
+            ?: bridgeTmdbId(item, show)
+            ?: runCatching { TmdbResolver.resolve(item) }.getOrNull()
+                ?.takeIf { it.mediaType.equals("tv", true) }?.tmdbId?.toIntOrNull()?.takeIf { it > 0 }
+        tmdbIdCache[key] = System.currentTimeMillis() to id
+        return id
     }
 
-    private suspend fun jikanFill(item: MediaItem, eps: List<Episode>): List<Episode> {
-        if (eps.none { EpisodeTitles.isGeneric(it.name) || it.overview.isNullOrBlank() }) return eps
-        val malId = (if (item.providerId.equals("mal", true)) item.id.toIntOrNull()?.takeIf { it > 0 } else null)
-            ?: anilistMalId(item) ?: return eps
-        val got = jikanEpisodes(malId)
-        if (got.isEmpty()) return eps
-        var changed = false
-        val out = eps.map { e ->
-            val j = got[e.number] ?: return@map e
-            val filledEp = filled(e, j.name, null, j.aired, j.score, null, null)
-            if (filledEp != e) changed = true
-            filledEp
+    private suspend fun bridgeTmdbId(item: MediaItem, show: AnilistShow?): Int? {
+        val aliases = show?.aliases?.takeIf { it.isNotEmpty() }
+            ?: setOf(item.searchTitle).takeIf { item.searchTitle.isNotBlank() } ?: return null
+        val ordered = buildList {
+            show?.english?.takeIf { it.isNotBlank() }?.let { add(it) }
+            for (a in aliases) if (a !in this) add(a)
+        }.take(6)
+        if (ordered.isEmpty()) return null
+        val queries = ordered.flatMap { TmdbMeta.queryVariants(it).take(2) }.distinct().take(6)
+        if (queries.isEmpty()) return null
+        val sequelRow = TmdbMeta.seasonHint(item.searchTitle) != null
+        var best: Int? = null
+        var bestScore = 0
+        for (kind in listOf("tv", "movie")) {
+            for (q in queries) {
+                val data = TmdbResolver.apiGet("/search/" + kind, mapOf("query" to q)) ?: continue
+                val arr = data.optJSONArray("results") ?: continue
+                for (i in 0 until minOf(arr.length(), 10)) {
+                    val o = arr.optJSONObject(i) ?: continue
+                    val oid = o.optString("id").trim().toIntOrNull()?.takeIf { it > 0 } ?: continue
+                    var base = 0
+                    for (n in listOf(o.optString("title"), o.optString("name"), o.optString("original_title"), o.optString("original_name"))) {
+                        if (n.isBlank() || n == "null") continue
+                        for (a in aliases) base = maxOf(base, TmdbMeta.titleScore(a, n))
+                    }
+                    if (base < 60) continue
+                    val raw = o.optString("release_date").ifBlank { o.optString("first_air_date") };
+                    val y = raw.take(4).toIntOrNull()
+                    if (!sequelRow && item.year != null && item.year > 0) {
+                        if (y == null || kotlin.math.abs(y - item.year) > 1) continue
+                    }
+                    val lang = o.optString("original_language").lowercase()
+                    var ja = lang == "ja"
+                    if (!ja) {
+                        val genres = o.optJSONArray("genre_ids")
+                        if (genres != null) for (g in 0 until genres.length()) {
+                            if (genres.optInt(g) == 16) { ja = true; break }
+                        }
+                    }
+                    if (!ja) continue
+                    val score = base * 100 + o.optDouble("popularity", 0.0).toInt().coerceAtMost(99)
+                    if (score > bestScore) { bestScore = score; best = oid }
+                }
+                if (bestScore >= 6000) return best
+            }
         }
-        return if (changed) out else eps
+        return best
     }
 
-    private suspend fun anilistMalId(item: MediaItem): Int? {
-        if (!item.providerId.equals("anilist", true)) return null
-        val id = item.id.toIntOrNull()?.takeIf { it > 0 } ?: return null
-        malCache[id]?.let { if (fresh(it.first)) return it.second.takeIf { v -> v > 0 } }
+    private suspend fun anilistShowFor(item: MediaItem): AnilistShow? {
+        val direct = if (item.providerId.equals("anilist", true)) item.id.toIntOrNull()?.takeIf { it > 0 } else null
+        if (direct != null) return anilistShowById(direct)
+        val t = item.searchTitle.trim()
+        if (t.isBlank()) return null
+        val key = "t|" + t.lowercase()
+        showCache[key]?.let { if (fresh(it.first)) return it.second }
         val raw = Http.postStringQuiet(
             "https://graphql.anilist.co",
-            JSONObject().put("query", "query{Media(id:" + id + ",type:ANIME){idMal}}").toString(),
-        ) ?: return null
-        val mal = runCatching {
-            JSONObject(raw).optJSONObject("data")?.optJSONObject("Media")?.optInt("idMal", 0)?.takeIf { it > 0 }
-        }.getOrNull()
-        if (mal != null) malCache[id] = System.currentTimeMillis() to mal
-        return mal
-    }
-
-    private suspend fun anilistStreams(anilistId: Int): Map<Int, StreamEp> {
-        streamCache[anilistId]?.let { if (fresh(it.first)) return it.second }
-        val raw = Http.postStringQuiet(
-            "https://graphql.anilist.co",
-            JSONObject().put("query", "query{Media(id:" + anilistId + ",type:ANIME){streamingEpisodes{title thumbnail}}}").toString(),
+            JSONObject().put("query", "query{Media(search:" + JSONObject.quote(t) + ",type:ANIME){id idMal title{userPreferred english romaji native} synonyms streamingEpisodes{title thumbnail} relations{edges{relationType node{id episodes}}}}}").toString(),
         )
-        val out = HashMap<Int, StreamEp>()
-        val arr = runCatching {
-            JSONObject(raw ?: "").optJSONObject("data")?.optJSONObject("Media")?.optJSONArray("streamingEpisodes")
-        }.getOrNull()
+        val media = runCatching { JSONObject(raw ?: "").optJSONObject("data")?.optJSONObject("Media") }.getOrNull()
+        val show = media?.let { parseAnilistShow(it) }
+        val verified = if (show != null && AnimeMetadataRepository.matchAliases(t, show.aliases) >= 55) show else null
+        showCache[key] = System.currentTimeMillis() to verified
+        if (verified != null) showCache["id|" + verified.id] = System.currentTimeMillis() to verified
+        return verified
+    }
+
+    private suspend fun anilistShowById(id: Int): AnilistShow? {
+        val key = "id|" + id
+        showCache[key]?.let { if (fresh(it.first)) return it.second }
+        val raw = Http.postStringQuiet(
+            "https://graphql.anilist.co",
+            JSONObject().put("query", "query{Media(id:" + id + ",type:ANIME){id idMal title{userPreferred english romaji native} synonyms streamingEpisodes{title thumbnail} relations{edges{relationType node{id episodes}}}}}").toString(),
+        ) ?: return null
+        val media = runCatching { JSONObject(raw).optJSONObject("data")?.optJSONObject("Media") }.getOrNull()
+        val show = media?.let { parseAnilistShow(it) }
+        if (show != null) showCache[key] = System.currentTimeMillis() to show
+        return show
+    }
+
+    private fun parseAnilistShow(media: JSONObject): AnilistShow? {
+        val id = media.optInt("id", 0).takeIf { it > 0 } ?: return null
+        val titles = media.optJSONObject("title")
+        val english = titles?.optString("english")?.trim()?.takeIf { it.isNotBlank() }
+        val aliases = buildSet {
+            listOf(titles?.optString("userPreferred"), english, titles?.optString("romaji"), titles?.optString("native")).forEach { v -> if (!v.isNullOrBlank()) add(v.trim()) }
+            val syns = media.optJSONArray("synonyms")
+            for (i in 0 until (syns?.length() ?: 0)) syns?.optString(i)?.trim()?.takeIf { it.isNotBlank() }?.let { add(it) }
+        }
+        val streams = HashMap<Int, StreamEp>()
+        val arr = media.optJSONArray("streamingEpisodes")
         for (i in 0 until (arr?.length() ?: 0)) {
             val o = arr?.optJSONObject(i) ?: continue
             val m = Regex("""(?i)^(?:episode|ep)\s*0*(\d+)\s*[-–—:.]?\s*(.*)$""").find(o.optString("title").trim()) ?: continue
@@ -198,83 +284,42 @@ object TrackerAnimeResolver {
             val name = m.groupValues[2].trim().takeIf { it.isNotBlank() }
             val thumb = o.optString("thumbnail").trim().takeIf { it.startsWith("http") }
             if (name == null && thumb == null) continue
-            if (!out.containsKey(n)) out[n] = StreamEp(name, thumb)
+            if (!streams.containsKey(n)) streams[n] = StreamEp(name, thumb)
         }
-        streamCache[anilistId] = System.currentTimeMillis() to out
-        return out
-    }
-
-    private suspend fun anilistIdForTitle(title: String): Int? {
-        val t = title.trim()
-        if (t.isBlank()) return null
-        anilistIdCache[t.lowercase()]?.let { if (fresh(it.first)) return it.second }
-        val raw = Http.postStringQuiet(
-            "https://graphql.anilist.co",
-            JSONObject().put("query", "query{Media(search:" + JSONObject.quote(t) + ",type:ANIME){id title{userPreferred english romaji native} synonyms}}").toString(),
-        ) ?: return null
-        val media = runCatching { JSONObject(raw).optJSONObject("data")?.optJSONObject("Media") }.getOrNull()
-        val id = media?.optInt("id", 0)?.takeIf { it > 0 }
-        if (id == null) {
-            anilistIdCache[t.lowercase()] = System.currentTimeMillis() to null
-            return null
-        }
-        val titles = media?.optJSONObject("title")
-        val aliases = buildSet {
-            listOf(titles?.optString("userPreferred"), titles?.optString("english"), titles?.optString("romaji"), titles?.optString("native")).forEach { v -> if (!v.isNullOrBlank()) add(v.trim()) }
-            val syns = media?.optJSONArray("synonyms")
-            for (i in 0 until (syns?.length() ?: 0)) syns?.optString(i)?.trim()?.takeIf { it.isNotBlank() }?.let { add(it) }
-        }
-        val found = if (AnimeMetadataRepository.matchAliases(t, aliases) >= 55) id else null
-        anilistIdCache[t.lowercase()] = System.currentTimeMillis() to found
-        return found
-    }
-
-    private suspend fun prequelOffset(item: MediaItem): Int? {
-        val anilistId = (if (item.providerId.equals("anilist", true)) item.id.toIntOrNull()?.takeIf { it > 0 } else null)
-            ?: anilistIdForTitle(item.searchTitle) ?: return null
-        offsetCache[anilistId]?.let { if (fresh(it.first)) return it.second }
-        var sum = 0
-        var cur = anilistId
-        val seen = HashSet<Int>()
-        var ok = true
-        repeat(8) {
-            if (!seen.add(cur)) return@repeat
-            val pre = prequelOf(cur)
-            if (pre == null) return@repeat
-            if (pre.second <= 0) {
-                ok = false
-                return@repeat
-            }
-            sum += pre.second
-            cur = pre.first
-        }
-        val out = if (ok) sum else null
-        offsetCache[anilistId] = System.currentTimeMillis() to out
-        return out
-    }
-
-    private suspend fun prequelOf(anilistId: Int): Pair<Int, Int>? {
-        val raw = Http.postStringQuiet(
-            "https://graphql.anilist.co",
-            JSONObject().put("query", "query{Media(id:" + anilistId + ",type:ANIME){relations{edges{relationType version} node{id episodes}}}}").toString(),
-        ) ?: return null
-        val edges = runCatching {
-            JSONObject(raw).optJSONObject("data")?.optJSONObject("Media")?.optJSONObject("relations")?.optJSONArray("edges")
-        }.getOrNull() ?: return null
-        var best: Pair<Int, Int>? = null
-        for (i in 0 until edges.length()) {
-            val e = edges.optJSONObject(i) ?: continue
+        val prequels = ArrayList<Prequel>()
+        val edges = media.optJSONObject("relations")?.optJSONArray("edges")
+        for (i in 0 until (edges?.length() ?: 0)) {
+            val e = edges?.optJSONObject(i) ?: continue
             if (!e.optString("relationType").equals("prequel", true)) continue
             val node = e.optJSONObject("node") ?: continue
-            val id = node.optInt("id", 0)
-            if (id <= 0) continue
-            val count = node.optInt("episodes", 0)
-            if (count <= 0) return null
-            if (best == null || count > best.second) best = id to count
+            val pid = node.optInt("id", 0)
+            if (pid <= 0 || pid == id) continue
+            prequels.add(Prequel(pid, node.optInt("episodes", 0)))
         }
-        return best
+        return AnilistShow(id, media.optInt("idMal", 0).takeIf { it > 0 }, aliases, english, streams, prequels)
     }
 
+    private suspend fun prequelOffset(show: AnilistShow?): Int? {
+        if (show == null) return null
+        var sum = 0
+        var cur: AnilistShow = show
+        val seen = HashSet<Int>()
+        var guard = 0
+        while (guard++ < 8) {
+            if (!seen.add(cur.id)) break
+            val pre = cur.prequels.maxByOrNull { it.count } ?: break
+            if (pre.count <= 0) return null
+            sum += pre.count
+            cur = anilistShowById(pre.id) ?: return null
+        }
+        return sum
+    }
+
+    private suspend fun jikanMap(item: MediaItem, show: AnilistShow?): Map<Int, JikanEp> {
+        val malId = (if (item.providerId.equals("mal", true)) item.id.toIntOrNull()?.takeIf { it > 0 } else null)
+            ?: show?.malId ?: return emptyMap()
+        return jikanEpisodes(malId)
+    }
     private suspend fun jikanEpisodes(malId: Int): Map<Int, JikanEp> {
         jikanCache[malId]?.let { if (fresh(it.first)) return it.second }
         val out = HashMap<Int, JikanEp>()

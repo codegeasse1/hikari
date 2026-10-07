@@ -1092,6 +1092,7 @@ fun SettingsScreen(nav: NavHostController) {
                     item { SettingsCard { TvPosterSizeCard(app) } }
                     item { SettingsCard { TvDetailStyleCard(app) } }
                     item { SettingsCard { TvEpisodeSizeCard(app) } }
+                    item { SettingsCard { EpisodeDescriptionCard(app) } }
                     item { SettingsCard { TvOverscanCard(app) } }
                     item { SettingsCard { TvPerformanceCard(app) } }
                     item { SettingsCard { TvRemoteCard() } }
@@ -3877,6 +3878,30 @@ private fun TvEpisodeSizeCard(app: HikariApp) {
             tr("Applies to both the episode list and the movie-style poster view."),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/**
+ * Episode descriptions under episode titles (Settings → TV). ON by default:
+ * an episode row without its description is just a number. Off shows titles
+ * only, on phone and TV alike.
+ */
+@Composable
+private fun EpisodeDescriptionCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    val flow = remember { app.store.episodeDescriptionFlow() }
+    val on by flow.collectAsState(initial = true)
+
+    Column(Modifier.padding(16.dp)) {
+        SettingsCardHeading(Icons.Filled.Description, tr("Episode descriptions"))
+        SettingsToggle(
+            label = tr("Show episode descriptions"),
+            supporting = tr("Print the description under each episode title. Off shows titles only."),
+            checked = on,
+            onCheckedChange = { value ->
+                scope.launch { runCatching { app.store.setEpisodeDescription(value) } }
+            },
         )
     }
 }

@@ -255,8 +255,12 @@ object TrackerLibraryRepository {
     private fun aniListMedia(o:JSONObject?, manga: Boolean = false):MediaItem?{
         if(o==null)return null;val id=o.optInt("id",0);if(id<=0)return null;val t=o.optJSONObject("title")
         val title=t?.optString("userPreferred").orEmpty().ifBlank{t?.optString("english").orEmpty()}.ifBlank{t?.optString("romaji").orEmpty()}.ifBlank{"Untitled"}
+        // English title as the search key; display stays the tracker's own
+        // (see AnimeCatalogRepository — romaji display titles match no
+        // database, which is what left tracker episodes bare).
+        val english=t?.optString("english")?.trim().orEmpty().takeIf{it.isNotBlank()&&!it.equals(title,ignoreCase=true)}.orEmpty()
         val next=o.optJSONObject("nextAiringEpisode")?.optLong("airingAt",0L)?.takeIf{it>0}?.let{java.time.Instant.ofEpochSecond(it).toString()}
-        return MediaItem("anilist",id.toString(),title,MediaType.SERIES,o.optJSONObject("coverImage")?.optString("large"),o.optJSONObject("startDate")?.optInt("year",0)?.takeIf{it>0},rawType=if(manga)"manga" else "anime",rating=o.optDouble("averageScore",0.0).takeIf{it>0}?.div(10.0),nextEpisodeDate=next,metadataSource="AniList")
+        return MediaItem("anilist",id.toString(),title,MediaType.SERIES,o.optJSONObject("coverImage")?.optString("large"),o.optJSONObject("startDate")?.optInt("year",0)?.takeIf{it>0},rawType=if(manga)"manga" else "anime",rating=o.optDouble("averageScore",0.0).takeIf{it>0}?.div(10.0),nextEpisodeDate=next,metadataSource="AniList",originalTitle=english)
     }
     private fun malMedia(o:JSONObject?, manga: Boolean = false):MediaItem?{
         if(o==null)return null;val id=o.optInt("id",0);if(id<=0)return null

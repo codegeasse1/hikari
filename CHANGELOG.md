@@ -1,3 +1,13 @@
+## 0.11.02
+
+Everything new and fixed since the last release (0.11.01):
+
+### Fixed
+
+- I fixed tracker catalogue episodes still showing bare Episode 1 rows with no titles or descriptions — the AniList rows carry romaji titles that TMDB can never match, the prequel lookup sent a malformed AniList query that always failed, and old wrong-show TMDB ids were trusted from the disk cache. AniList rows now carry their English title as the search key, TMDB is resolved through an AniList alias bridge, sequel seasons map through a fixed prequel chain, poisoned cache rows are never read or written again, and the three detail sources fill in parallel so one slow API cannot sink the rest
+- I added episode descriptions to the TV episode grid, which used to print titles only
+- I added an Episode descriptions switch in Settings TV, on by default — turning it off shows episode titles only, on phone and TV alike
+
 ## 0.11.01
 
 Everything new and fixed since the last release (0.11.00):

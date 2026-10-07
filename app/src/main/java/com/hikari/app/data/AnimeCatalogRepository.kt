@@ -29,7 +29,14 @@ object AnimeCatalogRepository {
                 if (id <= 0) continue
                 val t = o.optJSONObject("title")
                 val title = t?.optString("userPreferred").orEmpty().ifBlank { t?.optString("english").orEmpty() }.ifBlank { t?.optString("romaji").orEmpty() }.ifBlank { "Untitled" }
-                add(MediaItem("anilist", id.toString(), title, if (o.optString("format").equals("MOVIE", true)) MediaType.MOVIE else MediaType.SERIES, o.optJSONObject("coverImage")?.optString("large"), o.optJSONObject("startDate")?.optInt("year", 0)?.takeIf { it > 0 }, rawType = "anime", rating = o.optDouble("averageScore", 0.0).takeIf { it > 0 }?.div(10.0), nextEpisodeDate = o.optJSONObject("nextAiringEpisode")?.optLong("airingAt", 0L)?.takeIf { it > 0 }?.let { java.time.Instant.ofEpochSecond(it).toString() }, metadataSource = "AniList"))
+                // The English title rides along as the SEARCH key (see
+                // [MediaItem.searchTitle]): TMDB and the extensions index it,
+                // while the display title stays the tracker's own (often
+                // romaji, which no database matches). Without this every
+                // AniList row resolved to nothing and its episodes stayed
+                // bare "Episode N" rows.
+                val english = t?.optString("english")?.trim().orEmpty().takeIf { it.isNotBlank() && !it.equals(title, ignoreCase = true) }.orEmpty()
+                add(MediaItem("anilist", id.toString(), title, if (o.optString("format").equals("MOVIE", true)) MediaType.MOVIE else MediaType.SERIES, o.optJSONObject("coverImage")?.optString("large"), o.optJSONObject("startDate")?.optInt("year", 0)?.takeIf { it > 0 }, rawType = "anime", rating = o.optDouble("averageScore", 0.0).takeIf { it > 0 }?.div(10.0), nextEpisodeDate = o.optJSONObject("nextAiringEpisode")?.optLong("airingAt", 0L)?.takeIf { it > 0 }?.let { java.time.Instant.ofEpochSecond(it).toString() }, metadataSource = "AniList", originalTitle = english))
             }
         }
     }

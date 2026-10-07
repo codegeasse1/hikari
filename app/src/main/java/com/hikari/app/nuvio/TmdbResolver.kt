@@ -79,9 +79,17 @@ object TmdbResolver {
     suspend fun resolve(item: MediaItem): Resolved? {
         val key = cacheKey(item)
         memory[key]?.let { return it }
-        loadCache()[key]?.let {
-            memory[key] = it
-            return it
+        // Tracker rows never touch the FILE cache: older builds stored
+        // wrong-show TMDB ids under tracker numeric ids here, and trusting
+        // those rows again would re-list another show's episodes. The
+        // in-memory single-flight still applies, so one session resolves a
+        // title once.
+        val trackerRow = isTrackerAnime(item)
+        if (!trackerRow) {
+            loadCache()[key]?.let {
+                memory[key] = it
+                return it
+            }
         }
         // Single-flight: a fan-out source search resolves the same title from
         // every Nuvio provider at once — only the first caller pays for the
@@ -93,7 +101,7 @@ object TmdbResolver {
             val r = resolveNetwork(item)
             if (r != null) {
                 memory[key] = r
-                saveCache(key, r)
+                if (!isTrackerAnime(item)) saveCache(key, r)
             }
             deferred.complete(r)
             return r
