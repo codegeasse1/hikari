@@ -235,8 +235,9 @@ object TrackerAnimeResolver {
      * ever read — a tv id here would wear another entry's details.
      */
     private suspend fun tmdbMovieDetail(item: MediaItem): Detail? {
-        val id = runCatching { trackerTmdbId(item, null) }.getOrNull()
-            ?.takeIf { it.mediaType.equals("movie", true) }?.tmdbId?.toIntOrNull()?.takeIf { it > 0 }
+        val id = runCatching { simklTmdbRef(item) }.getOrNull()
+            ?.takeIf { it.mediaType.equals("movie", true) }
+            ?.tmdbId?.toIntOrNull()?.takeIf { it > 0 }
             ?: runCatching { TmdbResolver.resolve(item) }.getOrNull()
                 ?.takeIf { it.mediaType.equals("movie", true) }?.tmdbId?.toIntOrNull()?.takeIf { it > 0 }
             ?: return null
