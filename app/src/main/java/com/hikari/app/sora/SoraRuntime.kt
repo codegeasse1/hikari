@@ -349,7 +349,7 @@ object SoraRuntime {
             applyStored(d, key, stored)
             out.put(d)
         }
-        out.toString()
+        return out.toString()
     }
 
     private fun applyStored(d: JSONObject, key: String, stored: JSONObject) {
