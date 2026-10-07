@@ -674,6 +674,9 @@ fun SettingsScreen(nav: NavHostController) {
     var showUpdateDialog by remember { mutableStateOf(false) }
     var openFolder by remember { mutableStateOf<SettingsFolder?>(null) }
     var settingsQuery by remember { mutableStateOf("") }
+    val searchHits = remember(settingsQuery) {
+        if (settingsQuery.isBlank()) emptyList() else searchSettings(settingsQuery)
+    }
     // A sub-folder inside [openFolder] (Appearance & Theme → App icon, App Layout →
     // Poster styling…). Two levels is the whole tree, so two slots is enough and
     // back always has an obvious target.
@@ -1347,7 +1350,7 @@ fun SettingsScreen(nav: NavHostController) {
                 }
             }
             } else {
-                val hits = remember(settingsQuery) { searchSettings(settingsQuery) }
+                val hits = searchHits
                 if (hits.isEmpty()) {
                     item {
                         Text(
