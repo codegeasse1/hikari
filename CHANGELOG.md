@@ -1,11 +1,34 @@
 ## 0.11.03
 
-Everything new and fixed since the last release (0.11.02):
+### Added
+
+- Trackers catalogue with login (AniList, Simkl, Kitsu and more)
+- Anime, movie and series calendar
+- Anymex and Sora extension support
+- Manga support with reader
+- Download all episodes at once, or hand off to an external download manager
+- Play in external player
+- Press and hold to speed video up to 4x
+- Custom enhance presets
+- Cinema and vertical poster types
+- Episode tile size slider
+- Pick which servers to search from in Playback and Server settings
+- Ask where to play: own extension or chosen servers
+- Profile lock
+- In-player previous / next buttons with autoplay
+- Dub / sub audio switch
+- Episode titles, ratings and descriptions for all series and movies
+- Torrent streams in the IPTV tab
 
 ### Fixed
 
-- I fixed tracker catalogue episodes still showing bare Episode 1 rows or sitting on Loading episodes forever — the AniList episode-count query was malformed so the count never resolved, airing shows with no announced total resolved to nothing at all, and the tracker lookup ran after a 50-second extension sweep. The count now uses a correct query with an airing-schedule fallback, tracker rows resolve before the sweep so the numbered list paints in a second or two, the TMDB, AniList and Jikan enrichment replaces it within 10 seconds when found, and a still-bare list falls through to the borrowed site-scraped list — a series with episodes never reads as Episodes 0 again
-- I fixed the episode size slider doing nothing on the cinematic poster cards — the scale only applied to one TV row and was forced off on phones entirely. It now grows the poster cards, the list rows and their text on TV and phone alike
+- TV UI rework, TV lagging
+- Home genre click now shows every result
+- Telegram private videos not playing
+- Subtitles
+- Backup and restore
+- Codec lag on some servers' videos
+- App crashes
 
 ## 0.11.02
 
