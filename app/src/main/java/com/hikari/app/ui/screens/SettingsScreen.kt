@@ -1323,20 +1323,11 @@ fun SettingsScreen(nav: NavHostController) {
                         placeholder = { Text(tr("Search settings")) },
                         leadingIcon = {
                             Icon(
-                                androidx.compose.material.icons.filled.Search,
+                                Icons.Filled.Tune,
                                 contentDescription = null,
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         },
-                        trailingIcon = if (settingsQuery.isBlank()) null else ({
-                            IconButton(onClick = { settingsQuery = "" }) {
-                                Icon(
-                                    androidx.compose.material.icons.filled.Close,
-                                    contentDescription = tr("Clear"),
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                        }),
                         singleLine = true,
                         shape = RoundedCornerShape(14.dp),
                         modifier = Modifier.fillMaxWidth(),
