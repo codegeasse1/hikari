@@ -3345,6 +3345,7 @@ fun ExtensionsScreen(nav: NavHostController? = null) {
                     infoProvider = p
                 }
             ProviderType.ANIYOMI, ProviderType.MANGA -> schemaProvider = p
+            ProviderType.ANYMEX, ProviderType.ANYMEX_MANGA, ProviderType.SORA -> schemaProvider = p
             // A playlist has no settings either — what it has is a source and a
             // channel count, plus a way to re-read it.
             ProviderType.IPTV -> iptvInfoId = p.config.id
@@ -4473,6 +4474,10 @@ fun ExtensionsScreen(nav: NavHostController? = null) {
             ProviderType.VEGA -> VegaSettingsDialog(provider = provider, onDismiss = close)
             ProviderType.ANIYOMI, ProviderType.MANGA ->
                 AniyomiSettingsDialog(provider = provider, onDismiss = close)
+            ProviderType.ANYMEX, ProviderType.ANYMEX_MANGA ->
+                AnymexSettingsDialog(provider = provider, onDismiss = close)
+            ProviderType.SORA ->
+                SoraSettingsDialog(provider = provider, onDismiss = close)
             else -> NuvioSettingsDialog(provider = provider, onDismiss = close)
         }
     }
@@ -6790,6 +6795,262 @@ private fun AniyomiSettingsDialog(
  * honest answer — the old generic line read as if Hikari had lost them.
  */
 @Composable
+private fun ExtensionPrefDialog(
+    title: String,
+    load: suspend () -> String,
+    save: (key: String, rawJson: String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    var defs by remember { mutableStateOf<JSONArray?>(null) }
+    var listPick by remember { mutableStateOf<JSONObject?>(null) }
+    var listSel by remember { mutableStateOf(0) }
+    var multiPick by remember { mutableStateOf<JSONObject?>(null) }
+    var multiSel by remember { mutableStateOf(setOf<String>()) }
+    var textPick by remember { mutableStateOf<JSONObject?>(null) }
+    var textVal by remember { mutableStateOf("") }
+    LaunchedEffect(title) {
+        val raw = runCatching { withContext(Dispatchers.IO) { load() } }.getOrDefault("[]")
+        defs = runCatching { JSONArray(raw) }.getOrNull() ?: JSONArray()
+    }
+    fun live(key: String): JSONObject? {
+        val a = defs ?: return null
+        for (i in 0 until a.length()) {
+            val o = a.optJSONObject(i) ?: continue
+            if (o.optString("key") == key) return o
+        }
+        return null
+    }
+    fun update(key: String, fn: (JSONObject) -> Unit) {
+        val a = defs ?: return
+        val n = JSONArray()
+        for (i in 0 until a.length()) {
+            val o = a.optJSONObject(i) ?: continue
+            if (o.optString("key") == key) {
+                val c = JSONObject(o.toString())
+                fn(c)
+                n.put(c)
+            } else {
+                n.put(o)
+            }
+        }
+        defs = n
+    }
+    fun entryIndex(d: JSONObject): Int {
+        val values = d.optJSONArray("entryValues") ?: return 0
+        val cur = d.optString("value")
+        for (i in 0 until values.length()) if (values.optString(i) == cur) return i
+        return 0
+    }
+    fun entryLabel(d: JSONObject): String {
+        val entries = d.optJSONArray("entries") ?: return d.optString("value").ifBlank { d.optString("summary") }
+        val idx = entryIndex(d)
+        return entries.optString(idx).ifBlank { d.optString("summary") }
+    }
+    fun multiLabels(d: JSONObject): String {
+        val entries = d.optJSONArray("entries") ?: JSONArray()
+        val values = d.optJSONArray("entryValues") ?: JSONArray()
+        val sel = d.optJSONArray("values") ?: JSONArray()
+        val picked = LinkedHashSet<String>()
+        for (i in 0 until sel.length()) picked.add(sel.optString(i))
+        val names = ArrayList<String>()
+        for (i in 0 until entries.length()) {
+            if (i < values.length() && picked.contains(values.optString(i))) names.add(entries.optString(i))
+        }
+        return names.joinToString(", ").ifBlank { d.optString("summary") }
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            val a = defs
+            if (a == null) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                    CircularProgressIndicator(Modifier.size(28.dp))
+                }
+            } else if (a.length() == 0) {
+                Text(tr("This extension has no settings"))
+            } else {
+                LazyColumn(Modifier.heightIn(max = 420.dp).fillMaxWidth()) {
+                    items(a.length(), key = { idx -> a.optJSONObject(idx)?.optString("key") ?: idx.toString() }) { idx ->
+                        val d = a.optJSONObject(idx) ?: return@items
+                        val key = d.optString("key")
+                        when (d.optString("type")) {
+                            "switch", "checkBox" -> {
+                                val on = d.optBoolean("value", false)
+                                Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text(d.optString("title"), style = MaterialTheme.typography.titleSmall)
+                                        if (d.optString("summary").isNotBlank()) Text(d.optString("summary"), style = MaterialTheme.typography.bodySmall)
+                                    }
+                                    Switch(checked = on, onCheckedChange = { v ->
+                                        update(key) { it.put("value", v) }
+                                        scope.launch(Dispatchers.IO) { runCatching { save(key, v.toString()) } }
+                                    })
+                                }
+                            }
+                            "list" -> {
+                                Column(Modifier.fillMaxWidth().clickable {
+                                    listPick = JSONObject(d.toString())
+                                    listSel = entryIndex(live(key) ?: d)
+                                }.padding(vertical = 8.dp)) {
+                                    Text(d.optString("title"), style = MaterialTheme.typography.titleSmall)
+                                    Text(entryLabel(live(key) ?: d), style = MaterialTheme.typography.bodySmall)
+                                }
+                            }
+                            "multi_select" -> {
+                                Column(Modifier.fillMaxWidth().clickable {
+                                    val cur = live(key) ?: d
+                                    val sel = cur.optJSONArray("values") ?: JSONArray()
+                                    val s = LinkedHashSet<String>()
+                                    for (i in 0 until sel.length()) s.add(sel.optString(i))
+                                    multiSel = s
+                                    multiPick = JSONObject(cur.toString())
+                                }.padding(vertical = 8.dp)) {
+                                    Text(d.optString("title"), style = MaterialTheme.typography.titleSmall)
+                                    Text(multiLabels(live(key) ?: d), style = MaterialTheme.typography.bodySmall)
+                                }
+                            }
+                            else -> {
+                                Column(Modifier.fillMaxWidth().clickable {
+                                    textPick = JSONObject(d.toString())
+                                    textVal = (live(key) ?: d).optString("value")
+                                }.padding(vertical = 8.dp)) {
+                                    Text(d.optString("title"), style = MaterialTheme.typography.titleSmall)
+                                    val v = (live(key) ?: d).optString("value").ifBlank { d.optString("summary") }
+                                    Text(v, style = MaterialTheme.typography.bodySmall)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text(tr("Close")) } },
+    )
+    listPick?.let { lp ->
+        val entries = lp.optJSONArray("entries") ?: JSONArray()
+        val values = lp.optJSONArray("entryValues") ?: JSONArray()
+        AlertDialog(
+            onDismissRequest = { listPick = null },
+            title = { Text(lp.optString("title")) },
+            text = {
+                LazyColumn(Modifier.heightIn(max = 380.dp).fillMaxWidth()) {
+                    items(entries.length()) { i ->
+                        Row(Modifier.fillMaxWidth().clickable { listSel = i }.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            RadioButton(selected = listSel == i, onClick = { listSel = i })
+                            Spacer(Modifier.width(8.dp))
+                            Text(entries.optString(i))
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val v = if (listSel < values.length()) values.optString(listSel) else ""
+                    update(lp.optString("key")) { it.put("value", v) }
+                    val k = lp.optString("key")
+                    scope.launch(Dispatchers.IO) { runCatching { save(k, JSONObject.quote(v)) } }
+                    listPick = null
+                }) { Text(tr("Confirm")) }
+            },
+            dismissButton = { TextButton(onClick = { listPick = null }) { Text(tr("Cancel")) } },
+        )
+    }
+    multiPick?.let { mp ->
+        val entries = mp.optJSONArray("entries") ?: JSONArray()
+        val values = mp.optJSONArray("entryValues") ?: JSONArray()
+        AlertDialog(
+            onDismissRequest = { multiPick = null },
+            title = { Text(mp.optString("title")) },
+            text = {
+                LazyColumn(Modifier.heightIn(max = 380.dp).fillMaxWidth()) {
+                    items(entries.length()) { i ->
+                        val ev = if (i < values.length()) values.optString(i) else entries.optString(i)
+                        val on = multiSel.contains(ev)
+                        Row(Modifier.fillMaxWidth().clickable {
+                            multiSel = if (on) multiSel - ev else multiSel + ev
+                        }.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = on, onCheckedChange = { c ->
+                                multiSel = if (c) multiSel + ev else multiSel - ev
+                            })
+                            Spacer(Modifier.width(8.dp))
+                            Text(entries.optString(i))
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val arr = JSONArray()
+                    multiSel.forEach { arr.put(it) }
+                    update(mp.optString("key")) { it.put("values", arr) }
+                    val k = mp.optString("key")
+                    scope.launch(Dispatchers.IO) { runCatching { save(k, arr.toString()) } }
+                    multiPick = null
+                }) { Text(tr("Confirm")) }
+            },
+            dismissButton = { TextButton(onClick = { multiPick = null }) { Text(tr("Cancel")) } },
+        )
+    }
+    textPick?.let { tp ->
+        AlertDialog(
+            onDismissRequest = { textPick = null },
+            title = { Text(tp.optString("title")) },
+            text = {
+                OutlinedTextField(value = textVal, onValueChange = { textVal = it }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    update(tp.optString("key")) { it.put("value", textVal) }
+                    val k = tp.optString("key")
+                    val v = textVal
+                    scope.launch(Dispatchers.IO) { runCatching { save(k, JSONObject.quote(v)) } }
+                    textPick = null
+                }) { Text(tr("Confirm")) }
+            },
+            dismissButton = { TextButton(onClick = { textPick = null }) { Text(tr("Cancel")) } },
+        )
+    }
+}
+
+@Composable
+private fun AnymexSettingsDialog(
+    provider: ContentProvider,
+    onDismiss: () -> Unit,
+) {
+    ExtensionPrefDialog(
+        title = I18n.t("%s settings").replace("%s", provider.config.name),
+        load = {
+            when (val pp = provider) {
+                is com.hikari.app.anymex.AnymexProvider -> pp.preferenceDefs()
+                is com.hikari.app.anymex.AnymexMangaProvider -> pp.preferenceDefs()
+                else -> "[]"
+            }
+        },
+        save = { key, raw ->
+            when (val pp = provider) {
+                is com.hikari.app.anymex.AnymexProvider -> pp.setPreference(key, raw)
+                is com.hikari.app.anymex.AnymexMangaProvider -> pp.setPreference(key, raw)
+            }
+        },
+        onDismiss = onDismiss,
+    )
+}
+
+@Composable
+private fun SoraSettingsDialog(
+    provider: ContentProvider,
+    onDismiss: () -> Unit,
+) {
+    ExtensionPrefDialog(
+        title = I18n.t("%s settings").replace("%s", provider.config.name),
+        load = { (provider as? com.hikari.app.sora.SoraProvider)?.moduleSettings() ?: "[]" },
+        save = { key, raw -> (provider as? com.hikari.app.sora.SoraProvider)?.setModuleSetting(key, raw) },
+        onDismiss = onDismiss,
+    )
+}
+@Composable
 private fun ProviderInfoDialog(provider: ContentProvider, onDismiss: () -> Unit) {
     val kind = when (provider.config.type) {
         ProviderType.CS3 -> tr("CloudStream plugin")
@@ -7619,6 +7880,7 @@ private fun hasSettingsScreen(
     ProviderType.NUVIO -> true
     ProviderType.VEGA -> com.hikari.app.providers.vega.VegaPluginManager.hasSettings(p.config)
     ProviderType.ANIYOMI, ProviderType.MANGA -> true
+    ProviderType.ANYMEX, ProviderType.ANYMEX_MANGA, ProviderType.SORA -> true
     // Optimistic: until the manifest has been read for this addon, whether it
     // has a config page is unknown, and offering the gear is what lets the user
     // reach it (the tap loads the manifest and opens the page it declares).

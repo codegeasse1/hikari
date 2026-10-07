@@ -22,6 +22,7 @@ import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
@@ -204,6 +205,15 @@ object SoraRuntime {
                     var qjs: QuickJs? = null
                     try {
                         qjs = createEngine(deferred, inFlight)
+                        runCatching {
+                            val settingsJson = readModuleSettings(moduleFile).toString()
+                            qjs.evaluate<Any?>(
+                                "globalThis.__soraSettings = " + JSONObject.quote(settingsJson) + ";" +
+                                    "globalThis.getSetting = function (k, d) { try { var o = JSON.parse(globalThis.__soraSettings || '{}'); var v = o[k]; return (v === undefined || v === null) ? d : v; } catch (e) { return d; } };",
+                                "sora-settings.js",
+                                false,
+                            )
+                        }
                         qjs.evaluateCached(
                             "sora/v2/$providerId/${source.hashCode()}",
                             source,
@@ -280,6 +290,112 @@ object SoraRuntime {
      * entry points. Starts with "OK"; "NO" means "not a Sora module";
      * "ERR:…" carries a detail message.
      */
+    suspend fun moduleSettings(moduleFile: File): String = withContext(Dispatchers.Default) {
+        if (!moduleFile.exists()) return@withContext "[]"
+        val source = runCatching { moduleFile.readText() }.getOrNull()
+        if (source.isNullOrBlank()) return@withContext "[]"
+        var qjs: QuickJs? = null
+        try {
+            val deferred = CompletableDeferred<String>()
+            qjs = createEngine(deferred, AtomicInteger(0))
+            qjs.evaluationTimeoutMillis = VALIDATE_TIMEOUT_MS
+            qjs.evaluate<Any?>(source, "sora-settings-src.js", false)
+            val raw = qjs.evaluate<Any?>(
+                "(function () {" +
+                    " try {" +
+                    "  if (typeof globalThis.getSettings === 'function') return JSON.stringify(globalThis.getSettings() || []);" +
+                    "  if (globalThis.settings && typeof globalThis.settings === 'object') return JSON.stringify(globalThis.settings);" +
+                    "  return '[]';" +
+                    " } catch (e) { return '[]'; } })();",
+                "sora-settings-list.js",
+                false,
+            )?.toString() ?: "[]"
+            normalizeSettings(raw, moduleFile)
+        } catch (e: Throwable) {
+            "[]"
+        } finally {
+            runCatching { qjs?.close() }
+        }
+    }
+
+    private fun normalizeSettings(raw: String, moduleFile: File): String {
+        val stored = readModuleSettings(moduleFile)
+        val arr = runCatching { JSONArray(raw) }.getOrNull()
+        if (arr != null) {
+            val out = JSONArray()
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                val key = o.optString("key").trim()
+                if (key.isEmpty()) continue
+                val d = JSONObject(o.toString())
+                if (d.optString("type").isBlank()) d.put("type", "edit_text")
+                applyStored(d, key, stored)
+                out.put(d)
+            }
+            return out.toString()
+        }
+        val obj = runCatching { JSONObject(raw) }.getOrNull() ?: return "[]"
+        val out = JSONArray()
+        val keyIter = obj.keys()
+        while (keyIter.hasNext()) {
+            val key = keyIter.next()
+            val v = obj.opt(key) ?: continue
+            val d = if (v is JSONObject) JSONObject(v.toString()) else JSONObject()
+            d.put("key", key)
+            if (d.optString("type").isBlank()) d.put("type", when (v) {
+                is Boolean -> "switch"
+                is JSONArray -> "multi_select"
+                else -> "edit_text"
+            })
+            applyStored(d, key, stored)
+            out.put(d)
+        }
+        out.toString()
+    }
+
+    private fun applyStored(d: JSONObject, key: String, stored: JSONObject) {
+        if (!stored.has(key)) return
+        when (d.optString("type")) {
+            "switch", "checkBox" -> d.put("value", stored.optBoolean(key, d.optBoolean("value", false)))
+            "multi_select" -> d.put("values", stored.optJSONArray(key) ?: d.optJSONArray("values") ?: JSONArray())
+            else -> d.put("value", stored.optString(key, d.optString("value")))
+        }
+    }
+
+    fun readModuleSettings(moduleFile: File): JSONObject = runCatching {
+        JSONObject(File(moduleFile.parentFile, "kv.json").takeIf { it.exists() }?.readText() ?: "{}")
+    }.getOrDefault(JSONObject())
+
+    fun setModuleSetting(moduleFile: File, key: String, rawJson: String) {
+        if (key.isBlank()) return
+        val file = File(moduleFile.parentFile, "kv.json")
+        val obj = readModuleSettings(moduleFile)
+        runCatching {
+            if (rawJson.isEmpty()) obj.remove(key)
+            else obj.put(key, org.json.JSONTokener(rawJson).nextValue())
+        }
+        runCatching {
+            file.parentFile?.mkdirs()
+            file.writeText(obj.toString())
+        }
+    }
+
+    fun warm(moduleFile: File, providerId: String) {
+        val src = runCatching { moduleFile.takeIf { it.exists() }?.readText() }.getOrNull()
+        if (src.isNullOrBlank()) return
+        val key = "sora/v2/" + providerId + "/" + src.hashCode()
+        if (bytecodeCache.containsKey(key)) return
+        runCatching {
+            val qjs = QuickJs.create(jobDispatcher = Dispatchers.Default)
+            try {
+                qjs.evaluationTimeoutMillis = VALIDATE_TIMEOUT_MS
+                runCatching { qjs.compile(src, key, false) }.getOrNull()?.also { bytecodeCache[key] = it }
+            } finally {
+                runCatching { qjs.close() }
+            }
+        }
+    }
+
     suspend fun validate(context: Context, source: String): String =
         withContext(Dispatchers.Default) {
             var qjs: QuickJs? = null

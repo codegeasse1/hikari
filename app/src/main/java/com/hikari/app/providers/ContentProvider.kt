@@ -83,7 +83,9 @@ interface ContentProvider {
      */
     suspend fun homeCatalogs(): List<CatalogRef> = catalogs()
 
-    suspend fun getCatalog(ref: CatalogRef, page: Int): List<MediaItem>
+    suspend fun warmDetail(item: MediaItem) {}
+
+        suspend fun getCatalog(ref: CatalogRef, page: Int): List<MediaItem>
     suspend fun search(query: String, page: Int): List<MediaItem>
     suspend fun getMeta(item: MediaItem): MediaItem
     suspend fun getEpisodes(item: MediaItem): List<Episode>?

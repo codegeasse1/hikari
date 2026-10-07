@@ -45,6 +45,14 @@ class SoraProvider(override val config: ProviderConfig) : ContentProvider {
         private const val MAX_STREAMS = 60
     }
 
+    suspend fun moduleSettings(): String {
+        if (!moduleFile.exists()) return "[]"
+        return SoraRuntime.moduleSettings(moduleFile)
+    }
+    fun setModuleSetting(key: String, rawJson: String) {
+        if (!moduleFile.exists()) return
+        SoraRuntime.setModuleSetting(moduleFile, key, rawJson)
+    }
     private val moduleFile: File get() = File(config.url)
 
     // Sora modules only export searchResults — no dedicated home endpoint.
@@ -158,6 +166,10 @@ class SoraProvider(override val config: ProviderConfig) : ContentProvider {
         return out
     }
 
+    override suspend fun warmDetail(item: MediaItem) {
+        if (!moduleFile.exists()) return
+        SoraRuntime.warm(moduleFile, config.id)
+    }
     override suspend fun getMeta(item: MediaItem): MediaItem = withContext(Dispatchers.IO) {
         if (item.id.isBlank() || !moduleFile.exists()) return@withContext item
         val payload = SoraRuntime.details(moduleFile, config.id, item.id)

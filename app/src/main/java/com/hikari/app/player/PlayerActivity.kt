@@ -6168,8 +6168,10 @@ class PlayerActivity : ComponentActivity() {
         applyLiveEpisode(ep)
         autoplayRunning = fromAutoplay
         var cancelled = false
+        var settled = false
         var dialog: Dialog? = null
         fun dismissDialog() {
+            settled = true
             dialog?.let { runCatching { it.dismiss() } }
             dialog = null
         }
@@ -6180,7 +6182,7 @@ class PlayerActivity : ComponentActivity() {
             // never flashes a dialog at all.
             lifecycleScope.launch {
                 delay(1500)
-                if (gen == episodeSwitchGen && !cancelled && dialog == null && !isFinishing && !isDestroyed) {
+                if (gen == episodeSwitchGen && !cancelled && !settled && dialog == null && !isFinishing && !isDestroyed) {
                     dialog = showGlassProgress(
                         "Loading episode",
                         "Finding servers for this episode…",

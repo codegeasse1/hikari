@@ -552,6 +552,123 @@ object AnymexRuntime {
         return null
     }
 
+    suspend fun preferenceDefs(moduleFile: File): String = withContext(Dispatchers.Default) {
+        val schema = runCatching { JSONArray(sourcePreferences(moduleFile)) }.getOrNull() ?: JSONArray()
+        val stored = runCatching {
+            JSONObject(File(moduleFile.parentFile, "kv.json").takeIf { it.exists() }?.readText() ?: "{}")
+        }.getOrDefault(JSONObject())
+        val out = JSONArray()
+        for (i in 0 until schema.length()) {
+            val o = schema.optJSONObject(i) ?: continue
+            val key = o.optString("key").trim()
+            if (key.isEmpty() || key == "__prefsSeeded") continue
+            val d = JSONObject()
+            d.put("key", key)
+            var type = ""
+            var title = o.optString("title")
+            var summary = o.optString("summary")
+            o.optJSONObject("checkBoxPreference")?.let { sub ->
+                type = "checkBox"
+                if (title.isBlank()) title = sub.optString("title")
+                if (summary.isBlank()) summary = sub.optString("summary")
+                d.put("value", stored.optBoolean(key, sub.optBoolean("default", sub.optBoolean("value", false))))
+            }
+            o.optJSONObject("switchPreferenceCompat")?.let { sub ->
+                if (type.isEmpty()) type = "switch"
+                if (title.isBlank()) title = sub.optString("title")
+                if (summary.isBlank()) summary = sub.optString("summary")
+                if (!d.has("value")) d.put("value", stored.optBoolean(key, sub.optBoolean("default", sub.optBoolean("value", false))))
+            }
+            o.optJSONObject("listPreference")?.let { sub ->
+                type = "list"
+                if (title.isBlank()) title = sub.optString("title")
+                if (summary.isBlank()) summary = sub.optString("summary")
+                val entries = sub.optJSONArray("entries") ?: JSONArray()
+                val values = sub.optJSONArray("entryValues") ?: JSONArray()
+                d.put("entries", entries)
+                d.put("entryValues", values)
+                var cur = if (stored.has(key)) stored.optString(key) else ""
+                if (cur.isEmpty()) {
+                    val idx = sub.optInt("valueIndex", 0).coerceIn(0, maxOf(0, values.length() - 1))
+                    cur = values.optString(idx)
+                }
+                d.put("value", cur)
+            }
+            o.optJSONObject("multiSelectListPreference")?.let { sub ->
+                type = "multi_select"
+                if (title.isBlank()) title = sub.optString("title")
+                if (summary.isBlank()) summary = sub.optString("summary")
+                d.put("entries", sub.optJSONArray("entries") ?: JSONArray())
+                d.put("entryValues", sub.optJSONArray("entryValues") ?: JSONArray())
+                d.put("values", stored.optJSONArray(key) ?: sub.optJSONArray("values") ?: JSONArray())
+            }
+            o.optJSONObject("editTextPreference")?.let { sub ->
+                if (type.isEmpty()) type = "edit_text"
+                if (title.isBlank()) title = sub.optString("title")
+                if (summary.isBlank()) summary = sub.optString("summary")
+                d.put("value", if (stored.has(key)) stored.optString(key) else sub.optString("defaultValue").ifBlank { sub.optString("value") })
+            }
+            if (type.isEmpty()) continue
+            d.put("type", type)
+            d.put("title", title)
+            d.put("summary", summary)
+            out.put(d)
+        }
+        out.toString()
+    }
+
+    fun setPreference(moduleFile: File, key: String, rawJson: String) {
+        if (key.isBlank() || key == "__prefsSeeded") return
+        val kv = Kv(File(moduleFile.parentFile, "kv.json"))
+        kv.set(key, rawJson)
+        kv.save()
+    }
+
+    suspend fun sourcePreferences(moduleFile: File): String = withContext(Dispatchers.Default) {
+        if (!moduleFile.exists()) return@withContext "[]"
+        val source = runCatching { moduleFile.readText() }.getOrNull()
+        if (source.isNullOrBlank()) return@withContext "[]"
+        var qjs: QuickJs? = null
+        try {
+            val deferred = CompletableDeferred<String>()
+            qjs = createEngine(deferred, Kv(File(moduleFile.parentFile, "kv.json")), AtomicInteger(0), hostMetaOf(moduleFile))
+            qjs.evaluationTimeoutMillis = VALIDATE_TIMEOUT_MS
+            qjs.evaluate<Any?>(source, "anymex-prefs-src.js", false)
+            qjs.evaluate<Any?>(
+                "(function () {" +
+                    " try {" +
+                    "  var ext = globalThis.__anymexExtGet && globalThis.__anymexExtGet();" +
+                    "  if (!ext || typeof ext.getSourcePreferences !== 'function') return '[]';" +
+                    "  var p = ext.getSourcePreferences();" +
+                    "  if (p && typeof p.then === 'function') return '[]';" +
+                    "  return JSON.stringify(p || []);" +
+                    " } catch (e) { return '[]'; } })();",
+                "anymex-prefs-list.js",
+                false,
+            )?.toString() ?: "[]"
+        } catch (e: Throwable) {
+            "[]"
+        } finally {
+            runCatching { qjs?.close() }
+        }
+    }
+
+    fun warm(moduleFile: File, providerId: String) {
+        val src = runCatching { moduleFile.takeIf { it.exists() }?.readText() }.getOrNull()
+        if (src.isNullOrBlank()) return
+        val key = "anymex/v2/" + providerId + "/" + src.hashCode()
+        if (bytecodeCache.containsKey(key)) return
+        runCatching {
+            val qjs = QuickJs.create(jobDispatcher = Dispatchers.Default)
+            try {
+                qjs.evaluationTimeoutMillis = VALIDATE_TIMEOUT_MS
+                runCatching { qjs.compile(src, key, false) }.getOrNull()?.also { bytecodeCache[key] = it }
+            } finally {
+                runCatching { qjs.close() }
+            }
+        }
+    }
+
     private suspend fun bridgeExtractAsync(url: String, quality: String): String {
         val u = url.trim()
         if (u.isEmpty()) return "[]"

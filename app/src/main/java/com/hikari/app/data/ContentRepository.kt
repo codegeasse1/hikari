@@ -29,6 +29,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
@@ -5710,6 +5711,9 @@ class ContentRepository(private val manager: ProviderManager) {
             }
         }
         val originProvider = manager.byId(item.providerId)
+        if (originProvider != null) {
+            runCatching { originProvider.warmDetail(item) }
+        }
         var result = originProvider
             ?.let {
                 withTimeoutOrNull(metaForTimeoutMs(it)) {
@@ -5730,7 +5734,23 @@ class ContentRepository(private val manager: ProviderManager) {
         else manager.providers.value.filter {
             it.config.enabled && it.config.id != item.providerId && it.config.type == ProviderType.STREMIO
         }
+        if (others.size > 1 && result.backdropUrl == null && result.overview == null) {
+            val raced = supervisorScope {
+                others.take(4).map { alt ->
+                    async(Dispatchers.IO) {
+                        withTimeoutOrNull(8_000) { cancellableCatching { alt.getMeta(result) }.getOrDefault(result) }
+                    }
+                }.awaitAll().filterNotNull()
+            }.firstOrNull { it.backdropUrl != null || it.overview != null }
+            if (raced != null) {
+                if (result.backdropUrl == null && raced.backdropUrl != null) result = result.copy(backdropUrl = raced.backdropUrl)
+                if (result.overview == null && raced.overview != null) result = result.copy(overview = raced.overview)
+                if (result.genres.isEmpty() && raced.genres.isNotEmpty()) result = result.copy(genres = raced.genres)
+                if (result.year == null && raced.year != null) result = result.copy(year = raced.year)
+            }
+        }
         for (alt in others) {
+            if (result.backdropUrl != null && result.overview != null) break
             val r = withTimeoutOrNull(8_000) { cancellableCatching { alt.getMeta(result) }.getOrDefault(result) }
                 ?: continue
             if (result.backdropUrl == null && r.backdropUrl != null) {
@@ -5843,6 +5863,62 @@ class ContentRepository(private val manager: ProviderManager) {
     /** A flat season=1 list cut into per-season local numbering per [layout], or
      *  null when the list does not match it (tolerance 20%). Provider episode ids
      *  are kept unchanged so playback links remain owned by the source. */
+    private val directTmdbCache = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, List<Episode>>>()
+
+    private suspend fun directTmdbEpisodes(item: MediaItem, tmdbId: Int): List<Episode>? {
+        val key = tmdbId.toString()
+        directTmdbCache[key]?.let { cached ->
+            if (System.currentTimeMillis() - cached.first < 30 * 60 * 1000L && cached.second.isNotEmpty()) return cached.second
+        }
+        val tv = com.hikari.app.nuvio.TmdbResolver.apiGet("/tv/" + tmdbId, emptyMap()) ?: return null
+        val seasons = tv.optJSONArray("seasons") ?: return null
+        val nums = (0 until seasons.length()).mapNotNull { i ->
+            val s = seasons.optJSONObject(i) ?: return@mapNotNull null
+            val n = s.optInt("season_number")
+            if (n > 0 && s.optInt("episode_count") > 0) n else null
+        }.take(24)
+        if (nums.isEmpty()) return null
+        val rows = coroutineScope {
+            nums.map { sn ->
+                async(Dispatchers.IO) {
+                    val sd = com.hikari.app.nuvio.TmdbResolver.apiGet("/tv/" + tmdbId + "/season/" + sn, emptyMap())
+                        ?: return@async emptyList<Episode>()
+                    val eps = sd.optJSONArray("episodes") ?: return@async emptyList<Episode>()
+                    buildList {
+                        for (i in 0 until eps.length()) {
+                            val e = eps.optJSONObject(i) ?: continue
+                            val en = e.optInt("episode_number")
+                            if (en <= 0) continue
+                            val still = e.optString("still_path").trim()
+                                .takeIf { it.isNotBlank() && it != "null" }
+                                ?.let { "https://image.tmdb.org/t/p/w500" + it }
+                            add(Episode(
+                                number = en,
+                                id = item.id + "#s" + sn + "e" + en,
+                                name = e.optString("name").trim().takeIf { it.isNotBlank() && it != "null" },
+                                image = still,
+                                season = sn,
+                                overview = e.optString("overview").trim().takeIf { it.isNotBlank() && it != "null" },
+                                released = e.optString("air_date").trim().take(10).takeIf { it.isNotBlank() },
+                                rating = e.optDouble("vote_average", 0.0).takeIf { it > 0.0 },
+                                runtime = e.optInt("runtime", -1).takeIf { it > 0 },
+                            ))
+                        }
+                    }
+                }
+            }.awaitAll().flatten()
+        }
+        if (rows.isEmpty()) return null
+        val out = rows.sortedWith(compareBy({ it.season }, { it.number }))
+        val past = out.filter { ep ->
+            val air = ep.released ?: return@filter true
+            air <= java.time.LocalDate.now().toString()
+        }
+        val final = (if (past.isNotEmpty()) past else out).sortedWith(compareBy({ it.season }, { it.number }))
+        directTmdbCache[key] = System.currentTimeMillis() to final
+        return final
+    }
+
     private fun splitFlatEpisodes(
         episodes: List<Episode>,
         layout: List<AnimeMetadataRepository.SeasonLayout>,
@@ -6010,6 +6086,28 @@ class ContentRepository(private val manager: ProviderManager) {
         val cachedEps = MetaCache.cachedEpisodes(epsKey)
         val cachedSeasoned = cachedEps?.let { restoreAnimeSeasons(item, it) }
         cachedSeasoned?.let { publish(it) }
+        // TMDB-id shortcut: any row that already carries a TMDB id (a Nuvio
+        // row, a remapped TMDB row, a cached one) reads its full episode list
+        // straight from TMDB by id — one parallel read, no scrape, no title
+        // search. This is exactly the Nuvio fast path, for every engine.
+        if (cachedSeasoned == null && (item.type == MediaType.SERIES || item.type == MediaType.UNKNOWN)) {
+            val tmdbId = item.id.trim().takeIf { it.isNotEmpty() && it.all { c -> c.isDigit() } }
+                ?: runCatching { com.hikari.app.nuvio.TmdbResolver.resolve(item) }.getOrNull()
+                    ?.takeIf { it.mediaType.equals("tv", true) }?.tmdbId?.toIntOrNull()?.takeIf { it > 0 }?.toString()
+            if (!tmdbId.isNullOrBlank() && tmdbId.all { c -> c.isDigit() }) {
+                val direct = runCatching {
+                    withTimeoutOrNull(6_000) {
+                        directTmdbEpisodes(item, tmdbId.toInt())
+                    }
+                }.getOrNull()
+                if (!direct.isNullOrEmpty()) {
+                    val sorted = direct.sortedWith(compareBy({ it.season }, { it.number }))
+                    val translated = publish(translateEpisodes(item.providerId, sorted))
+                    val named = withRealEpisodeNames(item, translated)
+                    return@withContext finishEpisodes(item, selKey, epsKey, named, publish)
+                }
+            }
+        }
         // Tracker anime ids belong to no Stremio addon: their meta answers
         // nothing and the TMDB-id fallback lists another show's episodes, so
         // tracker rows skip straight to the borrowed site list / tracker
@@ -6034,8 +6132,12 @@ class ContentRepository(private val manager: ProviderManager) {
         // ANY capable extension responds.
         if (item.type == MediaType.SERIES || item.type == MediaType.UNKNOWN) {
             val targets = ordered.distinctBy { it.config.id }.take(8)
-            val answers = coroutineScope {
-                targets.mapIndexed { index, p ->
+            val answers = supervisorScope {
+                // The origin's answer ends the fan-out instantly — no waiting
+                // for seven cold runtimes when the title's own extension
+                // already answered. Fallen back to the full wait only when the
+                // origin itself came back empty.
+                val jobs = targets.mapIndexed { index, p ->
                     async(Dispatchers.IO) {
                         val raw = withTimeoutOrNull(episodesForTimeoutMs(p)) {
                             cancellableCatching { p.getEpisodes(item) }.getOrNull().orEmpty()
@@ -6052,7 +6154,14 @@ class ContentRepository(private val manager: ProviderManager) {
                             null
                         }
                     }
-                }.awaitAll().filterNotNull()
+                }
+                val first = jobs.getOrNull(0)?.await()
+                if (first != null) {
+                    for ((i, j) in jobs.withIndex()) if (i != 0) j.cancel()
+                    listOf(first)
+                } else {
+                    jobs.awaitAll().filterNotNull()
+                }
             }
             if (answers.isNotEmpty()) {
                 val originIndex = answers.firstOrNull { it.first == 0 }

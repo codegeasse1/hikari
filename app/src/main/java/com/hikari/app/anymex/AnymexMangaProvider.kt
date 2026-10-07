@@ -27,6 +27,14 @@ class AnymexMangaProvider(override val config: ProviderConfig) : ContentProvider
         private const val MAX_CHAPTERS = 2000
     }
 
+    suspend fun preferenceDefs(): String {
+        val m = module() ?: return "[]"
+        return AnymexRuntime.preferenceDefs(m)
+    }
+    fun setPreference(key: String, rawJson: String) {
+        val m = module() ?: return
+        AnymexRuntime.setPreference(m, key, rawJson)
+    }
     private fun module(): File? {
         if (config.url.isBlank()) return null
         val f = File(config.url)
@@ -38,6 +46,10 @@ class AnymexMangaProvider(override val config: ProviderConfig) : ContentProvider
         CatalogRef(config.id, MediaType.SERIES, CATALOG_LATEST, "Latest"),
     )
 
+    override suspend fun warmDetail(item: MediaItem) {
+        val m = module() ?: return
+        com.hikari.app.anymex.AnymexRuntime.warm(m, config.id)
+    }
     override suspend fun getCatalog(ref: CatalogRef, page: Int): List<MediaItem> =
         withContext(Dispatchers.IO) {
             val p = page.coerceAtLeast(1)

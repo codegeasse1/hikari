@@ -1,3 +1,13 @@
+## 0.11.00
+
+Everything new and fixed since the last release (0.10.99):
+
+### Fixed
+
+- I fixed Anymex and Sora extensions having no settings — every extension row now shows a gear that opens that source's own settings (language, site URL, quality and the rest, read live from the extension itself like the AnymeX app), saved into the extension's own store so the source actually uses them; Sora modules get the same through their own settings probe plus a per-module value the script can read
+- I fixed the Finding servers box staying over a playing episode after switching from the player arrows — the switch now settles the moment playback starts so a late search can never raise the box over video
+- I fixed detail pages and catalogues taking seconds on Hikari, CloudStream and the rest while Nuvio loads instantly — the origin's episode answer now ends the fan-out immediately, any row with a TMDB id reads its full episode list straight from TMDB with no scrape, the Stremio fallback races instead of walking one by one, script engines precompile on detail open, and catalogues paint from cache first exactly like before
+
 ## 0.10.99
 
 Everything new and fixed since the last release (0.10.98):

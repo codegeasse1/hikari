@@ -41,6 +41,14 @@ class AnymexProvider(override val config: ProviderConfig) : ContentProvider {
     private data class AnymexFilterValue(val name: String, val value: String)
     private data class AnymexFilter(val type: String, val name: String, val values: List<AnymexFilterValue>)
 
+    suspend fun preferenceDefs(): String {
+        val m = module() ?: return "[]"
+        return AnymexRuntime.preferenceDefs(m)
+    }
+    fun setPreference(key: String, rawJson: String) {
+        val m = module() ?: return
+        AnymexRuntime.setPreference(m, key, rawJson)
+    }
     private fun module(): File? {
         if (config.url.isBlank()) return null
         val f = File(config.url)
@@ -251,6 +259,10 @@ class AnymexProvider(override val config: ProviderConfig) : ContentProvider {
             mapItems(raw)
         }
 
+    override suspend fun warmDetail(item: MediaItem) {
+        val mod = module() ?: return
+        com.hikari.app.anymex.AnymexRuntime.warm(mod, config.id)
+    }
     override suspend fun getMeta(item: MediaItem): MediaItem = withContext(Dispatchers.IO) {
         val mod = module() ?: return@withContext item
         val raw = AnymexRuntime.detail(mod, config.id, item.id) ?: return@withContext item
