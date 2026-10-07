@@ -33,6 +33,26 @@ object TrackerAnimeResolver {
         return item.rawType.contains("anime", true) || item.providerId.equals("anilist", true)
     }
 
+    /**
+     * Any row that came from a tracker library (AniList/Simkl/MAL/Kitsu/Shikimori/Trakt),
+     * whatever its shape: anime series, anime film, live-action film or series. Manga rows
+     * are excluded — they open in the reader, never on the video detail page, so tracker
+     * video enrichment must never touch them.
+     */
+    fun isTrackerRow(item: MediaItem): Boolean {
+        if (item.rawType.equals("manga", true)) return false
+        val p = item.providerId.lowercase()
+        return p in trackerProviders || p == "trakt"
+    }
+
+    /**
+     * A tracker row whose header is worth filling on the video detail page: tracker anime
+     * series (see [isTrackerAnime]) plus tracker films, which otherwise show no overview
+     * at all because the anime-only detail lookup refuses them.
+     */
+    fun needsTrackerDetail(item: MediaItem): Boolean =
+        isTrackerAnime(item) || (isTrackerRow(item) && item.type == MediaType.MOVIE)
+
     suspend fun fallbackEpisodes(item: MediaItem): List<Episode>? = withContext(Dispatchers.IO) {
         if (!isTrackerAnime(item)) return@withContext null
         val count = episodeCount(item) ?: return@withContext null
@@ -73,6 +93,13 @@ object TrackerAnimeResolver {
     }
 
     suspend fun detail(item: MediaItem): Detail? = withContext(Dispatchers.IO) {
+        // Tracker films carry no anime record: their overview/genres/year/rating come
+        // from the TMDB film entry the exact Simkl mapping (or an exact title resolve)
+        // names, so a saved film reads like any other source's film.
+        if (item.type == MediaType.MOVIE && isTrackerRow(item)) {
+            return@withContext runCatching { tmdbMovieDetail(item) }.getOrNull()
+                ?: runCatching { anilistSearchDetail(item.searchTitle) }.getOrNull()
+        }
         if (!isTrackerAnime(item)) return@withContext null
         if (item.providerId.equals("anilist", true)) {
             runCatching { anilistDetail(item) }.getOrNull()?.let { return@withContext it }
@@ -170,7 +197,9 @@ object TrackerAnimeResolver {
 
     private suspend fun tmdbMaps(item: MediaItem, want: Set<Int>, show: AnilistShow?): TmdbMaps? {
         val tmdbId = trackerTmdbId(item, show) ?: return null
-        val tv = TmdbResolver.apiGet("/tv/" + tmdbId, emptyMap()) ?: return null
+        // A film id (anime films, tracker movies-as-series) has no /tv entry: its one
+        // row is enriched from the /movie entry instead of per-episode /tv seasons.
+        val tv = TmdbResolver.apiGet("/tv/" + tmdbId, emptyMap()) ?: return tmdbMovieMaps(item, tmdbId)
         val seasonsArr = tv.optJSONArray("seasons")
         val tmdbSeasons = (0 until (seasonsArr?.length() ?: 0)).mapNotNull { i ->
             val s = seasonsArr?.optJSONObject(i)
@@ -189,12 +218,80 @@ object TrackerAnimeResolver {
                 return TmdbMaps(names, details, 0)
             }
         }
-        val offset = prequelOffset(show) ?: return null
+        // Without an AniList record there is no prequel chain to offset by: the list is
+        // read season-local (offset 0), which is exactly right for the common single-season
+        // case. (Requiring the chain used to drop ALL TMDB enrichment whenever the show
+        // lookup missed, leaving bare "Episode N" rows.)
+        val offset = if (show == null) 0 else prequelOffset(show) ?: return null
         val abs = want.map { it + offset }.toSet()
         val names = runCatching { EpisodeTitles.lookupForId(tmdbId, abs, null) }.getOrNull()
         val details = runCatching { EpisodeTitles.detailsForId(tmdbId, abs, null) }.getOrNull().orEmpty()
         if ((names == null || names.isEmpty()) && details.isEmpty()) return null
         return TmdbMaps(names, details, offset)
+    }
+
+    /**
+     * A tracker film's header from its TMDB film entry. Only a "movie"-namespace id is
+     * ever read — a tv id here would wear another entry's details.
+     */
+    private suspend fun tmdbMovieDetail(item: MediaItem): Detail? {
+        val id = runCatching { trackerTmdbId(item, null) }.getOrNull()
+            ?.takeIf { it.mediaType.equals("movie", true) }?.tmdbId?.toIntOrNull()?.takeIf { it > 0 }
+            ?: runCatching { TmdbResolver.resolve(item) }.getOrNull()
+                ?.takeIf { it.mediaType.equals("movie", true) }?.tmdbId?.toIntOrNull()?.takeIf { it > 0 }
+            ?: return null
+        val obj = TmdbResolver.apiGet("/movie/$id", emptyMap()) ?: return null
+        return parseTmdbDetail(obj)
+    }
+
+    private fun parseTmdbDetail(obj: JSONObject): Detail? {
+        val overview = obj.optString("overview").trim().takeIf { it.isNotBlank() && it != "null" }
+        val genres = (0 until (obj.optJSONArray("genres")?.length() ?: 0)).mapNotNull { i ->
+            obj.optJSONArray("genres")?.optJSONObject(i)?.optString("name")?.trim()?.takeIf { it.isNotBlank() }
+        }
+        val year = obj.optString("release_date").ifBlank { obj.optString("first_air_date") }.take(4).toIntOrNull()
+        val rating = obj.optDouble("vote_average", 0.0).takeIf { it > 0.0 }
+        fun img(raw: String?): String? {
+            val p = raw?.trim().orEmpty()
+            if (p.isBlank() || p == "null") return null
+            if (p.startsWith("http")) return p
+            return "https://image.tmdb.org/t/p/w500" + (if (p.startsWith("/")) p else "/$p")
+        }
+        val poster = img(obj.optString("poster_path"))
+        val backdrop = img(obj.optString("backdrop_path"))
+        if (overview == null && genres.isEmpty() && year == null && rating == null) return null
+        return Detail(overview, genres, year, poster, backdrop, rating)
+    }
+
+    /**
+     * A film id's one-row enrichment (see [tmdbMaps]): the film's title names the single
+     * "Episode 1" row and its overview/date/rating/runtime/poster fill the row's blanks.
+     * The title is accepted only on a name match (the same 55+ gate as every AniList
+     * lookup), so a wrong-namespace id can never repaint the row.
+     */
+    private suspend fun tmdbMovieMaps(item: MediaItem, tmdbId: Int): TmdbMaps? {
+        val movie = TmdbResolver.apiGet("/movie/$tmdbId", emptyMap()) ?: return null
+        if (!movie.has("id")) return null
+        val title = movie.optString("title").ifBlank { movie.optString("original_title") }.trim()
+            .takeIf { it.isNotBlank() && it != "null" } ?: return null
+        val match = maxOf(
+            AnimeMetadataRepository.matchAliases(item.searchTitle, setOf(title)),
+            AnimeMetadataRepository.matchAliases(item.title, setOf(title)),
+            TmdbMeta.titleScore(item.searchTitle, title),
+        )
+        if (match < 55) return null
+        val poster = movie.optString("poster_path").trim().takeIf { it.isNotBlank() && it != "null" }
+            ?.let { "https://image.tmdb.org/t/p/w500" + (if (it.startsWith("/")) it else "/$it") }
+        val detail = EpisodeTitles.EpDetail(
+            season = 1,
+            number = 1,
+            overview = movie.optString("overview").trim().takeIf { it.isNotBlank() && it != "null" },
+            released = movie.optString("release_date").trim().take(10).takeIf { it.isNotBlank() },
+            rating = movie.optDouble("vote_average", 0.0).takeIf { it > 0.0 },
+            runtime = movie.optInt("runtime", 0).takeIf { it > 0 },
+            image = poster,
+        )
+        return TmdbMaps(EpisodeTitles.Names(mapOf(1 to title), emptyMap()), mapOf(1 to detail), 0)
     }
 
     private suspend fun trackerTmdbId(item: MediaItem, show: AnilistShow?): Int? {
@@ -558,6 +655,20 @@ object TrackerAnimeResolver {
                 val id = item.id.toIntOrNull() ?: return null
                 val raw = Http.getStringQuiet("https://api.jikan.moe/v4/anime/" + id) ?: return null
                 JSONObject(raw).optJSONObject("data")?.optInt("episodes", 0)?.takeIf { it > 0 }
+            }
+            "kitsu" -> {
+                val id = item.id.toIntOrNull() ?: return null
+                val raw = Http.getStringQuiet("https://kitsu.io/api/edge/anime/" + id + "?fields%5Banime%5D=episodeCount") ?: return null
+                runCatching { JSONObject(raw).optJSONObject("data")?.optJSONObject("attributes") }
+                    .getOrNull()?.optInt("episodeCount", 0)?.takeIf { it > 0 }
+            }
+            "shikimori" -> {
+                val id = item.id.toIntOrNull() ?: return null
+                val raw = Http.getStringQuiet("https://shikimori.one/api/animes/" + id) ?: return null
+                runCatching { JSONObject(raw) }.getOrNull()?.let { o ->
+                    o.optInt("episodes", 0).takeIf { it > 0 }
+                        ?: o.optInt("episodes_aired", 0).takeIf { it > 0 }
+                }
             }
             else -> null
         }

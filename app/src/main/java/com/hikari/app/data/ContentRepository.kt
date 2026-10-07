@@ -5765,8 +5765,9 @@ class ContentRepository(private val manager: ProviderManager) {
         // be reached by title search — and for anime Simkl's own records are the
         // correct ones (TMDB's anime coverage misfires on donghua and sequel
         // seasons). Fill what the origin left bare from Simkl first; the rating
-        // pass below still applies on top.
-        if (TrackerAnimeResolver.isTrackerAnime(result) && (result.overview.isNullOrBlank() || result.genres.isEmpty())) {
+        // pass below still applies on top. Tracker films take the same exit through
+        // TrackerAnimeResolver.detail, which reads their TMDB film entry.
+        if (TrackerAnimeResolver.needsTrackerDetail(result) && (result.overview.isNullOrBlank() || result.genres.isEmpty())) {
             runCatching { TrackerAnimeResolver.detail(result) }.getOrNull()?.let { d ->
                 if (result.overview.isNullOrBlank() && !d.overview.isNullOrBlank()) result = result.copy(overview = d.overview)
                 if (result.genres.isEmpty() && d.genres.isNotEmpty()) result = result.copy(genres = d.genres)

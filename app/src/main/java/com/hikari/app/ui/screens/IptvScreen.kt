@@ -187,12 +187,38 @@ fun IptvScreen(nav: NavHostController) {
                     addFileLabel = ""
                     addFilePath = ""
                     if (playAfter && wasStream) {
-                        val id = app.store.providers().firstOrNull { p ->
+                        val saved = app.store.providers().firstOrNull { p ->
                             p.type == com.hikari.app.data.ProviderType.IPTV &&
                                 (p.url == link || p.extra == link)
-                        }?.id
-                        if (id != null) {
-                            Routes.safeNavigate(nav, Routes.iptvPlaylist(id))
+                        }
+                        if (saved != null) {
+                            // Play means the detail page now, not the folder list: a
+                            // network stream is one file and opens straight on Play.
+                            if (NetworkStream.isTorrentLink(saved.url)) {
+                                Routes.safeNavigate(
+                                    nav,
+                                    Routes.catalog(
+                                        providerId = saved.id,
+                                        catalogId = IptvProvider.CATALOG_ALL,
+                                        title = saved.name,
+                                        providerName = saved.name,
+                                        type = MediaType.MOVIE,
+                                        rawType = "torrent",
+                                    ),
+                                )
+                            } else {
+                                Routes.safeNavigate(
+                                    nav,
+                                    Routes.detail(
+                                        providerId = saved.id,
+                                        type = MediaType.MOVIE,
+                                        mediaId = saved.url,
+                                        title = saved.name,
+                                        posterUrl = null,
+                                        rawType = "stream",
+                                    ),
+                                )
+                            }
                         }
                     }
                 },
@@ -361,6 +387,21 @@ fun IptvScreen(nav: NavHostController) {
                                     rawType = "torrent",
                                 ),
                             )
+                        } else if (card.stream && !card.torrent) {
+                            // A network stream is one file, not a channel list: it opens
+                            // straight on its detail page (Play), with no All-channels /
+                            // Ungrouped folders in between — and plays as VOD, not live.
+                            Routes.safeNavigate(
+                                nav,
+                                Routes.detail(
+                                    providerId = card.id,
+                                    type = MediaType.MOVIE,
+                                    mediaId = card.url,
+                                    title = card.name,
+                                    posterUrl = card.cover,
+                                    rawType = "stream",
+                                ),
+                            )
                         } else {
                             Routes.safeNavigate(nav, Routes.iptvPlaylist(card.id))
                         }
@@ -416,9 +457,11 @@ fun IptvScreen(nav: NavHostController) {
                             )
                         } else {
                             tr(
-                                "Paste an M3U/M3U8 link — an Xtream panel's " +
-                                    "get.php?username=…&password=…&type=m3u_plus link works, and so " +
-                                    "does a single m3u8 stream. Or pick a playlist file from storage."
+                                "Paste an M3U playlist link — an Xtream panel's " +
+                                    "get.php?username=…&password=…&type=m3u_plus link works. " +
+                                    "Or pick a playlist file from storage. A single video " +
+                                    "link (m3u8, mp4, and friends) is not a playlist — add it with " +
+                                    "Network stream instead so it plays directly."
                             )
                         },
                         style = MaterialTheme.typography.bodySmall,
@@ -610,6 +653,15 @@ private suspend fun addIptvPlaylist(
     if (url.isBlank()) {
         return@withContext Result.failure(
             Exception(I18n.t("Paste an M3U/M3U8 link, or pick a playlist file")),
+        )
+    }
+    // A single video/stream address is not a playlist: downloading it here would fetch
+    // video bytes as playlist text, and saving it would list it as a one-channel
+    // IPTV folder (All channels into Ungrouped) that plays as live TV. Network stream
+    // mode is the path that resolves such a link at play time and plays it as a file.
+    if (localPath.isNullOrBlank() && NetworkStream.isDirectMediaLink(url)) {
+        return@withContext Result.failure(
+            Exception(I18n.t("That looks like a single video link, not a playlist — add it with Network stream instead")),
         )
     }
     val count = IptvProvider.preview(url).getOrElse {
@@ -905,6 +957,9 @@ fun IptvPlaylistScreen(nav: NavHostController, providerId: String) {
 private data class IptvCard(
     val id: String,
     val name: String,
+    /** The playlist/stream link itself: a network stream opens straight on its
+     *  detail page, which plays this URL (no folders in between). */
+    val url: String = "",
     val channels: Int,
     val groups: Int,
     val cover: String?,
@@ -936,6 +991,7 @@ private suspend fun readCard(p: IptvProvider): IptvCard {
     return IptvCard(
         id = p.config.id,
         name = p.displayName,
+        url = p.config.url,
         channels = list.size,
         groups = list.map { IptvPlaylist.groupOf(it) }.distinct().size,
         // The first channel that really has a logo: a playlist tile wearing one

@@ -49,13 +49,16 @@ object IptvArt {
      * it from its own worker.
      *
      * Keyed by the channel's NAME and group, so the same channel in two playlists
-     * (or the same name in a group and in "All channels") reuses one file.
+     * (or the same name in a group and in "All channels") reuses one file. [live]
+     * decides the corner marker: a live channel wears LIVE, while a saved network
+     * stream — one file, played as VOD — must not (it is keyed apart so the two
+     * never share a file).
      */
-    fun tile(item: MediaItem): String? {
+    fun tile(item: MediaItem, live: Boolean = true): String? {
         val name = item.title.trim()
         if (name.isEmpty()) return null
         val group = item.overview.orEmpty().trim()
-        val key = fnv1a(name.lowercase() + "|" + group.lowercase())
+        val key = fnv1a(name.lowercase() + "|" + group.lowercase() + if (live) "|live" else "|vod")
         urls[key]?.let { return it }
         synchronized(lock) {
             urls[key]?.let { return it }
@@ -64,7 +67,7 @@ object IptvArt {
             }.getOrNull() ?: return null
             val file = File(dir, "$key.png")
             if (!file.exists() || file.length() == 0L) {
-                val bmp = runCatching { draw(name, group) }.getOrNull() ?: return null
+                val bmp = runCatching { draw(name, group, live) }.getOrNull() ?: return null
                 val wrote = runCatching {
                     file.outputStream().use { out -> bmp.compress(Bitmap.CompressFormat.PNG, 92, out) }
                 }.getOrDefault(false)
@@ -79,7 +82,7 @@ object IptvArt {
 
     // ------------------------------------------------------------------ drawing --
 
-    private fun draw(name: String, group: String): Bitmap {
+    private fun draw(name: String, group: String, live: Boolean): Bitmap {
         val bmp = Bitmap.createBitmap(W, H, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bmp)
         val hue = ((fnv1a(name.lowercase()) and 0x7FFFFFFF) % 360).toFloat()
@@ -138,7 +141,9 @@ object IptvArt {
             paint.alpha = 255
         }
 
-        // A LIVE marker, the way an IPTV app labels a channel.
+        // A LIVE marker, the way an IPTV app labels a channel. Saved network
+        // streams skip it: they are files, not live channels.
+        if (live) {
         val label = "LIVE"
         paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
         paint.textSize = W * 0.048f
@@ -160,6 +165,7 @@ object IptvArt {
             pill.centerY() + paint.textSize * 0.36f,
             paint,
         )
+        }
         return bmp
     }
 

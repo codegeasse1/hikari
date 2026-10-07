@@ -293,6 +293,13 @@ class IptvProvider(override val config: ProviderConfig) : ContentProvider {
             out += CatalogRef(config.id, MediaType.MOVIE, ALL, all.first().name, "torrent")
             return out
         }
+        // A NETWORK STREAM is one file, not a channel list either: a single shelf named
+        // after the stream — never an "All channels" shelf plus an "Ungrouped" tile
+        // (see [com.hikari.app.data.NetworkStream]).
+        if (com.hikari.app.data.NetworkStream.isStream(config)) {
+            out += CatalogRef(config.id, MediaType.MOVIE, ALL, all.first().name, "stream")
+            return out
+        }
         out += CatalogRef(config.id, MediaType.MOVIE, ALL, "All channels", "channel")
         val groups = all.groupBy { IptvPlaylist.groupOf(it) }
             .entries
@@ -406,8 +413,13 @@ class IptvProvider(override val config: ProviderConfig) : ContentProvider {
         posterUrl = c.logo,
         overview = IptvPlaylist.groupOf(c).takeIf { it != "Ungrouped" },
         // "torrent" keeps saved magnets out of the live-channel treatment
-        // (LIVE tile, live playback) — see Artwork and PlayerActivity.
-        rawType = if (com.hikari.app.data.NetworkStream.isTorrentLink(c.url)) "torrent" else "channel",
+        // (LIVE tile, live playback) — see Artwork and PlayerActivity. "stream"
+        // does the same for network streams: one file, played as VOD.
+        rawType = when {
+            com.hikari.app.data.NetworkStream.isTorrentLink(c.url) -> "torrent"
+            com.hikari.app.data.NetworkStream.isStream(config) -> "stream"
+            else -> "channel"
+        },
     )
 
     /** Re-reads the playlist on the next call. */

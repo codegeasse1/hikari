@@ -87,6 +87,30 @@ object NetworkStream {
     fun isTorrentConfig(config: ProviderConfig): Boolean =
         config.type == ProviderType.IPTV && isTorrentLink(config.url)
 
+    /**
+     * True when [url] is a single playable file/stream address (a direct m3u8, mp4/mkv,
+     * and friends) rather than a playlist of channels.
+     *
+     * The m3u extension is deliberately NOT on this list: it is the playlist format IPTV
+     * panels speak, while m3u8/media extensions name one stream. The playlist-adding flows
+     * refuse these so a lone video link can never become a one-channel
+     * All-channels/Ungrouped folder that plays as live TV — Network stream mode
+     * is the path that resolves and plays them as the files they are.
+     */
+    fun isDirectMediaLink(url: String): Boolean {
+        val u = url.trim()
+        if (isTorrentLink(u)) return false
+        if (!u.startsWith("http://") && !u.startsWith("https://")) return false
+        val path = u.lowercase().substringBefore('?').substringBefore('#')
+        return DIRECT_MEDIA_EXTENSIONS.any { path.endsWith(it) }
+    }
+
+    private val DIRECT_MEDIA_EXTENSIONS = listOf(
+        ".m3u8", ".mp4", ".mkv", ".ts", ".webm", ".mpd",
+        ".m4v", ".mov", ".avi", ".flv", ".mp3", ".m4a", ".aac",
+        ".wmv", ".mpg", ".mpeg",
+    )
+
     private val MEDIA_EXTENSIONS = listOf(
         ".m3u8", ".m3u", ".mp4", ".mkv", ".ts", ".webm", ".mpd",
         ".m4v", ".mov", ".avi", ".flv", ".mp3", ".m4a", ".aac",

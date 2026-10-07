@@ -866,6 +866,15 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 Exception("Paste an M3U/M3U8 link, or pick a playlist file"),
             )
         }
+        // A single video/stream address is not a playlist (same rule as the IPTV tab's
+        // own add flow): it would download video bytes as playlist text and become a
+        // one-channel IPTV folder that plays as live TV. Those links belong in the
+        // IPTV tab's Network stream mode, which resolves and plays them as files.
+        if (localPath.isNullOrBlank() && com.hikari.app.data.NetworkStream.isDirectMediaLink(url)) {
+            return@withContext Result.failure(
+                Exception("That looks like a single video link, not a playlist — add it from the IPTV tab with Network stream instead"),
+            )
+        }
         val count = com.hikari.app.providers.IptvProvider.preview(url).getOrElse {
             return@withContext Result.failure(
                 Exception(it.message ?: "Could not read that playlist"),
@@ -4002,9 +4011,11 @@ fun ExtensionsScreen(nav: NavHostController? = null) {
                     if (!LocalHideHelp.current) {
                     Text(
                         tr(
-                            "Paste an M3U/M3U8 link — an Xtream panel's " +
-                                "get.php?username=…&password=…&type=m3u_plus link works, and so " +
-                                "does a single m3u8 stream. Or pick a playlist file from storage."
+                            "Paste an M3U playlist link — an Xtream panel's " +
+                                "get.php?username=…&password=…&type=m3u_plus link works. " +
+                                "Or pick a playlist file from storage. A single video " +
+                                "link (m3u8, mp4, and friends) is not a playlist — add it from " +
+                                "the IPTV tab with Network stream so it plays directly."
                         ),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,

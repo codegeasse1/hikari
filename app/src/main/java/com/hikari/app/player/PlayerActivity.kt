@@ -10184,7 +10184,9 @@ class PlayerActivity : ComponentActivity() {
      *
      * Two answers, because either one alone misses a case: an IPTV channel is
      * live by construction (its provider id is minted as `iptv|…` — see
-     * [com.hikari.app.data.IptvMark]), and a plain HLS link from any other
+     * [com.hikari.app.data.IptvMark]) — except a saved network stream, which is
+     * one file on an IPTV-type row and is answered by media3's live state below
+     * instead — and a plain HLS link from any other
      * provider can be a live channel too, which media3 knows from the timeline
      * ([Player.isCurrentMediaItemLive]) once the source is prepared. No playlist
      * sniffing, no URL guessing beyond the id the app itself minted.
@@ -10195,7 +10197,17 @@ class PlayerActivity : ComponentActivity() {
         // without this it plays as a live channel ("Reconnecting to the live
         // stream…") instead of going to the torrent engine.
         if (src.isTorrent) return false
-        if (src.providerId.startsWith(com.hikari.app.data.IptvMark.ID_PREFIX)) return true
+        if (src.providerId.startsWith(com.hikari.app.data.IptvMark.ID_PREFIX)) {
+            // A saved NETWORK STREAM rides on an IPTV-type row but is a file, not a live
+            // channel: forcing LIVE here gave it live-TV retries ("Reconnecting to the live
+            // stream…") and no seek bar. Let media3's own live state decide instead — a VOD
+            // link then plays as VOD, while a genuinely live HLS link still plays as live.
+            val netStream = runCatching {
+                val cfg = com.hikari.app.HikariApp.instance.providers.byId(src.providerId)?.config
+                cfg != null && com.hikari.app.data.NetworkStream.isStream(cfg)
+            }.getOrDefault(false)
+            if (!netStream) return true
+        }
         return runCatching { player?.isCurrentMediaItemLive == true }.getOrDefault(false)
     }
 

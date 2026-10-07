@@ -170,7 +170,9 @@ object Artwork {
                 // magnet named e.g. "Digger 2026" resolves real artwork
                 // instead of wearing a "MAG/LIVE" tile.
                 val res = if (IptvMark.of(item) && item.rawType != "torrent") {
-                    runCatching { IptvArt.tile(item)?.let { Pair<String?, String?>(it, null) } }
+                    // A saved network stream is a file, not a live channel: its local
+                    // tile skips the LIVE marker (see [IptvArt]).
+                    runCatching { IptvArt.tile(item, live = item.rawType != "stream")?.let { Pair<String?, String?>(it, null) } }
                         .getOrNull()
                 } else {
                     runCatching { runBlocking { TmdbMeta.artwork(item) } }.getOrNull()
