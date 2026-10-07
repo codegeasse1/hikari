@@ -1673,7 +1673,7 @@ fun DetailScreen(
     val tvDetailBig by tvDetailBigFlow.collectAsState(initial = isTvLayout)
     val tvEpisodeSizeFlow = remember { detailApp.store.tvEpisodeSizeFlow() }
     val tvEpisodeSize by tvEpisodeSizeFlow.collectAsState(initial = 100)
-    val tvEpisodeScale = if (isTvLayout) (tvEpisodeSize / 100f).coerceIn(0.8f, 1.6f) else 1f
+    val tvEpisodeScale = (tvEpisodeSize / 100f).coerceIn(0.8f, 1.6f)
     val heroStyle =
         // Big TV detail: SIDE puts poster left + info/episodes right (matches
         // the living-room layout users expect). TALL was full-width art only.
@@ -3630,6 +3630,7 @@ fun DetailScreen(
                                             onClick = { tryPlay(ep) },
                                             onDownload = { tryDownload(ep) },
                                             modifier = Modifier.width((150f * tvEpisodeScale).dp),
+                                            sizeScale = tvEpisodeScale,
                                         )
                                     }
                                 }
@@ -4014,7 +4015,8 @@ fun DetailScreen(
                                                 fallbackImage = m?.backdropUrl ?: m?.posterUrl ?: posterUrl,
                                                 onClick = { tryPlay(ep) },
                                                 onDownload = { tryDownload(ep) },
-                                                modifier = Modifier.width(160.dp),
+                                                modifier = Modifier.width((160f * tvEpisodeScale).dp),
+                                                sizeScale = tvEpisodeScale,
                                             )
                                         }
                                     }
@@ -4626,7 +4628,8 @@ fun DetailScreen(
                                                 fallbackImage = m?.backdropUrl ?: m?.posterUrl ?: posterUrl,
                                                 onClick = { tryPlay(ep) },
                                                 onDownload = { tryDownload(ep) },
-                                                modifier = Modifier.weight(1f)
+                                                modifier = Modifier.weight(1f),
+                                                sizeScale = tvEpisodeScale,
                                             )
                                         }
                                         repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
@@ -4641,6 +4644,7 @@ fun DetailScreen(
                                         fallbackImage = m?.backdropUrl ?: m?.posterUrl ?: posterUrl,
                                         onClick = { tryPlay(ep) },
                                         onDownload = { tryDownload(ep) },
+                                        sizeScale = tvEpisodeScale,
                                     )
                                 }
                             }
@@ -7376,7 +7380,9 @@ private fun EpisodePosterCard(
         Text(
             ep.name?.ifBlank { tr("Episode %s").replace("%s", ep.number.toString()) }
                 ?: tr("Episode %s").replace("%s", ep.number.toString()),
-            style = MaterialTheme.typography.labelMedium,
+            style = MaterialTheme.typography.labelMedium.copy(
+                fontSize = (MaterialTheme.typography.labelMedium.fontSize.value * s).sp
+            ),
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.padding(start = (2f * s).dp, top = (5f * s).dp, end = (2f * s).dp)
@@ -7388,7 +7394,9 @@ private fun EpisodePosterCard(
         if (showDescription && !ep.overview.isNullOrBlank()) {
             Text(
                 ep.overview!!.trim(),
-                style = MaterialTheme.typography.labelSmall,
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontSize = (MaterialTheme.typography.labelSmall.fontSize.value * s).sp
+                ),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 3,
                 overflow = TextOverflow.Ellipsis,
@@ -7466,7 +7474,9 @@ private fun EpisodeRow(
                     ep.name?.ifBlank { tr("Episode %s").replace("%s", ep.number.toString()) }
                         ?: tr("Episode %s").replace("%s", ep.number.toString())
                     ),
-                style = MaterialTheme.typography.bodyMedium,
+                style = MaterialTheme.typography.bodyMedium.copy(
+                    fontSize = (MaterialTheme.typography.bodyMedium.fontSize.value * s).sp
+                ),
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis
             )
@@ -7502,7 +7512,9 @@ private fun EpisodeRow(
             if (showDescription && !ep.overview.isNullOrBlank()) {
                 Text(
                     ep.overview!!.trim(),
-                    style = MaterialTheme.typography.bodySmall,
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        fontSize = (MaterialTheme.typography.bodySmall.fontSize.value * s).sp
+                    ),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 3,
                     overflow = TextOverflow.Ellipsis,

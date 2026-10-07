@@ -40,16 +40,36 @@ object TrackerAnimeResolver {
         List(count) { i -> Episode(number = i + 1, id = item.id + "#e" + (i + 1), name = "Episode " + (i + 1), season = 1) }
     }
 
-    suspend fun trackerEpisodes(item: MediaItem): List<Episode>? = withContext(Dispatchers.IO) {
+    suspend fun trackerEpisodes(item: MediaItem): List<Episode>? = trackerEpisodesStaged(item, null)
+
+    /** Staged tracker list: the numbered base list paints through [onBase]
+     *  the moment the count is known (a second or two), while the TMDB /
+     *  AniList / Jikan enrichment keeps running in the background for up to
+     *  10 seconds total and the enriched list is the return value. When the
+     *  databases never answer, the base list still stands — a series with
+     *  episodes never reads as "Episodes (0)". */
+    suspend fun trackerEpisodesStaged(item: MediaItem, onBase: (suspend (List<Episode>) -> Unit)? = null): List<Episode>? = withContext(Dispatchers.IO) {
         if (!isTrackerAnime(item)) return@withContext null
-        bangumiEpisodes(item)?.takeIf { it.size >= 3 }?.let { return@withContext enrichEpisodes(item, it) }
-        simklCountEpisodes(item)?.let { return@withContext enrichEpisodes(item, it) }
-        episodeCount(item)?.takeIf { it in 1..3000 }?.let { count ->
-            return@withContext enrichEpisodes(item, List(count) { i ->
-                Episode(number = i + 1, id = item.id + "#e" + (i + 1), name = "Episode " + (i + 1), season = 1)
-            })
-        }
-        null
+        val start = System.currentTimeMillis()
+        val showD = async { runCatching { anilistShowFor(item) }.getOrNull() }
+        val countD = async { runCatching { episodeCount(item) }.getOrNull() }
+        val simklD = async { runCatching { simklCountEpisodes(item) }.getOrNull() }
+        val show = withTimeoutOrNull(6_000) { showD.await() }
+        val count = withTimeoutOrNull(5_000) { countD.await() }
+            ?: show?.totalEp
+            ?: show?.nextEp?.minus(1)?.takeIf { it > 0 }
+        val simklBase = withTimeoutOrNull(6_000) { simklD.await() }?.takeIf { it.size >= 3 }
+        showD.cancel(); countD.cancel(); simklD.cancel()
+        val base = simklBase
+            ?: count?.takeIf { it in 1..3000 }?.let { n ->
+                List(n) { i -> Episode(number = i + 1, id = item.id + "#e" + (i + 1), name = "Episode " + (i + 1), season = 1) }
+            }
+        if (base.isNullOrEmpty()) return@withContext null
+        runCatching { onBase?.invoke(base) }
+        val remaining = 10_000 - (System.currentTimeMillis() - start)
+        if (remaining <= 0) return@withContext base
+        val enriched = withTimeoutOrNull(remaining) { enrichEpisodes(item, base) }
+        if (enriched != null && enriched.any { !EpisodeTitles.isGeneric(it.name) || !it.overview.isNullOrBlank() }) enriched else base
     }
 
     suspend fun detail(item: MediaItem): Detail? = withContext(Dispatchers.IO) {
@@ -77,6 +97,8 @@ object TrackerAnimeResolver {
         val english: String?,
         val streams: Map<Int, StreamEp>,
         val prequels: List<Prequel>,
+        val totalEp: Int?,
+        val nextEp: Int?,
     )
     private class TmdbMaps(val names: EpisodeTitles.Names?, val details: Map<Int, EpisodeTitles.EpDetail>, val offset: Int)
 
@@ -89,16 +111,16 @@ object TrackerAnimeResolver {
             supervisorScope {
                 val want = eps.map { it.number }.toSet()
                 val showD = async(Dispatchers.IO) {
-                    withTimeoutOrNull(12_000) { runCatching { anilistShowFor(item) }.getOrNull() }
+                    withTimeoutOrNull(8_000) { runCatching { anilistShowFor(item) }.getOrNull() }
                 }
                 val tmdbD = async(Dispatchers.IO) {
-                    withTimeoutOrNull(25_000) {
+                    withTimeoutOrNull(15_000) {
                         val show = showD.await()
                         runCatching { tmdbMaps(item, want, show) }.getOrNull()
                     }
                 }
                 val jikanD = async(Dispatchers.IO) {
-                    withTimeoutOrNull(20_000) {
+                    withTimeoutOrNull(15_000) {
                         runCatching { jikanMap(item, showD.await()) }.getOrNull().orEmpty()
                     }
                 }
@@ -244,7 +266,7 @@ object TrackerAnimeResolver {
         showCache[key]?.let { if (fresh(it.first)) return it.second }
         val raw = Http.postStringQuiet(
             "https://graphql.anilist.co",
-            JSONObject().put("query", "query{Media(search:" + JSONObject.quote(t) + ",type:ANIME){id idMal title{userPreferred english romaji native} synonyms streamingEpisodes{title thumbnail} relations{edges{relationType node{id episodes}}}}}").toString(),
+            JSONObject().put("query", "query{Media(search:" + JSONObject.quote(t) + ",type:ANIME){id idMal title{userPreferred english romaji native} synonyms streamingEpisodes{title thumbnail} episodes nextAiringEpisode{episode} relations{edges{relationType node{id episodes}}}}}").toString(),
         )
         val media = runCatching { JSONObject(raw ?: "").optJSONObject("data")?.optJSONObject("Media") }.getOrNull()
         val show = media?.let { parseAnilistShow(it) }
@@ -259,7 +281,7 @@ object TrackerAnimeResolver {
         showCache[key]?.let { if (fresh(it.first)) return it.second }
         val raw = Http.postStringQuiet(
             "https://graphql.anilist.co",
-            JSONObject().put("query", "query{Media(id:" + id + ",type:ANIME){id idMal title{userPreferred english romaji native} synonyms streamingEpisodes{title thumbnail} relations{edges{relationType node{id episodes}}}}}").toString(),
+            JSONObject().put("query", "query{Media(id:" + id + ",type:ANIME){id idMal title{userPreferred english romaji native} synonyms streamingEpisodes{title thumbnail} episodes nextAiringEpisode{episode} relations{edges{relationType node{id episodes}}}}}").toString(),
         ) ?: return null
         val media = runCatching { JSONObject(raw).optJSONObject("data")?.optJSONObject("Media") }.getOrNull()
         val show = media?.let { parseAnilistShow(it) }
@@ -297,7 +319,9 @@ object TrackerAnimeResolver {
             if (pid <= 0 || pid == id) continue
             prequels.add(Prequel(pid, node.optInt("episodes", 0)))
         }
-        return AnilistShow(id, media.optInt("idMal", 0).takeIf { it > 0 }, aliases, english, streams, prequels)
+        return AnilistShow(id, media.optInt("idMal", 0).takeIf { it > 0 }, aliases, english, streams, prequels,
+            media.optInt("episodes", 0).takeIf { it > 0 },
+            media.optJSONObject("nextAiringEpisode")?.optInt("episode", 0)?.takeIf { it > 1 })
     }
 
     private suspend fun prequelOffset(show: AnilistShow?): Int? {
@@ -520,13 +544,15 @@ object TrackerAnimeResolver {
         return when (item.providerId.lowercase()) {
             "anilist" -> {
                 val id = item.id.toIntOrNull() ?: return null
-                val q = "query($id:Int){Media(id:$id){episodes}}"
                 val raw = Http.postStringQuiet(
                     "https://graphql.anilist.co",
-                    JSONObject().put("query", q).put("variables", JSONObject().put("id", id)).toString(),
-                    mapOf("Accept" to "application/json", "Content-Type" to "application/json"),
+                    JSONObject().put("query", "query(\$id:Int){Media(id:\$id,type:ANIME){episodes status nextAiringEpisode{episode}}}").put("variables", JSONObject().put("id", id)).toString(),
                 ) ?: return null
-                JSONObject(raw).optJSONObject("data")?.optJSONObject("Media")?.optInt("episodes", 0)?.takeIf { it > 0 }
+                val media = runCatching {
+                    JSONObject(raw).optJSONObject("data")?.optJSONObject("Media")
+                }.getOrNull() ?: return null
+                media.optInt("episodes", 0).takeIf { it > 0 }
+                    ?: media.optJSONObject("nextAiringEpisode")?.optInt("episode", 0)?.minus(1)?.takeIf { it > 0 }
             }
             "mal" -> {
                 val id = item.id.toIntOrNull() ?: return null

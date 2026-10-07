@@ -6222,10 +6222,19 @@ class ContentRepository(private val manager: ProviderManager) {
         // Tracker anime with no borrowable site list: Bangumi tracks donghua
         // week by week with the numbering the sites serve, and Simkl carries the
         // correct episode count for every other anime — a correct numbered list
-        // beats "Episodes (0)" for a show that plainly has episodes.
+        // beats "Episodes (0)" for a show that plainly has episodes. Staged:
+        // the bare numbered list paints immediately (the page never sits on
+        // "Loading episodes…" while TMDB is still answering) and the TMDB /
+        // AniList / Jikan enrichment replaces it when it lands, within 10
+        // seconds total — past that the base list stands as-is.
         if (TrackerAnimeResolver.isTrackerAnime(item)) {
-            runCatching { TrackerAnimeResolver.trackerEpisodes(item) }.getOrNull()
-                ?.takeIf { it.isNotEmpty() }?.let { raw ->
+            val staged = runCatching {
+                TrackerAnimeResolver.trackerEpisodesStaged(item) { base ->
+                    val list = publish(restoreAnimeSeasons(item, base))
+                    publish(translateEpisodes(item.providerId, list))
+                }
+            }.getOrNull()
+            staged?.takeIf { it.isNotEmpty() }?.let { raw ->
                     val list = publish(restoreAnimeSeasons(item, raw))
                     val translated = publish(translateEpisodes(item.providerId, list))
                     val named = withRealEpisodeNames(item, translated)
