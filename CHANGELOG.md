@@ -1,3 +1,12 @@
+## 0.10.99
+
+Everything new and fixed since the last release (0.10.98):
+
+### Fixed
+
+- I fixed extension episodes showing titles without ratings, dates or descriptions while Nuvio rows showed everything — the details fill did its own bare title search with none of TMDB's fallbacks, so any show TMDB indexes under a different translation never resolved. The fill now resolves through the same TMDB path as everything else first (alternate titles, IMDb fallback, cached), reading seasons straight by ID, with the old title search kept as backup
+- I fixed multi-season lists losing every season after the first — the TMDB read stopped as soon as the first season covered the local numbers, so season 2+ rows never got names or details and could even wear season 1's titles. Multi-season lists now read by absolute position with season-aware mapping
+
 ## 0.10.98
 
 Everything new and fixed since the last release (0.10.97):

@@ -6319,7 +6319,8 @@ class ContentRepository(private val manager: ProviderManager) {
         // merge keeps separate, e.g. different-language audio labels) must not
         // block the lookup: TMDB is asked for each number once and every twin
         // takes the same name.
-        val numbers = eps.map { it.number }.toSet()
+        val multiSeason = anilistNamed.map { it.season }.toSet().size > 1
+        val numbers = if (multiSeason) (1..anilistNamed.size).toSet() else eps.map { it.number }.toSet()
         // The episode-name lookup keys off the show's ORIGINAL name (a display
         // title localized by the app's TMDB language is not what the wiki knows
         // it as).
@@ -6336,17 +6337,36 @@ class ContentRepository(private val manager: ProviderManager) {
         // request); WITH one, every episode is looked up, because the provider's
         // real English title is still not the language the user chose.
         if (language == null && !needNames) return anilistNamed
-        val names = withTimeoutOrNull(12_000) {
-            EpisodeTitles.lookup(showName, item.year, numbers, language)
+        val seasonHint = TmdbMeta.seasonHint(showName)
+        val seasonBase = HashMap<Int, Int>()
+        if (multiSeason) {
+            var acc = 0
+            for ((sn, rows) in anilistNamed.groupBy { it.season }.toSortedMap()) {
+                seasonBase[sn] = acc
+                acc += rows.size
+            }
+        }
+        fun absOf(e: Episode): Int = if (!multiSeason) e.number else (seasonBase[e.season] ?: 0) + e.number
+        val names = withTimeoutOrNull(20_000) {
+            val resolvedId = withTimeoutOrNull(8_000) {
+                runCatching { com.hikari.app.nuvio.TmdbResolver.resolve(item) }.getOrNull()
+            }?.takeIf { it.mediaType.equals("tv", true) }?.tmdbId?.toIntOrNull()?.takeIf { it > 0 }
+            if (resolvedId != null) {
+                runCatching { EpisodeTitles.lookupForId(resolvedId, numbers, seasonHint, language) }.getOrNull()?.takeIf { !it.isEmpty() }
+                    ?: runCatching { EpisodeTitles.lookup(showName, item.year, numbers, language) }.getOrNull()
+            } else {
+                runCatching { EpisodeTitles.lookup(showName, item.year, numbers, language) }.getOrNull()
+            }
         } ?: return anilistNamed
         if (names.isEmpty()) return anilistNamed
         var changed = false
         val out = anilistNamed.map { e ->
             val raw = e.name
+            val key = absOf(e)
             val replacement = when {
-                names.english[e.number] != null -> names.english[e.number]
-                raw.isNullOrBlank() -> names.generic[e.number]
-                EpisodeTitles.looksMechanical(raw, showName) -> names.generic[e.number]
+                names.english[key] != null -> names.english[key]
+                raw.isNullOrBlank() -> names.generic[key]
+                EpisodeTitles.looksMechanical(raw, showName) -> names.generic[key]
                 else -> null
             }
             if (replacement != null && replacement != raw) {
@@ -6410,13 +6430,22 @@ class ContentRepository(private val manager: ProviderManager) {
         }
         // Same duplicate-number rule as [withRealEpisodeNames]: twins share one
         // TMDB row and each twin gets the same details filled in.
-        val numbers = list.map { it.number }.toSet()
+        val singleSeason = list.map { it.season }.toSet().size == 1
+        val numbers = if (singleSeason) list.map { it.number }.toSet() else (1..list.size).toSet()
         val language = com.hikari.app.nuvio.TmdbResolver.contentLanguage.takeIf { it.isNotBlank() }
-        val map = withTimeoutOrNull(15_000) {
-            com.hikari.app.nuvio.EpisodeTitles.details(item.searchTitle, item.year, numbers, language)
+        val seasonHint = TmdbMeta.seasonHint(item.searchTitle)
+        val map = withTimeoutOrNull(22_000) {
+            val resolvedId = withTimeoutOrNull(8_000) {
+                runCatching { com.hikari.app.nuvio.TmdbResolver.resolve(item) }.getOrNull()
+            }?.takeIf { it.mediaType.equals("tv", true) }?.tmdbId?.toIntOrNull()?.takeIf { it > 0 }
+            if (resolvedId != null) {
+                runCatching { EpisodeTitles.detailsForId(resolvedId, numbers, seasonHint, language) }.getOrNull()?.takeIf { it.isNotEmpty() }
+                    ?: runCatching { EpisodeTitles.details(item.searchTitle, item.year, numbers, language) }.getOrNull()
+            } else {
+                runCatching { EpisodeTitles.details(item.searchTitle, item.year, numbers, language) }.getOrNull()
+            }
         } ?: return list
         if (map.isEmpty()) return list
-        val singleSeason = list.map { it.season }.toSet().size == 1
         var changed = false
         val out = list.map { e ->
             val d = if (singleSeason) map[e.number]

@@ -326,46 +326,36 @@ object EpisodeTitles {
      *  episode keyed by absolute number. Stops as soon as every wanted number
      *  is covered: without that a long-running show's dozen season reads blow
      *  the caller's budget and the whole fill is lost (see [details]). */
-    private suspend fun showDetails(
-        title: String,
-        year: Int?,
+    suspend fun lookupForId(
+        tmdbId: Int,
+        numbers: Set<Int>,
+        season: Int? = null,
+        language: String? = null,
+    ): Names = withContext(Dispatchers.IO) {
+        if (tmdbId <= 0 || numbers.isEmpty()) return@withContext EMPTY
+        val lang = language?.trim().orEmpty().ifBlank { LANGUAGE }
+        val obj = TmdbResolver.apiGet("/tv/$tmdbId", mapOf("language" to lang)) ?: return@withContext EMPTY
+        names(tmdbId, obj, numbers, season, lang)
+    }
+
+    suspend fun detailsForId(
+        tmdbId: Int,
+        numbers: Set<Int>,
+        season: Int? = null,
+        language: String? = null,
+    ): Map<Int, EpDetail> = withContext(Dispatchers.IO) {
+        if (tmdbId <= 0 || numbers.isEmpty()) return@withContext emptyMap()
+        val lang = language?.trim().orEmpty().ifBlank { LANGUAGE }
+        readSeasonDetails(tmdbId, season, lang, numbers)
+    }
+
+    private suspend fun readSeasonDetails(
+        tmdbId: Int,
         season: Int?,
         language: String,
         want: Set<Int>,
-    ): Map<Int, EpDetail>? {
-        val variants = TmdbMeta.queryVariants(title)
-        if (variants.isEmpty()) return null
-        var hit: JSONObject? = null
-        var bestScore = 0
-        for (v in variants) {
-            val results = TmdbResolver.apiGet("/search/tv", mapOf("query" to v, "language" to language))
-                ?.optJSONArray("results") ?: continue
-            for (i in 0 until results.length()) {
-                val o = results.optJSONObject(i) ?: continue
-                val base = maxOf(
-                    TmdbMeta.titleScore(v, o.optString("name")),
-                    TmdbMeta.titleScore(v, o.optString("original_name")),
-                )
-                if (base == 0) continue
-                val y = o.optString("first_air_date").take(4).toIntOrNull()
-                val yearBonus = if (year != null && y != null) {
-                    if (y == year) 20 else if (Math.abs(y - year) <= 1) 5 else 0
-                } else {
-                    0
-                }
-                val popTier = minOf(99, (o.optDouble("popularity", 0.0) / 2).toInt())
-                val score = base * 10_000 + yearBonus * 100 + popTier
-                if (score > bestScore) {
-                    bestScore = score
-                    hit = o
-                }
-            }
-            if (bestScore >= 400_000) break
-        }
-        val chosen = hit ?: return null
-        val id = chosen.optInt("id")
-        if (id <= 0) return null
-        val obj = TmdbResolver.apiGet("/tv/$id", mapOf("language" to language)) ?: chosen
+    ): Map<Int, EpDetail> {
+        val obj = TmdbResolver.apiGet("/tv/$tmdbId", mapOf("language" to language)) ?: return emptyMap()
         val seasons = obj.optJSONArray("seasons") ?: return emptyMap()
         val rows = (0 until seasons.length()).mapNotNull { i ->
             val s = seasons.optJSONObject(i) ?: return@mapNotNull null
@@ -410,5 +400,47 @@ object EpisodeTitles {
             if (want.isNotEmpty() && want.all { out.containsKey(it) }) break
         }
         return out
+    }
+
+    private suspend fun showDetails(
+        title: String,
+        year: Int?,
+        season: Int?,
+        language: String,
+        want: Set<Int>,
+    ): Map<Int, EpDetail>? {
+        val variants = TmdbMeta.queryVariants(title)
+        if (variants.isEmpty()) return null
+        var hit: JSONObject? = null
+        var bestScore = 0
+        for (v in variants) {
+            val results = TmdbResolver.apiGet("/search/tv", mapOf("query" to v, "language" to language))
+                ?.optJSONArray("results") ?: continue
+            for (i in 0 until results.length()) {
+                val o = results.optJSONObject(i) ?: continue
+                val base = maxOf(
+                    TmdbMeta.titleScore(v, o.optString("name")),
+                    TmdbMeta.titleScore(v, o.optString("original_name")),
+                )
+                if (base == 0) continue
+                val y = o.optString("first_air_date").take(4).toIntOrNull()
+                val yearBonus = if (year != null && y != null) {
+                    if (y == year) 20 else if (Math.abs(y - year) <= 1) 5 else 0
+                } else {
+                    0
+                }
+                val popTier = minOf(99, (o.optDouble("popularity", 0.0) / 2).toInt())
+                val score = base * 10_000 + yearBonus * 100 + popTier
+                if (score > bestScore) {
+                    bestScore = score
+                    hit = o
+                }
+            }
+            if (bestScore >= 400_000) break
+        }
+        val chosen = hit ?: return null
+        val id = chosen.optInt("id")
+        if (id <= 0) return null
+        return readSeasonDetails(id, season, language, want)
     }
 }
