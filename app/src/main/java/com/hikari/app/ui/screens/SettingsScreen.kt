@@ -580,6 +580,84 @@ private fun SettingsSection(
 }
 
 @Composable
+/** One settings-search hit: where it lives and what opens it. */
+private data class SettingsSearchEntry(
+    val key: String,
+    val title: String,
+    val path: String,
+    val folder: SettingsFolder,
+    val sub: SettingsFolder? = null,
+    val sectionId: String? = null,
+    val keywords: String = "",
+)
+
+private fun settingsFolderByKey(key: String): SettingsFolder? =
+    SettingsFolder.entries.firstOrNull { it.key == key }
+
+/** Every setting worth finding, matched against title + path + keywords. */
+private fun searchSettings(rawQuery: String): List<SettingsSearchEntry> {
+    val tokens = rawQuery.trim().lowercase().split(Regex("\\s+")).filter { it.isNotEmpty() }
+    if (tokens.isEmpty()) return emptyList()
+    val folderKeywords = mapOf(
+        "appearance" to "theme accent font language color icon",
+        "layout" to "layout posters taskbar scale fullscreen ratings navigation",
+        "performance" to "performance lag stutter battery speed",
+        "tv" to "tv television remote overscan",
+        "player" to "player video audio subtitles controls gestures loading enhance",
+        "servers" to "playback servers play search extensions wait ask scope",
+        "network" to "network dns slow internet",
+        "sources" to "sources extensions repos userscripts verification",
+        "content" to "content adult nsfw filter",
+        "downloads" to "downloads offline save",
+        "trackers" to "trackers sync library anilist mal kitsu simkl trakt",
+        "integrations" to "integrations tmdb mdblist anime metadata ratings anilist simkl",
+        "catalog" to "catalog collections personal folders",
+        "privacy" to "privacy ads block user agent webview",
+        "logs" to "logs diagnostics crash report",
+        "backup" to "backup restore transfer",
+        "about" to "about version update roadmap",
+        "clear-data" to "clear data delete reset",
+        "integrations.tmdb" to "tmdb artwork metadata episodes credits",
+        "integrations.mdblist" to "ratings imdb rotten tomatoes",
+        "integrations.anime" to "anime anilist simkl episodes",
+    )
+    val out = ArrayList<SettingsSearchEntry>()
+    for (f in SettingsFolder.entries) {
+        val parent = f.parent?.let { pk -> SettingsFolder.entries.firstOrNull { it.key == pk } }
+        out += SettingsSearchEntry(
+            key = "folder-" + f.key,
+            title = f.title,
+            path = parent?.title ?: f.subtitle,
+            folder = parent ?: f,
+            sub = if (parent != null) f else null,
+            keywords = (folderKeywords[f.key].orEmpty() + " " + f.key.replace(".", " ").replace("-", " ")),
+        )
+    }
+    fun section(key: String, title: String, path: String, folderKey: String, subKey: String?, sectionId: String?, keywords: String) {
+        val folder = settingsFolderByKey(folderKey) ?: return
+        val sub = subKey?.let { settingsFolderByKey(it) }
+        out += SettingsSearchEntry(key, title, path, folder, sub, sectionId, keywords)
+    }
+    val servers = "Playback & Servers"
+    section("sec-play-start", "Playback start", servers, "servers", null, "player.start", "playback start play first server wait")
+    section("sec-ask-where", "Ask where to play", servers, "servers", null, "player.start", "ask where play extension selected scope choice")
+    section("sec-server-search", "Server search", servers, "servers", null, null, "server search all extensions nuvio stremio cloudstream hikari anymex aniyomi skystream sora vega choose")
+    section("sec-tracker-servers", "Tracker servers", servers, "servers", null, null, "tracker servers search")
+    section("sec-anime-meta", "Anime Metadata", "Integrations", "integrations", "integrations.anime", null, "anime metadata anilist simkl episodes")
+    section("sec-tmdb", "TMDB Enrichment", "Integrations", "integrations", "integrations.tmdb", "integrations.tmdb.main", "tmdb artwork metadata episodes credits")
+    section("sec-tmdb-mod", "TMDB modules", "Integrations", "integrations", "integrations.tmdb", "integrations.tmdb.modules", "tmdb modules artwork")
+    section("sec-mdb", "MDBList Ratings", "Integrations", "integrations", "integrations.mdblist", "integrations.mdblist.main", "ratings imdb rotten tomatoes")
+    section("sec-mdb-prov", "MDBList providers", "Integrations", "integrations", "integrations.mdblist", "integrations.mdblist.providers", "ratings providers")
+    return out.filter { e ->
+        val hay = (e.title + " " + e.path + " " + e.keywords).lowercase()
+        tokens.all { it in hay }
+    }.sortedWith(compareBy(
+        { e -> tokens.count { e.title.lowercase().contains(it) } == 0 },
+        { e -> e.sectionId == null },
+        { e -> e.title },
+    )).take(30)
+}
+
 fun SettingsScreen(nav: NavHostController) {
     val context = LocalContext.current
     val app = context.applicationContext as HikariApp
@@ -595,6 +673,7 @@ fun SettingsScreen(nav: NavHostController) {
     var updateStatus by remember { mutableStateOf<Updater.UpdateStatus?>(null) }
     var showUpdateDialog by remember { mutableStateOf(false) }
     var openFolder by remember { mutableStateOf<SettingsFolder?>(null) }
+    var settingsQuery by remember { mutableStateOf("") }
     // A sub-folder inside [openFolder] (Appearance & Theme → App icon, App Layout →
     // Poster styling…). Two levels is the whole tree, so two slots is enough and
     // back always has an obvious target.
@@ -1237,9 +1316,35 @@ fun SettingsScreen(nav: NavHostController) {
                         style = MaterialTheme.typography.headlineMedium,
                         fontWeight = FontWeight.Bold
                     )
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedTextField(
+                        value = settingsQuery,
+                        onValueChange = { settingsQuery = it },
+                        placeholder = { Text(tr("Search settings")) },
+                        leadingIcon = {
+                            Icon(
+                                androidx.compose.material.icons.filled.Search,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        },
+                        trailingIcon = if (settingsQuery.isBlank()) null else ({
+                            IconButton(onClick = { settingsQuery = "" }) {
+                                Icon(
+                                    androidx.compose.material.icons.filled.Close,
+                                    contentDescription = tr("Clear"),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }),
+                        singleLine = true,
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
                     Spacer(Modifier.height(14.dp))
                 }
             }
+            if (settingsQuery.isBlank()) {
             // Only the top-level folders: a sub-folder is reached from inside its
             // parent, not from the index. On a television the phone-only ones
             // (the taskbar, the launcher icon aliases) are left out entirely.
@@ -1248,6 +1353,53 @@ fun SettingsScreen(nav: NavHostController) {
                 .forEach { target ->
                 item {
                     SettingsFolderRow(folder = target, onClick = { openFolderPage(target) })
+                }
+            }
+            } else {
+                val hits = remember(settingsQuery) { searchSettings(settingsQuery) }
+                if (hits.isEmpty()) {
+                    item {
+                        Text(
+                            tr("No settings match that search"),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp),
+                        )
+                    }
+                }
+                hits.forEach { hit ->
+                    item(key = "search-" + hit.key) {
+                        SettingsCard(top = 8.dp) {
+                            ListItem(
+                                leadingContent = {
+                                    Icon(
+                                        hit.folder.icon,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary
+                                    )
+                                },
+                                headlineContent = { Text(tr(hit.title)) },
+                                supportingContent = { Text(tr(hit.path)) },
+                                trailingContent = {
+                                    Icon(
+                                        Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                },
+                                modifier = Modifier.clickable {
+                                    if (hit.sub != null) {
+                                        val parent = SettingsFolder.entries.firstOrNull { it.key == hit.sub.parent }
+                                        if (parent != null) openFolderPage(parent)
+                                        openSubPage(hit.sub)
+                                    } else {
+                                        openFolderPage(hit.folder)
+                                    }
+                                    if (hit.sectionId != null) openSettingsSections[hit.sectionId] = true
+                                }
+                            )
+                        }
+                    }
                 }
             }
             // Stats: a page rather than a folder (it is one screen, like Logs),

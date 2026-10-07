@@ -10,7 +10,7 @@ import java.net.URLEncoder
 import java.util.concurrent.ConcurrentHashMap
 
 object AnimeMetadataRepository {
-    data class Metadata(val title: String? = null, val rating: Double? = null, val nextEpisodeDate: String? = null, val source: String)
+    data class Metadata(val title: String? = null, val rating: Double? = null, val nextEpisodeDate: String? = null, val source: String, val year: Int? = null, val overview: String? = null, val genres: List<String> = emptyList(), val posterUrl: String? = null, val backdropUrl: String? = null)
     data class SeasonLayout(val season: Int, val episodes: Int)
     private val seasonCache = ConcurrentHashMap<String, List<SeasonLayout>>()
 
@@ -166,29 +166,81 @@ object AnimeMetadataRepository {
         result
     }
 
-    suspend fun enrich(app: HikariApp, item: MediaItem): Metadata? = withContext(Dispatchers.IO) {
-        val anime = isAnimeItem(item) || item.providerId in setOf("anilist", "mal", "kitsu", "shikimori")
+    suspend fun enrich(app: HikariApp, item: MediaItem, type: ProviderType? = null): Metadata? = withContext(Dispatchers.IO) {
+        val anime = isAnimeItem(item, type) || item.providerId in setOf("anilist", "mal", "kitsu", "shikimori")
         if (!anime || !runCatching { app.store.animeMetadataEnabled() }.getOrDefault(true)) return@withContext null
         val mode = normalizeMode(runCatching { app.store.animeMetadataSource() }.getOrDefault("anilist_simkl"))
         // The source picker is a real source selector, not merely a preference
         // for the rating. Both sources are asked in PARALLEL, so choosing two
-        // costs the slower one — never the sum.
+        // costs the slower one — never the sum. The canonical record rides
+        // along (shared 24h cache with the episode pass) so the header gets
+        // AniList's year, overview and artwork too — not just its title.
         return@withContext coroutineScope {
             val ani = if (mode == "simkl") null
             else async { runCatching { aniList(item.searchTitle) }.getOrNull() }
             val sim = if (mode == "anilist") null
             else async { runCatching { simkl(app, item) }.getOrNull() }
+            val full = if (mode == "simkl") null
+            else async {
+                runCatching {
+                    kotlinx.coroutines.withTimeoutOrNull(12_000L) { animeFull(item.searchTitle) }
+                }.getOrNull()
+            }
             val a = ani?.await()
             val s = sim?.await()
-            if (a == null && s == null) return@coroutineScope null
+            val f = full?.await()
+            if (a == null && s == null && f == null) return@coroutineScope null
             Metadata(
-                a?.title ?: s?.title,
-                if (mode == "simkl") s?.rating else a?.rating ?: s?.rating,
-                a?.nextEpisodeDate ?: s?.nextEpisodeDate,
-                listOfNotNull(s?.source, a?.source).distinct().joinToString(" + "),
+                a?.title ?: f?.title ?: s?.title,
+                if (mode == "simkl") s?.rating else a?.rating ?: f?.rating ?: s?.rating,
+                a?.nextEpisodeDate ?: f?.nextEpisodeDate ?: s?.nextEpisodeDate,
+                listOfNotNull(s?.source, a?.source ?: f?.let { "AniList" }).distinct().joinToString(" + "),
+                a?.year ?: f?.year,
+                f?.description,
+                (a?.genres ?: emptyList()).ifEmpty { f?.genres.orEmpty() },
+                a?.posterUrl ?: f?.posterUrl,
+                a?.backdropUrl ?: f?.backdropUrl,
             )
         }
     }
+
+    /** Title match score (0-100) shared by every AniList first-hit check: a
+     *  returned record is only trusted when one of its known spellings scores
+     *  55+, so a near-miss search can never repaint the wrong show's details
+     *  onto the page. */
+    fun titleScore(a0: String, b0: String): Int {
+        fun normalize(value: String): String = value.lowercase()
+            .replace(Regex("[^\\p{L}\\p{N}]+"), " ")
+            .replace(Regex("\\s+"), " ").trim()
+        val a = normalize(a0); val b = normalize(b0)
+        if (a.isBlank() || b.isBlank()) return 0
+        if (a == b) return 100
+        if (a.contains(b) || b.contains(a)) return 90
+        val aa = a.split(" ").filter { it.length > 2 }.toSet()
+        val bb = b.split(" ").filter { it.length > 2 }.toSet()
+        if (aa.isEmpty() || bb.isEmpty()) {
+            return if (a.length <= 2 || b.length <= 2) 0 else 10
+        }
+        return aa.intersect(bb).size * 100 / maxOf(aa.size, bb.size)
+    }
+
+    /** Best score of [wanted] (and its sequel-stripped root) against any known
+     *  spelling — the one gate every AniList lookup passes before its record
+     *  is trusted. */
+    fun matchAliases(wanted: String, aliases: Set<String>): Int {
+        if (aliases.isEmpty()) return 0
+        val roots = setOf(wanted.trim(), stripSequelTitle(wanted)).filter { it.isNotBlank() }
+        var best = 0
+        for (r in roots) for (a in aliases) best = maxOf(best, titleScore(r, a))
+        return best
+    }
+
+    fun stripSequelTitle(name: String): String = name.trim()
+        .replace(Regex("(?i)\\s*[:\\-–—]?\\s*\\bseason\\s*\\d+\\s*$"), "")
+        .replace(Regex("(?i)\\s*\\b\\d+(?:st|nd|rd|th)\\s+season\\s*$"), "")
+        .replace(Regex("(?i)\\s*\\b(?:part|cour)\\s*\\d+\\s*$"), "")
+        .replace(Regex("(?i)\\s*\\bs\\d{1,2}\\s*$"), "")
+        .trim()
 
     /** "auto" is the pre-0.10.95 stored value: AniList + Simkl, AniList first. */
     fun normalizeMode(raw: String): String = when (raw.trim().lowercase()) {
@@ -198,10 +250,14 @@ object AnimeMetadataRepository {
 
     fun includesAnilist(mode: String): Boolean = normalizeMode(mode) != "simkl"
 
-    /** True for anything that should read anime metadata: tracker anime rows
-     *  and extension rows typed as anime. */
-    fun isAnimeItem(item: MediaItem): Boolean =
-        item.rawType.equals("anime", true) ||
+    /** True for anything that should read anime metadata: tracker anime rows,
+     *  rows from anime-native engines (Anymex, Aniyomi) whatever their
+     *  `rawType` says, and extension rows typed as anime. Extension anime used
+     *  to fall through every check, so AniList never ran for exactly the rows
+     *  that needed it most. */
+    fun isAnimeItem(item: MediaItem, type: ProviderType? = null): Boolean =
+        item.rawType.contains("anime", true) ||
+            type == ProviderType.ANYMEX || type == ProviderType.ANIYOMI ||
             item.providerId.lowercase() in setOf("anilist", "mal", "kitsu", "shikimori", "simkl")
 
     data class AnimeEp(val number: Int, val title: String?, val image: String?)
@@ -222,6 +278,10 @@ object AnimeMetadataRepository {
         val episodes: List<AnimeEp>,
         val aliases: Set<String>,
         val anilistId: Int,
+        val year: Int? = null,
+        val genres: List<String> = emptyList(),
+        val posterUrl: String? = null,
+        val backdropUrl: String? = null,
     )
 
     private data class FullEntry(val at: Long, val full: AnimeFull?)
@@ -247,7 +307,7 @@ object AnimeMetadataRepository {
     private fun fetchAnimeFull(wanted: String): AnimeFull? {
         val query = "query{Media(search:" + JSONObject.quote(wanted) +
             ",type:ANIME){id title{userPreferred english romaji native} synonyms " +
-            "description(asHtml:false) averageScore " +
+            "description(asHtml:false) averageScore genres startDate{year} coverImage{large} bannerImage " +
             "nextAiringEpisode{airingAt episode} " +
             "streamingEpisodes{title thumbnail site}}}"
         val raw = Http.postStringQuiet(
@@ -289,6 +349,12 @@ object AnimeMetadataRepository {
             eps += AnimeEp(n, name, img)
         }
         if (displayTitle == null && aliases.isEmpty()) return null
+        if (matchAliases(wanted, aliases) < 55) return null
+        val year = media.optJSONObject("startDate")?.optInt("year", 0)?.takeIf { it > 0 }
+        val genres = (0 until (media.optJSONArray("genres")?.length() ?: 0))
+            .mapNotNull { i -> media.optJSONArray("genres")?.optString(i)?.trim()?.takeIf { it.isNotBlank() } }
+        val poster = media.optJSONObject("coverImage")?.optString("large")?.trim()?.takeIf { it.startsWith("http") }
+        val backdrop = media.optString("bannerImage").trim().takeIf { it.startsWith("http") }
         return AnimeFull(
             displayTitle,
             media.optString("description").trim().takeIf { it.isNotBlank() },
@@ -297,21 +363,36 @@ object AnimeMetadataRepository {
             eps.sortedBy { it.number },
             aliases,
             media.optInt("id", 0),
+            year,
+            genres,
+            poster,
+            backdrop,
         )
     }
 
     private fun aniList(title: String): Metadata? {
         if (title.isBlank()) return null
-        val query = "query{Media(search:" + JSONObject.quote(title) + ",type:ANIME){title{userPreferred english romaji}averageScore nextAiringEpisode{airingAt episode}}}"
+        val query = "query{Media(search:" + JSONObject.quote(title) + ",type:ANIME){title{userPreferred english romaji native} synonyms averageScore genres startDate{year} coverImage{large} bannerImage nextAiringEpisode{airingAt episode}}}"
         val raw = Http.postStringQuiet("https://graphql.anilist.co", JSONObject().put("query", query).toString()) ?: return null
         val media = JSONObject(raw).optJSONObject("data")?.optJSONObject("Media") ?: return null
         val titles = media.optJSONObject("title")
+        val aliases = buildSet {
+            listOf(titles?.optString("userPreferred"), titles?.optString("english"), titles?.optString("romaji"), titles?.optString("native")).forEach { v -> if (!v.isNullOrBlank()) add(v.trim()) }
+            val syns = media.optJSONArray("synonyms")
+            for (i in 0 until (syns?.length() ?: 0)) syns?.optString(i)?.trim()?.takeIf { it.isNotBlank() }?.let { add(it) }
+        }
+        if (matchAliases(title, aliases) < 55) return null
         val next = media.optJSONObject("nextAiringEpisode")?.optLong("airingAt", 0L)?.takeIf { it > 0 }
             ?.let { java.time.Instant.ofEpochSecond(it).toString() }
         val score = media.optDouble("averageScore", 0.0).takeIf { it > 0 }?.div(10.0)
         val displayTitle = titles?.optString("userPreferred").takeIf { !it.isNullOrBlank() }
             ?: titles?.optString("english").takeIf { !it.isNullOrBlank() }
-        return Metadata(displayTitle, score, next, "AniList")
+        val year = media.optJSONObject("startDate")?.optInt("year", 0)?.takeIf { it > 0 }
+        val genres = (0 until (media.optJSONArray("genres")?.length() ?: 0))
+            .mapNotNull { i -> media.optJSONArray("genres")?.optString(i)?.trim()?.takeIf { it.isNotBlank() } }
+        val poster = media.optJSONObject("coverImage")?.optString("large")?.trim()?.takeIf { it.startsWith("http") }
+        val backdrop = media.optString("bannerImage").trim().takeIf { it.startsWith("http") }
+        return Metadata(displayTitle, score, next, "AniList", year, null, genres, poster, backdrop)
     }
 
     private data class SimklCalendarEntry(val title: String, val next: String?, val ids: Set<String>)

@@ -214,7 +214,7 @@ object TrackerAnimeResolver {
     private suspend fun anilistSearchDetail(title: String): Detail? {
         val t = title.trim()
         if (t.isBlank()) return null
-        val query = "query{Media(search:" + JSONObject.quote(t) + ",type:ANIME){description genres startDate{year} averageScore coverImage{large} bannerImage}}"
+        val query = "query{Media(search:" + JSONObject.quote(t) + ",type:ANIME){title{userPreferred english romaji native} synonyms description genres startDate{year} averageScore coverImage{large} bannerImage}}"
         val raw = Http.postStringQuiet(
             "https://graphql.anilist.co",
             JSONObject().put("query", query).toString(),
@@ -222,6 +222,13 @@ object TrackerAnimeResolver {
         val media = runCatching {
             JSONObject(raw).optJSONObject("data")?.optJSONObject("Media")
         }.getOrNull() ?: return null
+        val titles = media.optJSONObject("title")
+        val aliases = buildSet {
+            listOf(titles?.optString("userPreferred"), titles?.optString("english"), titles?.optString("romaji"), titles?.optString("native")).forEach { v -> if (!v.isNullOrBlank()) add(v.trim()) }
+            val syns = media.optJSONArray("synonyms")
+            for (i in 0 until (syns?.length() ?: 0)) syns?.optString(i)?.trim()?.takeIf { it.isNotBlank() }?.let { add(it) }
+        }
+        if (AnimeMetadataRepository.matchAliases(t, aliases) < 55) return null
         return parseAnilistMedia(media)
     }
     private fun parseAnilistMedia(media: JSONObject): Detail? {

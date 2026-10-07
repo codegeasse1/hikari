@@ -4622,7 +4622,7 @@ fun DetailScreen(
                 scopeAskPending = null
                 if (pending != null) openStreams(pending.first, pending.second, pending.third)
             },
-            onDismiss = { scopeAskShow = false; scopeAskPending = null },
+            onDismiss = { scopeAskShow = false },
         )
     }
 

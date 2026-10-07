@@ -5757,13 +5757,20 @@ class ContentRepository(private val manager: ProviderManager) {
             }
         }
         val translated = translateItem(result)
-        val animeMeta = runCatching { AnimeMetadataRepository.enrich(HikariApp.instance, translated) }.getOrNull()
+        val engineType = manager.byId(translated.providerId)?.config?.type
+        val animeMeta = runCatching { AnimeMetadataRepository.enrich(HikariApp.instance, translated, engineType) }.getOrNull()
         val finalMeta = animeMeta?.let {
+            val animeRow = AnimeMetadataRepository.isAnimeItem(translated, engineType)
             translated.copy(
                 title = it.title ?: translated.title,
                 rating = it.rating ?: translated.rating,
                 nextEpisodeDate = it.nextEpisodeDate ?: translated.nextEpisodeDate,
                 metadataSource = it.source,
+                year = if (animeRow) it.year ?: translated.year else translated.year,
+                overview = translated.overview.takeIf { o -> !o.isNullOrBlank() } ?: it.overview,
+                genres = translated.genres.ifEmpty { it.genres },
+                posterUrl = translated.posterUrl.takeIf { u -> !u.isNullOrBlank() } ?: it.posterUrl,
+                backdropUrl = translated.backdropUrl ?: it.backdropUrl,
             )
         } ?: translated
         synchronized(metaCache) { metaCache[item.uniqueId] = finalMeta }
@@ -6320,7 +6327,7 @@ class ContentRepository(private val manager: ProviderManager) {
         val animeMode = AnimeMetadataRepository.normalizeMode(
             runCatching { com.hikari.app.HikariApp.instance.store.animeMetadataSource() }.getOrDefault("anilist_simkl")
         )
-        val animeRow = AnimeMetadataRepository.isAnimeItem(item)
+        val animeRow = AnimeMetadataRepository.isAnimeItem(item, manager.byId(item.providerId)?.config?.type)
         if (animeRow && animeMode == "anilist") return anilistNamed
         // Duplicate numbers (a provider listing episodes twice under names the
         // merge keeps separate, e.g. different-language audio labels) must not
@@ -6380,24 +6387,36 @@ class ContentRepository(private val manager: ProviderManager) {
             runCatching { com.hikari.app.HikariApp.instance.store.animeMetadataSource() }.getOrDefault("anilist_simkl")
         )
         if (!AnimeMetadataRepository.includesAnilist(mode)) return eps
-        if (!AnimeMetadataRepository.isAnimeItem(item) && !TrackerAnimeResolver.isTrackerAnime(item)) return eps
+        if (!AnimeMetadataRepository.isAnimeItem(item, manager.byId(item.providerId)?.config?.type) && !TrackerAnimeResolver.isTrackerAnime(item)) return eps
         val full = withTimeoutOrNull(12_000) {
             AnimeMetadataRepository.animeFull(item.searchTitle)
-        } ?: return eps
-        if (full.episodes.isEmpty()) return eps
-        val byNumber = full.episodes.associate { it.number to it }
+        }
+        val byNumber = full?.episodes.orEmpty().associate { it.number to it }
         val showName = item.searchTitle
+        val cjk = Regex("[\\u3040-\\u30ff\\u3400-\\u4dbf\\u4e00-\\u9fff\\uf900-\\ufaff]")
+        val bang = if (cjk.containsMatchIn(showName) || cjk.containsMatchIn(item.originalTitle)) {
+            withTimeoutOrNull(12_000) {
+                com.hikari.app.nuvio.BangumiMeta.episodes(
+                    showName,
+                    item.originalTitle.trim().takeIf { it.isNotBlank() },
+                    item.year,
+                    TmdbMeta.seasonHint(showName),
+                )
+            }.orEmpty().associate { it.number to it }
+        } else emptyMap()
+        if (byNumber.isEmpty() && bang.isEmpty()) return eps
         var changed = false
         val out = eps.map { e ->
-            val a = byNumber[e.number] ?: return@map e
-            if (a.title.isNullOrBlank()) return@map e
+            val candidate = byNumber[e.number]?.title?.takeIf { !it.isNullOrBlank() }
+                ?: bang[e.number]?.name?.takeIf { !it.isNullOrBlank() }
+                ?: return@map e
             val raw = e.name
             val upgrade = raw.isNullOrBlank() ||
                 EpisodeTitles.looksMechanical(raw, showName) ||
                 EpisodeTitles.needsEnglish(raw, showName)
-            if (!upgrade || a.title == raw) return@map e
+            if (!upgrade || candidate == raw) return@map e
             changed = true
-            e.copy(name = a.title)
+            e.copy(name = candidate)
         }
         return if (changed) out else eps
     }
@@ -6432,7 +6451,7 @@ class ContentRepository(private val manager: ProviderManager) {
     private suspend fun backfillEpisodeDetails(item: MediaItem, eps: List<Episode>): List<Episode> {
         if (eps.isEmpty()) return eps
         val trackerAnime = TrackerAnimeResolver.isTrackerAnime(item)
-        val anime = trackerAnime || AnimeMetadataRepository.isAnimeItem(item)
+        val anime = trackerAnime || AnimeMetadataRepository.isAnimeItem(item, manager.byId(item.providerId)?.config?.type)
         val mode = AnimeMetadataRepository.normalizeMode(
             runCatching { com.hikari.app.HikariApp.instance.store.animeMetadataSource() }.getOrDefault("anilist_simkl")
         )

@@ -1,3 +1,13 @@
+## 0.10.97
+
+Everything new and fixed since the last release (0.10.96):
+
+### Fixed
+
+- I fixed picking a scope never starting playback — the choice dialog dismissed before reading the pending play, so every pick was a no-op and Play had to be tapped twice. Choosing This extension only or My selected servers now starts instantly, and still respects the show-server-list toggle
+- I fixed anime integration doing nothing for extension rows — detection only recognized tracker rows, so AniList never ran for Anymex/Aniyomi/CloudStream anime (hence Chinese names and wrong years). Anime-native engines now count, every AniList first-hit is similarity-verified before its record is trusted, the header takes AniList's canonical year/overview/genres/artwork, episode names come from AniList plus a Bangumi fallback for CJK titles, and tracker detail search is verified the same way
+- I fixed settings having no search — the index now has a search bar that finds folders and individual options (try playback) and opens the exact page with the matching section expanded
+
 ## 0.10.96
 
 Everything new and fixed since the last release (0.10.95):
