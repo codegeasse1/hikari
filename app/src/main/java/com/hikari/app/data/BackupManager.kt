@@ -7,7 +7,6 @@ import android.util.JsonReader
 import android.util.JsonWriter
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
-import java.io.File
 import java.io.InputStream
 import com.hikari.app.BuildConfig
 import com.hikari.app.HikariApp
@@ -174,9 +173,13 @@ object BackupManager {
                     list
                 }.getOrDefault(emptyList())
                 for (name in profileNames) {
-                    // Raw JSON embedded as-is: profiles.prettyPrint-free text,
-                    // so jsonValue keeps the stored snapshot verbatim.
-                    w.name(name).jsonValue(profiles.optString(name))
+                    // Profiles are small snapshots: parse and re-emit through
+                    // the writer (JsonWriter has no raw-value call on this
+                    // compile SDK), which keeps the stored content verbatim.
+                    val obj = runCatching { JSONObject(profiles.optString(name)) }.getOrNull()
+                    if (obj == null) continue
+                    w.name(name)
+                    writeJsonObject(w, obj)
                 }
                 w.endObject()
                 w.endObject()
@@ -185,6 +188,38 @@ object BackupManager {
         if (dest.exists()) dest.delete()
         tmp.renameTo(dest)
         dest.length()
+    }
+
+    /**
+     * Writes an org.json value through [JsonWriter] (which has no raw-value
+     * call on this compile SDK): objects, arrays, strings, numbers, booleans
+     * and nulls, recursively. Only used for the small profile snapshots in
+     * [exportToFile] — never for extension files, which stream as base64.
+     */
+    private fun writeJsonValue(w: JsonWriter, v: Any?) {
+        when (v) {
+            null, JSONObject.NULL -> w.nullValue()
+            is JSONObject -> writeJsonObject(w, v)
+            is JSONArray -> {
+                w.beginArray()
+                for (i in 0 until v.length()) writeJsonValue(w, v.opt(i))
+                w.endArray()
+            }
+            is Boolean -> w.value(v)
+            is Number -> w.value(v)
+            else -> w.value(v.toString())
+        }
+    }
+
+    private fun writeJsonObject(w: JsonWriter, o: JSONObject) {
+        w.beginObject()
+        val keys = o.keys()
+        while (keys.hasNext()) {
+            val k = keys.next() as String
+            w.name(k)
+            writeJsonValue(w, o.opt(k))
+        }
+        w.endObject()
     }
 
     /**
@@ -555,11 +590,6 @@ object BackupManager {
         }
         return readAny(this) as? JSONObject
     }
-
-    /** Kept for callers on the old signature: a small in-memory backup
-     *  restores through the same streaming path (see [restoreStream]). */
-    suspend fun restore(app: HikariApp, bytes: ByteArray): Report =
-        restoreStream(app, ByteArrayInputStream(bytes))
 
     // ------------------------------------------- CloudStream backup import --
 
