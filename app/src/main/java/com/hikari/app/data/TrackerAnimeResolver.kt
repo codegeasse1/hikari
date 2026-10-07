@@ -4,6 +4,7 @@ import com.hikari.app.HikariApp
 import com.hikari.app.net.Http
 import com.hikari.app.nuvio.BangumiMeta
 import com.hikari.app.nuvio.EpisodeTitles
+import com.hikari.app.nuvio.TmdbResolver
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
