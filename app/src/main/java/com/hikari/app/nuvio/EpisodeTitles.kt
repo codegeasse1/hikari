@@ -367,7 +367,7 @@ object EpisodeTitles {
         val out = HashMap<Int, EpDetail>()
         var running = 0
         for (sn in picked) {
-            val sd = TmdbResolver.apiGet("/tv/$id/season/$sn", mapOf("language" to language)) ?: continue
+            val sd = TmdbResolver.apiGet("/tv/$tmdbId/season/$sn", mapOf("language" to language)) ?: continue
             val eps = sd.optJSONArray("episodes") ?: continue
             val list = ArrayList<EpDetail>()
             for (i in 0 until eps.length()) {
