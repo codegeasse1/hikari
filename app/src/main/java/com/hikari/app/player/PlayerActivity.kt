@@ -4,6 +4,7 @@ import android.animation.ObjectAnimator
 import android.animation.PropertyValuesHolder
 import android.app.Dialog
 import android.app.PictureInPictureParams
+import android.content.Context
 import android.content.pm.ActivityInfo
 import android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
 import android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
@@ -26,6 +27,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.provider.Settings
 import android.text.TextUtils
 import android.util.Rational
@@ -76,6 +78,7 @@ import androidx.media3.datasource.HttpDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.effect.HslAdjustment
 import androidx.media3.exoplayer.DefaultLoadControl
+import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.drm.DefaultDrmSessionManager
@@ -269,6 +272,77 @@ class PlayerActivity : ComponentActivity() {
 
     private var player: ExoPlayer? = null
     private var playerView: PlayerView? = null
+
+    /**
+     * Smooth-playback guard: a codec the device can only software-decode (4K
+     * AV1 on mid-range phones is the classic one) decodes slower than realtime
+     * even with the whole file buffered — the reported "it lags although it
+     * is fully loaded". Dropped frames are that failure's meter: once they
+     * pile up, the ceiling steps down to the next rendition the stream
+     * carries until the drops stop. Only in Auto quality — an explicit pick
+     * is the user's, and is never overridden.
+     */
+    private var dropCount = 0
+    private var dropStepped = 0
+
+    /** True while Android's battery saver caps this session (720p, no effects). */
+    private var batterySaverOn = false
+
+    /** The URL the current player instance was built for (Telegram cleanup). */
+    private var lastPlayedUrl: String = ""
+
+    private val dropWatcher = object : AnalyticsListener {
+        override fun onDroppedVideoFrames(
+            eventTime: AnalyticsListener.EventTime,
+            droppedFrames: Int,
+            elapsedMs: Long,
+        ) {
+            if (droppedFrames <= 0) return
+            dropCount += droppedFrames
+            maybeStepDownQuality()
+        }
+    }
+
+    /** A manual quality pick owns the ceiling — auto-degrade must not fight it. */
+    private fun hasManualVideoPick(): Boolean {
+        val p = player ?: return false
+        return p.currentTracks.groups.any { g ->
+            g.type == C.TRACK_TYPE_VIDEO &&
+                p.trackSelectionParameters.overrides[g.mediaTrackGroup] != null
+        }
+    }
+
+    private fun maybeStepDownQuality() {
+        if (dropCount < 300 || dropStepped >= 3) return
+        val p = player ?: return
+        if (hasManualVideoPick()) return
+        val heights = p.currentTracks.groups
+            .filter { it.type == C.TRACK_TYPE_VIDEO }
+            .flatMap { g -> (0 until g.mediaTrackGroup.length).map { g.mediaTrackGroup.getFormat(it).height } }
+            .filter { it > 0 }.distinct().sortedDescending()
+        val current = heights.firstOrNull() ?: return
+        if (current <= 720) return
+        // Only step when a lower rendition actually exists: a single-track
+        // progressive file has nowhere to go, and a toast would lie.
+        val target = heights.firstOrNull { it < current } ?: return
+        dropCount = 0
+        dropStepped++
+        p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+            .setMaxVideoSize(Int.MAX_VALUE, target)
+            .build()
+        Toast.makeText(
+            this,
+            I18n.t("Heavy codec — switched to %sp for smooth playback").replace("%s", target.toString()),
+            Toast.LENGTH_SHORT,
+        ).show()
+    }
+
+    /** Deletes a played Telegram file's local bytes (see [Td.forgetPlayedFile]). */
+    private fun releaseTelegramFile(url: String) {
+        if (!url.startsWith("hikari-td:")) return
+        val id = Regex("[?&]id=(\\d+)").find(url)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: return
+        runCatching { com.hikari.app.telegram.Td.forgetPlayedFile(id) }
+    }
 
     /** The Player UI skin in force for this playback session (Settings → Player
      *  → Player UI). Read once here from [PlayerSkins.current] — the mirror that
@@ -4351,6 +4425,9 @@ class PlayerActivity : ComponentActivity() {
 
     private fun applyVideoEnhance(force: Boolean = false) {
         val p = player ?: return
+        // Battery saver: no GL grade unless the user explicitly picks one
+        // (see [batterySaverOn]) — effects cost real watts on weak GPUs.
+        if (batterySaverOn && !force) return
         val key = enhancePresetKey
         val hdr = isCurrentVideoHdr()
         if (!force && key == appliedEnhanceKey && hdr == appliedEnhanceHdr) return
@@ -9812,13 +9889,23 @@ class PlayerActivity : ComponentActivity() {
 
         player?.let { old ->
             old.removeListener(listener)
+            old.removeAnalyticsListener(dropWatcher)
             old.release()
+        }
+        // Leaving a Telegram video: its local bytes are dropped now that no
+        // player reads them (re-opening the SAME url for an effects re-arm
+        // keeps them — the new player is about to read the same file).
+        if (lastPlayedUrl.isNotBlank() && lastPlayedUrl != src.url) {
+            releaseTelegramFile(lastPlayedUrl)
         }
         playerView?.player = null
         firstFrameTask?.let { bufferingWatchdog.removeCallbacks(it) }
         firstFrameTask = null
         renderedFirstFrame = false
         noVideoPolls = 0
+        // A new source gets its own drop budget (see [dropWatcher]).
+        dropCount = 0
+        dropStepped = 0
         // [firstFrameRetried] is deliberately NOT reset here: a restart of the
         // SAME server is what it guards, and `playDirectInner` is what a restart
         // calls — resetting it here made the guard useless, so a server that
@@ -9944,6 +10031,25 @@ class PlayerActivity : ComponentActivity() {
             .setSeekForwardIncrementMs(10_000)
             .build()
         this.player = player
+        lastPlayedUrl = src.url
+        player.addAnalyticsListener(dropWatcher)
+        // Battery saver on the device: cap the session at 720p with no video
+        // effects (software decode + a GL grade is what drains a weak battery
+        // fastest). An explicit quality pick later still wins — caps never
+        // override the user, here or in [maybeStepDownQuality].
+        if (!batterySaverOn &&
+            (getSystemService(Context.POWER_SERVICE) as? PowerManager)?.isPowerSaveMode == true
+        ) {
+            batterySaverOn = true
+            player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+                .setMaxVideoSize(1280, 720)
+                .build()
+            Toast.makeText(
+                this,
+                I18n.t("Battery saver is on — capped at 720p with effects off"),
+                Toast.LENGTH_SHORT,
+            ).show()
+        }
         if (noSubsRetry) {
             // The previous attempt crashed on a garbage in-manifest subtitle
             // track — disable text tracks for this retry.
@@ -13269,9 +13375,15 @@ class PlayerActivity : ComponentActivity() {
         probeDialog = null
         player?.let { p ->
             p.removeListener(listener)
+            p.removeAnalyticsListener(dropWatcher)
             p.release()
         }
         player = null
+        // Last Telegram file's local bytes go with the session (see [Td.forgetPlayedFile]).
+        if (lastPlayedUrl.isNotBlank()) {
+            releaseTelegramFile(lastPlayedUrl)
+            lastPlayedUrl = ""
+        }
         // The booster's gain stage dies with the player's audio sink — nothing
         // platform-side to release by hand. Drop the reference with the player.
         volumeBoostProcessor = null

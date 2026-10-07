@@ -4,6 +4,8 @@ import com.hikari.app.HikariApp
 import com.hikari.app.net.Http
 import com.hikari.app.nuvio.BangumiMeta
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.net.URLEncoder
@@ -48,15 +50,24 @@ object TrackerAnimeResolver {
     suspend fun detail(item: MediaItem): Detail? = withContext(Dispatchers.IO) {
         if (!isTrackerAnime(item)) return@withContext null
         if (!runCatching { HikariApp.instance.store.animeMetadataEnabled() }.getOrDefault(true)) return@withContext null
-        val mode = runCatching { HikariApp.instance.store.animeMetadataSource() }.getOrDefault("auto").lowercase()
-        if (mode != "anilist") {
-            simklDetail(item)?.let { return@withContext it }
-        }
+        val mode = AnimeMetadataRepository.normalizeMode(
+            runCatching { HikariApp.instance.store.animeMetadataSource() }.getOrDefault("anilist_simkl")
+        )
         // AniList needs no key and answers every anime by id — but only rows
         // that CAME from AniList carry that id, so every other tracker row
         // falls back to an AniList title search (skipped in Simkl-only mode).
-        anilistDetail(item)?.let { return@withContext it }
-        if (mode != "simkl") anilistSearchDetail(item.searchTitle) else null
+        // Both sides run in PARALLEL with AniList winning: one slow source
+        // never holds the detail page hostage for the other.
+        return@withContext coroutineScope {
+            val sim = if (mode == "anilist") null
+            else async { runCatching { simklDetail(item) }.getOrNull() }
+            val ani = if (mode == "simkl") null
+            else async {
+                runCatching { anilistDetail(item) }.getOrNull()
+                    ?: runCatching { anilistSearchDetail(item.searchTitle) }.getOrNull()
+            }
+            ani?.await() ?: sim?.await()
+        }
     }
 
     data class TmdbRef(val tmdbId: String, val mediaType: String)

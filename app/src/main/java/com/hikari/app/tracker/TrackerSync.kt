@@ -136,9 +136,33 @@ object TrackerSync {
         media: TrackerMedia,
     ): TrackerMatch? {
         val candidates = TrackerApi.search(client, account.token, media).getOrNull().orEmpty()
-        val best = bestMatch(media, candidates) ?: return null
+        val best = bestMatch(media, candidates) ?: aliasBestMatch(media, candidates)
+        best ?: return null
         runCatching { store.putTrackerMatch(TrackerStore.matchKey(client.kind, media.title), best) }
         return best
+    }
+
+    /**
+     * Second chance for a title the fuzzy score rejected: AniList knows every
+     * spelling of the show (romaji, English, native + synonyms), and an exact
+     * hit on ANY of them is the confident match a slightly-different name
+     * could never score. Each alias re-runs the full [bestMatch] rules, so a
+     * wrong-season or wrong-kind entry still cannot sneak through.
+     */
+    private suspend fun aliasBestMatch(
+        media: TrackerMedia,
+        candidates: List<TrackerMatch>,
+    ): TrackerMatch? {
+        if (candidates.isEmpty()) return null
+        val aliases = runCatching {
+            com.hikari.app.data.AnimeMetadataRepository.aliasesFor(media.title)
+        }.getOrNull().orEmpty()
+        if (aliases.isEmpty()) return null
+        for (alias in aliases) {
+            if (alias.equals(media.title, ignoreCase = true)) continue
+            bestMatch(media.copy(title = alias), candidates)?.let { return it }
+        }
+        return null
     }
 
     /**

@@ -1687,6 +1687,30 @@ object Td {
     }
 
     /**
+     * Drops a played Telegram file's local bytes from TDLib's store.
+     *
+     * Playback downloads the whole file into the app's storage, and nothing
+     * ever deleted it — every played Telegram video left gigabytes behind in
+     * the cache size. The player calls this for the previous file whenever it
+     * moves on (and for the last one when it closes), so storage stops
+     * growing with every video. Replaying re-downloads on demand; files the
+     * user explicitly saved elsewhere are separate copies and are untouched.
+     */
+    fun forgetPlayedFile(fileId: Int) {
+        val c = client ?: return
+        fileValues.remove(fileId)
+        fetchedFiles.remove(fileId)
+        downloadErrors.remove(fileId)
+        runCatching {
+            c.send(
+                TdApi.DeleteFile(fileId),
+                org.drinkless.tdlib.Client.ResultHandler { },
+                null,
+            )
+        }
+    }
+
+    /**
      * Ask TDLib to fetch [fileId] starting at [offset], for at most [limit]
      * bytes (0 = to the end of the file).
      *

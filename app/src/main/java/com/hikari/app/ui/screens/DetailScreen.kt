@@ -3153,6 +3153,85 @@ fun DetailScreen(
     val tvHeroImage = m?.let { Artwork.heroModel(it) }
         ?: (PosterLoader.model(posterUrl) to false)
 
+                    val tvPlayRow: @Composable (androidx.compose.ui.unit.Dp) -> Unit = { topPad ->
+                    Row(
+                        Modifier.padding(top = topPad),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Button(
+                            onClick = { tryPlay(detailBtnEp) },
+                            modifier = Modifier
+                                .focusRequester(playFocus)
+                                .tvPress(
+                                    previewPass = true,
+                                    onClick = { tryPlay(detailBtnEp) }
+                                )
+                        ) {
+                            Icon(Icons.Filled.PlayArrow, contentDescription = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text(detailActionLabel)
+                        }
+                        // Trailer beside Play, like the reference layout: opens
+                        // the title's own trailer instead of scrolling for it.
+                        extras?.trailers?.firstOrNull()?.let { tvTrailer ->
+                            FilledTonalButton(
+                                onClick = {
+                                    openYouTubeVideo(
+                                        context,
+                                        tvTrailer.youtubeKey,
+                                        (m?.title ?: title) + " — " + tvTrailer.name
+                                    )
+                                },
+                                modifier = Modifier.tvPress(
+                                    previewPass = true,
+                                    onClick = {
+                                        openYouTubeVideo(
+                                            context,
+                                            tvTrailer.youtubeKey,
+                                            (m?.title ?: title) + " — " + tvTrailer.name
+                                        )
+                                    }
+                                )
+                            ) {
+                                Icon(Icons.Filled.OndemandVideo, contentDescription = tr("Trailer"))
+                            }
+                        }
+                        FilledTonalButton(
+                            onClick = { tryDownload(detailBtnEp) },
+                            modifier = Modifier.tvPress(
+                                previewPass = true,
+                                onClick = { tryDownload(detailBtnEp) }
+                            )
+                        ) {
+                            Icon(painter = painterResource(R.drawable.ic_download), contentDescription = tr("Download"))
+                        }
+                        // Save, mirroring the phone row's library toggle below:
+                        // the reference TV layout puts Play + Save side by
+                        // side, and the TV hero only had Play + Download.
+                        if (isSaved) {
+                            FilledTonalButton(
+                                onClick = openLibrary,
+                                modifier = Modifier.tvPress(
+                                    previewPass = true,
+                                    onClick = openLibrary,
+                                )
+                            ) {
+                                Icon(Icons.Filled.Favorite, contentDescription = null)
+                            }
+                        } else {
+                            OutlinedButton(
+                                onClick = openLibrary,
+                                modifier = Modifier.tvPress(
+                                    previewPass = true,
+                                    onClick = openLibrary,
+                                )
+                            ) {
+                                Icon(Icons.Filled.FavoriteBorder, contentDescription = tr("Save"))
+                            }
+                        }
+                    }
+                    }
     val heroBlock: @Composable () -> Unit = {
         if (isTvLayout) {
             // TV detail is a single cinematic hero: artwork, title, metadata,
@@ -3200,6 +3279,8 @@ fun DetailScreen(
                                 .padding(horizontal = 12.dp, vertical = 10.dp)
                                 .verticalScroll(rememberScrollState())
                         ) {
+                            tvPlayRow(0.dp)
+                            Spacer(Modifier.height(6.dp))
                             Row(
                                 Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(7.dp),
@@ -3387,83 +3468,7 @@ fun DetailScreen(
                         ) { markSheet = true }
                     }
                     Spacer(Modifier.height(10.dp))
-Row(
-                        Modifier.padding(top = 12.dp),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Button(
-                            onClick = { tryPlay(detailBtnEp) },
-                            modifier = Modifier
-                                .focusRequester(playFocus)
-                                .tvPress(
-                                    previewPass = true,
-                                    onClick = { tryPlay(detailBtnEp) }
-                                )
-                        ) {
-                            Icon(Icons.Filled.PlayArrow, contentDescription = null)
-                            Spacer(Modifier.width(8.dp))
-                            Text(detailActionLabel)
-                        }
-                        // Trailer beside Play, like the reference layout: opens
-                        // the title's own trailer instead of scrolling for it.
-                        extras?.trailers?.firstOrNull()?.let { tvTrailer ->
-                            FilledTonalButton(
-                                onClick = {
-                                    openYouTubeVideo(
-                                        context,
-                                        tvTrailer.youtubeKey,
-                                        (m?.title ?: title) + " — " + tvTrailer.name
-                                    )
-                                },
-                                modifier = Modifier.tvPress(
-                                    previewPass = true,
-                                    onClick = {
-                                        openYouTubeVideo(
-                                            context,
-                                            tvTrailer.youtubeKey,
-                                            (m?.title ?: title) + " — " + tvTrailer.name
-                                        )
-                                    }
-                                )
-                            ) {
-                                Icon(Icons.Filled.OndemandVideo, contentDescription = tr("Trailer"))
-                            }
-                        }
-                        FilledTonalButton(
-                            onClick = { tryDownload(detailBtnEp) },
-                            modifier = Modifier.tvPress(
-                                previewPass = true,
-                                onClick = { tryDownload(detailBtnEp) }
-                            )
-                        ) {
-                            Icon(painter = painterResource(R.drawable.ic_download), contentDescription = tr("Download"))
-                        }
-                        // Save, mirroring the phone row's library toggle below:
-                        // the reference TV layout puts Play + Save side by
-                        // side, and the TV hero only had Play + Download.
-                        if (isSaved) {
-                            FilledTonalButton(
-                                onClick = openLibrary,
-                                modifier = Modifier.tvPress(
-                                    previewPass = true,
-                                    onClick = openLibrary,
-                                )
-                            ) {
-                                Icon(Icons.Filled.Favorite, contentDescription = null)
-                            }
-                        } else {
-                            OutlinedButton(
-                                onClick = openLibrary,
-                                modifier = Modifier.tvPress(
-                                    previewPass = true,
-                                    onClick = openLibrary,
-                                )
-                            ) {
-                                Icon(Icons.Filled.FavoriteBorder, contentDescription = tr("Save"))
-                            }
-                        }
-                    }
+                    if (!detailIsSeries) tvPlayRow(12.dp)
 
                     val tvMeta = buildList {
                         m?.rating?.takeIf { it > 0 }?.let { add("★ " + "%.1f".format(it)) }
@@ -3651,6 +3656,7 @@ Row(
                                         bottom = 24.dp,
                                     )
                             ) {
+                                tvPlayRow(8.dp)
                                 Row(
                                     Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.spacedBy(8.dp),

@@ -987,7 +987,7 @@ class AppStore(private val ctx: Context) {
     fun animeMetadataEnabledFlow(): Flow<Boolean> = store.data.map { it[K.ANIME_METADATA_ENABLED] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
     suspend fun animeMetadataEnabled(): Boolean = animeMetadataEnabledFlow().first()
     suspend fun setAnimeMetadataEnabled(value: Boolean) { write("ANIME_METADATA_ENABLED") { it[K.ANIME_METADATA_ENABLED] = value } }
-    fun animeMetadataSourceFlow(): Flow<String> = store.data.map { it[K.ANIME_METADATA_SOURCE] ?: "auto" }.distinctUntilChanged().flowOn(Dispatchers.Default)
+    fun animeMetadataSourceFlow(): Flow<String> = store.data.map { it[K.ANIME_METADATA_SOURCE] ?: "anilist_simkl" }.distinctUntilChanged().flowOn(Dispatchers.Default)
     suspend fun animeMetadataSource(): String = animeMetadataSourceFlow().first()
     suspend fun setAnimeMetadataSource(value: String) { write("ANIME_METADATA_SOURCE") { it[K.ANIME_METADATA_SOURCE] = value } }
 

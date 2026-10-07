@@ -1214,11 +1214,11 @@ class ContentRepository(private val manager: ProviderManager) {
         "vixsrc",
     )
 
-    // Search paging: scan a provider's search results page by page (no
-    // arbitrary cap) until the site stops returning results, so the app's
-    // count matches the website. The budgets keep a dead/hung provider from
-    // stalling the whole search forever.
-    private val MAX_SEARCH_PAGES = 30
+    // Search paging: every provider is scanned page by page with NO page-count
+    // cap — an endless catalogue simply keeps streaming into the grid as the
+    // user scrolls, page by page, instead of stopping at an arbitrary number.
+    // The time budgets below are the only bound, so a dead/hung provider
+    // still cannot stall the whole search forever.
     // Search streams page 1 to the UI immediately and keeps scanning in the
     // background, so these budgets only cap how long we wait for SLOW extra
     // pages. Trimmed hard (was 90s/240s/260s) so a single dead provider can't
@@ -2388,7 +2388,7 @@ class ContentRepository(private val manager: ProviderManager) {
                         // page cap.
                         var pageNo = page.coerceAtLeast(1)
                         val deadline = System.currentTimeMillis() + SEARCH_PROVIDER_BUDGET_MS
-                        while (pageNo <= MAX_SEARCH_PAGES && System.currentTimeMillis() < deadline) {
+                        while (System.currentTimeMillis() < deadline) {
                             val items = cancellableCatching {
                                 // Generous per-page budget — heavy scrapers (e.g.
                                 // MRDS) also download+decrypt every poster into a
@@ -6243,11 +6243,21 @@ class ContentRepository(private val manager: ProviderManager) {
      * gives up on any failure — names are a nicety, never a gate.
      */
     private suspend fun withRealEpisodeNames(item: MediaItem, eps: List<Episode>): List<Episode> {
+        // Anime rows read their names from AniList first — the canonical
+        // titles, so "Episode N" tracker counts and mechanical site labels
+        // become real names even where TMDB never runs (see below).
+        val anilistNamed = animeEpisodeNames(item, eps)
         // Tracker anime lists are tracker counts ("Episode N") or a borrowed
         // site list — a TMDB title search here could paint another show's
         // episode names onto them, so they keep their own names.
-        if (TrackerAnimeResolver.isTrackerAnime(item)) return eps
-        if (eps.size < 3) return eps
+        if (TrackerAnimeResolver.isTrackerAnime(item)) return anilistNamed
+        if (eps.size < 3) return anilistNamed
+        // "AniList only" never asks TMDB for anime rows: AniList's names stand.
+        val animeMode = AnimeMetadataRepository.normalizeMode(
+            runCatching { com.hikari.app.HikariApp.instance.store.animeMetadataSource() }.getOrDefault("anilist_simkl")
+        )
+        val animeRow = AnimeMetadataRepository.isAnimeItem(item)
+        if (animeRow && animeMode == "anilist") return anilistNamed
         // Duplicate numbers (a provider listing episodes twice under names the
         // merge keeps separate, e.g. different-language audio labels) must not
         // block the lookup: TMDB is asked for each number once and every twin
@@ -6263,18 +6273,18 @@ class ContentRepository(private val manager: ProviderManager) {
         // reported "the page says El primer baile, the player says First
         // Dance"). With no language chosen this stays exactly as it was.
         val language = com.hikari.app.nuvio.TmdbResolver.contentLanguage.takeIf { it.isNotBlank() }
-        val needNames = eps.any { EpisodeTitles.needsEnglish(it.name, showName) }
+        val needNames = anilistNamed.any { EpisodeTitles.needsEnglish(it.name, showName) }
         // Without a language there is nothing to do unless a row's own label
         // needs upgrading (that is what keeps ordinary shows from costing a
         // request); WITH one, every episode is looked up, because the provider's
         // real English title is still not the language the user chose.
-        if (language == null && !needNames) return eps
+        if (language == null && !needNames) return anilistNamed
         val names = withTimeoutOrNull(12_000) {
             EpisodeTitles.lookup(showName, item.year, numbers, language)
-        } ?: return eps
-        if (names.isEmpty()) return eps
+        } ?: return anilistNamed
+        if (names.isEmpty()) return anilistNamed
         var changed = false
-        val out = eps.map { e ->
+        val out = anilistNamed.map { e ->
             val raw = e.name
             val replacement = when {
                 names.english[e.number] != null -> names.english[e.number]
@@ -6288,6 +6298,42 @@ class ContentRepository(private val manager: ProviderManager) {
             } else {
                 e
             }
+        }
+        return if (changed) out else anilistNamed
+    }
+
+    /**
+     * Anime episode names from AniList's canonical record — the same lookup
+     * the tracker sync matches against, so the rows and the sync agree on
+     * what the show is called. Only blank, mechanical or foreign-script rows
+     * are upgraded: a site's own real title always wins. "AniList only" and
+     * wider modes run this; "Simkl only" skips it.
+     */
+    private suspend fun animeEpisodeNames(item: MediaItem, eps: List<Episode>): List<Episode> {
+        if (eps.size < 3) return eps
+        if (!runCatching { com.hikari.app.HikariApp.instance.store.animeMetadataEnabled() }.getOrDefault(true)) return eps
+        val mode = AnimeMetadataRepository.normalizeMode(
+            runCatching { com.hikari.app.HikariApp.instance.store.animeMetadataSource() }.getOrDefault("anilist_simkl")
+        )
+        if (!AnimeMetadataRepository.includesAnilist(mode)) return eps
+        if (!AnimeMetadataRepository.isAnimeItem(item) && !TrackerAnimeResolver.isTrackerAnime(item)) return eps
+        val full = withTimeoutOrNull(12_000) {
+            AnimeMetadataRepository.animeFull(item.searchTitle)
+        } ?: return eps
+        if (full.episodes.isEmpty()) return eps
+        val byNumber = full.episodes.associate { it.number to it }
+        val showName = item.searchTitle
+        var changed = false
+        val out = eps.map { e ->
+            val a = byNumber[e.number] ?: return@map e
+            if (a.title.isNullOrBlank()) return@map e
+            val raw = e.name
+            val upgrade = raw.isNullOrBlank() ||
+                EpisodeTitles.looksMechanical(raw, showName) ||
+                EpisodeTitles.needsEnglish(raw, showName)
+            if (!upgrade || a.title == raw) return@map e
+            changed = true
+            e.copy(name = a.title)
         }
         return if (changed) out else eps
     }
@@ -6320,25 +6366,43 @@ class ContentRepository(private val manager: ProviderManager) {
      * cannot resolve keeps exactly what its source gave it.
      */
     private suspend fun backfillEpisodeDetails(item: MediaItem, eps: List<Episode>): List<Episode> {
-        if (eps.isEmpty() || TrackerAnimeResolver.isTrackerAnime(item)) return eps
-        if (eps.all {
+        if (eps.isEmpty()) return eps
+        val trackerAnime = TrackerAnimeResolver.isTrackerAnime(item)
+        val anime = trackerAnime || AnimeMetadataRepository.isAnimeItem(item)
+        val mode = AnimeMetadataRepository.normalizeMode(
+            runCatching { com.hikari.app.HikariApp.instance.store.animeMetadataSource() }.getOrDefault("anilist_simkl")
+        )
+        var list = eps
+        // Anime rows take AniList stills first (the only per-episode art
+        // AniList carries) — in every mode but "Simkl only".
+        if (anime && AnimeMetadataRepository.includesAnilist(mode) &&
+            runCatching { com.hikari.app.HikariApp.instance.store.animeMetadataEnabled() }.getOrDefault(true)
+        ) {
+            list = fillAnimeStills(item, list)
+        }
+        // ...then TMDB's descriptions the way it always did. Tracker rows only
+        // get the TMDB pass in "full" (AniList + Simkl + TMDB) mode, and
+        // "AniList only" never asks TMDB for anime rows at all.
+        if (trackerAnime && mode != "full") return list
+        if (anime && mode == "anilist") return list
+        if (list.all {
                 !it.overview.isNullOrBlank() && !it.released.isNullOrBlank() &&
                     it.rating != null && it.runtime != null
             }
         ) {
-            return eps
+            return list
         }
         // Same duplicate-number rule as [withRealEpisodeNames]: twins share one
         // TMDB row and each twin gets the same details filled in.
-        val numbers = eps.map { it.number }.toSet()
+        val numbers = list.map { it.number }.toSet()
         val language = com.hikari.app.nuvio.TmdbResolver.contentLanguage.takeIf { it.isNotBlank() }
         val map = withTimeoutOrNull(15_000) {
             com.hikari.app.nuvio.EpisodeTitles.details(item.searchTitle, item.year, numbers, language)
-        } ?: return eps
-        if (map.isEmpty()) return eps
-        val singleSeason = eps.map { it.season }.toSet().size == 1
+        } ?: return list
+        if (map.isEmpty()) return list
+        val singleSeason = list.map { it.season }.toSet().size == 1
         var changed = false
-        val out = eps.map { e ->
+        val out = list.map { e ->
             val d = if (singleSeason) map[e.number]
             else map.values.firstOrNull { it.season == e.season && it.number == e.number }
             if (d == null) return@map e
@@ -6355,6 +6419,29 @@ class ContentRepository(private val manager: ProviderManager) {
             } else {
                 e
             }
+        }
+        return if (changed) out else list
+    }
+
+    /**
+     * Fills blank episode stills from AniList (the only per-episode art it
+     * carries). Names are left to [animeEpisodeNames], which runs earlier with
+     * upgrade rules; this only patches what is still missing artwork.
+     */
+    private suspend fun fillAnimeStills(item: MediaItem, eps: List<Episode>): List<Episode> {
+        if (eps.none { it.image.isNullOrBlank() }) return eps
+        val full = withTimeoutOrNull(12_000) {
+            AnimeMetadataRepository.animeFull(item.searchTitle)
+        } ?: return eps
+        if (full.episodes.isEmpty()) return eps
+        val byNumber = full.episodes.associate { it.number to it }
+        var changed = false
+        val out = eps.map { e ->
+            val img = byNumber[e.number]?.image
+            if (e.image.isNullOrBlank() && !img.isNullOrBlank()) {
+                changed = true
+                e.copy(image = img)
+            } else e
         }
         return if (changed) out else eps
     }

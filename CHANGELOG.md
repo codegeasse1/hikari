@@ -1,3 +1,16 @@
+## 0.10.95
+
+Everything new and fixed since the last release (0.10.94):
+
+### Fixed
+
+- I fixed series detail putting the Play button in the wrong place on TV — movies keep title, then Mark, then Play in the hero, while series now carry their Play line just above the episode list in both TV layouts instead
+- I fixed anime metadata and tracker sync missing slightly-different names — anime now resolves through AniList first (canonical titles, every alias, episode names and stills), in parallel with Simkl so two sources never cost twice the time, and tracker sync retries a miss against every AniList alias before reporting no confident match. The integration setting now offers Simkl only, AniList only, AniList + Simkl, and AniList + Simkl + TMDB
+- I fixed search stopping at an arbitrary page count — providers are now scanned page by page with no cap, streaming into the grid as results land, with the time budgets still bounding slow providers
+- I fixed heavy codecs lagging although the video is fully loaded — a software-decoded 4K stream decodes slower than realtime no matter the buffer. The player now watches dropped frames and steps down to the next rendition the stream carries until playback is smooth, Auto quality only, never overriding an explicit pick, and caps at 720p with effects off while Android's battery saver is on
+- I fixed player boxes sometimes rendering cut off until reopen — a skin change moves the panel outline without resizing it, so the clip kept cutting along the old shape. The outline now rebuilds on skin changes and whenever the size on screen disagrees with it
+- I fixed Telegram playback growing app storage by gigabytes — a played file's local bytes are now dropped from TDLib's store when the player moves on and when it closes, so storage stops growing with every video
+
 ## 0.10.94
 
 Everything new and fixed since the last release (0.10.93):

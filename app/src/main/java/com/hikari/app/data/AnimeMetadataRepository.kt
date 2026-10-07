@@ -2,6 +2,8 @@ package com.hikari.app.data
 import com.hikari.app.HikariApp
 import com.hikari.app.net.Http
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.net.URLEncoder
@@ -165,22 +167,136 @@ object AnimeMetadataRepository {
     }
 
     suspend fun enrich(app: HikariApp, item: MediaItem): Metadata? = withContext(Dispatchers.IO) {
-        val anime = item.rawType.equals("anime", true) || item.providerId in setOf("anilist", "mal", "kitsu", "shikimori")
+        val anime = isAnimeItem(item) || item.providerId in setOf("anilist", "mal", "kitsu", "shikimori")
         if (!anime || !runCatching { app.store.animeMetadataEnabled() }.getOrDefault(true)) return@withContext null
-        val mode = runCatching { app.store.animeMetadataSource() }.getOrDefault("auto").lowercase()
+        val mode = normalizeMode(runCatching { app.store.animeMetadataSource() }.getOrDefault("anilist_simkl"))
         // The source picker is a real source selector, not merely a preference
-        // for the rating. The old code always queried AniList and only disabled
-        // Simkl when AniList was selected, so choosing "Simkl" still silently
-        // used AniList metadata and choosing "AniList" could never prove that
-        // the selected source was actually being used.
-        val ani = if (mode == "simkl") null else runCatching { aniList(item.searchTitle) }.getOrNull()
-        val sim = if (mode == "anilist") null else runCatching { simkl(app, item) }.getOrNull()
-        if (ani == null && sim == null) return@withContext null
-        Metadata(
-            ani?.title ?: sim?.title,
-            if (mode == "simkl") sim?.rating else ani?.rating ?: sim?.rating,
-            ani?.nextEpisodeDate ?: sim?.nextEpisodeDate,
-            listOfNotNull(sim?.source, ani?.source).distinct().joinToString(" + "),
+        // for the rating. Both sources are asked in PARALLEL, so choosing two
+        // costs the slower one — never the sum.
+        return@withContext coroutineScope {
+            val ani = if (mode == "simkl") null
+            else async { runCatching { aniList(item.searchTitle) }.getOrNull() }
+            val sim = if (mode == "anilist") null
+            else async { runCatching { simkl(app, item) }.getOrNull() }
+            val a = ani?.await()
+            val s = sim?.await()
+            if (a == null && s == null) return@coroutineScope null
+            Metadata(
+                a?.title ?: s?.title,
+                if (mode == "simkl") s?.rating else a?.rating ?: s?.rating,
+                a?.nextEpisodeDate ?: s?.nextEpisodeDate,
+                listOfNotNull(s?.source, a?.source).distinct().joinToString(" + "),
+            )
+        }
+    }
+
+    /** "auto" is the pre-0.10.95 stored value: AniList + Simkl, AniList first. */
+    fun normalizeMode(raw: String): String = when (raw.trim().lowercase()) {
+        "simkl", "anilist", "anilist_simkl", "full" -> raw.trim().lowercase()
+        else -> "anilist_simkl"
+    }
+
+    fun includesAnilist(mode: String): Boolean = normalizeMode(mode) != "simkl"
+
+    /** True for anything that should read anime metadata: tracker anime rows
+     *  and extension rows typed as anime. */
+    fun isAnimeItem(item: MediaItem): Boolean =
+        item.rawType.equals("anime", true) ||
+            item.providerId.lowercase() in setOf("anilist", "mal", "kitsu", "shikimori", "simkl")
+
+    data class AnimeEp(val number: Int, val title: String?, val image: String?)
+
+    /**
+     * One anime's canonical AniList record: every title spelling AniList knows
+     * (romaji, English, native + synonyms), the description, the score and the
+     * per-episode titles/thumbnails AniList carries. A single GraphQL read,
+     * cached per title — the tracker sync matches against [aliases] so a
+     * slightly different spelling ("a little bit different") still resolves
+     * to the exact entry instead of "no confident match".
+     */
+    data class AnimeFull(
+        val title: String?,
+        val description: String?,
+        val rating: Double?,
+        val nextEpisodeDate: String?,
+        val episodes: List<AnimeEp>,
+        val aliases: Set<String>,
+        val anilistId: Int,
+    )
+
+    private data class FullEntry(val at: Long, val full: AnimeFull?)
+
+    private val fullCache = ConcurrentHashMap<String, FullEntry>()
+    private const val FULL_TTL_MS = 24 * 60 * 60 * 1000L
+
+    suspend fun animeFull(title: String): AnimeFull? = withContext(Dispatchers.IO) {
+        val wanted = title.trim()
+        if (wanted.isEmpty()) return@withContext null
+        val key = wanted.lowercase()
+        fullCache[key]?.let { if (System.currentTimeMillis() - it.at < FULL_TTL_MS) return@withContext it.full }
+        val full = runCatching { fetchAnimeFull(wanted) }.getOrNull()
+        fullCache[key] = FullEntry(System.currentTimeMillis(), full)
+        if (fullCache.size > 300) fullCache.keys.firstOrNull()?.let { fullCache.remove(it) }
+        full
+    }
+
+    /** Every spelling AniList knows for [title]: exact-match fuel for tracker sync. */
+    suspend fun aliasesFor(title: String): Set<String> =
+        animeFull(title)?.aliases.orEmpty()
+
+    private fun fetchAnimeFull(wanted: String): AnimeFull? {
+        val query = "query{Media(search:" + JSONObject.quote(wanted) +
+            ",type:ANIME){id title{userPreferred english romaji native} synonyms " +
+            "description(asHtml:false) averageScore " +
+            "nextAiringEpisode{airingAt episode} " +
+            "streamingEpisodes{title thumbnail site}}}"
+        val raw = Http.postStringQuiet(
+            "https://graphql.anilist.co",
+            JSONObject().put("query", query).toString(),
+        ) ?: return null
+        val media = runCatching {
+            JSONObject(raw).optJSONObject("data")?.optJSONObject("Media")
+        }.getOrNull() ?: return null
+        val titles = media.optJSONObject("title")
+        val displayTitle = titles?.optString("userPreferred").takeIf { !it.isNullOrBlank() }
+            ?: titles?.optString("english").takeIf { !it.isNullOrBlank() }
+        val aliases = buildSet {
+            listOf(
+                titles?.optString("userPreferred"),
+                titles?.optString("english"),
+                titles?.optString("romaji"),
+                titles?.optString("native"),
+            ).forEach { t -> if (!t.isNullOrBlank()) add(t.trim()) }
+            val syns = media.optJSONArray("synonyms")
+            for (i in 0 until (syns?.length() ?: 0)) {
+                syns?.optString(i)?.trim()?.takeIf { it.isNotBlank() }?.let { add(it) }
+            }
+        }
+        val score = media.optDouble("averageScore", 0.0).takeIf { it > 0 }?.div(10.0)
+        val next = media.optJSONObject("nextAiringEpisode")?.optLong("airingAt", 0L)?.takeIf { it > 0 }
+            ?.let { java.time.Instant.ofEpochSecond(it).toString() }
+        val eps = ArrayList<AnimeEp>()
+        val seen = HashSet<Int>()
+        val streams = media.optJSONArray("streamingEpisodes")
+        val epRe = Regex("""(?i)^\s*(?:episode|ep\.?|e)?\s*(\d{1,4})\s*[-–—:.|]?\s*(.*)$""")
+        for (i in 0 until (streams?.length() ?: 0)) {
+            val o = streams?.optJSONObject(i) ?: continue
+            val m = epRe.find(o.optString("title").trim()) ?: continue
+            val n = m.groupValues[1].toIntOrNull() ?: continue
+            if (n < 1 || n > 4000 || !seen.add(n)) continue
+            val name = m.groupValues[2].trim().takeIf { it.isNotBlank() }
+            val img = o.optString("thumbnail").trim().takeIf { it.startsWith("http") }
+            eps += AnimeEp(n, name, img)
+        }
+        if (displayTitle == null && aliases.isEmpty()) return null
+        return AnimeFull(
+            displayTitle,
+            media.optString("description").trim().takeIf { it.isNotBlank() },
+            score,
+            next,
+            eps.sortedBy { it.number },
+            aliases,
+            media.optInt("id", 0),
         )
     }
 

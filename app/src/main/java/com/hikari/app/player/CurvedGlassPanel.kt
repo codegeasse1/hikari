@@ -242,10 +242,16 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
         }
         requestLayout()
         invalidate()
+        // Same size, new outline: rebuild it now instead of waiting for a
+        // resize that may never come (see [rebuildShape]).
+        if (width > 0 && height > 0) rebuildShape(width, height)
     }
 
     private val shapePath = Path()
     private val sidesPath = Path()
+    /** The size [shapePath]/[sidesPath] were last built for (see [rebuildShape]). */
+    private var shapeW = -1
+    private var shapeH = -1
     private val rect = Rect()
     private val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
@@ -326,6 +332,25 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
+        rebuildShape(w, h)
+    }
+
+    /**
+     * (Re)builds the silhouette, its paint and the content padding for [w]×[h].
+     *
+     * This used to live inline in [onSizeChanged], which only runs when the
+     * SIZE changes — but the outline also moves when the SKIN changes (see
+     * [applySkin]: flat vs curved, another corner radius), and the first
+     * layout can measure before the real size is known. Both left the clip in
+     * [dispatchDraw] cutting along a stale box while the rows had already been
+     * laid out for the new one: boxes sliced until something resized the panel
+     * (reopening always did). The path now rebuilds for the size on screen
+     * whenever it is stale, wherever the change came from.
+     */
+    private fun rebuildShape(w: Int, h: Int) {
+        if (w <= 0 || h <= 0) return
+        shapeW = w
+        shapeH = h
         passes = 0
         val left = shapeLeft()
         val top = shapeTop()
@@ -456,6 +481,11 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
     }
 
     override fun dispatchDraw(canvas: Canvas) {
+        // The clip must match the size on screen, not the size of the last
+        // size change (see [rebuildShape]).
+        if ((width != shapeW || height != shapeH) && width > 0 && height > 0) {
+            rebuildShape(width, height)
+        }
         val save = canvas.save()
         canvas.clipPath(shapePath)
         super.dispatchDraw(canvas)

@@ -6205,19 +6205,19 @@ private fun TrackerServiceCard(
 private fun AnimeMetadataIntegrationCard(app: HikariApp) {
     val scope=rememberCoroutineScope()
     val enabled by app.store.animeMetadataEnabledFlow().collectAsState(initial=true)
-    val source by app.store.animeMetadataSourceFlow().collectAsState(initial="auto")
+    val source by app.store.animeMetadataSourceFlow().collectAsState(initial="anilist_simkl")
     var picker by remember { mutableStateOf(false) }
-    val labels=mapOf("auto" to tr("Automatic — Simkl + AniList"),"simkl" to tr("Simkl ratings + AniList airing"),"anilist" to tr("AniList metadata"))
+    val labels=mapOf("simkl" to tr("Simkl only"),"anilist" to tr("AniList only"),"anilist_simkl" to tr("AniList + Simkl"),"full" to tr("AniList + Simkl + TMDB"))
     Column(Modifier.padding(16.dp)) {
         SettingsCardHeading(Icons.Filled.AutoAwesome,tr("Anime metadata"))
         Spacer(Modifier.height(8.dp))
-        Text(tr("Use dedicated anime metadata for title, rating and next-episode release without changing which extension supplies playback."),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(tr("Use dedicated anime metadata for title, rating and next-episode release without changing which extension supplies playback. AniList answers episode names too, which is also what tracker sync matches against."),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(Modifier.height(12.dp))
         SettingsToggle(label=tr("Enable anime metadata"),supporting=tr("Applied when Hikari resolves anime metadata; stream providers remain unchanged."),checked=enabled,onCheckedChange={scope.launch{app.store.setAnimeMetadataEnabled(it)}})
         Spacer(Modifier.height(8.dp))
-        ChoiceRow(value=labels[source] ?: source,leadingIcon=Icons.Filled.AutoAwesome,onClick={picker=true})
+        ChoiceRow(value=labels[com.hikari.app.data.AnimeMetadataRepository.normalizeMode(source)] ?: source,leadingIcon=Icons.Filled.AutoAwesome,onClick={picker=true})
     }
-    if(picker) ChoiceDialog(title=tr("Anime metadata source"),items=labels.map{(k,v)->ChoiceItem(k,v)},selectedKey=source,onPick={scope.launch{app.store.setAnimeMetadataSource(it)}},onDismiss={picker=false})
+    if(picker) ChoiceDialog(title=tr("Anime metadata source"),items=labels.map{(k,v)->ChoiceItem(k,v)},selectedKey=com.hikari.app.data.AnimeMetadataRepository.normalizeMode(source),onPick={scope.launch{app.store.setAnimeMetadataSource(it)}},onDismiss={picker=false})
 }
 
 @Composable
