@@ -783,7 +783,21 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                     val gen = newEpisodeGeneration()
                     try {
                         val list = loadEpisodesFor(meta, gen)
-                        if (gen == episodeGeneration) _episodes.value = list
+                        if (gen == episodeGeneration) {
+                            _episodes.value = list
+                            // The catalog row never knew the type (UNKNOWN) and
+                            // the origin's meta did not say either — but two or
+                            // more episodes ARE a series. Correct the item so
+                            // the Play button, the Library filing and History
+                            // all treat it as one (see [detailIsSeries], which
+                            // already rendered it as a series from the list
+                            // alone). A single row proves nothing (films are
+                            // listed as one entry by some providers), so those
+                            // keep whatever type they arrived with.
+                            if (list.size >= 2 && _meta.value?.type != MediaType.SERIES) {
+                                _meta.value = _meta.value?.copy(type = MediaType.SERIES)
+                            }
+                        }
                     } finally {
                         if (gen == episodeGeneration) {
                             _episodesLoading.value = false
@@ -909,7 +923,15 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             val gen = newEpisodeGeneration()
             try {
                 val list = loadEpisodesFor(item, gen)
-                if (gen == episodeGeneration) _episodes.value = list
+                if (gen == episodeGeneration) {
+                    _episodes.value = list
+                    // Same type correction as the initial load above: a retry
+                    // (or a Vega pack switch) that lands two or more episodes
+                    // on an UNKNOWN-typed item proves it is a series.
+                    if (list.size >= 2 && _meta.value?.type != MediaType.SERIES) {
+                        _meta.value = _meta.value?.copy(type = MediaType.SERIES)
+                    }
+                }
             } finally {
                 if (gen == episodeGeneration) {
                     _episodesLoading.value = false

@@ -380,7 +380,7 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
     /** Normalizes any addon type string to a MediaType. The Stremio client
      *  accepts arbitrary type strings; we map obvious movies to MOVIE and
      *  EVERYTHING else to SERIES so no catalog is ever dropped. */
-    private fun typeOf(t: String): MediaType = when (t.lowercase()) {
+    private fun typeOf(t: String): MediaType = when (t.trim().lowercase()) {
         "movie", "movies", "film", "feature-film", "feature" -> MediaType.MOVIE
         else -> MediaType.SERIES
     }
@@ -675,9 +675,29 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
         // A series' /meta document frequently declares a different type than
         // the catalog row that produced the item (e.g. an addon exposed it via
         // a "movie"-typed catalog). Trust any explicit "type" the meta carries
-        // so the detail screen stops showing only Play for a real series.
-        val correctedRaw = m.optString("type").ifBlank { item.rawType }
-        val correctedType = if (correctedRaw.isBlank()) item.type else typeOf(correctedRaw)
+        // so the detail screen stops showing only Play for a real series —
+        // and cross-check it against the meta's own episode list, because a
+        // catalog can also mistag the other way (a film filed under a custom
+        // "series"/"tv" type string, which [typeOf] maps to SERIES). A movie
+        // meta never carries two videos; a videos list with episode-shaped
+        // entries (season/episode fields, or a "tt…:s:e" id) is a series no
+        // matter what the catalog row claimed.
+        val declaredType = m.optString("type").trim()
+        val videosSaySeries = run {
+            val videos = m.optJSONArray("videos") ?: return@run false
+            if (videos.length() > 1) return@run true
+            val v = videos.optJSONObject(0) ?: return@run false
+            v.has("episode") || v.has("season") || v.optString("id").contains(":")
+        }
+        val correctedRaw = when {
+            videosSaySeries && (declaredType.isBlank() || typeOf(declaredType) != MediaType.SERIES) -> "series"
+            else -> declaredType.ifBlank { item.rawType }
+        }
+        val correctedType = when {
+            videosSaySeries -> MediaType.SERIES
+            correctedRaw.isBlank() -> item.type
+            else -> typeOf(correctedRaw)
+        }
         return item.copy(
             type = correctedType,
             rawType = correctedRaw,

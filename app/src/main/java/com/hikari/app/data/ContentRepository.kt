@@ -2567,11 +2567,27 @@ class ContentRepository(private val manager: ProviderManager) {
         // The only thing that can notice a plugin which has stopped coming back,
         // and give its concurrency slot to the rest of the queue (see [crossHung]).
         ensureHangWatchdog()
+        // providerOutcome entries this pass writes itself (see below): primaries
+        // are cleared at the start of every pass, so anything that appears (or
+        // changes) under our feet was written by THIS pass, not an older one.
+        val outcomeBefore = HashMap(providerOutcome)
         try {
-            return StreamLookup(
-                streamsForInner(item, episode, onProgress, onOriginSettled),
-                complete = true,
-            )
+            val servers = streamsForInner(item, episode, onProgress, onOriginSettled)
+            if (servers.isNotEmpty()) return StreamLookup(servers, complete = true)
+            // Empty is only an ANSWER when every provider really answered. A
+            // cold plugin (its first call still spinning the runtime up), a
+            // dropped request, a call cut off by the deadline — [fetchStreams]
+            // records those as "✗ …" rather than "no servers" — knows nothing
+            // about the title, and reporting it as "no playable sources" is the
+            // "servers exist but the first tap finds none; the 4th or 5th works"
+            // report (each manual retry was a fresh pass against a warmer
+            // runtime). Say so honestly: the play flow retries an unfinished
+            // lookup automatically instead of declaring none (see
+            // [StreamLookup] and the final-read loop at the play call site).
+            val unanswered = providerOutcome.any { (id, verdict) ->
+                verdict != outcomeBefore[id] && isNoAnswer(verdict)
+            }
+            return StreamLookup(emptyList(), complete = !unanswered)
         } catch (e: kotlinx.coroutines.CancellationException) {
             // OUR job being cancelled means the caller went away — propagate it.
             // A cancellation from INSIDE the pass is a different story: the pass
@@ -5106,7 +5122,7 @@ class ContentRepository(private val manager: ProviderManager) {
                 recordStreamMessage(p, "Has the title, but its episode list failed: $epFailure")
                 return emptyList<StreamSource>() to "episode list failed: $epFailure"
             }
-            val match = matchCrossEpisode(eps, episode)
+            val match = matchCrossEpisode(eps, episode, best.title)
             if (match == null) {
                 recordStreamMessage(p, "Has the title, but not S${episode.season}E${episode.number}.")
                 return emptyList<StreamSource>() to
@@ -5166,11 +5182,32 @@ class ContentRepository(private val manager: ProviderManager) {
      * labelled otherwise); the episode at the flat position it would occupy in a
      * single list of the whole show; and finally that number in any season.
      */
-    private fun matchCrossEpisode(eps: List<Episode>, wanted: Episode): Episode? {
+    private fun matchCrossEpisode(
+        eps: List<Episode>,
+        wanted: Episode,
+        /** Title of the repo entry the list was read from (see the call in
+         *  [crossExtensionExtract]): needed for the season-conflict gate below. */
+        entryTitle: String? = null,
+    ): Episode? {
         if (eps.isEmpty()) return null
         eps.firstOrNull { it.season == wanted.season && it.number == wanted.number }
             ?.let { return it }
         if (wanted.number <= 0) return null
+        // A repo entry that NAMES its season ("Show Season 1", "Part 2",
+        // "斗破苍穹 第二季") is that season's page, not the show's: when it names
+        // a DIFFERENT season than the one being played — and its list really is
+        // that season's (some row carries the named season) — the positional
+        // fallbacks below would hand back another season's episode as this one
+        // (S1E5 played for an S2E5 tap: the "search all finds a different
+        // video" report). Only the exact match above is allowed then. A
+        // relatively-numbered list (no row carries the named season) still
+        // falls through, because that numbering IS the named season's own.
+        val statedSeason = entryTitle?.let { TmdbMeta.seasonHint(it) }
+        if (statedSeason != null && statedSeason != wanted.season &&
+            eps.any { it.season == statedSeason }
+        ) {
+            return null
+        }
         val seasons = eps.map { it.season }.distinct().sorted()
         // One season only: its "episode N" IS the wanted episode (the extension
         // either has a single season or never labels them at all).
@@ -6577,7 +6614,20 @@ class ContentRepository(private val manager: ProviderManager) {
         publish: (List<Episode>) -> List<Episode>,
     ): List<Episode> {
         val restored = restoreAnimeSeasons(item, named)
-        val filled = backfillEpisodeDetails(item, publish(restored))
+        // The TMDB enrichment tail (names, then details) is a nicety, never a
+        // gate: the extension's own list is already on screen via [publish],
+        // and each pass below gives up on its own. Bound the pair together to
+        // ten seconds wall-clock — past that the extension's data stands as-is
+        // instead of the page sitting on "Loading episodes…" for minutes while
+        // a slow TMDB answer trickles in.
+        val enrichEnd = System.currentTimeMillis() + 10_000L
+        fun enrichLeft() = (enrichEnd - System.currentTimeMillis()).coerceAtLeast(0L)
+        val withNames = if (enrichLeft() > 0L) {
+            withTimeoutOrNull(enrichLeft()) { withRealEpisodeNames(item, restored) } ?: restored
+        } else restored
+        val filled = if (enrichLeft() > 0L) {
+            withTimeoutOrNull(enrichLeft()) { backfillEpisodeDetails(item, publish(withNames)) } ?: withNames
+        } else withNames
         val out = publish(filled)
         synchronized(episodeCache) { episodeCache[selKey] = out }
         MetaCache.putEpisodes(epsKey, out)

@@ -287,14 +287,19 @@ class HikariApp : Application() {
 
     /**
      * Extension auto-open guard (see [com.hikari.app.net.ExtensionUiGuard]):
-     * dialogs/popups and external intents from extension code pass only on a
-     * user gesture (or inside the allow-window). Our own calls always pass.
-     * Application context covers the plugins that build UI on it instead of
-     * on an activity.
+     * external intents from extension code pass only on a user gesture (or
+     * inside the allow-window). Our own calls always pass. Application
+     * context covers the plugins that build UI on it instead of on an
+     * activity.
+     *
+     * Deliberately NO getSystemService/WindowManager interception here:
+     * Android's Dialog construction casts the context's WindowManager back
+     * to the framework implementation, so a proxy crashes EVERY dialog in
+     * the app (ClassCastException: $Proxy cannot be cast to
+     * WindowManagerImpl). Floating-window popups stay covered by the
+     * DialogFragment dismissal plus the preference forcing in
+     * [ExtensionVerifyGuard].
      */
-    override fun getSystemService(name: String): Any? =
-        com.hikari.app.net.ExtensionUiGuardMixins.windowService(name, super.getSystemService(name))
-
     override fun startActivity(intent: android.content.Intent) {
         if (com.hikari.app.net.ExtensionUiGuardMixins.startAllowed(intent)) super.startActivity(intent)
     }

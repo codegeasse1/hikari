@@ -1341,12 +1341,12 @@ class PlayerActivity : ComponentActivity() {
 
     /**
      * Extension auto-open guard (see [com.hikari.app.net.ExtensionUiGuard]):
-     * floating windows and external intents from extension code pass only on
-     * a user gesture (or inside the allow-window). Our own calls always pass.
+     * external intents from extension code pass only on a user gesture (or
+     * inside the allow-window). Our own calls always pass.
+     *
+     * Deliberately NO getSystemService/WindowManager interception here (a
+     * proxy crashes EVERY dialog — ClassCastException on WindowManagerImpl).
      */
-    override fun getSystemService(name: String): Any? =
-        com.hikari.app.net.ExtensionUiGuardMixins.windowService(name, super.getSystemService(name))
-
     override fun startActivity(intent: android.content.Intent) {
         if (com.hikari.app.net.ExtensionUiGuardMixins.startAllowed(intent)) super.startActivity(intent)
     }
