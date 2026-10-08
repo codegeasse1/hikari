@@ -411,8 +411,8 @@ object Profiles {
      * else) must ask first (see [needsPassword] and [unlock]). A password
      * asked at select time is the lock; a switch that skips it is the hole.
      */
-    suspend fun switchTo(app: HikariApp, id: String): Boolean = lock.withLock {
-        switchLocked(app, id)
+    suspend fun switchTo(app: HikariApp, id: String): Boolean {
+        return lock.withLock { switchLocked(app, id) }
     }
 
     private suspend fun switchLocked(app: HikariApp, id: String): Boolean {
@@ -437,7 +437,7 @@ object Profiles {
         } else {
             Logs.log("Profiles", "using \"${target.name}\"")
         }
-        true
+        return true
     }
 
     /** Applies one profile's snapshot to the store, downloads and live state. */
