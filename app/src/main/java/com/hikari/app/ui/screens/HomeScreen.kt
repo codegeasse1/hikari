@@ -358,6 +358,25 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
                 loadInternal(forceRefresh = true)
             }
         }
+        viewModelScope.launch {
+            restored.await()
+            // A profile switch REPLACES the whole store under this screen
+            // (see Profiles.replacePreferences): the pick read once in init
+            // would otherwise keep showing the profile that was just left —
+            // its home catalogue, its rows — on the new profile's screen.
+            // Re-apply whenever the store's own pick changes out from under
+            // us, so a profile only ever shows its own catalogue. Equality-
+            // guarded (like setSelection above), so our own writes never loop.
+            store.homeProvidersFlow().collect { multi ->
+                val single = runCatching { store.homeProvider() }.getOrDefault("")
+                val want = if (multi.isNotEmpty()) multi.toList()
+                else listOfNotNull(single.ifBlank { null })
+                if (want != _selection.value) {
+                    applySelection(want)
+                    loadInternal()
+                }
+            }
+        }
     }
 
     /** True when a stored Home pick refers to a collection, not an extension. */

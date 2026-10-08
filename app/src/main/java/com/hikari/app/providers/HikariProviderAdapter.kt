@@ -72,6 +72,28 @@ class HikariProviderAdapter(override val config: ProviderConfig) : ContentProvid
         }
 
     /**
+     * Same as [provider], but waits briefly when the extension is not ready
+     * yet instead of answering null instantly.
+     *
+     * The first access loads the plugin (a dex load plus the plugin's own
+     * init), and a Play tap that lands mid-load used to read the transient
+     * null as a PERMANENT empty answer — "no playable sources" for a title
+     * whose extension simply had not finished loading, while the next tap met
+     * a warm runtime and played. Only a sustained null (past the wait) is
+     * believed. Bounded and short: this runs inside the provider gate and the
+     * pass budgets, so it can never hold a lookup hostage.
+     */
+    private suspend fun awaitProvider(timeoutMs: Long = 2_500L): HikariProvider? {
+        provider?.let { return it }
+        val end = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < end) {
+            kotlinx.coroutines.delay(250L)
+            provider?.let { return it }
+        }
+        return provider
+    }
+
+    /**
      * The `.hiki` bundle's own answer to "is this an 18+ extension", read
      * straight out of the archive.
      *
@@ -213,7 +235,7 @@ class HikariProviderAdapter(override val config: ProviderConfig) : ContentProvid
 
     override suspend fun getEpisodes(item: MediaItem): List<Episode>? {
         if (item.type == MediaType.MOVIE) return null
-        val p = provider ?: return null
+        val p = awaitProvider() ?: return null
         return p.getEpisodes(item.toExt())?.map { ep ->
             val base = ep.name ?: "Episode ${ep.number}"
             Episode(
@@ -227,7 +249,7 @@ class HikariProviderAdapter(override val config: ProviderConfig) : ContentProvid
     }
 
     override suspend fun getStreams(item: MediaItem, episode: Episode?): List<StreamSource> {
-        val p = provider ?: return emptyList()
+        val p = awaitProvider() ?: return emptyList()
         val ep = episode?.let { HikariEpisode(it.number, it.id, it.name, it.image) }
         // One call at a time into this extension: a bridge provider that keeps
         // state (see [ProviderGate]) is corrupted by two concurrent passes.

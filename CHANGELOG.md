@@ -1,3 +1,14 @@
+## Unreleased (continuous build only)
+
+### Fixed
+
+- I fixed the "no playable sources, plays on the 9th tap" shape for every extension: a cold origin answered empty in milliseconds and burned both attempts before its runtime came up, and every tap wrote back the identical verdict string so the pass honesty check read it as "nothing changed" and declared the search finished. The origin now gets a warm pause between attempts (3 attempts), pass verdicts are stamped per-pass so a repeated identical verdict still counts as unfinished, Nuvio engines get their full 60s call budget instead of being cut at 45s mid-run, the final read retries up to 8 times, and a cold .hiki runtime is waited on briefly instead of believed empty
+- Detail pages now show their header and episodes within 3 seconds: whatever meta/TMDB has answered by then is what paints (the extension's own data when TMDB is slow), the TMDB episode shortcut and enrichment tail share one 3s budget, and the full meta repaints the header when it lands
+- Reanime specifically was the same hang class (cut at 45s, answering later in the background): covered by the Nuvio budget fix plus the universal origin fix above
+- I fixed MovieLinkBD movies reporting "page parsed OK, but produced no stream links": the site rebuilt its watch pages around an encrypted player blob, which this build now decodes directly (per-quality MLBD CDN file urls with the page's own mg token) when the installed plugin's version cannot see them
+- Profile passwords are now asked when a locked profile is SELECTED or OPENED, never just for opening the app: launching into a locked profile opens the profile picker first, the launch gate's switcher asks a locked target's password inline, and switching itself refuses a locked target any caller did not unlock
+- Switching profiles no longer shows the previous profile's home catalogue: Home re-applies the store's own pick whenever a profile switch replaces it, so a profile only ever shows its own catalogue
+
 ## 0.11.03
 
 ### Added

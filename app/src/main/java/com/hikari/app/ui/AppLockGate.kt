@@ -1069,22 +1069,43 @@ private fun ProfileGateCard(
     var pw by remember(profile.id) { mutableStateOf("") }
     var wrong by remember(profile.id) { mutableStateOf(false) }
     var checking by remember(profile.id) { mutableStateOf(false) }
-    var pickOther by remember { mutableStateOf(false) }
+    // Launching the app is CHOOSING, never a bare password demand: with other
+    // profiles around, the picker is what opens first, and the password is
+    // asked when a locked profile is selected or opened — never just for
+    // opening the app. A single locked profile still asks directly (there is
+    // nothing else to pick).
+    var pickOther by remember { mutableStateOf(others.isNotEmpty()) }
     var switchingTo by remember { mutableStateOf<String?>(null) }
+    // The profile the password field below is for: null means the active
+    // profile this card guards, otherwise a locked profile picked from the
+    // switcher whose password is asked inline before entering it.
+    var pwTarget by remember(profile.id) {
+        mutableStateOf<com.hikari.app.data.Profiles.Profile?>(null)
+    }
 
     fun check() {
         if (pw.isBlank() || checking) return
         checking = true
         val attempt = pw
+        val target = pwTarget ?: profile
         scope.launch {
             val res = runCatching {
-                com.hikari.app.data.Profiles.unlock(app, profile.id, attempt)
+                com.hikari.app.data.Profiles.unlock(app, target.id, attempt)
             }.getOrNull()
             checking = false
             if (res == com.hikari.app.data.Profiles.UnlockResult.OK ||
                 res == com.hikari.app.data.Profiles.UnlockResult.NO_SECRET
             ) {
-                onUnlocked()
+                if (target.id == profile.id) {
+                    onUnlocked()
+                } else {
+                    // Enter it. switchTo still refuses a target it does not
+                    // know as unlocked, so a stale tap can never slip through
+                    // here either (see Profiles.switchTo).
+                    runCatching { com.hikari.app.data.Profiles.switchTo(app, target.id) }
+                    pwTarget = null
+                    onSwitched()
+                }
             } else {
                 wrong = true
             }
@@ -1105,7 +1126,7 @@ private fun ProfileGateCard(
             )
             Spacer(Modifier.height(12.dp))
             Text(
-                "\"" + profile.name + "\" " + tr("is locked"),
+                "\"" + (pwTarget ?: profile).name + "\" " + tr("is locked"),
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.SemiBold,
             )
@@ -1170,17 +1191,48 @@ private fun ProfileGateCard(
             title = { Text(tr("Switch profile")) },
             text = {
                 Column {
+                    // The locked profile this card guards, first: tapping it
+                    // asks its password in the field below, so opening the app
+                    // is choosing which profile to open — the password is
+                    // asked for the one that is picked, not for launching.
+                    TextButton(
+                        enabled = switchingTo == null,
+                        onClick = {
+                            pwTarget = null
+                            pw = ""
+                            wrong = false
+                            pickOther = false
+                        },
+                    ) {
+                        Icon(
+                            Icons.Filled.Lock,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(profile.name)
+                    }
                     for (p in others) {
                         val busy = switchingTo == p.id
                         TextButton(
                             enabled = switchingTo == null,
                             onClick = {
-                                switchingTo = p.id
-                                scope.launch {
-                                    runCatching { com.hikari.app.data.Profiles.switchTo(app, p.id) }
-                                    switchingTo = null
+                                if (com.hikari.app.data.Profiles.needsPassword(p)) {
+                                    // A locked profile is never entered
+                                    // directly from here: its password is
+                                    // asked inline first (see check()).
+                                    pwTarget = p
+                                    pw = ""
+                                    wrong = false
                                     pickOther = false
-                                    onSwitched()
+                                } else {
+                                    switchingTo = p.id
+                                    scope.launch {
+                                        runCatching { com.hikari.app.data.Profiles.switchTo(app, p.id) }
+                                        switchingTo = null
+                                        pickOther = false
+                                        onSwitched()
+                                    }
                                 }
                             },
                         ) {

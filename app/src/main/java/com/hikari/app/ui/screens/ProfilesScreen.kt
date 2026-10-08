@@ -94,6 +94,7 @@ fun ProfilesScreen(app: HikariApp, onBack: () -> Unit) {
     val msgNowUsing = tr("Now using")
     val msgOtherKept = tr("The other setup is still here — switch back any time.")
     val msgSwitchFailed = tr("Could not switch profile. The current one is unchanged.")
+    val msgLockedFirst = tr("That profile is locked — enter its password first.")
     val msgDefaultName = tr("Default")
     val msgCreated = tr("Created. You can switch between this and your other setup any time.")
     val msgCreateFailed = tr("Could not create that profile.")
@@ -199,10 +200,16 @@ fun ProfilesScreen(app: HikariApp, onBack: () -> Unit) {
         scope.launch {
             val result = runCatching { Profiles.switchTo(app, profile.id) }
             busy = false
-            status = if (result.isSuccess) {
+            // switchTo itself refuses a locked target (defense in depth: the
+            // row already asked via askProfileGate, but no caller may enter a
+            // locked profile without its password).
+            val moved = result.getOrDefault(false)
+            status = if (moved) {
                 msgNowUsing + " \"" + profile.name + "\". " + msgOtherKept
-            } else {
+            } else if (result.isFailure) {
                 msgSwitchFailed
+            } else {
+                msgLockedFirst
             }
         }
     }

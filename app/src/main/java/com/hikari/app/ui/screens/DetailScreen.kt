@@ -744,6 +744,29 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             if (!com.hikari.app.data.IptvMark.of(base)) {
                 launch { loadShelves(metaDeferred.await()) }
             }
+            // The 3-second rule: the header and the episode list are on screen
+            // within 3 seconds — TMDB-enriched when TMDB answered in time, the
+            // extension's own data otherwise. The origin's /meta is usually the
+            // slow part (a cold runtime, a Stremio race, an anime enrichment),
+            // so the page never waits on it: whatever is ready at 3s is what
+            // the episodes are asked for, and the full meta repaints the header
+            // when it lands. Guarded by the episode generation, so a stale load
+            // can never repaint a newer page.
+            val gen = newEpisodeGeneration()
+            val fastMeta = withTimeoutOrNull(3_000L) { metaDeferred.await() }
+            launch {
+                val full = runCatching { metaDeferred.await() }.getOrNull() ?: return@launch
+                if (gen == episodeGeneration) {
+                    val cur = _meta.value
+                    _meta.value = full.copy(
+                        title = base.title.ifBlank { full.title },
+                        originalTitle = base.originalTitle.ifBlank { full.originalTitle },
+                        // Two or more episodes already proved this is a series
+                        // (see below): a late meta must not uncorrect that.
+                        type = if (cur?.type == MediaType.SERIES) MediaType.SERIES else full.type,
+                    )
+                }
+            }
             withContext(Dispatchers.IO) {
                 // The origin's own meta corrects the item's TYPE before the
                 // episode list is asked for — CS3 plugins can label a series page
@@ -751,8 +774,11 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 // NSFW→MOVIE), and getMeta corrects it from the LoadResponse, so
                 // episodes must be fetched against the CORRECTED item
                 // (loadResponse is cached, so this stays a single origin fetch).
-                // The fetch itself was started above, together with the shelves.
-                val meta = metaDeferred.await()
+                // The fetch itself was started above, together with the shelves;
+                // [fastMeta] is whatever it had ready at 3 seconds (or the
+                // row's own data when it had nothing yet) — the full answer
+                // repaints the header above when it lands.
+                val meta = fastMeta ?: base
                 // THE PAGE NEVER RENAMES ITSELF.
                 //
                 // The origin's /meta answers with ITS OWN title — the site's
@@ -780,7 +806,6 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                     _episodesLoaded.value = true
                 } else {
                     _episodesLoading.value = true
-                    val gen = newEpisodeGeneration()
                     try {
                         val list = loadEpisodesFor(meta, gen)
                         if (gen == episodeGeneration) {
@@ -1470,8 +1495,13 @@ private const val STREAMS_FINAL_CAP_MS = 80_000L
  *  back without a verdict (see [StreamLookup]). Each retry either JOINS the pass
  *  that is still running for this title via [StreamCache] or, when that pass
  *  really died, starts it once more — so this is a bounded "try again", not a
- *  way to re-run every extension in a loop. */
-private const val STREAMS_FINAL_RETRIES = 3
+ *  way to re-run every extension in a loop.
+ *
+ *  Eight, because a cold origin burns whole passes in milliseconds (see the
+ *  warm pause in [ContentRepository.fetchStreams]): three retries were spent
+ *  before the runtime had come up, and the 4th–9th manual taps were what found
+ *  the servers. The 80s cap above still binds the total. */
+private const val STREAMS_FINAL_RETRIES = 8
 
 /** Breather between those retries, so a pass that keeps dying does not spin. */
 private const val SEARCH_RETRY_PAUSE_MS = 1_500L

@@ -842,7 +842,20 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                         // StreamHG/StreamGG sign-dance (page -> player -> token
                         // API) takes several requests; 12s was too tight for
                         // the last-resort pass.
-                        withTimeoutOrNull(FALLBACK_CAP_MS) { FallbackResolver.resolve(fallbackTarget) } ?: emptyList()
+                        withTimeoutOrNull(FALLBACK_CAP_MS) {
+                            // MovieLinkBD's rebuilt watch pages carry their
+                            // files in an encrypted page blob the generic
+                            // engine cannot see (and an older plugin finds no
+                            // embeds at all — the recorded "page parsed OK,
+                            // but produced no stream links"). Read those
+                            // first; everything else falls through to the
+                            // generic engine below.
+                            val mlbd = if (MlbdResolver.matches(fallbackTarget)) {
+                                runCatching { MlbdResolver.resolve(fallbackTarget, episode) }
+                                    .getOrDefault(emptyList())
+                            } else emptyList()
+                            mlbd.ifEmpty { FallbackResolver.resolve(fallbackTarget) }
+                        } ?: emptyList()
                     } catch (t: Throwable) {
                         if (t is CancellationException) throw t
                         emptyList()

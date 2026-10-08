@@ -404,15 +404,23 @@ object Profiles {
      * one being entered is applied. Everything already on disk — the extension
      * files, the downloads, this device's layout and lock — stays where it is.
      */
-    suspend fun switchTo(app: HikariApp, id: String) = lock.withLock {
+    /**
+     * Move into profile [id]. Returns false — and changes NOTHING — when the
+     * target demands its password and this process has not unlocked it: every
+     * entry path (the Profiles screen, the launch gate's switcher, anything
+     * else) must ask first (see [needsPassword] and [unlock]). A password
+     * asked at select time is the lock; a switch that skips it is the hole.
+     */
+    suspend fun switchTo(app: HikariApp, id: String): Boolean = lock.withLock {
         switchLocked(app, id)
     }
 
-    private suspend fun switchLocked(app: HikariApp, id: String) {
+    private suspend fun switchLocked(app: HikariApp, id: String): Boolean {
         val ctx = app
         val reg = readRegistry(ctx)
         val list = profilesOf(reg)
-        val target = list.firstOrNull { it.id == id } ?: return
+        val target = list.firstOrNull { it.id == id } ?: return false
+        if (needsPassword(target)) return false
         val current = reg.optString("active").trim().takeIf { it.isNotBlank() }?.takeIf { it != id }
         // The setup being left is saved BEFORE anything is applied. Order matters:
         // reading it after the store had been replaced would save the new
@@ -429,6 +437,7 @@ object Profiles {
         } else {
             Logs.log("Profiles", "using \"${target.name}\"")
         }
+        true
     }
 
     /** Applies one profile's snapshot to the store, downloads and live state. */

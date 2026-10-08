@@ -443,6 +443,24 @@ class ContentRepository(private val manager: ProviderManager) {
          */
         val providerOutcome = ConcurrentHashMap<String, String>()
 
+        /**
+         * Pass sequence tagging [providerOutcome] writes, so a pass can tell
+         * an entry IT wrote apart from an identical one an older pass left.
+         *
+         * The freshness check in [streamsForOutcome] used to snapshot the map
+         * and compare afterwards — but the pass clears its targets' entries
+         * when it starts, then writes back the very same "✗ …" string when a
+         * hung provider hangs again, so the comparison said "nothing changed"
+         * and a pass that asked nobody successfully reported complete=true.
+         * That is the "first tap says no playable sources, the 9th plays"
+         * shape: every tap's verdict string was identical to the last one's.
+         * [fetchStreams] stamps the sequence on every verdict it writes (and
+         * removes the stamp with the entry on success); only a stamp from the
+         * running pass counts as this pass's own unfinished business.
+         */
+        val providerOutcomeSeq = ConcurrentHashMap<String, Long>()
+        private val outcomeSeq = java.util.concurrent.atomic.AtomicLong(0L)
+
         /** True while [providerId] should be left out of the search entirely —
          *  i.e. until its wedge expires (see [HUNG_TTL_MS]). After that it is
          *  asked again like any other extension. */
@@ -1288,6 +1306,13 @@ class ContentRepository(private val manager: ProviderManager) {
      *  still the first ones the player sees. */
     private val CROSS_EXT_GRACE_MS = 2_500L
 
+    /** Pause before re-asking the ORIGIN after an instant-empty attempt (see
+     *  [fetchStreams]): a cold extension answers empty in milliseconds, and
+     *  re-asking in the same millisecond burns every attempt before its
+     *  runtime comes up. Only the origin gets it — every other provider keeps
+     *  its existing pacing. */
+    private val ORIGIN_WARM_PAUSE_MS = 2_500L
+
     /** Head start for the provider the title was opened FROM.
      *
      *  With ~60 installed extensions, starting every search at t=0 saturates the
@@ -1537,6 +1562,10 @@ class ContentRepository(private val manager: ProviderManager) {
      *  one simply never answered. */
     private fun episodesForTimeoutMs(p: ContentProvider) =
         if (isAniyomi(p)) ANIYOMI_EPISODES_TIMEOUT_MS else 12_000L
+
+    /** One shared budget for the TMDB-id episode shortcut above: TMDB is found
+     *  within it or the extension's own list is shown instead, instantly. */
+    private val TMDB_SHORTCUT_MS = 3_000L
 
     /** How many installed extensions may be asked for an episode list when the
      *  origin's own list came back empty (see [episodesFromExtensions]). */
@@ -1824,6 +1853,10 @@ class ContentRepository(private val manager: ProviderManager) {
         p: ContentProvider,
         item: MediaItem,
         episode: Episode?,
+        /** [streamsForOutcome]'s running pass, or -1 when the caller is not a
+         *  pass (a sweep, a detached re-ask): only a pass stamps verdicts, so
+         *  only a pass can claim them as its own unfinished work. */
+        passSeq: Long = -1L,
     ): List<StreamSource> {
         // Is this the provider the user OPENED the title from? Its answer is the
         // one the player sorts to the front of its list (see
@@ -1832,10 +1865,18 @@ class ContentRepository(private val manager: ProviderManager) {
         val isOrigin = p.config.id == item.providerId
         // Aniyomi extensions pay a cold APK class load before their first
         // answer (see the Aniyomi budgets above) — 45s cut them off.
+        // Nuvio engines get at least their own call budget (60s
+        // QuickJS work — see NuvioRuntime.CALL_TIMEOUT_MS): cutting one at
+        // 45s kills it MID-RUN and the background re-ask then pays a second
+        // VM boot plus a second round of network for the same answer (the
+        // "Reanime: no answer in 45s, then 1 server in the background"
+        // shape). The pass ceiling above still binds the whole lookup.
         val fullTimeoutMs =
             if (isAniyomi(p)) minOf(NetTuning.timeout(90_000L), 120_000L)
-            else NetTuning.timeout(45_000L)
-        val maxAttempts = if (isOrigin) maxOf(NetTuning.attempts(), 2) else NetTuning.attempts()
+            else if (p.config.type == ProviderType.NUVIO) {
+                minOf(maxOf(NetTuning.timeout(45_000L), 60_000L), 75_000L)
+            } else NetTuning.timeout(45_000L)
+        val maxAttempts = if (isOrigin) maxOf(NetTuning.attempts(), 3) else NetTuning.attempts()
         var attempt = 0
         var lastWhy: String? = null
         while (true) {
@@ -1854,6 +1895,7 @@ class ContentRepository(private val manager: ProviderManager) {
             if (got.isNotEmpty()) {
                 val combined = supplementDubSubVariants(p, item, episode, got, fullTimeoutMs)
                 providerOutcome.remove(p.config.id)
+                if (passSeq >= 0L) providerOutcomeSeq.remove(p.config.id)
                 // Where a wait went, for the calls that took one: the extension,
                 // and the number of seconds its own answer cost. This is the one
                 // measurement that says whether a slow Play tap is the extension
@@ -1896,6 +1938,7 @@ class ContentRepository(private val manager: ProviderManager) {
                     noAnswer -> "✗ " + (lastWhy ?: said ?: "the call never came back")
                     else -> "no servers"
                 }
+                if (passSeq >= 0L) providerOutcomeSeq[p.config.id] = passSeq
                 com.hikari.app.data.Logs.log(
                     "Provider",
                     p.config.name.ifBlank { p.config.id } +
@@ -1930,6 +1973,19 @@ class ContentRepository(private val manager: ProviderManager) {
                     (lastWhy?.let { " ($it)" } ?: "") +
                     " — asking again with the full ${fullTimeoutMs / 1000}s budget",
             )
+            // A cold extension answers empty in milliseconds — no timeout, no
+            // exception, and its engine reported nothing at all (see the
+            // "✗ the call never came back" verdict below). Re-asking in the
+            // same millisecond burns the origin's attempts before its runtime
+            // has had a moment to come up, which is exactly the two
+            // instant-empty attempts in the failing logs. The origin alone
+            // gets a short warm pause here, so the next attempt meets a
+            // runtime that has started rather than one still loading.
+            if (isOrigin && !timedOut && lastWhy == null && took < 3 &&
+                providerStreamMessage(p) == null
+            ) {
+                kotlinx.coroutines.delay(ORIGIN_WARM_PAUSE_MS)
+            }
         }
     }
 
@@ -2570,9 +2626,17 @@ class ContentRepository(private val manager: ProviderManager) {
         // providerOutcome entries this pass writes itself (see below): primaries
         // are cleared at the start of every pass, so anything that appears (or
         // changes) under our feet was written by THIS pass, not an older one.
+        // PLUS the pass stamp (see [providerOutcomeSeq]): the clear-then-rewrite
+        // can put back the identical "✗ …" string a hung provider earns on
+        // every tap, and the snapshot comparison below cannot tell that from
+        // an entry the pass never touched — so a pass that asked nobody
+        // successfully used to report complete=true. A stamp from THIS pass is
+        // proof the entry is this pass's own unfinished work, whatever the
+        // string says.
+        val passSeq = outcomeSeq.incrementAndGet()
         val outcomeBefore = HashMap(providerOutcome)
         try {
-            val servers = streamsForInner(item, episode, onProgress, onOriginSettled)
+            val servers = streamsForInner(item, episode, onProgress, onOriginSettled, passSeq)
             if (servers.isNotEmpty()) return StreamLookup(servers, complete = true)
             // Empty is only an ANSWER when every provider really answered. A
             // cold plugin (its first call still spinning the runtime up), a
@@ -2585,7 +2649,8 @@ class ContentRepository(private val manager: ProviderManager) {
             // lookup automatically instead of declaring none (see
             // [StreamLookup] and the final-read loop at the play call site).
             val unanswered = providerOutcome.any { (id, verdict) ->
-                verdict != outcomeBefore[id] && isNoAnswer(verdict)
+                (providerOutcomeSeq[id] == passSeq || verdict != outcomeBefore[id]) &&
+                    isNoAnswer(verdict)
             }
             return StreamLookup(emptyList(), complete = !unanswered)
         } catch (e: kotlinx.coroutines.CancellationException) {
@@ -2747,6 +2812,10 @@ class ContentRepository(private val manager: ProviderManager) {
          *  until it fires, so this is what ends that hold — early, the moment
          *  the origin has really spoken. */
         onOriginSettled: (() -> Unit)? = null,
+        /** [streamsForOutcome]'s running pass (see [providerOutcomeSeq]): only
+         *  a pass stamps verdicts, so the freshness check knows which
+         *  unfinished entries are its own. */
+        passSeq: Long = -1L,
     ): List<StreamSource> =
         withContext(Dispatchers.IO) {
             val all = manager.providers.value.filter { it.config.enabled }
@@ -3202,9 +3271,9 @@ class ContentRepository(private val manager: ProviderManager) {
                                 // budget. Bound these jobs by the overall
                                 // deadline; the runtime's CALL budget bounds
                                 // real work.
-                                tagGroup(fetchStreams(p, item, episode), p)
+                                tagGroup(fetchStreams(p, item, episode, passSeq), p)
                             } else {
-                                tagGroup(fetchStreams(p, item, episode), p)
+                                tagGroup(fetchStreams(p, item, episode, passSeq), p)
                             }
                         } catch (e: kotlinx.coroutines.CancellationException) {
                             // Deadline cancelled us. Say whether we actually got
@@ -3223,6 +3292,7 @@ class ContentRepository(private val manager: ProviderManager) {
                                 "✗ search ended before it could run (still waiting for an engine slot)"
                             if (isNuvio) com.hikari.app.nuvio.NuvioScraper.lastOutcome[p.config.id] = why
                             providerOutcome[p.config.id] = why
+                            if (passSeq >= 0L) providerOutcomeSeq[p.config.id] = passSeq
                             throw e
                         } finally {
                             // Off the live "still searching" line the moment this
@@ -6148,29 +6218,44 @@ class ContentRepository(private val manager: ProviderManager) {
         // tracker lookup below (alias bridge, 10s budget, immediate base
         // paint), so a slow generic resolve can never hold the first paint
         // hostage past its 6s timeout.
+        //
+        // The whole shortcut shares ONE 3-second budget (see
+        // TMDB_SHORTCUT_MS): TMDB is enrichment, never the gate — when it is
+        // not found within 3 seconds the extension's own list is what the
+        // page shows, instantly, and TMDB fills in later through the tail in
+        // [finishEpisodes]. Past the budget the origin fan-out below runs on
+        // its own, so a slow TMDB answer can never hold the episode list
+        // hostage.
         if (!TrackerAnimeResolver.isTrackerAnime(item) && cachedSeasoned == null && (item.type == MediaType.SERIES || item.type == MediaType.UNKNOWN)) {
+            val tmdbEnd = System.currentTimeMillis() + TMDB_SHORTCUT_MS
+            fun tmdbLeft() = (tmdbEnd - System.currentTimeMillis()).coerceAtLeast(0L)
             // A tracker row's numeric id is the TRACKER's id (AniList/MAL),
             // not a TMDB id — reading it raw would list another show's
             // episodes with full details. Tracker rows only ever resolve
             // through the exact tracker-aware path below.
             val tmdbId = if (TrackerAnimeResolver.isTrackerAnime(item)) {
-                runCatching { com.hikari.app.nuvio.TmdbResolver.resolve(item) }.getOrNull()
+                runCatching {
+                    withTimeoutOrNull(tmdbLeft()) { com.hikari.app.nuvio.TmdbResolver.resolve(item) }
+                }.getOrNull()
                     ?.takeIf { it.mediaType.equals("tv", true) }?.tmdbId?.toIntOrNull()?.takeIf { it > 0 }?.toString()
             } else {
                 item.id.trim().takeIf { it.isNotEmpty() && it.all { c -> c.isDigit() } }
-                    ?: runCatching { com.hikari.app.nuvio.TmdbResolver.resolve(item) }.getOrNull()
+                    ?: runCatching {
+                        withTimeoutOrNull(tmdbLeft()) { com.hikari.app.nuvio.TmdbResolver.resolve(item) }
+                    }.getOrNull()
                         ?.takeIf { it.mediaType.equals("tv", true) }?.tmdbId?.toIntOrNull()?.takeIf { it > 0 }?.toString()
             }
-            if (!tmdbId.isNullOrBlank() && tmdbId.all { c -> c.isDigit() }) {
+            if (!tmdbId.isNullOrBlank() && tmdbId.all { c -> c.isDigit() } && tmdbLeft() > 0L) {
                 val direct = runCatching {
-                    withTimeoutOrNull(6_000) {
+                    withTimeoutOrNull(tmdbLeft()) {
                         directTmdbEpisodes(item, tmdbId.toInt())
                     }
                 }.getOrNull()
                 if (!direct.isNullOrEmpty()) {
                     val sorted = direct.sortedWith(compareBy({ it.season }, { it.number }))
                     val translated = publish(translateEpisodes(item.providerId, sorted))
-                    val named = withRealEpisodeNames(item, translated)
+                    val named = withTimeoutOrNull(tmdbLeft()) { withRealEpisodeNames(item, translated) }
+                        ?: translated
                     return@withContext finishEpisodes(item, selKey, epsKey, named, publish)
                 }
             }
@@ -6617,10 +6702,10 @@ class ContentRepository(private val manager: ProviderManager) {
         // The TMDB enrichment tail (names, then details) is a nicety, never a
         // gate: the extension's own list is already on screen via [publish],
         // and each pass below gives up on its own. Bound the pair together to
-        // ten seconds wall-clock — past that the extension's data stands as-is
-        // instead of the page sitting on "Loading episodes…" for minutes while
-        // a slow TMDB answer trickles in.
-        val enrichEnd = System.currentTimeMillis() + 10_000L
+        // three seconds wall-clock (see TMDB_SHORTCUT_MS) — past that the
+        // extension's data stands as-is instead of the page sitting on
+        // "Loading episodes…" while a slow TMDB answer trickles in.
+        val enrichEnd = System.currentTimeMillis() + 3_000L
         fun enrichLeft() = (enrichEnd - System.currentTimeMillis()).coerceAtLeast(0L)
         val withNames = if (enrichLeft() > 0L) {
             withTimeoutOrNull(enrichLeft()) { withRealEpisodeNames(item, restored) } ?: restored
