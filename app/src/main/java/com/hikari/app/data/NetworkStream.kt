@@ -78,8 +78,16 @@ object NetworkStream {
      *  to be listed, grouped, badged or played as an IPTV channel. */
     fun isTorrentLink(url: String): Boolean {
         val u = url.trim()
-        return u.startsWith("magnet:", ignoreCase = true) ||
-            u.lowercase().substringBefore('?').endsWith(".torrent")
+        return u.startsWith("magnet:", ignoreCase = true) || isTorrentFile(u)
+    }
+
+    /**
+     * A torrent FILE url, either convention: ".torrent" and the older ".tor".
+     * (The two need separate checks — ".torrent" does not end in ".tor".)
+     */
+    fun isTorrentFile(url: String): Boolean {
+        val path = url.trim().lowercase().substringBefore('?').substringBefore('#')
+        return path.endsWith(".torrent") || path.endsWith(".tor")
     }
 
     /** True when [config] is a saved torrent stream (still an IPTV-type row in
@@ -228,10 +236,10 @@ object NetworkStream {
                 ),
             )
         }
-        // A .torrent FILE is not playable bytes — the player would be handed
+        // A torrent FILE is not playable bytes — the player would be handed
         // the file itself and fail. Parse it into the info hash (+ trackers)
         // the torrent engine needs instead.
-        if (url.lowercase().substringBefore('?').endsWith(".torrent")) {
+        if (isTorrentFile(url)) {
             resolveTorrentFile(url, label)?.let { return listOf(it) }
             return listOf(
                 StreamSource(
@@ -299,6 +307,14 @@ object NetworkStream {
             query.contains("format=m3u8")
     }
 
+
+    /**
+     * Public for the extension engines: turn a torrent FILE url into its
+     * torrent source (info hash + trackers parsed out of the file), or null
+     * when the file cannot be fetched or parsed. Bounded inside, never throws.
+     */
+    suspend fun torrentFileInfo(url: String, label: String): StreamSource? =
+        runCatching { resolveTorrentFile(url, label) }.getOrNull()
 
     private suspend fun resolveTorrentFile(url: String, label: String): StreamSource? =
     withContext(Dispatchers.IO) {

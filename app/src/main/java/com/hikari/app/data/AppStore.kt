@@ -639,9 +639,24 @@ class AppStore(private val ctx: Context) {
         /** ENTIRE ENGINES marked as exceptions, by [ProviderType] name
          *  ("CS3", "HIKARI", …). See [searchExceptionTypesFlow]. */
         val SEARCH_EXCEPTION_TYPES = stringSetPreferencesKey("searchExceptionTypes")
-        /** Extensions left OUT of a marked engine ("all of CloudStream, except
-         *  these"). See [searchExceptionExcludesFlow]. */
-        val SEARCH_EXCEPTION_EXCLUDES = stringSetPreferencesKey("searchExceptionExcludes")
+       /** Extensions left OUT of a marked engine ("all of CloudStream, except
+        *  these"). See [searchExceptionExcludesFlow]. */
+       val SEARCH_EXCEPTION_EXCLUDES = stringSetPreferencesKey("searchExceptionExcludes")
+        /** Per-extension server-search time, in seconds (Settings → Playback &
+         *  Servers → Server search time). 0 or absent = that extension keeps
+         *  the built-in budget; 20–100 overrides it. See [serverTimeoutAllSecs]
+         *  for the "same time for every extension" master switch. */
+        val SERVER_TIMEOUT_ALL = intPreferencesKey("serverTimeoutAllSecs")
+        /** providerId → seconds (20–100), as JSON. Only the extensions the user
+         *  touched are in here; everything else reads the built-in budget. */
+        val SERVER_TIMEOUTS = stringPreferencesKey("serverTimeouts")
+        /** profileId → lock secret (`algo:salt:hash`, see
+         *  [com.hikari.app.lock.AppLock]), as JSON. Device-local (see
+         *  [DeviceLocal]): a lock describes THIS device and must never travel
+         *  in a backup or pairing payload — same rule as the app lock's own
+         *  secret. The registry only carries the `locked` flag, which is
+         *  meaningless without the secret. */
+        val PROFILE_LOCKS = stringPreferencesKey("profileLocks")
         /** Bottom navigation bar layout — see [com.hikari.app.ui.navigation.NavStyles]:
          *  "classic" | "floating" | "animated" (an old stored "borderless" is
          *  upgraded to "animated" when read). */
@@ -785,6 +800,9 @@ class AppStore(private val ctx: Context) {
             K.APP_LOCK_SESSION_AT.name,
             K.MYSTUFF_LOCK.name,
             K.MYSTUFF_LOCK_SECRET.name,
+            // A profile's own password, same rule as the app lock's: the
+            // receiving device keeps its own locks, whatever a file says.
+            K.PROFILE_LOCKS.name,
             K.TV_MODE.name,
             K.TV_OVERSCAN.name,
             K.TV_PERF.name,
@@ -1735,6 +1753,100 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setPlayScopeAsk(ask: Boolean) {
         write("PLAY_SCOPE_ASK") { it[K.PLAY_SCOPE_ASK] = ask }
+    }
+
+    // ---- Server search time (Settings → Playback & Servers) ----
+
+    /**
+     * The "same time for every extension" master value, in seconds. 0 (or
+     * absent) = off: every extension uses its own [serverTimeouts] entry or
+     * the built-in budget. 20–100 = every extension's server search gets that
+     * many seconds. Stored, never forced: an extension the user never touched
+     * keeps the built-in budget unless this master is on.
+     */
+    fun serverTimeoutAllFlow(): Flow<Int> =
+        store.data.map { (it[K.SERVER_TIMEOUT_ALL] ?: 0).coerceIn(0, 100) }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun serverTimeoutAll(): Int = serverTimeoutAllFlow().first()
+
+    suspend fun setServerTimeoutAll(secs: Int) {
+        write("SERVER_TIMEOUT_ALL") { it[K.SERVER_TIMEOUT_ALL] = secs.coerceIn(0, 100) }
+    }
+
+    /** providerId → seconds for the extensions the user overrode. */
+    fun serverTimeoutsFlow(): Flow<Map<String, Int>> =
+        store.data.map { parseServerTimeouts(it[K.SERVER_TIMEOUTS]) }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun serverTimeouts(): Map<String, Int> = serverTimeoutsFlow().first()
+
+    /**
+     * The server-search budget for [providerId], in seconds, or null when that
+     * extension keeps the built-in budget. The master switch wins when it is
+     * on; otherwise the per-extension entry wins; otherwise null.
+     */
+    suspend fun serverTimeoutFor(providerId: String): Int? {
+        val all = serverTimeoutAll()
+        if (all in 20..100) return all
+        return serverTimeouts()[providerId]?.coerceIn(20, 100)
+    }
+
+    /** Override one extension ([secs] null or out of range removes the entry). */
+    suspend fun setServerTimeout(providerId: String, secs: Int?) {
+        val map = serverTimeouts().toMutableMap()
+        if (secs == null || secs !in 20..100) map.remove(providerId)
+        else map[providerId] = secs
+        val json = JSONObject()
+        for ((k, v) in map) json.put(k, v)
+        write("SERVER_TIMEOUTS") { it[K.SERVER_TIMEOUTS] = json.toString() }
+    }
+
+    private fun parseServerTimeouts(raw: String?): Map<String, Int> {
+        if (raw.isNullOrBlank()) return emptyMap()
+        return runCatching {
+            val o = JSONObject(raw)
+            val out = LinkedHashMap<String, Int>()
+            val keys = o.keys()
+            while (keys.hasNext()) {
+                val k = keys.next() as String
+                val v = o.optInt(k, -1)
+                if (k.isNotBlank() && v in 20..100) out[k] = v
+            }
+            out
+        }.getOrDefault(emptyMap())
+    }
+
+    // ---- Per-profile locks (Profiles screen; separate from the app lock) ----
+
+    /** profileId → `algo:salt:hash` for the profiles that have their own
+     *  password. Absent = that profile is not locked. */
+    fun profileLocksFlow(): Flow<Map<String, String>> =
+        store.data.map { parseProfileLocks(it[K.PROFILE_LOCKS]) }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun profileLockSecret(profileId: String): String? =
+        profileLocksFlow().first()[profileId]
+
+    /** Sets ([secret] non-blank) or removes (blank) one profile's password. */
+    suspend fun setProfileLockSecret(profileId: String, secret: String) {
+        val map = profileLocksFlow().first().toMutableMap()
+        if (secret.isBlank()) map.remove(profileId) else map[profileId] = secret
+        val json = JSONObject()
+        for ((k, v) in map) json.put(k, v)
+        write("PROFILE_LOCKS") { it[K.PROFILE_LOCKS] = json.toString() }
+    }
+
+    private fun parseProfileLocks(raw: String?): Map<String, String> {
+        if (raw.isNullOrBlank()) return emptyMap()
+        return runCatching {
+            val o = JSONObject(raw)
+            val out = LinkedHashMap<String, String>()
+            val keys = o.keys()
+            while (keys.hasNext()) {
+                val k = keys.next() as String
+                val v = o.optString(k)
+                if (k.isNotBlank() && v.isNotBlank()) out[k] = v
+            }
+            out
+        }.getOrDefault(emptyMap())
     }
 
     fun iptvGroupModeFlow(): Flow<String> =

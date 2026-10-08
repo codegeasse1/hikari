@@ -64,6 +64,7 @@ import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.automirrored.filled.ViewList
+import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.OndemandVideo
 import androidx.compose.material3.Button
@@ -1736,7 +1737,14 @@ fun DetailScreen(
     // Episode presentation can be switched without leaving the detail page.
     // List mode keeps the compact existing rows; poster mode uses the episode
     // artwork like the TV reference layout.
-    var episodePosterStyle by rememberSaveable(isTvLayout) { mutableStateOf(isTvLayout) }
+    // 0 = list rows, 1 = poster grid, 2 = big cinema cards. TV starts on the
+    // grid, phones on the list; the header button cycles all three in order.
+    var episodeViewMode by rememberSaveable(isTvLayout) { mutableStateOf(if (isTvLayout) 1 else 0) }
+    val episodePosterStyle = episodeViewMode != 0
+    val episodeBigStyle = episodeViewMode == 2
+    fun cycleEpisodeView() {
+        episodeViewMode = (episodeViewMode + 1) % 3
+    }
 
     // Related/Similar cells. Tapping a cell opens the title directly instead of
     // dropping the user on the Search tab with a bare name query (which lists
@@ -2847,12 +2855,31 @@ fun DetailScreen(
             }
         }
     }
+    // Unaired episodes never reach the player: the source lists them, but
+    // there is nothing to resolve yet — tapping one used to report "no
+    // playable source", which reads as broken. They wear a badge (see the
+    // cards) and tapping one says it is not out yet instead.
+    fun playBlocked(ep: Episode?): Boolean {
+        if (!isEpisodeUnaired(ep?.released)) return false
+        runCatching {
+            // Application context (not the screen's): this lambda must work
+            // wherever the episode cards are composed.
+            android.widget.Toast.makeText(
+                HikariApp.instance.applicationContext,
+                tr("Not released yet"),
+                android.widget.Toast.LENGTH_SHORT,
+            ).show()
+        }
+        return true
+    }
     val tryPlay: (Episode?) -> Unit = { ep ->
-        if (scraperImageMode) openScraperReader(ep)
-        else {
-            val saved = savedProgressFor(ep)
-            resumeHint = saved
-            openStreams(ep, 0L, false)
+        if (!playBlocked(ep)) {
+            if (scraperImageMode) openScraperReader(ep)
+            else {
+                val saved = savedProgressFor(ep)
+                resumeHint = saved
+                openStreams(ep, 0L, false)
+            }
         }
     }
 
@@ -2862,10 +2889,12 @@ fun DetailScreen(
     // chooser the moment a server is ready — so "download episode 7" reaches
     // exactly the same code path as "play episode 7, then tap Download".
     val tryDownload: (Episode?) -> Unit = { ep ->
-        if (scraperImageMode) openScraperReader(ep)
-        else {
-            resumeHint = savedProgressFor(ep)
-            openStreams(ep, 0L, true)
+        if (!playBlocked(ep)) {
+            if (scraperImageMode) openScraperReader(ep)
+            else {
+                resumeHint = savedProgressFor(ep)
+                openStreams(ep, 0L, true)
+            }
         }
     }
 
@@ -2888,7 +2917,12 @@ fun DetailScreen(
         detailUnknownVegaKind ||
         (episodes?.isNotEmpty() == true)
     val detailCanPlay = !detailIsSeries || episodes.isNullOrEmpty()
-    val detailBtnEp = if (detailCanPlay) null else (resumeEp ?: sortedEps.firstOrNull())
+    // The Play button prefers an episode that is actually out: a season whose
+    // first listed episode has not aired yet used to open straight into "no
+    // playable source". Progress always wins first (a watched episode aired).
+    val detailBtnEp = if (detailCanPlay) null else (resumeEp
+        ?: sortedEps.firstOrNull { !isEpisodeUnaired(it.released) }
+        ?: sortedEps.firstOrNull())
     val detailActionLabel = if (scraperImageMode) I18n.t("Read") else when {
         resumeEp != null ->
             I18n.t("Resume") + if (resumeEp.season > 1)
@@ -3531,15 +3565,24 @@ fun DetailScreen(
                                     )
                                 }
                                 IconButton(
-                                    onClick = { episodePosterStyle = !episodePosterStyle },
+                                    onClick = { cycleEpisodeView() },
                                     modifier = Modifier.size(36.dp).tvPress(
                                         previewPass = true,
-                                        onClick = { episodePosterStyle = !episodePosterStyle }
+                                        onClick = { cycleEpisodeView() }
                                     )
                                 ) {
                                     Icon(
-                                        if (episodePosterStyle) Icons.AutoMirrored.Filled.ViewList else Icons.Filled.GridView,
-                                        contentDescription = if (episodePosterStyle) tr("Use episode list") else tr("Use episode poster grid"),
+                                        // The button shows the NEXT look: rows → grid → big cards → rows.
+                                        when (episodeViewMode) {
+                                            0 -> Icons.Filled.GridView
+                                            1 -> Icons.Filled.Dashboard
+                                            else -> Icons.AutoMirrored.Filled.ViewList
+                                        },
+                                        contentDescription = when (episodeViewMode) {
+                                            0 -> tr("Use episode poster grid")
+                                            1 -> tr("Use big episode cards")
+                                            else -> tr("Use episode list")
+                                        },
                                         tint = Color.White,
                                         modifier = Modifier.size(18.dp)
                                     )
@@ -3630,6 +3673,28 @@ fun DetailScreen(
                                             onClick = { tryPlay(ep) },
                                             onDownload = { tryDownload(ep) },
                                             modifier = Modifier.width((150f * tvEpisodeScale).dp),
+                                            sizeScale = tvEpisodeScale,
+                                        )
+                                    }
+                                }
+                            } else if (episodeBigStyle) {
+                                // Big cinema cards on TV: a horizontal rail of
+                                // wide cards, D-pad traversable like the grid.
+                                LazyRow(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    contentPadding = PaddingValues(horizontal = 2.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                ) {
+                                    itemsIndexed(
+                                        pageEps,
+                                        key = { index, ep -> "tv-ep-big-" + index + "-" + ep.season + "-" + ep.number }
+                                    ) { _, ep ->
+                                        EpisodeBigCard(
+                                            ep = ep,
+                                            fallbackImage = m?.backdropUrl ?: m?.posterUrl ?: posterUrl,
+                                            onClick = { tryPlay(ep) },
+                                            onDownload = { tryDownload(ep) },
+                                            modifier = Modifier.width((300f * tvEpisodeScale).dp),
                                             sizeScale = tvEpisodeScale,
                                         )
                                     }
@@ -3907,10 +3972,10 @@ fun DetailScreen(
                                         )
                                     }
                                     IconButton(
-                                        onClick = { episodePosterStyle = !episodePosterStyle },
+                                        onClick = { episodeViewMode = 0 },
                                         modifier = Modifier.size(40.dp).tvPress(
                                             previewPass = true,
-                                            onClick = { episodePosterStyle = !episodePosterStyle }
+                                            onClick = { episodeViewMode = 0 }
                                         )
                                     ) {
                                         Icon(
@@ -4477,15 +4542,24 @@ fun DetailScreen(
                                     )
                                 }
                                 IconButton(
-                                    onClick = { episodePosterStyle = !episodePosterStyle },
+                                    onClick = { cycleEpisodeView() },
                                     modifier = Modifier.size(32.dp).tvPress(
                                         previewPass = true,
-                                        onClick = { episodePosterStyle = !episodePosterStyle }
+                                        onClick = { cycleEpisodeView() }
                                     )
                                 ) {
                                     Icon(
-                                        if (episodePosterStyle) Icons.AutoMirrored.Filled.ViewList else Icons.Filled.GridView,
-                                        contentDescription = if (episodePosterStyle) tr("Use episode list") else tr("Use episode poster grid"),
+                                        // The button shows the NEXT look: rows → grid → big cards → rows.
+                                        when (episodeViewMode) {
+                                            0 -> Icons.Filled.GridView
+                                            1 -> Icons.Filled.Dashboard
+                                            else -> Icons.AutoMirrored.Filled.ViewList
+                                        },
+                                        contentDescription = when (episodeViewMode) {
+                                            0 -> tr("Use episode poster grid")
+                                            1 -> tr("Use big episode cards")
+                                            else -> tr("Use episode list")
+                                        },
                                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                         modifier = Modifier.size(18.dp)
                                     )
@@ -4613,7 +4687,25 @@ fun DetailScreen(
                         // key MUST be unique — plugins (MoviesMod, …) emit
                         // duplicate ids/numbers per quality group, and a
                         // duplicate Compose key crashes the whole screen.
-                        if (episodePosterStyle) {
+                        if (episodeBigStyle) {
+                            // Big cinema cards: one wide card per row — the
+                            // trailer-style look, readable on a phone without
+                            // shrinking three episodes into the width.
+                            pageEps.forEachIndexed { index, ep ->
+                                item(key = "ep-big-$index") {
+                                    EpisodeBigCard(
+                                        ep = ep,
+                                        fallbackImage = m?.backdropUrl ?: m?.posterUrl ?: posterUrl,
+                                        onClick = { tryPlay(ep) },
+                                        onDownload = { tryDownload(ep) },
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 16.dp, vertical = 6.dp),
+                                        sizeScale = tvEpisodeScale,
+                                    )
+                                }
+                            }
+                        } else if (episodePosterStyle) {
                             pageEps.chunked(3).forEachIndexed { rowIndex, row ->
                                 item(key = "ep-poster-$rowIndex") {
                                     Row(
@@ -7350,6 +7442,23 @@ private fun EpisodePosterCard(
                     color = Color.White
                 )
             }
+            if (isEpisodeUnaired(ep.released)) {
+                Box(
+                    Modifier
+                        .align(Alignment.TopStart)
+                        .padding((6f * s).dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(MaterialTheme.colorScheme.tertiary.copy(alpha = 0.92f))
+                        .padding(horizontal = (7f * s).dp, vertical = (3f * s).dp)
+                ) {
+                    Text(
+                        tr("Not released yet"),
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+                }
+            }
             Box(
                 Modifier
                     .align(Alignment.Center)
@@ -7401,6 +7510,198 @@ private fun EpisodePosterCard(
                 maxLines = 3,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.padding(start = (2f * s).dp, top = (2f * s).dp, end = (2f * s).dp)
+            )
+        }
+    }
+}
+
+/**
+ * True when the episode's air date is in the future — an episode the source
+ * lists but has not released yet. Only answers true for a date that actually
+ * parses (yyyy-MM-dd, "August 16, 2026", dd/MM/yyyy, yyyy/MM/dd,
+ * dd.MM.yyyy); anything unparseable or blank reads as released, so a weird
+ * provider stamp can never hide a playable episode.
+ */
+private fun isEpisodeUnaired(released: String?): Boolean {
+    val t = released?.trim().orEmpty()
+    if (t.isBlank()) return false
+    val today = java.util.Calendar.getInstance()
+    today.set(java.util.Calendar.HOUR_OF_DAY, 0)
+    today.set(java.util.Calendar.MINUTE, 0)
+    today.set(java.util.Calendar.SECOND, 0)
+    today.set(java.util.Calendar.MILLISECOND, 0)
+    fun parsed(vararg formats: String): java.util.Date? {
+        for (f in formats) {
+            val d = runCatching {
+                val sdf = java.text.SimpleDateFormat(f, java.util.Locale.US)
+                sdf.isLenient = false
+                sdf.parse(t.take(30))
+            }.getOrNull()
+            if (d != null) return d
+        }
+        return null
+    }
+    val head = t.take(10)
+    val d = if (Regex("""\d{4}-\d{2}-\d{2}""").matches(head)) {
+        parsed("yyyy-MM-dd", "yyyy-MM-dd'T'HH:mm:ss", "yyyy-MM-dd HH:mm:ss")
+    } else {
+        parsed(
+            "MMMM d, yyyy", "MMM d, yyyy", "d MMMM yyyy", "d MMM yyyy",
+            "dd/MM/yyyy", "d/M/yyyy", "yyyy/MM/dd", "dd.MM.yyyy",
+        )
+    } ?: return false
+    return d.after(today.time)
+}
+
+/**
+ * Big cinema episode card (episode view mode 2): one wide card per row — a
+ * 16:9 still with the season/episode chip, center play and download, then the
+ * title, the overview and the meta line underneath. The trailer-row look,
+ * sized so a phone shows about one card at a time instead of three small
+ * ones across the width.
+ */
+@Composable
+private fun EpisodeBigCard(
+    ep: Episode,
+    fallbackImage: String? = null,
+    onClick: () -> Unit,
+    onDownload: (() -> Unit)? = null,
+    modifier: Modifier = Modifier,
+    sizeScale: Float = 1f,
+) {
+    val s = sizeScale.coerceIn(0.8f, 1.6f)
+    val unaired = isEpisodeUnaired(ep.released)
+    Column(
+        modifier
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
+            .tvPress(previewPass = false, onClick = onClick)
+            .padding(bottom = (6f * s).dp)
+    ) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .aspectRatio(16f / 9f)
+                .clip(RoundedCornerShape(12.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+        ) {
+            val thumb = PosterLoader.model(ep.image?.takeIf { it.isNotBlank() } ?: fallbackImage)
+            if (thumb != null) {
+                AsyncImage(
+                    model = thumb,
+                    contentDescription = tr("Episode %s").replace("%s", ep.number.toString()),
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop
+                )
+            }
+            Box(
+                Modifier
+                    .align(Alignment.TopStart)
+                    .padding((8f * s).dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(Color.Black.copy(alpha = 0.72f))
+                    .padding(horizontal = (8f * s).dp, vertical = (4f * s).dp)
+            ) {
+                Text(
+                    "S" + ep.season.toString().padStart(2, '0') +
+                        " E" + ep.number.toString().padStart(2, '0'),
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White
+                )
+            }
+            if (unaired) {
+                Box(
+                    Modifier
+                        .align(Alignment.TopEnd)
+                        .padding((8f * s).dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(MaterialTheme.colorScheme.tertiary.copy(alpha = 0.92f))
+                        .padding(horizontal = (8f * s).dp, vertical = (4f * s).dp)
+                ) {
+                    Text(
+                        tr("Not released yet"),
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+                }
+            } else {
+                Box(
+                    Modifier
+                        .align(Alignment.Center)
+                        .size((52f * s).dp)
+                        .clip(CircleShape)
+                        .background(Color.Black.copy(alpha = 0.60f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Filled.PlayArrow,
+                        contentDescription = tr("Play"),
+                        tint = Color.White,
+                        modifier = Modifier.size((26f * s).dp)
+                    )
+                }
+            }
+            if (onDownload != null && !unaired) {
+                IconButton(
+                    onClick = onDownload,
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .size((40f * s).dp)
+                        .tvPress(previewPass = true, onClick = onDownload)
+                ) {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_download),
+                        contentDescription = tr("Download"),
+                        tint = Color.White,
+                        modifier = Modifier.size((20f * s).dp)
+                    )
+                }
+            }
+        }
+        Text(
+            ep.name?.ifBlank { tr("Episode %s").replace("%s", ep.number.toString()) }
+                ?: tr("Episode %s").replace("%s", ep.number.toString()),
+            style = MaterialTheme.typography.titleSmall.copy(
+                fontSize = (MaterialTheme.typography.titleSmall.fontSize.value * s).sp
+            ),
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(start = (4f * s).dp, top = (8f * s).dp, end = (4f * s).dp)
+        )
+        if (!ep.overview.isNullOrBlank()) {
+            Text(
+                ep.overview!!.trim(),
+                style = MaterialTheme.typography.bodySmall.copy(
+                    fontSize = (MaterialTheme.typography.bodySmall.fontSize.value * s).sp
+                ),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(start = (4f * s).dp, top = (3f * s).dp, end = (4f * s).dp)
+            )
+        }
+        val metaLine = buildString {
+            formatEpisodeDate(ep.released)?.let { append(it) }
+            ep.runtime?.takeIf { it > 0 }?.let {
+                if (isNotEmpty()) append("  •  ")
+                append("${it}m")
+            }
+            ep.rating?.takeIf { it > 0.0 }?.let {
+                if (isNotEmpty()) append("  •  ")
+                append(tr("Rated: %s").replace("%s", String.format(java.util.Locale.US, "%.1f", it)))
+            }
+        }.takeIf { it.isNotBlank() }
+        if (!metaLine.isNullOrBlank()) {
+            Text(
+                metaLine,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(start = (4f * s).dp, top = (3f * s).dp, end = (4f * s).dp)
             )
         }
     }
@@ -7481,6 +7782,16 @@ private fun EpisodeRow(
                 overflow = TextOverflow.Ellipsis
             )
             val aired = formatEpisodeDate(ep.released)
+            if (isEpisodeUnaired(ep.released)) {
+                Text(
+                    tr("Not released yet"),
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.tertiary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
             val ratedLine = buildString {
                 ep.rating?.takeIf { it > 0.0 }?.let {
                     append(tr("Rated: %s").replace("%s", String.format(java.util.Locale.US, "%.1f", it)))

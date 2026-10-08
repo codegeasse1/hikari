@@ -24,9 +24,11 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -85,6 +87,7 @@ import com.hikari.app.ui.navigation.LocalTaskbarInset
 import com.hikari.app.ui.navigation.Routes
 import com.hikari.app.ui.theme.rememberGlassTokens
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -731,7 +734,7 @@ private suspend fun addNetworkStream(
     val display = name.trim().ifBlank {
         when {
             url.startsWith("magnet:", ignoreCase = true) -> torrentDisplayName(url)
-            url.lowercase().substringBefore('?').endsWith(".torrent") ->
+            NetworkStream.isTorrentFile(url) ->
                 url.substringBefore('?').trimEnd('/').substringAfterLast('/')
                     .substringBeforeLast('.').ifBlank { "Torrent" }
             else -> NetworkStream.hostOf(url).removePrefix("www.").substringBefore('.').ifBlank { "Stream" }
@@ -815,6 +818,61 @@ fun IptvPlaylistScreen(nav: NavHostController, providerId: String) {
     }
     val isTorrent = playlist != null && NetworkStream.isTorrentLink(playlist.config.url)
 
+    // ---- In-folder search -------------------------------------------------
+    //
+    // The header's search icon used to jump to the global Search tab scoped to
+    // this playlist — leaving the folder to search it. It now searches right
+    // here: the field filters this playlist's channels in place (same backend
+    // as the scoped search, `IptvProvider.search`), and a tap plays from the
+    // results without ever leaving the folder.
+    var folderSearchOpen by remember(providerId) { mutableStateOf(false) }
+    var folderQuery by remember(providerId) { mutableStateOf("") }
+    var folderResults by remember(providerId) { mutableStateOf<List<MediaItem>?>(null) }
+    var folderSearching by remember(providerId) { mutableStateOf(false) }
+    var folderPage by remember(providerId) { mutableStateOf(1) }
+    var folderHasMore by remember(providerId) { mutableStateOf(false) }
+    LaunchedEffect(providerId, playlist, folderQuery) {
+        val p = playlist
+        val q = folderQuery.trim()
+        folderPage = 1
+        if (p == null || q.length < 2) {
+            folderResults = null
+            folderSearching = false
+            folderHasMore = false
+            return@LaunchedEffect
+        }
+        folderSearching = true
+        delay(400)
+        val first = withContext(Dispatchers.IO) {
+            runCatching { p.search(q, 1) }.getOrDefault(emptyList())
+        }
+        // A newer keystroke superseded this run (query changed mid-flight).
+        if (folderQuery.trim() != q) return@LaunchedEffect
+        folderResults = first
+        folderHasMore = first.size >= 240
+        folderSearching = false
+    }
+    fun folderMore() {
+        val p = playlist ?: return
+        val q = folderQuery.trim()
+        if (q.length < 2 || folderSearching) return
+        val next = folderPage + 1
+        folderSearching = true
+        scope.launch {
+            val more = withContext(Dispatchers.IO) {
+                runCatching { p.search(q, next) }.getOrDefault(emptyList())
+            }
+            if (folderQuery.trim() != q) {
+                folderSearching = false
+                return@launch
+            }
+            folderResults = (folderResults.orEmpty() + more).distinctBy { it.id }
+            folderPage = next
+            folderHasMore = more.size >= 240
+            folderSearching = false
+        }
+    }
+
     val loaded = groups
     Column(Modifier.fillMaxSize()) {
         IptvHeader(
@@ -833,9 +891,33 @@ fun IptvPlaylistScreen(nav: NavHostController, providerId: String) {
             onBack = { nav.popBackStack() },
             shape = shape,
             onCycleShape = { scope.launch { app.store.setIptvShape(nextShape(shape)) } },
-            onSearch = playlist?.let { p -> { Routes.safeNavigate(nav, Routes.searchInProvider(p.config.id)) } },
+            onSearch = playlist?.let {
+                {
+                    folderSearchOpen = !folderSearchOpen
+                    if (!folderSearchOpen) folderQuery = ""
+                }
+            },
             onAdd = null,
         )
+        if (folderSearchOpen && !isTorrent) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, top = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                OutlinedTextField(
+                    value = folderQuery,
+                    onValueChange = { folderQuery = it },
+                    label = { Text(tr("Search channels")) },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f).tvTextFieldKeys(folderQuery),
+                )
+                Spacer(Modifier.width(8.dp))
+                TextButton(onClick = {
+                    folderSearchOpen = false
+                    folderQuery = ""
+                }) { Text(tr("Close")) }
+            }
+        }
         if (!isTorrent) {
             com.hikari.app.ui.components.ChoiceRow(
                 value = tr("Grouped by: %s").replace("%s", when (IptvPlaylist.normalizeGroupMode(groupMode)) {
@@ -859,6 +941,95 @@ fun IptvPlaylistScreen(nav: NavHostController, providerId: String) {
         if (loaded == null) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
+            }
+            return@Column
+        }
+        // In-folder search results replace the group grid while a query is
+        // typed — the folder is never left to search it.
+        if (folderSearchOpen && !isTorrent && folderQuery.trim().length >= 2) {
+            val res = folderResults
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(
+                    start = 12.dp,
+                    end = 12.dp,
+                    top = 4.dp,
+                    bottom = LocalTaskbarInset.current + 24.dp,
+                ),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                if (res == null || (folderSearching && res.isEmpty())) {
+                    item(key = "iptv-search-loading") {
+                        Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator()
+                        }
+                    }
+                }
+                if (!folderSearching && res != null && res.isEmpty()) {
+                    item(key = "iptv-search-empty") {
+                        Text(
+                            tr("No channels match that search."),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(16.dp),
+                        )
+                    }
+                }
+                items(res.orEmpty(), key = { it.id }) { item ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable {
+                                Routes.safeNavigate(
+                                    nav,
+                                    Routes.detail(
+                                        providerId,
+                                        item.type,
+                                        item.id,
+                                        item.title,
+                                        item.posterUrl,
+                                        item.rawType,
+                                    ),
+                                )
+                            }
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                item.title,
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            if (item.overview?.isNotBlank() == true) {
+                                Text(
+                                    item.overview.orEmpty(),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+                    }
+                }
+                if (folderHasMore) {
+                    item(key = "iptv-search-more") {
+                        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                            TextButton(
+                                onClick = { folderMore() },
+                                enabled = !folderSearching,
+                            ) {
+                                if (folderSearching) {
+                                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                                } else {
+                                    Text(tr("Show more"))
+                                }
+                            }
+                        }
+                    }
+                }
             }
             return@Column
         }

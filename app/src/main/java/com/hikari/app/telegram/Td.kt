@@ -1002,7 +1002,13 @@ object Td {
                 { -it.order },
             )
         )
-        _chats.value = list
+        // TDLib chatters constantly — every read receipt, every position nudge
+        // from any chat, every last-message notice rebuilds this list, and each
+        // assignment used to recompose the whole Telegram tab even when nothing
+        // the user can see changed (Chat is a data class, so equality is by
+        // content). Skipping the identical publish kills that steady
+        // recomposition churn, which is what read as flicker on slow phones.
+        if (list != _chats.value) _chats.value = list
     }
 
     /** True when a query can be answered right now — the account is signed in

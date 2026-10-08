@@ -149,10 +149,37 @@ fun AppLockGate(activity: android.app.Activity, content: @Composable () -> Unit)
     var sessionRead by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
+    // ---- The active profile's own password ----
+    // Separate from the app lock above: a profile's password opens only that
+    // profile, and the app lock's password opens none of them. The registry is
+    // published into these flows by Profiles.load (the Profiles screen calls
+    // it too — the mutex serializes the two), and `profileTick` re-reads the
+    // gate after an unlock or a switch happens elsewhere.
+    var profileTick by remember { mutableStateOf(0) }
+    // False until the registry has been read once: without it a cold start
+    // into a locked active profile would compose that profile's content for
+    // a frame before the lock is known (the same flash the app-lock gate
+    // above closes with `sessionRead`).
+    var profilesRead by remember { mutableStateOf(false) }
+    val profilesAll by com.hikari.app.data.Profiles.all.collectAsState()
+    val profilesActiveId by com.hikari.app.data.Profiles.activeId.collectAsState()
+    val lockedProfile = remember(profilesAll, profilesActiveId, profileTick) {
+        profilesActiveId?.let { id -> profilesAll.firstOrNull { it.id == id } }
+            ?.takeIf { com.hikari.app.data.Profiles.needsPassword(it) }
+    }
+    LaunchedEffect(Unit) {
+        runCatching { com.hikari.app.data.Profiles.load(app) }
+        profilesRead = true
+        profileTick++
+    }
+
     /** Locks the app AND records it, so a fresh process asks again. */
     fun lockNow() {
         if (!unlocked) return
         unlocked = false
+        // A re-locked app re-locks its profiles too: their passwords are
+        // per-process unlocks by design (see Profiles.unlockedIds).
+        com.hikari.app.data.Profiles.lockAll()
         scope.launch { runCatching { app.store.setAppLockSessionClosed() } }
     }
 
@@ -307,7 +334,7 @@ fun AppLockGate(activity: android.app.Activity, content: @Composable () -> Unit)
         }
     }
 
-    if (enabledState == null || !sessionRead) {
+    if (enabledState == null || !sessionRead || !profilesRead) {
         // The stored state (or the stored unlock) has not arrived yet: draw a
         // blank card rather than the app. One frame, and the app's content is
         // never composed with the lock possibly on (see the note on
@@ -316,6 +343,18 @@ fun AppLockGate(activity: android.app.Activity, content: @Composable () -> Unit)
         return
     }
     if (enabledState != true || unlocked) {
+        // App lock passed (or off) — the active profile may still carry its
+        // OWN password, which is a different lock with a different secret
+        // (see Profiles). It is asked here, before any content is drawn.
+        if (lockedProfile != null) {
+            ProfileGateCard(
+                profile = lockedProfile,
+                others = profilesAll.filter { it.id != lockedProfile.id },
+                onUnlocked = { profileTick++ },
+                onSwitched = { profileTick++ },
+            )
+            return
+        }
         content()
         return
     }
@@ -1007,5 +1046,163 @@ object Biometrics {
                 .build()
             prompt.authenticate(info)
         }.onFailure { onError() }
+    }
+}
+
+/**
+ * The active profile's own password card (see
+ * [com.hikari.app.data.Profiles]): drawn by [AppLockGate] after the app lock
+ * passes, instead of the app's content, while the profile in use demands its
+ * password. Leaving for a different profile is always allowed — only ENTERING
+ * a locked one asks.
+ */
+@Composable
+private fun ProfileGateCard(
+    profile: com.hikari.app.data.Profiles.Profile,
+    others: List<com.hikari.app.data.Profiles.Profile>,
+    onUnlocked: () -> Unit,
+    onSwitched: () -> Unit,
+) {
+    val context = LocalContext.current
+    val app = context.applicationContext as HikariApp
+    val scope = rememberCoroutineScope()
+    var pw by remember(profile.id) { mutableStateOf("") }
+    var wrong by remember(profile.id) { mutableStateOf(false) }
+    var checking by remember(profile.id) { mutableStateOf(false) }
+    var pickOther by remember { mutableStateOf(false) }
+    var switchingTo by remember { mutableStateOf<String?>(null) }
+
+    fun check() {
+        if (pw.isBlank() || checking) return
+        checking = true
+        val attempt = pw
+        scope.launch {
+            val res = runCatching {
+                com.hikari.app.data.Profiles.unlock(app, profile.id, attempt)
+            }.getOrNull()
+            checking = false
+            if (res == com.hikari.app.data.Profiles.UnlockResult.OK ||
+                res == com.hikari.app.data.Profiles.UnlockResult.NO_SECRET
+            ) {
+                onUnlocked()
+            } else {
+                wrong = true
+            }
+        }
+    }
+
+    Surface(Modifier.fillMaxSize(), color = pageBackground()) {
+        Column(
+            Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 18.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Icon(
+                Icons.Filled.Lock,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(34.dp),
+            )
+            Spacer(Modifier.height(12.dp))
+            Text(
+                "\"" + profile.name + "\" " + tr("is locked"),
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                tr("Enter this profile's password to open it."),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(18.dp))
+            OutlinedTextField(
+                value = pw,
+                onValueChange = { pw = it; wrong = false },
+                label = { Text(tr("Password")) },
+                singleLine = true,
+                enabled = !checking,
+                isError = wrong,
+                visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                    keyboardType = androidx.compose.ui.text.input.KeyboardType.Password,
+                    imeAction = androidx.compose.ui.text.input.ImeAction.Done,
+                ),
+                keyboardActions = androidx.compose.foundation.text.KeyboardActions(onDone = { check() }),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            if (wrong) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    tr("Wrong password"),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+            Spacer(Modifier.height(12.dp))
+            Button(
+                onClick = { check() },
+                enabled = !checking && pw.isNotBlank(),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                if (checking) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        color = MaterialTheme.colorScheme.onPrimary,
+                        strokeWidth = 2.dp,
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Text(tr("Checking…"))
+                } else {
+                    Text(tr("Unlock"))
+                }
+            }
+            if (others.isNotEmpty()) {
+                Spacer(Modifier.height(4.dp))
+                TextButton(onClick = { pickOther = true }) { Text(tr("Use a different profile")) }
+            }
+        }
+    }
+
+    if (pickOther) {
+        AlertDialog(
+            onDismissRequest = { if (switchingTo == null) pickOther = false },
+            title = { Text(tr("Switch profile")) },
+            text = {
+                Column {
+                    for (p in others) {
+                        val busy = switchingTo == p.id
+                        TextButton(
+                            enabled = switchingTo == null,
+                            onClick = {
+                                switchingTo = p.id
+                                scope.launch {
+                                    runCatching { com.hikari.app.data.Profiles.switchTo(app, p.id) }
+                                    switchingTo = null
+                                    pickOther = false
+                                    onSwitched()
+                                }
+                            },
+                        ) {
+                            if (com.hikari.app.data.Profiles.needsPassword(p)) {
+                                Icon(
+                                    Icons.Filled.Lock,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                                Spacer(Modifier.width(8.dp))
+                            }
+                            Text(if (busy) tr("Switching…") else p.name)
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = { if (switchingTo == null) pickOther = false }) {
+                    Text(tr("Cancel"))
+                }
+            },
+        )
     }
 }

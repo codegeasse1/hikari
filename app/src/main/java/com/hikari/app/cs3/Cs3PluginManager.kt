@@ -463,6 +463,13 @@ object Cs3PluginManager {
         errorDetails.get().setLength(0)
         lastError = null
         return try {
+            // Deliberate plugin UI: follow-on windows the sheet opens a moment
+            // later (a sub-dialog, a picker) land on a bare handler with no
+            // gesture on the stack, so the auto-open guard gets an
+            // allow-window for exactly this (see ExtensionUiGuard).
+            com.hikari.app.net.ExtensionUiGuard.allowFor(
+                com.hikari.app.net.ExtensionUiGuard.SETTINGS_ALLOW_MS
+            )
             callback.invoke(host)
             pendingSettingsReload = file.absolutePath
             true

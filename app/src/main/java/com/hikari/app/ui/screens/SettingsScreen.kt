@@ -83,6 +83,7 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Extension
+import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.FormatSize
 import androidx.compose.material.icons.filled.Fullscreen
@@ -883,6 +884,7 @@ fun SettingsScreen(nav: NavHostController) {
                 SettingsFolder.PLAYBACK_SERVERS -> {
                     item { SettingsCard(top = 2.dp) { ServerSearchCard(app) } }
                     item { SettingsCard { TrackerServerSearchCard(app) } }
+                    item { SettingsCard { ServerTimeoutCard(app) } }
                     // "When playback starts" (play the first server / wait for more)
                     // lives here — it is a decision about SERVERS — and only here:
                     // the same card used to show up in the Player folder too.
@@ -5547,6 +5549,154 @@ private fun ServerSearchCard(app: HikariApp) {
 }
 
 /** One engine pill in the exception picker (see [ServerSearchCard]). */
+/**
+ * Settings → Playback & Servers → Server search time.
+ *
+ * How long one extension may be searched for servers before the wait ends —
+ * the budget behind "Server is not responding" and "extraction timed out".
+ * The master switch sets the same time for every extension; off, each
+ * extension keeps the built-in budget unless it has its own row below
+ * (20–100 seconds, one-second steps). Only lengthens the WAIT: an extension
+ * that fails outright still reports the moment it does (see
+ * ContentRepository.streamsTimeoutFor and the CS3 merge loop).
+ */
+@Composable
+private fun ServerTimeoutCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    val allSecs by remember { app.store.serverTimeoutAllFlow() }.collectAsState(initial = 0)
+    val overrides by remember { app.store.serverTimeoutsFlow() }.collectAsState(initial = emptyMap())
+    val installed by app.providers.providers.collectAsState()
+    val installedEnabled = installed.filter { it.config.enabled }
+    val enginesHere = remember(installedEnabled) {
+        installedEnabled.map { it.config.type }.distinct().sortedBy { it.groupLabel }
+    }
+    var openEngines by remember { mutableStateOf(setOf<String>()) }
+    val masterOn = allSecs in 20..100
+
+    Column(Modifier.padding(16.dp)) {
+        SettingsCardHeading(Icons.Filled.Timer, tr("Server search time"))
+        SettingsToggle(
+            label = tr("Same search time for every extension"),
+            supporting = if (masterOn) {
+                tr("Every extension waits up to %s seconds for servers").replace("%s", allSecs.toString())
+            } else {
+                tr("Set the time per extension below")
+            },
+            checked = masterOn,
+            onCheckedChange = { on ->
+                scope.launch { runCatching { app.store.setServerTimeoutAll(if (on) 40 else 0) } }
+            },
+        )
+        if (masterOn) {
+            Spacer(Modifier.height(8.dp))
+            TimeoutSecondSlider(
+                seconds = allSecs,
+                onCommit = { v -> scope.launch { runCatching { app.store.setServerTimeoutAll(v) } } },
+            )
+        }
+        if (!LocalHideHelp.current) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                tr(
+                    "Slow extensions (torrents first) need more than the built-in wait. " +
+                        "Raising the time only waits longer — a server that fails outright " +
+                        "still reports immediately instead of burning the whole time."
+                ),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Spacer(Modifier.height(12.dp))
+        if (installedEnabled.isEmpty()) {
+            Text(
+                tr("No extensions installed yet."),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        for (type in enginesHere) {
+            val exts = installedEnabled.filter { it.config.type == type }
+                .sortedBy { it.config.name.ifBlank { it.config.id }.lowercase() }
+            val custom = exts.count { it.config.id in overrides }
+            val open = type.name in openEngines
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        type.groupLabel,
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    Text(
+                        exts.size.toString() + " " + tr("extensions") +
+                            (if (custom > 0) " · " + custom.toString() + " " + tr("custom") else ""),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                TextButton(onClick = {
+                    openEngines = if (open) openEngines - type.name else openEngines + type.name
+                }) {
+                    Text(if (open) tr("Hide") else tr("Show"))
+                }
+            }
+            if (open) {
+                for (holder in exts) {
+                    val id = holder.config.id
+                    val label = holder.config.name.ifBlank { id }
+                    val current = overrides[id]
+                    Column(Modifier.fillMaxWidth().padding(start = 8.dp, top = 4.dp, bottom = 4.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                label,
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.weight(1f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            if (current != null) {
+                                TextButton(onClick = {
+                                    scope.launch { runCatching { app.store.setServerTimeout(id, null) } }
+                                }) {
+                                    Text(tr("Default"))
+                                }
+                            }
+                        }
+                        TimeoutSecondSlider(
+                            seconds = current ?: 20,
+                            onCommit = { v -> scope.launch { runCatching { app.store.setServerTimeout(id, v) } } },
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+        }
+    }
+}
+
+/** 20–100 seconds in one-second steps; writes only when the drag settles. */
+@Composable
+private fun TimeoutSecondSlider(seconds: Int, onCommit: (Int) -> Unit) {
+    var pos by remember(seconds) { mutableStateOf(seconds.coerceIn(20, 100).toFloat()) }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Slider(
+            value = pos,
+            onValueChange = { pos = it },
+            onValueChangeFinished = { onCommit(pos.roundToInt().coerceIn(20, 100)) },
+            valueRange = 20f..100f,
+            steps = 79,
+            modifier = Modifier.weight(1f),
+        )
+        Spacer(Modifier.width(10.dp))
+        Text(
+            pos.roundToInt().toString() + "s",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+    }
+}
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ExceptionEngineChip(
@@ -6871,7 +7021,18 @@ private fun BackupCard(app: HikariApp, onPair: () -> Unit) {
                     context.contentResolver.openInputStream(uri)?.use { BackupManager.restoreStream(app, it) }
                         ?: BackupManager.Report(false, "Could not read that file.")
                 }
-            }.getOrElse { BackupManager.Report(false, "Backup failed.", it.message.orEmpty()) }
+            }.getOrElse {
+                // The reason is logged (Settings → Logs & diagnostics) as well
+                // as shown: a bare "Backup failed" with no cause is what made
+                // this bug unreportable.
+                runCatching {
+                    com.hikari.app.data.Logs.log(
+                        "Backup",
+                        "restore failed: " + it.javaClass.simpleName + ": " + it.message.orEmpty(),
+                    )
+                }
+                BackupManager.Report(false, "Backup failed.", it.message.orEmpty())
+            }
             report(result)
         }
     }
@@ -6922,7 +7083,15 @@ private fun BackupCard(app: HikariApp, onPair: () -> Unit) {
                             "${app.providers.providers.value.size} sources",
                     )
                 }
-            }.getOrElse { BackupManager.Report(false, "Backup failed.", it.message.orEmpty()) }
+            }.getOrElse {
+                runCatching {
+                    com.hikari.app.data.Logs.log(
+                        "Backup",
+                        "export failed: " + it.javaClass.simpleName + ": " + it.message.orEmpty(),
+                    )
+                }
+                BackupManager.Report(false, "Backup failed.", it.message.orEmpty())
+            }
             report(result)
         }
     }

@@ -37,7 +37,24 @@ class VolumeBoostProcessor : AudioProcessor {
     var gain: Float = 1f
 
     private var inputFormat: AudioProcessor.AudioFormat = AudioProcessor.AudioFormat.NOT_SET
-    private var outputBuffer: ByteBuffer = AudioProcessor.EMPTY_BUFFER
+    /**
+     * Two reusable direct buffers, ping-ponged between accumulation and the
+     * sink: audio reaches here ~50–100 buffers a second, and the old code did
+     * a fresh `allocateDirect` (a native malloc plus Cleaner registration) for
+     * EVERY one — including a second allocation whenever two inputs merged —
+     * which is pure GC pressure and heat for zero audible difference. The sink
+     * consumes at most one handed-out buffer before feeding more input (the
+     * contract media3's own BaseAudioProcessor relies on), so two buffers
+     * rotating is steady-state allocation-free; growth only ever reallocates
+     * when a bigger buffer is genuinely needed.
+     */
+    private var back: ByteBuffer = AudioProcessor.EMPTY_BUFFER
+    /** A handed-out buffer the sink is still reading (at most one — the sink
+     *  consumes it before feeding more input). Recycled as spare on the next
+     *  pickup. */
+    private var outstanding: ByteBuffer? = null
+    /** An empty buffer kept for reuse, so growth is the only allocator. */
+    private var spare: ByteBuffer = AudioProcessor.EMPTY_BUFFER
     private var inputEnded = false
 
     override fun configure(inputAudioFormat: AudioProcessor.AudioFormat): AudioProcessor.AudioFormat {
@@ -54,41 +71,54 @@ class VolumeBoostProcessor : AudioProcessor {
         gain != 1f && inputFormat != AudioProcessor.AudioFormat.NOT_SET
 
     override fun queueInput(inputBuffer: ByteBuffer) {
-        val g = gain
-        if (g == 1f || !inputBuffer.hasRemaining()) {
-            if (inputBuffer.hasRemaining()) {
-                val copy = ByteBuffer.allocateDirect(inputBuffer.remaining())
-                    .order(ByteOrder.nativeOrder())
-                copy.put(inputBuffer)
-                copy.flip()
-                replaceOutput(copy)
-            }
-            inputBuffer.position(inputBuffer.limit())
-            return
-        }
         val bytes = inputBuffer.remaining()
-        val out = ByteBuffer.allocateDirect(bytes).order(ByteOrder.nativeOrder())
-        if (inputFormat.encoding == C.ENCODING_PCM_FLOAT) {
+        if (bytes <= 0) return
+        val g = gain
+        val acc = accFor(bytes)
+        if (inputFormat.encoding == C.ENCODING_PCM_FLOAT && g != 1f) {
             val floats = inputBuffer.asFloatBuffer()
-            val outFloats = out.asFloatBuffer()
+            val outFloats = acc.asFloatBuffer()
+            // The view starts at the accumulator's current position: advance
+            // it past the samples just written.
+            outFloats.position(acc.position() / 4)
             while (floats.hasRemaining()) {
                 outFloats.put((floats.get() * g).coerceIn(-1f, 1f))
             }
-            out.position(bytes)
-        } else {
+            acc.position(acc.position() + bytes)
+        } else if (g != 1f) {
             val shorts = inputBuffer.asShortBuffer()
-            val outShorts = out.asShortBuffer()
+            val outShorts = acc.asShortBuffer()
+            outShorts.position(acc.position() / 2)
             while (shorts.hasRemaining()) {
                 val amplified = (shorts.get() * g).toInt()
                     .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
                     .toShort()
                 outShorts.put(amplified)
             }
-            out.position(bytes)
+            acc.position(acc.position() + bytes)
+        } else {
+            acc.put(inputBuffer)
         }
-        out.flip()
         inputBuffer.position(inputBuffer.limit())
-        replaceOutput(out)
+    }
+
+    /** The accumulator with room for [extra] more bytes appended, grown only
+     *  when it genuinely does not fit (amortised doubling, contents kept). */
+    private fun accFor(extra: Int): ByteBuffer {
+        var acc = back
+        if (acc === AudioProcessor.EMPTY_BUFFER || acc.capacity() - acc.position() < extra) {
+            val keep = if (acc === AudioProcessor.EMPTY_BUFFER) 0 else acc.position()
+            var cap = maxOf(acc.capacity(), 4096)
+            while (cap - keep < extra) cap *= 2
+            val grown = ByteBuffer.allocateDirect(cap).order(ByteOrder.nativeOrder())
+            if (keep > 0) {
+                acc.flip()
+                grown.put(acc)
+            }
+            back = grown
+            acc = grown
+        }
+        return acc
     }
 
     override fun queueEndOfStream() {
@@ -96,35 +126,39 @@ class VolumeBoostProcessor : AudioProcessor {
     }
 
     override fun getOutput(): ByteBuffer {
-        val out = outputBuffer
-        outputBuffer = AudioProcessor.EMPTY_BUFFER
-        return out
+        // The previously handed-out buffer is consumed by now (single live
+        // output at a time) — keep the bigger of it and the spare for reuse.
+        outstanding?.let { used ->
+            used.clear()
+            if (used.capacity() > spare.capacity()) spare = used
+        }
+        outstanding = null
+        if (back === AudioProcessor.EMPTY_BUFFER || back.position() == 0) {
+            return AudioProcessor.EMPTY_BUFFER
+        }
+        back.flip()
+        val ready = back
+        back = spare
+        spare = AudioProcessor.EMPTY_BUFFER
+        outstanding = ready
+        return ready
     }
 
-    override fun isEnded(): Boolean =
-        inputEnded && outputBuffer === AudioProcessor.EMPTY_BUFFER
+    override fun isEnded(): Boolean {
+        if (!inputEnded) return false
+        if (outstanding != null) return false
+        return back === AudioProcessor.EMPTY_BUFFER || back.position() == 0
+    }
 
     override fun flush() {
-        outputBuffer = AudioProcessor.EMPTY_BUFFER
+        if (back !== AudioProcessor.EMPTY_BUFFER) back.clear()
+        outstanding = null
         inputEnded = false
     }
 
     override fun reset() {
         flush()
         inputFormat = AudioProcessor.AudioFormat.NOT_SET
-    }
-
-    private fun replaceOutput(buffer: ByteBuffer) {
-        if (outputBuffer === AudioProcessor.EMPTY_BUFFER) {
-            outputBuffer = buffer
-            return
-        }
-        val merged = ByteBuffer.allocateDirect(outputBuffer.remaining() + buffer.remaining())
-            .order(ByteOrder.nativeOrder())
-        merged.put(outputBuffer)
-        merged.put(buffer)
-        merged.flip()
-        outputBuffer = merged
     }
 }
 

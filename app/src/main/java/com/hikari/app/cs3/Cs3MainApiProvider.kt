@@ -735,7 +735,17 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
             val subs = CopyOnWriteArrayList<SubtitleFile>()
             val worker = Thread.currentThread()
             val rawTimeout = a.loadLinksTimeoutMs
-            val pluginTimeout = if (rawTimeout != null && rawTimeout in 1..120_000L) rawTimeout else 30_000L
+            val declared = if (rawTimeout != null && rawTimeout in 1..120_000L) rawTimeout else 30_000L
+            // The user's per-extension server-search time wins when set for
+            // this repo (Settings → Playback & Servers → Server search time);
+            // otherwise the plugin's own declared budget stands. Only the WAIT
+            // grows — a definitive failure still surfaces the moment it
+            // happens, via the merge loop below.
+            val overrideMs = runCatching {
+                com.hikari.app.HikariApp.instance.store.serverTimeoutFor(config.id)
+                    ?.coerceIn(20, 100)?.times(1000L)
+            }.getOrDefault(null)
+            val pluginTimeout = overrideMs ?: declared
             // How long the merge loop waits in total. Extended if a fast-empty
             // plugin run triggers its one retry (below), so the retry is never
             // cut off by a deadline that assumed a single attempt.
@@ -885,7 +895,7 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                 var pluginLinksSeen = -1
                 var pluginSubsSeen = -1
                 var pluginSourcesCache: List<StreamSource> = emptyList()
-                fun pluginSources(): List<StreamSource> {
+                suspend fun pluginSources(): List<StreamSource> {
                     if (links.size != pluginLinksSeen || subs.size != pluginSubsSeen) {
                         pluginLinksSeen = links.size
                         pluginSubsSeen = subs.size
@@ -975,8 +985,17 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                 // removed in 0.9.1 (see the CHANGELOG). Either way the player's
                 // panel must not go silent: if no engine left a reason behind,
                 // say that this extension found nothing.
-                if (result.isEmpty() && streamErrors[config.id].isNullOrBlank()) {
-                    streamErrors[config.id] = "No playable source found on this extension."
+                if (result.isEmpty()) {
+                    // Say WHY the page looks the way it does (see
+                    // [probePageReachability]): a blocked or dead site reads
+                    // very differently from a loaded page no engine could pull
+                    // a stream out of, and only the second one is an extractor
+                    // problem. Fast engines fail fast — this probe is the only
+                    // extra wait here, and it runs solely on total failure.
+                    probePageReachability(fallbackTarget, config.id)
+                    if (streamErrors[config.id].isNullOrBlank()) {
+                        streamErrors[config.id] = "No playable source found on this extension."
+                    }
                 }
                 result
             } finally {
@@ -996,6 +1015,52 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
     // impersonation, so the sites that needed it failed anyway. It only ever
     // ran on pages every other engine had already failed on, which is exactly
     // where it was least likely to succeed. See the CHANGELOG.
+
+    /**
+     * When every engine came up empty, one bounded look at the title page
+     * itself with the app's own network stack — so the panel can tell "the
+     * site refused/dead" apart from "the page loaded and nothing could be
+     * pulled out of it". Never throws, never runs on success.
+     */
+    private suspend fun probePageReachability(pageUrl: String, providerId: String) {
+        if (!pageUrl.startsWith("http", ignoreCase = true)) return
+        val note: String? = try {
+            withTimeoutOrNull(10_000) {
+                // Quiet client: a review-site fetch must never raise the Home
+                // screen's "verification needed" banner (see Http.getQuiet).
+                com.hikari.app.net.Http.getQuiet(pageUrl).use { res ->
+                    val code = res.code
+                    // The head is enough to spot a challenge or empty page —
+                    // never download a video body for a diagnosis.
+                    val peek = runCatching { res.peekBody(64 * 1024).string() }.getOrDefault("")
+                    when {
+                        code == 401 || code == 403 ->
+                            "the site refused this app (HTTP $code) — it may open in a browser but not from here"
+                        code in 500..599 -> "the site itself is erroring right now (HTTP $code)"
+                        code == 404 -> "the title page is gone (HTTP 404)"
+                        code !in 200..299 -> "the site answered HTTP $code"
+                        peek.isBlank() -> "the site returned an empty page"
+                        peek.contains("challenge-platform", ignoreCase = true) ||
+                            (peek.contains("cloudflare", ignoreCase = true) &&
+                                peek.contains("challenge", ignoreCase = true)) ||
+                            peek.contains("just a moment", ignoreCase = true) ->
+                            "the site is showing a bot check the app cannot pass on its own"
+                        // The page loads: the miss is in the engines, and any
+                        // reason they left behind already says so.
+                        else -> "\u0000OK"
+                    }
+                }
+            } ?: "the site could not be reached (network error or timeout)"
+        } catch (e: Throwable) {
+            if (e is CancellationException) throw e
+            "the site could not be reached (network error or timeout)"
+        }
+        if (note == null || note == "\u0000OK") return
+        val prev = streamErrors[providerId].orEmpty()
+        streamErrors[providerId] =
+            if (prev.isBlank()) "No playable source found: $note."
+            else "$prev The title page itself: $note."
+    }
 
     /**
      * CloudStream player (CS3IPlayer) only injects `referer` from ExtractorLink
@@ -1054,11 +1119,43 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
 
     /** Maps the plugin's raw ExtractorLinks into Hikari StreamSources with
      *  CloudStream-style names ("OkRuSSL 1080p") and referer/header merging. */
-    private fun toStreamSources(
+    /**
+     * Torrent FILE urls already parsed this session (url → source, or null
+     * with its attempt time): a transient fetch failure is retried after a
+     * minute, not on every merge-loop poll. Capped LRU (not the unbounded map
+     * it was): entries are small, but a long session sweeping many extensions
+     * must not grow memory without bound.
+     */
+    private val torFileCache: MutableMap<String, Pair<Long, com.hikari.app.data.StreamSource?>> =
+        java.util.Collections.synchronizedMap(
+            object : LinkedHashMap<String, Pair<Long, com.hikari.app.data.StreamSource?>>(64, 0.75f, true) {
+                override fun removeEldestEntry(
+                    eldest: Map.Entry<String, Pair<Long, com.hikari.app.data.StreamSource?>>?,
+                ): Boolean = size > 128
+            },
+        )
+
+    private suspend fun toStreamSources(
         rawLinks: List<com.lagradost.cloudstream3.utils.ExtractorLink>,
         rawSubs: List<SubtitleFile>,
     ): List<StreamSource> {
         val a = api
+        // Torrent FILE links (.tor / .torrent) carry no info hash — parse the
+        // file into the torrent source the engine needs. Extension servers do
+        // hand these out, and without this they arrived as dead video urls
+        // that buffered until the watchdog declared them unresponsive.
+        val now = System.currentTimeMillis()
+        for (u in rawLinks.map { it.url }
+            .filter { com.hikari.app.data.NetworkStream.isTorrentFile(it) }.distinct()) {
+            val cached = torFileCache[u]
+            if (cached == null || (cached.second == null && now - cached.first > 60_000)) {
+                torFileCache[u] = now to runCatching {
+                    withTimeoutOrNull(15_000) {
+                        com.hikari.app.data.NetworkStream.torrentFileInfo(u, "")
+                    }
+                }.getOrNull()
+            }
+        }
         return rawLinks
             .filter {
                 it.url.isNotBlank() && it.url != a?.mainUrl && it.type.name != "ERROR" &&
@@ -1089,8 +1186,13 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                 val subSources = rawSubs.map { SubtitleSource(it.lang.ifBlank { "Sub" }, it.url) }
                 // Magnet / .torrent links go through the same TorrServer
                 // engine as Stremio infoHash streams.
+                // Magnet / torrent links go through the same TorrServer engine
+                // as Stremio infoHash streams — including torrent FILE links
+                // (.tor / .torrent), whose info hash was parsed above.
+                val torFile = torFileCache[l.url]?.second
                 val isTorrent = l.type.name == "MAGNET" || l.type.name == "TORRENT" ||
-                    l.url.startsWith("magnet:", true) || l.url.startsWith("torrent:", true)
+                    l.url.startsWith("magnet:", true) || l.url.startsWith("torrent:", true) ||
+                    torFile != null
                 val qualityLabel = com.lagradost.cloudstream3.utils.Qualities.getStringByInt(l.quality)
                 val baseName = l.name.ifBlank { "Stream" }
                 StreamSource(
@@ -1114,9 +1216,9 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                     isM3u8 = l.isM3u8 || isLikelyHls(l.url),
                     isMpd = l.isDash || isLikelyDash(l.url),
                     isTorrent = isTorrent,
-                    infoHash = if (isTorrent) infoHashOf(l.url) else null,
+                    infoHash = if (isTorrent) infoHashOf(l.url) ?: torFile?.infoHash else null,
                     fileIdx = magnetIndex(l.url),
-                    trackers = magnetTrackers(l.url),
+                    trackers = (magnetTrackers(l.url) + torFile?.trackers.orEmpty()).distinct(),
                     // DRM-protected links (only ever produced by a plugin's
                     // `newDrmExtractorLink`) must carry their ClearKey/Widevine
                     // info to the player, otherwise ExoPlayer opens the

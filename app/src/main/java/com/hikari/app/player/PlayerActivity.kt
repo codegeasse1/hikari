@@ -298,6 +298,120 @@ class PlayerActivity : ComponentActivity() {
         ) {
             if (droppedFrames <= 0) return
             dropCount += droppedFrames
+            maybeEscapeSoftwareDecode()
+        }
+
+        override fun onVideoDecoderInitialized(
+            eventTime: AnalyticsListener.EventTime,
+            decoderName: String,
+            initializedTimestampMs: Long,
+            initializationDurationMs: Long,
+        ) {
+            videoDecoderName = decoderName
+        }
+    }
+
+    /** The video decoder media3 actually chose for the current source (set by
+     *  [dropWatcher]; null until the renderer initialises). Platform software
+     *  decoders are `OMX.google.*` / `c2.android.*`; anything else is hardware
+     *  (or the FFmpeg extension, which reports its own names — see below). */
+    private var videoDecoderName: String? = null
+
+    /**
+     * True while the current source is being played with software decoders
+     * forbidden (see [rebuildPlayerHwOnly]). Reset whenever playback moves to
+     * a different URL (see `playDirectInner`), so every server gets its own
+     * single escape attempt.
+     */
+    private var hwOnlyDecode = false
+
+    /** The URL [hwOnlyDecode] was armed for — one escape attempt per server. */
+    private var hwOnlyAttemptUrl: String? = null
+
+    /**
+     * Sustained frame loss that triggers the software-decode escape: 240
+     * dropped frames is ~8–10s of visible stutter. The unknown-decoder bar is
+     * higher (the FFmpeg extension does not always report a name): only sheer
+     * misery earns a rebuild there.
+     */
+    private val SOFT_DECODE_DROP_LIMIT = 240
+    private val UNKNOWN_DECODER_DROP_LIMIT = 600
+
+    private fun isSoftwareDecoderName(name: String?): Boolean {
+        if (name == null) return false
+        return name.startsWith("OMX.google.", ignoreCase = true) ||
+            name.startsWith("c2.android.", ignoreCase = true) ||
+            "ffmpeg" in name.lowercase() ||
+            "libav" in name.lowercase() ||
+            name.startsWith("sw-", ignoreCase = true)
+    }
+
+    /**
+     * The escape hatch for the "same quality but lagging + phone getting hot"
+     * report: when the picture stutters for seconds AND the decoder doing the
+     * work is software (a choking hardware codec that fell back, or an FFmpeg
+     * software decode of a codec the device has no hardware for), the ONLY fix
+     * that keeps every pixel is decoding on hardware. So the player is rebuilt
+     * once per server with software decoders forbidden, at the same position,
+     * with no cover flash — the same rendition, the same resolution, just a
+     * decoder that can keep up.
+     *
+     * When hardware genuinely cannot do the codec, the rebuild errors exactly
+     * like any failed server and the normal failover walks on to the next one
+     * — never a black screen that sits there.
+     */
+    private fun maybeEscapeSoftwareDecode() {
+        if (hwOnlyDecode) return
+        val url = sources.getOrNull(currentIndex)?.url ?: return
+        // One escape attempt per server URL.
+        if (url == hwOnlyAttemptUrl) return
+        val name = videoDecoderName
+        val software = isSoftwareDecoderName(name)
+        val limit = if (software) SOFT_DECODE_DROP_LIMIT
+        else if (name == null) UNKNOWN_DECODER_DROP_LIMIT
+        else return
+        if (dropCount < limit) return
+        val src = sources.getOrNull(currentIndex) ?: return
+        // Torrents resolve through their own engine — a direct rebuild would
+        // hand ExoPlayer a magnet it cannot play.
+        if (src.isTorrent && (src.infoHash != null || src.url.startsWith("magnet:", ignoreCase = true))) return
+        if (player == null) return
+        hwOnlyDecode = true
+        hwOnlyAttemptUrl = url
+        com.hikari.app.data.Logs.log(
+            "Player",
+            "sustained frame loss ($dropCount dropped) on " +
+                (if (software) "software decoder $name" else "unknown decoder") +
+                " — rebuilding with hardware-only decoding at the same quality",
+        )
+        runCatching {
+            Toast.makeText(
+                this,
+                I18n.t("Switching to hardware decoding…"),
+                Toast.LENGTH_SHORT,
+            ).show()
+        }
+        rebuildPlayerHwOnly()
+    }
+
+    /**
+     * The silent half of [maybeEscapeSoftwareDecode]: same shape as the
+     * effects-pipeline re-arm (same source, position kept, no cover), but the
+     * rebuilt player forbids software decoders (see `playDirectInner`).
+     */
+    private fun rebuildPlayerHwOnly() {
+        val p = player ?: return
+        if (currentIndex !in sources.indices) return
+        val position = p.currentPosition
+        if (position > 2_000L) {
+            startPositionMs = position
+            seekPending = true
+        }
+        silentEffectsRebuild = true
+        try {
+            playDirectInner(currentIndex)
+        } finally {
+            silentEffectsRebuild = false
         }
     }
 
@@ -1223,6 +1337,24 @@ class PlayerActivity : ComponentActivity() {
      *  including this View-based player, which is outside the Compose tree. */
     override fun attachBaseContext(newBase: android.content.Context) {
         super.attachBaseContext(UiScale.wrap(newBase))
+    }
+
+    /**
+     * Extension auto-open guard (see [com.hikari.app.net.ExtensionUiGuard]):
+     * floating windows and external intents from extension code pass only on
+     * a user gesture (or inside the allow-window). Our own calls always pass.
+     */
+    override fun getSystemService(name: String): Any? =
+        com.hikari.app.net.ExtensionUiGuardMixins.windowService(name, super.getSystemService(name))
+
+    override fun startActivity(intent: android.content.Intent) {
+        if (com.hikari.app.net.ExtensionUiGuardMixins.startAllowed(intent)) super.startActivity(intent)
+    }
+
+    override fun startActivity(intent: android.content.Intent, options: android.os.Bundle?) {
+        if (com.hikari.app.net.ExtensionUiGuardMixins.startAllowed(intent, options)) {
+            super.startActivity(intent, options)
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -9871,6 +10003,12 @@ class PlayerActivity : ComponentActivity() {
         noVideoPolls = 0
         // A new source restarts the drop tally (see [dropWatcher]).
         dropCount = 0
+        // ...and its decoder is unknown until the new renderer reports it, and
+        // a different URL earns a fresh software-decode escape attempt (see
+        // [maybeEscapeSoftwareDecode]) — the same URL keeps the armed flag so
+        // the HW-only rebuild below actually builds HW-only.
+        videoDecoderName = null
+        if (src.url != hwOnlyAttemptUrl) hwOnlyDecode = false
         // [firstFrameRetried] is deliberately NOT reset here: a restart of the
         // SAME server is what it guards, and `playDirectInner` is what a restart
         // calls — resetting it here made the guard useless, so a server that
@@ -9959,10 +10097,17 @@ class PlayerActivity : ComponentActivity() {
                 // lacking an EAC-3 hardware decoder. Hardware decoding of
                 // H.264/HEVC video is still preferred (avoids software-decoding
                 // 4K), and decoder fallback degrades a choking hardware codec to
-                // a software one instead of freezing into a black screen.
+                // a software one instead of freezing into a black screen —
+                // unless the software-decode escape fired (see
+                // [maybeEscapeSoftwareDecode]): then software decoders are
+                // forbidden outright, so the same rendition decodes on hardware
+                // instead of stuttering on CPU.
                 BoostRenderersFactory(this, boostProcessor)
-                    .setEnableDecoderFallback(true)
-                    .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
+                    .setEnableDecoderFallback(!hwOnlyDecode)
+                    .setExtensionRendererMode(
+                        if (hwOnlyDecode) DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF
+                        else DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON,
+                    )
             )
             .setMediaSourceFactory(mediaSourceFactory)
             // Deep-buffer, stall-resistant buffering policy — see buildLoadControl.

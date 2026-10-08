@@ -783,3 +783,23 @@ private object SubsceneSite : SubtitleSite {
  * A site whose search works but whose files are walled belongs in this comment,
  * not in the list.
  */
+
+// ---------------------------------------------------------------------------
+//  Not included: SubtitleNexus
+// ---------------------------------------------------------------------------
+
+/**
+ * `subtitlenexus.com` was checked live as a candidate source and does not
+ * qualify — it is an AI subtitle GENERATION service (create subtitles with
+ * named models, buy tokens, premium plans, sign-in), not a subtitle library:
+ *
+ *  * its search (`/products/search/?search=<title>`) answers "No subtitles
+ *    found" for mainstream titles (verified with "moana");
+ *  * its "All Subtitles" shelf is per-request AI generations
+ *    (`/ai/subtitle-request/<code>/<uuid>/`), and those detail pages carry NO
+ *    direct file URL at all — only pricing, token and sign-up links — so there
+ *    is nothing a row could download without a paid account.
+ *
+ * Wiring it would only add empty searches. If it ever serves key-less direct
+ * `.srt` downloads, it can join the list above like any other site.
+ */

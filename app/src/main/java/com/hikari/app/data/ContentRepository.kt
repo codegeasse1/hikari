@@ -1509,6 +1509,22 @@ class ContentRepository(private val manager: ProviderManager) {
     private fun streamsTimeoutMs(p: ContentProvider) =
         if (isAniyomi(p)) ANIYOMI_STREAMS_TIMEOUT_MS else CROSS_EXT_STREAMS_TIMEOUT_MS
 
+    /**
+     * Streams-phase budget, honoring the user's per-extension override
+     * (Settings → Playback & Servers → Server search time): an extension with
+     * an override gets exactly that many seconds; everything else keeps the
+     * built-in budget above. The budget only caps the WAIT — a definitive
+     * extraction failure still surfaces the moment it happens (see the
+     * caller: only a timeout lengthens anything).
+     */
+    private suspend fun streamsTimeoutFor(p: ContentProvider): Long {
+        val overrideSecs = runCatching {
+            HikariApp.instance.store.serverTimeoutFor(p.config.id)
+        }.getOrNull()
+        if (overrideSecs != null) return overrideSecs * 1000L
+        return streamsTimeoutMs(p)
+    }
+
     /** The Detail screen's meta fetch. A manifest-backed addon answers in
      *  milliseconds; an Aniyomi extension is an APK that has to be class-loaded
      *  first, and timing THAT out is what left an Aniyomi item with no meta —
@@ -5103,7 +5119,7 @@ class ContentRepository(private val manager: ProviderManager) {
         // repo can be written off.
         var gotFailure: String? = null
         var gotTimedOut = false
-        val streamsBudget = streamsTimeoutMs(p)
+        val streamsBudget = streamsTimeoutFor(p)
         val got: List<StreamSource> = gated(CROSS_EXT_EXTRACT_GATE, p.config.id) {
             withTimeoutOrNull(streamsBudget) {
                 cancellableCatching { p.getStreams(meta, ep) }

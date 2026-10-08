@@ -139,7 +139,13 @@ object BackupManager {
                         "s" -> if (r.value == null) w.nullValue() else w.value(r.value as String)
                         "b" -> if (r.value == null) w.nullValue() else w.value((r.value as Boolean))
                         "i", "l" -> if (r.value == null) w.nullValue() else w.value((r.value as Number).toLong())
-                        "f", "d" -> if (r.value == null) w.nullValue() else w.value((r.value as Number).toDouble())
+                        // JsonWriter rejects non-finite doubles outright
+                        // (IllegalArgumentException) — a single NaN anywhere
+                        // in the store used to fail the whole backup.
+                        "f", "d" -> if (r.value == null) w.nullValue() else {
+                            val d = (r.value as Number).toDouble()
+                            if (d.isFinite()) w.value(d) else w.nullValue()
+                        }
                         "ss" -> {
                             val list = r.value as? List<*> ?: (r.value as? Set<*>)?.toList()
                             if (list == null) {
@@ -157,7 +163,14 @@ object BackupManager {
                 }
                 w.endArray()
                 w.name("files").beginArray()
-                for ((rel, bytes) in collectFiles(app.filesDir)) {
+                // One file at a time: the file list used to be assembled whole
+                // (every extension's bytes in RAM at once) and a large
+                // extension set died with an OOM that surfaced as "Backup
+                // failed". Walking the names first and reading each file only
+                // for its own write keeps the peak at one file + its base64.
+                for (rel in collectFileRels(app.filesDir)) {
+                    val bytes = runCatching { File(app.filesDir, rel).readBytes() }.getOrNull()
+                    if (bytes == null || bytes.isEmpty()) continue
                     w.beginObject()
                     w.name("path").value(rel)
                     w.name("data").value(Base64.encodeToString(bytes, Base64.NO_WRAP))
@@ -186,7 +199,12 @@ object BackupManager {
             }
         }
         if (dest.exists()) dest.delete()
-        tmp.renameTo(dest)
+        // renameTo silently returns false across filesystems and on odd OEMs —
+        // an unchecked failure used to hand the saver an empty/missing file.
+        if (!tmp.renameTo(dest)) {
+            tmp.inputStream().use { input -> dest.outputStream().use { input.copyTo(it) } }
+            runCatching { tmp.delete() }
+        }
         dest.length()
     }
 
@@ -251,8 +269,10 @@ object BackupManager {
      * read is skipped rather than failing the whole backup (a locked or
      * half-written file must not cost the user their settings).
      */
-    private fun collectFiles(filesDir: File): List<Pair<String, ByteArray>> {
-        val out = ArrayList<Pair<String, ByteArray>>()
+    /** Extension-file paths (relative) for the backup walk — names only, so the
+     *  writer can stream one file at a time (see [exportToFile]). */
+    private fun collectFileRels(filesDir: File): List<String> {
+        val out = ArrayList<String>()
         for (relRoot in FILE_ROOTS) {
             val dir = File(filesDir, relRoot)
             if (!dir.isDirectory) continue
@@ -267,9 +287,7 @@ object BackupManager {
                         continue
                     }
                     if (child.length() <= 0L || child.length() > MAX_FILE_BYTES) continue
-                    val rel = child.relativeTo(filesDir).invariantSeparatorsPath
-                    val bytes = runCatching { child.readBytes() }.getOrNull() ?: continue
-                    out.add(rel to bytes)
+                    out.add(child.relativeTo(filesDir).invariantSeparatorsPath)
                 }
             }
         }

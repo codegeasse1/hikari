@@ -547,7 +547,12 @@ private fun TelegramHome(
     val scope = rememberCoroutineScope()
     LaunchedEffect(section) {
         val target = pages.indexOf(section)
-        if (target >= 0 && target != pager.currentPage) pager.animateScrollToPage(target)
+        // An instant jump, not an animation: this effect answers a state sync
+        // (an add landing on its section, back stepping out), and animating
+        // here fought the tab-enter transition — pages sliding against each
+        // other on open, which read as flicker. User taps still animate (see
+        // the strip handler below).
+        if (target >= 0 && target != pager.currentPage) pager.scrollToPage(target)
     }
     LaunchedEffect(pager.currentPage) {
         val shown = pages.getOrNull(pager.currentPage)

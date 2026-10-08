@@ -23,8 +23,11 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -127,6 +130,40 @@ fun ProfilesScreen(app: HikariApp, onBack: () -> Unit) {
             } else {
                 action()
             }
+        }
+    }
+    // The PER-PROFILE gate: opening, renaming, deleting or re-locking a
+    // profile that has its own password asks for THAT password — never the
+    // app lock's. A profile with no password of its own runs ungated.
+    var profileGateTarget by remember { mutableStateOf<Profiles.Profile?>(null) }
+    var profileGateAction by remember { mutableStateOf<(() -> Unit)?>(null) }
+    var profileGatePw by remember { mutableStateOf("") }
+    var profileGateWrong by remember { mutableStateOf(false) }
+    var profileGateBusy by remember { mutableStateOf(false) }
+    // The set/change/remove-password sheet, and its fields.
+    var lockSetupTarget by remember { mutableStateOf<Profiles.Profile?>(null) }
+    var lockCurrent by remember { mutableStateOf("") }
+    var lockNew by remember { mutableStateOf("") }
+    var lockConfirm by remember { mutableStateOf("") }
+    var lockApplyAll by remember { mutableStateOf(false) }
+    var lockBusy by remember { mutableStateOf(false) }
+    var lockError by remember { mutableStateOf("") }
+    fun resetLockSheet() {
+        lockCurrent = ""
+        lockNew = ""
+        lockConfirm = ""
+        lockApplyAll = false
+        lockBusy = false
+        lockError = ""
+    }
+    fun askProfileGate(profile: Profiles.Profile, action: () -> Unit) {
+        if (Profiles.needsPassword(profile)) {
+            profileGateTarget = profile
+            profileGateAction = action
+            profileGatePw = ""
+            profileGateWrong = false
+        } else {
+            action()
         }
     }
     // What each profile holds, read from its own snapshot (the active one is read
@@ -234,14 +271,20 @@ fun ProfilesScreen(app: HikariApp, onBack: () -> Unit) {
                     // left the picker would be an empty page describing a
                     // feature with nothing in it.
                     canDelete = profiles.size > 1,
-                    onOpen = { askGate { switchTo(profile) } },
+                    onOpen = { askProfileGate(profile) { switchTo(profile) } },
                     onRename = {
-                        askGate {
+                        askProfileGate(profile) {
                             typed = profile.name
                             renameTarget = profile
                         }
                     },
-                    onDelete = { askGate { deleteTarget = profile } },
+                    onDelete = { askProfileGate(profile) { deleteTarget = profile } },
+                    onLock = {
+                        askProfileGate(profile) {
+                            resetLockSheet()
+                            lockSetupTarget = profile
+                        }
+                    },
                 )
             }
             item(key = "profiles-new") {
@@ -455,6 +498,185 @@ fun ProfilesScreen(app: HikariApp, onBack: () -> Unit) {
             },
         )
     }
+
+    // The per-profile password prompt: opening, renaming, deleting or
+    // re-locking a profile that has its own password.
+    profileGateTarget?.let { target ->
+        ProfileLockDialog(
+            title = tr("Enter the password for") + " \"" + target.name + "\"",
+            value = profileGatePw,
+            onValueChange = {
+                profileGatePw = it
+                profileGateWrong = false
+            },
+            wrong = profileGateWrong,
+            busy = profileGateBusy,
+            onUnlock = {
+                if (profileGateBusy) return@ProfileLockDialog
+                profileGateBusy = true
+                val pw = profileGatePw
+                scope.launch {
+                    val res = runCatching { Profiles.unlock(app, target.id, pw) }.getOrNull()
+                    profileGateBusy = false
+                    if (res == Profiles.UnlockResult.OK || res == Profiles.UnlockResult.NO_SECRET) {
+                        profileGateTarget = null
+                        profileGatePw = ""
+                        val run = profileGateAction
+                        profileGateAction = null
+                        run?.invoke()
+                    } else {
+                        profileGateWrong = true
+                    }
+                }
+            },
+            onDismiss = {
+                if (!profileGateBusy) {
+                    profileGateTarget = null
+                    profileGatePw = ""
+                    profileGateAction = null
+                }
+            },
+        )
+    }
+
+    // Set, change or remove one profile's OWN password — never the app lock's.
+    // "Use the same password for every profile" writes it onto all of them;
+    // otherwise only this profile changes.
+    lockSetupTarget?.let { target ->
+        val canSave = !lockBusy && lockNew.length >= 4 && lockNew == lockConfirm &&
+            (!target.locked || lockCurrent.isNotBlank())
+        AlertDialog(
+            onDismissRequest = { if (!lockBusy) lockSetupTarget = null },
+            title = {
+                Text(
+                    if (target.locked) tr("Change the password for") + " \"" + target.name + "\""
+                    else tr("Lock") + " \"" + target.name + "\" " + tr("with a password")
+                )
+            },
+            text = {
+                Column {
+                    if (target.locked) {
+                        OutlinedTextField(
+                            value = lockCurrent,
+                            onValueChange = { lockCurrent = it; lockError = "" },
+                            singleLine = true,
+                            enabled = !lockBusy,
+                            label = { Text(tr("Current password")) },
+                            visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Spacer(Modifier.height(8.dp))
+                    }
+                    OutlinedTextField(
+                        value = lockNew,
+                        onValueChange = { lockNew = it; lockError = "" },
+                        singleLine = true,
+                        enabled = !lockBusy,
+                        label = { Text(tr("New password (4+ characters)")) },
+                        visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = lockConfirm,
+                        onValueChange = { lockConfirm = it; lockError = "" },
+                        singleLine = true,
+                        enabled = !lockBusy,
+                        label = { Text(tr("Repeat the new password")) },
+                        visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                        isError = lockConfirm.isNotBlank() && lockNew != lockConfirm,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(
+                            checked = lockApplyAll,
+                            enabled = !lockBusy,
+                            onCheckedChange = { lockApplyAll = it },
+                        )
+                        Text(
+                            tr("Use the same password for every profile"),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    if (lockError.isNotBlank()) {
+                        Text(
+                            lockError,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    } else if (!LocalHideHelp.current) {
+                        Text(
+                            tr("Only this profile asks for it — the app lock keeps its own password."),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(enabled = canSave, onClick = {
+                    scope.launch {
+                        lockBusy = true
+                        lockError = ""
+                        // A locked profile proves the current password first.
+                        if (target.locked) {
+                            val res = runCatching { Profiles.unlock(app, target.id, lockCurrent) }.getOrNull()
+                            if (res != Profiles.UnlockResult.OK && res != Profiles.UnlockResult.NO_SECRET) {
+                                lockBusy = false
+                                lockError = tr("Wrong password — try again.")
+                                return@launch
+                            }
+                        }
+                        val fail = runCatching {
+                            Profiles.setLock(app, target.id, lockNew)
+                            if (lockApplyAll) {
+                                for (p in profiles) {
+                                    if (p.id != target.id) Profiles.setLock(app, p.id, lockNew)
+                                }
+                            }
+                        }.isFailure
+                        lockBusy = false
+                        if (fail) {
+                            lockError = tr("Could not save it — try again.")
+                        } else {
+                            lockSetupTarget = null
+                            status = if (lockApplyAll) tr("Every profile now uses the new password.")
+                            else tr("Password set for") + " \"" + target.name + "\"."
+                        }
+                    }
+                }) {
+                    Text(if (lockBusy) tr("Saving…") else tr("Save"))
+                }
+            },
+            dismissButton = {
+                Row {
+                    if (target.locked) {
+                        TextButton(enabled = !lockBusy, onClick = {
+                            scope.launch {
+                                lockBusy = true
+                                val res = runCatching { Profiles.unlock(app, target.id, lockCurrent) }.getOrNull()
+                                lockBusy = false
+                                if (res == Profiles.UnlockResult.OK || res == Profiles.UnlockResult.NO_SECRET) {
+                                    runCatching { Profiles.clearLock(app, target.id) }
+                                    lockSetupTarget = null
+                                    status = tr("Password removed from") + " \"" + target.name + "\"."
+                                } else {
+                                    lockError = tr("Wrong password — try again.")
+                                }
+                            }
+                        }) {
+                            Text(tr("Remove"), color = MaterialTheme.colorScheme.error)
+                        }
+                    }
+                    TextButton(enabled = !lockBusy, onClick = { lockSetupTarget = null }) {
+                        Text(tr("Cancel"))
+                    }
+                }
+            },
+        )
+    }
 }
 
 /**
@@ -486,6 +708,7 @@ private fun ProfileRow(
     onOpen: () -> Unit,
     onRename: () -> Unit,
     onDelete: () -> Unit,
+    onLock: () -> Unit,
 ) {
     GlassCard(
         onClick = { if (!active) onOpen() },
@@ -552,6 +775,19 @@ private fun ProfileRow(
                     modifier = Modifier.size(18.dp),
                 )
             }
+            IconButton(enabled = !busy, onClick = onLock) {
+                Icon(
+                    if (profile.locked) Icons.Filled.Lock else Icons.Filled.LockOpen,
+                    contentDescription = if (profile.locked) {
+                        tr("Locked — change or remove the password")
+                    } else {
+                        tr("Lock this profile with its own password")
+                    },
+                    tint = if (profile.locked) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
             if (canDelete) {
                 IconButton(enabled = !busy, onClick = onDelete) {
                     Icon(
@@ -572,6 +808,7 @@ private fun ProfileRow(
  *  [com.hikari.app.lock.AppLock]). */
 @Composable
 private fun ProfileLockDialog(
+    title: String? = null,
     value: String,
     onValueChange: (String) -> Unit,
     wrong: Boolean,
@@ -581,7 +818,7 @@ private fun ProfileLockDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(tr("Enter your app-lock password")) },
+        title = { Text(title ?: tr("Enter your app-lock password")) },
         text = {
             Column {
                 OutlinedTextField(

@@ -4,6 +4,7 @@ import android.content.Context
 import com.hikari.app.BuildConfig
 import com.hikari.app.HikariApp
 import com.hikari.app.download.DownloadStore
+import com.hikari.app.lock.AppLock
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -67,6 +68,15 @@ object Profiles {
         val id: String,
         val name: String,
         val createdAt: Long,
+        /**
+         * Whether opening this profile asks for the profile's OWN password.
+         * Separate from the app lock by design: the `locked` flag travels in
+         * the registry, while the secret itself is device-local (see
+         * [AppStore.DeviceLocal]) and never enters a backup or pairing
+         * payload — so a restored profile whose secret did not travel opens
+         * rather than locking its new owner out (see [unlock]).
+         */
+        val locked: Boolean = false,
     )
 
     /** `filesDir/profiles` — the registry and one snapshot file per profile. */
@@ -104,6 +114,82 @@ object Profiles {
     /** True once the user has more than the implicit single setup. */
     fun inUse(): Boolean = _all.value.isNotEmpty()
 
+    // ------------------------------------------------------ profile locks --
+
+    /**
+     * Profiles unlocked in THIS process. Killing the app re-locks every
+     * profile — the same promise an app lock makes — and [lockAll] clears it
+     * whenever the app lock itself locks.
+     */
+    private val unlockedIds = java.util.Collections.synchronizedSet(HashSet<String>())
+
+    /** True when [id] currently opens without a password. */
+    fun isUnlocked(id: String): Boolean = unlockedIds.contains(id)
+
+    /** True when [profile] demands its password right now. */
+    fun needsPassword(profile: Profile): Boolean =
+        profile.locked && !unlockedIds.contains(profile.id)
+
+    /** Forget every in-process unlock. */
+    fun lockAll() {
+        unlockedIds.clear()
+    }
+
+    /** The outcome of a password attempt (see [unlock]). */
+    enum class UnlockResult { OK, WRONG, NO_SECRET }
+
+    /**
+     * Try [password] against profile [id]'s secret. OK records the unlock for
+     * this process. NO_SECRET means the flag says locked but no secret is on
+     * this device (a restore onto a new machine, or cleared app data): the
+     * flag is cleared and the profile opens, because a password nobody can
+     * type is a lockout, not a lock.
+     */
+    suspend fun unlock(app: HikariApp, id: String, password: String): UnlockResult {
+        val secret = runCatching { app.store.profileLockSecret(id) }.getOrNull().orEmpty()
+        if (secret.isBlank()) {
+            lock.withLock {
+                setLockedFlag(app, id, false)
+                unlockedIds.add(id)
+            }
+            return UnlockResult.NO_SECRET
+        }
+        // Deliberately expensive (120k PBKDF2 rounds): off the main thread.
+        val ok = withContext(Dispatchers.Default) { AppLock.verify(password, secret) }
+        return if (ok) {
+            unlockedIds.add(id)
+            UnlockResult.OK
+        } else UnlockResult.WRONG
+    }
+
+    /** Set (or replace) profile [id]'s password. The profile opens at once —
+     *  the user just proved they know it by typing it twice. */
+    suspend fun setLock(app: HikariApp, id: String, password: String) {
+        val secret = withContext(Dispatchers.Default) { AppLock.encode(password) }
+        lock.withLock {
+            runCatching { app.store.setProfileLockSecret(id, secret) }
+            setLockedFlag(app, id, true)
+            unlockedIds.add(id)
+        }
+    }
+
+    /** Remove profile [id]'s password. */
+    suspend fun clearLock(app: HikariApp, id: String) {
+        lock.withLock {
+            runCatching { app.store.setProfileLockSecret(id, "") }
+            setLockedFlag(app, id, false)
+            unlockedIds.remove(id)
+        }
+    }
+
+    private fun setLockedFlag(ctx: Context, id: String, locked: Boolean) {
+        val reg = readRegistry(ctx)
+        val active = reg.optString("active").trim().takeIf { it.isNotBlank() }
+        val list = profilesOf(reg).map { if (it.id == id) it.copy(locked = locked) else it }
+        writeRegistry(ctx, list, active)
+        publish(ctx, readRegistry(ctx))
+    }
+
     // ------------------------------------------------------------- files --
 
     private fun dir(ctx: Context): File = File(ctx.filesDir, DIR).apply { mkdirs() }
@@ -131,6 +217,7 @@ object Profiles {
                     id = id,
                     name = o.optString("name").trim().ifBlank { "Profile" },
                     createdAt = o.optLong("createdAt", 0L),
+                    locked = o.optBoolean("locked", false),
                 )
             )
         }
@@ -145,6 +232,7 @@ object Profiles {
                     .put("id", p.id)
                     .put("name", p.name)
                     .put("createdAt", p.createdAt)
+                    .put("locked", p.locked)
             )
         }
         val root = JSONObject()

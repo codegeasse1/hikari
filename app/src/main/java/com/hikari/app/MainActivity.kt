@@ -808,6 +808,24 @@ class MainActivity : AppCompatActivity() {
      * plugin's own PathClassLoader, never this activity's.
      */
     /**
+     * Extension auto-open guard (see [com.hikari.app.net.ExtensionUiGuard]):
+     * floating windows and external intents from extension code pass only on
+     * a user gesture (or inside the allow-window). Our own calls always pass.
+     */
+    override fun getSystemService(name: String): Any? =
+        com.hikari.app.net.ExtensionUiGuardMixins.windowService(name, super.getSystemService(name))
+
+    override fun startActivity(intent: android.content.Intent) {
+        if (com.hikari.app.net.ExtensionUiGuardMixins.startAllowed(intent)) super.startActivity(intent)
+    }
+
+    override fun startActivity(intent: android.content.Intent, options: android.os.Bundle?) {
+        if (com.hikari.app.net.ExtensionUiGuardMixins.startAllowed(intent, options)) {
+            super.startActivity(intent, options)
+        }
+    }
+
+    /**
      * Closes an extension's own popup the moment it appears.
      *
      * Hikari's rule is that a Cloudflare/Turnstile verification page opens only
