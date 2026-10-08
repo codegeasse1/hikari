@@ -901,7 +901,7 @@ fun IptvPlaylistScreen(nav: NavHostController, providerId: String) {
         )
         if (folderSearchOpen && !isTorrent) {
             Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, top = 4.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(top = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 OutlinedTextField(

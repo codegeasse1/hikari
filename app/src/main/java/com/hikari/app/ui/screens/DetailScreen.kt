@@ -2859,6 +2859,8 @@ fun DetailScreen(
     // there is nothing to resolve yet — tapping one used to report "no
     // playable source", which reads as broken. They wear a badge (see the
     // cards) and tapping one says it is not out yet instead.
+    // Hoisted: `tr` is @Composable and this gate is a plain function.
+    val notReleasedYet = tr("Not released yet")
     fun playBlocked(ep: Episode?): Boolean {
         if (!isEpisodeUnaired(ep?.released)) return false
         runCatching {
@@ -2866,7 +2868,7 @@ fun DetailScreen(
             // wherever the episode cards are composed.
             android.widget.Toast.makeText(
                 HikariApp.instance.applicationContext,
-                tr("Not released yet"),
+                notReleasedYet,
                 android.widget.Toast.LENGTH_SHORT,
             ).show()
         }

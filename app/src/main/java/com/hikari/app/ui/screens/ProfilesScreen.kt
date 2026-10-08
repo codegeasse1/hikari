@@ -545,6 +545,13 @@ fun ProfilesScreen(app: HikariApp, onBack: () -> Unit) {
     lockSetupTarget?.let { target ->
         val canSave = !lockBusy && lockNew.length >= 4 && lockNew == lockConfirm &&
             (!target.locked || lockCurrent.isNotBlank())
+        // Hoisted: `tr` is @Composable and the save/remove below run in a
+        // coroutine, where composable calls are illegal.
+        val errWrongPw = tr("Wrong password — try again.")
+        val errSaveFail = tr("Could not save it — try again.")
+        val msgAllSet = tr("Every profile now uses the new password.")
+        val msgOneSet = tr("Password set for")
+        val msgRemoved = tr("Password removed from")
         AlertDialog(
             onDismissRequest = { if (!lockBusy) lockSetupTarget = null },
             title = {
@@ -625,7 +632,7 @@ fun ProfilesScreen(app: HikariApp, onBack: () -> Unit) {
                             val res = runCatching { Profiles.unlock(app, target.id, lockCurrent) }.getOrNull()
                             if (res != Profiles.UnlockResult.OK && res != Profiles.UnlockResult.NO_SECRET) {
                                 lockBusy = false
-                                lockError = tr("Wrong password — try again.")
+                                lockError = errWrongPw
                                 return@launch
                             }
                         }
@@ -639,11 +646,11 @@ fun ProfilesScreen(app: HikariApp, onBack: () -> Unit) {
                         }.isFailure
                         lockBusy = false
                         if (fail) {
-                            lockError = tr("Could not save it — try again.")
+                            lockError = errSaveFail
                         } else {
                             lockSetupTarget = null
-                            status = if (lockApplyAll) tr("Every profile now uses the new password.")
-                            else tr("Password set for") + " \"" + target.name + "\"."
+                            status = if (lockApplyAll) msgAllSet
+                            else msgOneSet + " \"" + target.name + "\"."
                         }
                     }
                 }) {
@@ -661,9 +668,9 @@ fun ProfilesScreen(app: HikariApp, onBack: () -> Unit) {
                                 if (res == Profiles.UnlockResult.OK || res == Profiles.UnlockResult.NO_SECRET) {
                                     runCatching { Profiles.clearLock(app, target.id) }
                                     lockSetupTarget = null
-                                    status = tr("Password removed from") + " \"" + target.name + "\"."
+                                    status = msgRemoved + " \"" + target.name + "\"."
                                 } else {
-                                    lockError = tr("Wrong password — try again.")
+                                    lockError = errWrongPw
                                 }
                             }
                         }) {
