@@ -142,6 +142,16 @@ object MangaExtensionManager {
     private val cache = ConcurrentHashMap<String, Extension>()
     private val failure = ConcurrentHashMap<String, Pair<Long, String>>()
 
+    /**
+     * Drops the cached extension for [path] (see [ExtensionRecovery]): the
+     * next call reloads it fresh instead of reusing a wedged object. The
+     * failure backoff goes with it — a stall is not a failed load.
+     */
+    fun evict(path: String) {
+        cache.remove(path)
+        failure.remove(path)
+    }
+
     @Volatile
     var lastError: String? = null
         private set

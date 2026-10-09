@@ -2146,6 +2146,165 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         return "Unknown $what \"${typed.trim()}\" — did you mean \"$guess\"?"
     }
 
+    /**
+     * What a browser repo link ("Open with → Hikari") resolved to: an
+     * installed repo/addon, or a link that needs the user to pick its engine.
+     */
+    data class RepoLinkResult(
+        /** The stored repo (null for Stremio addons, which are providers). */
+        val repo: Cs3Repo?,
+        /** Set when the file fits more than one engine: the screen offers the
+         *  manual add dialog prefilled instead of guessing wrong. */
+        val ambiguousUrl: String? = null,
+        val kinds: List<RepoKind> = emptyList(),
+    )
+
+    /**
+     * Installs a repo link handed in from a browser (see
+     * [com.hikari.app.deeplink.RepoLinkActivity]): fetches the file, sniffs
+     * which engine it belongs to from its own content, and installs it through
+     * the same path as the matching manual box. A file that fits two engines
+     * (a CloudStream vs SkyStream `plugins` list with no telling entries) is
+     * NOT guessed — it comes back ambiguous and the screen asks.
+     */
+    suspend fun addRepoLink(rawUrl: String): Result<RepoLinkResult> = withContext(Dispatchers.IO) {
+        runCatching {
+            val trimmed = rawUrl.trim()
+            if (trimmed.startsWith("stremio://", ignoreCase = true)) {
+                throw Exception(
+                    "That is a Stremio app link — open it in Stremio, or paste " +
+                        "the addon's manifest.json address instead"
+                )
+            }
+            if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {
+                throw Exception("That link is not a repo file — it must start with http(s)://")
+            }
+            // The file itself, or the repo folder holding it (mirroring each
+            // engine's own "or just the folder" rule).
+            val lower = trimmed.substringBefore('?').lowercase()
+            val base = trimmed.trimEnd('/')
+            val candidates = if (lower.endsWith(".json")) listOf(trimmed)
+            else listOf(
+                "$base/repo.json",
+                "$base/manifest.json",
+                "$base/index.min.json",
+            )
+            var text: String? = null
+            var served = trimmed
+            for (c in candidates) {
+                val t = Http.fetchStringRobust(c, emptyMap(), 20L).getOrNull()
+                if (t != null && t.isNotBlank() && !looksLikeHtml(t)) {
+                    text = t
+                    served = c
+                    break
+                }
+            }
+            val body = text?.trim()
+                ?: throw Exception(
+                    "Nothing readable at that link — it is not a repo file, or the host is blocking"
+                )
+            if (body.startsWith("{")) {
+                val o = runCatching { JSONObject(body) }.getOrNull()
+                    ?: throw Exception("That file is not valid JSON")
+                // Stremio addon manifest.
+                if (isStremioManifest(o)) {
+                    addStremio(served).getOrThrow()
+                    return@runCatching RepoLinkResult(null)
+                }
+                // Nuvio provider manifest (`scrapers` with name + filename).
+                if (o.has("scrapers")) {
+                    val baseUrl = served.substringBeforeLast('/')
+                    val n = o.optJSONArray("scrapers")?.let { arr ->
+                        (0 until arr.length()).count { i ->
+                            arr.optJSONObject(i)?.let {
+                                com.hikari.app.nuvio.NuvioPluginManager.repoPlugin(it, baseUrl)
+                            } != null
+                        }
+                    } ?: 0
+                    if (n > 0) {
+                        val repo = addRepo(served, RepoKind.NUVIO).getOrThrow()
+                        return@runCatching RepoLinkResult(repo)
+                    }
+                }
+                // Anymex / Mangayomi index.
+                if (com.hikari.app.anymex.AnymexPluginManager.looksLikeAnymex(body)) {
+                    val repo = addRepo(served, RepoKind.ANYMEX).getOrThrow()
+                    return@runCatching RepoLinkResult(repo)
+                }
+                // CloudStream vs SkyStream `plugins` list: score the entries.
+                // SkyStream entries name `.sky` files (or carry packageName/id/
+                // addons); CloudStream entries point at `.cs3` files (or carry
+                // fileHash/authors/tvTypes). A list with no telling entries is
+                // ambiguous — the screen asks instead of guessing wrong.
+                val plugins = o.optJSONArray("plugins")
+                if (plugins != null) {
+                    var sky = 0
+                    var cs = 0
+                    for (i in 0 until plugins.length()) {
+                        val e = plugins.optJSONObject(i) ?: continue
+                        val u = e.optString("url").lowercase()
+                        val skyish = u.endsWith(".sky") || e.has("packageName") ||
+                            e.has("addons") || (e.has("id") && !e.has("fileHash"))
+                        val csish = u.endsWith(".cs3") || e.has("fileHash") ||
+                            e.has("authors") || e.has("tvTypes")
+                        if (skyish && !csish) sky++ else if (csish && !skyish) cs++
+                    }
+                    if (sky > 0 && cs == 0) {
+                        val repo = addRepo(served, RepoKind.SKYSTREAM).getOrThrow()
+                        return@runCatching RepoLinkResult(repo)
+                    }
+                    if (cs > 0 && sky == 0) {
+                        val repo = addRepo(served, RepoKind.CS3).getOrThrow()
+                        return@runCatching RepoLinkResult(repo)
+                    }
+                    if (plugins.length() > 0) {
+                        return@runCatching RepoLinkResult(
+                            null,
+                            ambiguousUrl = served,
+                            kinds = listOf(RepoKind.CS3, RepoKind.SKYSTREAM),
+                        )
+                    }
+                }
+                throw Exception(
+                    "That file does not look like a repo Hikari can auto-add — open " +
+                        "Extensions and paste it into the matching box (CloudStream / " +
+                        "Nuvio / SkyStream / Aniyomi / Vega / Sora / Anymex / Hikari / Stremio)"
+                )
+            }
+            if (body.startsWith("[")) {
+                // Aniyomi / Mihon index (bare array with pkg + apk entries).
+                val aniyomiCount = runCatching {
+                    com.hikari.app.aniyomi.AniyomiExtensionManager.indexEntries(body)?.length() ?: 0
+                }.getOrDefault(0)
+                if (aniyomiCount > 0) {
+                    val repo = addAniyomiRepo(served).getOrThrow()
+                    return@runCatching RepoLinkResult(repo)
+                }
+                // Vega provider manifest (bare array of providers).
+                val vega = runCatching {
+                    com.hikari.app.providers.vega.VegaPluginManager.repoPlugins(body, served)
+                }.getOrDefault(emptyList())
+                if (vega.isNotEmpty()) {
+                    val repo = addRepo(served, RepoKind.VEGA).getOrThrow()
+                    return@runCatching RepoLinkResult(repo)
+                }
+                throw Exception(
+                    "That file is a JSON array Hikari does not recognise — Aniyomi " +
+                        "indexes and Vega manifests are supported"
+                )
+            }
+            throw Exception("That file is not a repo Hikari understands (not JSON)")
+        }
+    }
+
+    /** A Stremio addon manifest: id + version + resources/catalogs/types, and
+     *  none of the repo keys the other engines use. */
+    private fun isStremioManifest(o: JSONObject): Boolean {
+        if (!o.has("id") || !o.has("version")) return false
+        if (o.has("plugins") || o.has("scrapers")) return false
+        return o.has("resources") || o.has("catalogs") || o.has("types")
+    }
+
     private suspend fun addRepo(rawUrl: String, kind: RepoKind): Result<Cs3Repo> {
         val trimmed = rawUrl.trim()
         resolveRepoAlias(trimmed)?.let { aliases ->
@@ -3329,6 +3488,34 @@ fun ExtensionsScreen(nav: NavHostController? = null) {
     val sites by vm.sites.collectAsState()
     val openRepo = repos.firstOrNull { it.url == openRepoUrl || it.url.trimEnd('/') == openRepoUrl?.trimEnd('/') }
     val context = LocalContext.current
+    // A repo link handed in from a browser ("Open with → Hikari", published as
+    // HikariApp.repoLinkRequest with AppNav already on this tab): install it
+    // into the section its own content says it belongs to, then open that
+    // repo's folder so the user lands inside it. A file that fits two engines
+    // opens the manual add dialog prefilled instead of guessing wrong.
+    LaunchedEffect(Unit) {
+        val app = context.applicationContext as HikariApp
+        val link = app.repoLinkRequest.value
+            ?.also { app.repoLinkRequest.value = null }
+            ?: return@LaunchedEffect
+        vm.runTask(
+            "Adding repo…",
+            { vm.addRepoLink(link) },
+            onSuccess = { res ->
+                res.repo?.let { openRepoUrl = it.url }
+                if (res.repo == null && res.kinds.isNotEmpty()) {
+                    vm.clearStatus()
+                    repoUrl = res.ambiguousUrl ?: link
+                    repoDialogKind = res.kinds.first()
+                    showRepoDialog = true
+                } else if (res.repo != null) {
+                    vm.setSuccess("Repo added")
+                } else {
+                    vm.setSuccess("Addon installed")
+                }
+            },
+        )
+    }
 
     var showSite by remember { mutableStateOf(false) }
     var siteName by remember { mutableStateOf("") }

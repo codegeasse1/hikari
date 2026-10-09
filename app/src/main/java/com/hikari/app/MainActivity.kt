@@ -154,6 +154,9 @@ class MainActivity : AppCompatActivity() {
         // here as the launch intent (see [handleTrackerRedirect] and the
         // `hikari://oauth` filter in the manifest).
         handleTrackerRedirect(intent)
+        // A repo link forwarded by RepoLinkActivity ("Open with → Hikari" in
+        // a browser) lands here the same way on a cold start.
+        handleRepoLink(intent)
         // A television shows this app LANDSCAPE, always.
         //
         // The TV layout is a landscape design (a rail down the left, rows to the
@@ -774,6 +777,21 @@ class MainActivity : AppCompatActivity() {
         // (and a recreation, which re-runs onCreate) sees the same link.
         setIntent(intent)
         handleTrackerRedirect(intent)
+        handleRepoLink(intent)
+    }
+
+    /**
+     * A repo link forwarded by [com.hikari.app.deeplink.RepoLinkActivity]
+     * ("Open with → Hikari" on a repo link in a browser): published for AppRoot,
+     * which switches to the Extensions tab — the Extensions screen installs it
+     * into the section it belongs to and opens that repo's folder.
+     */
+    private fun handleRepoLink(intent: android.content.Intent?) {
+        val url = intent?.getStringExtra(com.hikari.app.deeplink.RepoLinkActivity.EXTRA_REPO_LINK)
+            .orEmpty().trim()
+        if (url.isBlank()) return
+        (application as HikariApp).repoLinkRequest.value = url
+        intent?.removeExtra(com.hikari.app.deeplink.RepoLinkActivity.EXTRA_REPO_LINK)
     }
 
     /** Set MainAPI.app to this activity, whichever form the jar compiles it

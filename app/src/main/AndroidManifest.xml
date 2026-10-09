@@ -153,6 +153,40 @@
             </intent-filter>
         </activity>
 
+        <!-- "Open with → Hikari" for extension-repo links tapped in a browser
+             (CloudStream offers itself the same way, and Android shows a
+             chooser when several apps understand the link). Own activity (not a
+             filter on MainActivity) so the chooser names the ACTION ("Add
+             repo") rather than the app, like AnymeX's "Add Repo" entry. It
+             draws nothing and keeps no history — it forwards the URL to
+             MainActivity and finishes (see RepoLinkActivity).
+             Repo links are JSON files (repo.json, manifest.json, index.json,
+             index.min.json, anime_index.json, …), hence the suffix match; the
+             stremio: scheme covers Stremio install links. -->
+        <activity
+            android:name=".deeplink.RepoLinkActivity"
+            android:exported="true"
+            android:noHistory="true"
+            android:launchMode="singleTask"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:label="Add repo">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="http" />
+                <data android:scheme="https" />
+                <data android:pathPattern=".*\\.json" />
+                <data android:pathPattern=".*\\.JSON" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="stremio" />
+            </intent-filter>
+        </activity>
+
         <!-- The official Hikari icon: the only alias enabled in the manifest,
              i.e. what a fresh install (and a factory-reset state) shows. -->
         <activity-alias

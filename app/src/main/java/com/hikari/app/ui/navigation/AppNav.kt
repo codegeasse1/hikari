@@ -937,6 +937,10 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
     val context = LocalContext.current
     val app = context.applicationContext as HikariApp
     val homeRequest by app.homeTabRequest.collectAsState()
+    // A repo link from a browser ("Open with → Hikari"): switch to the
+    // Extensions tab, whose screen installs it into the section it belongs to
+    // and opens that repo's folder. Consumed by the Extensions screen itself.
+    val repoLinkRequest by app.repoLinkRequest.collectAsState()
     // Which taskbar buttons to draw (Settings → App Layout → Taskbar buttons).
     val hiddenTabsFlow = remember { app.store.hiddenTabsFlow() }
     val hiddenTabs by hiddenTabsFlow.collectAsState(initial = emptySet())
@@ -1037,6 +1041,11 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
         }
         if (homeRequest > 0) {
             app.homeTabRequest.value = 0
+        }
+    }
+    LaunchedEffect(repoLinkRequest, tabRoute) {
+        if (!repoLinkRequest.isNullOrBlank() && tabRoute != Routes.EXTENSIONS) {
+            Routes.navigateTab(nav, Routes.EXTENSIONS)
         }
     }
 

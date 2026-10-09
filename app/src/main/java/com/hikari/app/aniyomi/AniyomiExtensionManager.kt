@@ -1075,6 +1075,18 @@ object AniyomiExtensionManager {
     private val cache = ConcurrentHashMap<String, Extension>()
     private val lastFail = ConcurrentHashMap<String, Long>()
 
+    /**
+     * Drops the cached extension for [path] (see [ExtensionRecovery]): the
+     * next call reloads it fresh instead of reusing a wedged object. The
+     * failure backoff goes with it — a stall is not a failed load, and the
+     * very next lookup must be allowed to try the fresh object immediately.
+     */
+    fun evict(path: String) {
+        cache.remove(path)
+        lastFail.remove(path)
+        loadFailures.remove(path)
+    }
+
     /** Site URLs already resolved per provider id (see [siteUrlOf]). */
     private val siteCache = ConcurrentHashMap<String, String>()
 

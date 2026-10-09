@@ -37,6 +37,18 @@ object HikariPluginManager {
 
     private const val FAIL_RETRY_MS = 60_000L
 
+    /**
+     * Drops the cached providers for [path] WITHOUT reloading (see
+     * [ExtensionRecovery]): the next call lazily loads them fresh instead of
+     * reusing a wedged object. The failure backoff goes with it — a stall is
+     * not a failed load, and the very next lookup must be allowed to try the
+     * fresh object immediately. Lighter than [reload] (no class-load here).
+     */
+    fun evict(path: String) {
+        cache.remove(path)
+        lastFail.remove(path)
+    }
+
     @Volatile
     var lastError: String? = null
         private set

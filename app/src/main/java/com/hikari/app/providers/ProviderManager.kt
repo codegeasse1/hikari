@@ -288,10 +288,35 @@ object ProviderGate {
      */
     private const val BACKGROUND_COURTESY_MS = 2_000L
 
+    /** How long an INTERACTIVE caller waits for a busy extension before it
+     *  stops queueing and says so (see [ProviderStalledException]). A wedged
+     *  call used to hold this lock forever, so every later tap queued behind
+     *  the corpse, burned its whole budget, and answered "no playable
+     *  sources" — until an app restart cleared it. Generous on purpose: a
+     *  healthy long extraction must never trip it (see [ExtensionRecovery],
+     *  which also needs a repeat before it acts). */
+    private const val INTERACTIVE_GATE_MAX_MS = 90_000L
+
+    /** Same for BACKGROUND callers (their poll loop used to spin forever). */
+    private const val BACKGROUND_GATE_MAX_MS = 120_000L
+
     /** How long a background call may have waited before its wait is written to
      *  the log, with the reason. This is the line that answers "where did the
      *  minute before playback go" (see [withProvider]). */
     private const val WAIT_LOG_MS = 750L
+
+    /**
+     * Thrown when a provider call cannot even START because an earlier call
+     * into the same extension never let go of its lock. This is the signal
+     * that the extension's runtime is wedged — not slow, wedged — and it is
+     * what [com.hikari.app.providers.ExtensionRecovery] acts on. A plain
+     * [Exception] (not cancellation): the lookup must record it as a
+     * no-answer with a reason, never swallow it as a quiet cancel.
+     */
+    class ProviderStalledException(
+        val providerId: String,
+        val waitedMs: Long,
+    ) : Exception("stalled behind an earlier call into this extension (${waitedMs / 1000}s)")
 
     private fun lockFor(id: String) = locks.computeIfAbsent(id) { kotlinx.coroutines.sync.Mutex() }
 
@@ -307,7 +332,25 @@ object ProviderGate {
             val waiters = waitersFor(id)
             waiters.incrementAndGet()
             try {
-                return lockFor(id).withLock { block() }
+                // Bounded: an earlier call that will never return must not
+                // hold every later tap hostage (see [ProviderStalledException]
+                // and INTERACTIVE_GATE_MAX_MS). Still cancellable — the delays
+                // below yield like the old withLock did.
+                val mutex = lockFor(id)
+                val start = System.currentTimeMillis()
+                while (true) {
+                    if (mutex.tryLock()) {
+                        try {
+                            return block()
+                        } finally {
+                            mutex.unlock()
+                        }
+                    }
+                    if (System.currentTimeMillis() - start >= INTERACTIVE_GATE_MAX_MS) {
+                        throw ProviderStalledException(id, System.currentTimeMillis() - start)
+                    }
+                    kotlinx.coroutines.delay(25L)
+                }
             } finally {
                 waiters.decrementAndGet()
             }
@@ -325,6 +368,11 @@ object ProviderGate {
         val startedAt = System.currentTimeMillis()
         while (true) {
             val elapsed = System.currentTimeMillis() - startedAt
+            // Bounded like the interactive lane: a corpse must not hold the
+            // poll spinning forever either (see [BACKGROUND_GATE_MAX_MS]).
+            if (elapsed >= BACKGROUND_GATE_MAX_MS) {
+                throw ProviderStalledException(id, elapsed)
+            }
             val pageWantsThis = waiters.get() > 0 && elapsed < BACKGROUND_MAX_HOLD_MS
             val somePageLoading = waiters.get() == 0 && interactiveWindows.get() > 0 &&
                 elapsed < BACKGROUND_COURTESY_MS
@@ -352,5 +400,28 @@ object ProviderGate {
             }
             kotlinx.coroutines.delay(25L)
         }
+    }
+
+    /**
+     * The stall breaker: replaces a provider's lock with a fresh one.
+     *
+     * Called when an extension is proven wedged (see
+     * [com.hikari.app.providers.ExtensionRecovery]): the stuck call keeps the
+     * OLD mutex — nothing can take it away from a thread parked forever — but
+     * every new call moves to the new one, so one corpse stops poisoning every
+     * later tap. The stuck thread still leaks (one thread per wedge), but it
+     * no longer decides what plays. Universally safe across engines because it
+     * touches only the app's own lock map, never extension state. Logs loudly:
+     * a healthy long call misdiagnosed as wedged would run concurrently with
+     * the next call, which is exactly the race this gate exists to prevent —
+     * the generous caps above are what keep that misdiagnosis rare.
+     */
+    fun breaker(id: String) {
+        locks[id] = kotlinx.coroutines.sync.Mutex()
+        interactiveWaiters.remove(id)
+        com.hikari.app.data.Logs.log(
+            "Provider",
+            "$id: stall breaker pulled — lock replaced, later calls no longer queue behind the stuck one",
+        )
     }
 }

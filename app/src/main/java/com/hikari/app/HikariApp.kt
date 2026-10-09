@@ -150,6 +150,12 @@ class HikariApp : Application() {
      *  view instead of reloading the website's home page). */
     val homeTabRequest = MutableStateFlow(0)
 
+    /** A repo link handed in from a browser ("Open with → Hikari"); AppRoot
+     *  watches this and switches to the Extensions tab, whose screen installs
+     *  it into the section it belongs to and opens that repo's folder. Null
+     *  when there is none pending — the Extensions screen consumes it. */
+    val repoLinkRequest = MutableStateFlow<String?>(null)
+
     /** Bumped by [onContentLanguageChanged] whenever the language TMDB titles
      *  and overviews are fetched in changes. Screens that hold localized
      *  content watch this and rebuild (see HomeViewModel). */

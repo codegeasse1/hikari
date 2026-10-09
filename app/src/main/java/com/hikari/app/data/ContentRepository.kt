@@ -472,6 +472,17 @@ class ContentRepository(private val manager: ProviderManager) {
         }
 
         /**
+         * Forgets a "stopped responding" mark (see [ExtensionRecovery]): called
+         * when the provider answers again OR when its runtime has just been
+         * broken out and evicted — keeping the mark after a successful recovery
+         * would skip the fixed extension for two minutes and turn the cure
+         * back into "No playable sources".
+         */
+        fun clearHung(providerId: String) {
+            crossHung.remove(providerId)
+        }
+
+        /**
          * A counting gate for one class of provider work (search / detail /
          * extract) that can have a slot REFUNDED when its holder is wedged.
          *
@@ -1879,6 +1890,11 @@ class ContentRepository(private val manager: ProviderManager) {
         val maxAttempts = if (isOrigin) maxOf(NetTuning.attempts(), 3) else NetTuning.attempts()
         var attempt = 0
         var lastWhy: String? = null
+        // Set when this lookup breaks a proven wedge and re-asks on the fresh
+        // runtime (see [com.hikari.app.providers.ExtensionRecovery]): the fresh
+        // attempt gets its own full budget on top of the attempts already
+        // burned on the corpse, so the CURRENT tap can still play.
+        var recovered = false
         while (true) {
             attempt++
             var timedOut = false
@@ -1896,6 +1912,8 @@ class ContentRepository(private val manager: ProviderManager) {
                 val combined = supplementDubSubVariants(p, item, episode, got, fullTimeoutMs)
                 providerOutcome.remove(p.config.id)
                 if (passSeq >= 0L) providerOutcomeSeq.remove(p.config.id)
+                // It answered — whatever it is, the wedge (if any) is over.
+                com.hikari.app.providers.ExtensionRecovery.noteSuccess(p.config.id)
                 // Where a wait went, for the calls that took one: the extension,
                 // and the number of seconds its own answer cost. This is the one
                 // measurement that says whether a slow Play tap is the extension
@@ -1913,7 +1931,31 @@ class ContentRepository(private val manager: ProviderManager) {
                 return combined
             }
             if (timedOut) lastWhy = "no answer in ${took}s"
-            if (attempt >= maxAttempts) {
+            // A call that never came back is not "no servers" — and two in a
+            // row is not coincidence, it is a wedged runtime (see
+            // [com.hikari.app.providers.ExtensionRecovery]). Break it NOW, in
+            // THIS lookup, and spend one fresh full-budget attempt on the new
+            // runtime below — so the current tap plays instead of joining the
+            // "retry 5 times, restart the app, then it plays" reports. The
+            // gate-stall verdict counts the same as a timeout: it is the proof
+            // an earlier call is still holding the extension.
+            val gateStalled = lastWhy?.startsWith("ProviderStalledException") == true
+            if ((timedOut || gateStalled) && !recovered &&
+                com.hikari.app.providers.ExtensionRecovery.noteTimeout(p.config.id) >= 2 &&
+                com.hikari.app.providers.ExtensionRecovery.shouldRecover(p.config.id)
+            ) {
+                recovered = true
+                runCatching {
+                    com.hikari.app.providers.ExtensionRecovery.recover(HikariApp.instance, p.config)
+                }
+                com.hikari.app.data.Logs.log(
+                    "Provider",
+                    (p.config.name.ifBlank { p.config.id }) +
+                        " [${p.config.type.groupLabel}]: stall broken mid-lookup — " +
+                        "one fresh attempt with the full ${fullTimeoutMs / 1000}s budget",
+                )
+            }
+            if (attempt >= maxAttempts + (if (recovered) 1 else 0)) {
                 // Say WHY, on the provider's own log line. "This repo has no
                 // servers for this episode" and "this repo never answered" look
                 // identical in every server list and every summary line, and

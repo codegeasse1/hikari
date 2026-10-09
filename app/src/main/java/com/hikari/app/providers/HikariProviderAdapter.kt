@@ -21,7 +21,26 @@ import com.hikari.ext.HikariStream
  * [ContentProvider] interface, so extensions plug into Home, search, detail
  * and the player exactly like Stremio addons and CloudStream plugins.
  */
-class HikariProviderAdapter(override val config: ProviderConfig) : ContentProvider {
+class HikariProviderAdapter(override val config: ProviderConfig) : ContentProvider,
+    com.hikari.app.providers.StallResettable {
+
+    /** Drops the cached extension object (see [resetForStall]). */
+    fun dropCachedProvider() {
+        synchronized(this) {
+            loadedProvider = null
+            providerResolved = false
+        }
+    }
+
+    /**
+     * Forgets the cached extension so the next call lazily loads a fresh one
+     * (see [com.hikari.app.providers.ExtensionRecovery]): the wedged object —
+     * with whatever internal lock or state the stuck call died holding — is
+     * abandoned, never reused. The stuck thread itself still leaks (nothing
+     * can pull a thread out of a plugin that never returns), but it no longer
+     * decides what the next tap plays.
+     */
+    override fun resetForStall() = dropCachedProvider()
 
     @Volatile
     private var loadedProvider: HikariProvider? = null
