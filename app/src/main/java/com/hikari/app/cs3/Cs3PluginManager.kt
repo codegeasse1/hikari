@@ -414,15 +414,26 @@ object Cs3PluginManager {
             }
         }
         if (apis.isEmpty()) {
-            val details = errorDetails.get().toString().trim()
-            lastError = if (details.isNotBlank()) {
-                details
+            // Settings-driven plugins (M3U playlist managers et al) load
+            // cleanly and expose openSettings but register zero providers
+            // until the user configures them — CloudStream installs those
+            // fine (load success = install success; providers appear after
+            // setup). Mirror that: soft success, NOT a failure. The caller
+            // distinguishes via hasSettings().
+            val needsSetup = (instance as? Plugin)?.openSettings != null
+            if (needsSetup) {
+                lastError = null
             } else {
-                // Never leave the generic line alone: include what WAS seen so a
-                // future new-registration path can be diagnosed from the message.
-                val total = runCatching { APIHolder.allProviders.size }.getOrDefault(-1)
-                "Plugin loaded but registered no providers " +
-                    "(manifest=${manifest.pluginClassName}, totalProviders=$total)"
+                val details = errorDetails.get().toString().trim()
+                lastError = if (details.isNotBlank()) {
+                    details
+                } else {
+                    // Never leave the generic line alone: include what WAS seen so a
+                    // future new-registration path can be diagnosed from the message.
+                    val total = runCatching { APIHolder.allProviders.size }.getOrDefault(-1)
+                    "Plugin loaded but registered no providers " +
+                        "(manifest=${manifest.pluginClassName}, totalProviders=$total)"
+                }
             }
         }
         return apis

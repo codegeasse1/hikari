@@ -1219,6 +1219,26 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
 
         val apis = Cs3PluginManager.reload(getApplication<Application>(), file)
         if (apis.isEmpty()) {
+            // Settings-driven plugins (M3U playlist managers): load() succeeded
+            // but zero providers until the user configures them via settings —
+            // CloudStream installs those fine. Keep the file and register a
+            // setup placeholder so the row shows Uninstall + settings gear;
+            // Cs3ProviderSync replaces it with real providers after setup.
+            if (Cs3PluginManager.hasSettings(file)) {
+                val setupId = "cs3|" + clean.hashCode() + "|setup"
+                store.addProvider(
+                    ProviderConfig(
+                        id = setupId,
+                        name = base,
+                        type = ProviderType.CS3,
+                        url = file.absolutePath,
+                        iconUrl = iconUrl,
+                        extra = sourceUrl ?: clean,
+                    )
+                )
+                requestRefresh()
+                return Result.success(1)
+            }
             file.delete()
             val detail = Cs3PluginManager.lastError?.take(600)
             return Result.failure(

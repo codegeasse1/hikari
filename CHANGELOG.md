@@ -2,8 +2,9 @@
 
 ### Fixed
 
-- Universal CS3 video parity (all CloudStream extensions, CS3-only): signed-CDN session warm before first byte, Referer-mandatory hosts (Fastream/StreamWish/Filemoon/StreamTape family) never play bare — the header walk keeps Referer/UA instead of retrying the guaranteed-403 strip — plus the existing interceptor + plain-client path, so one Pelispedia-class 403 cannot recur on another extension
-- CloudStream plugin installs that reported "No CloudStream plugin loaded: Plugin loaded but registered no providers" (CNC M3UPlaylistPlayer et al): collection now falls back to snapshot-diff + instance field scan and repairs the sourcePlugin stamp, instead of trusting one exact-match filter — never recurs for any rebuilt/new registration path
+- CS3 exact playback parity (all CloudStream extensions): video now plays through CloudStream's own shared client (the exact extraction client, same cookies/TLS) + provider video interceptor, with the extractor's verbatim referer/headers and CloudStream's UA (Chrome/149) in ONE attempt — no more forced trailing-slash Referer, no UA 131-vs-149 mismatch, no separate-client session loss, no header-strip retries manufacturing 403s on Fastream-class CDNs; non-CS3 engines untouched
+- Settings-driven CloudStream installs (CNC M3UPlaylistPlayer et al): a clean load with zero providers + a settings screen now installs (kept file + setup row with settings gear, replaced by real providers after setup) instead of "Plugin loaded but registered no providers" + deleted file — mirrors CloudStream, which gates install on load success, not provider count
+- Download rate limits ("Failed - HTTP 429"): playlist/segment/file fetches honor Retry-After with exponential backoff (5 tries), segment parallelism lowered 6→4 with 429-aware spacing, so throttled CDNs complete instead of failing
 - Episode downloads failing "HTTP 428": resume/Range 428s retry once fresh without Range (direct + HLS text/bytes), so a precondition refusal no longer kills the episode
 - m3u8 playlist live channels not streaming: `#EXTVLCOPT:http-*` / Kodi stream headers are now parsed per channel and played with playlist-origin Referer + UA fallback, and `.ts`/`.m3u` are detected as HLS — headerless bare channel requests were the 403/stall class
 

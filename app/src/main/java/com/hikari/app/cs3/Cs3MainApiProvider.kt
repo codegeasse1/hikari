@@ -83,32 +83,53 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
         }
 
         /**
-         * Playback-session warm for signed CDNs: the plugin's own extractor
-         * client owns the session cookies, not [com.hikari.app.net.PlayerHttp]'s
-         * jar. Hitting the embed origin once with the playback client seeds
-         * those cookies so the signed segment request is not a cold 403.
-         * Best-effort, bounded, never throws.
+         * Playback-session warm for signed CDNs: hits the embed origin once
+         * with the SAME client playback uses (CloudStream's shared
+         * app.baseClient) so session cookies exist before the signed segment
+         * request. Best-effort, bounded, never throws.
          */
         suspend fun warmPlaybackSession(streamUrl: String, headers: Map<String, String>) {
             try {
                 val ref = headers.entries.firstOrNull { it.key.equals("Referer", true) }?.value
                     ?.takeIf { it.startsWith("http") }
                     ?: when {
-                        streamUrl.contains("fastream", true) -> "https://fastream.to/"
+                        streamUrl.contains("fastream", true) -> "https://fastream.to"
                         else -> null
                     } ?: return
                 withTimeoutOrNull(8_000) {
                     kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                        val req = okhttp3.Request.Builder().url(ref)
-                            .header("User-Agent", com.hikari.app.net.Http.UA)
-                            .header("Referer", ref)
-                            .build()
                         runCatching {
-                            com.hikari.app.net.PlayerHttp.plainClient.newCall(req).execute().use { }
+                            val client = cs3BaseClient()
+                            val req = okhttp3.Request.Builder().url(ref)
+                                .header("User-Agent", com.hikari.app.net.Http.UA)
+                                .header("Referer", ref)
+                                .build()
+                            client.newCall(req).execute().use { }
                         }
                     }
                 }
             } catch (_: Throwable) { }
+        }
+
+        /**
+         * CloudStream's shared extraction/playback client
+         * (MainActivityKt.getApp().baseClient — wired in HikariApp to the
+         * shared cookie jar). The CloudStream player (CS3IPlayer) plays every
+         * link through THIS client (+ the provider's video interceptor); a
+         * separate playback-only client loses the extractor's session and TLS
+         * profile, which is a 403-vs-play difference on signed CDNs.
+         */
+        fun cs3BaseClient(): okhttp3.OkHttpClient {
+            return runCatching {
+                val kt = Class.forName("com.lagradost.cloudstream3.MainActivityKt")
+                val req = kt.getMethod("getApp").invoke(null) ?: return@runCatching null
+                val base = runCatching {
+                    req.javaClass.methods.firstOrNull { it.name == "getBaseClient" }?.invoke(req)
+                }.getOrNull() ?: runCatching {
+                    req.javaClass.getField("baseClient").get(req)
+                }.getOrNull()
+                base as? okhttp3.OkHttpClient
+            }.getOrNull() ?: com.hikari.app.net.PlayerHttp.plainClient
         }
 
         /** How long the last loadLinks attempt took (ms) — proof the UI did something. */
@@ -1156,12 +1177,12 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
         if (host.contains("fastream")) {
             // The signed stream lives on a numbered CDN host (s40.fastream.to,
             // s41.fastream.to, …) but the hotlink check expects the SITE the
-            // embed came from — CloudStream's own player sends
-            // `Referer: https://fastream.to/` and no Origin at all. Sending the
-            // CDN host itself as Referer/Origin (what the apex-agnostic code
-            // did) is exactly the 403 in the report: the same URL plays in
-            // CloudStream and fails here.
-            headers.putIfAbsent("Referer", "https://fastream.to/")
+            // embed came from — CloudStream's own player sends the extractor's
+            // verbatim referer (`https://fastream.to`, NO trailing slash, via
+            // M3u8Helper with mainUrl). A trailing slash is a different string
+            // to an exact-match hotlink check and 403s the same URL that plays
+            // in CloudStream.
+            headers.putIfAbsent("Referer", "https://fastream.to")
             headers.remove("Origin")
             headers.putIfAbsent("User-Agent", com.hikari.app.net.Http.UA)
             return

@@ -9310,10 +9310,10 @@ class PlayerActivity : ComponentActivity() {
             val src = sources[audioIndex]
             val cleanHeaders = withKnownHotlinkReferer(src.url, sanitizeHeaders(src.headers))
             val ua = cleanHeaders["User-Agent"]?.takeIf { it.isNotBlank() } ?: Http.UA
-            // Same CloudStream parity as the main path below (CS3-only): plain
-            // client plus the provider's video interceptor when declared.
+            // Same CloudStream parity as the main path below (CS3-only): shared
+            // app.baseClient plus the provider's video interceptor when declared.
             val isCs3Audio = src.providerId.startsWith("cs3|")
-            var audioClient = if (isCs3Audio) com.hikari.app.net.PlayerHttp.plainClient else client
+            var audioClient = if (isCs3Audio) com.hikari.app.cs3.Cs3MainApiProvider.cs3BaseClient() else client
             if (isCs3Audio) {
                 runCatching {
                     com.hikari.app.cs3.Cs3MainApiProvider.videoInterceptorFor(src.url)
@@ -9889,17 +9889,26 @@ class PlayerActivity : ComponentActivity() {
             probeDialog = showGlassProgress(src.name, "Preparing stream…", cancelable = false)
         }
         lifecycleScope.launch {
-            val clean = withKnownHotlinkReferer(src.url, sanitizeHeaders(src.headers))
+            // CS3 exact parity (CloudStream CS3IPlayer.createLinkSource): the
+            // extractor's headers verbatim + its referer verbatim, NO
+            // synthesized Referer and NO header walk — CloudStream makes ONE
+            // attempt with exactly what the extractor declared. The walk
+            // (strip Referer → strip all) is a Hikari invention for generic
+            // CDNs and is exactly what turns a playable signed URL into three
+            // 403s on hotlink-guarded hosts. Non-CS3 keeps the walk.
+            val isCs3Probe = src.providerId.startsWith("cs3|")
+            val clean = if (isCs3Probe) sanitizeHeaders(src.headers)
+                else withKnownHotlinkReferer(src.url, sanitizeHeaders(src.headers))
             val mandatoryRef = runCatching {
                 com.hikari.app.cs3.Cs3MainApiProvider.isRefererMandatory(src.url)
             }.getOrDefault(false)
             // Warm the signed-CDN session (cookies) before the first byte, CS3 only.
-            if (src.providerId.startsWith("cs3|")) {
+            if (isCs3Probe) {
                 try {
                     com.hikari.app.cs3.Cs3MainApiProvider.warmPlaybackSession(src.url, clean)
                 } catch (_: Throwable) { }
             }
-            val headers = when (headerVariant) {
+            val headers = if (isCs3Probe) clean else when (headerVariant) {
                 1 -> if (mandatoryRef) clean else clean.filterKeys { !it.equals("Referer", ignoreCase = true) }
                 2 -> if (mandatoryRef) clean.filterKeys { it.equals("Referer", ignoreCase = true) || it.equals("User-Agent", ignoreCase = true) } else emptyMap()
                 else -> clean
@@ -10047,8 +10056,9 @@ class PlayerActivity : ComponentActivity() {
         // TamilBlasters' StreamHG set a specific Chrome UA their CDN's WAF
         // requires), falling back to our Chrome UA. Never brand-mangle it with
         // a "Hikari/" prefix — a malformed UA gets those hosts to answer 403.
-        // When a CDN keeps rejecting the request, headerVariant walks the header
-        // set down to nothing (some CDNs 403 any request carrying a Referer).
+        // CS3 exact parity (CloudStream CS3IPlayer.createLinkSource): verbatim
+        // extractor headers, verbatim referer, UA = declared or CloudStream's
+        // own 149, ONE attempt (no walk). The walk stays for non-CS3 only.
         // Header values are sanitized FIRST: some addons' extractors ship a
         // User-Agent with non-ASCII characters (a Cyrillic look-alike 'µ' inside
         // an otherwise-ASCII Chrome UA is the classic one), and OkHttp rejects
@@ -10056,27 +10066,27 @@ class PlayerActivity : ComponentActivity() {
         // media3 surfaces as a fatal playback error even though the stream is
         // fine. Sanitizing here means a sloppy extension can never crash the
         // player, now or in the future.
-        val cleanHeaders = withKnownHotlinkReferer(src.url, sanitizeHeaders(src.headers))
+        val isCs3Source = src.providerId.startsWith("cs3|")
+        val cleanHeaders = if (isCs3Source) sanitizeHeaders(src.headers)
+            else withKnownHotlinkReferer(src.url, sanitizeHeaders(src.headers))
         val mandatoryRef2 = runCatching {
             com.hikari.app.cs3.Cs3MainApiProvider.isRefererMandatory(src.url)
         }.getOrDefault(false)
-        val sourceHeaders = when (headerVariant) {
+        val sourceHeaders = if (isCs3Source) cleanHeaders else when (headerVariant) {
             1 -> if (mandatoryRef2) cleanHeaders else cleanHeaders.filterKeys { !it.equals("Referer", ignoreCase = true) }
             2 -> if (mandatoryRef2) cleanHeaders.filterKeys { it.equals("Referer", ignoreCase = true) || it.equals("User-Agent", ignoreCase = true) } else emptyMap()
             else -> cleanHeaders
         }
         val ua = sourceHeaders["User-Agent"]?.takeIf { it.isNotBlank() } ?: Http.UA
-        // CloudStream parity for CloudStream sources (CS3-only): the CloudStream
-        // app plays video bytes through its plain baseClient, while Hikari's
-        // shared playback client also runs the Cloudflare-verifier interceptor —
-        // a clearance-cookie mutation on a signed CDN URL is a 403-vs-play
-        // difference no header tweak can fix. CS3 sources therefore play through
-        // the interceptor-free client (same pool, cookies, timeouts, DNS), plus
+        // CloudStream parity for CloudStream sources (CS3-only): play through
+        // CloudStream's OWN shared client (MainActivityKt.getApp().baseClient —
+        // the exact client extraction used, same cookies/TLS/profile), plus
         // the provider's own video interceptor when it declared one
-        // (MainAPI.getVideoInterceptor — the CloudStream player honors it and
-        // Hikari never did). Every other engine keeps the stable path.
-        val isCs3Source = src.providerId.startsWith("cs3|")
-        var playbackClient = if (isCs3Source) com.hikari.app.net.PlayerHttp.plainClient else client
+        // (MainAPI.getVideoInterceptor — CS3IPlayer honors it). A separate
+        // playback-only client loses the extractor's session, which is a
+        // 403-vs-play difference on signed CDNs no header tweak can fix.
+        // Every other engine keeps the stable path.
+        var playbackClient = if (isCs3Source) com.hikari.app.cs3.Cs3MainApiProvider.cs3BaseClient() else client
         if (isCs3Source) {
             runCatching {
                 com.hikari.app.cs3.Cs3MainApiProvider.videoInterceptorFor(src.url)
@@ -12017,11 +12027,15 @@ class PlayerActivity : ComponentActivity() {
             // (a Cyrillic look-alike User-Agent), which OkHttp rejects with
             // IllegalArgumentException. Both are header problems, not server
             // problems — walk the header set down (full → no Referer → none)
-            // before declaring the server dead.
+            // before declaring the server dead. CS3 EXCLUDED (CloudStream
+            // parity): CS3IPlayer makes exactly ONE attempt with the
+            // extractor's verbatim headers — stripping them only manufactures
+            // 403s on hotlink-guarded hosts (Fastream class).
+            val isCs3Failed = sources.getOrNull(currentIndex)?.providerId?.startsWith("cs3|") == true
             val headerIssue = details.contains("Unexpected char", true) ||
                 (details.contains("IllegalArgumentException", true) &&
                     (details.contains("User-Agent", true) || details.contains("Header", true)))
-            if ((code == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS || headerIssue) &&
+            if (!isCs3Failed && (code == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS || headerIssue) &&
                 headerVariant < 2 && !terminalHostFailure
             ) {
                 headerVariant++
@@ -12252,12 +12266,13 @@ class PlayerActivity : ComponentActivity() {
     /** A Fastream stream without a Referer is a guaranteed 403: the signed URL
      *  lives on a numbered CDN host but the hotlink check wants the site root
      *  (the same rule Cs3MainApiProvider/FallbackResolver apply on their own
-     *  paths). Sources arriving from any OTHER path (Stremio addons, external
-     *  resolvers) bypass those, so the player fills the gap itself. An
+     *  paths). Verbatim `https://fastream.to` with NO trailing slash — the
+     *  extractor and CloudStream send exactly that, and an exact-match
+     *  hotlink check treats the slashed form as a different string. An
      *  explicitly set Referer is never overridden. */
     private fun withKnownHotlinkReferer(url: String, h: Map<String, String>): Map<String, String> {
         if (h.keys.any { it.equals("Referer", ignoreCase = true) }) return h
-        if (url.contains("fastream", ignoreCase = true)) return h + ("Referer" to "https://fastream.to/")
+        if (url.contains("fastream", ignoreCase = true)) return h + ("Referer" to "https://fastream.to")
         return h
     }
 

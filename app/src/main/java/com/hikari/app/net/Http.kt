@@ -15,13 +15,16 @@ import java.util.concurrent.TimeUnit
 
 object Http {
 
-    /** Desktop Chrome UA, matching CloudStream's own USER_AGENT. The WAFs that
+    /** Desktop Chrome UA, matching CloudStream's own USER_AGENT
+     *  (MainAPI.kt: Chrome/149). The WAFs that
      *  guard the TamilBlasters/StreamHG/luluvdo family serve their player pages
-     *  and HLS CDNs to desktop browsers (the plugins' own requests even use a
-     *  desktop Chrome 149); a mobile "… Mobile Safari" UA stands out to those
-     *  WAFs and some answer 403 before ever checking the token. */
+     *  and HLS CDNs to desktop browsers; a mobile "… Mobile Safari" UA stands out to those
+     *  WAFs and some answer 403 before ever checking the token. Signed CDNs
+     *  (Fastream class) also bind the signature to the UA seen at extraction
+     *  (CloudStream's 149) — playing with a different UA is a 403-vs-play
+     *  difference, so this must stay in lockstep with the jar. */
     const val UA =
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
 
     /** Honest app UA used when fetching Nuvio manifests and scraper files —
      *  mirrors the real nuvio app's own OkHttp client. Codeberg (which hosts

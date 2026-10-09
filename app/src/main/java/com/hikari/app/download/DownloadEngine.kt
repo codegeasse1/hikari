@@ -80,13 +80,15 @@ object DownloadEngine {
      *  throttle per connection), while a browser/Play-Store download opens
      *  several connections and uses the whole link. This spreads a download
      *  over that many connections. Kept modest so the video + audio renditions
-     *  together stay within the OkHttp per-host budget (16) in PlayerHttp. */
-    private const val SEGMENT_CONCURRENCY = 6
+     *  together stay within the OkHttp per-host budget (16) in PlayerHttp —
+     *  and low enough that strict CDNs don't answer HTTP 429 (the "Failed -
+     *  HTTP 429" download report). */
+    private const val SEGMENT_CONCURRENCY = 4
 
-    /** Segment fetches are retried this many times (short backoff) so a
-     *  transient 5xx/429 on one of the parallel connections never kills the
-     *  whole download. */
-    private const val SEGMENT_RETRIES = 3
+    /** Segment fetches are retried this many times (rate-limit aware backoff,
+     *  honoring Retry-After) so a transient 5xx/429 on one of the parallel
+     *  connections never kills the whole download. */
+    private const val SEGMENT_RETRIES = 5
 
     suspend fun run(
         ctx: Context,
@@ -502,7 +504,15 @@ object DownloadEngine {
                                         credited[0] = 0L
                                     }
                                     if (++attempt >= SEGMENT_RETRIES) throw t
-                                    delay(350L * attempt)
+                                    // Rate-limited: back off hard (2s/4s/8s…),
+                                    // else a short nudge. fetchBytes already
+                                    // honored Retry-After per attempt; this
+                                    // spaces the next attempt out.
+                                    if (t.message.orEmpty().contains("429")) {
+                                        delay((2000L shl (attempt - 1).coerceAtMost(3)).coerceAtMost(10000L))
+                                    } else {
+                                        delay(350L * attempt)
+                                    }
                                 }
                             }
                         }
@@ -581,7 +591,10 @@ object DownloadEngine {
         // HTTP 428 (Precondition Required) means the CDN refused our conditional
         // (Range) request — retry ONCE from scratch without Range instead of
         // surfacing "Failed - HTTP 428" for an otherwise playable episode.
+        // HTTP 429 (rate-limited) backs off honoring Retry-After instead of
+        // surfacing "Failed - HTTP 429".
         var triedFresh = false
+        var rateAttempts = 0
         var rangeStart: Long? = if (byteRange != null) null else if (startAt > 0L) startAt else null
         // byteRange requests keep their exact range; resume requests may drop it.
         while (true) {
@@ -593,9 +606,14 @@ object DownloadEngine {
                 req.header("Range", "bytes=$rangeStart-")
             }
             var code = -1
+            var retryAfter: String? = null
             try {
                 PlayerHttp.client.newCall(req.build()).execute().use { resp ->
                     code = resp.code
+                    if (code == 429) {
+                        retryAfter = resp.header("Retry-After")
+                        return@use
+                    }
                     if (code == 428 && !triedFresh && byteRange == null && rangeStart != null) {
                         // Fall through to the fresh retry below.
                         return@use
@@ -633,6 +651,14 @@ object DownloadEngine {
                 // A thrown 428 (via fetch paths that throw) also falls through.
                 if (!e.message.orEmpty().contains("428") || triedFresh || byteRange != null) throw e
                 code = 428
+            }
+            if (code == 429) {
+                if (rateAttempts >= 4) throw IOException("HTTP 429")
+                val secs = runCatching { retryAfter?.trim()?.toLongOrNull()?.coerceIn(1, 60) }.getOrNull()
+                    ?: minOf((2L shl rateAttempts.coerceAtMost(3)), 10L)
+                rateAttempts++
+                kotlinx.coroutines.delay(secs * 1000)
+                continue
             }
             if (code == 428 && !triedFresh && byteRange == null) {
                 triedFresh = true
@@ -1098,25 +1124,48 @@ object DownloadEngine {
         req.header("User-Agent", ua)
     }
 
+    /** Backoff for HTTP 429 (rate-limited): honors Retry-After seconds when the
+     *  server sent one, else exponential 2s/4s/8s. Returns the slept ms. */
+    private fun backoff429(retryAfter: String?, attempt: Int): Long {
+        val fromHeader = runCatching { retryAfter?.trim()?.toLongOrNull()?.coerceIn(1, 60) }.getOrNull()
+        val secs = fromHeader ?: minOf((2L shl attempt.coerceAtMost(3)), 10L)
+        try { Thread.sleep(secs * 1000) } catch (_: Throwable) { }
+        return secs * 1000
+    }
+
     private fun fetchText(
         url: String,
         headers: Map<String, String>,
         ua: String,
     ): Pair<String, String> {
-        // 428 once → tiny backoff + one retry (transient precondition/CDN hiccup).
+        // 428 once → tiny backoff + one retry; 429 → honor Retry-After with
+        // exponential backoff (up to 4 tries) instead of "Failed - HTTP 429".
         var last: IOException? = null
-        repeat(2) { attempt ->
+        repeat(5) { attempt ->
             try {
                 val req = Request.Builder().url(url)
                 applyHeaders(req, headers, ua)
                 PlayerHttp.client.newCall(req.build()).execute().use { resp ->
+                    if (resp.code == 429) {
+                        val ra = resp.header("Retry-After")
+                        resp.close()
+                        backoff429(ra, attempt)
+                        throw IOException("HTTP 429")
+                    }
                     if (!resp.isSuccessful) throw IOException("HTTP ${resp.code}")
                     val body = resp.body?.string() ?: throw IOException("Empty response body")
                     return body to resp.request.url.toString()
                 }
             } catch (e: IOException) {
                 last = e
-                if (!e.message.orEmpty().contains("428") || attempt > 0) throw e
+                val msg = e.message.orEmpty()
+                if (msg.contains("429")) {
+                    if (attempt >= 4) throw e
+                    // backoff already slept above; small extra jitter here.
+                    try { Thread.sleep(300) } catch (_: Throwable) { }
+                    return@repeat
+                }
+                if (!msg.contains("428") || attempt > 0) throw e
                 try { Thread.sleep(400) } catch (_: Throwable) { }
             }
         }
@@ -1130,21 +1179,39 @@ object DownloadEngine {
         byteRange: Pair<Long, Long>? = null,
     ): ByteArray {
         // Byte-range 428 → retry once WITHOUT Range (server refused precondition).
-        val req = Request.Builder().url(url)
-        applyHeaders(req, headers, ua)
-        if (byteRange != null) req.header("Range", "bytes=${byteRange.first}-${byteRange.second}")
-        PlayerHttp.client.newCall(req.build()).execute().use { resp ->
-            if (resp.code == 428 && byteRange != null) {
-                resp.close()
-                val fresh = Request.Builder().url(url)
-                applyHeaders(fresh, headers, ua)
-                PlayerHttp.client.newCall(fresh.build()).execute().use { r2 ->
-                    if (!r2.isSuccessful) throw IOException("HTTP ${r2.code}")
-                    val body = r2.body ?: throw IOException("Empty response body")
-                    return body.bytes()
+        // 429 → backoff + retry (up to 4), honoring Retry-After.
+        var attempt = 0
+        while (true) {
+            val req = Request.Builder().url(url)
+            applyHeaders(req, headers, ua)
+            if (byteRange != null) req.header("Range", "bytes=${byteRange.first}-${byteRange.second}")
+            PlayerHttp.client.newCall(req.build()).execute().use { resp ->
+                if (resp.code == 429) {
+                    val ra = resp.header("Retry-After")
+                    resp.close()
+                    if (attempt >= 4) throw IOException("HTTP 429")
+                    backoff429(ra, attempt++)
+                    return@use
                 }
-            }
-            if (!resp.isSuccessful) throw IOException("HTTP ${resp.code}")
+                if (resp.code == 428 && byteRange != null) {
+                    resp.close()
+                    val fresh = Request.Builder().url(url)
+                    applyHeaders(fresh, headers, ua)
+                    PlayerHttp.client.newCall(fresh.build()).execute().use { r2 ->
+                        if (r2.code == 429) {
+                            val ra = r2.header("Retry-After")
+                            r2.close()
+                            if (attempt >= 4) throw IOException("HTTP 429")
+                            backoff429(ra, attempt++)
+                            return@use
+                        }
+                        if (!r2.isSuccessful) throw IOException("HTTP ${r2.code}")
+                        val body = r2.body ?: throw IOException("Empty response body")
+                        return body.bytes()
+                    }
+                    return@use
+                }
+                if (!resp.isSuccessful) throw IOException("HTTP ${resp.code}")
             val body = resp.body ?: throw IOException("Empty response body")
             val len = body.contentLength()
             if (len > MAX_MEM_SEGMENT) throw IOException("Segment too large to buffer")
