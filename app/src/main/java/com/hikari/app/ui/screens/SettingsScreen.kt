@@ -478,7 +478,7 @@ private enum class SettingsFolder(
         "layout.episodes",
         "Episode UI & descriptions",
         "Episode layout, size & descriptions",
-        Icons.Filled.List,
+        Icons.Filled.Tv,
         parent = "layout",
     ),
 }
@@ -3862,7 +3862,7 @@ private fun EpisodeViewModeCard(app: HikariApp) {
         2 to tr("Cinematic big cards"),
     )
     Column(Modifier.padding(16.dp)) {
-        SettingsCardHeading(Icons.Filled.List, tr("Episode UI"))
+        SettingsCardHeading(Icons.Filled.Tv, tr("Episode UI"))
         options.forEach { (value, label) ->
             Row(
                 verticalAlignment = Alignment.CenterVertically,
