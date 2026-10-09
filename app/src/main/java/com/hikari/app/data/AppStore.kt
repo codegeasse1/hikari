@@ -379,6 +379,11 @@ class AppStore(private val ctx: Context) {
         val PLAYER_TV_PANELS = booleanPreferencesKey("playerTvPanels")
         /** Size of TV episode rows/cards as a percentage of the default size. */
         val TV_EPISODE_SIZE = intPreferencesKey("tvEpisodeSize")
+        /** Default episode layout: -1 = Auto (TV grid, phone list), 0 = list,
+         *  1 = poster grid, 2 = cinematic big cards (Settings → App Layout →
+         *  Episode UI). The detail header button cycles the same three and
+         *  writes back here, so the choice sticks across titles. */
+        val EPISODE_VIEW_MODE = intPreferencesKey("episodeViewMode")
         /** Show the episode description under the episode title (ON by
          *  default; Settings → TV). Off shows titles only, on phone and TV. */
         val EPISODE_DESCRIPTION = booleanPreferencesKey("episodeDescription")
@@ -3495,6 +3500,18 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
 
     suspend fun setTvEpisodeSize(size: Int) {
         write("TV_EPISODE_SIZE") { it[K.TV_EPISODE_SIZE] = size.coerceIn(80, 160) }
+    }
+
+    /** Default episode layout for every title (-1 = Auto). */
+    fun episodeViewModeFlow(): Flow<Int> =
+        store.data.map { (it[K.EPISODE_VIEW_MODE] ?: -1).coerceIn(-1, 2) }
+            .distinctUntilChanged()
+            .flowOn(Dispatchers.Default)
+
+    suspend fun episodeViewMode(): Int = episodeViewModeFlow().first()
+
+    suspend fun setEpisodeViewMode(mode: Int) {
+        write("EPISODE_VIEW_MODE") { it[K.EPISODE_VIEW_MODE] = mode.coerceIn(-1, 2) }
     }
 
     /** Whether episode rows print the description under the title (ON by

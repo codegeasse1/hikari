@@ -659,6 +659,19 @@ class PlayerActivity : ComponentActivity() {
         java.net.URI(url).host.orEmpty().lowercase()
     }.getOrDefault("")
 
+    /** True on an Nvidia Shield TV (any generation): its GL stack has refused
+     *  media3's video-effects pipeline before, which presents as "audio but no
+     *  video" on every server. The player starts with effects off there (see
+     *  onCreate) and [recoverNoPicture] disarms the pipeline first. */
+    private fun isShieldTv(): Boolean = runCatching {
+        val man = android.os.Build.MANUFACTURER.orEmpty()
+        val model = android.os.Build.MODEL.orEmpty()
+        val device = android.os.Build.DEVICE.orEmpty()
+        man.contains("nvidia", true) ||
+            model.contains("shield", true) ||
+            device.contains("shield", true)
+    }.getOrDefault(false)
+
     /** The HTTP status behind a playback error, when there was one. media3 puts
      *  "Response code: 500" in the cause chain, which [onPlayerError] already
      *  stringifies into its details blob. */
@@ -1798,6 +1811,16 @@ class PlayerActivity : ComponentActivity() {
             enhanceUnsupported = runCatching {
                 (applicationContext as HikariApp).store.enhanceUnsupported()
             }.getOrDefault(false)
+            // Nvidia Shield TV starts with effects off for THIS session: its GL
+            // stack is the "no video displayed" report — audio plays, every
+            // server black-screens. The picture must never depend on a GPU
+            // grade, so the pipeline stays disarmed there until the user picks
+            // a preset themselves (which fails gracefully with a toast, not a
+            // black screen). In-memory only — no persisted flag is written.
+            if (!enhanceUnsupported && isShieldTv()) {
+                enhanceUnsupported = true
+                com.hikari.app.data.Logs.log("Player", "Shield TV detected — starting with video effects off")
+            }
             applyVideoEnhance(force = true)
         }
         // Brightness/volume swipes. Read with the other player preferences; ON
@@ -6688,14 +6711,14 @@ class PlayerActivity : ComponentActivity() {
             source.local -> "Saved on this device"
             source.details.isNotBlank() -> {
                 val host = hostOf(source.url)
-                val d = ServerMeta.enrichedDetails(source.name, source.details)
+                val d = ServerMeta.enrichedDetails(source.name, source.details, source.url)
                 val provider = source.providerName.trim()
                 val body = if (host.isNullOrBlank()) d else "$host\n$d"
                 if (tvPanelsEnabled && TvMode.isTv && provider.isNotBlank()) "$body\n$provider" else body
             }
             else -> {
                 val host = hostOf(source.url)
-                val parsed = ServerMeta.enrichedDetails(source.name, "")
+                val parsed = ServerMeta.enrichedDetails(source.name, "", source.url)
                 when {
                     parsed.isBlank() -> host
                     host.isNullOrBlank() -> parsed
@@ -11004,6 +11027,26 @@ class PlayerActivity : ComponentActivity() {
                     "${firstFrameMs / 1000}s — re-opening instead of walking the list",
             )
             retryLiveStart(firstFrameMs)
+            return
+        }
+        // A committed server with the effects pipeline armed that draws no
+        // picture is a GPU-grade failure, not a dead mirror (the Shield TV
+        // "no video displayed" class: every server black-screens the same
+        // way). Disarm once and replay the SAME server before blaming the host
+        // — walking the list would blacklist a healthy mirror per row.
+        if (videoSinkArmed && !firstFrameRetried) {
+            firstFrameRetried = true
+            videoSinkArmed = false
+            enhanceUnsupported = true
+            appliedEnhanceKey = null
+            appliedEnhanceHdr = null
+            com.hikari.app.data.Logs.log(
+                "Player",
+                "FAILSAFE: no picture with effects armed — disarming pipeline and replaying same server",
+            )
+            Toast.makeText(this, I18n.t("Turning off video effects…"), Toast.LENGTH_SHORT).show()
+            noSubsRetry = false
+            playSource(index)
             return
         }
         com.hikari.app.data.Logs.log(

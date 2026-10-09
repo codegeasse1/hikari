@@ -6,24 +6,23 @@ package com.hikari.app.data
  * Torrentio/Stremio rows carry a rich `details` blob (quality, codec, size,
  * seeders). Most other providers send only a name ("Purstream | hd |
  * Dual-Audio") and blank details. This object never invents a fact: it parses
- * what the name/details/url already say (resolution, HDR/DV, codec, audio
- * language, file size) into one uniform line, and merges it with the
- * provider's own details without duplicating tokens.
+ * what the name/details/url already say (resolution, HDR/DV, codec, release
+ * tag, container, audio language, file size) into one uniform line, and merges
+ * it with the provider's own details without duplicating tokens.
  */
 object ServerMeta {
     private val sizeRe = Regex("""(\d+(?:\.\d+)?\s*(?:GB|MB))""", RegexOption.IGNORE_CASE)
     private val seedRe = Regex("""(👥\s*\d+|⛁\s*\d+|\b\d+\s*seeders?\b)""", RegexOption.IGNORE_CASE)
 
     private fun qualityOf(text: String): String? {
-        val t = text
-        if (Regex("""(^|[^a-z0-9])(4k|2160p|uhd)([^a-z0-9]|$)""", RegexOption.IGNORE_CASE).containsMatchIn(t)) return "4K"
-        if (Regex("""(^|[^0-9])1080p""", RegexOption.IGNORE_CASE).containsMatchIn(t)) return "1080p"
-        if (Regex("""\bFHD\b""", RegexOption.IGNORE_CASE).containsMatchIn(t)) return "1080p"
-        if (Regex("""(^|[^0-9])720p""", RegexOption.IGNORE_CASE).containsMatchIn(t)) return "720p"
-        if (Regex("""(^|[^a-z0-9])hd([^a-z0-9]|$)""", RegexOption.IGNORE_CASE).containsMatchIn(t)) return "HD"
-        if (Regex("""(^|[^0-9])480p""", RegexOption.IGNORE_CASE).containsMatchIn(t)) return "480p"
-        if (Regex("""(^|[^0-9])360p""", RegexOption.IGNORE_CASE).containsMatchIn(t)) return "360p"
-        if (Regex("""(^|[^a-z0-9])(hd)?cam([^a-z0-9]|$)|predvd""", RegexOption.IGNORE_CASE).containsMatchIn(t)) return "CAM"
+        if (Regex("""(^|[^a-z0-9])(4k|2160p|uhd)([^a-z0-9]|$)""", RegexOption.IGNORE_CASE).containsMatchIn(text)) return "4K"
+        if (Regex("""(^|[^0-9])1080p""", RegexOption.IGNORE_CASE).containsMatchIn(text)) return "1080p"
+        if (Regex("""\bFHD\b""", RegexOption.IGNORE_CASE).containsMatchIn(text)) return "1080p"
+        if (Regex("""(^|[^0-9])720p""", RegexOption.IGNORE_CASE).containsMatchIn(text)) return "720p"
+        if (Regex("""(^|[^a-z0-9])hd([^a-z0-9]|$)""", RegexOption.IGNORE_CASE).containsMatchIn(text)) return "HD"
+        if (Regex("""(^|[^0-9])480p""", RegexOption.IGNORE_CASE).containsMatchIn(text)) return "480p"
+        if (Regex("""(^|[^0-9])360p""", RegexOption.IGNORE_CASE).containsMatchIn(text)) return "360p"
+        if (Regex("""(^|[^a-z0-9])(hd)?cam([^a-z0-9]|$)|predvd""", RegexOption.IGNORE_CASE).containsMatchIn(text)) return "CAM"
         return null
     }
 
@@ -37,6 +36,26 @@ object ServerMeta {
         if (Regex("""hevc|h\.?265|x265""", RegexOption.IGNORE_CASE).containsMatchIn(text)) return "HEVC"
         if (Regex("""\bav1\b""", RegexOption.IGNORE_CASE).containsMatchIn(text)) return "AV1"
         if (Regex("""h\.?264|x264|\bavc\b""", RegexOption.IGNORE_CASE).containsMatchIn(text)) return "AVC"
+        return null
+    }
+
+    private fun releaseOf(text: String): String? {
+        if (Regex("""web-?dl""", RegexOption.IGNORE_CASE).containsMatchIn(text)) return "WEB-DL"
+        if (Regex("""blu-?ray""", RegexOption.IGNORE_CASE).containsMatchIn(text)) return "Blu-ray"
+        if (Regex("""web-?rip""", RegexOption.IGNORE_CASE).containsMatchIn(text)) return "WEBRip"
+        if (Regex("""hdcam""", RegexOption.IGNORE_CASE).containsMatchIn(text)) return "HDCAM"
+        return null
+    }
+
+    /** Container / transport read from the URL only — never guessed. */
+    fun containerOf(url: String): String? {
+        val u = url.lowercase()
+        if (".mkv" in u) return "MKV"
+        if (".mp4" in u) return "MP4"
+        if (".webm" in u) return "WEBM"
+        if (".avi" in u) return "AVI"
+        if (".m3u8" in u || "master.txt" in u) return "HLS"
+        if (".mpd" in u) return "DASH"
         return null
     }
 
@@ -68,17 +87,22 @@ object ServerMeta {
     /**
      * The uniform details line for [name]+[details] (no host — the caller
      * prepends it). Returns "" when nothing is known. Never invents size /
-     * codec: only what the texts already state.
+     * codec: only what the texts already state. [url] contributes the
+     * container (MKV/MP4/HLS/…) only.
      */
-    fun enrichedDetails(name: String, details: String): String {
+    fun enrichedDetails(name: String, details: String, url: String = ""): String {
         val base = details.trim()
         val joint = "$name $base"
         val parts = mutableListOf<String>()
         qualityOf(joint)?.let { if (!containsToken(base, it) && !containsToken(base, qualityAlias(it, base))) parts.add(it) }
         hdrOf(joint)?.let { if (!containsToken(base, it)) parts.add(it) }
         codecOf(joint)?.let { if (!containsToken(base, it)) parts.add(it) }
+        releaseOf(joint)?.let { if (!containsToken(base, it)) parts.add(it) }
         audioOf(joint)?.let {
             if (!containsToken(base, it) && !containsToken(base, it.substringBefore("-"))) parts.add(it)
+        }
+        if (url.isNotBlank()) {
+            containerOf(url)?.let { if (!containsToken(base, it)) parts.add(it) }
         }
         sizeRe.find(joint)?.let { m ->
             val size = m.groupValues[1].trim().uppercase().replace("\\s+".toRegex(), " ")

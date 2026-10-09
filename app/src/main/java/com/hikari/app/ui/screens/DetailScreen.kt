@@ -1791,11 +1791,22 @@ fun DetailScreen(
     // artwork like the TV reference layout.
     // 0 = list rows, 1 = poster grid, 2 = big cinema cards. TV starts on the
     // grid, phones on the list; the header button cycles all three in order.
+    // The default comes from Settings → App Layout → Episode UI (-1 = Auto:
+    // grid on TV, list on phones). The header button cycles the same three
+    // and writes back, so the choice sticks across titles.
+    val episodeViewPrefFlow = remember { detailApp.store.episodeViewModeFlow() }
+    val episodeViewPref by episodeViewPrefFlow.collectAsState(initial = -1)
     var episodeViewMode by rememberSaveable(isTvLayout) { mutableStateOf(if (isTvLayout) 1 else 0) }
+    LaunchedEffect(episodeViewPref, isTvLayout) {
+        val mapped = if (episodeViewPref < 0) (if (isTvLayout) 1 else 0) else episodeViewPref
+        if (episodeViewMode != mapped) episodeViewMode = mapped
+    }
     val episodePosterStyle = episodeViewMode != 0
     val episodeBigStyle = episodeViewMode == 2
     fun cycleEpisodeView() {
-        episodeViewMode = (episodeViewMode + 1) % 3
+        val next = (episodeViewMode + 1) % 3
+        episodeViewMode = next
+        scope.launch { runCatching { detailApp.store.setEpisodeViewMode(next) } }
     }
 
     // Related/Similar cells. Tapping a cell opens the title directly instead of

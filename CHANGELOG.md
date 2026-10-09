@@ -2,6 +2,9 @@
 
 ### Fixed
 
+- Server rows squeeze more from what each provider states (resolution, HDR/DV, codec, WEB-DL/Blu-ray tag, container from the URL, audio, size) so thin rows gain a real second line instead of a bare host — still never invented
+- New Settings → App Layout → Episode UI & descriptions folder: default episode layout (Auto / List / Poster grid / Cinematic big, applies to phone + TV and stays in sync with the header button), Episode size UI (renamed, works on phone + TV), and episode descriptions (moved out of TV & Remote)
+- Nvidia Shield TV Pro black screen ("no video displayed"): Shield starts with the GPU video-effects pipeline off and any effects-armed no-picture failover disarms the pipeline and replays the same server before blaming the mirror
 - Every server row now shows uniform details (quality • HDR/DV • codec • audio • size): Torrentio-style richness is kept as-is, while thin rows like Purstream gain a parsed line from their own name instead of a bare host — no invented sizes, only what the provider already states
 - Dual-audio Multi-Audio second servers get a language picker: the second stream's embedded Hindi / English / French tracks are listed and applied to the audio-only player (video stays on the first server), with a loud failure toast instead of silent "selected multi, no sound"
 - Seeks no longer restart from the start: subtitle re-attach keeps the position explicitly, every user seek (buttons, gestures, seek bar, resume, skip-intro) seeks both players together, and a seek discontinuity re-aligns the dual-audio pair instantly

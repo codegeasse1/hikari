@@ -474,6 +474,13 @@ private enum class SettingsFolder(
         // navigation rail there instead (see TvNavRail).
         phoneOnly = true,
     ),
+    LAYOUT_EPISODES(
+        "layout.episodes",
+        "Episode UI & descriptions",
+        "Episode layout, size & descriptions",
+        Icons.Filled.List,
+        parent = "layout",
+    ),
 }
 
 /** A card on a folder page, spaced like every other card there. */
@@ -1090,12 +1097,15 @@ fun SettingsScreen(nav: NavHostController) {
                     item { SettingsCard(top = 2.dp) { NavBarCard(app) } }
                     item { SettingsCard { TaskbarCard(app) } }
                 }
+                SettingsFolder.LAYOUT_EPISODES -> {
+                    item { SettingsCard(top = 2.dp) { EpisodeViewModeCard(app) } }
+                    item { SettingsCard { TvEpisodeSizeCard(app) } }
+                    item { SettingsCard { EpisodeDescriptionCard(app) } }
+                }
                 SettingsFolder.TV -> {
                     item { SettingsCard(top = 2.dp) { TvDeviceCard(app) } }
                     item { SettingsCard { TvPosterSizeCard(app) } }
                     item { SettingsCard { TvDetailStyleCard(app) } }
-                    item { SettingsCard { TvEpisodeSizeCard(app) } }
-                    item { SettingsCard { EpisodeDescriptionCard(app) } }
                     item { SettingsCard { TvOverscanCard(app) } }
                     item { SettingsCard { TvPerformanceCard(app) } }
                     item { SettingsCard { TvRemoteCard() } }
@@ -3835,8 +3845,59 @@ private fun ExternalPlayerCard(app: HikariApp) {
 }
 
 /**
- * Size of the episode UI used by the TV detail screen in both list and poster modes.
- * 100% keeps the existing size; the slider deliberately affects only the TV layout.
+ * Default episode layout for every title (Settings → App Layout → Episode UI).
+ * Auto keeps the old behaviour (poster grid on TV, list rows on phones); the
+ * three explicit choices apply to phone and TV alike. The detail page's header
+ * button cycles the same three and writes back here, so the choice sticks.
+ */
+@Composable
+private fun EpisodeViewModeCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    val flow = remember { app.store.episodeViewModeFlow() }
+    val mode by flow.collectAsState(initial = -1)
+    val options = listOf(
+        -1 to tr("Auto (grid on TV, list on phone)"),
+        0 to tr("List rows"),
+        1 to tr("Poster grid"),
+        2 to tr("Cinematic big cards"),
+    )
+    Column(Modifier.padding(16.dp)) {
+        SettingsCardHeading(Icons.Filled.List, tr("Episode UI"))
+        options.forEach { (value, label) ->
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable {
+                        scope.launch { runCatching { app.store.setEpisodeViewMode(value) } }
+                    }
+                    .padding(vertical = 6.dp),
+            ) {
+                RadioButton(
+                    selected = mode == value,
+                    onClick = {
+                        scope.launch { runCatching { app.store.setEpisodeViewMode(value) } }
+                    },
+                )
+                Text(
+                    label,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.padding(start = 8.dp),
+                )
+            }
+        }
+        Text(
+            tr("Applies to every title on phone and TV. The button above the episode list switches the same setting."),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/**
+ * Size of the episode UI in list, grid and big-card modes, on phone and TV.
+ * 100% keeps the existing size.
  */
 @Composable
 private fun TvEpisodeSizeCard(app: HikariApp) {
@@ -3850,7 +3911,7 @@ private fun TvEpisodeSizeCard(app: HikariApp) {
     }
 
     Column(Modifier.padding(16.dp)) {
-        SettingsCardHeading(Icons.Filled.Tv, tr("TV episode UI size"))
+        SettingsCardHeading(Icons.Filled.Tv, tr("Episode size UI"))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 tr("Episode size"),
@@ -3878,7 +3939,7 @@ private fun TvEpisodeSizeCard(app: HikariApp) {
             },
         )
         Text(
-            tr("Applies to both the episode list and the movie-style poster view."),
+            tr("Applies to the episode list, poster grid and big cards, on phone and TV."),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -3886,7 +3947,7 @@ private fun TvEpisodeSizeCard(app: HikariApp) {
 }
 
 /**
- * Episode descriptions under episode titles (Settings → TV). ON by default:
+ * Episode descriptions under episode titles (Settings → App Layout → Episode UI). ON by default:
  * an episode row without its description is just a number. Off shows titles
  * only, on phone and TV alike.
  */
