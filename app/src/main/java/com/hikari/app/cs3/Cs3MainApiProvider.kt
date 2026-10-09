@@ -54,6 +54,19 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
          */
         val streamErrors = java.util.concurrent.ConcurrentHashMap<String, String>()
 
+        /**
+         * Provider-declared video interceptors per resolved stream URL (see
+         * MainAPI.getVideoInterceptor): the CloudStream player plays every
+         * link through its provider's interceptor, so Hikari's player looks
+         * them up here at playback time. Keyed by stream URL like the other
+         * per-provider maps in this file; entries are tiny and process-local.
+         */
+        val videoInterceptors = ConcurrentHashMap<String, okhttp3.Interceptor>()
+
+        /** The cached video interceptor for [streamUrl], if its provider declared one. */
+        fun videoInterceptorFor(streamUrl: String): okhttp3.Interceptor? =
+            videoInterceptors[streamUrl]
+
         /** How long the last loadLinks attempt took (ms) — proof the UI did something. */
         @Volatile
         var lastStreamsTimeMs: Long = 0L
@@ -1172,6 +1185,12 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                     !isGarbageUrl(it.url) && isStreamableScheme(it.url)
             }
             .map { l ->
+                // Cache the provider's video interceptor (if any) for playback:
+                // the CloudStream player honors MainAPI.getVideoInterceptor and
+                // Hikari's player looks it up per URL (see videoInterceptorFor).
+                if (a != null) {
+                    runCatching { a.getVideoInterceptor(l) }.getOrNull()?.let { videoInterceptors[l.url] = it }
+                }
                 // CloudStream keeps the Referer OUT of ExtractorLink.headers —
                 // without it most anime CDNs answer with an anti-hotlink HTML
                 // page and ExoPlayer reports PARSING_CONTAINER_UNSUPPORTED.

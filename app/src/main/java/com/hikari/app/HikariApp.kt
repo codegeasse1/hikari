@@ -824,6 +824,21 @@ class HikariApp : Application() {
                     providers.refresh()
                 }
             }
+            // Silent CloudStream plugin auto-update (at most once a day): the
+            // CloudStream app refreshes its extensions from the plugin repos on
+            // its own, while Hikari's installed copies stayed stale until the
+            // user tapped Update — every site rebuild arrived as a separate
+            // "not playing" report. Same manifest-hash comparison as the Update
+            // buttons, headless and bounded; reconciles + refreshes when files
+            // actually moved. CS3-only.
+            runCatching {
+                val updated = com.hikari.app.cs3.Cs3AutoUpdate.runIfDue(this@HikariApp, store)
+                if (updated > 0) {
+                    Logs.log("Providers", "CS3 auto-update replaced $updated plugin file(s) — reconciling")
+                    com.hikari.app.cs3.Cs3ProviderSync.reconcile(this@HikariApp, store)
+                    providers.refresh()
+                }
+            }
             // Aniyomi extensions are the same story: one installed .ext can
             // register several sources, and the set can move when the extension
             // is updated, so rebuild the stored configs from the loaded

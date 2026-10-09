@@ -92,4 +92,17 @@ object PlayerHttp {
             )
             .build()
     }
+
+    /**
+     * CloudStream-parity playback client, used ONLY for CloudStream sources
+     * (see PlayerActivity): the pool, dispatcher, timeouts, DNS and the shared
+     * extraction/playback cookie jar of [client], but WITHOUT the
+     * Cloudflare-verifier interceptor — the CloudStream app plays video bytes
+     * through its plain baseClient, and a clearance-cookie mutation on a
+     * signed CDN URL is a 403-vs-play difference no header tweak can fix.
+     * Every other engine keeps playing through [client], untouched.
+     */
+    val plainClient: OkHttpClient by lazy {
+        client.newBuilder().apply { interceptors().clear() }.build()
+    }
 }

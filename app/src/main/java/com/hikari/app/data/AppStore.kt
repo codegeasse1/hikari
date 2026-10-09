@@ -197,6 +197,8 @@ class AppStore(private val ctx: Context) {
         val SLOW_TIP_ENABLED = booleanPreferencesKey("slowTipEnabled")
         val SLOW_TIP_DONT_ASK = booleanPreferencesKey("slowTipDontAsk")
         val SLOW_TIP_LAST_DISMISS = longPreferencesKey("slowTipLastDismiss")
+        /** Last silent CloudStream plugin auto-update pass, epoch millis (see Cs3AutoUpdate). */
+        val CS3_AUTO_UPDATE_AT = longPreferencesKey("cs3AutoUpdateAt")
         val TELEGRAM_DONT_SHOW = booleanPreferencesKey("telegramDontShow")
         val COMMUNITY_SEEN_VERSION = stringPreferencesKey("communitySeenVersion")
         /** The app version "Don't show this again" was ticked on — the tick
@@ -3245,6 +3247,13 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
 
     suspend fun setProfileTag(id: String) {
         write("PROFILE_TAG") { it[K.PROFILE_TAG] = id }
+    }
+
+    /** Last silent CloudStream plugin auto-update pass, epoch millis (0 = never). */
+    suspend fun cs3AutoUpdateAt(): Long = store.data.first()[K.CS3_AUTO_UPDATE_AT] ?: 0L
+
+    suspend fun setCs3AutoUpdateAt(at: Long) {
+        write("CS3_AUTO_UPDATE_AT") { it[K.CS3_AUTO_UPDATE_AT] = at }
     }
 
     // ---- Per-extension auto-translate (WebView pages → English) ----

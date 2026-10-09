@@ -9307,7 +9307,18 @@ class PlayerActivity : ComponentActivity() {
             val src = sources[audioIndex]
             val cleanHeaders = withKnownHotlinkReferer(src.url, sanitizeHeaders(src.headers))
             val ua = cleanHeaders["User-Agent"]?.takeIf { it.isNotBlank() } ?: Http.UA
-            val audioFactory = OkHttpDataSource.Factory(client)
+            // Same CloudStream parity as the main path below (CS3-only): plain
+            // client plus the provider's video interceptor when declared.
+            val isCs3Audio = src.providerId.startsWith("cs3|")
+            var audioClient = if (isCs3Audio) com.hikari.app.net.PlayerHttp.plainClient else client
+            if (isCs3Audio) {
+                runCatching {
+                    com.hikari.app.cs3.Cs3MainApiProvider.videoInterceptorFor(src.url)
+                }.getOrNull()?.let { inter ->
+                    audioClient = audioClient.newBuilder().addInterceptor(inter).build()
+                }
+            }
+            val audioFactory = OkHttpDataSource.Factory(audioClient)
                 .setUserAgent(ua)
                 .setDefaultRequestProperties(cleanHeaders)
             val mediaFactory = DefaultMediaSourceFactory(DefaultDataSource.Factory(this, audioFactory))
@@ -10040,10 +10051,28 @@ class PlayerActivity : ComponentActivity() {
             else -> cleanHeaders
         }
         val ua = sourceHeaders["User-Agent"]?.takeIf { it.isNotBlank() } ?: Http.UA
+        // CloudStream parity for CloudStream sources (CS3-only): the CloudStream
+        // app plays video bytes through its plain baseClient, while Hikari's
+        // shared playback client also runs the Cloudflare-verifier interceptor —
+        // a clearance-cookie mutation on a signed CDN URL is a 403-vs-play
+        // difference no header tweak can fix. CS3 sources therefore play through
+        // the interceptor-free client (same pool, cookies, timeouts, DNS), plus
+        // the provider's own video interceptor when it declared one
+        // (MainAPI.getVideoInterceptor — the CloudStream player honors it and
+        // Hikari never did). Every other engine keeps the stable path.
+        val isCs3Source = src.providerId.startsWith("cs3|")
+        var playbackClient = if (isCs3Source) com.hikari.app.net.PlayerHttp.plainClient else client
+        if (isCs3Source) {
+            runCatching {
+                com.hikari.app.cs3.Cs3MainApiProvider.videoInterceptorFor(src.url)
+            }.getOrNull()?.let { inter ->
+                playbackClient = playbackClient.newBuilder().addInterceptor(inter).build()
+            }
+        }
         // Local downloads read off the filesystem through DefaultDataSource
         // (which handles file:// and any local .m3u8's relative segment paths);
         // network sources keep the header-aware OkHttp factory.
-        val networkFactory: DataSource.Factory = OkHttpDataSource.Factory(client)
+        val networkFactory: DataSource.Factory = OkHttpDataSource.Factory(playbackClient)
             .setUserAgent(ua)
             .setDefaultRequestProperties(sourceHeaders)
         // DefaultDataSource sits IN FRONT of the OkHttp factory, and that is
