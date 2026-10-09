@@ -283,9 +283,15 @@ class IptvProvider(override val config: ProviderConfig) : ContentProvider {
         return IptvChannel(name = name, url = u, group = "")
     }
 
-    /** Channels after [group] filtering, shared by catalogs and streams. */
-    private fun groupChannels(all: List<IptvChannel>, group: String): List<IptvChannel> =
-        all.filter { IptvPlaylist.groupOf(it) == group }
+    /** Channels inside one catalog ref, shared by catalogs and scoped search. */
+    private fun channelsInCatalog(all: List<IptvChannel>, refId: String): List<IptvChannel> = when {
+        refId == ALL -> all
+        refId.startsWith(GROUP_PREFIX) -> groupChannels(all, refId.removePrefix(GROUP_PREFIX))
+        refId.startsWith(LANG_PREFIX) -> all.filter { IptvPlaylist.languageOf(it) == refId.removePrefix(LANG_PREFIX) }
+        refId.startsWith(CAT_PREFIX) -> all.filter { IptvPlaylist.categoryOf(it) == refId.removePrefix(CAT_PREFIX) }
+        refId.startsWith(COUNTRY_PREFIX) -> all.filter { IptvPlaylist.countryOf(it) == refId.removePrefix(COUNTRY_PREFIX) }
+        else -> emptyList()
+    }
 
     override suspend fun catalogs(): List<CatalogRef> {
         val all = channels()
@@ -317,16 +323,13 @@ class IptvProvider(override val config: ProviderConfig) : ContentProvider {
         return out
     }
 
+    /** Channels after [group] filtering, shared by catalogs and streams. */
+    private fun groupChannels(all: List<IptvChannel>, group: String): List<IptvChannel> =
+        all.filter { IptvPlaylist.groupOf(it) == group }
+
     override suspend fun getCatalog(ref: CatalogRef, page: Int): List<MediaItem> {
         val all = channels()
-        val list = when {
-            ref.id == ALL -> all
-            ref.id.startsWith(GROUP_PREFIX) -> groupChannels(all, ref.id.removePrefix(GROUP_PREFIX))
-            ref.id.startsWith(LANG_PREFIX) -> all.filter { IptvPlaylist.languageOf(it) == ref.id.removePrefix(LANG_PREFIX) }
-            ref.id.startsWith(CAT_PREFIX) -> all.filter { IptvPlaylist.categoryOf(it) == ref.id.removePrefix(CAT_PREFIX) }
-            ref.id.startsWith(COUNTRY_PREFIX) -> all.filter { IptvPlaylist.countryOf(it) == ref.id.removePrefix(COUNTRY_PREFIX) }
-            else -> emptyList()
-        }
+        val list = channelsInCatalog(all, ref.id)
         if (list.isEmpty()) return emptyList()
         val from = (page.coerceAtLeast(1) - 1) * PAGE
         if (from >= list.size) return emptyList()
@@ -338,6 +341,23 @@ class IptvProvider(override val config: ProviderConfig) : ContentProvider {
         if (q.isBlank()) return emptyList()
         val all = channels()
         val hit = all.filter { it.name.contains(q, ignoreCase = true) || it.group.contains(q, ignoreCase = true) }
+        if (hit.isEmpty()) return emptyList()
+        val from = (page.coerceAtLeast(1) - 1) * PAGE
+        if (from >= hit.size) return emptyList()
+        return hit.subList(from, minOf(from + PAGE, hit.size)).map { toItem(it) }
+    }
+
+    /**
+     * Search INSIDE one catalog (a group / language / category / country tile):
+     * the same name/group match as [search], but scoped to the tile's channels
+     * first — so searching "sony" inside Germany never offers a channel from
+     * another country. Same paging as [getCatalog].
+     */
+    suspend fun searchInCatalog(refId: String, query: String, page: Int): List<MediaItem> {
+        val q = query.trim()
+        if (q.isBlank()) return emptyList()
+        val scoped = channelsInCatalog(channels(), refId)
+        val hit = scoped.filter { it.name.contains(q, ignoreCase = true) || it.group.contains(q, ignoreCase = true) }
         if (hit.isEmpty()) return emptyList()
         val from = (page.coerceAtLeast(1) - 1) * PAGE
         if (from >= hit.size) return emptyList()

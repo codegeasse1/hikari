@@ -173,6 +173,14 @@ fun MyStuffScreen(nav: NavHostController, initial: String = MyStuff.LIBRARY) {
     // move reads as a page turning rather than a jump), and a swipe that settles
     // on a page selects that section, which is what redraws the pill. The two
     // effects each check before they write, so neither can spin the other.
+    //
+    // Television is the exception: a D-pad's left/right BOTH turns pager pages
+    // (the pager's own key handling) AND walks focus, so the page and the focus
+    // fought and the screen jolted right-and-left — at a page edge it is a bare
+    // overscroll spring-back. On TV there is no pager at all (see below): the
+    // section draws directly and the pills are the only switcher, so nothing
+    // can move the screen sideways again.
+    val tvPager = com.hikari.app.tv.TvMode.current()
     val pager = androidx.compose.foundation.pager.rememberPagerState(
         initialPage = strip.indexOf(section).coerceAtLeast(0),
         pageCount = { strip.size },
@@ -196,7 +204,10 @@ fun MyStuffScreen(nav: NavHostController, initial: String = MyStuff.LIBRARY) {
         if (target == pager.currentPage && !pager.isScrollInProgress) return@LaunchedEffect
         pagingProgrammatically = true
         try {
-            pager.animateScrollToPage(target)
+            // TV jumps: an animation the D-pad can interrupt mid-flight is how
+            // a section change visibly shuttled right-and-left.
+            if (tvPager) pager.scrollToPage(target)
+            else pager.animateScrollToPage(target)
         } finally {
             pagingProgrammatically = false
         }
@@ -218,6 +229,12 @@ fun MyStuffScreen(nav: NavHostController, initial: String = MyStuff.LIBRARY) {
                 section = picked
             }
         }
+        if (tvPager) {
+            // No pager on TV at all: the section draws directly, so no
+            // key-driven page turn or overscroll spring can ever move the
+            // screen again — pills are the only section switcher.
+            Box(Modifier.fillMaxSize()) { MyStuffPage(nav, section) }
+        } else {
         androidx.compose.foundation.pager.HorizontalPager(
             state = pager,
             modifier = Modifier.fillMaxSize(),
@@ -225,12 +242,20 @@ fun MyStuffScreen(nav: NavHostController, initial: String = MyStuff.LIBRARY) {
             // still slides is a page the user can drag into empty space.
             userScrollEnabled = strip.size > 1,
         ) { page ->
-            when (strip.getOrNull(page)) {
-                MyStuff.HISTORY -> HistoryScreen(nav, embedded = true)
-                MyStuff.DOWNLOADS -> DownloadsScreen(nav, embedded = true)
-                else -> LibraryScreen(nav, embedded = true)
-            }
+            MyStuffPage(nav, strip.getOrNull(page))
         }
+        }
+    }
+}
+
+/** The body of one My Stuff section — shared by the pager's pages (phone)
+ *  and the direct draw (TV, which has no pager). */
+@Composable
+private fun MyStuffPage(nav: NavHostController, name: String?) {
+    when (name) {
+        MyStuff.HISTORY -> HistoryScreen(nav, embedded = true)
+        MyStuff.DOWNLOADS -> DownloadsScreen(nav, embedded = true)
+        else -> LibraryScreen(nav, embedded = true)
     }
 }
 

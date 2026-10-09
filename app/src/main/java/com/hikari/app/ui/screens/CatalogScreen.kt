@@ -76,9 +76,11 @@ import com.hikari.app.data.ProviderType
 import com.hikari.app.i18n.I18n
 import com.hikari.app.manga.MangaProvider
 import com.hikari.app.providers.ContentProvider
+import com.hikari.app.providers.IptvProvider
 import com.hikari.app.ui.Artwork
 import com.hikari.app.ui.PosterLoader
 import com.hikari.app.ui.PosterStyle
+import com.hikari.app.ui.PosterTypes
 import com.hikari.app.ui.RatingBadge
 import com.hikari.app.ui.rememberPosterScore
 import com.hikari.app.ui.rememberPosterStyle
@@ -175,6 +177,11 @@ class CatalogViewModel(
     private var page = 1
     private var loadJob: kotlinx.coroutines.Job? = null
 
+    /** True on an IPTV channel shelf: it gets cinema cards and its own
+     *  in-catalog search (see [IptvProvider.searchInCatalog]) — manga keeps
+     *  its engine search, everything else is unchanged. */
+    val isIptv: Boolean = manager.byId(providerId) is IptvProvider
+
     private var trackerAll: List<MediaItem>? = null
     private val TRACKER_PAGE = 60
 
@@ -257,9 +264,15 @@ class CatalogViewModel(
             val fresh = try {
                 // A search is paged exactly like the catalog is: the same
                 // infinite-scroll effect asks for page 2, and a source with 400
-                // matches streams in the way the grid expects.
-                val raw = if (rawType == "manga" && _query.value.isNotBlank()) {
-                    provider?.search(_query.value.trim(), page) ?: emptyList()
+                // matches streams in the way the grid expects. Manga searches
+                // the engine; an IPTV shelf searches INSIDE its own tile (see
+                // [IptvProvider.searchInCatalog]) — same name/group match as
+                // the playlist's in-folder search, scoped to this shelf.
+                val iptv = provider as? IptvProvider
+                val raw = if (_query.value.isNotBlank() && (rawType == "manga" || iptv != null)) {
+                    val q = _query.value.trim()
+                    iptv?.searchInCatalog(_catalog.value, q, page)
+                        ?: provider?.search(q, page) ?: emptyList()
                 } else {
                     // One funnel for every engine (see
                     // [ContentRepository.loadCatalogPage]): a catalogue host
@@ -464,6 +477,13 @@ fun CatalogScreen(
     // ask one specific engine for a title. A video extension already has Home's
     // "search this extension" magnifier, and Search's own scope row.
     val searchable = rawType == "manga"
+    // An IPTV channel shelf (a group / language / category / country tile, or
+    // All channels) searches INSIDE itself — the same name/group match as the
+    // playlist's own in-folder search, scoped to this shelf, in place, never
+    // leaving for the Search tab. Torrent/stream single shelves are one item
+    // and need no box.
+    val iptvShelfSearch = vm.isIptv && rawType == "channel"
+    val catalogSearch = searchable || iptvShelfSearch
     val appliedQuery by vm.appliedQuery.collectAsState()
     val catalogReason by vm.reason.collectAsState()
     val selectedCatalog by vm.catalog.collectAsState()
@@ -486,7 +506,7 @@ fun CatalogScreen(
     // asking the source on every keystroke would blank it while typing).
     var typedQuery by rememberSaveable { mutableStateOf("") }
     LaunchedEffect(typedQuery) {
-        if (!searchable) return@LaunchedEffect
+        if (!catalogSearch) return@LaunchedEffect
         // Long enough that a typed word is one request, short enough that the
         // grid feels like it follows the keyboard.
         delay(400)
@@ -546,8 +566,12 @@ fun CatalogScreen(
     // (four cramped columns). On a television the count is still derived from
     // the living-room cell size instead (see [TvUi.gridColumns]).
     val isTvCatalog = com.hikari.app.tv.TvMode.current()
+    // IPTV shelves always draw cinema 16:9 cards (phone included): channel
+    // logos on tall vertical posters looked broken, and nothing else changes —
+    // every other engine keeps the user's own poster setting.
+    val iptvCinema = vm.isIptv
     // Phone cinema cards are 16:9 and need room: two columns, not three.
-    val phoneCinema = !isTvCatalog && rememberPosterStyle().isCinema(false)
+    val phoneCinema = !isTvCatalog && (iptvCinema || rememberPosterStyle().isCinema(false))
     val columns = if (isTvCatalog) { val w = LocalConfiguration.current.screenWidthDp; if (w >= 1400) 4 else 3 } else if (phoneCinema) 2 else TvUi.gridColumns(catalogColumnsFor(LocalConfiguration.current.screenWidthDp))
     // Infinite scroll: fetch the next page when the user scrolls close to the
     // bottom. (A LaunchedEffect keyed on gridState alone never re-fires on
@@ -642,11 +666,12 @@ fun CatalogScreen(
                 }
             }
         }
-        if (searchable) {
+        if (catalogSearch) {
             GlassSearchField(
                 value = typedQuery,
                 onValueChange = { typedQuery = it },
-                placeholder = I18n.t("Search %s…").replace("%s", tr(shownName)),
+                placeholder = if (iptvShelfSearch) I18n.t("Search channels…")
+                else I18n.t("Search %s…").replace("%s", tr(shownName)),
                 height = 46.dp,
                 modifier = Modifier
                     .fillMaxWidth()
@@ -658,7 +683,7 @@ fun CatalogScreen(
             // grid keeps the shape it is about to have, instead of a lone
             // spinner that says nothing about what is coming.
             Box(Modifier.fillMaxSize()) {
-                CatalogSkeletonGrid(columns = columns, cinema = rememberPosterStyle().isCinema(com.hikari.app.tv.TvMode.current()))
+                CatalogSkeletonGrid(columns = columns, cinema = iptvCinema || rememberPosterStyle().isCinema(com.hikari.app.tv.TvMode.current()))
                 // The spinner, on its own, cannot say WHY nothing is arriving —
                 // and ten seconds in, the usual answer is a Cloudflare check the
                 // site wants a browser to pass (see [VerificationNudge]). The
@@ -682,7 +707,8 @@ fun CatalogScreen(
                     title = if (appliedQuery.isNotBlank()) tr("No matches")
                     else tr("Nothing here right now"),
                     subtitle = if (appliedQuery.isNotBlank())
-                        I18n.t("This engine has no \"%s\" — it may also be blocking Hikari.").replace("%s", appliedQuery)
+                        if (iptvShelfSearch) tr("No channels here match that search.")
+                        else I18n.t("This engine has no \"%s\" — it may also be blocking Hikari.").replace("%s", appliedQuery)
                     else tr("The site may be blocking or down.") +
                         if (searchable) " " + tr("If the site shows a Cloudflare check, open it and pass it once.") else "",
                     actionLabel = if (searchable) tr("Verify site") else null,
@@ -703,7 +729,9 @@ fun CatalogScreen(
             // cell — a cell doing its own read opened one DataStore collection
             // per poster on screen (see MediaRow).
             val uniqueItems = rememberVisibleItems(items)
-            val style = rememberPosterStyle()
+            val style = rememberPosterStyle().let {
+                if (iptvCinema) it.copy(posterType = PosterTypes.CINEMA) else it
+            }
             LazyVerticalGrid(
                 // Nuvio's catalogue grid: a fixed column count chosen from the
                 // screen, sixteen-dp gutters and a real vertical gap so every
