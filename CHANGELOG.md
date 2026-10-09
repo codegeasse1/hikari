@@ -2,6 +2,9 @@
 
 ### Fixed
 
+- Every server row now shows uniform details (quality • HDR/DV • codec • audio • size): Torrentio-style richness is kept as-is, while thin rows like Purstream gain a parsed line from their own name instead of a bare host — no invented sizes, only what the provider already states
+- Dual-audio Multi-Audio second servers get a language picker: the second stream's embedded Hindi / English / French tracks are listed and applied to the audio-only player (video stays on the first server), with a loud failure toast instead of silent "selected multi, no sound"
+- Seeks no longer restart from the start: subtitle re-attach keeps the position explicitly, every user seek (buttons, gestures, seek bar, resume, skip-intro) seeks both players together, and a seek discontinuity re-aligns the dual-audio pair instantly
 - CS3 exact playback parity (all CloudStream extensions): video now plays through CloudStream's own shared client (the exact extraction client, same cookies/TLS) + provider video interceptor, with the extractor's verbatim referer/headers and CloudStream's UA (Chrome/149) in ONE attempt — no more forced trailing-slash Referer, no UA 131-vs-149 mismatch, no separate-client session loss, no header-strip retries manufacturing 403s on Fastream-class CDNs; non-CS3 engines untouched
 - Settings-driven CloudStream installs (CNC M3UPlaylistPlayer et al): a clean load with zero providers + a settings screen now installs (kept file + setup row with settings gear, replaced by real providers after setup) instead of "Plugin loaded but registered no providers" + deleted file — mirrors CloudStream, which gates install on load success, not provider count
 - Download rate limits ("Failed - HTTP 429"): playlist/segment/file fetches honor Retry-After with exponential backoff (5 tries), segment parallelism lowered 6→4 with 429-aware spacing, so throttled CDNs complete instead of failing

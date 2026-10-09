@@ -104,6 +104,7 @@ import com.hikari.app.data.MediaType
 import com.hikari.app.data.MediaItem as AppMediaItem
 import com.hikari.app.data.StreamSource
 import com.hikari.app.data.SubtitleSource
+import com.hikari.app.data.ServerMeta
 import com.hikari.app.data.WatchStats
 import com.hikari.app.download.DownloadEngine
 import com.hikari.app.download.DownloadKind
@@ -1102,6 +1103,9 @@ class PlayerActivity : ComponentActivity() {
     private var dualPlayer: ExoPlayer? = null
     private var dualAudioIndex = -1
     private var dualSyncTask: Runnable? = null
+    /** Which audio index the dual-track picker was already offered for — so a
+     *  Multi-Audio second server asks once per pairing, not on every sync. */
+    private var dualPickerShownFor = -1
 
     /** The user chose "Off" in the subtitle sheet. */
     private var textOff = false
@@ -1755,7 +1759,7 @@ class PlayerActivity : ComponentActivity() {
             val target = (p.currentPosition + 85_000L).coerceIn(
                 0L, p.duration.takeIf { it > 0L } ?: Long.MAX_VALUE
             )
-            p.seekTo(target)
+            seekBoth(target)
         }
         unlockBtn?.setOnClickListener { unlockControls() }
 
@@ -2037,7 +2041,7 @@ class PlayerActivity : ComponentActivity() {
                         if (event.actionMasked == MotionEvent.ACTION_UP && !controlsLocked) {
                             player?.let { p ->
                                 val dur = p.duration.takeIf { it > 0L }
-                                if (dur != null) p.seekTo(scrubTargetMs.coerceIn(0L, dur))
+                                if (dur != null) seekBoth(scrubTargetMs.coerceIn(0L, dur))
                             }
                         }
                         hideScrubFeedback()
@@ -3460,7 +3464,7 @@ class PlayerActivity : ComponentActivity() {
         val p = player ?: return
         val target = (p.currentPosition + deltaMs)
             .coerceIn(0L, p.duration.takeIf { it > 0L } ?: Long.MAX_VALUE)
-        p.seekTo(target)
+        seekBoth(target)
         showSeekFeedback(deltaMs)
     }
 
@@ -3476,7 +3480,7 @@ class PlayerActivity : ComponentActivity() {
         val delta = if (forward) 10_000L else -10_000L
         val target = (p.currentPosition + delta)
             .coerceIn(0L, p.duration.takeIf { it > 0L } ?: Long.MAX_VALUE)
-        p.seekTo(target)
+        seekBoth(target)
         showSeekFeedback(delta)
     }
 
@@ -6684,12 +6688,20 @@ class PlayerActivity : ComponentActivity() {
             source.local -> "Saved on this device"
             source.details.isNotBlank() -> {
                 val host = hostOf(source.url)
-                val d = source.details.trim()
+                val d = ServerMeta.enrichedDetails(source.name, source.details)
                 val provider = source.providerName.trim()
                 val body = if (host.isNullOrBlank()) d else "$host\n$d"
                 if (tvPanelsEnabled && TvMode.isTv && provider.isNotBlank()) "$body\n$provider" else body
             }
-            else -> hostOf(source.url)
+            else -> {
+                val host = hostOf(source.url)
+                val parsed = ServerMeta.enrichedDetails(source.name, "")
+                when {
+                    parsed.isBlank() -> host
+                    host.isNullOrBlank() -> parsed
+                    else -> "$host\n$parsed"
+                }
+            }
         },
         badge = when {
             source.url.startsWith("hikari-td:") -> "Telegram"
@@ -9350,6 +9362,25 @@ class PlayerActivity : ComponentActivity() {
             if (pos > 0L) dual.seekTo(pos)
             dualPlayer = dual
             dualAudioIndex = audioIndex
+            dualPickerShownFor = -1
+            // A second server that mixes but never reports an error still reads
+            // as "selected multi and then audio not coming" — surface its
+            // failure instead of silence.
+            dual.addListener(object : Player.Listener {
+                override fun onPlayerError(error: PlaybackException) {
+                    com.hikari.app.data.Logs.log(
+                        "Player",
+                        "dual audio error on \"${src.name}\": ${rootMessage(error).take(220)}",
+                    )
+                    runOnUiThread {
+                        Toast.makeText(
+                            this@PlayerActivity,
+                            I18n.t("Dual audio failed: %s").replace("%s", rootMessage(error).take(120)),
+                            Toast.LENGTH_LONG,
+                        ).show()
+                    }
+                }
+            })
             runCatching { primary.volume = 0f }
             startDualSync()
             Toast.makeText(
@@ -9357,6 +9388,10 @@ class PlayerActivity : ComponentActivity() {
                 I18n.t("Dual audio — sound from %s").replace("%s", src.name),
                 Toast.LENGTH_SHORT,
             ).show()
+            // A Multi/Dual-Audio second server carries its languages INSIDE one
+            // stream — offer its embedded track list so Hindi / English / French
+            // can be picked instead of "selected multi" with no sound choice.
+            maybeOfferDualTrackPicker(audioIndex)
         } catch (t: Throwable) {
             stopDualAudio()
             Toast.makeText(
@@ -9374,6 +9409,7 @@ class PlayerActivity : ComponentActivity() {
         dualPlayer?.let { runCatching { it.release() } }
         dualPlayer = null
         dualAudioIndex = -1
+        dualPickerShownFor = -1
         runCatching { player?.volume = 1f }
     }
 
@@ -9407,6 +9443,124 @@ class PlayerActivity : ComponentActivity() {
                 if (diff > 1500L || diff < -1500L) dual.seekTo(primary.currentPosition)
             }
         } catch (_: Throwable) {
+        }
+    }
+
+    /** Seeks both players together — every user seek keeps the dual-audio
+     *  pair aligned instantly instead of drifting until the 1s heartbeat. */
+    private fun seekBoth(targetMs: Long) {
+        try {
+            player?.seekTo(targetMs)
+        } catch (_: Throwable) { }
+        try {
+            dualPlayer?.seekTo(targetMs)
+        } catch (_: Throwable) { }
+    }
+
+    /** Offers the second server's embedded audio languages once per pairing.
+     *  A "Multi-Audio" server is one muxed stream with Hindi / English /
+     *  French inside it — without this the Audio sheet only says "selected
+     *  multi" and there is no language to pick. */
+    private fun maybeOfferDualTrackPicker(audioIndex: Int) {
+        if (dualPickerShownFor == audioIndex) return
+        lifecycleScope.launch {
+            for (i in 0 until 20) {
+                val dual = dualPlayer ?: return@launch
+                if (currentIndex == audioIndex || dualAudioIndex != audioIndex) return@launch
+                val hasAudio = dual.currentTracks.groups.any { it.type == C.TRACK_TYPE_AUDIO }
+                if (hasAudio || dual.playbackState == Player.STATE_READY) break
+                delay(300)
+            }
+            val dual = dualPlayer ?: return@launch
+            if (dualAudioIndex != audioIndex || dualPickerShownFor == audioIndex) return@launch
+            val count = dual.currentTracks.groups
+                .filter { it.type == C.TRACK_TYPE_AUDIO }
+                .sumOf { it.mediaTrackGroup.length }
+            val srcName = sources.getOrNull(audioIndex)?.name.orEmpty()
+            val multi = ServerMeta.isMultiAudio(srcName, "") || count > 1
+            if (!multi) {
+                // Single-language second server: nothing to choose, sound just plays.
+                if (count == 0) {
+                    com.hikari.app.data.Logs.log("Player", "dual audio has no audio tracks (yet) on \"${srcName.take(80)}\"")
+                }
+                return@launch
+            }
+            dualPickerShownFor = audioIndex
+            if (isFinishing || isDestroyed) return@launch
+            showDualAudioTrackPicker()
+        }
+    }
+
+    /** Language picker for the DUAL player's own audio tracks. Applies the
+     *  choice to the second ExoPlayer only — the video keeps playing from
+     *  the first server. */
+    private fun showDualAudioTrackPicker(waited: Boolean = false) {
+        val dual = dualPlayer ?: return
+        val groups = dual.currentTracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
+        if (groups.isEmpty() && !waited && dual.playbackState != Player.STATE_READY) {
+            lifecycleScope.launch {
+                for (i in 0 until 12) {
+                    val done = dualPlayer?.let {
+                        it.playbackState == Player.STATE_READY ||
+                            it.currentTracks.groups.any { g -> g.type == C.TRACK_TYPE_AUDIO }
+                    } ?: true
+                    if (done) break
+                    delay(200)
+                }
+                if (isFinishing || isDestroyed) return@launch
+                showDualAudioTrackPicker(waited = true)
+            }
+            return
+        }
+        if (groups.isEmpty()) {
+            Toast.makeText(this, I18n.t("Second server has no separate audio tracks yet"), Toast.LENGTH_SHORT).show()
+            return
+        }
+        val rows = mutableListOf<TrackRow>()
+        for (group in groups) {
+            val mg = group.mediaTrackGroup
+            for (i in 0 until mg.length) {
+                val f = mg.getFormat(i)
+                val label = languageOf(f.language) ?: trackLabel(f.label ?: f.id, i)
+                rows.add(
+                    TrackRow(
+                        label = label,
+                        sub = trackSub(label, f.label, f.id),
+                        badge = channelsBadge(f.channelCount) ?: codecBadge(f.sampleMimeType),
+                        group = group,
+                        index = i,
+                    )
+                )
+            }
+        }
+        val options = rows.mapIndexed { i, row ->
+            val selected = runCatching {
+                dual.trackSelectionParameters.overrides[row.group.mediaTrackGroup]
+                    ?.trackIndices?.contains(row.index) == true
+            }.getOrDefault(false)
+            GlassOption(label = row.label, sub = row.sub, badge = row.badge, selected = selected)
+        }
+        showGlassMenu(
+            I18n.t("Second server audio"),
+            options,
+            hint = I18n.t("Pick a language — video keeps playing from %s.").replace(
+                "%s", sources.getOrNull(currentIndex)?.name.orEmpty()
+            ),
+            iconRes = R.drawable.ic_audio,
+        ) { which ->
+            val row = rows.getOrNull(which) ?: return@showGlassMenu
+            dual.trackSelectionParameters = dual.trackSelectionParameters.buildUpon()
+                .setOverrideForType(
+                    TrackSelectionOverride(row.group.mediaTrackGroup, ImmutableList.of(row.index))
+                )
+                .build()
+            // Re-align sound under the picture the moment a language is picked.
+            runCatching { player?.currentPosition?.let { dual.seekTo(it) } }
+            Toast.makeText(
+                this,
+                I18n.t("Audio: %s").replace("%s", row.label),
+                Toast.LENGTH_SHORT,
+            ).show()
         }
     }
 
@@ -10362,9 +10516,25 @@ class PlayerActivity : ComponentActivity() {
                 // Re-prepare with the validated subtitle tracks. This rebuilds
                 // the media item, so the track groups are brand new — the
                 // user's remembered audio/subtitle pick is re-applied to them
-                // by applyStickyPicks from onTracksChanged.
+                // by applyStickyPicks from onTracksChanged. The position is
+                // kept explicitly: a re-prepare that drops back to 0 reads as
+                // "any seek restarts from the start" (the hdcloudcdn report).
+                val keepPos = p.currentPosition.takeIf { it > 2_000L } ?: 0L
                 p.setMediaItem(mediaItemWithSubtitles(src, configs), false)
                 p.prepare()
+                if (keepPos > 0L) {
+                    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(
+                        {
+                            runCatching {
+                                if (currentIndex == playedIndex) {
+                                    player?.seekTo(keepPos)
+                                    dualPlayer?.seekTo(keepPos)
+                                }
+                            }
+                        },
+                        300L,
+                    )
+                }
                 // The rebuild drops the live text override for a beat — the
                 // "subtitle hid itself when I touched Sync" report — so the
                 // remembered pick is re-asserted once the new item is ready.
@@ -11871,6 +12041,23 @@ class PlayerActivity : ComponentActivity() {
             syncDualAudio()
         }
 
+        // Any seek (seek bar, controller, headset) lands here — keep the
+        // dual-audio pair aligned instantly. Without this the sound lagged up
+        // to 1s behind every skip, and on hosts that reset a drifting second
+        // player the skip read as "restart from the start".
+        override fun onPositionDiscontinuity(
+            oldPosition: Player.PositionInfo,
+            newPosition: Player.PositionInfo,
+            reason: Int,
+        ) {
+            if (reason == Player.DISCONTINUITY_REASON_SEEK && dualPlayer != null) {
+                runCatching {
+                    val target = player?.currentPosition ?: return@runCatching
+                    dualPlayer?.seekTo(target)
+                }
+            }
+        }
+
         override fun onPlayerStateChanged(playWhenReady: Boolean, playbackState: Int) {
             if (playbackState == Player.STATE_ENDED) {
                 onPlaybackEnded()
@@ -11912,7 +12099,10 @@ class PlayerActivity : ComponentActivity() {
                     val target = if (dur > 0L) {
                         startPositionMs.coerceAtMost(dur - 1000L).coerceAtLeast(0L)
                     } else startPositionMs
-                    if (target > 0L) p.seekTo(target)
+                    if (target > 0L) {
+                        p.seekTo(target)
+                        runCatching { dualPlayer?.seekTo(target) }
+                    }
                 }
                 // Also offer the in-video resume prompt here (audio-only streams
                 // never fire onRenderedFirstFrame).
@@ -13440,7 +13630,7 @@ class PlayerActivity : ComponentActivity() {
         val target = if (dur > 0L) {
             positionMs.coerceAtMost(dur - 1000L).coerceAtLeast(0L)
         } else positionMs.coerceAtLeast(0L)
-        p.seekTo(target)
+        seekBoth(target)
     }
 
     private fun fmtResumeClock(ms: Long): String {
