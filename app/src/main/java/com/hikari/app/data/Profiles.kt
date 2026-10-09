@@ -135,6 +135,16 @@ object Profiles {
         unlockedIds.clear()
     }
 
+    /**
+     * Re-lock one profile at once: the next tap on it asks for its password
+     * again. Used for one-off gates (rename/delete/re-lock sheets) so a
+     * password typed there never leaves the profile open — and by
+     * [switchLocked], which keeps only the entered profile open.
+     */
+    fun reLock(id: String) {
+        unlockedIds.remove(id)
+    }
+
     /** The outcome of a password attempt (see [unlock]). */
     enum class UnlockResult { OK, WRONG, NO_SECRET }
 
@@ -429,6 +439,10 @@ object Profiles {
         applySnapshot(app, id)
         writeRegistry(ctx, list, id)
         publish(ctx, readRegistry(ctx))
+        // Every selection asks again: staying unlocked is only for the profile
+        // in use. Anything unlocked for a one-off gate (rename/delete) or left
+        // behind by this switch is re-locked here, so the next tap on it asks.
+        synchronized(unlockedIds) { unlockedIds.retainAll(setOf(id)) }
         if (current != null) {
             Logs.log(
                 "Profiles",

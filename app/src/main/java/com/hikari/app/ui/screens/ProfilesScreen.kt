@@ -138,6 +138,12 @@ fun ProfilesScreen(app: HikariApp, onBack: () -> Unit) {
     // app lock's. A profile with no password of its own runs ungated.
     var profileGateTarget by remember { mutableStateOf<Profiles.Profile?>(null) }
     var profileGateAction by remember { mutableStateOf<(() -> Unit)?>(null) }
+    // True when the pending gate guards a SWITCH into the target (as opposed
+    // to a one-off rename/delete/re-lock): switches stay unlocked while the
+    // entered profile is in use (Profiles.switchTo re-locks the rest), while
+    // one-off gates re-lock the moment their sheet opens — every selection
+    // asks again.
+    var profileGateIsSwitch by remember { mutableStateOf(false) }
     var profileGatePw by remember { mutableStateOf("") }
     var profileGateWrong by remember { mutableStateOf(false) }
     var profileGateBusy by remember { mutableStateOf(false) }
@@ -157,10 +163,11 @@ fun ProfilesScreen(app: HikariApp, onBack: () -> Unit) {
         lockBusy = false
         lockError = ""
     }
-    fun askProfileGate(profile: Profiles.Profile, action: () -> Unit) {
+    fun askProfileGate(profile: Profiles.Profile, isSwitch: Boolean = false, action: () -> Unit) {
         if (Profiles.needsPassword(profile)) {
             profileGateTarget = profile
             profileGateAction = action
+            profileGateIsSwitch = isSwitch
             profileGatePw = ""
             profileGateWrong = false
         } else {
@@ -278,7 +285,7 @@ fun ProfilesScreen(app: HikariApp, onBack: () -> Unit) {
                     // left the picker would be an empty page describing a
                     // feature with nothing in it.
                     canDelete = profiles.size > 1,
-                    onOpen = { askProfileGate(profile) { switchTo(profile) } },
+                    onOpen = { askProfileGate(profile, isSwitch = true) { switchTo(profile) } },
                     onRename = {
                         askProfileGate(profile) {
                             typed = profile.name
@@ -529,8 +536,18 @@ fun ProfilesScreen(app: HikariApp, onBack: () -> Unit) {
                         profileGateTarget = null
                         profileGatePw = ""
                         val run = profileGateAction
+                        val wasSwitch = profileGateIsSwitch
                         profileGateAction = null
+                        profileGateIsSwitch = false
                         run?.invoke()
+                        // One-time gate: a password typed for rename/delete/
+                        // re-lock must not leave the profile open — the next
+                        // tap (e.g. switching into it) asks again. Switches
+                        // are excluded: Profiles.switchTo re-locks everything
+                        // except the entered profile itself.
+                        if (!wasSwitch && target.id != Profiles.activeId.value) {
+                            Profiles.reLock(target.id)
+                        }
                     } else {
                         profileGateWrong = true
                     }
@@ -541,6 +558,7 @@ fun ProfilesScreen(app: HikariApp, onBack: () -> Unit) {
                     profileGateTarget = null
                     profileGatePw = ""
                     profileGateAction = null
+                    profileGateIsSwitch = false
                 }
             },
         )

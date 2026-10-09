@@ -28,7 +28,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
@@ -309,13 +311,24 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
         val pages = a.mainPage
         if (pages.isEmpty()) return@withContext emptyList()
         val out = ArrayList<CatalogRef>()
+        // CloudStream-faithful speed, CS3-only: a plugin's home pages are
+        // independent (each getMainPage call carries its own MainPageData),
+        // so fetch them in parallel like the CloudStream app instead of one
+        // network round-trip after another. No other engine is touched.
+        val rowsPerPage: List<List<HomePageList>> = coroutineScope {
+            pages.map { page ->
+                async {
+                    try {
+                        fetchHomeRows(a, page, 1)
+                    } catch (e: Throwable) {
+                        if (e is CancellationException) throw e
+                        emptyList()
+                    }
+                }
+            }.awaitAll()
+        }
         pages.forEachIndexed { pageIndex, page ->
-            val rows = try {
-                fetchHomeRows(a, page, 1)
-            } catch (e: Throwable) {
-                if (e is CancellationException) throw e
-                emptyList()
-            }
+            val rows = rowsPerPage.getOrElse(pageIndex) { emptyList() }
             if (rows.isEmpty()) {
                 // The plugin answers with a single flat page (or is offline):
                 // keep the old one-row-per-mainPage behaviour as a fallback.
@@ -930,7 +943,6 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                     } else emptyList()
 
                 val merged = LinkedHashMap<String, StreamSource>()
-                var firstSourceAt = -1L
                 // True once the plugin's loadLinks has emitted at least one
                 // usable link (it streams them in as it goes).
                 var sawPluginSource = false
@@ -938,55 +950,39 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                     val ps = pluginSources()
                     if (ps.isNotEmpty()) sawPluginSource = true
                     for (s in ps) merged.putIfAbsent(s.url, s)
-                    for (s in fallbackSources()) merged.putIfAbsent(s.url, s)
-                    for (s in movieblastSources()) merged.putIfAbsent(s.url, s)
                     val pluginDone = pluginJob.isCompleted
+                    // CloudStream-faithful authority, CS3-only: the plugin's
+                    // own loadLinks IS the source list, exactly like the
+                    // CloudStream app. The universal fallback and the
+                    // MovieBlast resolver are safety nets for when the plugin
+                    // comes up EMPTY — merged only after the plugin has
+                    // finished with nothing, never alongside (or ahead of)
+                    // real plugin servers. Every other engine keeps its own
+                    // logic untouched.
+                    if (pluginDone && !sawPluginSource) {
+                        for (s in fallbackSources()) merged.putIfAbsent(s.url, s)
+                        for (s in movieblastSources()) merged.putIfAbsent(s.url, s)
+                    }
                     val fallbackDone = fallbackJob.isCompleted
                     val movieblastDone = movieblastJob.isCompleted
-                    if (pluginDone && fallbackDone && movieblastDone) break
+                    // Wait out the plugin's own declared budget (bounded by
+                    // the deadline) so the FULL server list lands like in
+                    // CloudStream — cutting off at first sight is what kept
+                    // dropping the plugin's later mirrors. When the plugin
+                    // finished empty, the safety nets get their full budget
+                    // instead before declaring none.
+                    if (pluginDone && (sawPluginSource || (fallbackDone && movieblastDone))) break
                     val now = System.currentTimeMillis()
-                    if (merged.isNotEmpty()) {
-                        if (firstSourceAt < 0) firstSourceAt = now
-                        // The PLUGIN's loadLinks is the authoritative extractor
-                        // — CloudStream plays exactly the servers its loadLinks
-                        // produces, waiting out the plugin's own declared
-                        // budget. The fallback engine is only a safety net for
-                        // when the plugin comes up empty, so it must never be
-                        // allowed to cancel the plugin mid-extraction: that
-                        // raced the user into a raw-scanned "Hikari Auto" URL
-                        // (403-prone) while the plugin's properly-signed
-                        // StreamHG link was still one request away.
-                        val waited = now - firstSourceAt >= 2_000L
-                        val openNow = when {
-                            // Plugin still working → open fast only if it has
-                            // already handed us servers (its later servers are
-                            // a nice-to-have; playback speed is the point).
-                            !pluginDone && sawPluginSource -> waited
-                            // Plugin finished WITH servers → open fast.
-                            pluginDone && sawPluginSource -> waited
-                            // Plugin finished EMPTY → the fallback is the only
-                            // hope; don't cut it off, wait for its full budget
-                            // (it's what finds the StreamHG/VidHidePro server
-                            // when the plugin's own resolver dies).
-                            pluginDone -> fallbackDone && waited
-                            else -> false
-                        }
-                        if (openNow) break
-                    }
                     if (now > deadline) break
                     kotlinx.coroutines.delay(80)
                 }
-                // Say so when servers were handed over while the plugin was
-                // still extracting (its later links are dropped — playback speed
-                // is the point, see the merge loop). The line is what tells a
-                // "the list got shorter" report apart from a provider that
-                // simply found fewer servers.
-                if (merged.isNotEmpty() && !pluginJob.isCompleted) {
+                // The plugin came up empty and the safety net filled the gap —
+                // say so, so a safety-net server is never mistaken for a
+                // plugin server in a later report.
+                if (!sawPluginSource && merged.isNotEmpty()) {
                     com.hikari.app.data.Logs.log(
                         "Provider",
-                        a.name + ": ${merged.size} server(s) handed over after " +
-                            "${(System.currentTimeMillis() - started) / 1000}s while the " +
-                            "plugin was still extracting (its later links are dropped)",
+                        a.name + ": plugin came up empty — ${merged.size} server(s) from the safety-net engine",
                     )
                 }
                 if (!pluginJob.isCompleted) pluginJob.cancel()
