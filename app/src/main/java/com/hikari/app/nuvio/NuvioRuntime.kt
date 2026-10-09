@@ -847,8 +847,6 @@ object NuvioRuntime {
         }
         return builder.build()
     }
-        return builder.build()
-    }
 
     /** The `{ok:true,...}` payload the harness turns into a Response, for a
      *  response that really arrived — plus the fetch-log line that makes a
