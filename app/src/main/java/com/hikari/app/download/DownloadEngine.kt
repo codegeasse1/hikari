@@ -1212,15 +1212,16 @@ object DownloadEngine {
                     return@use
                 }
                 if (!resp.isSuccessful) throw IOException("HTTP ${resp.code}")
-            val body = resp.body ?: throw IOException("Empty response body")
-            val len = body.contentLength()
-            if (len > MAX_MEM_SEGMENT) throw IOException("Segment too large to buffer")
-            val bytes = body.bytes()
-            return if (byteRange != null && resp.code == 206) {
-                val want = (byteRange.second - byteRange.first + 1).toInt()
-                if (bytes.size > want) bytes.copyOf(want) else bytes
-            } else {
-                bytes
+                val body = resp.body ?: throw IOException("Empty response body")
+                val len = body.contentLength()
+                if (len > MAX_MEM_SEGMENT) throw IOException("Segment too large to buffer")
+                val bytes = body.bytes()
+                return if (byteRange != null && resp.code == 206) {
+                    val want = (byteRange.second - byteRange.first + 1).toInt()
+                    if (bytes.size > want) bytes.copyOf(want) else bytes
+                } else {
+                    bytes
+                }
             }
         }
     }
