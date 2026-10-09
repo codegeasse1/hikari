@@ -44,6 +44,35 @@
 - Profile passwords are now asked when a locked profile is SELECTED or OPENED, never just for opening the app: launching into a locked profile opens the profile picker first, the launch gate's switcher asks a locked target's password inline, and switching itself refuses a locked target any caller did not unlock
 - Switching profiles no longer shows the previous profile's home catalogue: Home re-applies the store's own pick whenever a profile switch replaces it, so a profile only ever shows its own catalogue
 
+## 0.11.04
+
+### Added
+
+- Browser repo links open Hikari: tapping any extension-repo link (any *.json over http/https, plus stremio: links) now offers Hikari in Android's Open-with chooser, like CloudStream and Anymex. Picking it installs the link into the section its content belongs to (Stremio, Nuvio, SkyStream, CloudStream, Aniyomi, Vega, Anymex) and opens that repo's folder
+- Silent daily plugin auto-updates for CloudStream and Nuvio: installed extensions are re-checked against their repo manifests headlessly and swapped only when the manifest pins a verified different build — a bad publish restores the previous file instead of deleting a working extension
+- Nuvio plays like the NuvioMobile reference app (all providers, matching request layer)
+- CloudStream playback through CloudStream's own shared extraction client with each provider's verbatim referer/headers
+- Uniform server-row details (quality • HDR • codec • audio • size) parsed from what each provider states — never invented
+- Dual-audio language picker for Multi-Audio second servers
+- Episode UI & descriptions settings folder (default layout Auto / List / Grid / Cinematic, tile size, descriptions)
+- IPTV shelves draw cinema cards on phones, every shelf has its own in-place search, playlists group by Country (Groups → Language → Category → Country)
+- TV My Stuff without flicker (no pager), player top/bottom bars hide as one, title badges in pill style, External-player pill beside Enhance
+- Per-extension server-search timeout (20–100s) in Playback & Servers settings, big single-column cinema episode cards, unreleased episodes badged and unplayable, per-profile locks
+
+### Fixed
+
+- "No playable sources" for titles that play after an app restart: a wedged extension call held the provider gate forever and every later tap burned its whole budget behind it. Gates are bounded now, two consecutive no-answers trigger stall recovery with a fresh runtime, and the failing tap itself retries instead of failing
+- "No playable sources, plays on the 9th tap": cold origins are warmed with retries, pass verdicts are stamped per-pass, Nuvio gets its full 60s budget, the final read retries up to 8 times
+- Detail pages paint header and episodes within 3 seconds even when TMDB is slow
+- MovieLinkBD encrypted player pages decode directly; Fastream-class 403s gone via the interceptor-honoring client
+- Dead IPTV live links show the honest reason with an explicit search-my-other-playlists ask — no silent channel swaps, no endless "reconnecting"
+- Telegram videos resume on a deeper RAM-only cushion instead of stall-looping
+- TV remote single-press guarantee (a held OK no longer walks two screens deep), smooth TV navigation on low-RAM sticks, Shield black-screen failover
+- Seeks keep position everywhere (no restart-from-start), subtitle re-attach included
+- Downloads: HTTP 429 backoff, HTTP 428 fresh retry; `.tor` files recognized as torrents; backup and restore repaired
+- Extensions can no longer uninstall themselves on failed updates; profile snapshots re-save after provider changes
+- Locked profiles ask on every selection; switching profiles never shows the previous profile's catalogue; movies and series are never typed off a single signal again
+
 ## 0.11.03
 
 ### Added

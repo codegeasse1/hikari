@@ -162,7 +162,10 @@
              MainActivity and finishes (see RepoLinkActivity).
              Repo links are JSON files (repo.json, manifest.json, index.json,
              index.min.json, anime_index.json, …), hence the suffix match; the
-             stremio: scheme covers Stremio install links. -->
+             stremio: scheme covers Stremio install links. android:host="*" is
+             load-bearing on every http/https row: Android ignores a path
+             pattern when no host is set, which once kept this entry out of
+             the chooser entirely. -->
         <activity
             android:name=".deeplink.RepoLinkActivity"
             android:exported="true"
@@ -174,10 +177,10 @@
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="http" />
-                <data android:scheme="https" />
-                <data android:pathPattern=".*\\.json" />
-                <data android:pathPattern=".*\\.JSON" />
+                <data android:scheme="http" android:host="*" android:pathPattern=".*\\.json" />
+                <data android:scheme="http" android:host="*" android:pathPattern=".*\\.JSON" />
+                <data android:scheme="https" android:host="*" android:pathPattern=".*\\.json" />
+                <data android:scheme="https" android:host="*" android:pathPattern=".*\\.JSON" />
             </intent-filter>
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
