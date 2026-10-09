@@ -23,6 +23,7 @@ import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.TvSeriesLoadResponse
 import com.lagradost.cloudstream3.TvType
+import com.lagradost.cloudstream3.fixUrl
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -1342,7 +1343,11 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
 
     /** One load() attempt, treating a plugin crash as a miss (never throwing). */
     private suspend fun tryLoad(a: MainAPI, id: String): LoadResponse? = try {
-        a.load(id)
+        // Like the CloudStream app's own APIRepository.load: fix the url first
+        // (relative search urls become mainUrl-absolute; JSON data payloads
+        // pass through untouched), so every plugin gets exactly what it would
+        // get in the CloudStream app.
+        a.load(a.fixUrl(id))
     } catch (e: CancellationException) {
         throw e
     } catch (e: Throwable) {

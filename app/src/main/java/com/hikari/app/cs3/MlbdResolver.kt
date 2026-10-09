@@ -125,18 +125,24 @@ object MlbdResolver {
 
     /**
      * The page's encrypted player blob: `<script id="mlbdInlinePlayerData"
-     * data-s="<hex>" data-r="<rounds>"><base64></script>`, decoded with the
-     * same LCG the page's own script runs (see the site's
+     * type="application/json" data-s="<hex>" data-r="<rounds>"><base64></script>`,
+     * decoded with the same LCG the page's own script runs (see the site's
      * mlbd-details-player.js: `r = imul(r, 1103515245) + 12345`, per byte
      * `charCode ^ (r >>> 16 & 255)`).
+     *
+     * The params are read off the matched script TAG itself, in ANY attribute
+     * order — the site serves `data-s`/`data-r` after the id, and a
+     * behind-the-tag search for them silently yields nothing (which is exactly
+     * how a page full of streams reported "produced no stream links").
      */
     private fun extractBlob(html: String): String? {
-        val anchor = html.indexOf("mlbdInlinePlayerData")
-        if (anchor < 0) return null
-        val head = html.substring(maxOf(0, anchor - 900), anchor)
-        val sHex = Regex("""data-s=["']([0-9a-fA-F]+)["']""").find(head)?.groupValues?.getOrNull(1)
+        val tag = Regex(
+            """<script[^>]*id=["']mlbdInlinePlayerData["'][^>]*>""",
+            RegexOption.IGNORE_CASE,
+        ).find(html)?.value ?: return null
+        val sHex = Regex("""data-s=["']([0-9a-fA-F]+)["']""").find(tag)?.groupValues?.getOrNull(1)
             ?: return null
-        val rounds = Regex("""data-r=["'](\d+)["']""").find(head)?.groupValues?.getOrNull(1)
+        val rounds = Regex("""data-r=["'](\d+)["']""").find(tag)?.groupValues?.getOrNull(1)
             ?.toIntOrNull() ?: return null
         val body = Regex(
             """id=["']mlbdInlinePlayerData["'][^>]*>([\s\S]*?)</script>""",
