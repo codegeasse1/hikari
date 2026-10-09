@@ -292,6 +292,11 @@ object Cs3PluginManager {
         // `openSettings` callback later. Replaced on every reload/reinstall.
         plugins[path] = instance
 
+        // Snapshot before load so providers registered under ANY sourcePlugin value
+        // (or via a new registration path) are still found by diff below.
+        val beforeApis: Set<com.lagradost.cloudstream3.MainAPI> = try {
+            APIHolder.allProviders.toSet()
+        } catch (_: Throwable) { emptySet() }
         // Drop any earlier registrations from this exact file (reinstall).
         try {
             APIHolder.allProviders.removeAll { it.sourcePlugin == path }
@@ -357,9 +362,26 @@ object Cs3PluginManager {
             record("load() threw", e)
             return fail()
         }
-        // 6) collect the providers this plugin registered
+        // 6) collect the providers this plugin registered.
+        // Primary: exact sourcePlugin match (classic path via
+        // BasePlugin.registerMainAPI which stamps filename).
+        // Fallback 1: snapshot diff — any provider that appeared during THIS
+        // load, even if a rebuilt/new plugin stamped a different sourcePlugin
+        // (this is the CNC M3UPlaylistPlayer case: load() succeeds yet the
+        // exact-match filter comes up empty).
+        // Fallback 2: scan the plugin instance's own fields for MainAPI
+        // instances a custom registration path may have kept privately.
         val apis = try {
-            APIHolder.allProviders.filter { it.sourcePlugin == path }
+            val exact = APIHolder.allProviders.filter { it.sourcePlugin == path }
+            if (exact.isNotEmpty()) exact
+            else {
+                val fresh = APIHolder.allProviders.filter { it !in beforeApis }
+                if (fresh.isNotEmpty()) {
+                    // Repair the stamp so reinstalls/reloads stay clean.
+                    fresh.forEach { runCatching { it.sourcePlugin = path } }
+                    fresh
+                } else scanInstanceForProviders(instance, path)
+            }
         } catch (e: Throwable) {
             record("collecting providers failed", e)
             return fail()
@@ -396,10 +418,51 @@ object Cs3PluginManager {
             lastError = if (details.isNotBlank()) {
                 details
             } else {
-                "Plugin loaded but registered no providers"
+                // Never leave the generic line alone: include what WAS seen so a
+                // future new-registration path can be diagnosed from the message.
+                val total = runCatching { APIHolder.allProviders.size }.getOrDefault(-1)
+                "Plugin loaded but registered no providers " +
+                    "(manifest=${manifest.pluginClassName}, totalProviders=$total)"
             }
         }
         return apis
+    }
+
+    /**
+     * Last-resort provider discovery: some rebuilt plugins keep their MainAPI
+     * instance in a field and never hit the classic registration list under
+     * the expected stamp. Reflect over the plugin instance (and any List/Array
+     * fields) for MainAPI values, stamp them to this file, and publish them so
+     * the extension is usable like any other.
+     */
+    private fun scanInstanceForProviders(
+        instance: com.lagradost.cloudstream3.plugins.BasePlugin,
+        path: String,
+    ): List<MainAPI> {
+        val found = ArrayList<MainAPI>()
+        try {
+            var c: Class<*>? = instance.javaClass
+            while (c != null && c != Any::class.java) {
+                for (f in c.declaredFields) {
+                    try {
+                        f.isAccessible = true
+                        val v = f.get(instance) ?: continue
+                        when {
+                            v is MainAPI -> found.add(v)
+                            v is Collection<*> -> v.filterIsInstance<MainAPI>().forEach { found.add(it) }
+                            v is Array<*> -> v.filterIsInstance<MainAPI>().forEach { found.add(it) }
+                        }
+                    } catch (_: Throwable) { }
+                }
+                c = c.superclass
+            }
+        } catch (_: Throwable) { }
+        if (found.isEmpty()) return emptyList()
+        found.forEach { api ->
+            runCatching { api.sourcePlugin = path }
+            runCatching { APIHolder.allProviders.add(api) }
+        }
+        return found.distinctBy { it.javaClass.name + "#" + it.name }
     }
 
     /** True when the cached plugin instance exposes a settings screen. */

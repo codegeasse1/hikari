@@ -2,6 +2,11 @@
 
 ### Fixed
 
+- Universal CS3 video parity (all CloudStream extensions, CS3-only): signed-CDN session warm before first byte, Referer-mandatory hosts (Fastream/StreamWish/Filemoon/StreamTape family) never play bare — the header walk keeps Referer/UA instead of retrying the guaranteed-403 strip — plus the existing interceptor + plain-client path, so one Pelispedia-class 403 cannot recur on another extension
+- CloudStream plugin installs that reported "No CloudStream plugin loaded: Plugin loaded but registered no providers" (CNC M3UPlaylistPlayer et al): collection now falls back to snapshot-diff + instance field scan and repairs the sourcePlugin stamp, instead of trusting one exact-match filter — never recurs for any rebuilt/new registration path
+- Episode downloads failing "HTTP 428": resume/Range 428s retry once fresh without Range (direct + HLS text/bytes), so a precondition refusal no longer kills the episode
+- m3u8 playlist live channels not streaming: `#EXTVLCOPT:http-*` / Kodi stream headers are now parsed per channel and played with playlist-origin Referer + UA fallback, and `.ts`/`.m3u` are detected as HLS — headerless bare channel requests were the 403/stall class
+
 - CloudStream extensions now follow CloudStream app logic (CS3 path only — Nuvio, Hikari, Stremio and all other engines untouched): the plugin's own loadLinks is authoritative and waited out to its declared budget so the full server list lands instead of being cut off at first sight, the universal fallback and MovieBlast resolver only merge when the plugin finishes empty, and multi-page home catalogs fetch in parallel
 - A locked profile now asks for its password on EVERY selection: switching re-locks every other profile, and passwords typed for rename/delete/re-lock are one-time gates that re-lock immediately
 - I fixed MovieLinkBD still reporting "page parsed OK, but produced no stream links" on the current site layout: the player params (`data-s`/`data-r`) sit AFTER the blob tag's id, so the behind-the-tag search missed them and the safety net decoded nothing — verified against today's live page (decodes to real MLBD CDN file urls). They are now read off the tag itself in any attribute order. Also from the CloudStream repo's own APIRepository: `load()` now fixes urls first, exactly like the CloudStream app

@@ -67,6 +67,50 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
         fun videoInterceptorFor(streamUrl: String): okhttp3.Interceptor? =
             videoInterceptors[streamUrl]
 
+        /**
+         * Hosts whose CDN hotlink check REQUIRES a Referer (Fastream is the
+         * classic: `s40.fastream.to` 403s a bare request while the same URL
+         * plays with `Referer: https://fastream.to/`). The player's generic
+         * header walk (full → no-Referer → none) must NEVER strip Referer for
+         * these — stripping is what turns one terminal 403 into three.
+         */
+        fun isRefererMandatory(url: String): Boolean {
+            val host = url.substringAfter("://").substringBefore('/').substringBefore('?').lowercase()
+            if (host.isBlank()) return false
+            return host.contains("fastream") || host.contains("streamwish") ||
+                host.contains("wish") || host.contains("vidhide") ||
+                host.contains("filemoon") || host.contains("streamtape")
+        }
+
+        /**
+         * Playback-session warm for signed CDNs: the plugin's own extractor
+         * client owns the session cookies, not [com.hikari.app.net.PlayerHttp]'s
+         * jar. Hitting the embed origin once with the playback client seeds
+         * those cookies so the signed segment request is not a cold 403.
+         * Best-effort, bounded, never throws.
+         */
+        suspend fun warmPlaybackSession(streamUrl: String, headers: Map<String, String>) {
+            try {
+                val ref = headers.entries.firstOrNull { it.key.equals("Referer", true) }?.value
+                    ?.takeIf { it.startsWith("http") }
+                    ?: when {
+                        streamUrl.contains("fastream", true) -> "https://fastream.to/"
+                        else -> null
+                    } ?: return
+                withTimeoutOrNull(8_000) {
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        val req = okhttp3.Request.Builder().url(ref)
+                            .header("User-Agent", com.hikari.app.net.Http.UA)
+                            .header("Referer", ref)
+                            .build()
+                        runCatching {
+                            com.hikari.app.net.PlayerHttp.plainClient.newCall(req).execute().use { }
+                        }
+                    }
+                }
+            } catch (_: Throwable) { }
+        }
+
         /** How long the last loadLinks attempt took (ms) — proof the UI did something. */
         @Volatile
         var lastStreamsTimeMs: Long = 0L

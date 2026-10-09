@@ -578,42 +578,70 @@ object DownloadEngine {
         isCancelled: () -> Boolean,
     ) {
         val startAt = if (resume && byteRange == null && file.exists()) file.length() else 0L
-        val req = Request.Builder().url(url)
-        applyHeaders(req, headers, ua)
-        if (byteRange != null) {
-            req.header("Range", "bytes=${byteRange.first}-${byteRange.second}")
-        } else if (startAt > 0L) {
-            req.header("Range", "bytes=$startAt-")
-        }
-        PlayerHttp.client.newCall(req.build()).execute().use { resp ->
-            if (!resp.isSuccessful) throw IOException("HTTP ${resp.code}")
-            val body = resp.body ?: throw IOException("Empty response body")
-            val append = byteRange == null && startAt > 0L && resp.code == 206
-            if (!append && byteRange == null && file.exists()) file.delete()
-            val avail = body.contentLength()
-            val total = when {
-                byteRange != null -> byteRange.second - byteRange.first + 1
-                avail > 0 && append -> startAt + avail
-                avail > 0 -> avail
-                else -> -1L
+        // HTTP 428 (Precondition Required) means the CDN refused our conditional
+        // (Range) request — retry ONCE from scratch without Range instead of
+        // surfacing "Failed - HTTP 428" for an otherwise playable episode.
+        var triedFresh = false
+        var rangeStart: Long? = if (byteRange != null) null else if (startAt > 0L) startAt else null
+        // byteRange requests keep their exact range; resume requests may drop it.
+        while (true) {
+            val req = Request.Builder().url(url)
+            applyHeaders(req, headers, ua)
+            if (byteRange != null) {
+                req.header("Range", "bytes=${byteRange.first}-${byteRange.second}")
+            } else if (rangeStart != null && rangeStart!! > 0L) {
+                req.header("Range", "bytes=$rangeStart-")
             }
-            val cap = if (byteRange != null) byteRange.second - byteRange.first + 1 else Long.MAX_VALUE
-            var written = if (append) startAt else 0L
-            FileOutputStream(file, append).use { out ->
-                body.byteStream().use { input ->
-                    val buf = ByteArray(BUFFER)
-                    while (true) {
-                        if (isCancelled()) throw DownloadCancelledException()
-                        val room = (cap - written).coerceAtMost(buf.size.toLong()).toInt()
-                        if (room <= 0) break
-                        val n = input.read(buf, 0, room)
-                        if (n < 0) break
-                        out.write(buf, 0, n)
-                        written += n
-                        onBytes(written, total)
+            var code = -1
+            try {
+                PlayerHttp.client.newCall(req.build()).execute().use { resp ->
+                    code = resp.code
+                    if (code == 428 && !triedFresh && byteRange == null && rangeStart != null) {
+                        // Fall through to the fresh retry below.
+                        return@use
+                    }
+                    if (!resp.isSuccessful) throw IOException("HTTP ${resp.code}")
+                    val body = resp.body ?: throw IOException("Empty response body")
+                    val append = byteRange == null && rangeStart != null && rangeStart!! > 0L && resp.code == 206
+                    if (!append && byteRange == null && file.exists()) file.delete()
+                    val avail = body.contentLength()
+                    val total = when {
+                        byteRange != null -> byteRange.second - byteRange.first + 1
+                        avail > 0 && append -> rangeStart!! + avail
+                        avail > 0 -> avail
+                        else -> -1L
+                    }
+                    val cap = if (byteRange != null) byteRange.second - byteRange.first + 1 else Long.MAX_VALUE
+                    var written = if (append) rangeStart!! else 0L
+                    FileOutputStream(file, append).use { out ->
+                        body.byteStream().use { input ->
+                            val buf = ByteArray(BUFFER)
+                            while (true) {
+                                if (isCancelled()) throw DownloadCancelledException()
+                                val room = (cap - written).coerceAtMost(buf.size.toLong()).toInt()
+                                if (room <= 0) break
+                                val n = input.read(buf, 0, room)
+                                if (n < 0) break
+                                out.write(buf, 0, n)
+                                written += n
+                                onBytes(written, total)
+                            }
+                        }
                     }
                 }
+            } catch (e: IOException) {
+                // A thrown 428 (via fetch paths that throw) also falls through.
+                if (!e.message.orEmpty().contains("428") || triedFresh || byteRange != null) throw e
+                code = 428
             }
+            if (code == 428 && !triedFresh && byteRange == null) {
+                triedFresh = true
+                rangeStart = null
+                runCatching { if (file.exists()) file.delete() } // fresh, not resumed
+                kotlinx.coroutines.delay(400)
+                continue
+            }
+            return
         }
     }
 
@@ -1075,13 +1103,24 @@ object DownloadEngine {
         headers: Map<String, String>,
         ua: String,
     ): Pair<String, String> {
-        val req = Request.Builder().url(url)
-        applyHeaders(req, headers, ua)
-        PlayerHttp.client.newCall(req.build()).execute().use { resp ->
-            if (!resp.isSuccessful) throw IOException("HTTP ${resp.code}")
-            val body = resp.body?.string() ?: throw IOException("Empty response body")
-            return body to resp.request.url.toString()
+        // 428 once → tiny backoff + one retry (transient precondition/CDN hiccup).
+        var last: IOException? = null
+        repeat(2) { attempt ->
+            try {
+                val req = Request.Builder().url(url)
+                applyHeaders(req, headers, ua)
+                PlayerHttp.client.newCall(req.build()).execute().use { resp ->
+                    if (!resp.isSuccessful) throw IOException("HTTP ${resp.code}")
+                    val body = resp.body?.string() ?: throw IOException("Empty response body")
+                    return body to resp.request.url.toString()
+                }
+            } catch (e: IOException) {
+                last = e
+                if (!e.message.orEmpty().contains("428") || attempt > 0) throw e
+                try { Thread.sleep(400) } catch (_: Throwable) { }
+            }
         }
+        throw last ?: IOException("Empty response body")
     }
 
     private fun fetchBytes(
@@ -1090,10 +1129,21 @@ object DownloadEngine {
         ua: String,
         byteRange: Pair<Long, Long>? = null,
     ): ByteArray {
+        // Byte-range 428 → retry once WITHOUT Range (server refused precondition).
         val req = Request.Builder().url(url)
         applyHeaders(req, headers, ua)
         if (byteRange != null) req.header("Range", "bytes=${byteRange.first}-${byteRange.second}")
         PlayerHttp.client.newCall(req.build()).execute().use { resp ->
+            if (resp.code == 428 && byteRange != null) {
+                resp.close()
+                val fresh = Request.Builder().url(url)
+                applyHeaders(fresh, headers, ua)
+                PlayerHttp.client.newCall(fresh.build()).execute().use { r2 ->
+                    if (!r2.isSuccessful) throw IOException("HTTP ${r2.code}")
+                    val body = r2.body ?: throw IOException("Empty response body")
+                    return body.bytes()
+                }
+            }
             if (!resp.isSuccessful) throw IOException("HTTP ${resp.code}")
             val body = resp.body ?: throw IOException("Empty response body")
             val len = body.contentLength()

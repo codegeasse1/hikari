@@ -14,6 +14,10 @@ data class IptvChannel(
     val group: String = "",
     val tvgId: String? = null,
     val language: String = "",
+    /** Per-channel request headers from `#EXTVLCOPT:http-*` / `#KODIPROP`
+     *  lines (Referer / User-Agent / Cookie). Empty for plain playlists —
+     *  the provider falls back to the playlist origin + app UA. */
+    val headers: Map<String, String> = emptyMap(),
 )
 
 /**
@@ -78,13 +82,48 @@ object IptvPlaylist {
         val out = ArrayList<IptvChannel>()
         val seen = HashSet<String>()
         var pending: Pending? = null
+        var pendingHeaders: LinkedHashMap<String, String>? = null
         var lastAttrName: String? = null
+        fun takeHeaders(): Map<String, String> {
+            val h = pendingHeaders?.toMap().orEmpty()
+            pendingHeaders = null
+            return h
+        }
         for (rawLine in text.lineSequence()) {
             val line = rawLine.trim()
             if (line.isEmpty()) continue
             if (line.startsWith("#")) {
                 val upper = line.uppercase()
                 when {
+                    upper.startsWith("#EXTVLCOPT") -> {
+                        // `#EXTVLCOPT:http-referrer=…` / `http-user-agent=…` /
+                        // `http-cookie=…` / `http-header=Key: value` — the ONLY
+                        // reason some m3u8 channels play in VLC/TiviMate but
+                        // 403'd here (headers were dropped as "not channels").
+                        parseVlcOpt(line)?.let { (k, v) ->
+                            if (pendingHeaders == null) pendingHeaders = LinkedHashMap()
+                            // Later lines win; keep first-seen key casing.
+                            val existing = pendingHeaders!!.keys.firstOrNull { it.equals(k, true) }
+                            if (existing != null) pendingHeaders!!.remove(existing)
+                            pendingHeaders!![k] = v
+                        }
+                        continue
+                    }
+                    upper.startsWith("#KODIPROP") -> {
+                        // Kodi `inputstream.adaptive` props sometimes carry
+                        // `inputstream.adaptive.license_key` / stream headers.
+                        parseKodiProp(line)?.let { (k, v) ->
+                            if (k.equals("User-Agent", true) || k.equals("Referer", true) ||
+                                k.equals("Cookie", true) || k.equals("Origin", true)
+                            ) {
+                                if (pendingHeaders == null) pendingHeaders = LinkedHashMap()
+                                val existing = pendingHeaders!!.keys.firstOrNull { it.equals(k, true) }
+                                if (existing != null) pendingHeaders!!.remove(existing)
+                                pendingHeaders!![k] = v
+                            }
+                        }
+                        continue
+                    }
                     upper.startsWith("#EXTINF") -> {
                         val comma = line.lastIndexOf(',')
                         val head = if (comma >= 0) line.substring(0, comma) else line
@@ -121,7 +160,7 @@ object IptvPlaylist {
                         val g = line.substringAfter(':').trim()
                         if (g.isNotBlank()) pending = (pending ?: Pending(null, null, "", null, "")).copy(group = g)
                     }
-                    // #EXTM3U/#EXTVLCOPT/#KODIPROP/#EXT-X-…: not channels.
+                    // #EXTM3U/#EXT-X-…: not channels (VLCOPT/KODIPROP handled above).
                 }
                 continue
             }
@@ -129,6 +168,7 @@ object IptvPlaylist {
             val key = line
             if (!seen.add(key)) {
                 pending = null
+                pendingHeaders = null
                 continue
             }
             val name = pending?.name ?: nameFromUrl(line)
@@ -139,11 +179,62 @@ object IptvPlaylist {
                 group = pending?.group.orEmpty().trim(),
                 tvgId = pending?.tvgId,
                 language = pending?.language.orEmpty().trim(),
+                headers = takeHeaders(),
             )
             pending = null
             if (out.size >= max) break
         }
         return out
+    }
+
+    /** `#EXTVLCOPT:<key>=<value>` → canonical header pair, or null. */
+    private fun parseVlcOpt(line: String): Pair<String, String>? {
+        val body = line.substringAfter(":", "").trim()
+        if (body.isEmpty()) return null
+        val eq = body.indexOf('=')
+        if (eq <= 0) return null
+        val k = body.substring(0, eq).trim().lowercase()
+        val v = body.substring(eq + 1).trim().trim('"').trim()
+        if (v.isEmpty()) return null
+        return when {
+            k == "http-referrer" || k == "http-referer" || k == "referrer" || k == "referer" -> "Referer" to v
+            k == "http-user-agent" || k == "user-agent" -> "User-Agent" to v
+            k == "http-cookie" || k == "cookie" -> "Cookie" to v
+            k == "http-origin" || k == "origin" -> "Origin" to v
+            k.startsWith("http-header-") -> {
+                val name = k.removePrefix("http-header-").trim()
+                if (name.isEmpty()) null else name to v
+            }
+            k.startsWith("http-header:") -> {
+                val rest = v
+                val ci = rest.indexOf(':')
+                if (ci <= 0) null else rest.substring(0, ci).trim() to rest.substring(ci + 1).trim()
+            }
+            else -> null
+        }
+    }
+
+    /** `#KODIPROP:<k>=<v>` header-ish pairs, or null. */
+    private fun parseKodiProp(line: String): Pair<String, String>? {
+        val body = line.substringAfter(":", "").trim()
+        if (body.isEmpty()) return null
+        val eq = body.indexOf('=')
+        if (eq <= 0) return null
+        val k = body.substring(0, eq).trim()
+        val v = body.substring(eq + 1).trim()
+        if (v.isEmpty()) return null
+        // `inputstream.adaptive.stream_headers=Referer=…&User-Agent=…`
+        if (k.equals("inputstream.adaptive.stream_headers", true)) {
+            // Kept simple: first header in the &-joined list (usually Referer).
+            val first = v.split('&').firstOrNull()?.trim().orEmpty()
+            val ci = first.indexOf('=')
+            if (ci <= 0) return null
+            val name = first.substring(0, ci).trim()
+            val value = first.substring(ci + 1).trim()
+            if (name.isEmpty() || value.isEmpty()) return null
+            return name to value
+        }
+        return null
     }
 
     /** The group a channel is listed under, with the playlists that declare no

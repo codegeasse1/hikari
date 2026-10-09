@@ -758,7 +758,10 @@ class PlayerActivity : ComponentActivity() {
      *  1 = without Referer, 2 = no custom headers at all. Some CDNs (often
      *  Cloudflare-fronted) 403 a request that carries a Referer/Origin they
      *  don't expect even though the bare URL works in a browser — the player
-     *  walks these variants before giving up on a server. */
+     *  walks these variants before giving up on a server.
+     *  Hotlink-guarded hosts (Fastream et al — see
+     *  Cs3MainApiProvider.isRefererMandatory) are EXCLUDED from the walk: a
+     *  bare request there is a guaranteed 403, so variants 1/2 keep Referer. */
     private var headerVariant = 0
 
     /** True while the current source is retried with text tracks disabled
@@ -9887,9 +9890,18 @@ class PlayerActivity : ComponentActivity() {
         }
         lifecycleScope.launch {
             val clean = withKnownHotlinkReferer(src.url, sanitizeHeaders(src.headers))
+            val mandatoryRef = runCatching {
+                com.hikari.app.cs3.Cs3MainApiProvider.isRefererMandatory(src.url)
+            }.getOrDefault(false)
+            // Warm the signed-CDN session (cookies) before the first byte, CS3 only.
+            if (src.providerId.startsWith("cs3|")) {
+                try {
+                    com.hikari.app.cs3.Cs3MainApiProvider.warmPlaybackSession(src.url, clean)
+                } catch (_: Throwable) { }
+            }
             val headers = when (headerVariant) {
-                1 -> clean.filterKeys { !it.equals("Referer", ignoreCase = true) }
-                2 -> emptyMap()
+                1 -> if (mandatoryRef) clean else clean.filterKeys { !it.equals("Referer", ignoreCase = true) }
+                2 -> if (mandatoryRef) clean.filterKeys { it.equals("Referer", ignoreCase = true) || it.equals("User-Agent", ignoreCase = true) } else emptyMap()
                 else -> clean
             }
             val ua = headers["User-Agent"]?.takeIf { it.isNotBlank() } ?: Http.UA
@@ -10045,9 +10057,12 @@ class PlayerActivity : ComponentActivity() {
         // fine. Sanitizing here means a sloppy extension can never crash the
         // player, now or in the future.
         val cleanHeaders = withKnownHotlinkReferer(src.url, sanitizeHeaders(src.headers))
+        val mandatoryRef2 = runCatching {
+            com.hikari.app.cs3.Cs3MainApiProvider.isRefererMandatory(src.url)
+        }.getOrDefault(false)
         val sourceHeaders = when (headerVariant) {
-            1 -> cleanHeaders.filterKeys { !it.equals("Referer", ignoreCase = true) }
-            2 -> emptyMap()
+            1 -> if (mandatoryRef2) cleanHeaders else cleanHeaders.filterKeys { !it.equals("Referer", ignoreCase = true) }
+            2 -> if (mandatoryRef2) cleanHeaders.filterKeys { it.equals("Referer", ignoreCase = true) || it.equals("User-Agent", ignoreCase = true) } else emptyMap()
             else -> cleanHeaders
         }
         val ua = sourceHeaders["User-Agent"]?.takeIf { it.isNotBlank() } ?: Http.UA

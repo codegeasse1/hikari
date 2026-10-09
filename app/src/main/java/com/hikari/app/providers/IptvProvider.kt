@@ -392,12 +392,51 @@ class IptvProvider(override val config: ProviderConfig) : ContentProvider {
             StreamSource(
                 name = channel.name,
                 url = url,
-                isM3u8 = url.substringBefore('?').contains(".m3u8", ignoreCase = true),
+                headers = channelHeaders(channel),
+                isM3u8 = isHlsUrl(url),
+                isMpd = url.substringBefore('?').contains(".mpd", ignoreCase = true),
                 provider = ProviderType.IPTV.groupLabel,
                 providerId = config.id,
                 providerName = displayName,
             ),
         )
+    }
+
+    /** Lower-cased path without query, for container sniffing. */
+    private fun isHlsUrl(url: String): Boolean {
+        val u = url.substringBefore('?').lowercase()
+        return u.contains(".m3u8") || u.endsWith(".ts") || u.endsWith(".m3u")
+    }
+
+    /**
+     * Headers a channel plays with: the playlist's own `#EXTVLCOPT` headers
+     * first (the provider put them there because the CDN demands them), then
+     * the playlist origin as Referer fallback + desktop UA. Live HLS panels
+     * 403 bare requests the same way Fastream does — a headerless channel is
+     * the "m3u8 channels not streaming" report.
+     */
+    private fun channelHeaders(channel: IptvChannel): Map<String, String> {
+        val out = LinkedHashMap<String, String>()
+        channel.headers.forEach { (k, v) ->
+            if (k.isNotBlank() && v.isNotBlank()) out[k] = v
+        }
+        if (out.keys.none { it.equals("Referer", true) || it.equals("Referrer", true) }) {
+            runCatching {
+                val base = selfCheckUrl.trim()
+                val i = base.indexOf("://")
+                if (i > 0) {
+                    val host = base.substring(i + 3).substringBefore('/').substringBefore('?').substringBefore('#')
+                    if (host.isNotBlank()) {
+                        val scheme = base.substring(0, i + 3)
+                        out["Referer"] = "$scheme$host/"
+                    }
+                }
+            }
+        }
+        if (out.keys.none { it.equals("User-Agent", true) }) {
+            out["User-Agent"] = Http.UA
+        }
+        return out
     }
 
     override suspend fun getMeta(item: MediaItem): MediaItem = item
