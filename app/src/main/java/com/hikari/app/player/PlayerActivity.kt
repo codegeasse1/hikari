@@ -10794,6 +10794,16 @@ class PlayerActivity : ComponentActivity() {
      */
     private var liveFailoverSpentUrl: String = ""
 
+    /** The "search other playlists?" prompt for a dead live link (see
+     *  [failoverLiveChannel]) — one at a time, dismissed with the activity so
+     *  a rotation/destroy never leaks its window. */
+    private var liveAskDialog: android.app.AlertDialog? = null
+
+    private fun dismissLiveAskDialog() {
+        runCatching { liveAskDialog?.dismiss() }
+        liveAskDialog = null
+    }
+
     /**
      * A LIVE channel's last server just failed. Transient trouble (a timeout, a
      * dropped segment, a 5xx) still gets the classic treatment — a bounded run
@@ -10803,12 +10813,16 @@ class PlayerActivity : ComponentActivity() {
      * on the same dead URL and then showed a generic error, which is the
      * reported "Reconnecting to the live stream…" loop that never plays.
      *
-     * So for an unrecoverable failure, in order: (1) re-read the channel's OWN
-     * playlist — panels rotate these URLs (toffeelive, skygo, …), so the
-     * playlist usually already holds the working replacement; (2) look for the
-     * same channel in the other installed IPTV playlists (the cross-search
-     * family switch does not matter here — this is failover, not search); (3)
-     * only then show the honest, specific error. One hunt per URL.
+     * For an unrecoverable failure the player ASKS FIRST: a dialog shows the
+     * honest dead-link reason and offers to hunt the same channel in the other
+     * installed IPTV playlists. "Search" runs the hunt (own playlist's rotated
+     * link first, then siblings) and plays the feed it finds, or the honest
+     * error when nobody has one; "Close" (or dismissing the dialog) shows the
+     * honest error in the player. Nothing ever swaps to another playlist's
+     * feed silently under the tapped channel's name — that silent swap is the
+     * reported "I tapped Disney JR and a news channel played" class. One ask
+     * per URL: answering (either way) spends it, so a retry goes straight to
+     * the error instead of nagging again.
      */
     private fun failoverLiveChannel(details: String, code: Int) {
         val src = sources.getOrNull(currentIndex)
@@ -10837,8 +10851,89 @@ class PlayerActivity : ComponentActivity() {
             )
             return
         }
+        // Asked + answered (either way) spends the URL — a retry then goes
+        // straight to the honest error instead of nagging again.
         liveFailoverSpentUrl = src.url
-        val line = I18n.t("Channel link dead — looking for another feed…")
+        val deadMessage = liveDeadMessage(httpStatus, dnsDead, src.name)
+        com.hikari.app.data.Logs.log(
+            "Player",
+            "live stream \"${src.name}\" link is dead " +
+                "(http=${httpStatus ?: "?"}, dns=$dnsDead) — asking before any sibling hunt",
+        )
+        // No other IPTV playlist installed: there is nothing to search, so
+        // skip the question and show the honest error straight away.
+        lifecycleScope.launch {
+            val siblings = withContext(Dispatchers.IO) {
+                runCatching { (applicationContext as HikariApp).store.providers() }
+                    .getOrDefault(emptyList())
+                    .count {
+                        it.type == com.hikari.app.data.ProviderType.IPTV &&
+                            it.enabled && it.id != src.providerId
+                    }
+            }
+            if (isFinishing || isDestroyed) return@launch
+            // The user moved on (another channel, another server) while the
+            // count was running — the ask belongs to a dead context now.
+            val cur = sources.getOrNull(currentIndex)
+            if (cur == null || cur.url != src.url) return@launch
+            if (siblings <= 0) {
+                showError(deadMessage, false)
+                return@launch
+            }
+            askLiveSiblingSearch(src, deadMessage, httpStatus, dnsDead)
+        }
+    }
+
+    /**
+     * The ask before any cross-playlist hunt: shows WHY the tapped channel
+     * failed and lets the user choose. "Search" runs [runLiveAlternativeHunt]
+     * (own playlist's rotated link first, then siblings) and plays what it
+     * finds; "Close" — or dismissing the dialog any other way — shows the
+     * honest dead-link error in the player. Runs on the main thread.
+     */
+    private fun askLiveSiblingSearch(
+        src: PlayerSource,
+        deadMessage: String,
+        httpStatus: Int?,
+        dnsDead: Boolean,
+    ) {
+        dismissLiveAskDialog()
+        hideLoadingBanner(immediate = true)
+        var answered = false
+        fun answerYes() {
+            if (answered) return
+            answered = true
+            dismissLiveAskDialog()
+            runLiveAlternativeHunt(src, httpStatus, dnsDead)
+        }
+        fun answerNo() {
+            if (answered) return
+            answered = true
+            dismissLiveAskDialog()
+            if (!isFinishing && !isDestroyed) showError(deadMessage, false)
+        }
+        val question = I18n.t("Search for this channel in your other playlists?")
+        liveAskDialog = android.app.AlertDialog.Builder(this)
+            .setTitle(src.name)
+            .setMessage(deadMessage + "\n\n" + question)
+            .setPositiveButton(I18n.t("Search")) { _, _ -> answerYes() }
+            .setNegativeButton(I18n.t("Close")) { _, _ -> answerNo() }
+            .setOnCancelListener { answerNo() }
+            .create()
+        liveAskDialog?.show()
+    }
+
+    /**
+     * The hunt itself, only ever started from [askLiveSiblingSearch] after an
+     * explicit "Search": (1) re-read the channel's OWN playlist — panels
+     * rotate these URLs, so the playlist usually already holds the working
+     * replacement; (2) the same channel in the other installed IPTV playlists.
+     * Plays the feed it finds (logging whose it is, since the title keeps the
+     * tapped channel's name), else the honest error. Bails out when the user
+     * has since moved to another source.
+     */
+    private fun runLiveAlternativeHunt(src: PlayerSource, httpStatus: Int?, dnsDead: Boolean) {
+        val line = I18n.t("Searching other playlists for this channel…")
         coverPlaybackLine = line
         loadingStatus?.text = line
         loadingSpinnerStatus?.text = line
@@ -10847,16 +10942,14 @@ class PlayerActivity : ComponentActivity() {
         ) {
             showLoadingCover()
         }
-        com.hikari.app.data.Logs.log(
-            "Player",
-            "live stream \"${src.name}\" link is dead " +
-                "(http=${httpStatus ?: "?"}, dns=$dnsDead) — refreshing playlist + siblings",
-        )
         lifecycleScope.launch {
             val alt = withContext(Dispatchers.IO) {
                 withTimeoutOrNull(75_000L) { findLiveAlternative(src) }
             }
             if (isFinishing || isDestroyed) return@launch
+            // User switched source mid-hunt — don't stomp their new channel.
+            val cur = sources.getOrNull(currentIndex)
+            if (cur == null || cur.url != src.url) return@launch
             if (alt == null) {
                 showError(liveDeadMessage(httpStatus, dnsDead, src.name), false)
                 return@launch
@@ -14079,6 +14172,7 @@ class PlayerActivity : ComponentActivity() {
         dismissSlowDialog()
         dismissFailDialog()
         dismissSlowNetTip()
+        dismissLiveAskDialog()
         hudHideTask?.let { hudHandler.removeCallbacks(it) }
         hudHideTask = null
         SlowNetTip.onPlaybackEnd()

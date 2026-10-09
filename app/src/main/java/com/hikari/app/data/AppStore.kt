@@ -2457,7 +2457,7 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
         store.data.map { TileShapes.normalize(it[K.IPTV_SHAPE]) }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     fun normalizeIptvGroupMode(mode: String?): String =
-        if (mode == "language" || mode == "category") mode else "groups"
+        if (mode == "language" || mode == "category" || mode == "country") mode else "groups"
 
     suspend fun setIptvShape(shape: String) {
         write("IPTV_SHAPE") { it[K.IPTV_SHAPE] = TileShapes.normalize(shape) }
