@@ -14,6 +14,10 @@ data class IptvChannel(
     val group: String = "",
     val tvgId: String? = null,
     val language: String = "",
+    /** The playlist's own `tvg-country` (usually an ISO code like "BD"/"IN").
+     *  Empty when the playlist declares none — [countryOf] then falls back to
+     *  the channel/group name, so grouping by country still works. */
+    val country: String = "",
     /** Per-channel request headers from `#EXTVLCOPT:http-*` / `#KODIPROP`
      *  lines (Referer / User-Agent / Cookie). Empty for plain playlists —
      *  the provider falls back to the playlist origin + app UA. */
@@ -64,6 +68,7 @@ object IptvPlaylist {
         val group: String,
         val tvgId: String?,
         val language: String,
+        val country: String,
     )
 
     /**
@@ -153,12 +158,15 @@ object IptvPlaylist {
                         val lang = attrs["tvg-language"].orEmpty()
                             .ifBlank { attrs["language"].orEmpty() }
                             .trim()
-                        pending = Pending(name, logo, group, attrs["tvg-id"]?.takeIf { it.isNotBlank() }, lang)
+                        val country = attrs["tvg-country"].orEmpty()
+                            .ifBlank { attrs["country"].orEmpty() }
+                            .trim()
+                        pending = Pending(name, logo, group, attrs["tvg-id"]?.takeIf { it.isNotBlank() }, lang, country)
                     }
                     // The group can also sit on its own line AFTER the #EXTINF.
                     upper.startsWith("#EXTGRP:") -> {
                         val g = line.substringAfter(':').trim()
-                        if (g.isNotBlank()) pending = (pending ?: Pending(null, null, "", null, "")).copy(group = g)
+                        if (g.isNotBlank()) pending = (pending ?: Pending(null, null, "", null, "", "")).copy(group = g)
                     }
                     // #EXTM3U/#EXT-X-…: not channels (VLCOPT/KODIPROP handled above).
                 }
@@ -179,6 +187,7 @@ object IptvPlaylist {
                 group = pending?.group.orEmpty().trim(),
                 tvgId = pending?.tvgId,
                 language = pending?.language.orEmpty().trim(),
+                country = pending?.country.orEmpty().trim(),
                 headers = takeHeaders(),
             )
             pending = null
@@ -243,14 +252,15 @@ object IptvPlaylist {
 
     /** Grouping modes for a playlist page (see the IPTV tab): "groups" is the
      *  playlist's own `group-title` sections, "language" buckets channels by
-     *  spoken language, "category" by what they show. */
+     *  spoken language, "category" by what they show, "country" by origin. */
     fun normalizeGroupMode(mode: String?): String =
-        if (mode == "language" || mode == "category") mode else "groups"
+        if (mode == "language" || mode == "category" || mode == "country") mode else "groups"
 
     /** The tile a channel belongs to under [mode] (see [normalizeGroupMode]). */
     fun groupKey(c: IptvChannel, mode: String): String = when (normalizeGroupMode(mode)) {
         "language" -> languageOf(c)
         "category" -> categoryOf(c)
+        "country" -> countryOf(c)
         else -> groupOf(c)
     }
 
@@ -264,6 +274,85 @@ object IptvPlaylist {
         }
         return "Others"
     }
+
+    /** Where a channel is from: the playlist's own `tvg-country` first (usually
+     *  an ISO code — "BD", "IN", "US" — resolved below), then a name/group
+     *  match ("[BD]", "Bangla", "USA", …), else Others. */
+    fun countryOf(c: IptvChannel): String {
+        isoCountry(c.country)?.let { return it }
+        val n = " " + c.name.lowercase() + " " + c.group.lowercase() + " "
+        for ((label, keys) in COUNTRY_KEYS) {
+            for (k in keys) if (n.contains(k)) return label
+        }
+        return "Others"
+    }
+
+    /** Resolves a `tvg-country` value: a 2-letter ISO code maps through
+     *  [COUNTRY_CODES], anything longer is taken as a name already. */
+    private fun isoCountry(raw: String): String? {
+        val v = raw.trim()
+        if (v.isEmpty()) return null
+        if (v.length == 2) {
+            COUNTRY_CODES[v.uppercase()]?.let { return it }
+        }
+        return v.replaceFirstChar { it.uppercase() }.takeIf { it.isNotBlank() }
+    }
+
+    private val COUNTRY_CODES: Map<String, String> = mapOf(
+        "IN" to "India", "US" to "USA", "GB" to "UK", "UK" to "UK",
+        "BD" to "Bangladesh", "PK" to "Pakistan", "NP" to "Nepal",
+        "LK" to "Sri Lanka", "AE" to "UAE", "SA" to "Saudi Arabia",
+        "CA" to "Canada", "AU" to "Australia", "FR" to "France",
+        "DE" to "Germany", "ES" to "Spain", "IT" to "Italy",
+        "PT" to "Portugal", "NL" to "Netherlands", "RU" to "Russia",
+        "TR" to "Turkey", "CN" to "China", "JP" to "Japan",
+        "KR" to "South Korea", "ID" to "Indonesia", "MY" to "Malaysia",
+        "SG" to "Singapore", "PH" to "Philippines", "TH" to "Thailand",
+        "VN" to "Vietnam", "EG" to "Egypt", "ZA" to "South Africa",
+        "NG" to "Nigeria", "BR" to "Brazil", "MX" to "Mexico",
+        "AR" to "Argentina", "AF" to "Afghanistan", "IR" to "Iran",
+        "IQ" to "Iraq", "QA" to "Qatar", "KW" to "Kuwait",
+        "OM" to "Oman", "BH" to "Bahrain", "JO" to "Jordan",
+        "LB" to "Lebanon", "IL" to "Israel", "MM" to "Myanmar",
+    )
+
+    private val COUNTRY_KEYS: List<Pair<String, List<String>>> = listOf(
+        "India" to listOf("india", " hindi", "hindi ", "[in]", "(in)", " indian"),
+        "USA" to listOf("usa", "america", "[us]", "(us)", " united states"),
+        "UK" to listOf(" uk", "uk ", "britain", "british", "england", "[uk]", " london"),
+        "Bangladesh" to listOf("bangladesh", "bangla", "bengali", "[bd]", "(bd)", "bdix", " dhaka"),
+        "Pakistan" to listOf("pakistan", " pak ", "urdu", "[pk]", "(pk)", " lahore", " karachi"),
+        "Nepal" to listOf("nepal", "nepali", "[np]", "(np)"),
+        "Sri Lanka" to listOf("sri lanka", "srilanka", "[lk]", "(lk)"),
+        "UAE" to listOf("uae", "dubai", "arab emirates", "[ae]", "(ae)"),
+        "Saudi Arabia" to listOf("saudi", "ksa", "[sa]", "(sa)"),
+        "Canada" to listOf("canada", "canadian", "[ca]", "(ca)"),
+        "Australia" to listOf("australia", " aussie", "[au]", "(au)"),
+        "France" to listOf("france", "french", "français", "francais", "[fr]", "(fr)"),
+        "Germany" to listOf("germany", "german", "deutsch", "[de]", "(de)"),
+        "Spain" to listOf("spain", "spanish", "espana", "españa", "[es]", "(es)"),
+        "Italy" to listOf("italy", "italian", "[it]", "(it)"),
+        "Portugal" to listOf("portugal", "portuguese", "[pt]", "(pt)"),
+        "Netherlands" to listOf("netherlands", "dutch", "holland", "[nl]", "(nl)"),
+        "Russia" to listOf("russia", "russian", "[ru]", "(ru)"),
+        "Turkey" to listOf("turkey", "turkish", "turkiye", "türkiye", "[tr]", "(tr)"),
+        "China" to listOf("china", "chinese", "mandarin", "[cn]", "(cn)", "cctv"),
+        "Japan" to listOf("japan", "japanese", "nihon", "[jp]", "(jp)"),
+        "South Korea" to listOf("korea", "korean", "seoul", "[kr]", "(kr)"),
+        "Indonesia" to listOf("indonesia", "[id]", "(id)"),
+        "Malaysia" to listOf("malaysia", "[my]", "(my)"),
+        "Singapore" to listOf("singapore", "[sg]", "(sg)"),
+        "Philippines" to listOf("philippines", "filipino", "pinoy", "[ph]", "(ph)"),
+        "Thailand" to listOf("thailand", "thai ", "[th]", "(th)"),
+        "Vietnam" to listOf("vietnam", "[vn]", "(vn)"),
+        "Egypt" to listOf("egypt", "[eg]", "(eg)"),
+        "South Africa" to listOf("south africa", "[za]", "(za)"),
+        "Nigeria" to listOf("nigeria", "[ng]", "(ng)"),
+        "Brazil" to listOf("brazil", "brasil", "[br]", "(br)"),
+        "Mexico" to listOf("mexico", "[mx]", "(mx)"),
+        "Iran" to listOf("iran", "persian", "farsi", "[ir]", "(ir)"),
+        "Qatar" to listOf("qatar", "al jazeera", "aljazeera", "[qa]", "(qa)"),
+    )
 
     /** What a channel shows: Kids, News, Sports, Movies, Music, Entertainment,
      *  Documentary, Religious or Others — matched from its group and name, so

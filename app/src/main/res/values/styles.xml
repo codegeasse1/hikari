@@ -36,21 +36,24 @@
     <style name="HikariPlayerChip.Accent" parent="HikariPill.Accent" />
 
     <!-- Small metadata badges under the player title (episode / duration /
-         quality / source), matching the reference player's pill row. -->
+         quality / source). Same metrics as the pill row above and below them
+         (11dp bold, pill padding), so the title cluster reads as one strip
+         with the rest of the player chrome instead of a row of small tags. -->
     <style name="HikariBadge">
         <item name="android:layout_width">wrap_content</item>
         <item name="android:layout_height">wrap_content</item>
-        <item name="android:textSize">9.5dp</item>
+        <item name="android:textSize">11dp</item>
         <item name="android:textStyle">bold</item>
-        <item name="android:textColor">#F2FFFFFF</item>
+        <item name="android:textColor">#FFFFFFFF</item>
+        <item name="android:gravity">center</item>
         <item name="android:maxLines">1</item>
         <item name="android:ellipsize">end</item>
         <item name="android:background">@drawable/badge_glass</item>
         <item name="android:layout_marginEnd">4dp</item>
-        <item name="android:paddingStart">7dp</item>
-        <item name="android:paddingEnd">7dp</item>
-        <item name="android:paddingTop">2dp</item>
-        <item name="android:paddingBottom">2dp</item>
+        <item name="android:paddingStart">8dp</item>
+        <item name="android:paddingEnd">8dp</item>
+        <item name="android:paddingTop">4dp</item>
+        <item name="android:paddingBottom">4dp</item>
     </style>
 
     <!-- Accent badge: the highlighted one (video quality). -->

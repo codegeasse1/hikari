@@ -811,6 +811,29 @@ class HikariApp : Application() {
                     )
                 }
             }
+            // The active profile's snapshot must never predate an install:
+            // re-save it (debounced) whenever the provider list moves, so a
+            // later switch-away, data-clear or restore cannot vaporize
+            // extensions installed since the snapshot was taken (see
+            // Profiles.saveActive). Skips the initial emission; later ones are
+            // real changes.
+            appScope.launch {
+                var saveJob: kotlinx.coroutines.Job? = null
+                var first = true
+                providers.providers.collect {
+                    if (first) {
+                        first = false
+                        return@collect
+                    }
+                    saveJob?.cancel()
+                    saveJob = appScope.launch {
+                        kotlinx.coroutines.delay(10_000L)
+                        runCatching {
+                            com.hikari.app.data.Profiles.saveActive(this@HikariApp)
+                        }
+                    }
+                }
+            }
             providers.providers.value
                 .filterIsInstance<com.hikari.app.cs3.Cs3MainApiProvider>()
                 .forEach { it.warm() }

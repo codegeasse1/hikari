@@ -100,6 +100,11 @@ object NuvioAutoUpdate {
         // mapped to the exact bytes URL (manifest `scrapers`, like the
         // Extensions screen's own listing).
         val servedUrlFor = ConcurrentHashMap<String, String>()
+        // A loose identity (the branch-blind file key) can name TWO different
+        // files in one repo. This updater has no hash gate — a wrong download
+        // that still validates would SILENTLY REPLACE the provider — so a key
+        // claimed by more than one URL is ambiguous and never used for a swap.
+        val ambiguousKeys = ConcurrentHashMap.newKeySet<String>()
         coroutineScope {
             val gate = Semaphore(4)
             repos.map { repo ->
@@ -107,7 +112,8 @@ object NuvioAutoUpdate {
                     gate.withPermit {
                         for (url in fetchManifestEntries(repo.url)) {
                             for (key in SourceUrls.matchKeys(url)) {
-                                servedUrlFor.putIfAbsent(key, url)
+                                val prev = servedUrlFor.putIfAbsent(key, url)
+                                if (prev != null && prev != url) ambiguousKeys.add(key)
                             }
                         }
                     }
@@ -123,7 +129,7 @@ object NuvioAutoUpdate {
         for ((path, source) in installed) {
             if (updated >= MAX_UPDATES_PER_RUN) break
             val keys = SourceUrls.matchKeys(source)
-            val key = keys.firstOrNull { servedUrlFor.containsKey(it) } ?: continue
+            val key = keys.firstOrNull { servedUrlFor.containsKey(it) && it !in ambiguousKeys } ?: continue
             val downloadUrl = servedUrlFor[key] ?: continue
             if (updateOne(app, path, source, downloadUrl)) {
                 updated++

@@ -334,6 +334,23 @@ object Profiles {
     // ------------------------------------------------------------- public --
 
     /**
+     * Re-saves the ACTIVE profile's snapshot from the current setup. Called
+     * (debounced) whenever the installed-provider list changes, so a snapshot
+     * never predates an install: without this, a profile saved long ago and
+     * re-applied later — a switch-away, "Clear all data", a backup restore —
+     * silently dropped every extension installed since, which reads exactly
+     * like "my extensions uninstalled themselves". No-op when profiles have
+     * never been used.
+     */
+    suspend fun saveActive(app: HikariApp) = lock.withLock {
+        val ctx = app
+        val reg = readRegistry(ctx)
+        val id = reg.optString("active").trim().takeIf { it.isNotBlank() } ?: return@withLock
+        if (profilesOf(reg).none { it.id == id }) return@withLock
+        saveSnapshot(ctx, app, id)
+    }
+
+    /**
      * Reads the registry, and makes the store agree with it.
      *
      * The agreement check is the point: the registry lives in the app's files

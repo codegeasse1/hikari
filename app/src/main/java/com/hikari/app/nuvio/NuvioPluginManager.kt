@@ -103,15 +103,15 @@ object NuvioPluginManager {
     /**
      * Removes the Nuvio providers earlier builds pre-installed (see
      * [FORMERLY_SEEDED]), once per install. Repos are left alone — only the
-     * scrapers go, and only the exact files the old seeding named.
+     * scrapers go, and only a row that is BOTH from Yoru's repo under one of
+     * the four names AND still sitting on the bare file the old seeder wrote.
+     * A reinstall lands on a per-source stamped file name (see
+     * [installScraper]), so user installs never match the second condition.
      *
-     * Matched on the FILE, not the name: MovieBox (`moviebox.js`) and 4KHDHub
-     * also ship in the Hindi-Nuvio and All-in-One bundles seeded above, and a
-     * copy the user installed from one of those is theirs to keep. Only a
-     * provider whose stored source URL resolves inside Yoru's repo AND whose
-     * file name is one of the four is removed (the URL identity helpers are the
-     * same ones the Extensions screen's install/uninstall use, so a
-     * `refs/heads`/jsDelivr respelling of the same file still matches).
+     * Matched on the source FILE, not the display name: MovieBox (`moviebox.js`)
+     * also ships in the Hindi-Nuvio and All-in-One bundles, and a copy the
+     * user installed from one of those is theirs to keep (different repo, no
+     * match — and a stamped local file, no match either).
      */
     suspend fun removeFormerlySeededProviders(context: Context) {
         val store = HikariApp.instance.store
@@ -122,7 +122,14 @@ object NuvioPluginManager {
         val targets = store.providers().filter { cfg ->
             if (cfg.type != ProviderType.NUVIO) return@filter false
             val key = SourceUrls.fileKey(cfg.extra ?: "") ?: return@filter false
-            key.startsWith("$SEED_REPO/") && key.substringAfterLast('/') in FORMERLY_SEEDED
+            if (!key.startsWith("$SEED_REPO/")) return@filter false
+            val seededName = key.substringAfterLast('/')
+            if (seededName !in FORMERLY_SEEDED) return@filter false
+            // Only the file the old seeder itself wrote (bare name): installs
+            // land on per-source stamped names now, so a user's reinstall is
+            // immune to this sweep by construction — only a leftover of the
+            // old seeding is ever taken back.
+            File(cfg.url).name == seededName
         }
         if (targets.isNotEmpty()) {
             val ids = targets.map { it.id }.toSet()
@@ -147,7 +154,10 @@ object NuvioPluginManager {
     }
 
     /** Writes a scraper JS file and registers it as a NUVIO provider. The
-     *  provider code is validated inside the runtime before being accepted. */
+     *  provider code is validated before anything installed is touched, and
+     *  the file carries a per-source stamp in its name (like the CS3/Hiki
+     *  installers): two repos' providers often share a file name, and without
+     *  the stamp the second install overwrote the first's file. */
     suspend fun installScraper(
         context: Context,
         bytes: ByteArray,
@@ -163,36 +173,60 @@ object NuvioPluginManager {
         // bytes are passed so the patch is content-gated (a same-named but
         // different build is never clobbered).
         val effective = patchedBytes(sourceUrl, bytes) ?: bytes
-        val clean = rawName.substringAfterLast('/').ifBlank { "provider.js" }
-            .let { if (it.endsWith(".js", true)) it else "$it.js" }
-        val file = File(scrapersDir(context), clean)
-        file.setWritable(true)
-        val wrote = runCatching { file.writeBytes(effective) }
+        val base = rawName.substringAfterLast('/').ifBlank { "provider" }
+            .let { if (it.endsWith(".js", true)) it.dropLast(3) else it }
+            .trim().ifBlank { "provider" }
+        // Per-source file identity: two repos publishing `moviebox.js` must
+        // not share one file (the second install overwrote the first, and
+        // uninstalling either deleted the other's code). A stamped name also
+        // never matches the formerly-seeded sweep's bare file names, so a
+        // reinstall is immune to that sweep by construction.
+        val clean = if (sourceUrl.isNullOrBlank()) "$base.js"
+        else "$base-${shortHash(SourceUrls.canonical(sourceUrl))}.js"
+        val dir = scrapersDir(context)
+        val file = File(dir, clean)
+        // Validate BEFORE touching the installed file: the old code overwrote
+        // it first and deleted it when the new bytes failed validation, so a
+        // failed update destroyed the working extension.
+        val tmp = File(dir, "$clean.tmp")
+        tmp.setWritable(true)
+        val wrote = runCatching { tmp.writeBytes(effective) }
         if (wrote.isFailure) {
+            runCatching { tmp.delete() }
             return@withContext Result.failure(
                 Exception("Could not write scraper file: ${wrote.exceptionOrNull()?.message}")
             )
         }
-        val source = runCatching { file.readText() }.getOrNull()
+        val source = runCatching { tmp.readText() }.getOrNull()
         if (source.isNullOrBlank()) {
-            file.delete()
+            runCatching { tmp.delete() }
             return@withContext Result.failure(Exception("Scraper file is empty"))
         }
         // Load the module in a pooled WebView to confirm it exports getStreams.
         val verdict = NuvioRuntime.validate(context, source)
         if (!verdict.startsWith("OK")) {
-            file.delete()
+            runCatching { tmp.delete() }
             val detail = if (verdict.startsWith("ERR:")) verdict.removePrefix("ERR:").take(300)
             else "no getStreams export found"
             return@withContext Result.failure(
                 Exception("Not a valid nuvio provider: $detail")
             )
         }
+        file.setWritable(true)
+        var committed = tmp.renameTo(file)
+        if (!committed) {
+            runCatching { file.delete() }
+            committed = tmp.renameTo(file)
+        }
+        runCatching { tmp.delete() }
+        if (!committed) {
+            return@withContext Result.failure(Exception("Could not install scraper file"))
+        }
         val id = "nuvio|" + clean.hashCode()
         HikariApp.instance.store.addProvider(
             ProviderConfig(
                 id = id,
-                name = clean.removeSuffix(".js"),
+                name = base,
                 type = ProviderType.NUVIO,
                 url = file.absolutePath,
                 iconUrl = iconUrl,
@@ -200,7 +234,38 @@ object NuvioPluginManager {
             )
         )
         HikariApp.instance.providers.refresh()
+        // One source must never leave two copies behind: an install that
+        // follows a pre-stamp-era file (bare name) drops that old row and its
+        // file once nothing references it — the CS3 path does the same.
+        if (!sourceUrl.isNullOrBlank()) {
+            val wanted = SourceUrls.matchKeys(sourceUrl).toSet()
+            val stale = HikariApp.instance.store.providers().filter {
+                it.type == ProviderType.NUVIO && it.url != file.absolutePath &&
+                    it.extra != null && SourceUrls.matchKeys(it.extra).any { k -> k in wanted }
+            }
+            if (stale.isNotEmpty()) {
+                val stalePaths = stale.map { it.url }.toSet()
+                HikariApp.instance.store.updateProviders { list ->
+                    list.filterNot { it.type == ProviderType.NUVIO && it.url in stalePaths }
+                }
+                HikariApp.instance.providers.refresh()
+                val keep = HikariApp.instance.store.providers().map { it.url }.toSet()
+                val root = context.filesDir.absolutePath
+                stalePaths.forEach { p ->
+                    if (p.startsWith(root) && p !in keep) {
+                        runCatching { File(p).delete() }
+                    }
+                }
+            }
+        }
         Result.success(1)
+    }
+
+    /** A short, stable, filename-safe digest — the per-source stamp (mirrors
+     *  the Extensions screen's own). */
+    private fun shortHash(s: String): String {
+        val md = java.security.MessageDigest.getInstance("SHA-1")
+        return md.digest(s.toByteArray()).joinToString("") { "%02x".format(it) }.take(8)
     }
 
     /** Removes every NUVIO provider that came from [sourceUrl] (and its file).

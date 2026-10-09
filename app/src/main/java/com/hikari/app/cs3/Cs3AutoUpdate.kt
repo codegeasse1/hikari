@@ -99,6 +99,11 @@ object Cs3AutoUpdate {
         // Extensions screen's own check).
         val servedHashes = ConcurrentHashMap<String, String>()
         val servedUrlFor = ConcurrentHashMap<String, String>()
+        // A loose identity (the branch-blind file key) can name TWO different
+        // files in one repo. First-wins would then pin the wrong hash/URL and
+        // either churn or swap in the wrong file — so a key claimed by more
+        // than one URL is ambiguous and never used for a silent swap.
+        val ambiguousKeys = ConcurrentHashMap.newKeySet<String>()
         coroutineScope {
             val gate = Semaphore(4)
             repos.map { repo ->
@@ -107,7 +112,8 @@ object Cs3AutoUpdate {
                         for ((url, hash) in fetchManifestEntries(repo.url)) {
                             for (key in SourceUrls.matchKeys(url)) {
                                 servedHashes.putIfAbsent(key, hash)
-                                servedUrlFor.putIfAbsent(key, url)
+                                val prev = servedUrlFor.putIfAbsent(key, url)
+                                if (prev != null && prev != url) ambiguousKeys.add(key)
                             }
                         }
                     }
@@ -123,7 +129,7 @@ object Cs3AutoUpdate {
         for ((path, source) in installed) {
             if (updated >= MAX_UPDATES_PER_RUN) break
             val keys = SourceUrls.matchKeys(source)
-            val key = keys.firstOrNull { servedHashes.containsKey(it) } ?: continue
+            val key = keys.firstOrNull { servedHashes.containsKey(it) && it !in ambiguousKeys } ?: continue
             val expected = servedHashes[key]?.removePrefix("sha256-")?.lowercase() ?: continue
             if (!expected.matches(Regex("[0-9a-f]{64}"))) continue
             val actual = sha256File(path) ?: continue

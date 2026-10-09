@@ -1107,15 +1107,31 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         else "$base-${shortHash(SourceUrls.canonical(sourceUrl))}.hiki"
         val dir = File(getApplication<Application>().filesDir, "hiki").apply { mkdirs() }
         val file = File(dir, clean)
-        file.setWritable(true)
-        val wrote = runCatching { file.writeBytes(bytes) }
+        // Trial-load against a temp copy first (see installCs3Bytes): a failed
+        // load must never delete the working extension.
+        val tmp = File(dir, "$clean.tmp")
+        tmp.setWritable(true)
+        val wrote = runCatching { tmp.writeBytes(bytes) }
         if (wrote.isFailure) {
+            runCatching { tmp.delete() }
             return Result.failure(Exception("Could not write extension file: ${wrote.exceptionOrNull()?.message}"))
         }
 
-        val providers = HikariPluginManager.reload(getApplication<Application>(), file)
+        fun commitTmp(): Boolean {
+            file.setWritable(true)
+            var committed = tmp.renameTo(file)
+            if (!committed) {
+                runCatching { file.delete() }
+                committed = tmp.renameTo(file)
+            }
+            runCatching { tmp.delete() }
+            if (committed) file.setWritable(true)
+            return committed
+        }
+
+        val providers = HikariPluginManager.reload(getApplication<Application>(), tmp)
         if (providers.isEmpty()) {
-            file.delete()
+            runCatching { tmp.delete() }
             val detail = HikariPluginManager.lastError?.take(600)
             return Result.failure(
                 Exception(
@@ -1124,6 +1140,10 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 )
             )
         }
+        if (!commitTmp()) {
+            return Result.failure(Exception("Could not install extension file"))
+        }
+        HikariPluginManager.reload(getApplication<Application>(), file)
         var added = 0
         providers.forEachIndexed { i, p ->
             val id = "hiki|" + clean.hashCode() + "|" + i
@@ -1211,20 +1231,42 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         else "$base-${shortHash(SourceUrls.canonical(sourceUrl))}.cs3"
         val dir = File(getApplication<Application>().filesDir, "cs3").apply { mkdirs() }
         val file = File(dir, clean)
-        file.setWritable(true)
-        val wrote = runCatching { file.writeBytes(bytes) }
+        // Validate BEFORE touching the installed file: the old code overwrote
+        // it first and deleted it when the new bytes failed to load, so a
+        // failed update/reinstall destroyed the working extension. The trial
+        // load runs against a temp copy; only loaded bytes are renamed in.
+        val tmp = File(dir, "$clean.tmp")
+        tmp.setWritable(true)
+        val wrote = runCatching { tmp.writeBytes(bytes) }
         if (wrote.isFailure) {
+            runCatching { tmp.delete() }
             return Result.failure(Exception("Could not write plugin file: ${wrote.exceptionOrNull()?.message}"))
         }
 
-        val apis = Cs3PluginManager.reload(getApplication<Application>(), file)
+        // Commits the trial bytes as the installed file (temp → final).
+        fun commitTmp(): Boolean {
+            file.setWritable(true)
+            var committed = tmp.renameTo(file)
+            if (!committed) {
+                runCatching { file.delete() }
+                committed = tmp.renameTo(file)
+            }
+            runCatching { tmp.delete() }
+            if (committed) file.setWritable(true)
+            return committed
+        }
+
+        val apis = Cs3PluginManager.reload(getApplication<Application>(), tmp)
         if (apis.isEmpty()) {
             // Settings-driven plugins (M3U playlist managers): load() succeeded
             // but zero providers until the user configures them via settings —
             // CloudStream installs those fine. Keep the file and register a
             // setup placeholder so the row shows Uninstall + settings gear;
             // Cs3ProviderSync replaces it with real providers after setup.
-            if (Cs3PluginManager.hasSettings(file)) {
+            if (Cs3PluginManager.hasSettings(tmp)) {
+                if (!commitTmp()) {
+                    return Result.failure(Exception("Could not install plugin file"))
+                }
                 val setupId = "cs3|" + clean.hashCode() + "|setup"
                 store.addProvider(
                     ProviderConfig(
@@ -1239,7 +1281,7 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 requestRefresh()
                 return Result.success(1)
             }
-            file.delete()
+            runCatching { tmp.delete() }
             val detail = Cs3PluginManager.lastError?.take(600)
             return Result.failure(
                 Exception(
@@ -1248,8 +1290,19 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 )
             )
         }
+        // The trial load above registered the TEMP path: commit the bytes as
+        // the installed file, then load that path for real (one extra dex load
+        // at install time). The temp instance lingers in memory only — no row
+        // ever points at the temp path, so it can never serve stale code.
+        if (!commitTmp()) {
+            return Result.failure(Exception("Could not install plugin file"))
+        }
+        val finalApis = Cs3PluginManager.reload(getApplication<Application>(), file)
+        if (finalApis.isEmpty()) {
+            return Result.failure(Exception("No CloudStream plugin found in this .cs3 file"))
+        }
         var added = 0
-        apis.forEachIndexed { i, api ->
+        finalApis.forEachIndexed { i, api ->
             val name = api.name.ifBlank { base }
             val id = "cs3|" + clean.hashCode() + "|" + i
             store.addProvider(

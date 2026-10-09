@@ -885,6 +885,7 @@ fun IptvPlaylistScreen(nav: NavHostController, providerId: String) {
                     .replaceFirst("%s", when (IptvPlaylist.normalizeGroupMode(groupMode)) {
                         "language" -> tr("languages")
                         "category" -> tr("categories")
+                        "country" -> tr("countries")
                         else -> tr("groups")
                     })
             },
@@ -923,14 +924,16 @@ fun IptvPlaylistScreen(nav: NavHostController, providerId: String) {
                 value = tr("Grouped by: %s").replace("%s", when (IptvPlaylist.normalizeGroupMode(groupMode)) {
                     "language" -> tr("Language")
                     "category" -> tr("Category")
+                    "country" -> tr("Country")
                     else -> tr("Groups")
                 }),
-                supporting = tr("Group this playlist by its sections, language or category"),
+                supporting = tr("Group this playlist by its sections, language, category or country"),
                 leadingIcon = Icons.Filled.FolderOpen,
                 onClick = {
                     val next = when (IptvPlaylist.normalizeGroupMode(groupMode)) {
                         "groups" -> "language"
                         "language" -> "category"
+                        "category" -> "country"
                         else -> "groups"
                     }
                     scope.launch { app.store.setIptvGroupMode(next) }
@@ -1209,6 +1212,7 @@ private suspend fun readGroups(p: IptvProvider, mode: String): List<IptvGroupTil
                 catalogId = when (m) {
                     "language" -> IptvProvider.catalogIdForLanguage(group)
                     "category" -> IptvProvider.catalogIdForCategory(group)
+                    "country" -> IptvProvider.catalogIdForCountry(group)
                     else -> IptvProvider.catalogIdForGroup(group)
                 },
                 count = channels.size,

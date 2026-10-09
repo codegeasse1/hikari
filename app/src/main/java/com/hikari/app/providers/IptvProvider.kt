@@ -87,12 +87,16 @@ class IptvProvider(override val config: ProviderConfig) : ContentProvider {
          *  Home, so the tab can bucket channels without a second code path. */
         private const val LANG_PREFIX = "iptv-lang:"
         private const val CAT_PREFIX = "iptv-cat:"
+        private const val COUNTRY_PREFIX = "iptv-country:"
 
         /** The catalog id of one language bucket's shelf. */
         fun catalogIdForLanguage(language: String): String = LANG_PREFIX + language
 
         /** The catalog id of one category bucket's shelf. */
         fun catalogIdForCategory(category: String): String = CAT_PREFIX + category
+
+        /** The catalog id of one country bucket's shelf. */
+        fun catalogIdForCountry(country: String): String = COUNTRY_PREFIX + country
 
         /**
          * Drops everything remembered about a removed playlist — its last
@@ -320,6 +324,7 @@ class IptvProvider(override val config: ProviderConfig) : ContentProvider {
             ref.id.startsWith(GROUP_PREFIX) -> groupChannels(all, ref.id.removePrefix(GROUP_PREFIX))
             ref.id.startsWith(LANG_PREFIX) -> all.filter { IptvPlaylist.languageOf(it) == ref.id.removePrefix(LANG_PREFIX) }
             ref.id.startsWith(CAT_PREFIX) -> all.filter { IptvPlaylist.categoryOf(it) == ref.id.removePrefix(CAT_PREFIX) }
+            ref.id.startsWith(COUNTRY_PREFIX) -> all.filter { IptvPlaylist.countryOf(it) == ref.id.removePrefix(COUNTRY_PREFIX) }
             else -> emptyList()
         }
         if (list.isEmpty()) return emptyList()

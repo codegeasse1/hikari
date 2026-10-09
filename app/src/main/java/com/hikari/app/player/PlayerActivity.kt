@@ -90,6 +90,7 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy
 import androidx.media3.ui.AspectRatioFrameLayout
+import androidx.media3.ui.PlayerControlView
 import androidx.media3.ui.PlayerView
 import androidx.media3.ui.SubtitleView
 import coil.load
@@ -1424,6 +1425,17 @@ class PlayerActivity : ComponentActivity() {
         applySubtitleStyle()
         // YouTube-style: fade the controls out after 3s instead of media3's 5s.
         playerView?.controllerShowTimeoutMs = 3000
+        // One synchronous hide for the top AND bottom bars. media3 1.7's
+        // controller hides in STAGES (PlayerControlViewLayoutManager: the main
+        // bars fade, then the whole view goes GONE a full ANIMATION_INTERVAL_MS
+        // = 2s later) — and our custom top bar is not in its fade set, so it
+        // sat on screen ~2s after the bottom bar had gone. With animation off,
+        // hide() takes the whole controller at once and the 3s timeout above
+        // still applies; the visibility mirror below keeps firing either way.
+        runCatching {
+            (playerView?.findViewById<View>(androidx.media3.ui.R.id.exo_controller) as? PlayerControlView)
+                ?.isAnimationEnabled = false
+        }
         // Keep our own mirror of the controller visibility (media3's
         // PlayerControlView field is private) for the tap-to-toggle logic.
         playerView?.setControllerVisibilityListener(object : PlayerView.ControllerVisibilityListener {
@@ -10002,14 +10014,23 @@ class PlayerActivity : ComponentActivity() {
      * Start/resume thresholds keep media3's snappy defaults (1 s to start,
      * 2 s to resume after a stall): a longer resume threshold would only make
      * the spinner itself last longer.
+     *
+     * Telegram videos ([isTd]) ride MTProto instead of HTTP: no CDN, bursty
+     * throughput that often dips under the bitrate mid-play. Starting is
+     * already fast (TdFileDataSource primes 128KB, not the whole window), so
+     * what "buffers too much" means there is the STALL LOOP — resume on 2s of
+     * media, stall again seconds later. The TD policy keeps the 1s start but
+     * resumes only on an 8s cushion inside a deeper RAM buffer, so one dip
+     * costs one pause instead of ten. RAM only: TDLib's on-disk store and the
+     * video quality are untouched.
      */
-    private fun buildLoadControl(): DefaultLoadControl =
+    private fun buildLoadControl(isTd: Boolean = false): DefaultLoadControl =
         DefaultLoadControl.Builder()
             .setBufferDurationsMs(
-                60_000,   // minBufferMs — the steady-state bank to keep topped up
-                150_000,  // maxBufferMs — ceiling when the link can outrun playback
+                if (isTd) 90_000 else 60_000,   // minBufferMs — the steady-state bank to keep topped up
+                if (isTd) 180_000 else 150_000, // maxBufferMs — ceiling when the link can outrun playback
                 1_000,    // bufferForPlaybackMs — how little we need to start
-                2_000,    // bufferForPlaybackAfterRebufferMs — how little to resume
+                if (isTd) 8_000 else 2_000,     // bufferForPlaybackAfterRebufferMs — how little to resume
             )
             .build()
 
@@ -10200,6 +10221,20 @@ class PlayerActivity : ComponentActivity() {
         dismissSlowDialog()
         currentIndex = index
         val src = sources[index]
+        // A new URL re-arms the live alternative-feed hunt; re-opens of the
+        // same URL keep its spent mark (see liveFailoverSpentUrl).
+        if (src.url != lastPlayedUrl) liveFailoverSpentUrl = ""
+        // A Telegram video's cold-start cost is resolving the file reference
+        // and pulling the first chunk over MTProto. Tapping a video prewarms
+        // it, but deep links / resumes / server switches skip that tap — so
+        // kick it here too. Idempotent (Td.request replaces same-offset work),
+        // and the player's own window request supersedes it at the same offset.
+        if (src.url.startsWith("hikari-td:")) {
+            runCatching {
+                val id = com.hikari.app.telegram.TdFileDataSource.fileIdOf(src.url)
+                if (id != 0) com.hikari.app.telegram.Td.prewarm(id)
+            }
+        }
         // Remember what we've actually handed to ExoPlayer this session — a
         // later re-extraction usually repeats most of these URLs, and freshIndex
         // must not pick one we already know dies.
@@ -10383,8 +10418,9 @@ class PlayerActivity : ComponentActivity() {
                     )
             )
             .setMediaSourceFactory(mediaSourceFactory)
-            // Deep-buffer, stall-resistant buffering policy — see buildLoadControl.
-            .setLoadControl(buildLoadControl())
+            // Deep-buffer, stall-resistant buffering policy — Telegram videos
+            // get the MTProto-tuned variant (see buildLoadControl).
+            .setLoadControl(buildLoadControl(src.url.startsWith("hikari-td:")))
             // Hold the CPU + Wi-Fi radio awake for the whole session (including
             // PiP/background audio). A radio that drops into power-save
             // mid-stream is a classic "it randomly stops to buffer" cause on
@@ -10690,7 +10726,14 @@ class PlayerActivity : ComponentActivity() {
             "live stream \"${src.name}\" has not started — re-opening " +
                 "($liveStartRetries/$maxLiveStartRetries)",
         )
-        Toast.makeText(this, I18n.t("Reconnecting to the live stream…"), Toast.LENGTH_SHORT).show()
+        // The cover already says this whenever it is up (see below) — a toast
+        // on top of it is the doubled "Reconnecting…" indicator, so the toast
+        // only fires when no cover is visible to carry the message.
+        if (loadingBanner?.visibility != View.VISIBLE &&
+            loadingSpinner?.visibility != View.VISIBLE
+        ) {
+            Toast.makeText(this, I18n.t("Reconnecting to the live stream…"), Toast.LENGTH_SHORT).show()
+        }
         // A full re-open: a fresh connection, a fresh playlist read. For live
         // HLS that is the cure for a stalled segment fetch, and it never costs
         // the user their place in anything (a live channel has no position to
@@ -10735,7 +10778,201 @@ class PlayerActivity : ComponentActivity() {
             retryLiveStart(liveStartBudgetMs)
         }
         liveReconnectTask = task
-        bufferingWatchdog.postDelayed(task, liveReconnectDelayMs)
+        // Back off between re-opens (3s, 6s, 9s, then 12s): hammering a dead
+        // host every 3s helped nothing and kept the "Reconnecting…" loop
+        // spinning hot while the panel was down.
+        val done = if (liveStartRetryIndex == currentIndex) liveStartRetries else 0
+        val delay = liveReconnectDelayMs * (done + 1).coerceAtMost(4)
+        bufferingWatchdog.postDelayed(task, delay)
+    }
+
+    /**
+     * The dead URL this channel already burned its alternative-feed attempt on
+     * (see [failoverLiveChannel]). Re-opens keep the same URL, so matching it
+     * here is what stops a second 45s playlist hunt for a link already proven
+     * unfixable; a new URL (another channel, a swapped feed) re-arms the hunt.
+     */
+    private var liveFailoverSpentUrl: String = ""
+
+    /**
+     * A LIVE channel's last server just failed. Transient trouble (a timeout, a
+     * dropped segment, a 5xx) still gets the classic treatment — a bounded run
+     * of fresh connections. But a link that is dead on arrival (DNS does not
+     * resolve, the playlist URL 404s/403s, the host refuses the connection)
+     * can never be fixed by re-opening it: the old code burned all 6 re-opens
+     * on the same dead URL and then showed a generic error, which is the
+     * reported "Reconnecting to the live stream…" loop that never plays.
+     *
+     * So for an unrecoverable failure, in order: (1) re-read the channel's OWN
+     * playlist — panels rotate these URLs (toffeelive, skygo, …), so the
+     * playlist usually already holds the working replacement; (2) look for the
+     * same channel in the other installed IPTV playlists (the cross-search
+     * family switch does not matter here — this is failover, not search); (3)
+     * only then show the honest, specific error. One hunt per URL.
+     */
+    private fun failoverLiveChannel(details: String, code: Int) {
+        val src = sources.getOrNull(currentIndex)
+        if (src == null) {
+            scheduleLiveReconnect("failed (code $code)")
+            return
+        }
+        val httpStatus = httpStatusOf(details)
+        val dnsDead = details.contains("UnknownHostException", true) ||
+            details.contains("Unable to resolve host", true) ||
+            details.contains("No address associated", true)
+        val httpDead = httpStatus != null &&
+            (httpStatus == 401 || httpStatus == 403 || httpStatus == 404 ||
+                httpStatus == 410 || httpStatus == 451 || httpStatus >= 500)
+        val connDead = code == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
+            code == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT ||
+            code == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND
+        if (!dnsDead && !httpDead && !connDead) {
+            scheduleLiveReconnect("failed (code $code)")
+            return
+        }
+        if (liveFailoverSpentUrl == src.url) {
+            showError(
+                liveDeadMessage(httpStatus, dnsDead, src.name),
+                false,
+            )
+            return
+        }
+        liveFailoverSpentUrl = src.url
+        val line = I18n.t("Channel link dead — looking for another feed…")
+        coverPlaybackLine = line
+        loadingStatus?.text = line
+        loadingSpinnerStatus?.text = line
+        if (loadingBanner?.visibility != View.VISIBLE &&
+            loadingSpinner?.visibility != View.VISIBLE
+        ) {
+            showLoadingCover()
+        }
+        com.hikari.app.data.Logs.log(
+            "Player",
+            "live stream \"${src.name}\" link is dead " +
+                "(http=${httpStatus ?: "?"}, dns=$dnsDead) — refreshing playlist + siblings",
+        )
+        lifecycleScope.launch {
+            val alt = withContext(Dispatchers.IO) {
+                withTimeoutOrNull(75_000L) { findLiveAlternative(src) }
+            }
+            if (isFinishing || isDestroyed) return@launch
+            if (alt == null) {
+                showError(liveDeadMessage(httpStatus, dnsDead, src.name), false)
+                return@launch
+            }
+            val list = sources.toMutableList()
+            if (currentIndex !in list.indices) return@launch
+            triedUrls.add(src.url)
+            val u = alt.url
+            list[currentIndex] = src.copy(
+                url = u,
+                headers = src.headers + alt.headers,
+                isM3u8 = u.contains(".m3u8", true) || u.contains(".m3u", true),
+                isMpd = u.contains(".mpd", true),
+            )
+            sources = list
+            notifySourcesChanged()
+            liveStartRetryIndex = -1
+            liveStartRetries = 0
+            noSubsRetry = false
+            resetHeaderWalk()
+            com.hikari.app.data.Logs.log(
+                "Player",
+                "live stream \"${src.name}\" continuing on sibling feed ${alt.providerName}",
+            )
+            playSource(currentIndex)
+        }
+    }
+
+    /** The specific, honest error for a channel whose link is dead. */
+    private fun liveDeadMessage(httpStatus: Int?, dnsDead: Boolean, name: String): String =
+        when {
+            dnsDead -> I18n.t(
+                "“%s” can't be reached — its server address doesn't resolve. " +
+                    "The channel may be geo-blocked or offline; try another playlist."
+            ).replace("%s", name)
+            httpStatus == 404 || httpStatus == 410 ->
+                I18n.t(
+                    "“%s” is offline — its stream link is gone (404). " +
+                        "Refresh the playlist and try again later."
+                ).replace("%s", name)
+            httpStatus == 401 || httpStatus == 403 ->
+                I18n.t(
+                    "“%s” refused to play (forbidden). Its link likely expired — " +
+                        "refresh the playlist and try again."
+                ).replace("%s", name)
+            else -> I18n.t(
+                "“%s” is not responding. It may be offline right now."
+            ).replace("%s", name)
+        }
+
+    /**
+     * Another working URL for [src]'s channel: first a re-read of its own
+     * playlist (rotated links), then the same channel in the other installed
+     * IPTV playlists. Null when nobody has one. Runs off the main thread.
+     */
+    private suspend fun findLiveAlternative(src: PlayerSource): AltFeed? {
+        val store = (applicationContext as HikariApp).store
+        val all = runCatching { store.providers() }.getOrDefault(emptyList())
+            .filter { it.type == com.hikari.app.data.ProviderType.IPTV && it.enabled }
+        if (all.isEmpty()) return null
+        val want = liveChannelKey(src.name)
+        if (want.isEmpty()) return null
+        // Own playlist first, re-read: the panel usually already serves the
+        // rotated replacement link.
+        val own = all.firstOrNull { it.id == src.providerId }
+        if (own != null) {
+            matchLiveChannel(own.id, want, src.url, force = true)?.let { return it }
+        }
+        // Then every other installed playlist (cached read — fast).
+        for (cfg in all) {
+            if (cfg.id == src.providerId) continue
+            matchLiveChannel(cfg.id, want, src.url, force = false)?.let { return it }
+        }
+        return null
+    }
+
+    private data class AltFeed(
+        val url: String,
+        val headers: Map<String, String>,
+        val providerName: String,
+    )
+
+    /** First channel of playlist [providerId] matching [want] on a NEW url. */
+    private suspend fun matchLiveChannel(
+        providerId: String,
+        want: String,
+        deadUrl: String,
+        force: Boolean,
+    ): AltFeed? {
+        val cfg = runCatching { (applicationContext as HikariApp).store.providers() }
+            .getOrDefault(emptyList()).firstOrNull { it.id == providerId } ?: return null
+        val provider = com.hikari.app.providers.IptvProvider(cfg)
+        val channels = runCatching { provider.channels(force) }.getOrDefault(emptyList())
+        // Exact normalized name first, then a containment fallback — but never
+        // the dead URL itself and never a different stream on a shared stub.
+        val hit = channels.firstOrNull {
+            liveChannelKey(it.name) == want && it.url.isNotBlank() && it.url != deadUrl
+        } ?: channels.firstOrNull {
+            val k = liveChannelKey(it.name)
+            k.isNotEmpty() && k != want && (k.contains(want) || want.contains(k)) &&
+                it.url.isNotBlank() && it.url != deadUrl
+        } ?: return null
+        return AltFeed(hit.url, hit.headers, provider.displayName)
+    }
+
+    /**
+     * Channel names as comparable keys: case/punctuation/quality-tag blind, so
+     * "[BD] Sony Ten Sports 1 HD" meets "SONY TEN 1 HD" in another playlist.
+     */
+    private fun liveChannelKey(name: String): String {
+        var s = name.lowercase()
+        s = s.replace(Regex("\\[[^\\]]*\\]"), " ")
+        s = s.replace(Regex("\\([^\\)]*\\)"), " ")
+        s = s.replace(Regex("\\b(uhd|fhd|hd|hq|hdtc|hdcam|cam|sd|4k|8k|live|tv|channel|plus|\\+|1080p|720p|480p|2160p)\\b"), " ")
+        s = s.replace(Regex("[^a-z0-9]+"), " ")
+        return s.trim().replace(Regex("\\s+"), " ")
     }
 
     /**
@@ -12486,11 +12723,11 @@ class PlayerActivity : ComponentActivity() {
         // No server left. A LIVE channel is not re-searched: an IPTV playlist
         // has one link per channel, so asking the detail screen for "more
         // servers" can only ever wait — which is the reported "it keeps
-        // searching instead of playing". A live feed that dropped is fixed by a
-        // fresh connection and nothing else, so re-open it (bounded, and with
-        // its own honest failure — see [retryLiveStart]).
+        // searching instead of playing". A dropped live feed is fixed by a
+        // fresh connection — unless the LINK itself is dead (DNS/404/403),
+        // which no re-open can fix (see [failoverLiveChannel]).
         if (isLiveSource(sources.getOrNull(currentIndex))) {
-            scheduleLiveReconnect("failed (code $code)")
+            failoverLiveChannel(details, code)
             return
         }
         // If this looks like the servers simply died — expired
