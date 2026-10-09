@@ -861,8 +861,8 @@ class PlayerActivity : ComponentActivity() {
     private var errorPanel: View? = null
     private var errorText: TextView? = null
     private var nextBtn: TextView? = null
-    private var lockBtn: ImageButton? = null
-    private var favBtn: ImageButton? = null
+    private var lockBtn: TextView? = null
+    private var favBtn: TextView? = null
     private var resizeBtn: ImageButton? = null
     private var skipBtn: TextView? = null
     private var rotateBtn: TextView? = null
@@ -1600,11 +1600,11 @@ class PlayerActivity : ComponentActivity() {
         autoplayBtn?.setOnClickListener { toggleAutoplay() }
         subsBtn?.setOnClickListener { showSubsDialog() }
         audioBtn?.setOnClickListener { showAudioDialog() }
-        findViewById<ImageButton>(R.id.download_btn)?.setOnClickListener { showDownloadDialog() }
+        findViewById<TextView>(R.id.download_btn)?.setOnClickListener { showDownloadDialog() }
         favBtn?.setOnClickListener { toggleFavourite() }
         // Top-bar gear: the player options that don't deserve a pill of their
         // own (video fit and rotation).
-        findViewById<ImageButton>(R.id.options_btn)?.setOnClickListener {
+        findViewById<TextView>(R.id.options_btn)?.setOnClickListener {
             // Declared as a function so toggling the server-chooser row can
             // re-open the menu with its new state (a static option list would
             // need a live flow just to move one checkmark).
@@ -1788,6 +1788,8 @@ class PlayerActivity : ComponentActivity() {
 
         // The Enhance pill: realtime colour grading of the video itself.
         findViewById<TextView>(R.id.enhance_btn)?.setOnClickListener { showEnhanceMenu() }
+        // External-player pill, right beside Enhance in the bottom-right slot.
+        findViewById<TextView>(R.id.external_btn)?.setOnClickListener { openExternalPlayer() }
 
         // Both remaining preferences are read asynchronously and applied as soon
         // as they land. Until then the player keeps the layout it shipped with
@@ -1910,7 +1912,7 @@ class PlayerActivity : ComponentActivity() {
         // auto-enter when the user leaves the player with video playing (12+).
         // minSdk is 24, so the whole feature is gated on SDK >= 26 (API 26
         // introduced PiP).
-        val pipBtn = findViewById<ImageButton>(R.id.pip_btn)
+        val pipBtn = findViewById<TextView>(R.id.pip_btn)
         if (Build.VERSION.SDK_INT >= 26) {
             pipBtn?.setOnClickListener { enterPip() }
             if (Build.VERSION.SDK_INT >= 31) {
@@ -2140,10 +2142,15 @@ class PlayerActivity : ComponentActivity() {
                             val on = list.any { it.uniqueId == favouriteItem?.uniqueId }
                             if (on != isFavourite) {
                                 isFavourite = on
-                                favBtn?.setImageResource(
-                                    if (on) R.drawable.ic_heart_filled else R.drawable.ic_heart
+                                favBtn?.setCompoundDrawablesRelativeWithIntrinsicBounds(
+                                    if (on) R.drawable.ic_heart_filled else R.drawable.ic_heart, 0, 0, 0
                                 )
-                                favBtn?.imageTintList = tintOf(on)
+                                favBtn?.compoundDrawableTintList = tintOf(on)
+                                // Keep the icon-only-mode cache honest: it snapshots
+                                // the pill's drawables on first pass (see
+                                // [applyControlLabels]), so a heart that flips later
+                                // must refresh the snapshot, not go stale.
+                                originalPillDrawables[R.id.fav_btn]?.set(0, favBtn?.compoundDrawablesRelative?.getOrNull(0))
                             }
                         }
                     }
@@ -3338,8 +3345,9 @@ class PlayerActivity : ComponentActivity() {
         val item = favouriteItem ?: return
         val next = !isFavourite
         isFavourite = next
-        favBtn?.setImageResource(if (next) R.drawable.ic_heart_filled else R.drawable.ic_heart)
-        favBtn?.imageTintList = tintOf(next)
+        favBtn?.setCompoundDrawablesRelativeWithIntrinsicBounds(if (next) R.drawable.ic_heart_filled else R.drawable.ic_heart, 0, 0, 0)
+        favBtn?.compoundDrawableTintList = tintOf(next)
+        originalPillDrawables[R.id.fav_btn]?.set(0, favBtn?.compoundDrawablesRelative?.getOrNull(0))
         val app = applicationContext as HikariApp
         app.appScope.launch {
             runCatching {
@@ -3724,7 +3732,9 @@ class PlayerActivity : ComponentActivity() {
     private val pillIds = intArrayOf(
         R.id.speed_btn, R.id.episodes_btn, R.id.prev_ep_btn, R.id.next_ep_btn,
         R.id.autoplay_btn, R.id.sources_btn, R.id.quality_btn,
-        R.id.audio_btn, R.id.subs_btn, R.id.rotate_btn, R.id.skip_btn, R.id.enhance_btn
+        R.id.audio_btn, R.id.subs_btn, R.id.rotate_btn, R.id.skip_btn, R.id.enhance_btn,
+        R.id.fav_btn, R.id.download_btn, R.id.pip_btn, R.id.options_btn, R.id.lock_btn,
+        R.id.external_btn
     )
 
     /** The cyan -> violet player gradient as a shape (the signature accent). */
@@ -3887,12 +3897,11 @@ class PlayerActivity : ComponentActivity() {
         }
         topBar?.let { it.setPadding(it.paddingLeft, it.paddingTop, it.paddingRight, dp(spec.topBarPadBottom)) }
 
-        // The pill row: background, text size, inner padding and the gap between
-        // pills. A pill that has been compacted into the top bar is skipped — it
-        // is drawn as a round icon button there, exactly like its neighbours.
+        // The pill row AND the top bar: both wear the same pill treatment, so a
+        // skin restyles the whole overlay in one pass (a pill moved up keeps
+        // its look instead of becoming a round button).
         for (id in pillIds) {
             val v = findViewById<TextView>(id) ?: continue
-            if ((v.parent as? View)?.id == R.id.player_top_actions) continue
             v.background = if (PlayerSkins.normalize(skin) == PlayerSkins.TV) {
                 ColorDrawable(android.graphics.Color.TRANSPARENT)
             } else {
@@ -3959,14 +3968,11 @@ class PlayerActivity : ComponentActivity() {
 
     private fun applyAccentPalette() {
         val d = resources.displayMetrics.density
-
-        // Accent pills — skipped while compacted into the top bar, where they
-        // are drawn as plain glass round buttons like their neighbours. The
-        // corner radius follows the active skin.
+        // Accent pills keep their gradient in the top bar too, so a Sources /
+        // Skip / Enhance pill moved up still reads as the featured action.
         val accentRadius = PlayerSkins.spec(skin).accentPillRadius
         for (id in accentPillIds) {
             val v = findViewById<TextView>(id) ?: continue
-            if ((v.parent as? View)?.id == R.id.player_top_actions) continue
             v.background = if (PlayerSkins.normalize(skin) == PlayerSkins.TV) {
                 tvAccentPillRipple(accentRadius)
             } else {
@@ -4046,14 +4052,15 @@ class PlayerActivity : ComponentActivity() {
 
     /** The layout order inside each slot. Matches the XML order, so the default
      *  layout comes out exactly as shipped (and the resize button stays pinned
-     *  at the far right, after the enhance pill). */
+     *  at the far right, after the enhance/external pills).
+     */
     private val controlOrder = listOf(
         PlayerControl.FAVORITE, PlayerControl.DOWNLOAD, PlayerControl.PIP,
         PlayerControl.OPTIONS, PlayerControl.LOCK,
         PlayerControl.SPEED, PlayerControl.EPISODES, PlayerControl.SOURCES,
         PlayerControl.QUALITY, PlayerControl.AUDIO, PlayerControl.SUBS,
         PlayerControl.ROTATE, PlayerControl.SKIP,
-        PlayerControl.ENHANCE, PlayerControl.RESIZE,
+        PlayerControl.ENHANCE, PlayerControl.EXTERNAL, PlayerControl.RESIZE,
     )
 
     private fun controlView(c: PlayerControl): View? = when (c) {
@@ -4072,6 +4079,7 @@ class PlayerActivity : ComponentActivity() {
         PlayerControl.SKIP -> findViewById(R.id.skip_btn)
         PlayerControl.RESIZE -> findViewById(R.id.resize_btn)
         PlayerControl.ENHANCE -> findViewById(R.id.enhance_btn)
+        PlayerControl.EXTERNAL -> findViewById(R.id.external_btn)
     }
 
     /**
@@ -4167,6 +4175,7 @@ class PlayerActivity : ComponentActivity() {
             PlayerControl.SKIP -> PlayerControlSlot.BOTTOM_LEFT
 
             PlayerControl.ENHANCE,
+            PlayerControl.EXTERNAL,
             PlayerControl.RESIZE -> PlayerControlSlot.BOTTOM_RIGHT
         }
     }
@@ -4175,6 +4184,7 @@ class PlayerActivity : ComponentActivity() {
     private fun resetPillScroll() {
         val sc = findViewById<HorizontalScrollView>(R.id.player_pill_scroll) ?: return
         if (sc.scrollX != 0) sc.scrollTo(0, 0)
+        findViewById<HorizontalScrollView>(R.id.player_top_scroll)?.let { if (it.scrollX != 0) it.scrollTo(0, 0) }
     }
 
     // ---- Television: every control the remote has to be able to press ------
@@ -4380,9 +4390,19 @@ class PlayerActivity : ComponentActivity() {
      * push the buttons off the screen. The original look is stashed and restored
      * by [restorePill] when the button leaves the top bar.
      */
+    /**
+     * A pill drawn in the top bar keeps its pill look: the whole bar — title
+     * badges, actions, everything — wears the same frosted treatment as the
+     * bottom row, which is what makes the two bars read as one player. The
+     * strip scrolls sideways, so a wide labelled pill can never push its
+     * neighbours off the screen (the reason this used to strip pills down to
+     * round icon buttons). The original look is still stashed for
+     * [restorePill]; only the outer margins are evened out to the pill
+     * rhythm while the button is up here.
+     */
     private fun compactForTopBar(v: View) {
         if (v !is TextView) return
-        val orig = pillOriginals.getOrPut(v.id) {
+        pillOriginals.getOrPut(v.id) {
             PillOriginal(
                 text = v.text,
                 start = v.compoundDrawablesRelative.getOrNull(0),
@@ -4395,22 +4415,13 @@ class PlayerActivity : ComponentActivity() {
                 params = ViewGroup.LayoutParams(v.layoutParams),
             )
         }
-        val d = resources.displayMetrics.density
-        val side = (26f * d).roundToInt()
-        v.text = ""
-        v.setCompoundDrawablesRelativeWithIntrinsicBounds(orig.start, null, null, null)
-        v.background = ContextCompat.getDrawable(this, R.drawable.circle_glass_ripple)
-        v.setPadding(0, 0, 0, 0)
-        v.gravity = android.view.Gravity.CENTER
         v.visibility = View.VISIBLE
-        val lp = v.layoutParams
-        lp.width = side
-        lp.height = side
-        if (lp is ViewGroup.MarginLayoutParams) {
-            lp.marginStart = (3f * d).roundToInt()
-            lp.marginEnd = 0
+        val d = resources.displayMetrics.density
+        (v.layoutParams as? ViewGroup.MarginLayoutParams)?.let { lp ->
+            lp.marginStart = (2f * d).roundToInt()
+            lp.marginEnd = (2f * d).roundToInt()
+            v.layoutParams = lp
         }
-        v.layoutParams = lp
     }
 
     private fun restorePill(v: View) {
@@ -5288,6 +5299,19 @@ class PlayerActivity : ComponentActivity() {
      * One tappable row of the glass menus. [onClick] null draws a static row
      * (used for the read-only rows a menu may need).
      */
+    /** Break opportunities for server-row text: a 60-char hostname has no spaces,
+     *  so the line breaker cannot wrap it and the row measures wider than the
+     *  panel — the "server box cut on the right" report. A zero-width space
+     *  after URL punctuation lets it wrap at dots/slashes without changing
+     *  what the eye reads. Display-only rows; never applied to played URLs. */
+    private fun breakableRowText(s: String): String {
+        val out = StringBuilder(s.length + 16)
+        for (c in s) {
+            out.append(c)
+            if (c == '.' || c == '/' || c == ':' || c == '?' || c == '&' || c == '=' || c == ';' || c == ',') out.append('\u200B')
+        }
+        return out.toString()
+    }
     private fun glassRow(option: GlassOption, onClick: (() -> Unit)?): View {
         val density = resources.displayMetrics.density
         // Rows are capsules: the radius is deliberately larger than half the
@@ -5377,6 +5401,7 @@ class PlayerActivity : ComponentActivity() {
                 // name is the choice being made, so it wraps to two lines and
                 // the capsule grows with it.
                 maxLines = if (option.labelMaxLines >= 3) 6 else option.labelMaxLines
+                if (option.labelMaxLines >= 3) breakStrategy = android.text.Layout.BREAK_STRATEGY_HIGH_QUALITY
                 ellipsize = if (option.labelMaxLines >= 3) null else TextUtils.TruncateAt.END
                 includeFontPadding = false
                 typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
@@ -5384,7 +5409,7 @@ class PlayerActivity : ComponentActivity() {
             })
             option.sub?.takeIf { it.isNotBlank() }?.let { sub ->
                 addView(TextView(this@PlayerActivity).apply {
-                    text = sub
+                    text = if (option.labelMaxLines >= 3) breakableRowText(sub) else sub
                     dpText(if (tvMenu && tvPanelsEnabled && option.labelMaxLines >= 3) 10.5f else 9f)
                     // Two lines, not one. The sub line is where a menu explains
                     // itself — "Nothing applied — the picture exactly as the
@@ -5395,6 +5420,7 @@ class PlayerActivity : ComponentActivity() {
                     // line when it needs to; the rows that do not need it are
                     // unchanged, so the menu still reads as one family.
                     maxLines = if (option.labelMaxLines >= 3) 8 else 2
+                    if (option.labelMaxLines >= 3) breakStrategy = android.text.Layout.BREAK_STRATEGY_HIGH_QUALITY
                     ellipsize = if (option.labelMaxLines >= 3) null else TextUtils.TruncateAt.END
                     includeFontPadding = false
                     setTextColor(0xFF98A3B5.toInt())
@@ -6161,6 +6187,12 @@ class PlayerActivity : ComponentActivity() {
             })
         }
         val list = optionList()
+        // The last row must be able to scroll fully into view with air under it:
+        // the shared optionList bottom pad is only a few dp, so a chooser whose
+        // list ends exactly at the panel edge reads as "cannot scroll down
+        // fully". Padding lives on the container, so live rebuilds keep it.
+        list.setPadding(list.paddingLeft, list.paddingTop, list.paddingRight,
+            list.paddingBottom + (12 * density).roundToInt())
         options.forEachIndexed { i, option ->
             addOptionRow(list, option) {
                 dialog.dismiss()
@@ -7109,7 +7141,17 @@ class PlayerActivity : ComponentActivity() {
             // list would yank them to the top, or a re-created chip row would
             // throw away the chip they had scrolled to.
             val sv = verticalScrollerOf(list)
+            // Whether the user is already reading the END of the list: servers
+            // land live while the sheet is open, and blindly restoring keepY
+            // after every append is what made the list feel like it "cannot
+            // scroll down" — the user drags down, a server lands, the offset
+            // snaps back up. At the end, follow the new rows down instead.
             val keepY = sv?.scrollY ?: 0
+            val nearBottomPx = (48 * density).roundToInt()
+            val wasAtBottom = sv?.let { v ->
+                val content = if (v.childCount > 0) v.getChildAt(0) else null
+                content != null && content.bottom - (v.scrollY + v.height) <= nearBottomPx
+            } ?: false
             val keepX = chipScroll.scrollX
             rebuildChips()
             rebuildList()
@@ -7121,7 +7163,7 @@ class PlayerActivity : ComponentActivity() {
             if (playerTvRemote()) {
                 runCatching { dialog.window?.decorView?.tvFocusableTree() }
             }
-            sv?.post { sv.scrollTo(0, keepY) }
+            if (wasAtBottom) sv?.post { sv.scrollTo(0, Int.MAX_VALUE) } else sv?.post { sv.scrollTo(0, keepY) }
             chipScroll.post { chipScroll.scrollTo(keepX, 0) }
         }
         sourcesWatchers.add(watcher)

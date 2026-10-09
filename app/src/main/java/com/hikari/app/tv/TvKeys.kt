@@ -94,6 +94,10 @@ private fun isPressKey(key: Key): Boolean = when (key) {
  * D-pad can land on it at all), centre/enter presses it, and left/right flip it.
  * The press is consumed here so the component's own handler cannot apply it a
  * second time.
+ *
+ * One press is one activation: held-key auto-repeat is swallowed, so keeping
+ * OK held down flips the toggle once instead of machine-gunning it (the same
+ * repeat class that drove [tvPress] into a focus jump — see its note).
  */
 fun Modifier.tvToggle(
     value: Boolean,
@@ -103,6 +107,9 @@ fun Modifier.tvToggle(
     .focusable(enabled && TvMode.isTv)
     .onPreviewKeyEvent { event ->
         if (!enabled || !TvMode.isTv || event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+        // A held key re-fires Down with a non-zero repeat count: the toggle
+        // answers the first press only, or one hold flips it a dozen times.
+        if (event.nativeKeyEvent.repeatCount != 0) return@onPreviewKeyEvent true
         when {
             isPressKey(event.key) -> {
                 onValueChange(!value)
@@ -132,6 +139,21 @@ fun Modifier.tvToggle(
  * target and the press. The default [Indication] is passed through so a focused
  * row is visibly highlighted on a television, where `focusable()` alone draws
  * nothing and the user cannot see what the remote is on.
+ *
+ * One press is one activation, guaranteed here rather than at the 60+ call
+ * sites. A held OK key re-fires Down with a non-zero repeat count, and the old
+ * code answered EVERY one: the first Down opened a repo and moved the focus,
+ * so the repeats landed on whatever the new screen had focused (its back
+ * button, the Home rail) — one tap walked the user two screens deep, "very
+ * fast". Repeats are now swallowed (consumed, never fired).
+ *
+ * Deliberately stateless: the repeat count comes from the key event itself,
+ * so there is no claimed-flag that a navigation between Down and Up could
+ * strand (a stranded flag would eat the NEXT press's Down and make the
+ * control look dead until an Up wandered back). Same-node `clickable` +
+ * `tvPress` pairs stay single-fire in practice: the Down is consumed here,
+ * so a click handler waiting for the matching Up never completes a second
+ * activation.
  */
 @Composable
 fun Modifier.tvPress(
@@ -173,6 +195,9 @@ fun Modifier.tvPress(
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     val state = remember { HoldState() }
     fun down(): Boolean {
+        // Held-key auto-repeat re-fires Down with a non-zero repeat count: one
+        // physical press must fire once, or the repeats land on whatever the
+        // first activation focused (see the KDoc above). Consumed, never fired.
         if (!tvEnabled) return false
         if (onHold == null) {
             onClick()
@@ -205,6 +230,9 @@ fun Modifier.tvPress(
     fun handle(event: androidx.compose.ui.input.key.KeyEvent): Boolean {
         if (!tvEnabled) return false
         if (!isPressKey(event.key)) return false
+        // Held-key auto-repeat (see down()'s note): swallow repeats here so
+        // neither the tap nor the hold path ever sees them.
+        if (event.type == KeyEventType.KeyDown && event.nativeKeyEvent.repeatCount != 0) return true
         return when (event.type) {
             KeyEventType.KeyDown -> down()
             KeyEventType.KeyUp -> up()

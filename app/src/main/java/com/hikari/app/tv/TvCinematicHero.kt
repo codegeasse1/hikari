@@ -35,6 +35,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
@@ -81,6 +82,12 @@ fun TvCinematicHero(
                 // plain handler) so the focus system never sees the keypress
                 // and the hero keeps focus while browsing.
                 .onPreviewKeyEvent { event ->
+                    // One press, one step: without the type check every press
+                    // stepped TWICE (Down + Up), and a held key machine-gunned
+                    // through the list — each step a full-bleed decode the box
+                    // cannot afford (see tvPress's repeat note).
+                    if (event.type != KeyEventType.KeyDown ||
+                        event.nativeKeyEvent.repeatCount != 0) return@onPreviewKeyEvent false
                     when (event.key) {
                         Key.DirectionLeft -> {
                             index = (index - 1 + items.size) % items.size

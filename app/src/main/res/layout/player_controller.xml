@@ -74,6 +74,7 @@
           android:layout_width="0dp"
           android:layout_height="wrap_content"
           android:layout_weight="1"
+          android:minWidth="80dp"
           android:orientation="vertical"
           android:gravity="center_vertical"
           android:paddingStart="12dp"
@@ -132,8 +133,18 @@
            real feature: favourite, download, picture-in-picture, player
            options (fit/crop/rotate) and screen lock. The container's id is what
            PlayerActivity's control-layout setting moves buttons into/out of
-           (Settings -> Player -> Player controls); a pill moved up here is
-           drawn as a compact round icon button so the bar can never overflow. -->
+           (Settings -> Player -> Player controls); every button here wears the same pill treatment as the bottom row, and
+           the strip scrolls sideways so a full bar can never push anything off-screen. -->
+      <HorizontalScrollView
+          android:id="@+id/player_top_scroll"
+          android:layout_width="wrap_content"
+          android:layout_height="wrap_content"
+          android:scrollbars="none"
+          android:overScrollMode="never"
+          android:clipToPadding="false"
+          android:fillViewport="true"
+          android:layoutDirection="ltr">
+
       <LinearLayout
           android:id="@+id/player_top_actions"
           android:layout_width="wrap_content"
@@ -142,60 +153,42 @@
           android:gravity="center_vertical"
           android:layoutDirection="ltr">
 
-      <ImageButton
+      <TextView
           android:id="@+id/fav_btn"
-          android:layout_width="26dp"
-          android:layout_height="26dp"
-          android:src="@drawable/ic_heart"
-          android:tint="#FFFFFF"
-          android:contentDescription="@string/cd_add_to_library"
-          android:background="@drawable/circle_glass_ripple"
-          android:scaleType="centerInside" />
+          style="@style/HikariPill"
+          android:drawableStart="@drawable/ic_heart"
+          android:text="@string/player_top_favorite"
+          android:contentDescription="@string/cd_add_to_library" />
 
-      <ImageButton
+      <TextView
           android:id="@+id/download_btn"
-          android:layout_width="26dp"
-          android:layout_height="26dp"
-          android:layout_marginStart="3dp"
-          android:src="@drawable/ic_download"
-          android:tint="#FFFFFF"
-          android:contentDescription="@string/cd_download"
-          android:background="@drawable/circle_glass_ripple"
-          android:scaleType="centerInside" />
+          style="@style/HikariPill"
+          android:drawableStart="@drawable/ic_download"
+          android:text="@string/player_top_download"
+          android:contentDescription="@string/cd_download" />
 
-      <ImageButton
+      <TextView
           android:id="@+id/pip_btn"
-          android:layout_width="26dp"
-          android:layout_height="26dp"
-          android:layout_marginStart="3dp"
-          android:src="@drawable/ic_pip"
-          android:tint="#FFFFFF"
-          android:contentDescription="@string/cd_pip"
-          android:background="@drawable/circle_glass_ripple"
-          android:scaleType="centerInside" />
+          style="@style/HikariPill"
+          android:drawableStart="@drawable/ic_pip"
+          android:text="@string/player_top_pip"
+          android:contentDescription="@string/cd_pip" />
 
-      <ImageButton
+      <TextView
           android:id="@+id/options_btn"
-          android:layout_width="26dp"
-          android:layout_height="26dp"
-          android:layout_marginStart="3dp"
-          android:src="@drawable/ic_settings"
-          android:tint="#FFFFFF"
-          android:contentDescription="@string/cd_player_options"
-          android:background="@drawable/circle_glass_ripple"
-          android:scaleType="centerInside" />
+          style="@style/HikariPill"
+          android:drawableStart="@drawable/ic_settings"
+          android:text="@string/player_top_settings"
+          android:contentDescription="@string/cd_player_options" />
 
-      <ImageButton
+      <TextView
           android:id="@+id/lock_btn"
-          android:layout_width="26dp"
-          android:layout_height="26dp"
-          android:layout_marginStart="3dp"
-          android:src="@drawable/ic_lock"
-          android:tint="#FFFFFF"
-          android:contentDescription="@string/cd_lock_controls"
-          android:background="@drawable/circle_glass_ripple"
-          android:scaleType="centerInside" />
+          style="@style/HikariPill"
+          android:drawableStart="@drawable/ic_lock"
+          android:text="@string/player_top_lock"
+          android:contentDescription="@string/cd_lock_controls" />
       </LinearLayout>
+      </HorizontalScrollView>
     </LinearLayout>
   </LinearLayout>
 
@@ -386,6 +379,13 @@
           style="@style/HikariPill.Accent"
           android:drawableStart="@drawable/ic_enhance"
           android:text="@string/player_enhance" />
+
+      <TextView
+          android:id="@+id/external_btn"
+          style="@style/HikariPill"
+          android:drawableStart="@drawable/ic_external"
+          android:text="@string/player_external"
+          android:contentDescription="@string/cd_external_player" />
 
       <ImageButton
           android:id="@+id/resize_btn"

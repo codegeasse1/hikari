@@ -839,6 +839,21 @@ class HikariApp : Application() {
                     providers.refresh()
                 }
             }
+            // Silent Nuvio scraper auto-update (at most once a day): the same
+            // staleness story as CloudStream — NuvioMobile refreshes its
+            // providers from the repos on its own, while Hikari's installed
+            // copies stayed frozen at install time, so every site rebuild
+            // arrived as another "server failed in Hikari" report. Same
+            // manifest comparison as the Update buttons, headless and bounded;
+            // a swapped file takes effect on the next provider call (scrapers
+            // are read per call), so only a refresh is needed. NUVIO-only.
+            runCatching {
+                val updated = com.hikari.app.nuvio.NuvioAutoUpdate.runIfDue(this@HikariApp, store)
+                if (updated > 0) {
+                    Logs.log("Providers", "Nuvio auto-update replaced $updated scraper file(s) — refreshing")
+                    providers.refresh()
+                }
+            }
             // Aniyomi extensions are the same story: one installed .ext can
             // register several sources, and the set can move when the extension
             // is updated, so rebuild the stored configs from the loaded

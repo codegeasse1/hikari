@@ -565,6 +565,7 @@ private fun controlIcon(control: PlayerControl): Int = when (control) {
     PlayerControl.SKIP -> R.drawable.ic_skip
     PlayerControl.RESIZE -> R.drawable.ic_resize
     PlayerControl.ENHANCE -> R.drawable.ic_enhance
+    PlayerControl.EXTERNAL -> R.drawable.ic_external
 }
 
 /** Words | Icons switch for the preview card. */

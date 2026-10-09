@@ -681,7 +681,10 @@
       },
       text: function () { return Promise.resolve(body); },
       json: function () {
-        try { return Promise.resolve(JSON.parse(body)); } catch (e) { return Promise.reject(new Error('invalid json: ' + e.message)); }
+        try {
+          if (body === null || body === undefined || body === '') return Promise.resolve(null);
+          return Promise.resolve(JSON.parse(body));
+        } catch (e) { return Promise.resolve(null); }
       },
       arrayBuffer: function () {
         if (bodyBytes) {
@@ -717,6 +720,32 @@
     throw new Error('no fetch bridge available');
   }
 
+  function __bytesToB64(bytes) {
+    var bin = '';
+    var CHUNK = 8192;
+    for (var i = 0; i < bytes.length; i += CHUNK) {
+      var end = Math.min(i + CHUNK, bytes.length);
+      bin += String.fromCharCode.apply(null, bytes.subarray(i, end));
+    }
+    if (typeof btoa === 'function') return btoa(bin);
+    if (g.Buffer && typeof g.Buffer.from === 'function') return g.Buffer.from(bin, 'latin1').toString('base64');
+    throw new Error('no base64 encoder available');
+  }
+
+  // Mirrors NuvioMobile's __normalize_fetch_body: binary bodies ride the
+  // string bridge as `b64:<base64>` (see BINARY_BODY_PREFIX in NuvioRuntime),
+  // which decodes them verbatim. String() on a typed array would send
+  // "[object Uint8Array]".
+  function __nuvioEncodeBody(body) {
+    if (typeof ArrayBuffer !== 'undefined' && body instanceof ArrayBuffer) {
+      return 'b64:' + __bytesToB64(new Uint8Array(body));
+    }
+    if (typeof ArrayBuffer !== 'undefined' && typeof ArrayBuffer.isView === 'function' &&
+        ArrayBuffer.isView(body)) {
+      return 'b64:' + __bytesToB64(new Uint8Array(body.buffer, body.byteOffset, body.byteLength));
+    }
+    return String(body);
+  }
   function __nuvioFetch(input, init) {
     return new Promise(function (resolve, reject) {
       try {
@@ -728,7 +757,7 @@
         if (init) {
           if (init.method) method = String(init.method).toUpperCase();
           if (init.headers) headers = __normalizeHeaders(init.headers);
-          if (init.body != null) body = String(init.body);
+          if (init.body != null) body = __nuvioEncodeBody(init.body);
           if (init.redirect === 'manual' || init.redirect === 'error') followRedirects = false;
         }
         var rawOrPromise;

@@ -49,7 +49,8 @@ enum class PlayerControl(
     ROTATE("rotate", "Rotate", "Rotate the video 90°", PlayerControlSlot.BOTTOM_LEFT),
     SKIP("skip", "Skip intro", "Jump past the opening titles", PlayerControlSlot.BOTTOM_LEFT),
     RESIZE("resize", "Resize video", "Fit, crop or stretch the picture", PlayerControlSlot.BOTTOM_RIGHT),
-    ENHANCE("enhance", "Enhance", "Switch the video enhance preset", PlayerControlSlot.BOTTOM_RIGHT);
+    ENHANCE("enhance", "Enhance", "Switch the video enhance preset", PlayerControlSlot.BOTTOM_RIGHT),
+    EXTERNAL("external", "External player", "Play this video in another app", PlayerControlSlot.BOTTOM_RIGHT);
 
     companion object {
         fun fromKey(key: String?): PlayerControl? = entries.firstOrNull { it.key == key }

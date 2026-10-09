@@ -304,7 +304,7 @@ object NuvioPluginManager {
         HikariApp.instance.assets.open(asset).use { it.readBytes() }
     }.getOrNull()
 
-    private fun patchedBytes(sourceUrl: String?, original: ByteArray? = null): ByteArray? {
+    internal fun patchedBytes(sourceUrl: String?, original: ByteArray? = null): ByteArray? {
         val patch = patchFor(sourceUrl) ?: return null
         // Content guard: never replace a DIFFERENT build that merely shares the
         // filename (see the 4khdhub note above).

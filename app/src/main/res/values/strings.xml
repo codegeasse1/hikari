@@ -30,6 +30,13 @@
     <string name="player_skip_intro">Skip Intro</string>
     <string name="player_enhance">Enhance</string>
     <string name="player_tap_to_play">Tap to play</string>
+    <string name="player_top_favorite">Favourite</string>
+    <string name="player_top_download">Download</string>
+    <string name="player_top_pip">PiP</string>
+    <string name="player_top_settings">Settings</string>
+    <string name="player_top_lock">Lock</string>
+    <string name="player_external">External</string>
+    <string name="cd_external_player">Open in external player</string>
     <string name="cd_back">Back</string>
     <string name="cd_add_to_library">Add to library</string>
     <string name="cd_download">Download</string>

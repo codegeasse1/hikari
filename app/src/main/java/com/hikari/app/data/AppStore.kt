@@ -199,6 +199,8 @@ class AppStore(private val ctx: Context) {
         val SLOW_TIP_LAST_DISMISS = longPreferencesKey("slowTipLastDismiss")
         /** Last silent CloudStream plugin auto-update pass, epoch millis (see Cs3AutoUpdate). */
         val CS3_AUTO_UPDATE_AT = longPreferencesKey("cs3AutoUpdateAt")
+        /** Last silent Nuvio scraper auto-update pass, epoch millis (see NuvioAutoUpdate). */
+        val NUVIO_AUTO_UPDATE_AT = longPreferencesKey("nuvioAutoUpdateAt")
         val TELEGRAM_DONT_SHOW = booleanPreferencesKey("telegramDontShow")
         val COMMUNITY_SEEN_VERSION = stringPreferencesKey("communitySeenVersion")
         /** The app version "Don't show this again" was ticked on — the tick
@@ -3259,6 +3261,13 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
 
     suspend fun setCs3AutoUpdateAt(at: Long) {
         write("CS3_AUTO_UPDATE_AT") { it[K.CS3_AUTO_UPDATE_AT] = at }
+    }
+
+    /** Last silent Nuvio scraper auto-update pass, epoch millis (0 = never). */
+    suspend fun nuvioAutoUpdateAt(): Long = store.data.first()[K.NUVIO_AUTO_UPDATE_AT] ?: 0L
+
+    suspend fun setNuvioAutoUpdateAt(at: Long) {
+        write("NUVIO_AUTO_UPDATE_AT") { it[K.NUVIO_AUTO_UPDATE_AT] = at }
     }
 
     // ---- Per-extension auto-translate (WebView pages → English) ----

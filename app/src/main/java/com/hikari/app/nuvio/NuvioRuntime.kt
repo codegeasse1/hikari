@@ -17,7 +17,8 @@ import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.Dispatcher
-import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -94,7 +95,7 @@ object NuvioRuntime {
      * below, this cannot be switched off, because it is the hardware talking.
      */
     private const val TV_CONCURRENT = 4
-    private const val FETCH_TIMEOUT_MS = 30_000L
+    private const val FETCH_TIMEOUT_MS = 60_000L
     // CALL_TIMEOUT_MS bounds a provider's whole JS execution. It is nuvio's own
     // per-plugin ceiling (PluginRuntime.PLUGIN_TIMEOUT_MS = 60s): a provider
     // that needs its cold boot plus a slow site fetch plus extraction is
@@ -130,9 +131,16 @@ object NuvioRuntime {
     private val engineMemoryLimit: Long
         get() = com.hikari.app.data.PerfMode.tvEngineMemoryLimit ?: ENGINE_MEMORY_LIMIT
 
-    // Hikari's full desktop Chrome UA as the default for nuvio bridge fetches.
-    // Providers that set their own UA header still override this.
-    private const val NUVIO_DEFAULT_UA = com.hikari.app.net.Http.UA
+    /** The default User-Agent for nuvio bridge fetches, byte-identical to
+     *  NuvioMobile's own FetchBridge fallback: providers that send no UA get
+     *  this one, so sites answer Hikari exactly what they answer nuvio. */
+    private const val NUVIO_DEFAULT_UA =
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    /** Binary-body marker: the harness sends `b64:<base64>` when a provider
+     *  POSTs an ArrayBuffer/typed-array body (see __nuvioFetch). The bridge
+     *  args are all strings, so binary rides the same channel with a prefix
+     *  the reference client's bodyKind/base64 pair fills. */
+    internal const val BINARY_BODY_PREFIX = "b64:"
 
     /** Bounds how many providers run their JS engines at once (see above). */
     private val concurrency = Semaphore(MAX_CONCURRENT)
@@ -782,7 +790,7 @@ object NuvioRuntime {
         for (name in headers.names()) {
             val key = name.lowercase()
             if (out.containsKey(key)) continue
-            out[key] = headers.values(name).joinToString(", ")
+            out[key] = headers.values(name).joinToString(",")
         }
         return out
     }
@@ -815,13 +823,30 @@ object NuvioRuntime {
                 runCatching { builder.header(k, h.getString(k)) }
             }
         }
-        if (body.isNotEmpty() && (method == "POST" || method == "PUT" || method == "PATCH")) {
+        // Request body, mirroring NuvioMobile's httpRequestRaw: POST/PUT/PATCH/
+        // DELETE may carry one; anything else never does. The harness sends
+        // binary (ArrayBuffer/typed-array) bodies as `b64:<base64>` (see
+        // BINARY_BODY_PREFIX) so they ride the string bridge verbatim instead
+        // of arriving as "[object Uint8Array]". Default media types match the
+        // reference exactly: form-encoded for POST, JSON for PUT/PATCH/DELETE.
+        val bodyBytes: ByteArray? = when {
+            body.startsWith(BINARY_BODY_PREFIX) -> runCatching {
+                android.util.Base64.decode(body.removePrefix(BINARY_BODY_PREFIX), android.util.Base64.DEFAULT)
+            }.getOrNull()
+            body.isNotEmpty() -> body.toByteArray(Charsets.UTF_8)
+            else -> null
+        }
+        if (bodyBytes != null && (method == "POST" || method == "PUT" || method == "PATCH" || method == "DELETE")) {
             val type = if (h != null && h.has("Content-Type")) h.getString("Content-Type")
-            else "application/x-www-form-urlencoded; charset=utf-8"
-            builder.method(method, okhttp3.RequestBody.create(type.toMediaTypeOrNull(), body))
+            else if (method == "POST") "application/x-www-form-urlencoded" else "application/json"
+            val mediaType = runCatching { type.toMediaType() }.getOrNull()
+                ?: throw IllegalArgumentException("bad Content-Type: $type")
+            builder.method(method, bodyBytes.toRequestBody(mediaType))
         } else {
             builder.method(if (method == "HEAD") "HEAD" else "GET", null)
         }
+        return builder.build()
+    }
         return builder.build()
     }
 
