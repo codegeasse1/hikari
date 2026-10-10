@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPOTLIGHT loading cover: a pool of accent light that blooms behind the
+     title instead of artwork, so the card is about the NAME of what is loading.
+     Drawn over the black banner background and under the title block. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="oval">
+    <gradient
+        android:type="radial"
+        android:gradientRadius="240dp"
+        android:startColor="@color/hikari_accent_ripple"
+        android:centerColor="#1A7B5CFF"
+        android:endColor="@android:color/transparent" />
+</shape>

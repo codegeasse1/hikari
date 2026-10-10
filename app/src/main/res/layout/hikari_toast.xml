@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Backs the com.lagradost.cloudstream3.databinding.ToastBinding shadow, which
+     is what CloudStream plugins get when they call CommonActivity.showToast.
+     Kept deliberately dumb (one card + one text view) so it can never fail to
+     inflate. -->
+<androidx.cardview.widget.CardView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    android:background="#F0222222"
+    app:cardBackgroundColor="#F0222222"
+    app:cardCornerRadius="12dp"
+    app:cardElevation="6dp">
+
+    <TextView
+        android:id="@+id/toast_text"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:maxWidth="320dp"
+        android:paddingStart="18dp"
+        android:paddingTop="12dp"
+        android:paddingEnd="18dp"
+        android:paddingBottom="12dp"
+        android:textColor="#FFFFFF"
+        android:textSize="14sp" />
+</androidx.cardview.widget.CardView>

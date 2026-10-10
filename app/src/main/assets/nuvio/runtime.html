@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<script>
+// bootstrap commonjs-ish module/export globals so the esbuild/UMD bundles
+// below can be loaded as plain scripts (never through evaluateJavascript,
+// which has a practical message-size ceiling that broke crypto-js/cheerio)
+var __nuvioModule = { exports: {} };
+var module = __nuvioModule;
+var exports = module.exports;
+</script>
+<script src="cheerio.js"></script>
+<script>
+var __nuvioCheerio = module.exports;
+module = { exports: {} };
+exports = module.exports;
+</script>
+<script src="crypto-js.js"></script>
+<script>
+var __nuvioCryptoJs = module.exports;
+</script>
+<script src="harness.js"></script>
+<script>
+window.__nuvioRegisterModule('cheerio', __nuvioCheerio);
+window.__nuvioRegisterModule('crypto-js', __nuvioCryptoJs);
+
+// WebCrypto fallback: WebView usually exposes crypto.subtle even on file://,
+// but if it doesn't (non-secure-context path), back it with crypto-js so
+// providers using subtle.digest / getRandomValues / randomUUID keep working.
+(function () {
+  try {
+    if (window.crypto && window.crypto.subtle && window.crypto.getRandomValues) return;
+    var CJS = window.__nuvioRequire('crypto-js');
+    function toHex(bytes) { return CJS.lib.WordArray.create(bytes).toString(CJS.enc.Hex); }
+    function digestBytes(name, bytes) {
+      var wa = CJS.lib.WordArray.create(bytes);
+      var n = String(name || 'SHA-256').replace(/[-_]/g, '').toLowerCase();
+      if (n.indexOf('md5') === 0) return CJS.MD5(wa);
+      if (n.indexOf('sha1') === 0) return CJS.SHA1(wa);
+      return CJS.SHA256(wa);
+    }
+    function hexToBuffer(hex) {
+      var out = new Uint8Array(hex.length / 2);
+      for (var i = 0; i < out.length; i++) out[i] = parseInt(hex.substr(i * 2, 2), 16);
+      return out.buffer;
+    }
+    if (!window.crypto) window.crypto = {};
+    if (!window.crypto.getRandomValues) {
+      window.crypto.getRandomValues = function (arr) {
+        var rand = CJS.lib.WordArray.random(arr.length);
+        var hex = rand.toString(CJS.enc.Hex);
+        for (var i = 0; i < arr.length; i++) arr[i] = parseInt(hex.substr(i * 2, 2), 16) & 0xff;
+        return arr;
+      };
+    }
+    if (!window.crypto.randomUUID) {
+      window.crypto.randomUUID = function () {
+        var b = new Uint8Array(16);
+        window.crypto.getRandomValues(b);
+        b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80;
+        var h = toHex(b);
+        return h.substr(0, 8) + '-' + h.substr(8, 4) + '-' + h.substr(12, 4) + '-' + h.substr(16, 4) + '-' + h.substr(20);
+      };
+    }
+    if (!window.crypto.subtle) {
+      window.crypto.subtle = {
+        digest: function (algo, data) {
+          return Promise.resolve(hexToBuffer(digestBytes(algo && algo.name, new Uint8Array(data)).toString(CJS.enc.Hex)));
+        },
+        importKey: function () { throw new Error('crypto.subtle.importKey not available in nuvio runtime (file://)'); },
+        sign: function () { throw new Error('crypto.subtle.sign not available in nuvio runtime (file://)'); },
+        verify: function () { throw new Error('crypto.subtle.verify not available in nuvio runtime (file://)'); },
+        encrypt: function () { throw new Error('crypto.subtle.encrypt not available in nuvio runtime (file://)'); },
+        decrypt: function () { throw new Error('crypto.subtle.decrypt not available in nuvio runtime (file://)'); },
+        deriveBits: function () { throw new Error('crypto.subtle.deriveBits not available in nuvio runtime (file://)'); }
+      };
+    }
+    console.log('[nuvio] crypto.subtle shim active');
+  } catch (e) {
+    console.warn('[nuvio] crypto.subtle shim failed: ' + e);
+  }
+})();
+
+window.__nuvioReady = true;
+console.log('[nuvio] runtime.html boot complete');
+</script>
+</head>
+<body></body>
+</html>

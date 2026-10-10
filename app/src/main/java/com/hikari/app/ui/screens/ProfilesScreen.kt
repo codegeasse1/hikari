@@ -1,0 +1,952 @@
+package com.hikari.app.ui.screens
+
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.LockOpen
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import com.hikari.app.HikariApp
+import com.hikari.app.data.Profiles
+import com.hikari.app.i18n.tr
+import com.hikari.app.tv.tvTextFieldKeys
+import com.hikari.app.ui.components.GlassCard
+import com.hikari.app.ui.components.GlassShape
+import com.hikari.app.ui.components.LocalHideHelp
+import com.hikari.app.ui.components.SettingsPageHeader
+import com.hikari.app.ui.navigation.LocalTaskbarInset
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+/**
+ * Settings → Profiles: the picker, and the place a profile is created, renamed
+ * or removed.
+ *
+ * A profile is a whole setup kept apart from the others on the same device (see
+ * [Profiles]) — what the user gets is exactly what the request described: a new
+ * profile looks like Hikari freshly installed (no extensions installed, an empty
+ * Library, an empty history, its own settings), and choosing an older one brings
+ * everything back, because the old setup was never deleted, only put away.
+ *
+ * The page is deliberately plain about the one thing that IS shared: the
+ * extension files and the films already downloaded stay on the device, so a new
+ * profile installs an extension without downloading it twice, and deleting a
+ * profile never deletes the user's videos.
+ */
+@Composable
+fun ProfilesScreen(app: HikariApp, onBack: () -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val listState = rememberLazyListState()
+
+    val profiles by Profiles.all.collectAsState()
+    val activeId by Profiles.activeId.collectAsState()
+
+    // Hoisted strings: `tr` is composable, and the ones below are also read from
+    // plain lambdas — a coroutine that has finished switching, a dialog button —
+    // which cannot call it.
+    val msgNowUsing = tr("Now using")
+    val msgOtherKept = tr("The other setup is still here — switch back any time.")
+    val msgSwitchFailed = tr("Could not switch profile. The current one is unchanged.")
+    val msgLockedFirst = tr("That profile is locked — enter its password first.")
+    val msgDefaultName = tr("Default")
+    val msgCreated = tr("Created. You can switch between this and your other setup any time.")
+    val msgCreateFailed = tr("Could not create that profile.")
+    val msgDeleted = tr("Profile deleted.")
+
+    var busy by remember { mutableStateOf(false) }
+    var naming by remember { mutableStateOf(false) }
+    var renameTarget by remember { mutableStateOf<Profiles.Profile?>(null) }
+    var deleteTarget by remember { mutableStateOf<Profiles.Profile?>(null) }
+    var typed by remember { mutableStateOf("") }
+    var status by remember { mutableStateOf("") }
+    // The app-lock gate over this page: when an app lock is set, creating,
+    // renaming, deleting or SWITCHING a profile asks for the lock's password
+    // first — otherwise anyone holding the unlocked phone could open or change
+    // a profile that is not theirs. The pending action runs only after the
+    // password verifies; nothing about the password is kept.
+    var gateOpen by remember { mutableStateOf(false) }
+    var gatePassword by remember { mutableStateOf("") }
+    var gateWrong by remember { mutableStateOf(false) }
+    var gateBusy by remember { mutableStateOf(false) }
+    var gateSecret by remember { mutableStateOf("") }
+    var pendingGate by remember { mutableStateOf<(() -> Unit)?>(null) }
+
+    fun askGate(action: () -> Unit) {
+        scope.launch {
+            val on = runCatching { app.store.appLock() }.getOrDefault(false)
+            val secret = runCatching { app.store.appLockSecret() }.getOrDefault("")
+            if (on && secret.isNotBlank()) {
+                pendingGate = action
+                gateSecret = secret
+                gatePassword = ""
+                gateWrong = false
+                gateOpen = true
+            } else {
+                action()
+            }
+        }
+    }
+    // The PER-PROFILE gate: opening, renaming, deleting or re-locking a
+    // profile that has its own password asks for THAT password — never the
+    // app lock's. A profile with no password of its own runs ungated.
+    var profileGateTarget by remember { mutableStateOf<Profiles.Profile?>(null) }
+    var profileGateAction by remember { mutableStateOf<(() -> Unit)?>(null) }
+    // True when the pending gate guards a SWITCH into the target (as opposed
+    // to a one-off rename/delete/re-lock): switches stay unlocked while the
+    // entered profile is in use (Profiles.switchTo re-locks the rest), while
+    // one-off gates re-lock the moment their sheet opens — every selection
+    // asks again.
+    var profileGateIsSwitch by remember { mutableStateOf(false) }
+    var profileGatePw by remember { mutableStateOf("") }
+    var profileGateWrong by remember { mutableStateOf(false) }
+    var profileGateBusy by remember { mutableStateOf(false) }
+    // The set/change/remove-password sheet, and its fields.
+    var lockSetupTarget by remember { mutableStateOf<Profiles.Profile?>(null) }
+    var lockCurrent by remember { mutableStateOf("") }
+    var lockNew by remember { mutableStateOf("") }
+    var lockConfirm by remember { mutableStateOf("") }
+    var lockApplyAll by remember { mutableStateOf(false) }
+    var lockBusy by remember { mutableStateOf(false) }
+    var lockError by remember { mutableStateOf("") }
+    fun resetLockSheet() {
+        lockCurrent = ""
+        lockNew = ""
+        lockConfirm = ""
+        lockApplyAll = false
+        lockBusy = false
+        lockError = ""
+    }
+    fun askProfileGate(profile: Profiles.Profile, isSwitch: Boolean = false, action: () -> Unit) {
+        if (Profiles.needsPassword(profile)) {
+            profileGateTarget = profile
+            profileGateAction = action
+            profileGateIsSwitch = isSwitch
+            profileGatePw = ""
+            profileGateWrong = false
+        } else {
+            action()
+        }
+    }
+    // What each profile holds, read from its own snapshot (the active one is read
+    // from the live store instead — its snapshot is only as fresh as the last
+    // switch away from it).
+    var summaries by remember { mutableStateOf<Map<String, Profiles.Summary>>(emptyMap()) }
+
+    LaunchedEffect(profiles, activeId) {
+        val live = withContext(Dispatchers.IO) { runCatching { Profiles.liveSummary(app) }.getOrNull() }
+        val rest = withContext(Dispatchers.IO) {
+            profiles.filter { it.id != activeId }.mapNotNull { p ->
+                runCatching { Profiles.summaryOf(context, p.id) }.getOrNull()?.let { p.id to it }
+            }
+        }
+        val map = HashMap<String, Profiles.Summary>()
+        for ((id, summary) in rest) map[id] = summary
+        val active = activeId
+        if (active != null && live != null) map[active] = live
+        summaries = map
+    }
+
+    // The registry lives in the files directory, so this page is also what makes
+    // sure the app's flows are showing it (a profile restored from a backup, or
+    // an app whose data was cleared, is picked up here).
+    LaunchedEffect(Unit) { runCatching { Profiles.load(app) } }
+
+    BackHandler { onBack() }
+
+    fun switchTo(profile: Profiles.Profile) {
+        if (profile.id == activeId || busy) return
+        busy = true
+        status = ""
+        scope.launch {
+            val result = runCatching { Profiles.switchTo(app, profile.id) }
+            busy = false
+            // switchTo itself refuses a locked target (defense in depth: the
+            // row already asked via askProfileGate, but no caller may enter a
+            // locked profile without its password).
+            val moved = result.getOrDefault(false)
+            status = if (moved) {
+                msgNowUsing + " \"" + profile.name + "\". " + msgOtherKept
+            } else if (result.isFailure) {
+                msgSwitchFailed
+            } else {
+                msgLockedFirst
+            }
+        }
+    }
+
+    LazyColumn(
+        state = listState,
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(
+            start = 16.dp,
+            end = 16.dp,
+            top = 16.dp,
+            bottom = LocalTaskbarInset.current + 16.dp,
+        ),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        item(key = "profiles-header") {
+            SettingsPageHeader(
+                title = tr("Profiles"),
+                subtitle = tr("More than one setup on this device"),
+                onBack = onBack,
+            )
+        }
+
+        if (profiles.isEmpty()) {
+            item(key = "profiles-intro") {
+                GlassCard(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp)) {
+                        Text(
+                            tr("Keep setups apart"),
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            tr(
+                                "A profile is a whole Hikari of its own: its installed " +
+                                    "extensions, Library, history, accounts and settings. " +
+                                    "A new one starts empty — like the app on the day it " +
+                                    "was installed — and your current setup is saved as " +
+                                    "the first profile, so nothing is lost."
+                            ),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        PrimaryButton(
+                            label = tr("Save this setup as a profile"),
+                            enabled = !busy,
+                        ) {
+                            askGate {
+                                typed = msgDefaultName
+                                naming = true
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            items(profiles, key = { it.id }) { profile ->
+                ProfileRow(
+                    profile = profile,
+                    active = profile.id == activeId,
+                    summary = summaryText(summaries[profile.id]),
+                    busy = busy,
+                    // The last profile is not offered for deletion: with none
+                    // left the picker would be an empty page describing a
+                    // feature with nothing in it.
+                    canDelete = profiles.size > 1,
+                    onOpen = { askProfileGate(profile, isSwitch = true) { switchTo(profile) } },
+                    onRename = {
+                        askProfileGate(profile) {
+                            typed = profile.name
+                            renameTarget = profile
+                        }
+                    },
+                    onDelete = { askProfileGate(profile) { deleteTarget = profile } },
+                    onLock = {
+                        askProfileGate(profile) {
+                            resetLockSheet()
+                            lockSetupTarget = profile
+                        }
+                    },
+                )
+            }
+            item(key = "profiles-new") {
+                GlassCard(
+                    onClick = {
+                        askGate {
+                            typed = ""
+                            naming = true
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 15.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            Icons.Filled.Add,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                tr("New profile"),
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                tr(
+                                    "Starts empty: no extensions installed, an empty " +
+                                        "Library and history, its own settings."
+                                ),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
+            // An explanation paragraph, so it obeys the hide-explanations switch
+            // like every other one (it was the line that kept showing with the
+            // switch off). The `if` is INSIDE the item because `LocalHideHelp`
+            // is a composition-local read and the LazyColumn's content lambda is
+            // not composable — reading it out there is a compile error.
+            item(key = "profiles-note") {
+                if (!LocalHideHelp.current) {
+                    Text(
+                        tr(
+                            "Extension files and anything already downloaded stay on this " +
+                                "device and are shared — a profile carries the setup, not a " +
+                                "second copy of your videos. Your app lock and this device's " +
+                                "layout are kept for every profile."
+                        ),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 6.dp, start = 4.dp, end = 4.dp),
+                    )
+                }
+            }
+        }
+
+        if (busy) {
+            item(key = "profiles-busy") {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        tr("Switching — saving this setup and loading the other…"),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        if (status.isNotBlank()) {
+            item(key = "profiles-status") {
+                Text(
+                    status,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+        }
+    }
+
+    if (naming) {
+        ProfileNameDialog(
+            title = if (profiles.isEmpty()) tr("Save this setup") else tr("New profile"),
+            hint = if (profiles.isEmpty()) {
+                tr("Your current extensions, Library, history and settings become this profile.")
+            } else {
+                tr(
+                    "The new profile starts empty. This setup is saved first, so you " +
+                        "can switch back to it."
+                )
+            },
+            value = typed,
+            confirmLabel = if (profiles.isEmpty()) tr("Save") else tr("Create"),
+            onValueChange = { typed = it },
+            onConfirm = {
+                val name = typed.trim()
+                naming = false
+                busy = true
+                scope.launch {
+                    val result = runCatching {
+                        if (profiles.isEmpty()) Profiles.adopt(app, name.ifBlank { "Default" })
+                        else Profiles.createEmpty(app, name.ifBlank { "Profile" })
+                    }
+                    busy = false
+                    status = if (result.isSuccess) {
+                        msgCreated
+                    } else {
+                        msgCreateFailed
+                    }
+                }
+            },
+            onDismiss = { naming = false },
+        )
+    }
+
+    renameTarget?.let { target ->
+        ProfileNameDialog(
+            title = tr("Rename profile"),
+            hint = tr("Only the name changes — everything inside stays as it is."),
+            value = typed,
+            confirmLabel = tr("Save"),
+            onValueChange = { typed = it },
+            onConfirm = {
+                val name = typed.trim()
+                renameTarget = null
+                if (name.isNotBlank()) {
+                    scope.launch { runCatching { Profiles.rename(app, target.id, name) } }
+                }
+            },
+            onDismiss = { renameTarget = null },
+        )
+    }
+
+    deleteTarget?.let { target ->
+        AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            title = { Text(tr("Delete this profile?")) },
+            text = {
+                Text(
+                    tr("Removes") + " \"" + target.name + "\" " + tr(
+                        "and everything it holds: its installed extensions, Library, " +
+                            "history and settings. The extension files and your " +
+                            "downloads stay on the device, and other profiles are " +
+                            "untouched."
+                    )
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    deleteTarget = null
+                    busy = true
+                    scope.launch {
+                        runCatching { Profiles.delete(app, target.id) }
+                        busy = false
+                        status = msgDeleted
+                    }
+                }) {
+                    Text(tr("Delete"), color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteTarget = null }) { Text(tr("Cancel")) }
+            },
+        )
+    }
+
+    if (gateOpen) {
+        ProfileLockDialog(
+            value = gatePassword,
+            onValueChange = {
+                gatePassword = it
+                gateWrong = false
+            },
+            wrong = gateWrong,
+            busy = gateBusy,
+            onUnlock = {
+                if (gateBusy) return@ProfileLockDialog
+                gateBusy = true
+                val pw = gatePassword
+                val sec = gateSecret
+                val run = pendingGate
+                scope.launch {
+                    val ok = withContext(Dispatchers.IO) {
+                        com.hikari.app.lock.AppLock.verify(pw, sec)
+                    }
+                    gateBusy = false
+                    if (ok) {
+                        gateOpen = false
+                        gatePassword = ""
+                        pendingGate = null
+                        run?.invoke()
+                    } else {
+                        gateWrong = true
+                    }
+                }
+            },
+            onDismiss = {
+                if (!gateBusy) {
+                    gateOpen = false
+                    gatePassword = ""
+                    pendingGate = null
+                }
+            },
+        )
+    }
+
+    // The per-profile password prompt: opening, renaming, deleting or
+    // re-locking a profile that has its own password.
+    profileGateTarget?.let { target ->
+        ProfileLockDialog(
+            title = tr("Enter the password for") + " \"" + target.name + "\"",
+            value = profileGatePw,
+            onValueChange = {
+                profileGatePw = it
+                profileGateWrong = false
+            },
+            wrong = profileGateWrong,
+            busy = profileGateBusy,
+            onUnlock = {
+                if (profileGateBusy) return@ProfileLockDialog
+                profileGateBusy = true
+                val pw = profileGatePw
+                scope.launch {
+                    val res = runCatching { Profiles.unlock(app, target.id, pw) }.getOrNull()
+                    profileGateBusy = false
+                    if (res == Profiles.UnlockResult.OK || res == Profiles.UnlockResult.NO_SECRET) {
+                        profileGateTarget = null
+                        profileGatePw = ""
+                        val run = profileGateAction
+                        val wasSwitch = profileGateIsSwitch
+                        profileGateAction = null
+                        profileGateIsSwitch = false
+                        run?.invoke()
+                        // One-time gate: a password typed for rename/delete/
+                        // re-lock must not leave the profile open — the next
+                        // tap (e.g. switching into it) asks again. Switches
+                        // are excluded: Profiles.switchTo re-locks everything
+                        // except the entered profile itself.
+                        if (!wasSwitch && target.id != Profiles.activeId.value) {
+                            Profiles.reLock(target.id)
+                        }
+                    } else {
+                        profileGateWrong = true
+                    }
+                }
+            },
+            onDismiss = {
+                if (!profileGateBusy) {
+                    profileGateTarget = null
+                    profileGatePw = ""
+                    profileGateAction = null
+                    profileGateIsSwitch = false
+                }
+            },
+        )
+    }
+
+    // Set, change or remove one profile's OWN password — never the app lock's.
+    // "Use the same password for every profile" writes it onto all of them;
+    // otherwise only this profile changes.
+    lockSetupTarget?.let { target ->
+        val canSave = !lockBusy && lockNew.length >= 4 && lockNew == lockConfirm &&
+            (!target.locked || lockCurrent.isNotBlank())
+        // Hoisted: `tr` is @Composable and the save/remove below run in a
+        // coroutine, where composable calls are illegal.
+        val errWrongPw = tr("Wrong password — try again.")
+        val errSaveFail = tr("Could not save it — try again.")
+        val msgAllSet = tr("Every profile now uses the new password.")
+        val msgOneSet = tr("Password set for")
+        val msgRemoved = tr("Password removed from")
+        AlertDialog(
+            onDismissRequest = { if (!lockBusy) lockSetupTarget = null },
+            title = {
+                Text(
+                    if (target.locked) tr("Change the password for") + " \"" + target.name + "\""
+                    else tr("Lock") + " \"" + target.name + "\" " + tr("with a password")
+                )
+            },
+            text = {
+                Column {
+                    if (target.locked) {
+                        OutlinedTextField(
+                            value = lockCurrent,
+                            onValueChange = { lockCurrent = it; lockError = "" },
+                            singleLine = true,
+                            enabled = !lockBusy,
+                            label = { Text(tr("Current password")) },
+                            visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Spacer(Modifier.height(8.dp))
+                    }
+                    OutlinedTextField(
+                        value = lockNew,
+                        onValueChange = { lockNew = it; lockError = "" },
+                        singleLine = true,
+                        enabled = !lockBusy,
+                        label = { Text(tr("New password (4+ characters)")) },
+                        visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = lockConfirm,
+                        onValueChange = { lockConfirm = it; lockError = "" },
+                        singleLine = true,
+                        enabled = !lockBusy,
+                        label = { Text(tr("Repeat the new password")) },
+                        visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                        isError = lockConfirm.isNotBlank() && lockNew != lockConfirm,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(
+                            checked = lockApplyAll,
+                            enabled = !lockBusy,
+                            onCheckedChange = { lockApplyAll = it },
+                        )
+                        Text(
+                            tr("Use the same password for every profile"),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    if (lockError.isNotBlank()) {
+                        Text(
+                            lockError,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    } else if (!LocalHideHelp.current) {
+                        Text(
+                            tr("Only this profile asks for it — the app lock keeps its own password."),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(enabled = canSave, onClick = {
+                    scope.launch {
+                        lockBusy = true
+                        lockError = ""
+                        // A locked profile proves the current password first.
+                        if (target.locked) {
+                            val res = runCatching { Profiles.unlock(app, target.id, lockCurrent) }.getOrNull()
+                            if (res != Profiles.UnlockResult.OK && res != Profiles.UnlockResult.NO_SECRET) {
+                                lockBusy = false
+                                lockError = errWrongPw
+                                return@launch
+                            }
+                        }
+                        val fail = runCatching {
+                            Profiles.setLock(app, target.id, lockNew)
+                            if (lockApplyAll) {
+                                for (p in profiles) {
+                                    if (p.id != target.id) Profiles.setLock(app, p.id, lockNew)
+                                }
+                            }
+                        }.isFailure
+                        lockBusy = false
+                        if (fail) {
+                            lockError = errSaveFail
+                        } else {
+                            lockSetupTarget = null
+                            status = if (lockApplyAll) msgAllSet
+                            else msgOneSet + " \"" + target.name + "\"."
+                        }
+                    }
+                }) {
+                    Text(if (lockBusy) tr("Saving…") else tr("Save"))
+                }
+            },
+            dismissButton = {
+                Row {
+                    if (target.locked) {
+                        TextButton(enabled = !lockBusy, onClick = {
+                            scope.launch {
+                                lockBusy = true
+                                val res = runCatching { Profiles.unlock(app, target.id, lockCurrent) }.getOrNull()
+                                lockBusy = false
+                                if (res == Profiles.UnlockResult.OK || res == Profiles.UnlockResult.NO_SECRET) {
+                                    runCatching { Profiles.clearLock(app, target.id) }
+                                    lockSetupTarget = null
+                                    status = msgRemoved + " \"" + target.name + "\"."
+                                } else {
+                                    lockError = errWrongPw
+                                }
+                            }
+                        }) {
+                            Text(tr("Remove"), color = MaterialTheme.colorScheme.error)
+                        }
+                    }
+                    TextButton(enabled = !lockBusy, onClick = { lockSetupTarget = null }) {
+                        Text(tr("Cancel"))
+                    }
+                }
+            },
+        )
+    }
+}
+
+/**
+ * What one profile holds, in the user's own words — "12 extensions · 34 saved ·
+ * 120 watched", or a sentence when there is nothing in it yet (which is what a
+ * profile that has never been used looks like, and worth saying plainly so it
+ * does not read as a broken row).
+ */
+@Composable
+private fun summaryText(summary: Profiles.Summary?): String {
+    if (summary == null) return ""
+    if (summary.isEmpty) return tr("Empty — nothing installed or saved yet")
+    val parts = buildList {
+        if (summary.extensions > 0) add(summary.extensions.toString() + " " + tr("extensions"))
+        if (summary.saved > 0) add(summary.saved.toString() + " " + tr("saved"))
+        if (summary.watched > 0) add(summary.watched.toString() + " " + tr("watched"))
+    }
+    return parts.joinToString(" · ")
+}
+
+/** One profile: name, what it holds, and the three things to do with it. */
+@Composable
+private fun ProfileRow(
+    profile: Profiles.Profile,
+    active: Boolean,
+    summary: String,
+    busy: Boolean,
+    canDelete: Boolean,
+    onOpen: () -> Unit,
+    onRename: () -> Unit,
+    onDelete: () -> Unit,
+    onLock: () -> Unit,
+) {
+    GlassCard(
+        onClick = { if (!active) onOpen() },
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                Modifier
+                    .size(40.dp)
+                    .clip(GlassShape)
+                    .background(
+                        if (active) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
+                        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    if (active) Icons.Filled.Check else Icons.Filled.Person,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+            }
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        profile.name,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    if (active) {
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            tr("In use"),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                }
+                if (summary.isNotBlank()) {
+                    Text(
+                        summary,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            IconButton(enabled = !busy, onClick = onRename) {
+                Icon(
+                    Icons.Filled.Edit,
+                    contentDescription = tr("Rename"),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+            IconButton(enabled = !busy, onClick = onLock) {
+                Icon(
+                    if (profile.locked) Icons.Filled.Lock else Icons.Filled.LockOpen,
+                    contentDescription = if (profile.locked) {
+                        tr("Locked — change or remove the password")
+                    } else {
+                        tr("Lock this profile with its own password")
+                    },
+                    tint = if (profile.locked) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+            if (canDelete) {
+                IconButton(enabled = !busy, onClick = onDelete) {
+                    Icon(
+                        Icons.Filled.Delete,
+                        contentDescription = tr("Delete"),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** The app-lock password prompt that guards creating, renaming, deleting and
+ *  opening a profile. The password itself is never stored — it is verified
+ *  against the lock's derivation and dropped (see
+ *  [com.hikari.app.lock.AppLock]). */
+@Composable
+private fun ProfileLockDialog(
+    title: String? = null,
+    value: String,
+    onValueChange: (String) -> Unit,
+    wrong: Boolean,
+    busy: Boolean,
+    onUnlock: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title ?: tr("Enter your app-lock password")) },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = value,
+                    onValueChange = onValueChange,
+                    singleLine = true,
+                    label = { Text(tr("Password")) },
+                    visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                    isError = wrong,
+                    supportingText = {
+                        if (wrong) {
+                            Text(
+                                tr("Wrong password — try again."),
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth().tvTextFieldKeys(value),
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    tr("Only the person who set this password can create, change or open a profile."),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(enabled = value.isNotBlank() && !busy, onClick = onUnlock) {
+                Text(if (busy) tr("Checking…") else tr("Unlock"))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(tr("Cancel")) }
+        },
+    )
+}
+
+/** One name field, used for creating a profile and for renaming one. */
+@Composable
+private fun ProfileNameDialog(
+    title: String,
+    hint: String,
+    value: String,
+    confirmLabel: String,
+    onValueChange: (String) -> Unit,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = value,
+                    onValueChange = onValueChange,
+                    singleLine = true,
+                    label = { Text(tr("Profile name")) },
+                    modifier = Modifier.fillMaxWidth().tvTextFieldKeys(value),
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    hint,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(enabled = value.isNotBlank(), onClick = onConfirm) { Text(confirmLabel) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(tr("Cancel")) }
+        },
+    )
+}
+
+/** The page's one primary action (the same shape the picker sheets use). */
+@Composable
+private fun PrimaryButton(label: String, enabled: Boolean, onClick: () -> Unit) {
+    Surface(
+        onClick = { if (enabled) onClick() },
+        shape = RoundedCornerShape(18.dp),
+        color = if (enabled) MaterialTheme.colorScheme.primary
+        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Box(Modifier.padding(vertical = 14.dp), contentAlignment = Alignment.Center) {
+            Text(
+                label,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = if (enabled) MaterialTheme.colorScheme.onPrimary
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}

@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Loading cover EFFECT "Aura ring" fallback.
+
+     The ring hangs on the SCREEN's own edge (a rounded rectangle inset 8dp by
+     activity_player.xml), because it is the loading screen's frame lit up rather
+     than a shape drawn around the title card.
+
+     Its COLOUR is the user's own choice (Settings → App Layout → Loading screen →
+     Aura ring colour) and is handed over from the detail screen as an ARGB extra,
+     which PlayerActivity draws itself — see `auraRingDrawable`. This drawable is
+     only what the view carries before that runs (and what a cover with no colour
+     extra falls back to): the app accent, drawn as a thick soft band of light
+     under a crisp hairline, so the ring reads as a glow rather than a bare
+     outline even in that first frame.
+
+     PlayerActivity animates the ALPHA (see showLoadingBanner); the ring is NOT
+     scaled, because scaling a border around the screen would pull it off the
+     edge it is meant to sit on. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <corners android:radius="26dp" />
+            <stroke
+                android:width="14dp"
+                android:color="#33F5C569" />
+            <solid android:color="@android:color/transparent" />
+        </shape>
+    </item>
+    <item>
+        <shape android:shape="rectangle">
+            <corners android:radius="26dp" />
+            <stroke
+                android:width="2dp"
+                android:color="@color/hikari_accent_mid" />
+            <solid android:color="@android:color/transparent" />
+        </shape>
+    </item>
+</layer-list>

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Highlighted metadata badge (video quality). -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <gradient
+        android:angle="0"
+        android:startColor="@color/hikari_accent_start"
+        android:endColor="@color/hikari_accent_end" />
+    <corners android:radius="11dp" />
+</shape>

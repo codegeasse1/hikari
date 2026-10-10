@@ -1,0 +1,497 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#000000"
+    android:keepScreenOn="true">
+
+    <androidx.media3.ui.PlayerView
+        android:id="@+id/player_view"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        app:controller_layout_id="@layout/player_controller"
+        app:play_icon="@drawable/hikari_play"
+        app:pause_icon="@drawable/hikari_pause"
+        app:show_buffering="when_playing" />
+
+    <!-- Title-card loading cover (Nuvio/Stremio style): the title's backdrop
+         with its name breathing in and out, shown from the instant the player
+         opens until the first server paints its first frame. It replaces both
+         the old source-sheet spinner and the player's own buffering spinner, so
+         tapping Play reads as one continuous "finding your server" screen.
+         Sits directly above the PlayerView so it covers the video surface; the
+         error panel and lock button are declared after it and stay on top. -->
+    <FrameLayout
+        android:id="@+id/loading_banner"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@drawable/player_banner_fallback"
+        android:clickable="true"
+        android:focusable="true"
+        android:visibility="gone">
+
+        <ImageView
+            android:id="@+id/loading_backdrop"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:scaleType="centerCrop" />
+
+        <View
+            android:id="@+id/loading_scrim"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@drawable/player_banner_scrim" />
+
+        <!-- SPOTLIGHT style only: the accent bloom behind the title (see
+             player_banner_glow). GONE for every other loading style — and also
+             shown for the "Accent glow" loading EFFECT, which is the same pool
+             of light on a style that does not draw one itself. -->
+        <View
+            android:id="@+id/loading_glow"
+            android:layout_width="520dp"
+            android:layout_height="520dp"
+            android:layout_gravity="center"
+            android:background="@drawable/player_banner_glow"
+            android:visibility="gone" />
+
+        <!-- Loading cover EFFECT "Aura ring" (Settings → App Layout → Loading
+             screen → Effect). It hangs on the SCREEN's own edge rather than
+             around the title card: the ring IS the loading screen's frame lit up,
+             so it belongs out at the phone's border (the ring and the gallery
+             frame both sat too far inside — see the 8dp/18dp pair in the detail
+             screen's own cover, which draws the identical picture).
+
+             The colour is chosen in Settings (Aura ring colour) and handed over
+             as an ARGB extra; PlayerActivity draws the ring itself from that
+             colour (auraRingDrawable), so the two screens match exactly. The
+             drawable here is only the fallback for when no colour was passed.
+
+             PlayerActivity animates its ALPHA only — the ring is a border around
+             the screen, so scaling it would pull it off the edge. -->
+        <View
+            android:id="@+id/loading_effect_ring"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:layout_margin="8dp"
+            android:background="@drawable/player_banner_effect_ring"
+            android:visibility="gone" />
+
+        <!-- The title block. (It used to be wrapped by a frame that owned the
+             aura ring; the ring moved out to the screen's edge, so this is just
+             the card's centred slot now.) -->
+        <FrameLayout
+            android:id="@+id/loading_ring_frame"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center">
+
+            <LinearLayout
+                android:id="@+id/loading_title_box"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center"
+                android:orientation="vertical"
+                android:gravity="center_horizontal"
+                android:paddingStart="28dp"
+                android:paddingEnd="28dp">
+
+                <!-- POSTER style only: the title's own poster on a glass card, so a
+                     portrait poster is shown whole rather than cropped into a
+                     backdrop. GONE for the other styles. -->
+                <ImageView
+                    android:id="@+id/loading_card_poster"
+                    android:layout_width="128dp"
+                    android:layout_height="192dp"
+                    android:layout_marginBottom="14dp"
+                    android:background="@drawable/player_banner_card"
+                    android:scaleType="centerCrop"
+                    android:visibility="gone" />
+
+                <!-- The title's own WORDMARK, drawn instead of @id/loading_title
+                     when the title has one (Settings → App Layout → Loading
+                     screen → Title logo). GONE for every title without one, and
+                     then the text title below is drawn as it always was — the two
+                     occupy the same slot, never both. Its width is set in code
+                     from the loading-logo size setting; adjustViewBounds keeps
+                     the height the art's own, so nothing is cropped or squashed.
+                     It lives inside this LinearLayout on purpose: the breathing
+                     animation scales the whole box, so the wordmark grows and
+                     shrinks exactly like the text title did. -->
+                <ImageView
+                    android:id="@+id/loading_logo"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:adjustViewBounds="true"
+                    android:scaleType="fitCenter"
+                    android:contentDescription="@string/app_name"
+                    android:visibility="gone" />
+
+                <TextView
+                    android:id="@+id/loading_title"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:gravity="center"
+                    android:maxLines="3"
+                    android:ellipsize="end"
+                    android:textColor="#FFFFFF"
+                    android:textSize="32sp"
+                    android:textStyle="bold"
+                    android:letterSpacing="0.10"
+                    android:shadowColor="#CC000000"
+                    android:shadowRadius="18"
+                    android:shadowDx="0"
+                    android:shadowDy="3" />
+
+                <TextView
+                    android:id="@+id/loading_episode"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:gravity="center"
+                    android:textColor="@color/hikari_accent_mid"
+                    android:textSize="14sp"
+                    android:textStyle="bold"
+                    android:visibility="gone" />
+
+                <TextView
+                    android:id="@+id/loading_detail"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:gravity="center"
+                    android:maxLines="2"
+                    android:ellipsize="end"
+                    android:textColor="#CCFFFFFF"
+                    android:textSize="13sp"
+                    android:visibility="gone" />
+            </LinearLayout>
+        </FrameLayout>
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom|center_horizontal"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:paddingBottom="56dp">
+
+            <ProgressBar
+                android:layout_width="18dp"
+                android:layout_height="18dp"
+                android:indeterminateTint="@color/hikari_accent_mid" />
+
+            <TextView
+                android:id="@+id/loading_status"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="10dp"
+                android:maxLines="3"
+                android:ellipsize="end"
+                android:text="Finding the best server…"
+                android:textColor="#CCFFFFFF"
+                android:textSize="13sp" />
+        </LinearLayout>
+
+        <!-- Loading EFFECT "Sheen" and "Gallery frame" (Settings → App Layout →
+             Loading screen → Effect). Both cover the whole card and are drawn
+             LAST, so the light sweeps over everything the style drew and the
+             frame sits on top of it, exactly as they do on the detail screen's
+             cover. GONE unless that treatment is chosen, and either/both can be
+             shown at once. -->
+        <View
+            android:id="@+id/loading_effect_sheen"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@drawable/player_banner_effect_sheen"
+            android:visibility="gone" />
+
+        <!-- Inset so it sits just inside the aura ring's own path (8dp) when
+             both treatments are chosen, and close to the phone's border on its
+             own — the two rings are one nested pair, not two rings fighting for
+             the same line. -->
+        <View
+            android:id="@+id/loading_effect_frame"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:layout_margin="18dp"
+            android:background="@drawable/player_banner_effect_frame"
+            android:visibility="gone" />
+    </FrameLayout>
+
+    <!-- Spinner-only cover: the same "finding your server" moment as the title
+         card above, for users who turn the banner off in Settings. Just the
+         round progress indicator on black, so the player opens immediately
+         without the artwork/name animation. -->
+    <FrameLayout
+        android:id="@+id/loading_spinner"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@drawable/player_banner_fallback"
+        android:clickable="true"
+        android:focusable="true"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:orientation="vertical"
+            android:gravity="center_horizontal">
+
+            <ProgressBar
+                android:layout_width="52dp"
+                android:layout_height="52dp"
+                android:indeterminateTint="@color/hikari_accent_mid" />
+
+            <TextView
+                android:id="@+id/loading_spinner_status"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:gravity="center"
+                android:maxLines="4"
+                android:paddingStart="24dp"
+                android:paddingEnd="24dp"
+                android:ellipsize="end"
+                android:text="Finding the best server…"
+                android:textColor="#CCFFFFFF"
+                android:textSize="13sp" />
+        </LinearLayout>
+    </FrameLayout>
+
+    <!-- Double-tap seek feedback (YouTube/mpv style): flash of a large
+         rewind/forward arrow + the amount next to it. -->
+    <LinearLayout
+        android:id="@+id/seek_feedback"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:orientation="vertical"
+        android:gravity="center"
+        android:padding="18dp"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/seek_icon"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textSize="54sp"
+            android:textStyle="bold"
+            android:textColor="#FFFFFF"
+            android:shadowColor="#AA000000"
+            android:shadowRadius="8"
+            android:shadowDy="2"
+            android:shadowDx="0" />
+
+        <TextView
+            android:id="@+id/seek_text"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textSize="22sp"
+            android:textStyle="bold"
+            android:textColor="@color/hikari_accent_mid"
+            android:shadowColor="#AA000000"
+            android:shadowRadius="8"
+            android:shadowDy="2"
+            android:shadowDx="0"
+            android:layout_marginTop="2dp" />
+    </LinearLayout>
+
+    <!-- Brightness / volume gesture HUD: two vertical glass sliders that fade in
+         while the finger drags up/down. The left half of the video controls
+         brightness, the right half controls volume (swipe up = increase).
+         The sliders start INVISIBLE rather than GONE so their tracks are
+         measured once at startup (a GONE view has no height until the first
+         drag, which would make the very first update a no-op), and the root is
+         non-clickable so these views never intercept the player's touches. -->
+    <FrameLayout
+        android:id="@+id/gesture_hud"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:alpha="0"
+        android:clickable="false"
+        android:focusable="false"
+        android:importantForAccessibility="no">
+
+        <LinearLayout
+            android:id="@+id/hud_bright"
+            android:layout_width="64dp"
+            android:layout_height="wrap_content"
+            android:layout_gravity="start|center_vertical"
+            android:layout_marginStart="14dp"
+            android:orientation="vertical"
+            android:gravity="center_horizontal"
+            android:background="@drawable/hud_panel"
+            android:paddingTop="14dp"
+            android:paddingBottom="12dp"
+            android:visibility="invisible">
+
+            <ImageView
+                android:layout_width="20dp"
+                android:layout_height="20dp"
+                android:src="@drawable/ic_brightness_high" />
+
+            <FrameLayout
+                android:id="@+id/hud_bright_track"
+                android:layout_width="8dp"
+                android:layout_height="150dp"
+                android:layout_marginTop="10dp"
+                android:layout_marginBottom="10dp"
+                android:background="@drawable/hud_track">
+
+                <View
+                    android:id="@+id/hud_bright_fill"
+                    android:layout_width="match_parent"
+                    android:layout_height="0dp"
+                    android:layout_gravity="bottom"
+                    android:background="@drawable/hud_fill" />
+
+                <View
+                    android:id="@+id/hud_bright_thumb"
+                    android:layout_width="14dp"
+                    android:layout_height="14dp"
+                    android:layout_gravity="bottom|center_horizontal"
+                    android:background="@drawable/hud_thumb" />
+            </FrameLayout>
+
+            <ImageView
+                android:layout_width="20dp"
+                android:layout_height="20dp"
+                android:src="@drawable/ic_brightness_low" />
+
+            <TextView
+                android:id="@+id/hud_bright_value"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:textSize="12sp"
+                android:textStyle="bold"
+                android:textColor="#FFFFFF"
+                android:text="50%" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/hud_vol"
+            android:layout_width="64dp"
+            android:layout_height="wrap_content"
+            android:layout_gravity="end|center_vertical"
+            android:layout_marginEnd="14dp"
+            android:orientation="vertical"
+            android:gravity="center_horizontal"
+            android:background="@drawable/hud_panel"
+            android:paddingTop="14dp"
+            android:paddingBottom="12dp"
+            android:visibility="invisible">
+
+            <ImageView
+                android:layout_width="20dp"
+                android:layout_height="20dp"
+                android:src="@drawable/ic_volume_up" />
+
+            <FrameLayout
+                android:id="@+id/hud_vol_track"
+                android:layout_width="8dp"
+                android:layout_height="150dp"
+                android:layout_marginTop="10dp"
+                android:layout_marginBottom="10dp"
+                android:background="@drawable/hud_track">
+
+                <View
+                    android:id="@+id/hud_vol_fill"
+                    android:layout_width="match_parent"
+                    android:layout_height="0dp"
+                    android:layout_gravity="bottom"
+                    android:background="@drawable/hud_fill" />
+
+                <View
+                    android:id="@+id/hud_vol_thumb"
+                    android:layout_width="14dp"
+                    android:layout_height="14dp"
+                    android:layout_gravity="bottom|center_horizontal"
+                    android:background="@drawable/hud_thumb" />
+            </FrameLayout>
+
+            <ImageView
+                android:layout_width="20dp"
+                android:layout_height="20dp"
+                android:src="@drawable/ic_volume_off" />
+
+            <TextView
+                android:id="@+id/hud_vol_value"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:textSize="12sp"
+                android:textStyle="bold"
+                android:textColor="#FFFFFF"
+                android:text="50%" />
+        </LinearLayout>
+    </FrameLayout>
+
+    <!-- Shown when controls are locked: the only way back to the controls, and
+         deliberately SMALL and out of the way, sitting exactly where the lock
+         button itself sits in the controller's top bar (same top-right corner,
+         offsets chosen so the two icons' centres line up, so tapping the same
+         spot unlocks). An earlier build put a big 64dp padlock dead centre,
+         which sat on top of the picture for the whole film — watching a locked
+         movie was ruined by the button itself. Brightness/volume swipes and
+         playback keep working while locked; this icon is the only thing drawn. -->
+    <ImageButton
+        android:id="@+id/unlock_btn"
+        android:layout_width="30dp"
+        android:layout_height="30dp"
+        android:layout_gravity="top|end"
+        android:layout_marginTop="5dp"
+        android:layout_marginEnd="4dp"
+        android:src="@drawable/ic_unlock"
+        android:tint="#FFFFFF"
+        android:background="@drawable/circle_glass_ripple"
+        android:scaleType="centerInside"
+        android:padding="6dp"
+        android:contentDescription="@string/cd_lock_controls"
+        android:visibility="gone" />
+
+    <LinearLayout
+        android:id="@+id/error_panel"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:orientation="vertical"
+        android:gravity="center"
+        android:background="#EE000000"
+        android:padding="24dp"
+        android:visibility="gone">
+        <TextView
+            android:id="@+id/error_title"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Playback failed"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:textColor="#FFFFFF" />
+
+        <TextView
+            android:id="@+id/error_text"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textSize="13sp"
+            android:textColor="#FF8A80"
+            android:paddingTop="8dp"
+            android:maxWidth="320dp" />
+
+        <TextView
+            android:id="@+id/next_btn"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Try next server"
+            android:textSize="15sp"
+            android:textColor="#FFFFFF"
+            android:background="#33FFFFFF"
+            android:paddingStart="18dp"
+            android:paddingEnd="18dp"
+            android:paddingTop="10dp"
+            android:paddingBottom="10dp"
+            android:layout_marginTop="16dp" />
+    </LinearLayout>
+</FrameLayout>
