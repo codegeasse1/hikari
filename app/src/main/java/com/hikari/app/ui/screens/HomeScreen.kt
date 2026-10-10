@@ -124,6 +124,7 @@ import com.hikari.app.data.TmdbSpec
 import com.hikari.app.data.Profiles
 import com.hikari.app.tv.TvCinematicHero
 import com.hikari.app.tv.TvHomeHeaderBar
+import com.hikari.app.tv.TvManageFeedDialog
 import com.hikari.app.tv.TvMode
 import com.hikari.app.tv.TvProfileMenuDialog
 import com.hikari.app.tv.TvSelectProviderDialog
@@ -679,6 +680,7 @@ fun HomeScreen(nav: NavHostController) {
     // Television: the CloudStream-desktop-style provider box and profile menu,
     // opened from the top-right pills (see [TvHomeTopBar]).
     var showTvProviderBox by remember { mutableStateOf(false) }
+    var showTvManageFeed by remember { mutableStateOf(false) }
     var showTvProfileMenu by remember { mutableStateOf(false) }
     var showSearchDialog by remember { mutableStateOf(false) }
     // The in-place search overlay for a PICKED extension (see [openSearch]).
@@ -1454,8 +1456,9 @@ fun HomeScreen(nav: NavHostController) {
     }
 
     // Television: the CloudStream-desktop-style provider box — filter field,
-    // "All Plugins (Global)", one card per extension. A tap chooses and
-    // closes; a hold toggles the multi-pick and keeps the box open.
+    // "All Plugins (Global)" pill in the title, one card per extension. A tap
+    // chooses and closes; a hold toggles the multi-pick and keeps the box
+    // open; Manage feed opens the feed mixer.
     if (showTvProviderBox) {
         TvSelectProviderDialog(
             providers = activeProviders,
@@ -1474,7 +1477,25 @@ fun HomeScreen(nav: NavHostController) {
                     else (selection + id).distinct()
                 )
             },
+            onManage = {
+                showTvProviderBox = false
+                showTvManageFeed = true
+            },
             onDismiss = { showTvProviderBox = false },
+        )
+    }
+
+    // Television: the Home Screen Feed mixer — active providers with remove,
+    // available plugins with add, Save & Close applying the mix.
+    if (showTvManageFeed) {
+        TvManageFeedDialog(
+            providers = activeProviders,
+            selection = selection,
+            onSave = { ids ->
+                showTvManageFeed = false
+                vm.setSelection(ids)
+            },
+            onDismiss = { showTvManageFeed = false },
         )
     }
 

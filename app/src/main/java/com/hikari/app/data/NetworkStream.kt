@@ -36,6 +36,8 @@ import java.util.LinkedList
  *     with `/api/file/…?download`);
  *  3. Terabox and the box hosts that run the same API (Telebox, 1024tera, …) —
  *     see [terabox], which is the one flow here that is a real protocol;
+ *  3b. MDisk-class download pages with a known API shape (Diskwala) — see
+ *     [mdisk]; every other mdisk-class page keeps the generic stack;
  *  4. Hikari's own extraction stack ([FallbackResolver]): it fetches the page,
  *     unpacks packed player JS, scans for HLS/MP4, runs the dood/rumble dances,
  *     probes extensionless HLS and finally hands the URL to CloudStream's whole
@@ -67,18 +69,64 @@ object NetworkStream {
     fun isStream(config: ProviderConfig): Boolean =
         config.type == ProviderType.IPTV && config.extra == MARKER
 
-    /** Anything with a scheme is worth trying; the resolver is what decides. */
+    /** Anything with a scheme is worth trying; the resolver is what decides. A
+     *  bare info hash (no scheme at all) counts too — it is magnetized on the
+     *  way in, instead of being prefixed into an unplayable https URL that
+     *  then listed as an IPTV playlist. */
     fun isStreamLink(url: String): Boolean {
         val u = url.trim()
         return u.startsWith("http://") || u.startsWith("https://") ||
-            u.startsWith("magnet:", ignoreCase = true)
+            u.startsWith("magnet:", ignoreCase = true) || isBareInfoHash(u)
+    }
+
+    /**
+     * A pasted info hash with no scheme at all: 40 hex chars (SHA-1) or 32
+     * base32 chars — a torrent all the same.
+     */
+    fun isBareInfoHash(url: String): Boolean {
+        val u = url.trim()
+        return (u.length == 40 && u.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }) ||
+            (u.length == 32 && u.all { it in 'a'..'z' || it in 'A'..'Z' || it in '2'..'7' })
+    }
+
+    /** Public trackers, so a trackerless magnet (or bare hash) has peers to
+     *  find — other apps ship defaults, and without any a good hash resolves
+     *  to "server failed". Appended only when the magnet names none. */
+    private val DEFAULT_TRACKERS = listOf(
+        "udp://tracker.opentrackr.org:1337/announce",
+        "udp://open.tracker.cl:1337/announce",
+        "udp://tracker.openbittorrent.com:6969/announce",
+        "udp://exodus.desync.com:6969/announce",
+        "udp://tracker.torrent.eu.org:451/announce",
+        "udp://tracker.moeking.me:6969/announce",
+        "udp://opentracker.i2p.rocks:6969/announce",
+        "http://tracker.openbittorrent.com:80/announce",
+    )
+
+    /** A bare info hash as a magnet link, with default trackers. */
+    fun magnetize(hash: String): String {
+        val h = hash.trim()
+        val tr = DEFAULT_TRACKERS.joinToString("") {
+            "&tr=" + URLEncoder.encode(it, "UTF-8")
+        }
+        return "magnet:?xt=urn:btih:$h$tr"
+    }
+
+    /** [url] with default trackers appended when a magnet names none. */
+    private fun withDefaultTrackers(url: String): String {
+        if (!url.startsWith("magnet:", ignoreCase = true)) return url
+        if (url.contains("&tr=", ignoreCase = true)) return url
+        val tr = DEFAULT_TRACKERS.joinToString("") {
+            "&tr=" + URLEncoder.encode(it, "UTF-8")
+        }
+        return url + tr
     }
 
     /** True for a magnet link or .torrent file: torrent-engine territory, never
      *  to be listed, grouped, badged or played as an IPTV channel. */
     fun isTorrentLink(url: String): Boolean {
         val u = url.trim()
-        return u.startsWith("magnet:", ignoreCase = true) || isTorrentFile(u)
+        return u.startsWith("magnet:", ignoreCase = true) || isTorrentFile(u) || isBareInfoHash(u)
     }
 
     /**
@@ -163,7 +211,10 @@ object NetworkStream {
         providerName: String,
         budgetMs: Long = RESOLVE_BUDGET_MS,
     ): List<StreamSource> = withContext(Dispatchers.IO) {
-        val url = rawUrl.trim()
+        // A bare info hash is a magnet with no scheme yet; a trackerless
+        // magnet gets the default trackers (see above).
+        val raw = rawUrl.trim()
+        val url = if (isBareInfoHash(raw)) magnetize(raw) else withDefaultTrackers(raw)
         if (!isStreamLink(url)) return@withContext emptyList()
         val name = label.trim().ifBlank { hostOf(url) }
         val sources: List<StreamSource> = try {
@@ -261,6 +312,12 @@ object NetworkStream {
         // 3. The box hosts (Terabox / Telebox / …).
         if (isBoxLink(url)) {
             val files = stage { terabox(url) }.orEmpty()
+            if (files.isNotEmpty()) return files
+        }
+
+        // 3b. MDisk-class download pages with a known API shape (Diskwala).
+        if (isMdiskLink(url)) {
+            val files = stage { mdisk(url) }.orEmpty()
             if (files.isNotEmpty()) return files
         }
 
@@ -511,21 +568,45 @@ private class BReader(val b: ByteArray) {
         val key = boxShareKey(url) ?: return emptyList()
         val origin = originOf(url)
         val jar = LinkedList<String>()
-        val home = fetchText("$origin/main", BOX_UA, jar) ?: return emptyList()
+        // Tokens and cookies come from the SHARE page first: it sets the
+        // share cookies and (on most mirrors) embeds the jsToken, while /main
+        // is the fallback when the share page carries neither (bot-walled
+        // HTML, a redirect that dropped the token).
+        val shareHtml = fetchText(url, BOX_UA, jar, referer = origin)
+        var token = if (!shareHtml.isNullOrBlank()) jsTokenOf(shareHtml) else ""
+        val home = if (token.isNotBlank()) {
+            shareHtml
+        } else {
+            fetchText("$origin/main", BOX_UA, jar).also {
+                token = if (!it.isNullOrBlank()) jsTokenOf(it) else ""
+            }
+        }
+        if (home.isNullOrBlank()) {
+            Logs.log("NetStream", "terabox: no page html for $origin (share + /main both empty)")
+            return emptyList()
+        }
         val tokens = fetchText(
             "$origin/api/shorturlinfo?shorturl=$key&root=1",
             BOX_UA,
             jar,
             referer = origin,
-        ) ?: return emptyList()
+        ) ?: run {
+            Logs.log("NetStream", "terabox: shorturlinfo unreachable for $origin")
+            return emptyList()
+        }
+        val tokensErrno = runCatching { JSONObject(tokens).optInt("errno", -1) }.getOrDefault(-1)
 
-        var list = boxList(origin, key, jsTokenOf(home), jar)
+        var list = boxList(origin, key, token, jar)
         if (list == null) {
             // A fresh page read (new cookies + token) is what a "verify" answer
             // asks for; one retry is enough for a challenge that is really just
             // a stale session.
-            val retryHome = fetchText("$origin/main", BOX_UA, LinkedList()) ?: home
-            list = boxList(origin, key, jsTokenOf(retryHome), LinkedList())
+            Logs.log("NetStream", "terabox: list empty (shorturlinfo errno=$tokensErrno), retrying with fresh session")
+            val retryJar = LinkedList<String>()
+            val retryHome = fetchText(url, BOX_UA, retryJar, referer = origin)
+                ?: fetchText("$origin/main", BOX_UA, retryJar)
+                ?: home
+            list = boxList(origin, key, jsTokenOf(retryHome), retryJar)
         }
         val entries = list ?: return emptyList()
         // The share's metadata call is not needed for the dlinks, but it is what
@@ -592,7 +673,15 @@ private class BReader(val b: ByteArray) {
         }
         val text = fetchText(query, BOX_UA, jar, referer = origin) ?: return null
         val json = runCatching { JSONObject(text) }.getOrNull() ?: return null
-        if (json.optInt("errno", -1) != 0) return null
+        val errno = json.optInt("errno", -1)
+        if (errno != 0) {
+            Logs.log(
+                "NetStream",
+                "terabox: share/list errno=$errno" +
+                    json.optString("errmsg").takeIf { it.isNotBlank() }?.let { " ($it)" }.orEmpty(),
+            )
+            return null
+        }
         val arr = json.optJSONArray("list") ?: return emptyList()
         return (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }
     }
@@ -606,6 +695,92 @@ private class BReader(val b: ByteArray) {
         // A name the host did not give an extension to is still worth handing to
         // the player when the share holds nothing else — see the caller.
         return !lower.contains('.')
+    }
+
+    // ---- mdisk-class download pages (diskwala) ----
+
+    /**
+     * Diskwala / MDisk-class download pages. Their file API signs every
+     * request (Appicrypt headers over a canonical SHA-256 — the site's own
+     * bundle computes it in a signer module). Best-effort: the plain-hash
+     * equivalents are attempted, and anything the server refuses falls through
+     * to the generic extraction stack below, so a wrong guess costs nothing.
+     */
+    private fun isMdiskLink(url: String): Boolean {
+        val host = hostOf(url).lowercase()
+        return MDISK_HOSTS.any { host.contains(it) }
+    }
+
+    private suspend fun mdisk(url: String): List<StreamSource> {
+        val host = hostOf(url).lowercase()
+        // Only the host whose API shape is known is attempted; every other
+        // mdisk-class page keeps the generic stack.
+        if (!host.contains("diskwala")) return emptyList()
+        // /app/<id> share pages (and any last-segment id form).
+        val id = url.trim().substringBefore('?').substringBefore('#').trimEnd('/')
+            .substringAfterLast('/').takeIf {
+                it.length >= 8 && it.all { c -> c.isLetterOrDigit() }
+            } ?: return emptyList()
+        val api = "https://ddudapidd.diskwala.com/api/v1"
+        for (body in listOf("{\"id\":\"$id\"}", "{\"file_id\":\"$id\"}")) {
+            signedDiskwalaPost("$api/file/sign", body)?.let { signed ->
+                pickSignedUrl(signed)?.let { return listOf(sourceOf(it, id)) }
+            }
+        }
+        return emptyList()
+    }
+
+    /** One signed Diskwala API call (see above): the canonical SHA-256 is sent
+     *  both as hex and as base64, since only the site's own signer knows which
+     *  encoding its cryptogram wraps. Null unless the server answers 200 with
+     *  a body. */
+    private suspend fun signedDiskwalaPost(apiUrl: String, body: String): String? =
+        withContext(Dispatchers.IO) {
+            val path = runCatching {
+                java.net.URI(apiUrl).path.removePrefix("/api/v1")
+            }.getOrDefault("/file/sign")
+            val ts = System.currentTimeMillis().toString()
+            // Canonical form, exactly like the site's own signer builds it:
+            // "METHOD path | params=<sorted JSON or empty> | body=<sorted JSON
+            // or empty> | ts=<ms>". Our bodies are single-key compact JSON, so
+            // they already match the signer's sorted form.
+            val canonical = "POST $path | params= | body=$body | ts=$ts"
+            val digest = runCatching {
+                val md = java.security.MessageDigest.getInstance("SHA-256")
+                md.digest(canonical.toByteArray(Charsets.UTF_8))
+            }.getOrNull() ?: return@withContext null
+            val hex = digest.joinToString("") { "%02x".format(it) }
+            val b64 = android.util.Base64.encodeToString(digest, android.util.Base64.NO_WRAP)
+            for (crypt in listOf(hex, b64)) {
+                val out = runCatching {
+                    Http.postString(
+                        apiUrl, body,
+                        mapOf("Appicrypt" to crypt, "Appicrypt-ts" to ts),
+                    )
+                }.getOrNull()
+                if (!out.isNullOrBlank()) return@withContext out
+            }
+            null
+        }
+
+    /** The playable URL inside a Diskwala sign answer: the known keys first,
+     *  then the first http(s) URL in the body. */
+    private fun pickSignedUrl(body: String): String? {
+        runCatching {
+            val o = JSONObject(body)
+            for (k in listOf("url", "file_url", "download_url", "stream_url", "dlink", "signed_url")) {
+                o.optString(k).takeIf { it.startsWith("http") }?.let { return it }
+                val nested = o.optJSONObject(k)
+                if (nested != null) {
+                    for (k2 in listOf("url", "file_url", "download_url", "stream_url")) {
+                        nested.optString(k2).takeIf { it.startsWith("http") }?.let { return it }
+                    }
+                }
+            }
+        }
+        return Regex("""https?:\\/\\/[^"'\s\\]+""").find(body)?.value
+            ?.replace("\\/", "/")
+            ?.takeIf { it.startsWith("http") }
     }
 
     /** `jsToken` out of a box home page: the web app parks it in a

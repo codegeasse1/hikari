@@ -648,6 +648,9 @@ private suspend fun addIptvPlaylist(
 ): Result<Int> = withContext(Dispatchers.IO) {
     val url = when {
         !localPath.isNullOrBlank() -> localPath
+        // A bare info hash is a torrent, not a host: keep it verbatim so the
+        // torrent guard below sees it instead of an "https://" lookalike.
+        NetworkStream.isBareInfoHash(link.trim()) -> link.trim()
         else -> link.trim().let {
             if (it.startsWith("http://") || it.startsWith("https://")) it
             else if (it.isBlank()) "" else "https://$it"
@@ -656,6 +659,13 @@ private suspend fun addIptvPlaylist(
     if (url.isBlank()) {
         return@withContext Result.failure(
             Exception(I18n.t("Paste an M3U/M3U8 link, or pick a playlist file")),
+        )
+    }
+    // A torrent is not a playlist: saving one here lists it as an IPTV folder
+    // that plays as live TV. Tor mode is the path that engines it.
+    if (localPath.isNullOrBlank() && NetworkStream.isTorrentLink(url)) {
+        return@withContext Result.failure(
+            Exception(I18n.t("That looks like a torrent, not a playlist — add it with Tor instead")),
         )
     }
     // A single video/stream address is not a playlist: downloading it here would fetch
@@ -711,9 +721,12 @@ private suspend fun addNetworkStream(
     val trimmed = link.trim()
     // A magnet link is complete as-is: prefixing "https://" (as before) mangles
     // it into an unplayable https URL that then lists and plays like an IPTV
-    // channel instead of going to the torrent engine.
+    // channel instead of going to the torrent engine. A bare info hash is a
+    // magnet with no scheme yet (see [NetworkStream.magnetize]).
     val url = if (trimmed.startsWith("magnet:", ignoreCase = true)) {
         trimmed
+    } else if (NetworkStream.isBareInfoHash(trimmed)) {
+        NetworkStream.magnetize(trimmed)
     } else if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
         trimmed
     } else if (trimmed.isBlank()) {
@@ -757,6 +770,9 @@ private suspend fun addNetworkStream(
  *  .torrent file's name, or Torrent + short hash — never a URL shard like
  *  "magnet:". */
 private fun torrentDisplayName(link: String): String {
+    if (NetworkStream.isBareInfoHash(link)) {
+        return "Torrent · " + link.take(8).uppercase()
+    }
     Regex("[?&]dn=([^&]+)").find(link)?.let { m ->
         runCatching { java.net.URLDecoder.decode(m.groupValues[1], "UTF-8") }.getOrNull()
             ?.trim()?.takeIf { it.isNotBlank() }?.let { return it }

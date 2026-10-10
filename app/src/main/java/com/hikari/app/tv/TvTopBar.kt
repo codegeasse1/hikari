@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -322,10 +323,13 @@ fun TvProviderIcon(
 }
 
 /**
- * The "Select Provider" box: a filter field, the "All Plugins (Global)" card,
- * and one card per installed provider (icon, name, engine). A tap chooses and
- * closes; a hold toggles that provider into the multi-pick without closing,
- * so the old strip's hold-to-multi lives on here.
+ * The "Select Provider" box, in the reference shape: title on the left with
+ * the "All Plugins (Global)" pill at its right, the filter full-width below,
+ * and one card per installed provider in a grid. A tap chooses and closes; a
+ * hold toggles that provider into the multi-pick without closing, so the old
+ * strip's hold-to-multi lives on here. The grid collapses to its content
+ * (bounded above) instead of holding a fixed tall box, so the dialog's bottom
+ * is just room for the buttons, never a slab of empty panel.
  */
 @Composable
 fun TvSelectProviderDialog(
@@ -335,6 +339,7 @@ fun TvSelectProviderDialog(
     onPick: (String) -> Unit,
     onDismiss: () -> Unit,
     onToggleMulti: ((String) -> Unit)? = null,
+    onManage: (() -> Unit)? = null,
 ) {
     var query by remember { mutableStateOf("") }
     val shown = remember(providers, query) {
@@ -345,13 +350,55 @@ fun TvSelectProviderDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
-            Column {
-                Text(tr("Select Provider"), fontWeight = FontWeight.Bold)
-                Text(
-                    tr("Choose a dedicated provider or search across all installed plugins"),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(tr("Select Provider"), fontWeight = FontWeight.Bold)
+                    Text(
+                        tr("Choose a dedicated provider or search across all installed plugins"),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(Modifier.width(10.dp))
+                val allSelected = selection.isEmpty()
+                Surface(
+                    onClick = onPickAll,
+                    shape = RoundedCornerShape(12.dp),
+                    color = if (allSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.28f)
+                    else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                    modifier = Modifier.tvPress(previewPass = true, onClick = onPickAll),
+                ) {
+                    Row(
+                        Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            Icons.Filled.Language,
+                            contentDescription = null,
+                            tint = if (allSelected) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            tr("All Plugins (Global)"),
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        if (allSelected) {
+                            Spacer(Modifier.width(4.dp))
+                            Icon(
+                                Icons.Filled.Check,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(16.dp),
+                            )
+                        }
+                    }
+                }
             }
         },
         text = {
@@ -390,32 +437,6 @@ fun TvSelectProviderDialog(
                     shape = RoundedCornerShape(14.dp),
                     modifier = Modifier.fillMaxWidth(),
                 )
-                Spacer(Modifier.height(10.dp))
-                TvProviderCard(
-                    name = tr("All Plugins (Global)"),
-                    supporting = tr("%s installed").replace(
-                        "%s",
-                        providers.size.toString(),
-                    ),
-                    selected = selection.isEmpty(),
-                    icon = {
-                        Box(
-                            Modifier
-                                .size(34.dp)
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Icon(
-                                Icons.Filled.Language,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(20.dp),
-                            )
-                        }
-                    },
-                    onClick = onPickAll,
-                )
                 Spacer(Modifier.height(8.dp))
                 LazyVerticalGrid(
                     columns = GridCells.Fixed(2),
@@ -424,7 +445,7 @@ fun TvSelectProviderDialog(
                     contentPadding = PaddingValues(vertical = 2.dp),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(320.dp),
+                        .heightIn(max = 320.dp),
                 ) {
                     items(shown, key = { "tv-sel-" + it.config.id }) { p ->
                         val id = p.config.id
@@ -448,7 +469,151 @@ fun TvSelectProviderDialog(
         },
         confirmButton = {},
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text(tr("Close")) }
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (onManage != null) {
+                    TextButton(onClick = onManage) { Text(tr("Manage feed")) }
+                }
+                TextButton(onClick = onDismiss) { Text(tr("Close")) }
+            }
+        },
+    )
+}
+
+/**
+ * "Manage Home Screen Feed", in the reference shape: the picked providers as
+ * the Active feed (each removable), every other installed provider as
+ * Available (each addable), and Save & Close applying the mix. An empty feed
+ * is the global feed (everything); a non-empty one mixes exactly the picked
+ * providers. TV only; the phone's picker sheet is unchanged.
+ */
+@Composable
+fun TvManageFeedDialog(
+    providers: List<ContentProvider>,
+    selection: List<String>,
+    onSave: (List<String>) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val working = remember(selection) { mutableStateOf(ArrayList(selection)) }
+    val active = working.value.mapNotNull { id -> providers.firstOrNull { it.config.id == id } }
+    val available = providers.filter { p -> p.config.id !in working.value }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Column {
+                Text(tr("Manage Home Screen Feed"), fontWeight = FontWeight.Bold)
+                Text(
+                    tr("Mix providers into one Home feed. Empty means everything."),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        text = {
+            Column(Modifier.fillMaxWidth()) {
+                Text(
+                    tr("Active Providers Feed"),
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Spacer(Modifier.height(6.dp))
+                if (active.isEmpty()) {
+                    Text(
+                        tr("Global — all installed plugins"),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                active.forEach { p ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.weight(1f)) {
+                            TvProviderCard(
+                                name = p.config.name,
+                                supporting = p.config.type.groupLabel,
+                                selected = true,
+                                icon = {
+                                    TvProviderIcon(
+                                        iconUrl = p.config.iconUrl,
+                                        name = p.config.name,
+                                        size = 34.dp,
+                                    )
+                                },
+                                onClick = {},
+                            )
+                        }
+                        IconButton(onClick = {
+                            working.value = ArrayList(working.value - p.config.id)
+                        }) {
+                            Icon(
+                                Icons.Filled.Close,
+                                contentDescription = tr("Remove"),
+                                tint = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(6.dp))
+                }
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    tr("Available Plugins"),
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(6.dp))
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(2),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    contentPadding = PaddingValues(vertical = 2.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 260.dp),
+                ) {
+                    items(available, key = { "tv-feed-" + it.config.id }) { p ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(Modifier.weight(1f)) {
+                                TvProviderCard(
+                                    name = p.config.name,
+                                    supporting = p.config.type.groupLabel,
+                                    selected = false,
+                                    icon = {
+                                        TvProviderIcon(
+                                            iconUrl = p.config.iconUrl,
+                                            name = p.config.name,
+                                            size = 34.dp,
+                                        )
+                                    },
+                                    onClick = {
+                                        working.value = ArrayList((working.value + p.config.id).distinct())
+                                    },
+                                )
+                            }
+                            IconButton(onClick = {
+                                working.value = ArrayList((working.value + p.config.id).distinct())
+                            }) {
+                                Icon(
+                                    Icons.Filled.Add,
+                                    contentDescription = tr("Add"),
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(20.dp),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onSave(working.value.toList()) }) { Text(tr("Save & Close")) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(tr("Cancel")) }
         },
     )
 }

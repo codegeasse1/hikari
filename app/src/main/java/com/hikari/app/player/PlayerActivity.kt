@@ -2181,14 +2181,21 @@ class PlayerActivity : ComponentActivity() {
 
         sources = runCatching {
             val arr = JSONArray(intent.getStringExtra("sources").orEmpty())
-            (0 until arr.length()).map { i ->
+            (0 until arr.length()).mapNotNull { i ->
+                // One poison row must never void the whole handoff: the old
+                // all-or-nothing parse turned N found servers into an empty
+                // chooser over a cover still counting them.
+                runCatching {
                 val o = arr.getJSONObject(i)
                 val headersObj = o.optJSONObject("headers") ?: JSONObject()
                 val headers = HashMap<String, String>()
                 val keys = headersObj.keys()
                 while (keys.hasNext()) {
                     val k = keys.next()
-                    headers[k] = headersObj.getString(k)
+                    // Header values are USUALLY strings, but a JSON payload can
+                    // carry a number/boolean/null — getString() throws on those
+                    // and used to fail the entire list. Anything stringifies.
+                    headers[k] = if (headersObj.isNull(k)) "" else (headersObj.opt(k)?.toString() ?: "")
                 }
                 val subsObj = o.optJSONArray("subtitles") ?: JSONArray()
                 val subs = (0 until subsObj.length()).map { j ->
@@ -2219,6 +2226,7 @@ class PlayerActivity : ComponentActivity() {
                     providerName = o.optString("providerName"),
                     details = o.optString("details"),
                 )
+                }.getOrNull()
             }
         }.getOrDefault(emptyList())
             // The same video surfaced by both extraction engines / addons = one
@@ -2400,7 +2408,7 @@ class PlayerActivity : ComponentActivity() {
                             val current = StreamsLive.flow(liveId).value
                             if (current.isNotEmpty()) {
                                 val have = sources.mapTo(HashSet()) { it.infoHash ?: it.url }
-val fresh = current.mapNotNull { runCatching { it.toPlayerSource() }.getOrNull() }
+                                val fresh = current.mapNotNull { runCatching { it.toPlayerSource() }.getOrNull() }
                                     .filter { (it.infoHash ?: it.url) !in have }
                                 if (fresh.isNotEmpty()) {
                                     sources = sources + fresh
@@ -2474,7 +2482,7 @@ val fresh = current.mapNotNull { runCatching { it.toPlayerSource() }.getOrNull()
                 StreamsLive.flow(liveId).collect { incoming ->
                     if (incoming.isEmpty()) return@collect
                     val have = sources.map { it.infoHash ?: it.url }.toHashSet()
-val fresh = incoming
+                    val fresh = incoming
                         .mapNotNull { runCatching { it.toPlayerSource() }.getOrNull() }
                         .filter { (it.infoHash ?: it.url) !in have }
                     if (fresh.isEmpty()) return@collect
@@ -6523,7 +6531,7 @@ val fresh = incoming
         var added = false
         for (s in cumulative) {
             if (!seen.add(s.url)) continue
-// A single unconvertible row must never abort the batch (see the
+            // A single unconvertible row must never abort the batch (see the
             // snapshot parse): the list keeps whatever converts.
             out += runCatching { s.toPlayerSource() }.getOrNull() ?: continue
             added = true
@@ -7017,7 +7025,14 @@ val fresh = incoming
         var builtSelected = -1
 
         fun rebuildList() {
-            val all = sections()
+            // sections() walks provider metadata; a poison entry degrades to
+            // one flat section instead of a thrown rebuild (the watcher
+            // swallows throws, which used to freeze an empty box over servers
+            // the search had already found).
+            val all = runCatching { sections() }.getOrDefault(
+                if (sources.isEmpty()) emptyList()
+                else listOf("All" to sources.indices.toList())
+            )
             val visible = if (chip == "All") all else all.filter { it.first == chip }
             val sig = ArrayList<String>()
             visible.forEach { (name, memberIdx) ->
@@ -7080,7 +7095,7 @@ val fresh = incoming
                 memberIdx.forEach { i ->
                     val isNew = pos >= keep
                     pos++
-if (isNew && runCatching {
+                    if (isNew && runCatching {
                         val src = sources[i]
                         addOptionRow(list, serverOption(src, i)) {
                             // The tap IS the answer: never let the
@@ -7108,10 +7123,10 @@ if (isNew && runCatching {
                                 // A tap here IS the user's choice: if this
                                 // server dies, offer a way out instead of
                                 // sliding onto another one silently.
-pickedByUser = true
+                                pickedByUser = true
                             }
                         }
-}.isSuccess) rendered++
+                    }.isSuccess) rendered++
                     }
                 }
             if (rendered == 0) {
@@ -7205,10 +7220,15 @@ pickedByUser = true
             }
         }
 
-rebuildChips()
+        rebuildChips()
         syncFromSession()
         rebuildChips()
         rebuildList()
+        // Rows added after the dialog is already on screen need an explicit
+        // layout pass: without it a chooser opened over an empty list can sit
+        // blank until the next touch-driven traversal, even though the rows
+        // are already children ("servers show only after I touch the list").
+        list.requestLayout()
         val watcher: () -> Unit = {
             // A rebuild changes the content height, so put the scroll offsets
             // back AFTER the new rows are laid out (scrollTo clamps to the new
@@ -7228,9 +7248,12 @@ rebuildChips()
                 content != null && content.bottom - (v.scrollY + v.height) <= nearBottomPx
             } ?: false
             val keepX = chipScroll.scrollX
-syncFromSession()
+            syncFromSession()
             rebuildChips()
             rebuildList()
+            // Same explicit pass for live appends (see above): servers that
+            // land while the sheet is open must paint without a touch.
+            list.requestLayout()
             // Television: rows/chips appended AFTER the dialog's one-time focus
             // pass are reachable but ringless without this (see [glassRow]'s
             // birth ring — this is the belt and braces for rows built before
@@ -7770,13 +7793,19 @@ syncFromSession()
                         // TrackGroup object — the group dies with the next
                         // re-prepare, the language does not.
                         pickText = TrackPick(C.TRACK_TYPE_TEXT, format.language, format.label, ti)
-                        p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
-                            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
-                            .clearOverridesOfType(C.TRACK_TYPE_TEXT)
-                            .setOverrideForType(
-                                TrackSelectionOverride(group.mediaTrackGroup, ImmutableList.of(ti))
-                            )
-                            .build()
+                        // Fresh player, not the dialog-time snapshot (see the
+                        // audio sheet): a re-resolve between open and tap swaps
+                        // the instance, and the confirm loop converges the pick
+                        // onto the live track list.
+                        (player ?: return@addOptionRow).let { live ->
+                            live.trackSelectionParameters = live.trackSelectionParameters.buildUpon()
+                                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                                .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                                .setOverrideForType(
+                                    TrackSelectionOverride(group.mediaTrackGroup, ImmutableList.of(ti))
+                                )
+                                .build()
+                        }
                         // Say what was chosen and re-assert it on the next loop
                         // pass: "I tapped the subtitle and nothing appeared" is
                         // the other half of the same report, and a silent pick
@@ -7787,15 +7816,12 @@ syncFromSession()
                             I18n.t("Subtitle: %s").replace("%s", option.label),
                             Toast.LENGTH_SHORT,
                         ).show()
-                        // Re-asserted a moment later, on the next loop pass: the
-                        // override is what the player renders, and a stream that
-                        // re-prepares right after the pick (a provider subtitle
-                        // being attached) can otherwise look as though the tap did
-                        // nothing. `player` is not a View, so this is a Handler.
-                        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(
-                            { applyStickyPicks(C.TRACK_TYPE_TEXT) },
-                            400L,
-                        )
+                        // Re-asserted until it reads back as active (see
+                        // [confirmTrackPick]): a stream that re-prepares right
+                        // after the pick can otherwise look as though the tap
+                        // did nothing. `player` is not a View, so this is a
+                        // Handler.
+                        confirmTrackPick(C.TRACK_TYPE_TEXT)
                     }
                 }
                 dialog.dismiss()
@@ -9308,9 +9334,15 @@ syncFromSession()
             if (which == 0) {
                 stopDualAudio()
                 pickAudio = null
-                p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
-                    .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
-                    .build()
+                // Fresh player, not the dialog-time snapshot: a re-resolve
+                // between open and tap swaps the instance, and an override
+                // written to the dead one is exactly a "selected but not
+                // playing" report (the confirm loop below then converges it).
+                (player ?: return@showGlassMenu).let { live ->
+                    live.trackSelectionParameters = live.trackSelectionParameters.buildUpon()
+                        .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
+                        .build()
+                }
             } else {
                 val (group, ti) = indexMap[which] ?: return@showGlassMenu
                 // An in-stream track is the video server's own sound: any
@@ -9321,14 +9353,20 @@ syncFromSession()
                 // replaced when the provider subtitles are attached, the
                 // language survives.
                 pickAudio = TrackPick(C.TRACK_TYPE_AUDIO, format.language, format.label, ti)
-                p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
-                    .setOverrideForType(
-                        TrackSelectionOverride(group.mediaTrackGroup, ImmutableList.of(ti))
-                    )
-                    .build()
-                // Confirm the switch and re-assert it on the next loop pass —
-                // a select that produces no visible/sonorous change reads as a
-                // dead row on a stream with several languages.
+                // Fresh player (see above): the override below is best-effort
+                // on a possibly-stale group, and [confirmTrackPick] converges
+                // it onto the live track list by language/label.
+                (player ?: return@showGlassMenu).let { live ->
+                    live.trackSelectionParameters = live.trackSelectionParameters.buildUpon()
+                        .setOverrideForType(
+                            TrackSelectionOverride(group.mediaTrackGroup, ImmutableList.of(ti))
+                        )
+                        .build()
+                }
+                // Confirmed until it reads back as active, not fire-and-forget
+                // (see [confirmTrackPick]) — a select that produces no
+                // visible/sonorous change reads as a dead row on a stream with
+                // several languages.
                 Toast.makeText(
                     this,
                     I18n.t("Audio: %s").replace(
@@ -9337,10 +9375,7 @@ syncFromSession()
                     ),
                     Toast.LENGTH_SHORT,
                 ).show()
-                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(
-                    { applyStickyPicks(C.TRACK_TYPE_AUDIO) },
-                    400L,
-                )
+                confirmTrackPick(C.TRACK_TYPE_AUDIO)
             }
         }
     }
@@ -13899,6 +13934,30 @@ syncFromSession()
                 .build()
             return
         }
+    }
+
+    /**
+     * Re-asserts a just-made subtitle/audio pick until it reads back as
+     * active, instead of once and hoping. The old one-shot 400ms re-assert
+     * raced a player that was still being rebuilt or whose tracks had not
+     * parsed yet (flaky mirrors re-resolve mid-play, which is why some
+     * extensions kept the old language): the toast claimed Japanese while the
+     * player never took it, and reopening the sheet showed the old row. This
+     * stops the moment [applyStickyPicks] reports the pick in effect, gives up
+     * after a few seconds when the track is genuinely gone (the default
+     * rightly stands then), and never touches a destroyed activity.
+     */
+    private fun confirmTrackPick(type: Int, attempts: Int = 10) {
+        val handler = android.os.Handler(android.os.Looper.getMainLooper())
+        var left = attempts
+        fun tick() {
+            if (isFinishing || isDestroyed) return
+            if (player == null) return
+            if (applyStickyPicks(type)) return
+            if (--left <= 0) return
+            handler.postDelayed({ tick() }, 500L)
+        }
+        handler.postDelayed({ tick() }, 400L)
     }
 
     /** Re-applies the user's remembered subtitle / audio pick to the CURRENT

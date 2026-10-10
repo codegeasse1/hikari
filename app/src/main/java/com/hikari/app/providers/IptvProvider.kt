@@ -252,6 +252,9 @@ class IptvProvider(override val config: ProviderConfig) : ContentProvider {
      *  pasted straight in), that stream is the playlist's only channel. */
     /** Display name for a saved torrent (mirrors the Add dialog's). */
     private fun torrentName(link: String): String {
+        if (com.hikari.app.data.NetworkStream.isBareInfoHash(link)) {
+            return "Torrent · " + link.take(8).uppercase()
+        }
         Regex("[?&]dn=([^&]+)").find(link)?.let { m ->
             runCatching { java.net.URLDecoder.decode(m.groupValues[1], "UTF-8") }.getOrNull()
                 ?.trim()?.takeIf { it.isNotBlank() }?.let { return it }
