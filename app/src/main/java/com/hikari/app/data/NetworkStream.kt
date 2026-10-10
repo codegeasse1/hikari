@@ -311,6 +311,13 @@ object NetworkStream {
 
         // 3. The box hosts (Terabox / Telebox / …).
         if (isBoxLink(url)) {
+            // A share link (…/s/<key>) resolves ONLY through the box API: the
+            // generic stack below would hand back the share page itself as a
+            // "server", and the player cannot parse HTML as video
+            // (CONTAINER_UNSUPPORTED). Returning the API result directly keeps
+            // a refused list honest ("no servers", errno in the log) instead
+            // of a fake row that dies in the player.
+            if (boxShareKey(url) != null) return stage { terabox(url) }.orEmpty()
             val files = stage { terabox(url) }.orEmpty()
             if (files.isNotEmpty()) return files
         }
@@ -550,8 +557,11 @@ private class BReader(val b: ByteArray) {
      *
      *  1. the host's home page, for `jsToken` (an anti-bot token the API refuses
      *     requests without) and for the cookies it sets;
-     *  2. `/api/shorturlinfo?shorturl=<key>&root=1` — the share's metadata;
-     *  3. `/share/list?…&shorturl=<key>&root=1` — its entries, `dlink` per file.
+     *  2. `/api/shorturlinfo?shorturl=<key>&root=1` — the share's metadata,
+     *     including its `sekey`;
+     *  3. `/share/list?…&shorturl=<key>&root=1&sekey=<sekey>` — its entries,
+     *     `dlink` per file (a list call without the share's own `sekey` is
+     *     refused with errno 105 — that refusal is the whole failure class).
      *
      * Everything is asked of the link's OWN host: the box service lives on a
      * dozen mirror domains (terabox.com, 1024tera.com, 4funbox.com, telebox.link
@@ -595,18 +605,41 @@ private class BReader(val b: ByteArray) {
             return emptyList()
         }
         val tokensErrno = runCatching { JSONObject(tokens).optInt("errno", -1) }.getOrDefault(-1)
+        var sekey = boxSekeyOf(tokens)
+        Logs.log(
+            "NetStream",
+            "terabox: shorturlinfo errno=$tokensErrno token=" +
+                (if (token.isNotBlank()) "yes" else "none") +
+                " sekey=" + (if (!sekey.isNullOrBlank()) "yes" else "none"),
+        )
+        if (boxShareLocked(tokens)) {
+            Logs.log("NetStream", "terabox: share needs a password/extraction code for $origin")
+            return emptyList()
+        }
 
-        var list = boxList(origin, key, token, jar)
+        var list = boxList(origin, key, token, jar, sekey)
         if (list == null) {
             // A fresh page read (new cookies + token) is what a "verify" answer
             // asks for; one retry is enough for a challenge that is really just
-            // a stale session.
+            // a stale session. The share metadata is re-read too, so a rotated
+            // sekey cannot doom the retry.
             Logs.log("NetStream", "terabox: list empty (shorturlinfo errno=$tokensErrno), retrying with fresh session")
             val retryJar = LinkedList<String>()
             val retryHome = fetchText(url, BOX_UA, retryJar, referer = origin)
                 ?: fetchText("$origin/main", BOX_UA, retryJar)
                 ?: home
-            list = boxList(origin, key, jsTokenOf(retryHome), retryJar)
+            val retryTokens = fetchText(
+                "$origin/api/shorturlinfo?shorturl=$key&root=1",
+                BOX_UA,
+                retryJar,
+                referer = origin,
+            )
+            if (!retryTokens.isNullOrBlank() &&
+                runCatching { JSONObject(retryTokens).optInt("errno", -1) }.getOrDefault(-1) == 0
+            ) {
+                sekey = boxSekeyOf(retryTokens) ?: sekey
+            }
+            list = boxList(origin, key, jsTokenOf(retryHome), retryJar, sekey)
         }
         val entries = list ?: return emptyList()
         // The share's metadata call is not needed for the dlinks, but it is what
@@ -628,6 +661,29 @@ private class BReader(val b: ByteArray) {
         return files
     }
 
+    /** The share's `sekey` inside a shorturlinfo answer — the list call's
+     *  password for THAT share. Top level first, then the first
+     *  `shorturlinfo` entry, then a `data` object; null when absent. */
+    private fun boxSekeyOf(tokens: String): String? {
+        val root = runCatching { JSONObject(tokens) }.getOrNull() ?: return null
+        root.optString("sekey").takeIf { it.isNotBlank() }?.let { return it }
+        root.optJSONArray("shorturlinfo")?.optJSONObject(0)
+            ?.optString("sekey")?.takeIf { it.isNotBlank() }?.let { return it }
+        root.optJSONObject("data")?.optString("sekey")
+            ?.takeIf { it.isNotBlank() }?.let { return it }
+        return null
+    }
+
+    /** True when the share's own metadata says it needs a password or
+     *  extraction code (narrow on purpose — unknown shapes stay resolvable). */
+    private fun boxShareLocked(tokens: String): Boolean {
+        val root = runCatching { JSONObject(tokens) }.getOrNull() ?: return false
+        val flags = listOf("need_password", "needpassword", "need_pwd", "encrypted", "is_encrypt", "protected")
+        if (flags.any { root.optInt(it, 0) == 1 || root.optBoolean(it, false) }) return true
+        val first = root.optJSONArray("shorturlinfo")?.optJSONObject(0) ?: return false
+        return flags.any { first.optInt(it, 0) == 1 || first.optBoolean(it, false) }
+    }
+
     /** `/share/list` for one share — the account of the entries at its root,
      *  plus (bounded) the video files inside any folder it holds. */
     private suspend fun boxList(
@@ -635,8 +691,9 @@ private class BReader(val b: ByteArray) {
         key: String,
         jsToken: String,
         jar: MutableList<String>,
+        sekey: String?,
     ): List<JSONObject>? {
-        val root = boxListPage(origin, key, jsToken, jar, dir = null) ?: return null
+        val root = boxListPage(origin, key, jsToken, jar, sekey, dir = null) ?: return null
         val out = ArrayList<JSONObject>(root)
         // A share of a season is a folder of episodes: one level down, and at
         // most a few folders, keeps a huge share from turning into a hundred
@@ -648,7 +705,7 @@ private class BReader(val b: ByteArray) {
             val dir = e.optString("path").trim()
             if (dir.isBlank()) continue
             folders++
-            out += boxListPage(origin, key, jsToken, jar, dir = dir).orEmpty()
+            out += boxListPage(origin, key, jsToken, jar, sekey, dir = dir).orEmpty()
         }
         return out
     }
@@ -658,11 +715,13 @@ private class BReader(val b: ByteArray) {
         key: String,
         jsToken: String,
         jar: MutableList<String>,
+        sekey: String?,
         dir: String?,
     ): List<JSONObject>? {
         val query = buildString {
             append("$origin/share/list?$BOX_APP_QUERY")
             if (jsToken.isNotBlank()) append("&jsToken=").append(jsToken)
+            if (!sekey.isNullOrBlank()) append("&sekey=").append(URLEncoder.encode(sekey, "UTF-8"))
             append("&shorturl=").append(key)
             append("&by=name&order=asc&num=20000&page=1")
             if (dir.isNullOrBlank()) {
