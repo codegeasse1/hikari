@@ -448,7 +448,7 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
      * declares nothing. The lookup path uses it so an attempt never cuts the
      * plugin off earlier than its own extraction below would.
      */
-    fun effectivePluginTimeoutMs(): Long {
+suspend fun effectivePluginTimeoutMs(): Long {
         val overrideMs = runCatching {
             com.hikari.app.HikariApp.instance.store.serverTimeoutFor(config.id)
                 ?.coerceIn(20, 100)?.times(1000L)

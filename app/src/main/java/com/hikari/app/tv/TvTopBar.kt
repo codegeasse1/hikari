@@ -22,7 +22,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.ChevronDown
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Search
@@ -49,7 +49,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
-import com.hikari.app.data.ContentProvider
+import com.hikari.app.providers.ContentProvider
 import com.hikari.app.data.Profiles
 import com.hikari.app.i18n.tr
 /**
@@ -116,7 +116,7 @@ fun TvProviderPill(
             )
             Spacer(Modifier.width(4.dp))
             Icon(
-                Icons.Filled.ChevronDown,
+Icons.Filled.KeyboardArrowDown,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(16.dp),
@@ -167,7 +167,7 @@ fun TvProfilePill(
             )
             Spacer(Modifier.width(4.dp))
             Icon(
-                Icons.Filled.ChevronDown,
+Icons.Filled.KeyboardArrowDown,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(16.dp),

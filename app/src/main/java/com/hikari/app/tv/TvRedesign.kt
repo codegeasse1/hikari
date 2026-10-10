@@ -19,6 +19,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material3.Icon
@@ -43,6 +44,7 @@ import coil.compose.AsyncImage
 import com.hikari.app.data.MediaItem
 import com.hikari.app.i18n.tr
 import com.hikari.app.ui.Artwork
+import kotlinx.coroutines.launch
 
 @Composable
 fun TvSettingsSourceCard(
