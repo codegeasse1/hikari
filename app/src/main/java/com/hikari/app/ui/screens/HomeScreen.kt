@@ -123,7 +123,7 @@ import com.hikari.app.data.TmdbSourceType
 import com.hikari.app.data.TmdbSpec
 import com.hikari.app.data.Profiles
 import com.hikari.app.tv.TvCinematicHero
-import com.hikari.app.tv.TvHomeTopBar
+import com.hikari.app.tv.TvHomeHeaderBar
 import com.hikari.app.tv.TvMode
 import com.hikari.app.tv.TvProfileMenuDialog
 import com.hikari.app.tv.TvSelectProviderDialog
@@ -984,17 +984,19 @@ fun HomeScreen(nav: NavHostController) {
                 // the header keeps its own row of the feed, the banner starts
                 // below it, and no hero style can collide with it again.
                 Column(Modifier.fillMaxWidth()) {
-                    // Television: the CloudStream-desktop-style top-right pills —
-                    // provider (icon + name, opens the provider box) and profile
-                    // (avatar + name, opens the profile menu). Row of its own
-                    // above the header, so it never overlaps the artwork, the
-                    // title or the buttons (see the overlap note below).
+                    // Television: the CloudStream-desktop-style home header as ONE
+                    // line — title, mouse/search/translate/site buttons and the
+                    // provider + profile pills in a single row (see
+                    // [TvHomeHeaderBar]). The old provider strip and its search
+                    // field below it are gone: the top pill's Select Provider
+                    // box (filter + hold-to-multi) is the one place providers
+                    // are picked.
                     if (TvMode.current()) {
                         val pillProvider =
                             providers.firstOrNull { it.config.id == selected }
                         val pillProfileName =
                             profiles.firstOrNull { it.id == activeProfileId }?.name
-                        TvHomeTopBar(
+                        TvHomeHeaderBar(
                             providerName = when {
                                 selection.size > 1 -> selectedName
                                 else -> pillProvider?.config?.name ?: selectedName
@@ -1003,93 +1005,24 @@ fun HomeScreen(nav: NavHostController) {
                             profileName = pillProfileName,
                             onProviderClick = { showTvProviderBox = true },
                             onProfileClick = { showTvProfileMenu = true },
+                            selected = headerSelection,
+                            onSearch = openSearch,
+                            onTranslate = { showTranslate = true },
+                            onVerify = openVerify,
+                            onMouse = { com.hikari.app.tv.MouseMode.toggle() },
+                            mouseOn = com.hikari.app.tv.MouseMode.enabled,
+                            onSettings = openSettings,
                         )
-                    }
-                    HomeHeader(
-                        selected = headerSelection,
-                        onSearch = openSearch,
-                        onTranslate = { showTranslate = true },
-                        onVerify = openVerify,
-                        overlay = false,
-                        onSettings = openSettings,
-                        onMouse = { com.hikari.app.tv.MouseMode.toggle() },
-                        mouseOn = com.hikari.app.tv.MouseMode.enabled,
-                    )
-                    // Television: the provider strip sits under the header like
-                    // CloudStream's — every extension one OK-press away, hold
-                    // OK to multi-pick, instead of the phone's floating pill
-                    // and sheet (which stay as the overflow via ▦).
-                    if (TvMode.current()) {
-                        var tvProvQuery by rememberSaveable { mutableStateOf("") }
-                        val stripProviders = if (tvProvQuery.isBlank()) activeProviders
-                        else activeProviders.filter {
-                            it.config.name.contains(tvProvQuery.trim(), ignoreCase = true)
-                        }
-                        OutlinedTextField(
-                            value = tvProvQuery,
-                            onValueChange = { tvProvQuery = it },
-                            singleLine = true,
-                            textStyle = MaterialTheme.typography.bodyMedium,
-                            placeholder = {
-                                Text(
-                                    if (tvProvQuery.isBlank()) tr("Search providers…")
-                                    else tr("%s of %s").replaceFirst("%s", stripProviders.size.toString()).replaceFirst("%s", activeProviders.size.toString()),
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            },
-                            leadingIcon = {
-                                Box(
-                                    Modifier
-                                        .size(34.dp)
-                                        .clip(CircleShape)
-                                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)),
-                                    contentAlignment = Alignment.Center,
-                                ) {
-                                    Icon(
-                                        Icons.Filled.Search,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(18.dp),
-                                    )
-                                }
-                            },
-                            trailingIcon = if (tvProvQuery.isNotBlank()) {
-                                {
-                                    IconButton(onClick = { tvProvQuery = "" }) {
-                                        Icon(
-                                            Icons.Filled.Close,
-                                            contentDescription = tr("Clear"),
-                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            modifier = Modifier.size(18.dp),
-                                        )
-                                    }
-                                }
-                            } else null,
-                            shape = RoundedCornerShape(20.dp),
-                            colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = MaterialTheme.colorScheme.primary,
-                                unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
-                                focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-                                unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.30f),
-                            ),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(start = 20.dp, end = 20.dp, top = 6.dp)
-                                .tvTextFieldKeys(tvProvQuery),
-                        )
-                        TvProviderStrip(
-                            providers = stripProviders,
-                            selection = selection,
-                            onPickSingle = { vm.selectProvider(it) },
-                            onPickAll = { vm.setSelection(emptyList()) },
-                            onToggleMulti = { id ->
-                                vm.setSelection(
-                                    if (id in selection) selection - id
-                                    else (selection + id).distinct()
-                                )
-                            },
-                            onOpenPicker = { showPicker = true },
+                    } else {
+                        HomeHeader(
+                            selected = headerSelection,
+                            onSearch = openSearch,
+                            onTranslate = { showTranslate = true },
+                            onVerify = openVerify,
+                            overlay = false,
+                            onSettings = openSettings,
+                            onMouse = { com.hikari.app.tv.MouseMode.toggle() },
+                            mouseOn = com.hikari.app.tv.MouseMode.enabled,
                         )
                     }
                     if (featured.isNotEmpty()) {
@@ -1521,8 +1454,8 @@ fun HomeScreen(nav: NavHostController) {
     }
 
     // Television: the CloudStream-desktop-style provider box — filter field,
-    // "All Plugins (Global)", one card per extension. Single-pick, like the
-    // strip: a tap chooses and closes.
+    // "All Plugins (Global)", one card per extension. A tap chooses and
+    // closes; a hold toggles the multi-pick and keeps the box open.
     if (showTvProviderBox) {
         TvSelectProviderDialog(
             providers = activeProviders,
@@ -1534,6 +1467,12 @@ fun HomeScreen(nav: NavHostController) {
             onPick = { id ->
                 showTvProviderBox = false
                 vm.selectProvider(id)
+            },
+            onToggleMulti = { id ->
+                vm.setSelection(
+                    if (id in selection) selection - id
+                    else (selection + id).distinct()
+                )
             },
             onDismiss = { showTvProviderBox = false },
         )

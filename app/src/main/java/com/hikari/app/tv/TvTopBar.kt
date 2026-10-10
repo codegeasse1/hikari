@@ -25,6 +25,8 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.Mouse
+import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
@@ -48,10 +50,12 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.hikari.app.providers.ContentProvider
 import com.hikari.app.data.Profiles
 import com.hikari.app.i18n.tr
+
 /**
  * The television top-right cluster, in the shape of the CloudStream desktop
  * reference: a provider pill (icon + name, opens the provider box) and a
@@ -116,7 +120,7 @@ fun TvProviderPill(
             )
             Spacer(Modifier.width(4.dp))
             Icon(
-Icons.Filled.KeyboardArrowDown,
+                Icons.Filled.KeyboardArrowDown,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(16.dp),
@@ -167,12 +171,117 @@ fun TvProfilePill(
             )
             Spacer(Modifier.width(4.dp))
             Icon(
-Icons.Filled.KeyboardArrowDown,
+                Icons.Filled.KeyboardArrowDown,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(16.dp),
             )
         }
+    }
+}
+
+/**
+ * The television home header as ONE line, CloudStream-desktop-style: the
+ * title and tagline on the left, then the mouse, search, translate and
+ * site buttons, then the provider pill and the profile pill — everything in
+ * a single row, so the pills row and the button row can never stack into two.
+ *
+ * [selected] is the header's extension pick (null on All/collections): it
+ * gates the translate and site buttons exactly like the phone header, and
+ * [onSettings] is non-null only while the Settings tab is hidden from the
+ * taskbar.
+ */
+@Composable
+fun TvHomeHeaderBar(
+    providerName: String?,
+    providerIconUrl: String?,
+    profileName: String?,
+    onProviderClick: () -> Unit,
+    onProfileClick: () -> Unit,
+    selected: String?,
+    onSearch: () -> Unit,
+    onTranslate: () -> Unit,
+    onVerify: () -> Unit,
+    onMouse: () -> Unit,
+    mouseOn: Boolean,
+    onSettings: (() -> Unit)?,
+    modifier: Modifier = Modifier,
+) {
+    val accent = MaterialTheme.colorScheme.primary
+    Row(
+        modifier
+            .fillMaxWidth()
+            .padding(start = 20.dp, end = 20.dp, top = 10.dp, bottom = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                tr("Hikari"),
+                style = MaterialTheme.typography.headlineLarge,
+                fontWeight = FontWeight.Bold,
+                color = accent,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                tr("Every stream, one place."),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        IconButton(onClick = onMouse) {
+            Icon(
+                Icons.Filled.Mouse,
+                contentDescription = tr("Mouse cursor"),
+                tint = if (mouseOn) accent else accent.copy(alpha = 0.7f),
+                modifier = Modifier.size(if (mouseOn) 26.dp else 24.dp),
+            )
+        }
+        IconButton(onClick = onSearch) {
+            Icon(Icons.Filled.Search, contentDescription = tr("Search"), tint = accent)
+        }
+        selected?.let { pid ->
+            val translateOn = com.hikari.app.data.Translator.isOn(pid)
+            IconButton(onClick = onTranslate) {
+                Text(
+                    tr("A\u3042"),
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = if (translateOn) accent else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 4.dp),
+                )
+            }
+        }
+        if (selected != null) {
+            IconButton(onClick = onVerify) {
+                Icon(
+                    Icons.Filled.Public,
+                    contentDescription = tr("Open this extension's site in a web view"),
+                    tint = accent,
+                )
+            }
+        }
+        onSettings?.let { open ->
+            IconButton(onClick = open) {
+                Icon(
+                    Icons.Filled.Settings,
+                    contentDescription = tr("Settings"),
+                    tint = accent,
+                )
+            }
+        }
+        TvProviderPill(
+            name = providerName,
+            iconUrl = providerIconUrl,
+            onClick = onProviderClick,
+        )
+        Spacer(Modifier.width(10.dp))
+        TvProfilePill(
+            name = profileName,
+            onClick = onProfileClick,
+        )
     }
 }
 
@@ -214,8 +323,9 @@ fun TvProviderIcon(
 
 /**
  * The "Select Provider" box: a filter field, the "All Plugins (Global)" card,
- * and one card per installed provider (icon, name, engine). Single-pick, like
- * the strip it opens from — a tap chooses and closes.
+ * and one card per installed provider (icon, name, engine). A tap chooses and
+ * closes; a hold toggles that provider into the multi-pick without closing,
+ * so the old strip's hold-to-multi lives on here.
  */
 @Composable
 fun TvSelectProviderDialog(
@@ -224,6 +334,7 @@ fun TvSelectProviderDialog(
     onPickAll: () -> Unit,
     onPick: (String) -> Unit,
     onDismiss: () -> Unit,
+    onToggleMulti: ((String) -> Unit)? = null,
 ) {
     var query by remember { mutableStateOf("") }
     val shown = remember(providers, query) {
@@ -329,6 +440,7 @@ fun TvSelectProviderDialog(
                                 )
                             },
                             onClick = { onPick(id) },
+                            onHold = onToggleMulti?.let { toggle -> { toggle(id) } },
                         )
                     }
                 }
@@ -348,6 +460,7 @@ private fun TvProviderCard(
     selected: Boolean,
     icon: @Composable () -> Unit,
     onClick: () -> Unit,
+    onHold: (() -> Unit)? = null,
 ) {
     val shape = RoundedCornerShape(16.dp)
     Row(
@@ -365,7 +478,7 @@ private fun TvProviderCard(
                 shape,
             )
             .clickable(onClick = onClick)
-            .tvPress(previewPass = true, onClick = onClick)
+            .tvPress(previewPass = true, onClick = onClick, onHold = onHold)
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -400,6 +513,7 @@ private fun TvProviderCard(
         }
     }
 }
+
 /**
  * The profile menu: the active profile first, every other profile to switch
  * into, an inline Add row, and Manage (which opens Settings, where the full

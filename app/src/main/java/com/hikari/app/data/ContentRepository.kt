@@ -1913,7 +1913,7 @@ class ContentRepository(private val manager: ProviderManager) {
             var timedOut = false
             val at = System.currentTimeMillis()
             val got = cancellableCatching {
-val r = withTimeoutOrNull(attemptBudgetMs) { p.getStreams(item, episode) }
+                val r = withTimeoutOrNull(attemptBudgetMs) { p.getStreams(item, episode) }
                 if (r == null) timedOut = true
                 r.orEmpty()
             }.getOrElse { t ->
@@ -1922,7 +1922,7 @@ val r = withTimeoutOrNull(attemptBudgetMs) { p.getStreams(item, episode) }
             }
             val took = (System.currentTimeMillis() - at) / 1000
             if (got.isNotEmpty()) {
-val combined = supplementDubSubVariants(p, item, episode, got, attemptBudgetMs)
+                val combined = supplementDubSubVariants(p, item, episode, got, attemptBudgetMs)
                 providerOutcome.remove(p.config.id)
                 if (passSeq >= 0L) providerOutcomeSeq.remove(p.config.id)
                 // It answered — whatever it is, the wedge (if any) is over.
@@ -1965,7 +1965,7 @@ val combined = supplementDubSubVariants(p, item, episode, got, attemptBudgetMs)
                     "Provider",
                     (p.config.name.ifBlank { p.config.id }) +
                         " [${p.config.type.groupLabel}]: stall broken mid-lookup — " +
-"one fresh attempt with the full ${attemptBudgetMs / 1000}s budget",
+                        "one fresh attempt with the full ${attemptBudgetMs / 1000}s budget",
                 )
             }
             if (attempt >= maxAttempts + (if (recovered) 1 else 0)) {
@@ -2052,7 +2052,7 @@ val combined = supplementDubSubVariants(p, item, episode, got, attemptBudgetMs)
                 p.config.name.ifBlank { p.config.id } + " [" + p.config.type.groupLabel + "]" +
                     ": attempt $attempt/$maxAttempts answered nothing" +
                     (lastWhy?.let { " ($it)" } ?: "") +
-" — asking again with the full ${attemptBudgetMs / 1000}s budget",
+                    " — asking again with the full ${attemptBudgetMs / 1000}s budget",
             )
             // A cold extension answers empty in milliseconds — no timeout, no
             // exception, and its engine reported nothing at all (see the
@@ -6282,6 +6282,37 @@ val combined = supplementDubSubVariants(p, item, episode, got, attemptBudgetMs)
         return episodes
     }
 
+    /**
+     * Site-scraping engines (a CloudStream repo, a .hiki repo, SkyStream,
+     * Aniyomi, Vega, Sora, AnyMEX, Universal): the episode ids they list ARE
+     * the playback credentials their loadLinks needs. Only the origin's own
+     * list may be shown for them — TMDB's full-season list and another
+     * engine's list carry foreign ids that play nowhere on this extension.
+     */
+    private fun isSiteScraperOrigin(item: MediaItem): Boolean =
+        when (manager.byId(item.providerId)?.config?.type) {
+            ProviderType.CS3, ProviderType.HIKARI, ProviderType.UNIVERSAL,
+            ProviderType.SKYSTREAM, ProviderType.ANIYOMI, ProviderType.VEGA,
+            ProviderType.SORA, ProviderType.ANYMEX -> true
+            else -> false
+        }
+
+    /**
+     * True when [eps] looks like a [directTmdbEpisodes] list: ids of the form
+     * "<item>#sNeM". A site-scraper never mints those, so such a list under a
+     * scraper's key is phantom seasons from the old TMDB-shortcut path —
+     * poison, never paint.
+     */
+    private fun isTmdbSyntheticList(item: MediaItem, eps: List<Episode>): Boolean {
+        if (eps.isEmpty()) return false
+        val prefix = item.id + "#s"
+        var synthetic = 0
+        for (e in eps) {
+            if (e.id.startsWith(prefix) && e.id.contains("e")) synthetic++
+        }
+        return synthetic * 2 >= eps.size
+    }
+
 
 
     /**
@@ -6354,13 +6385,21 @@ val combined = supplementDubSubVariants(p, item, episode, got, attemptBudgetMs)
         // every cache on this lookup by the provider's current selection, so
         // pack 2 never paints (or inherits) pack 1's answers.
         val selKey = item.uniqueId + vegaSelectionSuffix(item)
+        // The origin owns the list for a site-scraper (see
+        // [isSiteScraperOrigin]): TMDB's synthetic ids can never play there.
+        val scraperOrigin = isSiteScraperOrigin(item)
         synchronized(episodeCache) { episodeCache[selKey] }?.let {
-            val fixed = restoreAnimeSeasons(item, it)
-            publish(fixed)
-            if (fixed !== it) {
-                synchronized(episodeCache) { episodeCache[selKey] = fixed }
+            if (scraperOrigin && isTmdbSyntheticList(item, it)) {
+                synchronized(episodeCache) { episodeCache.remove(selKey) }
+                runCatching { MetaCache.evictEpisodes(selKey) }
+            } else {
+                val fixed = restoreAnimeSeasons(item, it)
+                publish(fixed)
+                if (fixed !== it) {
+                    synchronized(episodeCache) { episodeCache[selKey] = fixed }
+                }
+                return@withContext fixed
             }
-            return@withContext fixed
         }
         // The list this title had last time, painted immediately while the
         // engines below are asked for the fresh one — an ongoing series gains
@@ -6372,7 +6411,11 @@ val combined = supplementDubSubVariants(p, item, episode, got, attemptBudgetMs)
         val epsKey = MetaCache.episodesKey(selKey) +
             if (TrackerAnimeResolver.isTrackerAnime(item)) "|trk2" else ""
         val cachedEps = MetaCache.cachedEpisodes(epsKey)
-        val cachedSeasoned = cachedEps?.let { restoreAnimeSeasons(item, it) }
+        // Poison check (see above): a TMDB-synthetic disk list for a
+        // site-scraper is phantom seasons — evict it and ask the origin.
+        val cachedPoisoned = scraperOrigin && cachedEps != null && isTmdbSyntheticList(item, cachedEps)
+        if (cachedPoisoned) runCatching { MetaCache.evictEpisodes(selKey) }
+        val cachedSeasoned = if (cachedPoisoned) null else cachedEps?.let { restoreAnimeSeasons(item, it) }
         cachedSeasoned?.let { publish(it) }
         // TMDB-id shortcut: any row that already carries a TMDB id (a Nuvio
         // row, a remapped TMDB row, a cached one) reads its full episode list
@@ -6390,7 +6433,10 @@ val combined = supplementDubSubVariants(p, item, episode, got, attemptBudgetMs)
         // [finishEpisodes]. Past the budget the origin fan-out below runs on
         // its own, so a slow TMDB answer can never hold the episode list
         // hostage.
-        if (!TrackerAnimeResolver.isTrackerAnime(item) && cachedSeasoned == null && (item.type == MediaType.SERIES || item.type == MediaType.UNKNOWN)) {
+        // Never for a site-scraper: the shortcut's synthetic ids would paint
+        // seasons the origin never scraped and hand them to Play (see above) —
+        // the origin is asked first below instead.
+        if (!scraperOrigin && !TrackerAnimeResolver.isTrackerAnime(item) && cachedSeasoned == null && (item.type == MediaType.SERIES || item.type == MediaType.UNKNOWN)) {
             val tmdbEnd = System.currentTimeMillis() + TMDB_SHORTCUT_MS
             fun tmdbLeft() = (tmdbEnd - System.currentTimeMillis()).coerceAtLeast(0L)
             // A tracker row's numeric id is the TRACKER's id (AniList/MAL),
@@ -6446,7 +6492,35 @@ val combined = supplementDubSubVariants(p, item, episode, got, attemptBudgetMs)
         // origin still wins when it eventually answers, preserving source
         // preference while making the first visible episode arrive as soon as
         // ANY capable extension responds.
-        if (item.type == MediaType.SERIES || item.type == MediaType.UNKNOWN) {
+        // A site-scraper's page shows ONLY its own list: the origin is asked
+        // first and alone, so a slow TMDB answer or another engine's fuller
+        // list can never paint seasons the origin never scraped. The reported
+        // case: Attack on Titan opened from a CloudStream repo that scrapes
+        // season 1 only — the page showed all 4 seasons, Play sent a foreign
+        // episode id to the extension and found no sources; reopening showed
+        // season 1 and played. An empty origin still falls through to the
+        // borrow sweep below (a fallback, not the truth), and the next open
+        // asks the origin first again.
+        if (scraperOrigin && (item.type == MediaType.SERIES || item.type == MediaType.UNKNOWN)) {
+            val origin = manager.byId(item.providerId)
+            if (origin != null) {
+                val raw = withTimeoutOrNull(episodesForTimeoutMs(origin)) {
+                    cancellableCatching { origin.getEpisodes(item) }.getOrNull().orEmpty()
+                }.orEmpty()
+                val eps = EpisodeDubSub.mergedFor(item.uniqueId, raw)
+                if (eps.isNotEmpty()) {
+                    val restored = restoreAnimeSeasons(item, eps)
+                    val sorted = publish(restored.sortedWith(compareBy({ it.season }, { it.number })))
+                    val translated = publish(translateEpisodes(item.providerId, sorted))
+                    val named = withRealEpisodeNames(item, translated)
+                    return@withContext finishEpisodes(item, selKey, epsKey, named, publish)
+                }
+            }
+        }
+        // (A scraper whose origin came back empty skips this fan-out too: its
+        // answers are other engines' lists with foreign ids. The borrow sweep
+        // below is the only fallback.)
+        if (!scraperOrigin && (item.type == MediaType.SERIES || item.type == MediaType.UNKNOWN)) {
             val targets = ordered.distinctBy { it.config.id }.take(8)
             val answers = supervisorScope {
                 // The origin's answer ends the fan-out instantly — no waiting
@@ -6487,7 +6561,7 @@ val combined = supplementDubSubVariants(p, item, episode, got, attemptBudgetMs)
                 val named = withRealEpisodeNames(item, translated)
                 return@withContext finishEpisodes(item, selKey, epsKey, named, publish)
             }
-        } else {
+        } else if (!scraperOrigin) {
             for (p in ordered) {
                 val raw = (withTimeoutOrNull(episodesForTimeoutMs(p)) {
                     cancellableCatching { p.getEpisodes(item) }.getOrNull() ?: emptyList()
