@@ -121,8 +121,12 @@ import com.hikari.app.data.RepoProvenance
 import com.hikari.app.data.TmdbGenres
 import com.hikari.app.data.TmdbSourceType
 import com.hikari.app.data.TmdbSpec
+import com.hikari.app.data.Profiles
 import com.hikari.app.tv.TvCinematicHero
+import com.hikari.app.tv.TvHomeTopBar
 import com.hikari.app.tv.TvMode
+import com.hikari.app.tv.TvProfileMenuDialog
+import com.hikari.app.tv.TvSelectProviderDialog
 import com.hikari.app.tv.TvUi
 import com.hikari.app.ui.Artwork
 import com.hikari.app.ui.PosterLoader
@@ -672,6 +676,10 @@ fun HomeScreen(nav: NavHostController) {
     }
     var showPicker by remember { mutableStateOf(false) }
     var showTranslate by remember { mutableStateOf(false) }
+    // Television: the CloudStream-desktop-style provider box and profile menu,
+    // opened from the top-right pills (see [TvHomeTopBar]).
+    var showTvProviderBox by remember { mutableStateOf(false) }
+    var showTvProfileMenu by remember { mutableStateOf(false) }
     var showSearchDialog by remember { mutableStateOf(false) }
     // The in-place search overlay for a PICKED extension (see [openSearch]).
     //
@@ -710,6 +718,15 @@ fun HomeScreen(nav: NavHostController) {
     // collection's folders.
     val collectionsFlow = remember { app.store.collectionsFlow() }
     val collections by collectionsFlow.collectAsState(initial = emptyList())
+    // Television top-right pills: the profile list + active id for the profile
+    // pill menu, and the favourites for the hero's bookmark toggle.
+    // [Profiles.all] is a stable object-level flow (same as in ProfilesScreen),
+    // so it needs no remember; the store flows below do (see historyFlow).
+    val profiles by Profiles.all.collectAsState()
+    val activeProfileId by Profiles.activeId.collectAsState()
+    val favoritesFlow = remember { app.store.favoritesFlow() }
+    val favorites by favoritesFlow.collectAsState(initial = emptyList())
+    val favoriteIds = remember(favorites) { favorites.map { it.uniqueId }.toSet() }
     // Which repository each installed extension came from, for the picker's
     // rows ("Cs3 · CNC Verse"). Built HERE — while Home's feed is loading —
     // rather than inside the picker sheet: computing it in the sheet charged the
@@ -967,6 +984,27 @@ fun HomeScreen(nav: NavHostController) {
                 // the header keeps its own row of the feed, the banner starts
                 // below it, and no hero style can collide with it again.
                 Column(Modifier.fillMaxWidth()) {
+                    // Television: the CloudStream-desktop-style top-right pills —
+                    // provider (icon + name, opens the provider box) and profile
+                    // (avatar + name, opens the profile menu). Row of its own
+                    // above the header, so it never overlaps the artwork, the
+                    // title or the buttons (see the overlap note below).
+                    if (TvMode.current()) {
+                        val pillProvider =
+                            providers.firstOrNull { it.config.id == selected }
+                        val pillProfileName =
+                            profiles.firstOrNull { it.id == activeProfileId }?.name
+                        TvHomeTopBar(
+                            providerName = when {
+                                selection.size > 1 -> selectedName
+                                else -> pillProvider?.config?.name ?: selectedName
+                            },
+                            providerIconUrl = pillProvider?.config?.iconUrl,
+                            profileName = pillProfileName,
+                            onProviderClick = { showTvProviderBox = true },
+                            onProfileClick = { showTvProfileMenu = true },
+                        )
+                    }
                     HomeHeader(
                         selected = headerSelection,
                         onSearch = openSearch,
@@ -1064,6 +1102,18 @@ fun HomeScreen(nav: NavHostController) {
                             TvCinematicHero(
                                 items = featured,
                                 scale = heroConfig.scale,
+                                bookmarkedIds = favoriteIds,
+                                onToggleBookmark = { item ->
+                                    scope.launch {
+                                        runCatching {
+                                            if (item.uniqueId in favoriteIds) {
+                                                app.store.removeFavorite(item.uniqueId)
+                                            } else {
+                                                app.store.addFavorite(item)
+                                            }
+                                        }
+                                    }
+                                },
                                 onOpen = { item ->                                    Routes.safeNavigate(
                                         nav,
                                         Routes.detail(
@@ -1467,6 +1517,57 @@ fun HomeScreen(nav: NavHostController) {
             },
             onDismiss = { showPicker = false },
             repoNameByProvider = repoNameByProvider,
+        )
+    }
+
+    // Television: the CloudStream-desktop-style provider box — filter field,
+    // "All Plugins (Global)", one card per extension. Single-pick, like the
+    // strip: a tap chooses and closes.
+    if (showTvProviderBox) {
+        TvSelectProviderDialog(
+            providers = activeProviders,
+            selection = selection,
+            onPickAll = {
+                showTvProviderBox = false
+                vm.setSelection(emptyList())
+            },
+            onPick = { id ->
+                showTvProviderBox = false
+                vm.selectProvider(id)
+            },
+            onDismiss = { showTvProviderBox = false },
+        )
+    }
+
+    // Television: the profile menu — switch, add, manage. A locked target
+    // refuses the switch (see [Profiles.switchTo]) instead of opening: the
+    // password lives in the Profiles screen, so the menu says so.
+    if (showTvProfileMenu) {
+        TvProfileMenuDialog(
+            profiles = profiles,
+            activeId = activeProfileId,
+            onSwitch = { id ->
+                showTvProfileMenu = false
+                scope.launch {
+                    val ok = runCatching { Profiles.switchTo(app, id) }.getOrDefault(false)
+                    if (!ok) {
+                        Toast.makeText(
+                            app.applicationContext,
+                            I18n.t("That profile is locked — unlock it in Settings, Profiles."),
+                            Toast.LENGTH_LONG,
+                        ).show()
+                    }
+                }
+            },
+            onAdd = { name ->
+                showTvProfileMenu = false
+                scope.launch { runCatching { Profiles.createEmpty(app, name) } }
+            },
+            onManage = {
+                showTvProfileMenu = false
+                Routes.safeNavigate(nav, Routes.SETTINGS)
+            },
+            onDismiss = { showTvProfileMenu = false },
         )
     }
 

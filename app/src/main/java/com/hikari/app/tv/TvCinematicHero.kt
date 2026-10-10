@@ -1,11 +1,13 @@
 package com.hikari.app.tv
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -17,15 +19,19 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -63,12 +69,18 @@ import com.hikari.app.ui.components.PosterImage
 fun TvCinematicHero(
     items: List<MediaItem>,
     onOpen: (MediaItem) -> Unit,
-    modifier: Modifier = Modifier,
+modifier: Modifier = Modifier,
     scale: Float = 1f,
+    /** Ids (see [MediaItem.uniqueId]) the user has bookmarked — the hero's
+     *  bookmark button reads them. Null toggle hides the button. */
+    bookmarkedIds: Set<String> = emptySet(),
+    onToggleBookmark: ((MediaItem) -> Unit)? = null,
 ) {
     if (items.isEmpty()) return
     var index by remember(items) { mutableIntStateOf(0) }
-    val item = items[index.coerceIn(items.indices)]
+val item = items[index.coerceIn(items.indices)]
+    // The overview's [more] expansion resets per title, like the index does.
+    var overviewExpanded by remember(item) { mutableStateOf(false) }
     val art = remember(item) { Artwork.heroModel(item) }
     val scheme = MaterialTheme.colorScheme
     val bg = scheme.background
@@ -163,23 +175,34 @@ fun TvCinematicHero(
                     overflow = TextOverflow.Ellipsis,
                     lineHeight = 40.sp,
                 )
-                if (item.overview?.isNotBlank() == true) {
+if (item.overview?.isNotBlank() == true) {
                     Spacer(Modifier.height(6.dp))
                     Text(
                         item.overview,
                         style = MaterialTheme.typography.bodyLarge,
                         color = Color.White.copy(alpha = 0.8f),
-                        maxLines = 3,
+                        maxLines = if (overviewExpanded) Int.MAX_VALUE else 3,
                         overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.clickable { overviewExpanded = !overviewExpanded },
                     )
+                    if (!overviewExpanded) {
+                        Text(
+                            tr("[more]"),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = Color.White.copy(alpha = 0.6f),
+                            modifier = Modifier
+                                .padding(top = 2.dp)
+                                .clickable { overviewExpanded = true },
+                        )
+                    }
                 }
                 Spacer(Modifier.height(12.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     Button(
                         onClick = { onOpen(item) },
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = scheme.primary,
-                            contentColor = scheme.onPrimary,
+containerColor = Color.White,
+                            contentColor = Color.Black,
                         ),
                         shape = RoundedCornerShape(24.dp),
                     ) {
@@ -187,11 +210,35 @@ fun TvCinematicHero(
                         Spacer(Modifier.width(6.dp))
                         Text(tr("Play"), fontWeight = FontWeight.Bold)
                     }
-                    androidx.compose.material3.OutlinedButton(
-                        onClick = { onOpen(item) },
-                        shape = RoundedCornerShape(24.dp),
-                    ) {
-                        Text(tr("View Details"), fontWeight = FontWeight.Bold)
+if (onToggleBookmark != null) {
+                        val saved = item.uniqueId in bookmarkedIds
+                        OutlinedButton(
+                            onClick = { onToggleBookmark(item) },
+                            shape = RoundedCornerShape(24.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                contentColor = Color.White,
+                            ),
+                            border = BorderStroke(
+                                1.dp,
+                                Color.White.copy(alpha = 0.5f),
+                            ),
+                            contentPadding = PaddingValues(
+                                horizontal = 14.dp,
+                                vertical = 8.dp,
+                            ),
+                        ) {
+                            Icon(
+                                if (saved) Icons.Filled.Bookmark else Icons.Filled.BookmarkBorder,
+                                contentDescription = tr("Bookmark"),
+                            )
+                        }
+                    } else {
+                        OutlinedButton(
+                            onClick = { onOpen(item) },
+                            shape = RoundedCornerShape(24.dp),
+                        ) {
+                            Text(tr("View Details"), fontWeight = FontWeight.Bold)
+                        }
                     }
                 }
             }

@@ -67,6 +67,12 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
         fun videoInterceptorFor(streamUrl: String): okhttp3.Interceptor? =
             videoInterceptors[streamUrl]
 
+        /** How long a cached load() stays usable (CloudStream: 10 minutes). */
+        const val LOAD_CACHE_TTL_MS = 10 * 60 * 1000L
+
+        /** Hard cap on cached load() entries per provider (CloudStream: 20). */
+        const val LOAD_CACHE_MAX = 20
+
         /**
          * Hosts whose CDN hotlink check REQUIRES a Referer (Fastream is the
          * classic: `s40.fastream.to` 403s a bare request while the same URL
@@ -363,7 +369,94 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
             Cs3PluginManager.hasSettings(file)
     }
 
-    private val loadCache = ConcurrentHashMap<String, LoadResponse>()
+    /**
+     * CloudStream's own load() cache (see APIRepository): 20 entries, a
+     * 10-minute TTL, keyed by (provider, fixed url), cleared on plugin reload.
+     * An unbounded, TTL-less map lived here before — a LoadResponse minted in
+     * the morning (provider-opaque episode payloads, rewritten final urls,
+     * sometimes signed links) was still being replayed at night, long after
+     * the provider would have minted something else. That is the systematic
+     * shape behind "same episode, same extension, plays in CloudStream, no
+     * servers in Hikari": CloudStream re-loads fresh every 10 minutes, Hikari
+     * replayed the corpse. Same 10 minutes here, plus a size cap.
+     */
+    private val loadCache = ConcurrentHashMap<String, Pair<Long, LoadResponse>>()
+
+    private fun cachedLoad(url: String): LoadResponse? {
+        val (at, resp) = loadCache[url] ?: return null
+        if (System.currentTimeMillis() - at > LOAD_CACHE_TTL_MS) {
+            loadCache.remove(url)
+            return null
+        }
+        return resp
+    }
+
+    private fun putLoad(url: String, resp: LoadResponse) {
+        loadCache[url] = System.currentTimeMillis() to resp
+        if (loadCache.size > LOAD_CACHE_MAX * 2) {
+            // Sweep the expired first; whatever is left beyond the cap goes
+            // oldest-first. The map is small — a full scan is cheap.
+            val now = System.currentTimeMillis()
+            loadCache.entries.removeIf { now - it.value.first > LOAD_CACHE_TTL_MS }
+            if (loadCache.size > LOAD_CACHE_MAX) {
+                loadCache.entries
+                    .sortedBy { it.value.first }
+                    .take(loadCache.size - LOAD_CACHE_MAX)
+                    .forEach { loadCache.remove(it.key) }
+            }
+        }
+    }
+
+    /** True when ANY load() entry exists for [url] — live or expired. The
+     *  freshness retry (see ContentRepository) uses it to tell "this lookup
+     *  replayed a cached title" from "this lookup already ran fresh". */
+    fun hadCachedLoadFor(url: String): Boolean {
+        if (loadCache.containsKey(url)) return true
+        return loadCache.entries.any { it.value.second.url == url }
+    }
+
+    /** True when a load() entry for [url] exists but is older than the TTL —
+     *  the rotten-input case. Removes it as a side effect (it is evicted
+     *  either way before a fresh load runs). */
+    fun hasStaleLoadFor(url: String): Boolean {
+        val now = System.currentTimeMillis()
+        var stale = false
+        loadCache[url]?.let { (at, _) ->
+            if (now - at > LOAD_CACHE_TTL_MS) {
+                loadCache.remove(url)
+                stale = true
+            }
+        }
+        if (!stale) {
+            val it = loadCache.entries.iterator()
+            while (it.hasNext()) {
+                val (k, v) = it.next()
+                if (v.second.url == url && now - v.first > LOAD_CACHE_TTL_MS) {
+                    it.remove()
+                    stale = true
+                }
+            }
+        }
+        return stale
+    }
+
+    /**
+     * This provider's loadLinks budget in ms: the user's per-extension
+     * server-search time when set for this repo, else the plugin's declared
+     * loadLinksTimeoutMs coerced into CloudStream's own 5s..8min window
+     * (see APIRepository.getTimeout), defaulting to 2 MINUTES when the plugin
+     * declares nothing. The lookup path uses it so an attempt never cuts the
+     * plugin off earlier than its own extraction below would.
+     */
+    fun effectivePluginTimeoutMs(): Long {
+        val overrideMs = runCatching {
+            com.hikari.app.HikariApp.instance.store.serverTimeoutFor(config.id)
+                ?.coerceIn(20, 100)?.times(1000L)
+        }.getOrDefault(null)
+        if (overrideMs != null) return overrideMs
+        val rawTimeout = runCatching { api?.loadLinksTimeoutMs }.getOrNull()
+        return (rawTimeout ?: 120_000L).coerceIn(5_000L, 480_000L)
+    }
 
     /**
      * Last getMainPage response per (page data, page number) so the catalogs()
@@ -707,7 +800,7 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
         // CloudStream does.
         val canonicalUrl = resp.url.takeIf { it.isNotBlank() } ?: item.id
         if (canonicalUrl != item.id) {
-            loadCache[canonicalUrl] = resp
+putLoad(canonicalUrl, resp)
         }
         val mt = when (resp) {
             is MovieLoadResponse -> MediaType.MOVIE
@@ -795,6 +888,15 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                     ?.takeIf { it.isNotBlank() }
             } else null
             val data = if (episode != null) episode.id else movieData ?: item.id
+            // Like the CloudStream app's own APIRepository.loadLinks: empty,
+            // "[]" and "about:blank" data never reaches the plugin — it
+            // answers "no links" instead of letting the provider throw on
+            // garbage (Jackson's "Unrecognized token") and having that throw
+            // read as a broken extension.
+            if (data.isEmpty() || data == "[]" || data == "about:blank") {
+                streamErrors[config.id] = "No playable source found on this extension."
+                return@withContext emptyList()
+            }
             // The universal fallback engine and the MovieBlast resolver scrape
             // a real page URL, never a serialized payload, so they keep using
             // the original item url.
@@ -809,11 +911,14 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
             // allowed to block the other: once one finishes, the other gets a
             // short grace window and then we play what we have.
             // CloudStream lets each plugin declare its own loadLinks budget
-            // (MainAPI.loadLinksTimeoutMs, default 30s). Hikari used to hard-cap
-            // this at 12s — and a provider that signs requests / walks several
-            // API pages (MovieBlast, AllMovieLand, …) routinely blows past that
-            // on a phone network, so Hikari declared "no playable sources" while
-            // CloudStream happily waited. Respect the plugin's own budget now.
+// CloudStream lets each plugin declare its own loadLinks budget
+            // (MainAPI.loadLinksTimeoutMs, CloudStream default 2 minutes — see
+            // [effectivePluginTimeoutMs]). The user's per-extension
+            // server-search time wins when set for this repo (Settings →
+            // Playback & Servers → Server search time); otherwise the plugin's
+            // own declared budget stands. Only the WAIT grows — a definitive
+            // failure still surfaces the moment it happens, via the merge
+            // loop below.
             // CopyOnWriteArrayList, not mutableListOf: a plugin's loadLinks
             // invokes these callbacks from its OWN coroutines, and providers
             // that fan out over several extractors (Goojara-style) call back
@@ -826,8 +931,6 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
             val links = CopyOnWriteArrayList<com.lagradost.cloudstream3.utils.ExtractorLink>()
             val subs = CopyOnWriteArrayList<SubtitleFile>()
             val worker = Thread.currentThread()
-            val rawTimeout = a.loadLinksTimeoutMs
-            val declared = if (rawTimeout != null && rawTimeout in 1..120_000L) rawTimeout else 30_000L
             // The user's per-extension server-search time wins when set for
             // this repo (Settings → Playback & Servers → Server search time);
             // otherwise the plugin's own declared budget stands. Only the WAIT
@@ -837,7 +940,7 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                 com.hikari.app.HikariApp.instance.store.serverTimeoutFor(config.id)
                     ?.coerceIn(20, 100)?.times(1000L)
             }.getOrDefault(null)
-            val pluginTimeout = overrideMs ?: declared
+val pluginTimeout = overrideMs ?: effectivePluginTimeoutMs()
             // How long the merge loop waits in total. Extended if a fast-empty
             // plugin run triggers its one retry (below), so the retry is never
             // cut off by a deadline that assumed a single attempt.
@@ -1415,15 +1518,33 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
         val it = loadCache.entries.iterator()
         while (it.hasNext()) {
             val (k, v) = it.next()
-            if (v.url == url) it.remove()
+if (v.second.url == url) it.remove()
         }
     }
 
     /** Finds the original search/page id that produced a (rewritten) url. */
     private fun originalIdOf(url: String): String? {
-        for ((k, v) in loadCache) if (v.url == url) return k
+for ((k, v) in loadCache) if (v.second.url == url) return k
         return null
     }
+
+    /**
+     * Drops every cached load() that belongs to [url] — under its own key and
+     * under any rewritten key that resolves to it (same sweep as
+     * [invalidateHollow]). The self-heal for stale provider-opaque episode
+     * payloads (see ContentRepository) calls this before re-resolving, so the
+     * fresh load() really runs instead of re-serving the response that minted
+     * the dead payload.
+     */
+    fun evictLoadCacheFor(url: String) {
+        loadCache.remove(url)
+        val it = loadCache.entries.iterator()
+        while (it.hasNext()) {
+            val (k, v) = it.next()
+            if (v.second.url == url || k == url) it.remove()
+        }
+    }
+
 
     /** One load() attempt, treating a plugin crash as a miss (never throwing). */
     private suspend fun tryLoad(a: MainAPI, id: String): LoadResponse? = try {
@@ -1439,7 +1560,7 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
     }
 
     private suspend fun loadResponse(id: String): LoadResponse? {
-        loadCache[id]?.let { return it }
+cachedLoad(id)?.let { return it }
         val a = api ?: return null
         // Some providers' load() walks many pages (e.g. PimpBunny model pages
         // paginate up to 50) — cap it so the detail screen can never hang.
@@ -1458,7 +1579,7 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
             if (e is CancellationException) throw e
             null
         } ?: return null
-        loadCache[id] = r
+putLoad(id, r)
         return r
     }
 

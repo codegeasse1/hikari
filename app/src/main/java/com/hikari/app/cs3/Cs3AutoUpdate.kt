@@ -172,6 +172,8 @@ object Cs3AutoUpdate {
                 false
             } else {
                 runCatching { backup.delete() }
+                // Committed a new extension build — cached episode payloads may no longer parse with it (see MetaCache).
+                runCatching { com.hikari.app.data.MetaCache.bumpEpisodesEpoch() }
                 true
             }
         } catch (t: Throwable) {

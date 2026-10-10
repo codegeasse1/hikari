@@ -1887,6 +1887,19 @@ class ContentRepository(private val manager: ProviderManager) {
             else if (p.config.type == ProviderType.NUVIO) {
                 minOf(maxOf(NetTuning.timeout(45_000L), 60_000L), 75_000L)
             } else NetTuning.timeout(45_000L)
+        // CloudStream waits out the plugin's own loadLinks budget (up to 8
+        // min, 2 min default — see APIRepository.getTimeout) on the title it
+        // is playing. An attempt capped below that budget cancels a slow but
+        // working provider mid-flight here while CloudStream plays it there.
+        // So the ORIGIN CloudStream provider — the one this title came from —
+        // gets the full plugin budget per attempt (capped at CloudStream's own
+        // 8-minute max); the cross-extension pass keeps its discipline so one
+        // slow repo cannot hold 250 others hostage.
+        val originCs3BudgetMs = if (isOrigin && p is Cs3MainApiProvider) {
+            runCatching { p.effectivePluginTimeoutMs() }.getOrDefault(0L)
+                .coerceIn(0L, 480_000L)
+        } else 0L
+        val attemptBudgetMs = maxOf(fullTimeoutMs, originCs3BudgetMs)
         val maxAttempts = if (isOrigin) maxOf(NetTuning.attempts(), 3) else NetTuning.attempts()
         var attempt = 0
         var lastWhy: String? = null
@@ -1900,7 +1913,7 @@ class ContentRepository(private val manager: ProviderManager) {
             var timedOut = false
             val at = System.currentTimeMillis()
             val got = cancellableCatching {
-                val r = withTimeoutOrNull(fullTimeoutMs) { p.getStreams(item, episode) }
+val r = withTimeoutOrNull(attemptBudgetMs) { p.getStreams(item, episode) }
                 if (r == null) timedOut = true
                 r.orEmpty()
             }.getOrElse { t ->
@@ -1909,7 +1922,7 @@ class ContentRepository(private val manager: ProviderManager) {
             }
             val took = (System.currentTimeMillis() - at) / 1000
             if (got.isNotEmpty()) {
-                val combined = supplementDubSubVariants(p, item, episode, got, fullTimeoutMs)
+val combined = supplementDubSubVariants(p, item, episode, got, attemptBudgetMs)
                 providerOutcome.remove(p.config.id)
                 if (passSeq >= 0L) providerOutcomeSeq.remove(p.config.id)
                 // It answered — whatever it is, the wedge (if any) is over.
@@ -1952,10 +1965,36 @@ class ContentRepository(private val manager: ProviderManager) {
                     "Provider",
                     (p.config.name.ifBlank { p.config.id }) +
                         " [${p.config.type.groupLabel}]: stall broken mid-lookup — " +
-                        "one fresh attempt with the full ${fullTimeoutMs / 1000}s budget",
+"one fresh attempt with the full ${attemptBudgetMs / 1000}s budget",
                 )
             }
             if (attempt >= maxAttempts + (if (recovered) 1 else 0)) {
+                // Stale input, healed here instead of failing the tap: the
+                // episode `data` string (or the title load behind it) this
+                // lookup replayed can predate the installed provider build (a
+                // cached episode list plus a silent extension update — the
+                // epoch in [MetaCache] stops new staleness) or simply have
+                // rotted (signed/redirect/session payloads; CloudStream never
+                // replays one — 10-minute load cache, no episode list on disk
+                // at all). Fires on a deserialization-shaped provider error OR
+                // when a cache actually fed this lookup — never for a lookup
+                // that already ran fresh, and never for genuine empties.
+                val healed = healStaleEpisodePayload(p, item, episode, attemptBudgetMs)
+                if (healed.isNotEmpty()) {
+                    val combined =
+                        supplementDubSubVariants(p, item, episode, healed, attemptBudgetMs)
+                    providerOutcome.remove(p.config.id)
+                    if (passSeq >= 0L) providerOutcomeSeq.remove(p.config.id)
+                    com.hikari.app.providers.ExtensionRecovery.noteSuccess(p.config.id)
+                    com.hikari.app.data.Logs.log(
+                        "Provider",
+                        p.config.name.ifBlank { p.config.id } +
+                            " [${p.config.type.groupLabel}]" +
+                            ": stale episode payload re-resolved fresh — " +
+                            "${combined.size} server(s)",
+                    )
+                    return combined
+                }
                 // Say WHY, on the provider's own log line. "This repo has no
                 // servers for this episode" and "this repo never answered" look
                 // identical in every server list and every summary line, and
@@ -2013,7 +2052,7 @@ class ContentRepository(private val manager: ProviderManager) {
                 p.config.name.ifBlank { p.config.id } + " [" + p.config.type.groupLabel + "]" +
                     ": attempt $attempt/$maxAttempts answered nothing" +
                     (lastWhy?.let { " ($it)" } ?: "") +
-                    " — asking again with the full ${fullTimeoutMs / 1000}s budget",
+" — asking again with the full ${attemptBudgetMs / 1000}s budget",
             )
             // A cold extension answers empty in milliseconds — no timeout, no
             // exception, and its engine reported nothing at all (see the
@@ -2032,6 +2071,89 @@ class ContentRepository(private val manager: ProviderManager) {
     }
 
     /**
+    /**
+     * One bounded freshness retry for a CloudStream lookup that came back with
+     * nothing (see the call site in [fetchStreams]). Two shapes, one cure:
+     * (a) the provider's own error says its `loadLinks` could not DESERIALIZE
+     * the episode `data` string — a payload minted by a previous extension
+     * build; (b) the attempts above replayed a CACHED input — an expired
+     * load() entry, or a stored episode list (which CloudStream never keeps
+     * at all: its load cache is 10 minutes and it holds no episode list on
+     * disk, so it always extracts from fresh data). Signed/redirect/session
+     * payloads rot even within one build, and that rot reads exactly like
+     * "same episode, same extension, plays in CloudStream, no servers here".
+     * A lookup whose input was already fresh (no cache existed anywhere)
+     * retries nothing: re-asking a genuine empty only dresses the wait up as
+     * diligence. Empty unless every step succeeds — this never masks a
+     * genuine "no servers".
+     */
+    private suspend fun healStaleEpisodePayload(
+        p: ContentProvider,
+        item: MediaItem,
+        episode: Episode?,
+        fullTimeoutMs: Long,
+    ): List<StreamSource> {
+        if (p.config.type != ProviderType.CS3) return emptyList()
+        val api = p as? Cs3MainApiProvider ?: return emptyList()
+        val deser = isDeserializationFailure(providerStreamMessage(p))
+        val staleInput = api.hasStaleLoadFor(item.id) ||
+            runCatching {
+                com.hikari.app.data.MetaCache.hasEpisodes(item.uniqueId)
+            }.getOrDefault(false)
+        if (!deser && !staleInput) return emptyList()
+        return try {
+            api.evictLoadCacheFor(item.id)
+            runCatching { com.hikari.app.data.MetaCache.evictEpisodes(item.uniqueId) }
+            val freshEps = if (episode == null) {
+                null
+            } else {
+                withTimeoutOrNull(20_000L) { api.getEpisodes(item) }.orEmpty()
+            }
+            val freshEp = if (episode == null) {
+                null
+            } else {
+                if (freshEps.isNullOrEmpty()) return emptyList()
+                // The re-resolved list is the new cache: the next tap must
+                // replay THESE payloads, not the rotten ones just evicted.
+                runCatching {
+                    com.hikari.app.data.MetaCache.putEpisodes(
+                        com.hikari.app.data.MetaCache.episodesKey(item.uniqueId),
+                        freshEps,
+                    )
+                }
+                freshEps.firstOrNull { it.season == episode.season && it.number == episode.number }
+                    ?: freshEps.firstOrNull { it.number == episode.number }
+                    ?: return emptyList()
+            }
+            val budget = minOf(fullTimeoutMs, 120_000L)
+            withTimeoutOrNull(budget) { api.getStreams(item, freshEp) }.orEmpty()
+        } catch (e: Throwable) {
+            currentCoroutineContext().ensureActive()
+            emptyList()
+        }
+    }
+
+    /**
+     * True when a provider's own error text says its JSON/payload parse
+     * failed — Jackson's missing-creator-parameter family (the reported
+     * `MissingKotlinParameterException ... tvtype ... missing (therefore
+     * NULL)`) or an unmappable payload. One of the two shapes that trigger
+     * the freshness retry (see [healStaleEpisodePayload]); the other is a
+     * lookup that demonstrably replayed a cached input.
+     */
+    private fun isDeserializationFailure(text: String?): Boolean {
+        if (text.isNullOrBlank()) return false
+        val t = text.lowercase()
+        return t.contains("missingkotlinparameterexception") ||
+            t.contains("creator parameter") ||
+            t.contains("mismatchedinputexception") ||
+            t.contains("unrecognizedpropertyexception") ||
+            t.contains("invaliddefinitionexception") ||
+            t.contains("cannot construct") ||
+            t.contains("jsonmappingexception") ||
+            t.contains("databind")
+    }
+
      * Pulls folded-away dub/sub sibling rows back into the server list.
      *
      * The episode list shows ONE row per episode number (see [EpisodeDubSub]),

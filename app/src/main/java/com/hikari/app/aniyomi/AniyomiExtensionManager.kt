@@ -572,6 +572,8 @@ object AniyomiExtensionManager {
                     fresh
             }
             HikariApp.instance.providers.refresh()
+            // A new extension build may change provider-opaque episode payloads — retire cached ones (see MetaCache).
+            runCatching { com.hikari.app.data.MetaCache.bumpEpisodesEpoch() }
             Result.success(fresh.size)
         } finally {
             if (temp.exists()) runCatching { temp.delete() }

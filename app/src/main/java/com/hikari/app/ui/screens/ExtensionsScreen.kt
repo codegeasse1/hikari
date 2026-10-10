@@ -1144,6 +1144,8 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             return Result.failure(Exception("Could not install extension file"))
         }
         HikariPluginManager.reload(getApplication<Application>(), file)
+        // Committed a new extension build — cached episode payloads may no longer parse with it (see MetaCache).
+        runCatching { com.hikari.app.data.MetaCache.bumpEpisodesEpoch() }
         var added = 0
         providers.forEachIndexed { i, p ->
             val id = "hiki|" + clean.hashCode() + "|" + i
@@ -1301,6 +1303,8 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         if (finalApis.isEmpty()) {
             return Result.failure(Exception("No CloudStream plugin found in this .cs3 file"))
         }
+        // Committed a new extension build — cached episode payloads may no longer parse with it (see MetaCache).
+        runCatching { com.hikari.app.data.MetaCache.bumpEpisodesEpoch() }
         var added = 0
         finalApis.forEachIndexed { i, api ->
             val name = api.name.ifBlank { base }
@@ -2687,8 +2691,36 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             remember = false,
         )
             .getOrElse { throw Exception("Could not fetch repo: ${it.message}") }
-        val root = runCatching { JSONObject(text) }.getOrElse {
-            throw Exception("Invalid $file: ${it.message}")
+val root = runCatching { JSONObject(text) }.getOrElse { err ->
+            // A repo stored under the WRONG kind (added before its kind
+            // existed, or pasted as a CS3/Hikari URL): the kegareta Anymex
+            // indexes are bare JSON arrays, which never parse as a JSONObject
+            // — but they ARE valid Anymex (or Vega) indexes. Sniff the
+            // content, migrate the stored kind, and serve the plugins instead
+            // of stranding the folder at "Invalid repo.json" with 0 plugins.
+            val axPlugins = runCatching {
+                com.hikari.app.anymex.AnymexPluginManager.repoPlugins(text, repo.url)
+            }.getOrDefault(emptyList())
+            if (axPlugins.isNotEmpty()) {
+                runCatching {
+                    store.removeCs3Repo(repo.url)
+                    store.addCs3Repo(repo.copy(kind = RepoKind.ANYMEX))
+                }
+                repos.value = store.repos()
+                return axPlugins to null
+            }
+            val vegaPlugins = runCatching {
+                com.hikari.app.providers.vega.VegaPluginManager.repoPlugins(text, repo.url)
+            }.getOrDefault(emptyList())
+            if (vegaPlugins.isNotEmpty()) {
+                runCatching {
+                    store.removeCs3Repo(repo.url)
+                    store.addCs3Repo(repo.copy(kind = RepoKind.VEGA))
+                }
+                repos.value = store.repos()
+                return vegaPlugins to null
+            }
+            throw Exception("Invalid $file: ${err.message}")
         }
         if (repo.kind == RepoKind.NUVIO) {
             // A nuvio manifest lists providers under `scrapers`, each served at

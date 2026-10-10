@@ -2400,7 +2400,7 @@ class PlayerActivity : ComponentActivity() {
                             val current = StreamsLive.flow(liveId).value
                             if (current.isNotEmpty()) {
                                 val have = sources.mapTo(HashSet()) { it.infoHash ?: it.url }
-                                val fresh = current.map { it.toPlayerSource() }
+val fresh = current.mapNotNull { runCatching { it.toPlayerSource() }.getOrNull() }
                                     .filter { (it.infoHash ?: it.url) !in have }
                                 if (fresh.isNotEmpty()) {
                                     sources = sources + fresh
@@ -2474,8 +2474,8 @@ class PlayerActivity : ComponentActivity() {
                 StreamsLive.flow(liveId).collect { incoming ->
                     if (incoming.isEmpty()) return@collect
                     val have = sources.map { it.infoHash ?: it.url }.toHashSet()
-                    val fresh = incoming
-                        .map { it.toPlayerSource() }
+val fresh = incoming
+                        .mapNotNull { runCatching { it.toPlayerSource() }.getOrNull() }
                         .filter { (it.infoHash ?: it.url) !in have }
                     if (fresh.isEmpty()) return@collect
                     sources = sources + fresh
@@ -6523,7 +6523,9 @@ class PlayerActivity : ComponentActivity() {
         var added = false
         for (s in cumulative) {
             if (!seen.add(s.url)) continue
-            out += s.toPlayerSource()
+// A single unconvertible row must never abort the batch (see the
+            // snapshot parse): the list keeps whatever converts.
+            out += runCatching { s.toPlayerSource() }.getOrNull() ?: continue
             added = true
         }
         if (added) {
@@ -6832,6 +6834,45 @@ class PlayerActivity : ComponentActivity() {
         serverChooserDialog = dialog
         var chip = "All"
 
+        /**
+         * Pulls the live session straight into this chooser — the same dedup as
+         * [appendSources], but read synchronously instead of waiting for the
+         * next collector emission or coalesced rebuild. The collector and the
+         * failsafe cover the normal path; this covers the abnormal one the user
+         * reported: a chooser sitting empty while the cover counts servers
+         * ("Found 128 servers — still searching…" over a blank "Select
+         * server"). Whatever orphaned the feed (a subscription that attached to
+         * a replaced session, a coalesced rebuild that never re-fired, a batch
+         * that landed between the collector's last emission and the dialog's
+         * open), the session's CURRENT value is the truth, and reading it here
+         * makes the open chooser converge on it on every tick — not only when
+         * something new arrives.
+         */
+        fun syncFromSession() {
+            val id = liveSessionId ?: return
+            if (!dialog.isShowing) return
+            val current = runCatching { StreamsLive.flow(id).value }.getOrDefault(emptyList())
+            if (current.isEmpty()) return
+            val hadBefore = sources.size
+            val have = HashSet<String>(hadBefore + current.size)
+            for (s in sources) have.add(s.infoHash ?: s.url)
+            var added = false
+            val out = sources.toMutableList()
+            for (s in current) {
+                if (!have.add(s.infoHash ?: s.url)) continue
+                out += runCatching { s.toPlayerSource() }.getOrNull() ?: continue
+                added = true
+            }
+            if (added) {
+                sources = out
+                com.hikari.app.data.Logs.log(
+                    "Player",
+                    "chooser sync: adopted ${out.size - hadBefore} server(s) from the live session " +
+                        "(${current.size} in session, had $hadBefore); list now ${out.size}",
+                )
+            }
+        }
+
         /** Sections that actually have servers, in the fixed order above. */
         fun groups(): List<String> {
             val have = sources.map { serverGroup(it) }.toSet()
@@ -7000,6 +7041,11 @@ class PlayerActivity : ComponentActivity() {
                 while (list.childCount > 1) list.removeViewAt(list.childCount - 1)
             }
             var pos = 0
+            // Rows actually put on screen. One undrawable row (a poison label,
+            // a row inflation that throws) is skipped instead of aborting the
+            // list — an aborted rebuild used to leave an empty box with no
+            // spinner and no rows, while the cover kept counting found servers.
+            var rendered = 0
             visible.forEach { (name, memberIdx) ->
                 if (chip == "All") {
                     val isNew = pos >= keep
@@ -7034,7 +7080,7 @@ class PlayerActivity : ComponentActivity() {
                 memberIdx.forEach { i ->
                     val isNew = pos >= keep
                     pos++
-                    if (isNew) {
+if (isNew && runCatching {
                         val src = sources[i]
                         addOptionRow(list, serverOption(src, i)) {
                             // The tap IS the answer: never let the
@@ -7062,17 +7108,32 @@ class PlayerActivity : ComponentActivity() {
                                 // A tap here IS the user's choice: if this
                                 // server dies, offer a way out instead of
                                 // sliding onto another one silently.
-                                pickedByUser = true
+pickedByUser = true
                             }
                         }
+}.isSuccess) rendered++
                     }
                 }
-            }
-            if (visible.isEmpty()) {
+            if (rendered == 0) {
                 // Opened before the first server landed ("don't play directly"
                 // opens the chooser the instant the player does): show that the
                 // search is running and that this list is where the servers
                 // will appear, instead of a blank panel.
+                val sessionSize = liveSessionId?.let {
+                    runCatching { StreamsLive.flow(it).value.size }.getOrDefault(-1)
+                } ?: -1
+                if (sessionSize > 0) {
+                    // The session HAS servers this chooser is not showing — the
+                    // exact report the user sent ("Found 128 servers" over an
+                    // empty "Select server"). syncFromSession above converges
+                    // the list; this line makes any remaining gap answerable
+                    // from the shared log instead of guessed at.
+                    com.hikari.app.data.Logs.log(
+                        "Player",
+                        "chooser empty with $sessionSize server(s) in the live session " +
+                            "(sources=${sources.size}, chip=$chip, sections=${runCatching { sections().size }.getOrDefault(-1)})",
+                    )
+                }
                 val stateRow = LinearLayout(this).apply {
                     orientation = LinearLayout.VERTICAL
                     gravity = Gravity.CENTER
@@ -7144,6 +7205,8 @@ class PlayerActivity : ComponentActivity() {
             }
         }
 
+rebuildChips()
+        syncFromSession()
         rebuildChips()
         rebuildList()
         val watcher: () -> Unit = {
@@ -7165,6 +7228,7 @@ class PlayerActivity : ComponentActivity() {
                 content != null && content.bottom - (v.scrollY + v.height) <= nearBottomPx
             } ?: false
             val keepX = chipScroll.scrollX
+syncFromSession()
             rebuildChips()
             rebuildList()
             // Television: rows/chips appended AFTER the dialog's one-time focus

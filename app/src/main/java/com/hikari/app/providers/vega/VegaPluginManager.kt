@@ -187,6 +187,9 @@ object VegaPluginManager {
             )
         )
         HikariApp.instance.providers.refresh()
+        // A new provider build may change provider-opaque payloads cached from
+        // the old one — retire them (see MetaCache.bumpEpisodesEpoch).
+        runCatching { com.hikari.app.data.MetaCache.bumpEpisodesEpoch() }
         Result.success(1)
     }
 

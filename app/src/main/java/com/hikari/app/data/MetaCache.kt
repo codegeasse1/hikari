@@ -55,6 +55,51 @@ object MetaCache {
      *  series can gain episodes, so this is deliberately the shortest window). */
     const val EPISODES_TTL_MS = 12 * 60 * 60 * 1000L
 
+    /**
+     * Extension-build epoch stamped into every episode-list key (see
+     * [episodesKey]). A cached episode row carries the provider's OPAQUE
+     * `data` payload (the string its own `loadLinks` re-parses), and a
+     * provider update can change that payload's shape — the reported
+     * `MissingKotlinParameterException ... tvtype ... missing (therefore
+     * NULL)` was an extension that added a required `LoadLinksData` field
+     * while Hikari kept replaying the previous build's payloads for up to
+     * [EPISODES_TTL_MS] (the silent auto-updater swaps builds overnight, so
+     * this bit every morning). Every installer and auto-updater calls
+     * [bumpEpisodesEpoch] when it commits a new extension file, which
+     * retires all cached payloads at once; the lists are re-fetched once
+     * and the cache keeps working. Losing the cache costs a re-fetch and
+     * nothing else (see the class note), so a coarse global epoch is safe.
+     */
+    @Volatile
+    private var episodesEpoch: Int = -1
+
+    private fun prefs() = ctx().getSharedPreferences("metacache", Context.MODE_PRIVATE)
+
+    /** The current extension-build epoch, 0 when nothing has ever bumped it. */
+    fun episodesEpoch(): Int {
+        val held = episodesEpoch
+        if (held >= 0) return held
+        val read = runCatching { prefs().getInt("episodes_epoch", 0) }.getOrDefault(0)
+        episodesEpoch = read
+        return read
+    }
+
+    /**
+     * Retires every cached episode list. Called when an extension file is
+     * installed or updated — its payloads may no longer parse with the new
+     * build. In-memory entries go immediately; on-disk ones become
+     * unreachable (their keys carry the old epoch) and age out via TTL/trim.
+     */
+    fun bumpEpisodesEpoch() {
+        val next = episodesEpoch() + 1
+        episodesEpoch = next
+        runCatching { prefs().edit().putInt("episodes_epoch", next).apply() }
+        synchronized(mem) {
+            val doomed = mem.keys.filter { it.startsWith("eps|") }
+            doomed.forEach { mem.remove(it) }
+        }
+    }
+
     /** How many files the directory may hold before the oldest are dropped. */
     private const val MAX_FILES = 1500
 
@@ -165,7 +210,7 @@ object MetaCache {
 
     // ---- Episode lists -------------------------------------------------------
 
-    fun episodesKey(uniqueId: String): String = "eps|$uniqueId"
+fun episodesKey(uniqueId: String): String = "eps|${episodesEpoch()}|$uniqueId"
 
     fun cachedEpisodes(key: String, ttlMs: Long = EPISODES_TTL_MS): List<Episode>? {
         val o = read(key, ttlMs) ?: return null
@@ -209,6 +254,26 @@ object MetaCache {
         }
         write(key, JSONObject().put("episodes", arr))
         runCatching { _epRevision.value += 1 }
+    }
+
+    /**
+     * Drops one title's cached episode list (memory + disk) so the next read
+     * re-resolves fresh — the freshness retry's eviction half. Only the
+     * current epoch's entry: older epochs are already unreachable by key.
+     */
+    fun evictEpisodes(uniqueId: String) {
+        val key = episodesKey(uniqueId)
+        memDrop(key)
+        runCatching { file(key).delete() }
+    }
+
+    /** True when a cached episode list exists for [uniqueId] (memory or disk),
+     *  however old — the thing CloudStream never keeps, and the input a stale
+     *  lookup most likely replayed. Cheap presence check: parses nothing. */
+    fun hasEpisodes(uniqueId: String): Boolean {
+        val key = episodesKey(uniqueId)
+        if (synchronized(mem) { mem.containsKey(key) }) return true
+        return runCatching { file(key).exists() }.getOrDefault(false)
     }
 
     // ---- Serialization -------------------------------------------------------
