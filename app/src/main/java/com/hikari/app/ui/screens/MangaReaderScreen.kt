@@ -1044,8 +1044,15 @@ fun MangaReaderScreen(
         }
     }
 
-    val chromeChapters = remember(navChapters, chapters, activeChapterUrl) {
-        val at = navIndexOf(navChapters, activeChapterUrl, chapters)
+    // Dedup-aware index of the chapter being read, shared by the chapter rows
+    // below and the reader's chapter sheet (whose own ids are the deduped urls
+    // — a raw active-url lookup there misses whenever the active chapter is
+    // another scanlator's copy of the same number).
+    val chapterInitialIndex = remember(navChapters, chapters, activeChapterUrl) {
+        navIndexOf(navChapters, activeChapterUrl, chapters)
+    }
+    val chromeChapters = remember(navChapters, chapterInitialIndex) {
+        val at = chapterInitialIndex
         navChapters.mapIndexed { i, c ->
             ReaderChapter(id = c.url, name = c.label, read = at >= 0 && i < at)
         }
@@ -1338,6 +1345,7 @@ fun MangaReaderScreen(
             },
             chapters = chromeChapters,
             activeChapterId = activeChapterUrl,
+            initialChapterIndex = chapterInitialIndex,
             onSelectChapter = { openChapter(it) },
             chapterCoverModel = posterUrl.takeIf { it.isNotBlank() },
         )

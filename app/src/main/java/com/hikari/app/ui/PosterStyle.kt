@@ -29,7 +29,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -55,6 +57,8 @@ import com.hikari.app.ui.theme.rememberGlassTokens
 import kotlin.math.hypot
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
 
 /**
  * The visual treatments a poster card can wear — Settings → App Layout →
@@ -233,6 +237,10 @@ data class PosterStyle(
     /** Draw the quality tag on the poster ([com.hikari.app.data.TitleQuality] —
      *  only titles whose quality the app has actually seen get one). */
     val showQuality: Boolean = false,
+    /** Draw the Dub/Sub + latest-episode pills in the poster's top-center
+     *  (CloudStream-style). They print only for series whose episode list the
+     *  app has already cached — never a guess. */
+    val showEpBadges: Boolean = true,
     /** The glass hairline + frosted backing every card in the app shares. */
     val glass: Boolean = true,
     /** The signature looks drawn over the card — a SET of [PosterEffects], so a
@@ -276,6 +284,7 @@ fun rememberPosterStyle(): PosterStyle {
     val ratingsFlow = remember { app.store.posterShowRatingsFlow() }
     val typeFlow = remember { app.store.posterShowTypeFlow() }
     val qualityFlow = remember { app.store.posterShowQualityFlow() }
+    val epBadgesFlow = remember { app.store.posterShowEpBadgesFlow() }
     val glassFlow = remember { app.store.posterGlassFlow() }
     val effectsFlow = remember { app.store.posterEffectsFlow() }
     val auraFlow = remember { app.store.posterAuraColorFlow() }
@@ -301,6 +310,7 @@ fun rememberPosterStyle(): PosterStyle {
     val ratings by ratingsFlow.collectAsState(initial = false)
     val showType by typeFlow.collectAsState(initial = true)
     val showQuality by qualityFlow.collectAsState(initial = false)
+    val showEpBadges by epBadgesFlow.collectAsState(initial = true)
     val glass by glassFlow.collectAsState(initial = true)
     val effects by effectsFlow.collectAsState(initial = emptySet())
     val auraColor by auraFlow.collectAsState(initial = AuraColors.THEME)
@@ -314,6 +324,7 @@ fun rememberPosterStyle(): PosterStyle {
         showRatings = ratings,
         showType = showType,
         showQuality = showQuality,
+        showEpBadges = showEpBadges,
         glass = glass,
         effects = if (perf) emptySet() else PosterEffects.normalizeSet(effects),
         auraColor = AuraColors.normalize(auraColor),
@@ -411,6 +422,61 @@ fun rememberPosterBadges(item: MediaItem?, style: PosterStyle): List<String> {
                 }
             }
         }
+    }
+}
+
+/**
+ * The Dub/Sub + latest-episode pills a poster draws in its top-center corner,
+ * CloudStream-style ("Dub Ep 12" over "Sub Ep 14").
+ *
+ * The numbers come from the title's CACHED episode list only
+ * ([com.hikari.app.data.MetaCache.cachedEpisodes] — the same stale-while-
+ * revalidate store the detail page paints from), read off the main thread, so
+ * a grid of posters costs no network and no per-card disk storm after the
+ * first read (the cache holds an in-process mirror). A title whose episodes
+ * were never loaded shows nothing rather than a guess. [MetaCache.epRevision]
+ * repaints cells that are already on screen the moment some title's episodes
+ * land.
+ */
+@Composable
+fun rememberPosterEpBadges(item: MediaItem?): List<String> {
+    if (item == null) return emptyList()
+    if (item.type != com.hikari.app.data.MediaType.SERIES &&
+        item.type != com.hikari.app.data.MediaType.UNKNOWN
+    ) return emptyList()
+    val dubLabel = com.hikari.app.i18n.tr("Dub")
+    val subLabel = com.hikari.app.i18n.tr("Sub")
+    var pills by remember(item.uniqueId) { mutableStateOf<List<String>?>(null) }
+    val revision by com.hikari.app.data.MetaCache.epRevision.collectAsState()
+    LaunchedEffect(item.uniqueId, revision) {
+        pills = withContext(Dispatchers.IO) {
+            runCatching { epPillsFor(item, dubLabel, subLabel) }.getOrNull()
+        }
+    }
+    return pills ?: emptyList()
+}
+
+/** Latest Dub / Sub episode numbers from the cached list, as pill texts. */
+private fun epPillsFor(item: MediaItem, dubLabel: String, subLabel: String): List<String> {
+    val key = com.hikari.app.data.MetaCache.episodesKey(item.uniqueId)
+    val eps = com.hikari.app.data.MetaCache.cachedEpisodes(key)
+        ?: com.hikari.app.data.MetaCache.cachedEpisodes(key + "|trk2")
+        ?: return emptyList()
+    var dub = 0
+    var sub = 0
+    var plain = 0
+    for (e in eps) {
+        if (e.number <= 0) continue
+        when (com.hikari.app.data.EpisodeDubSub.audioKindOf(e)?.lowercase()) {
+            "dub" -> if (e.number > dub) dub = e.number
+            "sub" -> if (e.number > sub) sub = e.number
+            else -> if (e.number > plain) plain = e.number
+        }
+    }
+    return buildList {
+        if (dub > 0) add("$dubLabel Ep $dub")
+        if (sub > 0) add("$subLabel Ep $sub")
+        if (dub == 0 && sub == 0 && plain > 0) add("Ep $plain")
     }
 }
 
@@ -532,6 +598,7 @@ fun PosterArt(
 ) {
     val shape = style.shape()
     val badges = rememberPosterBadges(item, style)
+    val epPills = rememberPosterEpBadges(if (style.showEpBadges) item else null)
     val glass = rememberGlassTokens()
     val effects = PosterEffects.normalizeSet(style.effects)
     val tilted = PosterEffects.TILT in effects
@@ -823,6 +890,22 @@ fun PosterArt(
                     verticalArrangement = Arrangement.spacedBy(3.dp),
                 ) {
                     badges.forEach { label ->
+                        PosterTag(text = label)
+                    }
+                }
+            }
+            // The Dub/Sub + latest-episode pills hang from the top-CENTER, so
+            // they can never land on the score badge (top-right) or the
+            // type/quality stack (top-left), whatever corners those use.
+            if (epPills.isNotEmpty()) {
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 5.dp),
+                    verticalArrangement = Arrangement.spacedBy(3.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    epPills.forEach { label ->
                         PosterTag(text = label)
                     }
                 }

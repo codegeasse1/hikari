@@ -162,6 +162,7 @@ import com.hikari.app.ui.components.ChoiceItem
 import com.hikari.app.ui.components.EmptyState
 import com.hikari.app.ui.components.CategoryPickerSheet
 import com.hikari.app.ui.components.GlassShape
+import com.hikari.app.ui.theme.rememberGlassTokens
 import com.hikari.app.ui.components.HeroArtwork
 import com.hikari.app.ui.navigation.Routes
 import com.hikari.app.tv.tvPress
@@ -1803,6 +1804,11 @@ fun DetailScreen(
     }
     val episodePosterStyle = episodeViewMode != 0
     val episodeBigStyle = episodeViewMode == 2
+    // CloudStream-style frosted-glass episode cards (Settings → App Layout →
+    // Episode UI). One switch for all three layouts — read once here and
+    // passed down, so the rows do not each open their own store collection.
+    val episodeGlassFlow = remember { detailApp.store.episodeGlassFlow() }
+    val episodeGlass by episodeGlassFlow.collectAsState(initial = false)
     fun cycleEpisodeView() {
         val next = (episodeViewMode + 1) % 3
         episodeViewMode = next
@@ -3739,6 +3745,7 @@ fun DetailScreen(
                                             onDownload = { tryDownload(ep) },
                                             modifier = Modifier.width((150f * tvEpisodeScale).dp),
                                             sizeScale = tvEpisodeScale,
+                                            glass = episodeGlass,
                                         )
                                     }
                                 }
@@ -3761,6 +3768,7 @@ fun DetailScreen(
                                             onDownload = { tryDownload(ep) },
                                             modifier = Modifier.width((300f * tvEpisodeScale).dp),
                                             sizeScale = tvEpisodeScale,
+                                            glass = episodeGlass,
                                         )
                                     }
                                 }
@@ -3772,6 +3780,7 @@ fun DetailScreen(
                                         onClick = { tryPlay(ep) },
                                         onDownload = { tryDownload(ep) },
                                         sizeScale = tvEpisodeScale,
+                                        glass = episodeGlass,
                                     )
                                 }
                             }
@@ -4767,6 +4776,7 @@ fun DetailScreen(
                                             .fillMaxWidth()
                                             .padding(horizontal = 16.dp, vertical = 6.dp),
                                         sizeScale = tvEpisodeScale,
+                                        glass = episodeGlass,
                                     )
                                 }
                             }
@@ -4787,6 +4797,7 @@ fun DetailScreen(
                                                 onDownload = { tryDownload(ep) },
                                                 modifier = Modifier.weight(1f),
                                                 sizeScale = tvEpisodeScale,
+                                                glass = episodeGlass,
                                             )
                                         }
                                         repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
@@ -4802,6 +4813,7 @@ fun DetailScreen(
                                         onClick = { tryPlay(ep) },
                                         onDownload = { tryDownload(ep) },
                                         sizeScale = tvEpisodeScale,
+                                        glass = episodeGlass,
                                     )
                                 }
                             }
@@ -7467,11 +7479,22 @@ private fun EpisodePosterCard(
     onDownload: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
     sizeScale: Float = 1f,
+    /** Frosted-glass card variant (Settings → App Layout → Episode UI). */
+    glass: Boolean = false,
 ) {
     val s = sizeScale.coerceIn(0.8f, 1.6f)
+    val tokens = rememberGlassTokens()
     Column(
-        modifier
-            .clip(RoundedCornerShape(10.dp))
+        (if (glass) {
+            modifier
+                .clip(RoundedCornerShape(16.dp))
+                .background(Brush.verticalGradient(listOf(tokens.fillTop, tokens.fillBottom)))
+                .border(1.dp, tokens.border, RoundedCornerShape(16.dp))
+                .padding((8f * s).dp)
+        } else {
+            modifier
+                .clip(RoundedCornerShape(10.dp))
+        })
             .clickable(onClick = onClick)
             .tvPress(previewPass = false, onClick = onClick)
             .padding(bottom = (4f * s).dp)
@@ -7633,12 +7656,23 @@ private fun EpisodeBigCard(
     onDownload: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
     sizeScale: Float = 1f,
+    /** Frosted-glass card variant (Settings → App Layout → Episode UI). */
+    glass: Boolean = false,
 ) {
     val s = sizeScale.coerceIn(0.8f, 1.6f)
     val unaired = isEpisodeUnaired(ep.released)
+    val tokens = rememberGlassTokens()
     Column(
-        modifier
-            .clip(RoundedCornerShape(12.dp))
+        (if (glass) {
+            modifier
+                .clip(RoundedCornerShape(16.dp))
+                .background(Brush.verticalGradient(listOf(tokens.fillTop, tokens.fillBottom)))
+                .border(1.dp, tokens.border, RoundedCornerShape(16.dp))
+                .padding((8f * s).dp)
+        } else {
+            modifier
+                .clip(RoundedCornerShape(12.dp))
+        })
             .clickable(onClick = onClick)
             .tvPress(previewPass = false, onClick = onClick)
             .padding(bottom = (6f * s).dp)
@@ -7797,15 +7831,28 @@ private fun EpisodeRow(
      *  the button (callers that have nowhere to send a download). */
     onDownload: (() -> Unit)? = null,
     sizeScale: Float = 1f,
+    /** Frosted-glass card variant (Settings → App Layout → Episode UI): the
+     *  CloudStream-style rounded translucent card instead of the flat row. */
+    glass: Boolean = false,
 ) {
     val s = sizeScale.coerceIn(0.8f, 1.6f)
+    val tokens = rememberGlassTokens()
     Row(
-        Modifier
-            .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.background.copy(alpha = 0.98f))
+        (if (glass) {
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 6.dp)
+                .clip(RoundedCornerShape(16.dp))
+                .background(Brush.verticalGradient(listOf(tokens.fillTop, tokens.fillBottom)))
+                .border(1.dp, tokens.border, RoundedCornerShape(16.dp))
+        } else {
+            Modifier
+                .fillMaxWidth()
+                .background(MaterialTheme.colorScheme.background.copy(alpha = 0.98f))
+        })
             .clickable(onClick = onClick)
             .tvPress(previewPass = false, onClick = onClick)
-            .padding(horizontal = (16f * s).dp, vertical = (8f * s).dp),
+            .padding(horizontal = (16f * s).dp, vertical = if (glass) 12.dp else (8f * s).dp),
         verticalAlignment = Alignment.Top
     ) {
         val thumb = PosterLoader.model(ep.image?.takeIf { it.isNotBlank() } ?: fallbackImage)

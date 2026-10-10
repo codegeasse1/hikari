@@ -3,11 +3,13 @@ package com.hikari.app.data
 import android.content.ContentValues
 import android.content.Context
 import android.media.MediaScannerConnection
+import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import java.io.File
 import java.io.IOException
+import java.io.OutputStream
 
 /**
  * Saving a file into the phone's public Downloads folder — ONE implementation,
@@ -146,6 +148,61 @@ object DownloadsSaver {
             MediaScannerConnection.scanFile(context, arrayOf(dest.absolutePath), arrayOf(mime), null)
         }
         return dest.name
+    }
+
+    /**
+     * Opens a Downloads entry for STREAMING writes: returns the row plus an
+     * open stream to it. The caller writes, closes the stream, then calls
+     * [finishDownload] — or [abortDownload] on failure, so no pending ghost
+     * stays in Downloads. Fails on API < 29 (no pending-row support there);
+     * callers fall back to [save] then.
+     */
+    fun openDownloadStream(
+        context: Context,
+        displayName: String,
+        mime: String,
+    ): Result<Pair<Uri, OutputStream>> {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            return Result.failure(IOException("direct streaming needs Android 10+"))
+        }
+        return runCatching {
+            val resolver = context.contentResolver
+            val values = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
+                put(MediaStore.MediaColumns.MIME_TYPE, mime)
+                put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/" + FOLDER)
+                put(MediaStore.MediaColumns.IS_PENDING, 1)
+            }
+            val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                ?: throw IOException("MediaStore refused the entry")
+            try {
+                val out = resolver.openOutputStream(uri)
+                    ?: throw IOException("the entry could not be opened for writing")
+                uri to out
+            } catch (t: Throwable) {
+                runCatching { resolver.delete(uri, null, null) }
+                throw t
+            }
+        }
+    }
+
+    /** Marks a streamed entry complete and returns its display name
+     *  (MediaStore renames collisions, so the row's own name is read back). */
+    fun finishDownload(context: Context, uri: Uri): String {
+        val resolver = context.contentResolver
+        runCatching {
+            val values = ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }
+            resolver.update(uri, values, null, null)
+        }
+        return runCatching {
+            resolver.query(uri, arrayOf(MediaStore.MediaColumns.DISPLAY_NAME), null, null, null)
+                ?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
+        }.getOrNull().takeIf { !it.isNullOrBlank() } ?: ""
+    }
+
+    /** Deletes a streamed entry after a failed write. */
+    fun abortDownload(context: Context, uri: Uri) {
+        runCatching { context.contentResolver.delete(uri, null, null) }
     }
 
     /** `app.log` → `app (1).log` when the name is taken, as a plain file write

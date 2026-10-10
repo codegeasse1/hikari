@@ -2707,6 +2707,8 @@ private fun PosterStyleCard(app: HikariApp) {
     val typeBadge by typeBadgeFlow.collectAsState(initial = true)
     val qualityBadgeFlow = remember { app.store.posterShowQualityFlow() }
     val qualityBadge by qualityBadgeFlow.collectAsState(initial = false)
+    val epBadgesFlow = remember { app.store.posterShowEpBadgesFlow() }
+    val epBadges by epBadgesFlow.collectAsState(initial = true)
     val glassFlow = remember { app.store.posterGlassFlow() }
     val glass by glassFlow.collectAsState(initial = true)
     val effectsFlow = remember { app.store.posterEffectsFlow() }
@@ -2862,6 +2864,15 @@ private fun PosterStyleCard(app: HikariApp) {
             ),
             checked = qualityBadge,
             onCheckedChange = { on -> scope.launch { runCatching { app.store.setPosterShowQuality(on) } } },
+        )
+        // CloudStream-style Dub/Sub + latest-episode pills in the poster's
+        // top-center. They print only for series whose episodes the app has
+        // already seen — a title with no cached episode list shows nothing.
+        SettingsToggle(
+            label = tr("Dub / Sub + episode badges on posters"),
+            supporting = tr("Latest dub/sub episode pills, like CloudStream"),
+            checked = epBadges,
+            onCheckedChange = { on -> scope.launch { runCatching { app.store.setPosterShowEpBadges(on) } } },
         )
         SettingsToggle(
             label = tr("Glass trim"),
@@ -3855,6 +3866,8 @@ private fun EpisodeViewModeCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
     val flow = remember { app.store.episodeViewModeFlow() }
     val mode by flow.collectAsState(initial = -1)
+    val glassFlow = remember { app.store.episodeGlassFlow() }
+    val glass by glassFlow.collectAsState(initial = false)
     val options = listOf(
         -1 to tr("Auto (grid on TV, list on phone)"),
         0 to tr("List rows"),
@@ -3891,6 +3904,16 @@ private fun EpisodeViewModeCard(app: HikariApp) {
             tr("Applies to every title on phone and TV. The button above the episode list switches the same setting."),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(4.dp))
+        // The CloudStream look for all three layouts above: list rows, the
+        // poster grid and the cinematic big cards each draw as frosted-glass
+        // cards while this is on.
+        SettingsToggle(
+            label = tr("Glass box episode UI"),
+            supporting = tr("Frosted-glass cards for list, grid and big episodes"),
+            checked = glass,
+            onCheckedChange = { on -> scope.launch { runCatching { app.store.setEpisodeGlass(on) } } },
         )
     }
 }
@@ -7060,6 +7083,7 @@ private fun BackupCard(app: HikariApp, onPair: () -> Unit) {
     // Read here, not in the coroutine below: tr() is a composable, so it cannot
     // be called from inside scope.launch.
     val savedPrefix = tr("Saved to Downloads")
+    val backingUpPrefix = tr("Backing up…")
 
     fun report(r: BackupManager.Report) {
         busy = false
@@ -7124,26 +7148,49 @@ private fun BackupCard(app: HikariApp, onPair: () -> Unit) {
         scope.launch {
             val result = runCatching {
                 val name = BackupManager.fileName()
-                val tmp = withContext(Dispatchers.IO) {
-                    val f = File(context.cacheDir, "outbox/" + name)
-                    BackupManager.exportToFile(app, f)
-                    f
+                // Fast path first: stream the backup straight into Downloads
+                // (no cache double-write) with parallel file encoding and live
+                // progress. Old devices / OEM MediaStore refusals take the
+                // previous cache-file route instead.
+                val (bytes, saved): Pair<Long, String> = withContext(Dispatchers.IO) {
+                    var lastBeat = 0L
+                    val opened = com.hikari.app.data.DownloadsSaver
+                        .openDownloadStream(context, name, "application/json")
+                    if (opened.isSuccess) {
+                        val (uri, out) = opened.getOrThrow()
+                        try {
+                            val n = BackupManager.exportToStream(app, out) { done, total ->
+                                val now = System.currentTimeMillis()
+                                if (now - lastBeat > 400 || done >= total) {
+                                    lastBeat = now
+                                    scope.launch { status = backingUpPrefix + " " + done + "/" + total }
+                                }
+                            }
+                            val shown = com.hikari.app.data.DownloadsSaver.finishDownload(context, uri)
+                            n to shown.ifBlank { name }
+                        } catch (t: Throwable) {
+                            runCatching { com.hikari.app.data.DownloadsSaver.abortDownload(context, uri) }
+                            throw t
+                        }
+                    } else {
+                        runCatching {
+                            com.hikari.app.data.Logs.log("Backup", "direct export unavailable, cache-file fallback")
+                        }
+                        val f = File(context.cacheDir, "outbox/" + name)
+                        BackupManager.exportToFile(app, f)
+                        val shown = BackupManager.saveToDownloads(context, f, name)
+                        val n = f.length()
+                        runCatching { f.delete() }
+                        n to (shown ?: throw java.io.IOException("could not save the backup"))
+                    }
                 }
-                val saved = withContext(Dispatchers.IO) {
-                    BackupManager.saveToDownloads(context, tmp, name)
-                }
-                val kb = withContext(Dispatchers.IO) { (tmp.length() + 1023) / 1024 }
-                runCatching { tmp.delete() }
-                if (saved == null) {
-                    BackupManager.Report(false, "Could not save the backup.")
-                } else {
-                    BackupManager.Report(
-                        true,
-                        savedPrefix + "/" + saved,
-                        "${kb} KB · " +
-                            "${app.providers.providers.value.size} sources",
-                    )
-                }
+                val kb = (bytes + 1023) / 1024
+                BackupManager.Report(
+                    true,
+                    savedPrefix + "/" + saved,
+                    "${kb} KB · " +
+                        "${app.providers.providers.value.size} sources",
+                )
             }.getOrElse {
                 runCatching {
                     com.hikari.app.data.Logs.log(

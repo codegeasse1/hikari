@@ -68,6 +68,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
@@ -224,6 +225,9 @@ fun YomiReaderChrome(
     onToggleSeriesOverride: () -> Unit,
     chapters: List<ReaderChapter>,
     activeChapterId: String,
+    /** Dedup-aware index of the chapter being read (see MangaReaderScreen):
+     *  the sheet opens scrolled to it instead of chapter 1. */
+    initialChapterIndex: Int = -1,
     onSelectChapter: (String) -> Unit,
     chapterCoverModel: Any? = null,
     modifier: Modifier = Modifier,
@@ -418,6 +422,7 @@ fun YomiReaderChrome(
                 onDismiss = { showChapterList = false },
                 chapters = chapters,
                 activeChapterId = activeChapterId,
+                initialChapterIndex = initialChapterIndex,
                 onSelectChapter = onSelectChapter,
                 chapterCoverModel = chapterCoverModel,
             )
@@ -1811,20 +1816,34 @@ private fun ChapterListSheet(
     onDismiss: () -> Unit,
     chapters: List<ReaderChapter>,
     activeChapterId: String,
+    initialChapterIndex: Int = -1,
     onSelectChapter: (String) -> Unit,
     chapterCoverModel: Any? = null,
 ) {
     val ctx = LocalContext.current
-    // Open on the chapter being read, not on chapter 1: the list is the whole
-    // point of the sheet, and on a hundred-chapter title starting at the top
-    // every time meant scrolling to the reader's own chapter by hand.
-    val listState = rememberLazyListState()
-    LaunchedEffect(activeChapterId, chapters) {
-        val at = chapters.indexOfFirst { it.id == activeChapterId }
-        if (at >= 0) listState.scrollToItem((at - 1).coerceAtLeast(0))
+    // Opens FULLY expanded: with the default half-expanded sheet the first
+    // drag only grows the sheet and the list starts scrolling on the second
+    // one. The scroll ALSO starts on the chapter being read, from the first
+    // frame (initialFirstVisibleItemIndex, not just the effect below), so
+    // reopening after picking chapter 50 lands on chapter 50 instead of the
+    // top. The index is the reader's dedup-aware one: the sheet's own ids are
+    // the deduped urls, so a raw active-url lookup misses whenever the active
+    // chapter is another scanlator's copy of the same number.
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    fun resolveIndex(): Int =
+        initialChapterIndex.takeIf { it in chapters.indices }
+            ?: chapters.indexOfFirst { it.id == activeChapterId }.takeIf { it >= 0 }
+            ?: 0
+    val listState = rememberLazyListState(
+        initialFirstVisibleItemIndex = (resolveIndex() - 1).coerceAtLeast(0),
+    )
+    LaunchedEffect(activeChapterId, chapters, initialChapterIndex) {
+        val at = resolveIndex()
+        listState.scrollToItem((at - 1).coerceAtLeast(0))
     }
     ModalBottomSheet(
         onDismissRequest = onDismiss,
+        sheetState = sheetState,
         containerColor = SheetColor,
         contentColor = OnDark,
     ) {

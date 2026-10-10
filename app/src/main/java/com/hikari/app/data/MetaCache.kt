@@ -2,6 +2,9 @@ package com.hikari.app.data
 
 import android.content.Context
 import com.hikari.app.HikariApp
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -68,6 +71,12 @@ object MetaCache {
     private fun memGet(key: String): Payload? = synchronized(mem) { mem[key] }
     private fun memPut(key: String, value: Payload) { synchronized(mem) { mem[key] = value } }
     private fun memDrop(key: String) { synchronized(mem) { mem.remove(key) } }
+
+    /** Bumped every time an episode list lands (see [putEpisodes]): poster
+     *  Dub/Sub pills collect this so a grid that is already on screen gains
+     *  its pills the moment some title's episodes arrive, without polling. */
+    private val _epRevision = MutableStateFlow(0)
+    val epRevision: StateFlow<Int> = _epRevision.asStateFlow()
 
     private fun ctx(): Context = HikariApp.instance.applicationContext
 
@@ -199,6 +208,7 @@ object MetaCache {
             )
         }
         write(key, JSONObject().put("episodes", arr))
+        runCatching { _epRevision.value += 1 }
     }
 
     // ---- Serialization -------------------------------------------------------

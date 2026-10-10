@@ -389,6 +389,10 @@ class AppStore(private val ctx: Context) {
         /** Show the episode description under the episode title (ON by
          *  default; Settings → TV). Off shows titles only, on phone and TV. */
         val EPISODE_DESCRIPTION = booleanPreferencesKey("episodeDescription")
+        /** CloudStream-style frosted-glass episode cards (OFF by default;
+         *  Settings → App Layout → Episode UI). Applies to list, grid and big
+         *  cards alike. */
+        val EPISODE_GLASS = booleanPreferencesKey("episodeGlass")
         /**
          * The player's volume BOOSTER: +6 dB (2× the amplitude) applied to the
          * audio session by an `android.media.audiofx.LoudnessEnhancer`, so a
@@ -537,6 +541,9 @@ class AppStore(private val ctx: Context) {
         val POSTER_SHOW_TYPE = booleanPreferencesKey("posterShowType")
         /** The quality tag above it ([com.hikari.app.data.TitleQuality]). */
         val POSTER_SHOW_QUALITY = booleanPreferencesKey("posterShowQuality")
+        /** The Dub/Sub + latest-episode pills in the poster's top-center
+         *  (CloudStream-style; shown once the title's episodes are known). */
+        val POSTER_SHOW_EP_BADGES = booleanPreferencesKey("posterShowEpBadges")
         val POSTER_GLASS = booleanPreferencesKey("posterGlass")
         /** The animated/visual treatment drawn over every poster card — see
          *  [com.hikari.app.ui.PosterEffects]. A SET, so a card can wear several
@@ -1316,6 +1323,19 @@ class AppStore(private val ctx: Context) {
 
     suspend fun setPosterShowQuality(show: Boolean) {
         write("POSTER_SHOW_QUALITY") { it[K.POSTER_SHOW_QUALITY] = show }
+    }
+
+    /** The Dub/Sub + latest-episode pills (ON by default, like the reference
+     *  clients). They print only for series whose episode list the app has
+     *  already seen — a title with no cached episodes shows nothing rather
+     *  than a guess. */
+    fun posterShowEpBadgesFlow(): Flow<Boolean> =
+        store.data.map { it[K.POSTER_SHOW_EP_BADGES] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun posterShowEpBadges(): Boolean = posterShowEpBadgesFlow().first()
+
+    suspend fun setPosterShowEpBadges(show: Boolean) {
+        write("POSTER_SHOW_EP_BADGES") { it[K.POSTER_SHOW_EP_BADGES] = show }
     }
 
     /** The glass hairline + soft sheen over every poster. */
@@ -3532,6 +3552,18 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
 
     suspend fun setEpisodeDescription(on: Boolean) {
         write("EPISODE_DESCRIPTION") { it[K.EPISODE_DESCRIPTION] = on }
+    }
+
+    /** Whether episodes draw as frosted-glass cards (OFF by default). One
+     *  switch for all three layouts — list, poster grid and cinematic big
+     *  cards each have a glass variant. */
+    fun episodeGlassFlow(): Flow<Boolean> =
+        store.data.map { it[K.EPISODE_GLASS] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun episodeGlass(): Boolean = episodeGlassFlow().first()
+
+    suspend fun setEpisodeGlass(on: Boolean) {
+        write("EPISODE_GLASS") { it[K.EPISODE_GLASS] = on }
     }
 
     /**

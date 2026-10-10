@@ -8,11 +8,18 @@ import android.util.JsonWriter
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
+import java.io.OutputStream
 import com.hikari.app.BuildConfig
 import com.hikari.app.HikariApp
 import com.hikari.app.net.ExtensionVerifyGuard
 import com.hikari.app.net.NetTuning
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -121,82 +128,7 @@ object BackupManager {
         dest.parentFile?.mkdirs()
         val tmp = File(dest.parentFile, dest.name + ".part")
         java.io.FileOutputStream(tmp).buffered(32 * 1024).use { raw ->
-            JsonWriter(raw.writer(Charsets.UTF_8)).use { w ->
-                w.setIndent("")
-                w.beginObject()
-                w.name("format").value(FORMAT)
-                w.name("version").value(FORMAT_VERSION.toLong())
-                w.name("app").value(BuildConfig.VERSION_NAME)
-                w.name("code").value(BuildConfig.VERSION_CODE.toLong())
-                w.name("createdAt").value(System.currentTimeMillis())
-                w.name("prefs").beginArray()
-                for (r in app.store.snapshotPreferences()) {
-                    w.beginObject()
-                    w.name("key").value(r.key)
-                    w.name("type").value(r.type)
-                    w.name("value")
-                    when (r.type) {
-                        "s" -> if (r.value == null) w.nullValue() else w.value(r.value as String)
-                        "b" -> if (r.value == null) w.nullValue() else w.value((r.value as Boolean))
-                        "i", "l" -> if (r.value == null) w.nullValue() else w.value((r.value as Number).toLong())
-                        // JsonWriter rejects non-finite doubles outright
-                        // (IllegalArgumentException) — a single NaN anywhere
-                        // in the store used to fail the whole backup.
-                        "f", "d" -> if (r.value == null) w.nullValue() else {
-                            val d = (r.value as Number).toDouble()
-                            if (d.isFinite()) w.value(d) else w.nullValue()
-                        }
-                        "ss" -> {
-                            val list = r.value as? List<*> ?: (r.value as? Set<*>)?.toList()
-                            if (list == null) {
-                                w.nullValue()
-                            } else {
-                                w.beginArray()
-                                for (s in list) w.value(s?.toString())
-                                w.endArray()
-                            }
-                        }
-                        "bin" -> if (r.value == null) w.nullValue() else w.value(r.value as String)
-                        else -> w.nullValue()
-                    }
-                    w.endObject()
-                }
-                w.endArray()
-                w.name("files").beginArray()
-                // One file at a time: the file list used to be assembled whole
-                // (every extension's bytes in RAM at once) and a large
-                // extension set died with an OOM that surfaced as "Backup
-                // failed". Walking the names first and reading each file only
-                // for its own write keeps the peak at one file + its base64.
-                for (rel in collectFileRels(app.filesDir)) {
-                    val bytes = runCatching { File(app.filesDir, rel).readBytes() }.getOrNull()
-                    if (bytes == null || bytes.isEmpty()) continue
-                    w.beginObject()
-                    w.name("path").value(rel)
-                    w.name("data").value(Base64.encodeToString(bytes, Base64.NO_WRAP))
-                    w.endObject()
-                }
-                w.endArray()
-                w.name("profiles").beginObject()
-                val profiles = exportProfiles(app.filesDir)
-                val profileNames = runCatching {
-                    val list = ArrayList<String>()
-                    val keys = profiles.keys()
-                    while (keys.hasNext()) list.add(keys.next() as String)
-                    list
-                }.getOrDefault(emptyList())
-                for (name in profileNames) {
-                    // Profiles are small snapshots: parse and re-emit through
-                    // the writer (JsonWriter has no raw-value call on this
-                    // compile SDK), which keeps the stored content verbatim.
-                    val obj = runCatching { JSONObject(profiles.optString(name)) }.getOrNull()
-                    if (obj == null) continue
-                    w.name(name)
-                    writeJsonObject(w, obj)
-                }
-                w.endObject()
-                w.endObject()
-            }
+            writeBackupJson(app, raw, onProgress = null)
         }
         if (dest.exists()) dest.delete()
         // renameTo silently returns false across filesystems and on odd OEMs —
@@ -206,6 +138,170 @@ object BackupManager {
             runCatching { tmp.delete() }
         }
         dest.length()
+    }
+
+    /**
+     * Streams the backup straight into [dest] as it is built and returns the
+     * bytes written — the fast path for saving to Downloads (see
+     * [DownloadsSaver.openDownloadStream]): the old route wrote the whole file
+     * to cache, read it back, and copied it into MediaStore (every byte touched
+     * three times). The caller owns [dest]: it is closed here, and a throw
+     * means nothing complete was written.
+     */
+    suspend fun exportToStream(
+        app: HikariApp,
+        dest: OutputStream,
+        onProgress: ((done: Int, total: Int) -> Unit)? = null,
+    ): Long = withContext(Dispatchers.IO) {
+        val counting = CountingOutputStream(dest.buffered(32 * 1024))
+        counting.use { writeBackupJson(app, it, onProgress) }
+        counting.count
+    }
+
+    /** Counts what passes through, so the streamed export can report its size
+     *  without a second pass over the bytes. */
+    private class CountingOutputStream(private val out: OutputStream) : OutputStream() {
+        var count = 0L
+        override fun write(b: Int) {
+            out.write(b)
+            count++
+        }
+        override fun write(b: ByteArray, off: Int, len: Int) {
+            out.write(b, off, len)
+            count += len
+        }
+        override fun flush() = out.flush()
+        override fun close() = out.close()
+    }
+
+    /**
+     * The backup document, written as it is built. The JSON streams out
+     * through [JsonWriter] and no allocation is ever bigger than a few
+     * extension files (each capped by [MAX_FILE_BYTES]), so a backup of any
+     * real size completes. The format on disk is byte-for-byte what the old
+     * in-memory [export] used to produce, so old and new files restore
+     * through the same code.
+     */
+    private suspend fun writeBackupJson(
+        app: HikariApp,
+        raw: OutputStream,
+        onProgress: ((done: Int, total: Int) -> Unit)?,
+    ) {
+        JsonWriter(raw.writer(Charsets.UTF_8)).use { w ->
+            w.setIndent("")
+            w.beginObject()
+            w.name("format").value(FORMAT)
+            w.name("version").value(FORMAT_VERSION.toLong())
+            w.name("app").value(BuildConfig.VERSION_NAME)
+            w.name("code").value(BuildConfig.VERSION_CODE.toLong())
+            w.name("createdAt").value(System.currentTimeMillis())
+            w.name("prefs").beginArray()
+            for (r in app.store.snapshotPreferences()) {
+                w.beginObject()
+                w.name("key").value(r.key)
+                w.name("type").value(r.type)
+                w.name("value")
+                when (r.type) {
+                    "s" -> if (r.value == null) w.nullValue() else w.value(r.value as String)
+                    "b" -> if (r.value == null) w.nullValue() else w.value((r.value as Boolean))
+                    "i", "l" -> if (r.value == null) w.nullValue() else w.value((r.value as Number).toLong())
+                    // JsonWriter rejects non-finite doubles outright
+                    // (IllegalArgumentException) — a single NaN anywhere
+                    // in the store used to fail the whole backup.
+                    "f", "d" -> if (r.value == null) w.nullValue() else {
+                        val d = (r.value as Number).toDouble()
+                        if (d.isFinite()) w.value(d) else w.nullValue()
+                    }
+                    "ss" -> {
+                        val list = r.value as? List<*> ?: (r.value as? Set<*>)?.toList()
+                        if (list == null) {
+                            w.nullValue()
+                        } else {
+                            w.beginArray()
+                            for (s in list) w.value(s?.toString())
+                            w.endArray()
+                        }
+                    }
+                    "bin" -> if (r.value == null) w.nullValue() else w.value(r.value as String)
+                    else -> w.nullValue()
+                }
+                w.endObject()
+            }
+            w.endArray()
+            w.name("files").beginArray()
+            // Encoded off the writer thread in small parallel batches (see
+            // [writeBackupFiles]): a large extension set used to back up at
+            // single-core speed here — the "backup takes a minute" report.
+            writeBackupFiles(app, w, onProgress)
+            w.endArray()
+            w.name("profiles").beginObject()
+            val profiles = exportProfiles(app.filesDir)
+            val profileNames = runCatching {
+                val list = ArrayList<String>()
+                val keys = profiles.keys()
+                while (keys.hasNext()) list.add(keys.next() as String)
+                list
+            }.getOrDefault(emptyList())
+            for (name in profileNames) {
+                // Profiles are small snapshots: parse and re-emit through
+                // the writer (JsonWriter has no raw-value call on this
+                // compile SDK), which keeps the stored content verbatim.
+                val obj = runCatching { JSONObject(profiles.optString(name)) }.getOrNull()
+                if (obj == null) continue
+                w.name(name)
+                writeJsonObject(w, obj)
+            }
+            w.endObject()
+            w.endObject()
+        }
+    }
+
+    /** How many extension files are read + base64-encoded at once (see
+     *  [writeBackupFiles]): enough to keep every core busy, few enough that
+     *  the peak stays at a few files even at the [MAX_FILE_BYTES] cap. */
+    private const val BACKUP_ENCODE_PARALLEL = 4
+
+    /**
+     * The `files` array of the backup: one object per extension file, emitted
+     * in walk order. Small batches encode concurrently while the writer
+     * itself stays strictly sequential (JsonWriter is not thread-safe — only
+     * this coroutine touches it).
+     */
+    private suspend fun writeBackupFiles(
+        app: HikariApp,
+        w: JsonWriter,
+        onProgress: ((done: Int, total: Int) -> Unit)?,
+    ) {
+        val rels = collectFileRels(app.filesDir)
+        if (rels.isEmpty()) {
+            onProgress?.invoke(0, 0)
+            return
+        }
+        var done = 0
+        onProgress?.invoke(0, rels.size)
+        for (chunk in rels.chunked(BACKUP_ENCODE_PARALLEL)) {
+            val encoded = coroutineScope {
+                chunk.map { rel -> async { rel to encodeBackupFile(app.filesDir, rel) } }.awaitAll()
+            }
+            for ((rel, b64) in encoded) {
+                done++
+                if (b64 == null) continue
+                w.beginObject()
+                w.name("path").value(rel)
+                w.name("data").value(b64)
+                w.endObject()
+            }
+            onProgress?.invoke(done, rels.size)
+        }
+        onProgress?.invoke(done, rels.size)
+    }
+
+    /** One extension file as base64, or null when it cannot be read (a locked
+     *  or half-written file must not cost the user their settings). */
+    private fun encodeBackupFile(filesDir: File, rel: String): String? {
+        val bytes = runCatching { File(filesDir, rel).readBytes() }.getOrNull()
+        if (bytes == null || bytes.isEmpty()) return null
+        return Base64.encodeToString(bytes, Base64.NO_WRAP)
     }
 
     /**
@@ -368,6 +464,7 @@ object BackupManager {
         var sawSections = false
         var written = 0
         var skipped = 0
+        var identical = 0
         val staged = ArrayList<Pair<File, File>>()
         val profileTexts = HashMap<String, String>()
         fun cleanup() {
@@ -440,6 +537,17 @@ object BackupManager {
                                         continue
                                     }
                                     val target = File(app.filesDir, rel)
+                                    // The common case (re-restore, same versions)
+                                    // is byte-identical bytes already on disk: skip
+                                    // the write AND the reload below, instead of
+                                    // rewriting every extension and cold-loading
+                                    // all runtimes for nothing.
+                                    if (target.isFile && target.length() == bytes.size.toLong() &&
+                                        runCatching { target.readBytes().contentEquals(bytes) }.getOrDefault(false)
+                                    ) {
+                                        identical++
+                                        continue
+                                    }
                                     target.parentFile?.mkdirs()
                                     val tmp = File(target.parentFile, target.name + ".restore-part")
                                     if (runCatching { tmp.writeBytes(bytes) }.isFailure) {
@@ -524,11 +632,19 @@ object BackupManager {
             for ((k, v) in profileTexts) put(k, v)
         }
         val profilesLine = restoreProfiles(app.filesDir, profilesObj)
-        refreshLiveState(app)
+        if (written > 0) {
+            // New bytes are on disk: the light settings apply now and the
+            // extension reload happens in the background, so the success
+            // shows instantly instead of after every runtime cold-loads.
+            refreshLiveState(app, deferProviders = true)
+        } else {
+            refreshLiveState(app)
+        }
         val detail = "settings: $applied" +
             (if (profilesLine.isNotBlank()) " · " + profilesLine else "") +
             (if (deviceLocal > 0) " · device-local kept: $deviceLocal" else "") +
             " · files: $written" +
+            (if (identical > 0) " · unchanged: $identical" else "") +
             (if (skipped > 0) " · skipped: $skipped" else "") +
             " · from $fromName $fromCode"
         Logs.log("Backup", "restore ok — $detail")
@@ -862,7 +978,11 @@ object BackupManager {
      * [com.hikari.app.data.Profiles.switchTo], which re-uses this rather than
      * keeping a second list of "the settings that are read once at startup".
      */
-    suspend fun refreshLiveState(app: HikariApp) {
+    /** Background scope for deferred post-restore work: the app object has
+     *  no lifecycle scope of its own. */
+    private val refreshScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    suspend fun refreshLiveState(app: HikariApp, deferProviders: Boolean = false) {
         runCatching { app.elementBlocks = app.store.elementBlocks() }
         runCatching {
             app.webViewUseDefaultUa = app.store.webviewUseDefaultUa()
@@ -881,7 +1001,11 @@ object BackupManager {
         // in-memory plugin cache is keyed by file path, so a restored file that
         // replaces a DIFFERENT version of the same extension keeps the cached
         // instance for this session — the next launch picks up the new bytes.
-        runCatching { app.providers.refresh() }
+        if (deferProviders) {
+            refreshScope.launch { runCatching { app.providers.refresh() } }
+        } else {
+            runCatching { app.providers.refresh() }
+        }
     }
 
     /**
