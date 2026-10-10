@@ -7152,7 +7152,7 @@ private fun BackupCard(app: HikariApp, onPair: () -> Unit) {
                 // (no cache double-write) with parallel file encoding and live
                 // progress. Old devices / OEM MediaStore refusals take the
                 // previous cache-file route instead.
-                val (bytes, saved): Pair<Long, String> = withContext(Dispatchers.IO) {
+                val (bytes, saved) = withContext(Dispatchers.IO) {
                     var lastBeat = 0L
                     val opened = com.hikari.app.data.DownloadsSaver
                         .openDownloadStream(context, name, "application/json")
