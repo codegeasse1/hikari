@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The NEON skin's top bar: a floating rounded chip holding the title and the
+     action buttons, so the top controls read as a card over the video. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#B30A0D16" />
+    <stroke android:width="1dp" android:color="#337B5CFF" />
+    <corners android:radius="18dp" />
+</shape>

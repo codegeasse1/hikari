@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Hikari</string>
+    <string name="settings_language_title">mmmm... monke langwidge</string>
+    <string name="settings_language_subtitle">Chaynge da app wurds an da playa butuns</string>
+    <string name="settings_language_system">Da usual wun</string>
+    <string name="player_options">Playa stuf</string>
+    <string name="player_fit_video">Fit da movin pikchur</string>
+    <string name="player_fit_video_desc">Show da hool frame</string>
+    <string name="player_crop_to_fill">Chop so it fill</string>
+    <string name="player_crop_to_fill_desc">Zoom til da frame full</string>
+    <string name="player_stretch_video">Stretch it to fill</string>
+    <string name="player_stretch_video_desc">Full da screen, no care bout shape</string>
+    <string name="player_rotate_screen">Spin da screen</string>
+    <string name="player_rotate_screen_desc">Spin da pikchur 90° each time</string>
+    <string name="player_server_chooser">Pik a serva</string>
+    <string name="player_server_on">On — pik serva evry time</string>
+    <string name="player_server_off">Off — start on da best serva</string>
+    <string name="player_options_hint">Fit, spin, an if da servas start by demself.</string>
+    <string name="player_episodes">Eppysodes</string>
+    <string name="player_source">Serva</string>
+    <string name="player_quality">How gud</string>
+    <string name="player_audio">Sownd</string>
+    <string name="player_subtitles">Wurds</string>
+    <string name="player_rotate">Spin</string>
+    <string name="player_skip_intro">Skip da start</string>
+    <string name="player_enhance">Make betta</string>
+    <string name="player_tap_to_play">Tap tap to play</string>
+    <string name="cd_back">Go back</string>
+    <string name="cd_add_to_library">Put in hoard</string>
+    <string name="cd_download">Get it</string>
+    <string name="cd_pip">Pikchur in pikchur</string>
+    <string name="cd_player_options">Playa stuf</string>
+    <string name="cd_lock_controls">Lok da butuns</string>
+    <string name="cd_fit_or_crop">Fit, chop or stretch da pikchur</string>
+</resources>
