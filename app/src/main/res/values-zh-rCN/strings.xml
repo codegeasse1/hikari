@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Hikari</string>
+    <string name="settings_language_title">应用语言</string>
+    <string name="settings_language_subtitle">更改应用文字和播放器控件</string>
+    <string name="settings_language_system">系统默认</string>
+    <string name="player_options">播放器选项</string>
+    <string name="player_fit_video">适应画面</string>
+    <string name="player_fit_video_desc">显示完整画面</string>
+    <string name="player_crop_to_fill">裁剪填充</string>
+    <string name="player_crop_to_fill_desc">放大直到填满画面</string>
+    <string name="player_rotate_screen">旋转屏幕</string>
+    <string name="player_rotate_screen_desc">每次旋转 90°</string>
+    <string name="player_server_chooser">服务器选择</string>
+    <string name="player_server_on">开 — 每次选择服务器</string>
+    <string name="player_server_off">关 — 从最佳服务器开始</string>
+    <string name="player_options_hint">画面适应、旋转,以及服务器是否自动开始。</string>
+    <string name="player_episodes">剧集</string>
+    <string name="player_source">来源</string>
+    <string name="player_quality">画质</string>
+    <string name="player_audio">音频</string>
+    <string name="player_subtitles">字幕</string>
+    <string name="player_rotate">旋转</string>
+    <string name="player_skip_intro">跳过片头</string>
+    <string name="player_enhance">画质增强</string>
+    <string name="player_tap_to_play">点击播放</string>
+    <string name="cd_back">返回</string>
+    <string name="cd_add_to_library">添加到媒体库</string>
+    <string name="cd_download">下载</string>
+    <string name="cd_pip">画中画</string>
+    <string name="cd_player_options">播放器选项</string>
+    <string name="cd_lock_controls">锁定控件</string>
+    <string name="cd_fit_or_crop">适应或裁剪视频</string>
+</resources>

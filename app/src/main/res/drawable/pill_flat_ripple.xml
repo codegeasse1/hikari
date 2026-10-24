@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The MINIMAL skin's control chips: no fill at all, just a soft ripple, so
+     the row of controls reads as text on the video rather than as a toolbar. -->
+<ripple xmlns:android="http://schemas.android.com/apk/res/android"
+    android:color="#33FFFFFF">
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="#00000000" />
+            <corners android:radius="7dp" />
+        </shape>
+    </item>
+</ripple>

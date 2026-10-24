@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Big centre play/pause button: a cyan -> violet gradient ring around a
+     translucent dark disc (the white play/pause glyph is drawn on top by
+     media3, supplied via app:play_icon / app:pause_icon on the PlayerView). -->
+<ripple xmlns:android="http://schemas.android.com/apk/res/android"
+    android:color="#4DFFFFFF">
+    <item>
+        <layer-list>
+            <item>
+                <shape android:shape="oval">
+                    <gradient
+                        android:type="linear"
+                        android:angle="45"
+                        android:startColor="@color/hikari_accent_start"
+                        android:endColor="@color/hikari_accent_end" />
+                </shape>
+            </item>
+            <item
+                android:left="3dp"
+                android:top="3dp"
+                android:right="3dp"
+                android:bottom="3dp">
+                <shape android:shape="oval">
+                    <solid android:color="#66060A14" />
+                </shape>
+            </item>
+        </layer-list>
+    </item>
+</ripple>

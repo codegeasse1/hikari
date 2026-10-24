@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Hikari</string>
+    <string name="settings_language_title">アプリの言語</string>
+    <string name="settings_language_subtitle">アプリの表示とプレイヤー操作を切り替えます</string>
+    <string name="settings_language_system">システムの既定</string>
+    <string name="player_options">プレイヤー設定</string>
+    <string name="player_fit_video">映像を合わせる</string>
+    <string name="player_fit_video_desc">フレーム全体を表示</string>
+    <string name="player_crop_to_fill">切り抜いて拡大</string>
+    <string name="player_crop_to_fill_desc">枠いっぱいまで拡大</string>
+    <string name="player_stretch_video">引き伸ばして全体表示</string>
+    <string name="player_stretch_video_desc">形を無視して画面いっぱいに表示</string>
+    <string name="player_rotate_screen">画面を回転</string>
+    <string name="player_rotate_screen_desc">1回につき90°回転</string>
+    <string name="player_server_chooser">サーバー選択</string>
+    <string name="player_server_on">オン — 毎回サーバーを選ぶ</string>
+    <string name="player_server_off">オフ — 最適なサーバーで開始</string>
+    <string name="player_options_hint">映像の合わせ方、回転、サーバーの自動開始。</string>
+    <string name="player_episodes">エピソード</string>
+    <string name="player_source">ソース</string>
+    <string name="player_quality">画質</string>
+    <string name="player_audio">音声</string>
+    <string name="player_subtitles">字幕</string>
+    <string name="player_rotate">回転</string>
+    <string name="player_skip_intro">イントロをスキップ</string>
+    <string name="player_enhance">高画質化</string>
+    <string name="player_tap_to_play">タップして再生</string>
+    <string name="cd_back">戻る</string>
+    <string name="cd_add_to_library">ライブラリに追加</string>
+    <string name="cd_download">ダウンロード</string>
+    <string name="cd_pip">ピクチャーインピクチャー</string>
+    <string name="cd_player_options">プレイヤー設定</string>
+    <string name="cd_lock_controls">操作をロック</string>
+    <string name="cd_fit_or_crop">動画をフィット・切り抜き・引き伸ばし</string>
+</resources>
