@@ -1,3 +1,8 @@
+## 0.12.19 (continuous build only)
+
+- In-player server list always horizontal: the Source pill and the failover back-to-list open the horizontal rows even with the Vertical page layout set (outside the player the setting still rules), so the sheet fits the playing video instead of cramping portrait cards over it
+- Terabox shares refused with `share/list errno=105` on a share the metadata says exists now replay the list with a real browser session: the share page loads in a hidden WebView (real cookies + JS-set values, the gate a plain GET never passes) and the metadata + list calls re-run with that session; the share-page shape is logged for the next report
+
 ## 0.12.18 (continuous build only)
 
 - Metadata sources: a search bar sits under the Extension metadata header so a long source list filters as you type (name, id or engine) instead of scrolling to find a toggle

@@ -6729,15 +6729,18 @@ class PlayerActivity : ComponentActivity() {
     }
 
     /** Sources row in the user's chosen page layout (see ServerLayouts).
-     *  Phone-only: TV always keeps the horizontal rows. */
+     *  Phone-only: TV always keeps the horizontal rows. [horizontal] forces
+     *  the horizontal rows — the in-player sheets always pass it, so the
+     *  Source pill reads like the player page whatever the setting. */
     private fun serverRow(
         src: PlayerSource,
         selected: Boolean,
         onPlay: () -> Unit,
         onDownload: () -> Unit,
         onExternal: () -> Unit,
+        horizontal: Boolean = false,
     ): View =
-        if (com.hikari.app.player.ServerLayouts.isVertical() && !com.hikari.app.tv.TvMode.isTv) serverVertRow(src, selected, onPlay, onDownload, onExternal)
+        if (!horizontal && com.hikari.app.player.ServerLayouts.isVertical() && !com.hikari.app.tv.TvMode.isTv) serverVertRow(src, selected, onPlay, onDownload, onExternal)
         else serverRefRow(src, selected, onPlay, onDownload, onExternal)
 
     private fun glassRow(option: GlassOption, onClick: (() -> Unit)?): View {
@@ -8307,7 +8310,7 @@ class PlayerActivity : ComponentActivity() {
     }
 
     /** The Source pill: the same grouped picker, dismissible without a pick. */
-    private fun showSourcesDialog() = showServerChooser()
+    private fun showSourcesDialog() = showServerChooser(forceHorizontal = true)
 
     /** The fixed section order: the engine the user opened the title from first
      *  — the other repos of THAT engine are the closest thing to "my
@@ -8460,7 +8463,7 @@ class PlayerActivity : ComponentActivity() {
      * (the player closes, nothing auto-starts) rather than falling back to
      * a server the user never picked.
      */
-    private fun showServerChooser(startMode: Boolean = false, forDownload: Boolean = false) {
+    private fun showServerChooser(startMode: Boolean = false, forDownload: Boolean = false, forceHorizontal: Boolean = false) {
         // startMode is the "don't play directly" chooser, which is opened the
         // instant the player does — before the first server has landed — so it
         // may legitimately be empty and fill in live. The Source pill
@@ -8826,6 +8829,7 @@ class PlayerActivity : ComponentActivity() {
                     val src = sources[i]
                     val v = serverRow(
                         src = src,
+                        horizontal = forceHorizontal,
                         selected = playbackCommitted && i == currentIndex,
                         onPlay = {
                             startChoicePending = false
@@ -9323,7 +9327,7 @@ class PlayerActivity : ComponentActivity() {
             // A vertical sheet opened portrait (see the startMode lock above):
             // free the lock so playback follows the video again instead of
             // staying portrait. Phone-only, like the lock itself.
-            if (com.hikari.app.player.ServerLayouts.isVertical() && !com.hikari.app.tv.TvMode.isTv && !playerTvRemote()) {
+            if (!forceHorizontal && com.hikari.app.player.ServerLayouts.isVertical() && !com.hikari.app.tv.TvMode.isTv && !playerTvRemote()) {
                 runCatching { requestedOrientation = SCREEN_ORIENTATION_UNSPECIFIED }
             }
             // Closed without a pick (the back button, the ✕, a tap outside):
@@ -9501,7 +9505,7 @@ class PlayerActivity : ComponentActivity() {
         // 560dp, centered) over the portrait poster — but with the same
         // glass look as horizontal: the rows float directly over the art,
         // no dark box behind them. TV always keeps horizontal.
-        val verticalSheet = com.hikari.app.player.ServerLayouts.isVertical() && !com.hikari.app.tv.TvMode.isTv
+        val verticalSheet = !forceHorizontal && com.hikari.app.player.ServerLayouts.isVertical() && !com.hikari.app.tv.TvMode.isTv
         // Vertical opens portrait (see the startMode lock above): the rotation
         // lands asynchronously AFTER this point, so measuring the window now
         // would size a landscape-wide box that then hangs off the portrait
@@ -14790,7 +14794,7 @@ class PlayerActivity : ComponentActivity() {
                     pickedByUser = false
                     noSubsRetry = false
                     if (downloadFlowActive) openDownloadPending = true
-                    showServerChooser()
+                    showServerChooser(forceHorizontal = true)
                 }
                 2 -> {
                     // Stop asking from now on — persist it so the next video

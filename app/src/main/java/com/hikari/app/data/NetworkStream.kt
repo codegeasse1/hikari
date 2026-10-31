@@ -1,14 +1,22 @@
 package com.hikari.app.data
 
+import com.hikari.app.HikariApp
 import com.hikari.app.cs3.FallbackResolver
 import com.hikari.app.net.Http
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.resume
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import java.net.URLEncoder
 import java.util.IdentityHashMap
 import java.util.LinkedList
+import android.os.Handler
+import android.os.Looper
+import android.webkit.CookieManager
+import android.webkit.WebView
+import android.webkit.WebViewClient
 
 /**
  * A link the user pasted into the IPTV tab as a NETWORK STREAM, resolved to
@@ -634,6 +642,16 @@ private class BReader(val b: ByteArray) {
             Logs.log("NetStream", "terabox: no page html for $origin (share + /main both empty)")
             return emptyList()
         }
+        // Shape of the share page, for the next report: a verify-walled or
+        // bot-walled fetch answers short JSON with no tokens at all, while
+        // the real page carries the jsToken (and usually yunData/sign).
+        Logs.log(
+            "NetStream",
+            "terabox: share page ${shareHtml?.length ?: 0} chars" +
+                " tokenFrom=" + (if (!shareHtml.isNullOrBlank() && token.isNotBlank() && jsTokenOf(shareHtml).isNotBlank()) "share" else "main") +
+                " yunData=" + (shareHtml?.contains("yunData") == true) +
+                " verify=" + (shareHtml?.contains("verify", ignoreCase = true) == true),
+        )
         // The reference client sends a per-session `browserid` cookie on the
         // API calls; without one the list endpoint can refuse an otherwise
         // identical request.
@@ -697,15 +715,27 @@ private class BReader(val b: ByteArray) {
             // Family-wide fallback (bounded, 2 extra hosts): some mirrors refuse
             // the list call with errno 105 while the canonical backend answers
             // the same key. Same credentials, same key — never per-mirror code.
+            // A browser session goes first: a refused list on a share the
+            // metadata says exists is the session gate (the box only trusts
+            // its own page visit — cookies plus JS-set values a plain GET
+            // never runs), and a real visit passes it the way the resolver
+            // sites' own backends do.
             if (list == null) {
-                val retryToken = jsTokenOf(retryHome)
-                val fallbacks = listOf("https://www.terabox.com", "https://terabox.com")
-                    .filter { it != origin }
-                for (fb in fallbacks) {
-                    list = boxList(fb, key, retryToken, retryJar, sekey, sig, ids, pageUrl = url)
-                    if (list != null) {
-                        Logs.log("NetStream", "terabox: list answered via fallback $fb for $origin")
-                        break
+                val shareAlive = runCatching { JSONObject(tokens).optInt("errno", -1) == 0 }
+                    .getOrDefault(false)
+                if (shareAlive) {
+                    list = boxWebList(origin, url, key, sekey, sig, ids)
+                }
+                if (list == null) {
+                    val retryToken = jsTokenOf(retryHome)
+                    val fallbacks = listOf("https://www.terabox.com", "https://terabox.com")
+                        .filter { it != origin }
+                    for (fb in fallbacks) {
+                        list = boxList(fb, key, retryToken, retryJar, sekey, sig, ids, pageUrl = url)
+                        if (list != null) {
+                            Logs.log("NetStream", "terabox: list answered via fallback $fb for $origin")
+                            break
+                        }
                     }
                 }
             }
@@ -915,6 +945,163 @@ private class BReader(val b: ByteArray) {
         }
         val arr = json.optJSONArray("list") ?: return emptyList()
         return (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }
+    }
+
+    /**
+     * The same list call with a real browser session: the share page loads in
+     * a hidden WebView (real cookies, real JS-set values — the gate a plain
+     * GET never passes), then the metadata + list calls replay with that
+     * session's cookies and freshly read tokens. Null when the browser
+     * session itself yields nothing; the plain-HTTP result then stands.
+     */
+    private suspend fun boxWebList(
+        origin: String,
+        pageUrl: String,
+        key: String,
+        sekey: String?,
+        sig: Pair<String, Long>?,
+        ids: Pair<String, String>?,
+    ): List<JSONObject>? {
+        val (html, cookies) = boxWebSession(pageUrl) ?: run {
+            Logs.log("NetStream", "terabox: web session empty for $origin")
+            return null
+        }
+        if (cookies.isEmpty() && html.isBlank()) {
+            Logs.log("NetStream", "terabox: web session empty for $origin")
+            return null
+        }
+        val jar = LinkedList(cookies.distinct())
+        var webToken = jsTokenOf(html)
+        var webSig = boxSignOf(html) ?: sig
+        var webSekey = sekey
+        var webIds = ids
+        // The metadata call re-read under the browser session: a rotated
+        // sekey or missing ids must not doom the replay.
+        val meta = fetchText(
+            "$origin/api/shorturlinfo?shorturl=$key&root=1",
+            BOX_UA,
+            jar,
+            referer = pageUrl,
+        )
+        if (!meta.isNullOrBlank() &&
+            runCatching { JSONObject(meta).optInt("errno", -1) }.getOrDefault(-1) == 0
+        ) {
+            webSekey = boxSekeyOf(meta) ?: webSekey
+            webIds = boxShareIdsOf(meta) ?: webIds
+        }
+        Logs.log(
+            "NetStream",
+            "terabox: web session page ${html.length} chars cookies=${jar.size}" +
+                " token=" + (if (webToken.isNotBlank()) "yes" else "none") +
+                " sekey=" + (if (!webSekey.isNullOrBlank()) "yes" else "none") +
+                " sign=" + (if (webSig != null) "yes" else "none") +
+                " ids=" + (if (webIds != null) "yes" else "none"),
+        )
+        val out = boxList(origin, key, webToken, jar, webSekey, webSig, webIds, pageUrl = pageUrl)
+        if (out != null) {
+            Logs.log("NetStream", "terabox: list answered via web session for $origin")
+        }
+        return out
+    }
+
+    /**
+     * The share page in a real browser: a hidden WebView loads it (cookies +
+     * JS run exactly like the user's own browser, which is what passes the
+     * box's session gate), then the rendered HTML and the session cookies
+     * come back. Bounded and never fatal — null on anything unexpected,
+     * including devices with no WebView provider.
+     */
+    private suspend fun boxWebSession(pageUrl: String): Pair<String, List<String>>? =
+        withTimeoutOrNull(12_000) {
+            suspendCancellableCoroutine { cont ->
+                val main = Handler(Looper.getMainLooper())
+                val holder = arrayOfNulls<WebView>(1)
+                fun finish(value: Pair<String, List<String>>?) {
+                    if (!cont.isActive) return
+                    runCatching { holder[0]?.destroy() }
+                    holder[0] = null
+                    cont.resume(value)
+                }
+                cont.invokeOnCancellation {
+                    main.post {
+                        runCatching { holder[0]?.destroy() }
+                        holder[0] = null
+                    }
+                }
+                main.post {
+                    try {
+                        val cm = CookieManager.getInstance()
+                        cm.setAcceptCookie(true)
+                        val web = WebView(HikariApp.instance.applicationContext)
+                        holder[0] = web
+                        web.settings.javaScriptEnabled = true
+                        web.settings.domStorageEnabled = true
+                        web.settings.mediaPlaybackRequiresUserGesture = false
+                        web.webViewClient = object : WebViewClient() {
+                            var settled = false
+                            override fun onPageFinished(view: WebView, url: String) {
+                                if (settled) return
+                                settled = true
+                                // Let the SPA render + drop its cookies before
+                                // reading (bounded by the caller's timeout).
+                                main.postDelayed({
+                                    try {
+                                        val cookies = (cm.getCookie(pageUrl) ?: "")
+                                            .split(";").map { it.trim() }
+                                            .filter { it.isNotBlank() }
+                                        view.evaluateJavascript(
+                                            "(function(){return document.documentElement.outerHTML})()",
+                                        ) { raw ->
+                                            finish(Pair(unquoteJs(raw), cookies))
+                                        }
+                                    } catch (_: Throwable) {
+                                        finish(null)
+                                    }
+                                }, 2500)
+                            }
+                        }
+                        web.loadUrl(pageUrl)
+                    } catch (_: Throwable) {
+                        finish(null)
+                    }
+                }
+            }
+        }
+
+    /** Unquote an evaluateJavascript result (a JSON string literal). */
+    private fun unquoteJs(quoted: String?): String {
+        if (quoted.isNullOrBlank() || quoted == "null") return ""
+        val t = quoted.trim()
+        if (t.length < 2 || !t.startsWith("\"") || !t.endsWith("\"")) return t
+        val inner = t.substring(1, t.length - 1)
+        val sb = StringBuilder(inner.length)
+        var i = 0
+        while (i < inner.length) {
+            val c = inner[i]
+            if (c == '\\' && i + 1 < inner.length) {
+                when (val n = inner[i + 1]) {
+                    'n' -> sb.append('\n')
+                    'r' -> sb.append('\r')
+                    't' -> sb.append('\t')
+                    'u' -> {
+                        val hex = inner.substring(i + 2, (i + 6).coerceAtMost(inner.length))
+                        val code = hex.toIntOrNull(16)
+                        if (code != null) {
+                            sb.append(code.toChar())
+                            i += 4
+                        } else {
+                            sb.append(n)
+                        }
+                    }
+                    else -> sb.append(n)
+                }
+                i += 2
+            } else {
+                sb.append(c)
+                i++
+            }
+        }
+        return sb.toString()
     }
 
     private fun isBoxFolder(e: JSONObject): Boolean =
