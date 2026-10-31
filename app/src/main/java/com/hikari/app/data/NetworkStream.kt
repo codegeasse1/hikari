@@ -3,9 +3,8 @@ package com.hikari.app.data
 import com.hikari.app.HikariApp
 import com.hikari.app.cs3.FallbackResolver
 import com.hikari.app.net.Http
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.resume
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
@@ -1011,62 +1010,62 @@ private class BReader(val b: ByteArray) {
      * come back. Bounded and never fatal — null on anything unexpected,
      * including devices with no WebView provider.
      */
-    private suspend fun boxWebSession(pageUrl: String): Pair<String, List<String>>? =
-        withTimeoutOrNull(12_000) {
-            suspendCancellableCoroutine { cont ->
-                val main = Handler(Looper.getMainLooper())
-                val holder = arrayOfNulls<WebView>(1)
-                fun finish(value: Pair<String, List<String>>?) {
-                    if (!cont.isActive) return
-                    runCatching { holder[0]?.destroy() }
-                    holder[0] = null
-                    cont.resume(value)
-                }
-                cont.invokeOnCancellation {
-                    main.post {
-                        runCatching { holder[0]?.destroy() }
-                        holder[0] = null
-                    }
-                }
-                main.post {
-                    try {
-                        val cm = CookieManager.getInstance()
-                        cm.setAcceptCookie(true)
-                        val web = WebView(HikariApp.instance.applicationContext)
-                        holder[0] = web
-                        web.settings.javaScriptEnabled = true
-                        web.settings.domStorageEnabled = true
-                        web.settings.mediaPlaybackRequiresUserGesture = false
-                        web.webViewClient = object : WebViewClient() {
-                            var settled = false
-                            override fun onPageFinished(view: WebView, url: String) {
-                                if (settled) return
-                                settled = true
-                                // Let the SPA render + drop its cookies before
-                                // reading (bounded by the caller's timeout).
-                                main.postDelayed({
-                                    try {
-                                        val cookies = (cm.getCookie(pageUrl) ?: "")
-                                            .split(";").map { it.trim() }
-                                            .filter { it.isNotBlank() }
-                                        view.evaluateJavascript(
-                                            "(function(){return document.documentElement.outerHTML})()",
-                                        ) { raw ->
-                                            finish(Pair(unquoteJs(raw), cookies))
-                                        }
-                                    } catch (_: Throwable) {
-                                        finish(null)
-                                    }
-                                }, 2500)
+    private suspend fun boxWebSession(pageUrl: String): Pair<String, List<String>>? {
+        // The main thread only HOSTS the view — it is never blocked: the
+        // load runs there, the caller waits on a deferred from its own
+        // stage thread, and both the settle read and the watchdog below
+        // destroy the view whatever happens first.
+        val done = CompletableDeferred<Pair<String, List<String>>?>()
+        val main = Handler(Looper.getMainLooper())
+        val holder = arrayOfNulls<WebView>(1)
+        fun finish(value: Pair<String, List<String>>?) {
+            if (done.isCompleted) return
+            runCatching { holder[0]?.destroy() }
+            holder[0] = null
+            done.complete(value)
+        }
+        main.post {
+            try {
+                val cm = CookieManager.getInstance()
+                cm.setAcceptCookie(true)
+                val web = WebView(HikariApp.instance.applicationContext)
+                holder[0] = web
+                web.settings.javaScriptEnabled = true
+                web.settings.domStorageEnabled = true
+                web.settings.mediaPlaybackRequiresUserGesture = false
+                web.webViewClient = object : WebViewClient() {
+                    var settled = false
+                    override fun onPageFinished(view: WebView, url: String) {
+                        if (settled) return
+                        settled = true
+                        // Let the SPA render + drop its cookies before
+                        // reading (bounded by the watchdog below).
+                        main.postDelayed({
+                            try {
+                                val cookies = (cm.getCookie(pageUrl) ?: "")
+                                    .split(";").map { it.trim() }
+                                    .filter { it.isNotBlank() }
+                                view.evaluateJavascript(
+                                    "(function(){return document.documentElement.outerHTML})()",
+                                ) { raw ->
+                                    finish(Pair(unquoteJs(raw), cookies))
+                                }
+                            } catch (_: Throwable) {
+                                finish(null)
                             }
-                        }
-                        web.loadUrl(pageUrl)
-                    } catch (_: Throwable) {
-                        finish(null)
+                        }, 2500)
                     }
                 }
+                web.loadUrl(pageUrl)
+            } catch (_: Throwable) {
+                finish(null)
             }
         }
+        // Whatever the page does (hang, challenge, redirect loop), the
+        // view is gone after ~11s; the caller's own timeout is the backstop.
+        main.postDelayed({ finish(null) }, 11_000)
+        return withTimeoutOrNull(12_000) { done.await() }
+    }
 
     /** Unquote an evaluateJavascript result (a JSON string literal). */
     private fun unquoteJs(quoted: String?): String {
