@@ -1,3 +1,7 @@
+## 0.12.17 (continuous build only)
+
+- Settings → Integrations → Metadata sources: anime merges Simkl, then AniList, then TMDB with first hit winning per field (no logins — everything enabled fetches automatically; Simkl works off a connected tracker login or a free pasted app ID), movies & series keep TMDB behind their own switch, and sources whose own metadata is better can stay native per extension so their titles, posters and episode names are used as-is
+
 ## 0.12.16 (continuous build only)
 
 - Manga fixes: chapter lists and catalog pages retry once after a breather on rate-limit/transient failures (429/5xx) instead of dying on the first refusal, and empty answers now log which host they came from so the next report pinpoints the URL; image memory is guarded by app-heap pressure (caches drop at 80%+ heap on any trim and on resume, fewer concurrent decodes) so thousand-cover scrolls can't OOM the process; the manga globe now asks WebView vs Browser — browser opens the site in the device default app

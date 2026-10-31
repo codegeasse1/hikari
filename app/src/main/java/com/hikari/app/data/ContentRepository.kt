@@ -6479,6 +6479,17 @@ class ContentRepository(private val manager: ProviderManager) {
             MetaCache.putMeta(metaKey, t)
             return@withContext t
         }
+        // Extension-own rows (Settings → Integrations → Extension metadata):
+        // the origin's own meta stands untouched — no Stremio backfill, no
+        // tracker/anime/TMDB passes. Tracker ids are virtual (no installed
+        // provider behind them), so they never match this skip.
+        val nativeIds = runCatching { HikariApp.instance.store.nativeProviders() }.getOrDefault(emptySet())
+        if (originProvider != null && item.providerId in nativeIds) {
+            val t = translateItem(result)
+            synchronized(metaCache) { metaCache[item.uniqueId] = t }
+            MetaCache.putMeta(metaKey, t)
+            return@withContext t
+        }
         // Tracker anime ids belong to no Stremio addon: asking them could
         // only return another show's meta (a numeric id read as TMDB), so
         // tracker rows skip this pass and go straight to AniList/Simkl below.
@@ -6729,6 +6740,10 @@ class ContentRepository(private val manager: ProviderManager) {
      *  excluded by the caller: TMDB slices those by broadcast year while the
      *  sites serve one absolute numbering. */
     private suspend fun tmdbSeasonLayout(item: MediaItem): List<AnimeMetadataRepository.SeasonLayout> {
+        // Season splitting follows the same TMDB toggles as the rest of the
+        // enrichment: without TMDB for this kind of row the flat provider
+        // numbering stands as-is.
+        if (!tmdbEpisodesAllowed(item)) return emptyList()
         val key = item.searchTitle.lowercase() + "|" + (item.year ?: 0)
         tmdbSeasonLayouts[key]?.let { return it }
         val out = withTimeoutOrNull(8_000) { tmdbSeasonLayoutNetwork(item) }.orEmpty()
@@ -6770,6 +6785,7 @@ class ContentRepository(private val manager: ProviderManager) {
      *  by the source. */
     private suspend fun restoreAnimeSeasons(item: MediaItem, episodes: List<Episode>): List<Episode> {
         if (item.type != MediaType.SERIES || episodes.size < 8) return episodes
+        if (item.providerId in runCatching { HikariApp.instance.store.nativeProviders() }.getOrDefault(emptySet())) return episodes
         if (episodes.map { it.season }.distinct().any { it > 1 }) return episodes
         val tmdbLayout = runCatching { tmdbSeasonLayout(item) }.getOrDefault(emptyList())
         splitFlatEpisodes(episodes, tmdbLayout)?.let { return it }
@@ -7407,12 +7423,25 @@ class ContentRepository(private val manager: ProviderManager) {
      * restart, which would make number → title mapping wrong), and quietly
      * gives up on any failure — names are a nicety, never a gate.
      */
+    /** TMDB-backed episode naming/details for [item]'s kind, honoring the
+     *  Integrations toggles (extension-own rows never reach here — they
+     *  return before any rename is attempted). */
+    private suspend fun tmdbEpisodesAllowed(item: MediaItem): Boolean {
+        val store = HikariApp.instance.store
+        val anime = AnimeMetadataRepository.isAnimeItem(item, manager.byId(item.providerId)?.config?.type)
+        return runCatching { if (anime) store.animeTmdb() else store.videoTmdb() }.getOrDefault(true)
+    }
+
     private suspend fun withRealEpisodeNames(item: MediaItem, eps: List<Episode>): List<Episode> {
+        // Extension-own rows keep the origin's names untouched.
+        if (item.providerId in runCatching { HikariApp.instance.store.nativeProviders() }.getOrDefault(emptySet())) return eps
         // Anime rows read their names from AniList first — the canonical
         // titles, so "Episode N" tracker counts and mechanical site labels
         // become real names even where TMDB never runs (see below).
         val anilistNamed = animeEpisodeNames(item, eps)
         if (eps.size < 3) return anilistNamed
+        // TMDB naming only when TMDB is on for this kind of row.
+        if (!tmdbEpisodesAllowed(item)) return anilistNamed
         // Duplicate numbers (a provider listing episodes twice under names the
         // merge keeps separate, e.g. different-language audio labels) must not
         // block the lookup: TMDB is asked for each number once and every twin
@@ -7493,7 +7522,31 @@ class ContentRepository(private val manager: ProviderManager) {
      * wider modes run this; "Simkl only" skips it.
      */
     private suspend fun animeEpisodeNames(item: MediaItem, eps: List<Episode>): List<Episode> {
-        return eps
+        if (eps.isEmpty()) return eps
+        // One absolute numbering only: per-season restarts would map numbers
+        // onto the wrong AniList rows.
+        if (eps.map { it.season }.toSet().size > 1) return eps
+        val store = HikariApp.instance.store
+        if (!runCatching { store.animeAnilist() }.getOrDefault(true)) return eps
+        if (item.providerId in runCatching { store.nativeProviders() }.getOrDefault(emptySet())) return eps
+        if (!AnimeMetadataRepository.isAnimeItem(item, manager.byId(item.providerId)?.config?.type)) return eps
+        val byNum = runCatching { AnimeMetadataRepository.animeFull(item.searchTitle) }.getOrNull()
+            ?.episodes?.associateBy { it.number } ?: return eps
+        if (byNum.isEmpty()) return eps
+        var changed = false
+        val out = eps.map { e ->
+            val a = byNum[e.number] ?: return@map e
+            val upgrade = e.name.isNullOrBlank() ||
+                EpisodeTitles.looksMechanical(e.name, item.searchTitle) ||
+                EpisodeTitles.needsEnglish(e.name, item.searchTitle)
+            val newName = if (upgrade) (a.title ?: e.name) else e.name
+            val newImage = if (e.image.isNullOrBlank()) a.image else e.image
+            if (newName != e.name || newImage != e.image) {
+                changed = true
+                e.copy(name = newName, image = newImage)
+            } else e
+        }
+        return if (changed) out else eps
     }
 
     /**
@@ -7523,7 +7576,12 @@ class ContentRepository(private val manager: ProviderManager) {
         val filled = if (enrichLeft() > 0L) {
             withTimeoutOrNull(enrichLeft()) { backfillEpisodeDetails(item, publish(withNames)) } ?: withNames
         } else withNames
-        val out = publish(filled)
+        // AniList stills last: only blanks TMDB could not fill, anime rows
+        // with AniList on, never touching extension-own rows.
+        val stills = if (enrichLeft() > 0L) {
+            withTimeoutOrNull(enrichLeft()) { fillAnimeStills(item, filled) } ?: filled
+        } else filled
+        val out = publish(stills)
         synchronized(episodeCache) { episodeCache[selKey] = out }
         MetaCache.putEpisodes(epsKey, out)
         return out
@@ -7547,9 +7605,12 @@ class ContentRepository(private val manager: ProviderManager) {
         ) {
             return list
         }
+        // Extension-own rows keep the origin's episode details; TMDB details
+        // only land when TMDB is on for this kind of row.
+        if (item.providerId in runCatching { HikariApp.instance.store.nativeProviders() }.getOrDefault(emptySet())) return list
+        if (!tmdbEpisodesAllowed(item)) return list
         // Same duplicate-number rule as [withRealEpisodeNames]: twins share one
-        // TMDB row and each twin gets the same details filled in.
-        val singleSeason = list.map { it.season }.toSet().size == 1
+        // TMDB row and each twin gets the same details filled in.        val singleSeason = list.map { it.season }.toSet().size == 1
         // Same pack-follows-season rule as [withRealEpisodeNames]: a picked
         // "[Season 3]" pack fills its blanks from season 3, shifted past an
         // earlier cour part's files when the pack is a second half.
@@ -7598,7 +7659,24 @@ class ContentRepository(private val manager: ProviderManager) {
      * upgrade rules; this only patches what is still missing artwork.
      */
     private suspend fun fillAnimeStills(item: MediaItem, eps: List<Episode>): List<Episode> {
-        return eps
+        if (eps.isEmpty() || eps.none { it.image.isNullOrBlank() }) return eps
+        if (eps.map { it.season }.toSet().size > 1) return eps
+        val store = HikariApp.instance.store
+        if (!runCatching { store.animeAnilist() }.getOrDefault(true)) return eps
+        if (item.providerId in runCatching { store.nativeProviders() }.getOrDefault(emptySet())) return eps
+        if (!AnimeMetadataRepository.isAnimeItem(item, manager.byId(item.providerId)?.config?.type)) return eps
+        val byNum = runCatching { AnimeMetadataRepository.animeFull(item.searchTitle) }.getOrNull()
+            ?.episodes?.associateBy { it.number } ?: return eps
+        if (byNum.isEmpty()) return eps
+        var changed = false
+        val out = eps.map { e ->
+            val img = byNum[e.number]?.image
+            if (e.image.isNullOrBlank() && !img.isNullOrBlank()) {
+                changed = true
+                e.copy(image = img)
+            } else e
+        }
+        return if (changed) out else eps
     }
 
     // ---- Per-extension auto-translate (app content → English) ----

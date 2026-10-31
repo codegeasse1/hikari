@@ -140,6 +140,7 @@ import com.hikari.app.HikariApp
 import com.hikari.app.R
 import com.hikari.app.data.ContentRepository
 import com.hikari.app.data.ContentRepository.StreamLookup
+import com.hikari.app.data.AnimeMetadataRepository
 import com.hikari.app.data.AppStore
 import com.hikari.app.data.CatalogRef
 import com.hikari.app.data.CastMember
@@ -1245,6 +1246,19 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             ?.setSelectedLink(item.id, options[at].link)
     }
 
+    private val _tmdbSectionsOk = MutableStateFlow(true)
+    val tmdbSectionsOk: StateFlow<Boolean> = _tmdbSectionsOk.asStateFlow()
+
+    /** TMDB detail shelves (extras/cast/trailers, Related/Similar, logo) for
+     *  [item]: off for extension-own rows, otherwise per the Movies & series /
+     *  Anime TMDB toggles. MDBList ratings have their own toggle and stay. */
+    private suspend fun tmdbSectionsAllowed(item: MediaItem): Boolean {
+        val store = HikariApp.instance.store
+        if (item.providerId in runCatching { store.nativeProviders() }.getOrDefault(emptySet())) return false
+        val anime = AnimeMetadataRepository.isAnimeItem(item, manager.byId(item.providerId)?.config?.type)
+        return runCatching { if (anime) store.animeTmdb() else store.videoTmdb() }.getOrDefault(true)
+    }
+
     private suspend fun loadShelves(item: MediaItem, shelvesGen: Int) {
         // Everything here is blocking network + file IO, so it runs off the main
         // thread. Without this the TMDB lookups below were killed by Android's
@@ -1252,9 +1266,14 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
         // silently swallowed by the runCatching calls — which is exactly why the
         // Details block and the Cast/Trailers/Related/Similar rows never showed up.
         withContext(Dispatchers.IO) {
+            // Extension-own rows and rows whose kind has TMDB off keep the
+            // page to provider data (+ MDBList ratings below, separate
+            // toggle): no extras/cast/trailers, no Related/Similar.
+            val tmdbOk = tmdbSectionsAllowed(item)
+            if (shelvesGen == shelvesGeneration) _tmdbSectionsOk.value = tmdbOk
             // Extras first: they are ONE TMDB call (credits+videos+certifications)
             // and carry the details block, so the page fills in fastest this way.
-            val ex = runCatching { TmdbMeta.extras(item) }.getOrNull()
+            val ex = if (tmdbOk) runCatching { TmdbMeta.extras(item) }.getOrNull() else null
             if (shelvesGen != shelvesGeneration) return@withContext
             _extras.value = ex
             // Ratings next: a handful of review sites (Wikidata, Rotten Tomatoes,
@@ -1273,9 +1292,9 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                     onUpdate = { if (shelvesGen == shelvesGeneration) _ratings.value = it },
                 )
             }.getOrDefault(emptyList()).let { if (shelvesGen == shelvesGeneration) _ratings.value = it }
-            val rel = runCatching { TmdbMeta.related(item) }.getOrDefault(emptyList())
+            val rel = if (tmdbOk) runCatching { TmdbMeta.related(item) }.getOrDefault(emptyList()) else emptyList()
             if (shelvesGen == shelvesGeneration) _related.value = rel
-            val sim = runCatching { TmdbMeta.similar(item) }.getOrDefault(emptyList())
+            val sim = if (tmdbOk) runCatching { TmdbMeta.similar(item) }.getOrDefault(emptyList()) else emptyList()
             if (shelvesGen == shelvesGeneration) _similar.value = sim
         }
     }
@@ -1943,6 +1962,7 @@ fun DetailScreen(
     val similar by vm.similar.collectAsState()
     val extras by vm.extras.collectAsState()
     val ratings by vm.ratings.collectAsState()
+    val tmdbSectionsOk by vm.tmdbSectionsOk.collectAsState()
     val m = meta
     // When the origin provider no longer exists, the ViewModel remaps this page
     // onto a live provider (see remapMissingProvider). Everything that RECORDS
@@ -4724,9 +4744,9 @@ fun DetailScreen(
         }
     }
     val detailList = com.hikari.app.ui.components.keptListState("detail:$providerId|$mediaId")
-    LaunchedEffect(m?.uniqueId) {
+    LaunchedEffect(m?.uniqueId, tmdbSectionsOk) {
         val item = m ?: return@LaunchedEffect
-        heroLogo = runCatching { TmdbMeta.logo(item) }.getOrNull()
+        heroLogo = if (tmdbSectionsOk) runCatching { TmdbMeta.logo(item) }.getOrNull() else null
     }
     val tvHeroImage = m?.let { if (isTvLayout) Artwork.tvHeroModel(it) else Artwork.heroModel(it) }
         ?: (PosterLoader.model(posterUrl) to false)

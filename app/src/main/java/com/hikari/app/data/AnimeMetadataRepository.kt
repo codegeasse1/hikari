@@ -1,6 +1,7 @@
 package com.hikari.app.data
 import com.hikari.app.HikariApp
 import com.hikari.app.net.Http
+import com.hikari.app.nuvio.TmdbResolver
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -25,8 +26,108 @@ object AnimeMetadataRepository {
         return emptyList()
     }
 
-        suspend fun enrich(app: HikariApp, item: MediaItem, type: ProviderType? = null): Metadata? {
-        return null
+    /**
+     * Anime metadata with no login: Simkl (tracker login's app ID, else the
+     * free app ID pasted in Settings), keyless AniList GraphQL, TMDB with the
+     * bundled keys — in that fixed priority, first hit wins per field. Each
+     * source runs fenced: one refusing or mistranslating only loses its own
+     * fields, never the record. A TMDB title that cannot score 55+ against
+     * the known spellings never repaints the row (the mistranslation guard);
+     * its overview/art still land, the provider title stands.
+     */
+    suspend fun enrich(app: HikariApp, item: MediaItem, type: ProviderType? = null): Metadata? {
+        if (!isAnimeItem(item, type)) return null
+        val store = app.store
+        val wantSimkl = runCatching { store.animeSimkl() }.getOrDefault(true)
+        val wantAnilist = runCatching { store.animeAnilist() }.getOrDefault(true)
+        val wantTmdb = runCatching { store.animeTmdb() }.getOrDefault(true)
+        if (!wantSimkl && !wantAnilist && !wantTmdb) return null
+        val query = item.searchTitle.ifBlank { item.title }
+        if (query.isBlank()) return null
+        var title: String? = null
+        var rating: Double? = null
+        var next: String? = null
+        var year: Int? = null
+        var overview: String? = null
+        var genres: List<String> = emptyList()
+        var poster: String? = null
+        var backdrop: String? = null
+        var source: String? = null
+        var aliases: Set<String> = emptySet()
+        if (wantSimkl) {
+            val simklMeta = runCatching {
+                val id = simklClientId(app) ?: return@runCatching null
+                withContext(Dispatchers.IO) { simklWithId(item, id) }
+            }.getOrNull()
+            simklMeta?.let { m ->
+                if (title == null) m.title?.let { title = it; source = m.source }
+                if (rating == null) m.rating?.let { rating = it; if (source == null) source = m.source }
+                if (next == null) m.nextEpisodeDate?.let { next = it; if (source == null) source = m.source }
+            }
+        }
+        if (wantAnilist) {
+            runCatching { withContext(Dispatchers.IO) { animeFull(query) } }.getOrNull()?.let { full ->
+                aliases = full.aliases
+                if (title == null) full.title?.let { title = it; source = "AniList" }
+                if (rating == null) full.rating?.let { rating = it; if (source == null) source = "AniList" }
+                if (next == null) full.nextEpisodeDate?.let { next = it; if (source == null) source = "AniList" }
+                if (year == null) full.year?.let { year = it }
+                if (genres.isEmpty() && full.genres.isNotEmpty()) genres = full.genres
+                if (poster == null) full.posterUrl?.let { poster = it }
+                if (backdrop == null) full.backdropUrl?.let { backdrop = it }
+            }
+        }
+        if (wantTmdb) {
+            runCatching { withContext(Dispatchers.IO) { tmdbAnime(item, aliases) } }.getOrNull()?.let { m ->
+                if (title == null) m.title?.let { title = it; source = m.source }
+                if (rating == null) m.rating?.let { rating = it; if (source == null) source = m.source }
+                if (year == null) m.year?.let { year = it }
+                if (overview == null) m.overview?.let { overview = it }
+                if (genres.isEmpty() && m.genres.isNotEmpty()) genres = m.genres
+                if (poster == null) m.posterUrl?.let { poster = it }
+                if (backdrop == null) m.backdropUrl?.let { backdrop = it }
+                if (next == null) m.nextEpisodeDate?.let { next = it }
+            }
+        }
+        val from = source ?: return null
+        Logs.log(
+            "AnimeMeta",
+            "anime metadata for \"" + query.take(80) + "\" from " + from +
+                " (title=" + (title != null) + " overview=" + (overview != null) +
+                " poster=" + (poster != null) + ")",
+        )
+        return Metadata(title, rating, next, from, year, overview, genres, poster, backdrop)
+    }
+
+    /** TMDB's anime record for [item]: overview, art and anything the anime
+     *  sources left blank. The title only counts when it scores 55+ against
+     *  the known spellings (AniList aliases when the AniList step ran, else
+     *  the row's own names) — a mistranslation then keeps the provider title
+     *  and still contributes the rest. */
+    private fun tmdbAnime(item: MediaItem, aliases: Set<String>): Metadata? {
+        val resolved = runCatching { TmdbResolver.resolve(item) }.getOrNull() ?: return null
+        if (!resolved.mediaType.equals("tv", true) && !resolved.mediaType.equals("movie", true)) return null
+        val details = runCatching {
+            TmdbResolver.apiGet("/" + resolved.mediaType + "/" + resolved.tmdbId, emptyMap())
+        }.getOrNull() ?: return null
+        val movie = resolved.mediaType.equals("movie", true)
+        val tmdbTitle = (if (movie) details.optString("title").ifBlank { details.optString("original_title") }
+        else details.optString("name").ifBlank { details.optString("original_name") })
+            .trim().takeIf { it.isNotBlank() }
+        val known = aliases + item.searchTitle + item.title
+        val title = tmdbTitle?.takeIf { matchAliases(it, known) >= 55 }
+        val year = (if (movie) details.optString("release_date") else details.optString("first_air_date"))
+            .trim().take(4).toIntOrNull()?.takeIf { it > 1900 }
+        val genres = (0 until (details.optJSONArray("genres")?.length() ?: 0))
+            .mapNotNull { i -> details.optJSONArray("genres")?.optJSONObject(i)?.optString("name")?.trim()?.takeIf { it.isNotBlank() } }
+        val poster = details.optString("poster_path").trim().takeIf { it.isNotBlank() }
+            ?.let { "https://image.tmdb.org/t/p/w500" + it }
+        val backdrop = details.optString("backdrop_path").trim().takeIf { it.isNotBlank() }
+            ?.let { "https://image.tmdb.org/t/p/w1280" + it }
+        val rating = details.optDouble("vote_average", 0.0).takeIf { it > 0 }
+        val ov = details.optString("overview").trim().takeIf { it.isNotBlank() }
+        if (title == null && rating == null && ov == null && genres.isEmpty() && poster == null && year == null) return null
+        return Metadata(title, rating, null, "TMDB", year, ov, genres, poster, backdrop)
     }
 
     /** Title match score (0-100) shared by every AniList first-hit check: a
@@ -264,22 +365,33 @@ object AnimeMetadataRepository {
         }?.next
     }
 
-    private suspend fun simkl(app: HikariApp, item: MediaItem): Metadata? {
-        val client = app.store.trackerClients().firstOrNull { it.kind == TrackerKind.SIMKL } ?: return null
-        if (!client.ready) return null
-        val clientId = URLEncoder.encode(client.id, "UTF-8")
+    /** Simkl app ID with no login step: the connected Simkl tracker's when
+     *  there is one, else the free app ID pasted in Settings → Integrations
+     *  → Anime. Null when neither exists — the Simkl step is then skipped
+     *  and AniList/TMDB carry the row. */
+    private suspend fun simklClientId(app: HikariApp): String? {
+        val trackerId = runCatching {
+            app.store.trackerClients().firstOrNull { it.kind == TrackerKind.SIMKL }?.id.orEmpty()
+        }.getOrDefault("").trim()
+        if (trackerId.isNotBlank()) return trackerId
+        return runCatching { app.store.animeSimklAppId() }.getOrDefault("").trim()
+            .takeIf { it.isNotBlank() }
+    }
+
+    private suspend fun simklWithId(item: MediaItem, clientId: String): Metadata? {
+        val encoded = URLEncoder.encode(clientId, "UTF-8")
         val url = if (item.providerId.equals("tmdb", true)) {
             "https://api.simkl.com/ratings?tmdb=" + URLEncoder.encode(item.id, "UTF-8") +
-                "&type=anime&fields=simkl,ext,rank,release_status,year&client_id=" + clientId
+                "&type=anime&fields=simkl,ext,rank,release_status,year&client_id=" + encoded
         } else {
             val raw = Http.getStringQuiet("https://api.simkl.com/search/anime?q=" +
-                URLEncoder.encode(item.searchTitle, "UTF-8") + "&client_id=" + clientId) ?: return null
+                URLEncoder.encode(item.searchTitle, "UTF-8") + "&client_id=" + encoded) ?: return null
             val array = org.json.JSONArray(raw)
             if (array.length() == 0) return null
             val first = array.optJSONObject(0) ?: return null
             val id = first.optJSONObject("ids")?.optInt("simkl", 0)?.takeIf { it > 0 }
                 ?: first.optInt("id", 0).takeIf { it > 0 } ?: return null
-            "https://api.simkl.com/ratings?simkl=$id&fields=simkl,ext,rank,release_status,year&client_id=$clientId"
+            "https://api.simkl.com/ratings?simkl=$id&fields=simkl,ext,rank,release_status,year&client_id=$encoded"
         }
         val raw = Http.getStringQuiet(url) ?: return null
         val rating = JSONObject(raw).optJSONObject("simkl")

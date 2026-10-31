@@ -6938,11 +6938,109 @@ private fun TrackerServiceCard(
 }
 
 @Composable
+@Composable
 private fun AnimeMetadataIntegrationCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    val simkl by remember { app.store.animeSimklFlow() }.collectAsState(initial = true)
+    val anilist by remember { app.store.animeAnilistFlow() }.collectAsState(initial = true)
+    val animeTmdb by remember { app.store.animeTmdbFlow() }.collectAsState(initial = true)
+    val videoTmdb by remember { app.store.videoTmdbFlow() }.collectAsState(initial = true)
+    val savedSimklId by remember { app.store.animeSimklAppIdFlow() }.collectAsState(initial = "")
+    var draftSimklId by remember { mutableStateOf("") }
+    LaunchedEffect(savedSimklId) { draftSimklId = savedSimklId }
+    val native by remember { app.store.nativeProvidersFlow() }.collectAsState(initial = emptySet())
+    val installed by app.providers.providers.collectAsState()
+    val videoProviders = remember(installed) {
+        installed.filter { it.config.enabled && it.config.type.isFamilyEngine }
+            .sortedBy { it.config.name.ifBlank { it.config.id }.lowercase() }
+    }
+
     Column(Modifier.padding(16.dp)) {
-        SettingsCardHeading(Icons.Filled.AutoAwesome,tr("Anime metadata"))
-        Spacer(Modifier.height(8.dp))
-        Text(tr("All titles, episodes, seasons and details now come from TMDB, the same as everything else."),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+        SettingsCardHeading(Icons.Filled.AutoAwesome, tr("Metadata sources"))
+        if (!LocalHideHelp.current) Text(
+            tr("Anime metadata merges Simkl, then AniList, then TMDB — the first hit wins per field. No logins needed; everything enabled here fetches automatically."),
+            style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(10.dp))
+        Text(tr("Anime"), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+        SettingsToggle(
+            label = tr("Simkl"),
+            supporting = tr("Anime titles, posters and episode details from Simkl"),
+            checked = simkl,
+            onCheckedChange = { on -> scope.launch { runCatching { app.store.setAnimeSimkl(on) } } },
+        )
+        SettingsToggle(
+            label = tr("AniList"),
+            supporting = tr("Anime titles, posters and episode details from AniList"),
+            checked = anilist,
+            onCheckedChange = { on -> scope.launch { runCatching { app.store.setAnimeAnilist(on) } } },
+        )
+        SettingsToggle(
+            label = tr("TMDB"),
+            supporting = tr("Anime titles, posters and episode details from TMDB"),
+            checked = animeTmdb,
+            onCheckedChange = { on -> scope.launch { runCatching { app.store.setAnimeTmdb(on) } } },
+        )
+        if (simkl) {
+            Spacer(Modifier.height(10.dp))
+            Text(
+                tr("Simkl app ID"),
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Text(
+                tr("Optional. A connected Simkl tracker login already supplies one; a free app ID from the Simkl API portal works without any login."),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp, bottom = 10.dp),
+            )
+            ApiKeyEditor(
+                label = "Simkl app ID",
+                value = draftSimklId,
+                savedValue = savedSimklId,
+                onValueChange = { draftSimklId = it },
+                onSave = {
+                    scope.launch { runCatching { app.store.setAnimeSimklAppId(draftSimklId.trim()) } }
+                },
+            )
+        }
+        Spacer(Modifier.height(14.dp))
+        Text(tr("Movies & series"), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+        SettingsToggle(
+            label = tr("TMDB"),
+            supporting = tr("Posters, details and episode names for movies and series"),
+            checked = videoTmdb,
+            onCheckedChange = { on -> scope.launch { runCatching { app.store.setVideoTmdb(on) } } },
+        )
+        Spacer(Modifier.height(14.dp))
+        Text(tr("Extension metadata"), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+        if (!LocalHideHelp.current) Text(
+            tr("Sources whose own metadata is better stay native: their titles, posters and episode names are used as-is, with no external enrichment."),
+            style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        if (videoProviders.isEmpty()) {
+            Text(
+                tr("Install a video source to choose native metadata per source."),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 8.dp),
+            )
+        }
+        for (p in videoProviders) {
+            val id = p.config.id
+            SettingsToggle(
+                label = p.config.name.ifBlank { id },
+                supporting = p.config.type.groupLabel,
+                checked = id in native,
+                onCheckedChange = { on ->
+                    scope.launch {
+                        runCatching {
+                            app.store.setNativeProviders(if (on) native + id else native - id)
+                        }
+                    }
+                },
+            )
+        }
     }
 }
 

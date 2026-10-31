@@ -555,6 +555,21 @@ class AppStore(private val ctx: Context) {
         val TRACKER_LIBRARY_SOURCE = stringPreferencesKey("trackerLibrarySource")
         val ANIME_METADATA_ENABLED = booleanPreferencesKey("animeMetadataEnabled")
         val ANIME_METADATA_SOURCE = stringPreferencesKey("animeMetadataSource")
+        /** Anime metadata chain: each source fetches on its own, no login.
+         *  AniList is keyless GraphQL, TMDB uses the bundled keys, Simkl needs
+         *  an app ID (tracker login's, or the free one pasted below). Fixed
+         *  priority Simkl -> AniList -> TMDB: first hit wins per field. */
+        val ANIME_SIMKL = booleanPreferencesKey("animeMetaSimkl")
+        val ANIME_ANILIST = booleanPreferencesKey("animeMetaAnilist")
+        val ANIME_TMDB = booleanPreferencesKey("animeMetaTmdb")
+        /** Optional Simkl app ID (free at simkl.com/developer, no login) so
+         *  Simkl metadata works without connecting the Simkl tracker. */
+        val ANIME_SIMKL_APP_ID = stringPreferencesKey("animeMetaSimklAppId")
+        /** Movies & series metadata from TMDB (no login, bundled keys). */
+        val VIDEO_TMDB = booleanPreferencesKey("videoMetaTmdb")
+        /** Provider ids shown with extension-own metadata only: no TMDB /
+         *  anime blank-filling, no episode renaming, no TMDB shelves. */
+        val NATIVE_PROVIDERS = stringSetPreferencesKey("nativeMetadataProviders")
         val TRACKER_PROGRESS_SOURCE = stringPreferencesKey("trackerProgressSource")
         val TRACKER_RECOMMENDATIONS_SOURCE = stringPreferencesKey("trackerRecommendationsSource")
         val TRACKER_CONTINUE_DAYS = intPreferencesKey("trackerContinueDays")
@@ -1083,6 +1098,25 @@ class AppStore(private val ctx: Context) {
     fun animeMetadataSourceFlow(): Flow<String> = store.data.map { it[K.ANIME_METADATA_SOURCE] ?: "anilist_simkl" }.distinctUntilChanged().flowOn(Dispatchers.Default)
     suspend fun animeMetadataSource(): String = animeMetadataSourceFlow().first()
     suspend fun setAnimeMetadataSource(value: String) { write("ANIME_METADATA_SOURCE") { it[K.ANIME_METADATA_SOURCE] = value } }
+    fun animeSimklFlow(): Flow<Boolean> = store.data.map { it[K.ANIME_SIMKL] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
+    suspend fun animeSimkl(): Boolean = animeSimklFlow().first()
+    suspend fun setAnimeSimkl(value: Boolean) { write("ANIME_SIMKL") { it[K.ANIME_SIMKL] = value } }
+    fun animeAnilistFlow(): Flow<Boolean> = store.data.map { it[K.ANIME_ANILIST] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
+    suspend fun animeAnilist(): Boolean = animeAnilistFlow().first()
+    suspend fun setAnimeAnilist(value: Boolean) { write("ANIME_ANILIST") { it[K.ANIME_ANILIST] = value } }
+    fun animeTmdbFlow(): Flow<Boolean> = store.data.map { it[K.ANIME_TMDB] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
+    suspend fun animeTmdb(): Boolean = animeTmdbFlow().first()
+    suspend fun setAnimeTmdb(value: Boolean) { write("ANIME_TMDB") { it[K.ANIME_TMDB] = value } }
+    fun animeSimklAppIdFlow(): Flow<String> = store.data.map { it[K.ANIME_SIMKL_APP_ID] ?: "" }.distinctUntilChanged().flowOn(Dispatchers.Default)
+    suspend fun animeSimklAppId(): String = animeSimklAppIdFlow().first()
+    suspend fun setAnimeSimklAppId(value: String) { write("ANIME_SIMKL_APP_ID") { it[K.ANIME_SIMKL_APP_ID] = value } }
+    fun videoTmdbFlow(): Flow<Boolean> = store.data.map { it[K.VIDEO_TMDB] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
+    suspend fun videoTmdb(): Boolean = videoTmdbFlow().first()
+    suspend fun setVideoTmdb(value: Boolean) { write("VIDEO_TMDB") { it[K.VIDEO_TMDB] = value } }
+    fun nativeProvidersFlow(): Flow<Set<String>> =
+        store.data.map { it[K.NATIVE_PROVIDERS] ?: emptySet() }.distinctUntilChanged().flowOn(Dispatchers.Default)
+    suspend fun nativeProviders(): Set<String> = nativeProvidersFlow().first()
+    suspend fun setNativeProviders(ids: Set<String>) { write("NATIVE_PROVIDERS") { it[K.NATIVE_PROVIDERS] = ids.toSet() } }
 
     fun trackerLibrarySourceFlow(): Flow<String> = store.data.map { it[K.TRACKER_LIBRARY_SOURCE] ?: "nuvio" }.distinctUntilChanged().flowOn(Dispatchers.Default)
     suspend fun trackerLibrarySource(): String = trackerLibrarySourceFlow().first()
