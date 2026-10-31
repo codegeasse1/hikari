@@ -1,0 +1,75 @@
+<resources>
+    <!-- NOTE: the white "Hikari" header users saw on every screen was the
+         Android window title bar (it renders the app label). Every theme
+         below now forces windowNoTitle + windowActionBar=false explicitly,
+         so no activity can ever draw a title bar again. -->
+    <!-- MainActivity is an AppCompatActivity (CloudStream plugins cast `app` to
+         it). Both themes descend from MaterialComponents (itself an AppCompat
+         descendant) because CloudStream plugins ship their own settings UI —
+         usually a BottomSheetDialogFragment whose layout uses Material widgets
+         (MaterialButton, TextInputLayout, SwitchMaterial…). Those widgets throw
+         "The style on this component requires your app theme to be
+         Theme.MaterialComponents" unless the activity theme is a Material one,
+         and a Material theme also defines `bottomSheetDialogTheme` so the sheet
+         comes up dark to match Hikari instead of Material's light fallback. -->
+    <style name="Theme.Hikari" parent="Theme.MaterialComponents.NoActionBar">
+        <item name="windowSplashScreenBackground">@color/hikari_bg</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
+        <item name="postSplashScreenTheme">@style/Theme.Hikari.App</item>
+        <item name="android:windowBackground">@color/hikari_bg</item>
+        <item name="android:colorBackground">@color/hikari_bg</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowActionBar">false</item>
+        <!-- The app runs immersive/edge-to-edge (MainActivity hides the system
+             bars), and on a phone with a notch/punch-hole the DEFAULT cutout
+             mode refuses to let the window draw into that area: the system
+             letterboxes the top with a blank bar and pushes the whole UI down
+             — which looks fine on a device without a cutout and broken on one
+             with ("fullscreen leaves a blank bar under the status bar").
+             shortEdges lets the dark background + content fill the cutout too. -->
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+    </style>
+
+    <style name="Theme.Hikari.App" parent="Theme.MaterialComponents.NoActionBar">
+        <!-- Brand palette: the accents native widgets (plugin settings sheets,
+             switches, buttons, dialogs) pick up, so they match the app's gold
+             Compose theme instead of Material's default purple. -->
+        <item name="colorPrimary">#F5C569</item>
+        <item name="colorPrimaryVariant">#C99E45</item>
+        <item name="colorOnPrimary">#1A1408</item>
+        <item name="colorSecondary">#F5C569</item>
+        <item name="colorSecondaryVariant">#C99E45</item>
+        <item name="colorOnSecondary">#1A1408</item>
+        <item name="colorSurface">#11162B</item>
+        <item name="colorOnSurface">#E6E8F0</item>
+        <item name="colorOnBackground">#E6E8F0</item>
+        <item name="android:colorAccent">#F5C569</item>
+        <item name="android:colorBackground">@color/hikari_bg</item>
+        <item name="android:windowBackground">@color/hikari_bg</item>
+        <item name="android:statusBarColor">@color/hikari_bg</item>
+        <item name="android:navigationBarColor">@color/hikari_bg</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowActionBar">false</item>
+        <!-- See Theme.Hikari: draw into a notch/punch-hole too, otherwise the
+             system reserves a blank band at the top and pushes every screen
+             down by it on cutout devices. -->
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+    </style>
+
+    <style name="Theme.Hikari.Player" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowBackground">@android:color/black</item>
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowActionBar">false</item>
+        <!-- Brand accent: native widgets/seekbars tint from colorAccent. The
+             player itself uses the cyan->violet player palette (see
+             colors.xml + drawable/player_*), so keep these in the same
+             violet family rather than the app's gold. -->
+        <item name="android:colorAccent">@color/hikari_accent_mid</item>
+        <item name="android:colorControlActivated">@color/hikari_accent_mid</item>
+        <item name="android:colorControlHighlight">@color/hikari_accent_ripple</item>
+        <item name="android:colorControlNormal">#99FFFFFF</item>
+    </style>
+</resources>

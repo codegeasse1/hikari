@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Hikari</string>
+    <string name="settings_language_title">שפת האפליקציה</string>
+    <string name="settings_language_subtitle">משנה את טקסטי האפליקציה ואת בקרות הנגן</string>
+    <string name="settings_language_system">ברירת מחדל של המערכת</string>
+    <string name="player_options">אפשרויות נגן</string>
+    <string name="player_fit_video">התאמת וידאו</string>
+    <string name="player_fit_video_desc">הצג את הפריים כולו</string>
+    <string name="player_crop_to_fill">חיתוך למילוי</string>
+    <string name="player_crop_to_fill_desc">הגדל עד למילוי הפריים</string>
+    <string name="player_stretch_video">מתיחה למילוי</string>
+    <string name="player_stretch_video_desc">מלא את המסך בלי להתחשב בצורה</string>
+    <string name="player_rotate_screen">סיבוב המסך</string>
+    <string name="player_rotate_screen_desc">סובב את הווידאו ב-90° בכל פעם</string>
+    <string name="player_server_chooser">בחירת שרת</string>
+    <string name="player_server_on">פועל — בחר שרת בכל פעם</string>
+    <string name="player_server_off">כבוי — התחל בשרת הטוב ביותר</string>
+    <string name="player_options_hint">התאמת וידאו, סיבוב, והאם השרתים מתחילים לבד.</string>
+    <string name="player_episodes">פרקים</string>
+    <string name="player_source">מקור</string>
+    <string name="player_quality">איכות</string>
+    <string name="player_audio">שמע</string>
+    <string name="player_subtitles">כתוביות</string>
+    <string name="player_rotate">סובב</string>
+    <string name="player_skip_intro">דלג על פתיח</string>
+    <string name="player_enhance">שפר</string>
+    <string name="player_tap_to_play">הקש להפעלה</string>
+    <string name="cd_back">חזרה</string>
+    <string name="cd_add_to_library">הוסף לספרייה</string>
+    <string name="cd_download">הורדה</string>
+    <string name="cd_pip">תמונה בתוך תמונה</string>
+    <string name="cd_player_options">אפשרויות נגן</string>
+    <string name="cd_lock_controls">נעל בקרות</string>
+    <string name="cd_fit_or_crop">התאמה, חיתוך או מתיחה של הווידאו</string>
+</resources>
