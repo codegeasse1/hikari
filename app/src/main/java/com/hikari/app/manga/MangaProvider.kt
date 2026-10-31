@@ -235,6 +235,37 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
         ok
     } ?: false
 
+    /** HTTP statuses worth one more ask after a breather: rate limits and
+     *  transient edge/gateway failures. An app that fires hundreds of requests
+     *  in parallel trips these far more often than a reader that taps one
+     *  title at a time. Anything else (404/403, parse failures, timeouts)
+     *  answers the same way twice, so only these retry. */
+    private fun isRetryableHttp(t: Throwable?): Boolean {
+        var c: Throwable? = t
+        while (c != null) {
+            if (c is eu.kanade.tachiyomi.network.HttpException &&
+                (c.code == 429 || c.code in 502..504 || c.code in 520..524)
+            ) return true
+            c = c.cause
+        }
+        return false
+    }
+
+    /** The host an empty manga answer came from, for the log — an empty list
+     *  carries no exception, so without this the next report can never say
+     *  whether the request went to the wrong URL or the right URL refused. */
+    private fun logEmptyAnswer(what: String, src: CatalogueSource, mangaUrl: String?) {
+        val base = runCatching {
+            (src as? eu.kanade.tachiyomi.source.online.HttpSource)?.baseUrl
+        }.getOrNull()
+        val target = runCatching {
+            if (mangaUrl != null && mangaUrl.startsWith("http")) mangaUrl
+            else (base?.trimEnd('/') ?: "") + "/" + (mangaUrl ?: "").trimStart('/')
+        }.getOrNull()?.takeIf { it.isNotBlank() } ?: base
+        val host = runCatching { java.net.URI(target).host }.getOrNull() ?: target
+        Logs.log("Manga", "${config.name}: empty $what answer from $host")
+    }
+
     /**
      * Records a site as needing the user's own verification when a failure is a
      * bot wall rather than a broken extension — HTTP 403/429/503/Cloudflare.
@@ -366,6 +397,21 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
         var mangas = first.getOrNull()
         var failure = first.exceptionOrNull()?.takeIf { it !is kotlinx.coroutines.CancellationException }
             ?.let { reason(it) }
+        // One more ask after a breather on rate limits / transient edge
+        // failures (see [isRetryableHttp]) — page 2+ has no warm-up retry, so
+        // a refused page used to end the whole list ("That's everything"
+        // after a dozen titles).
+        if (mangas == null && isRetryableHttp(first.exceptionOrNull())) {
+            kotlinx.coroutines.delay(2_000)
+            val retry = runCatching { withTimeoutOrNull(EXT_CALL_TIMEOUT_MS) { ask() } }
+            retry.exceptionOrNull()?.let { if (it is kotlinx.coroutines.CancellationException) throw it }
+            if (retry.isSuccess) {
+                mangas = retry.getOrNull()
+                failure = null
+            } else {
+                failure = retry.exceptionOrNull()?.let { reason(it) }
+            }
+        }
         if (mangas == null && failure == null) {
             // The bounded ask gave up on a hung site (null verdict, no
             // exception): name it so the catalogue screen can say the site
@@ -418,6 +464,10 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
         // take back to the extension's own page (the site's markup moved), rather
         // than to a Cloudflare check that was never the issue.
         if (mangas.isEmpty()) {
+            // An empty answer carries no exception, so log where it came from
+            // (see [logEmptyAnswer]) — a wrong URL and a refused right URL
+            // need different fixes.
+            logEmptyAnswer("${ref.name.lowercase()} page $page", src, null)
             // The reported MangaTime shape: the extension answers 200 with no
             // titles while the site itself is up. Its catalog is one tRPC query
             // (see nativeMangaTime) — run that exact query directly. Page 1
@@ -667,6 +717,20 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
         first.exceptionOrNull()?.let { if (it is kotlinx.coroutines.CancellationException) throw it }
         var raw = first.getOrNull()
         var failure = first.exceptionOrNull()?.let { reason(it) }
+        // One more ask after a breather on rate limits / transient edge
+        // failures (see [isRetryableHttp]) — a refused chapter list used to
+        // read as "no chapters" with nothing to retry it.
+        if (raw == null && isRetryableHttp(first.exceptionOrNull())) {
+            kotlinx.coroutines.delay(2_000)
+            val retry = runCatching { withTimeoutOrNull(EXT_CALL_TIMEOUT_MS) { ask() } }
+            retry.exceptionOrNull()?.let { if (it is kotlinx.coroutines.CancellationException) throw it }
+            if (retry.isSuccess) {
+                raw = retry.getOrNull()
+                failure = null
+            } else {
+                failure = retry.exceptionOrNull()?.let { reason(it) }
+            }
+        }
         if (raw == null && failure == null) {
             failure = "the site took too long to answer (over ${EXT_CALL_TIMEOUT_MS / 1000}s)"
         }
@@ -710,7 +774,12 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
             val direct = runCatching { withTimeoutOrNull(EXT_CALL_TIMEOUT_MS) { src.getChapterList(sm(item)) } }.getOrNull()
             if (!direct.isNullOrEmpty()) raw = direct
         }
-        if (raw.isEmpty()) return@gate failEpisodes("no chapters in this answer")
+        if (raw.isEmpty()) {
+            // Same host logging as the catalogue (see [logEmptyAnswer]): an
+            // empty chapter list never names where it came from otherwise.
+            logEmptyAnswer("chapters", src, sm(item).url)
+            return@gate failEpisodes("no chapters in this answer")
+        }
         val sorted = sortChapters(raw)
         MangaStore.putChapters(item.providerId + "|" + item.id, sorted.map { it.toChapter() })
         lastOutcome[config.id] = "✓ ${sorted.size} chapter(s)"

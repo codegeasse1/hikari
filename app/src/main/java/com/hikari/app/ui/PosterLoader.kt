@@ -167,6 +167,13 @@ object PosterLoader {
     //  Animated covers drawn as a STILL
     // ------------------------------------------------------------------
 
+    /** Drop decoded still frames (see relieveHeapPressure in HikariApp): the
+     *  cells that drew them re-fetch on next scroll. */
+    fun clearMemory() {
+        stills.clear()
+        stillPending.clear()
+    }
+
     /** First frames already fetched this session, keyed by URL. */
     private val stills = ConcurrentHashMap<String, android.graphics.Bitmap>()
 

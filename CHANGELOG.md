@@ -1,3 +1,7 @@
+## 0.12.16 (continuous build only)
+
+- Manga fixes: chapter lists and catalog pages retry once after a breather on rate-limit/transient failures (429/5xx) instead of dying on the first refusal, and empty answers now log which host they came from so the next report pinpoints the URL; image memory is guarded by app-heap pressure (caches drop at 80%+ heap on any trim and on resume, fewer concurrent decodes) so thousand-cover scrolls can't OOM the process; the manga globe now asks WebView vs Browser — browser opens the site in the device default app
+
 ## 0.12.15 (continuous build only)
 
 - Server rows show the full picture like the reference: every horizontal row now carries the red provider name above its title plus its own host/link detail line (vertical cards already had the header — their facts line never named the host), and vertical cards read bigger (3-line titles, 6-line detail, more chips, roomier padding) so nothing is cut

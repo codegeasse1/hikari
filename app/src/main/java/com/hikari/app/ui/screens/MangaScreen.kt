@@ -1,5 +1,7 @@
 package com.hikari.app.ui.screens
 
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -200,6 +202,9 @@ fun MangaScreen(nav: NavHostController, initialQuery: String = "", initialGenre:
     // has just been passed turns empty answers into real ones, and the grid
     // must not sit on the old empties as if the check changed nothing.
     var verifyTick by remember { mutableStateOf(0) }
+    // Pending "open this engine's site" question (see SiteOpenDialog): the
+    // globe asks first, then opens the WebView or the device browser.
+    var verifySiteAsk by remember { mutableStateOf<SiteAsk?>(null) }
     val verifyLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) {
@@ -221,18 +226,36 @@ fun MangaScreen(nav: NavHostController, initialQuery: String = "", initialGenre:
                 ).show()
             } else {
                 val host = runCatching { java.net.URI(site).host?.lowercase() }.getOrNull()
-                verifyLauncher.launch(
-                    android.content.Intent(context, com.hikari.app.web.WebViewActivity::class.java)
-                        .apply {
-                            putExtra("url", site)
-                            putExtra("title", "Verify: " + (host ?: engine.config.name))
-                            putExtra("providerId", engine.config.id)
-                            putExtra("autoCloseWhenCloudflarePassed", true)
-                            if (host != null) putExtra("verifyHost", host)
-                        }
-                )
+                verifySiteAsk = SiteAsk(site, host, engine.config.name, engine.config.id)
             }
         }
+    }
+    verifySiteAsk?.let { ask ->
+        SiteOpenDialog(
+            ask = ask,
+            onWebView = { a ->
+                verifyLauncher.launch(
+                    Intent(context, com.hikari.app.web.WebViewActivity::class.java)
+                        .apply {
+                            putExtra("url", a.site)
+                            putExtra("title", "Verify: " + (a.host ?: a.title))
+                            putExtra("providerId", a.providerId)
+                            putExtra("autoCloseWhenCloudflarePassed", true)
+                            if (a.host != null) putExtra("verifyHost", a.host)
+                        }
+                )
+            },
+            // Through the same launcher, so coming back re-asks the engines
+            // (see verifyLauncher above) exactly like the WebView path.
+            onBrowser = { a ->
+                verifyLauncher.launch(
+                    Intent(Intent.ACTION_VIEW, Uri.parse(a.site)).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                )
+            },
+            onClose = { verifySiteAsk = null },
+        )
     }
     val typed = query.trim()
     // Blank here means a plain keyword search, exactly as before.
@@ -989,6 +1012,42 @@ private fun EngineRow(
                         .size(15.dp),
                 )
             }
+            // "Open in…": the in-app WebView (a normal open, keeping the
+            // verification extras below) or the device browser, the same as
+            // tapping any link on the phone.
+            var siteAsk by remember { mutableStateOf<SiteAsk?>(null) }
+            siteAsk?.let { ask ->
+                SiteOpenDialog(
+                    ask = ask,
+                    onWebView = { a ->
+                        context.startActivity(
+                            Intent(
+                                context,
+                                com.hikari.app.web.WebViewActivity::class.java,
+                            ).apply {
+                                putExtra("url", a.site)
+                                putExtra("title", "Verify: " + (a.host ?: a.title))
+                                putExtra("providerId", a.providerId)
+                                // Closes itself the moment the clearance is in
+                                // the cookie jar, so the user does not have to
+                                // know when they are "done".
+                                putExtra("autoCloseWhenCloudflarePassed", true)
+                                if (a.host != null) putExtra("verifyHost", a.host)
+                            }
+                        )
+                    },
+                    onBrowser = { a ->
+                        runCatching {
+                            context.startActivity(
+                                Intent(Intent.ACTION_VIEW, Uri.parse(a.site)).apply {
+                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                }
+                            )
+                        }
+                    },
+                    onClose = { siteAsk = null },
+                )
+            }
             IconButton(
                 onClick = {
                     // The site is derived by LOADING the extension (its source's
@@ -1008,21 +1067,7 @@ private fun EngineRow(
                             ).show()
                         } else {
                             val host = runCatching { java.net.URI(site).host?.lowercase() }.getOrNull()
-                            context.startActivity(
-                                android.content.Intent(
-                                    context,
-                                    com.hikari.app.web.WebViewActivity::class.java,
-                                ).apply {
-                                    putExtra("url", site)
-                                    putExtra("title", "Verify: " + (host ?: name))
-                                    putExtra("providerId", providerId)
-                                    // Closes itself the moment the clearance is in
-                                    // the cookie jar, so the user does not have to
-                                    // know when they are "done".
-                                    putExtra("autoCloseWhenCloudflarePassed", true)
-                                    if (host != null) putExtra("verifyHost", host)
-                                }
-                            )
+                            siteAsk = SiteAsk(site, host, name, providerId)
                         }
                     }
                 }
@@ -1036,6 +1081,39 @@ private fun EngineRow(
             }
         }
     }
+}
+
+/** One "open this manga site" question: the derived URL plus the labels the
+ *  dialog and both openers need. Internal so the detail screen asks it too. */
+internal data class SiteAsk(
+    val site: String,
+    val host: String?,
+    val title: String,
+    val providerId: String,
+)
+
+/** "Open in…" for a manga site: the in-app WebView (a normal open, keeping
+ *  the Cloudflare-verification extras) or the device browser (ACTION_VIEW —
+ *  the same as tapping any link on the phone). Internal so the detail screen
+ *  reuses it. */
+@Composable
+internal fun SiteOpenDialog(
+    ask: SiteAsk,
+    onWebView: (SiteAsk) -> Unit,
+    onBrowser: (SiteAsk) -> Unit,
+    onClose: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onClose,
+        title = { Text(tr("Open site in…")) },
+        text = { Text(ask.site) },
+        confirmButton = {
+            TextButton(onClick = { onBrowser(ask); onClose() }) { Text(tr("Browser")) }
+        },
+        dismissButton = {
+            TextButton(onClick = { onWebView(ask); onClose() }) { Text(tr("WebView")) }
+        },
+    )
 }
 
 /**

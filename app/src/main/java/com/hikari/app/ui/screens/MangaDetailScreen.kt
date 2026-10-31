@@ -1,6 +1,7 @@
 package com.hikari.app.ui.screens
 
 import android.content.Intent
+import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -30,6 +31,7 @@ import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -125,6 +127,9 @@ fun MangaDetailScreen(
     // the header draws) so the load effect runs again on demand.
     var reload by remember { mutableIntStateOf(0) }
     var expanded by remember { mutableStateOf(false) }
+    // Pending "open this title's site" question (see SiteOpenDialog): the
+    // globe asks first, then opens the WebView or the device browser.
+    var verifySiteAsk by remember { mutableStateOf<SiteAsk?>(null) }
 
     val rev = rememberMangaRevision()
     val progress = remember(rev) { MangaStore.progressFor(key) }
@@ -172,17 +177,35 @@ fun MangaDetailScreen(
                 ).show()
             } else {
                 val host = runCatching { java.net.URI(site).host?.lowercase() }.getOrNull()
-                verifyLauncher.launch(
-                    Intent(context, WebViewActivity::class.java).apply {
-                        putExtra("url", site)
-                        putExtra("title", "Verify: " + (host ?: title))
-                        putExtra("providerId", providerId)
-                        putExtra("autoCloseWhenCloudflarePassed", true)
-                        if (host != null) putExtra("verifyHost", host)
-                    }
-                )
+                verifySiteAsk = SiteAsk(site, host, title, providerId)
             }
         }
+    }
+    verifySiteAsk?.let { ask ->
+        SiteOpenDialog(
+            ask = ask,
+            onWebView = { a ->
+                verifyLauncher.launch(
+                    Intent(context, WebViewActivity::class.java).apply {
+                        putExtra("url", a.site)
+                        putExtra("title", "Verify: " + (a.host ?: a.title))
+                        putExtra("providerId", a.providerId)
+                        putExtra("autoCloseWhenCloudflarePassed", true)
+                        if (a.host != null) putExtra("verifyHost", a.host)
+                    }
+                )
+            },
+            // Through the same launcher, so coming back reloads the chapters
+            // (see verifyLauncher above) exactly like the WebView path.
+            onBrowser = { a ->
+                verifyLauncher.launch(
+                    Intent(Intent.ACTION_VIEW, Uri.parse(a.site)).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                )
+            },
+            onClose = { verifySiteAsk = null },
+        )
     }
 
     LaunchedEffect(providerId, mangaUrl, reload) {

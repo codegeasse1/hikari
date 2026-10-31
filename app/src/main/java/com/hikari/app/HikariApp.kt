@@ -1015,13 +1015,46 @@ class HikariApp : Application() {
      * the one large, re-creatable thing the app holds, and a box asking a
      * foreground app for memory back is a box about to kill it.
      */
+    /**
+     * True when the APP's own heap is nearly full, regardless of what the
+     * device reports. Device trims only fire when the DEVICE is tight — but
+     * this process dies at its own 256–512 MB cap while the device still
+     * shows gigabytes free (the reported OOM: java 475/512 MB with 2.3 GB
+     * free). Poll the heap directly instead of waiting for a trim that
+     * never comes.
+     */
+    private fun heapPressure(): Boolean {
+        val rt = Runtime.getRuntime()
+        return rt.totalMemory() - rt.freeMemory() > rt.maxMemory() * 4 / 5
+    }
+
+    /** Drop the re-fetchable image caches when the heap is nearly full (see
+     *  [heapPressure]). Posters and stills decode again on scroll; a dead
+     *  process loses the page. No-op without pressure. */
+    private fun relieveHeapPressure(caller: String) {
+        if (!heapPressure()) return
+        val before = runCatching { com.hikari.app.data.MemoryReport.short() }.getOrNull().orEmpty()
+        runCatching { coil.Coil.imageLoader(this).memoryCache?.clear() }
+        runCatching { com.hikari.app.ui.PosterLoader.clearMemory() }
+        // A nudge, not the fix: the caches above are the memory given back.
+        System.gc()
+        runCatching {
+            Logs.log("Memory", "heap pressure ($caller) · $before → dropped image caches")
+        }
+    }
+
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
         // RUNNING_* is the device asking a FOREGROUND app to give memory back.
         // Everything below the first of them is the routine background trim
         // (UI_HIDDEN and friends), which every app gets and which says nothing
         // about the user's problem.
-        if (level < android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) return
+        //
+        // The heap itself can be full while the device is not (see
+        // [heapPressure]), so pressure is checked on EVERY trim: a pressured
+        // phone drops caches here exactly like a tight television does.
+        val pressured = heapPressure()
+        if (level < android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW && !pressured) return
         // Read BEFORE anything is dropped: the number that matters is what the
         // process held when the device decided it was tight.
         val held = com.hikari.app.data.MemoryReport.short()
@@ -1038,14 +1071,20 @@ class HikariApp : Application() {
         // trim would be its own bug.
         val onTv = com.hikari.app.data.PerfMode.tvDevice
         val critical = level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL
-        if (onTv || critical) {
+        if (onTv || critical || pressured) {
             runCatching { coil.Coil.imageLoader(this).memoryCache?.clear() }
+            // TV already drops stills via the poster path; on a pressured
+            // phone the decoded stills go too, plus a GC nudge.
+            if (pressured) {
+                runCatching { com.hikari.app.ui.PosterLoader.clearMemory() }
+                System.gc()
+            }
         }
         runCatching {
             Logs.log(
                 "Memory",
                 "onTrimMemory(" + trimLevelName(level) + ") · " + held +
-                    (if (onTv || critical) " → poster cache cleared" else ""),
+                    (if (onTv || critical || pressured) " → poster cache cleared" else ""),
             )
         }
     }
@@ -1085,7 +1124,12 @@ class HikariApp : Application() {
             }
 
             override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {}
-            override fun onActivityResumed(activity: Activity) {}
+            override fun onActivityResumed(activity: Activity) {
+                // Foreground again with a nearly-full heap (long reader
+                // session, thousand-cover scroll): drop caches before the
+                // next burst, not after the process dies.
+                relieveHeapPressure("resume")
+            }
             override fun onActivityPaused(activity: Activity) {}
             override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) {}
         })
@@ -1393,10 +1437,13 @@ class HikariApp : Application() {
             // horizontal not loading"). Coil gets its own dispatcher with a much
             // higher per-host ceiling so a whole row loads in parallel, plus a
             // bigger connection pool so those parallel requests actually reuse
-            // sockets instead of serialising on TCP/TLS handshakes.
+            // sockets instead of serialising on TCP/TLS handshakes. Bounded
+            // below the old 128/32: every in-flight decode holds a full bitmap,
+            // and a fast scroll over a thousand covers with no bound is what
+            // fills a 512 MB heap with transient decodes alone.
             val dispatcher = Dispatcher().apply {
-                maxRequests = 128
-                maxRequestsPerHost = 32
+                maxRequests = 96
+                maxRequestsPerHost = 24
             }
             val client = OkHttpClient.Builder()
                 .dns(DohDns)
