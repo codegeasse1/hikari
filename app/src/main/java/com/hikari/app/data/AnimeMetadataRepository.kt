@@ -104,7 +104,7 @@ object AnimeMetadataRepository {
      *  the known spellings (AniList aliases when the AniList step ran, else
      *  the row's own names) — a mistranslation then keeps the provider title
      *  and still contributes the rest. */
-    private fun tmdbAnime(item: MediaItem, aliases: Set<String>): Metadata? {
+    private suspend fun tmdbAnime(item: MediaItem, aliases: Set<String>): Metadata? {
         val resolved = runCatching { TmdbResolver.resolve(item) }.getOrNull() ?: return null
         if (!resolved.mediaType.equals("tv", true) && !resolved.mediaType.equals("movie", true)) return null
         val details = runCatching {

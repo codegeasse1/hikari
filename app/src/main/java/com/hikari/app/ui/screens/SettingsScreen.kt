@@ -6938,7 +6938,6 @@ private fun TrackerServiceCard(
 }
 
 @Composable
-@Composable
 private fun AnimeMetadataIntegrationCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
     val simkl by remember { app.store.animeSimklFlow() }.collectAsState(initial = true)

@@ -7610,7 +7610,8 @@ class ContentRepository(private val manager: ProviderManager) {
         if (item.providerId in runCatching { HikariApp.instance.store.nativeProviders() }.getOrDefault(emptySet())) return list
         if (!tmdbEpisodesAllowed(item)) return list
         // Same duplicate-number rule as [withRealEpisodeNames]: twins share one
-        // TMDB row and each twin gets the same details filled in.        val singleSeason = list.map { it.season }.toSet().size == 1
+        // TMDB row and each twin gets the same details filled in.
+        val singleSeason = list.map { it.season }.toSet().size == 1
         // Same pack-follows-season rule as [withRealEpisodeNames]: a picked
         // "[Season 3]" pack fills its blanks from season 3, shifted past an
         // earlier cour part's files when the pack is a second half.
