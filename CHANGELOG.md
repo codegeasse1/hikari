@@ -1,3 +1,7 @@
+## 0.12.18 (continuous build only)
+
+- Metadata sources: a search bar sits under the Extension metadata header so a long source list filters as you type (name, id or engine) instead of scrolling to find a toggle
+
 ## 0.12.17 (continuous build only)
 
 - Settings → Integrations → Metadata sources: anime merges Simkl, then AniList, then TMDB with first hit winning per field (no logins — everything enabled fetches automatically; Simkl works off a connected tracker login or a free pasted app ID), movies & series keep TMDB behind their own switch, and sources whose own metadata is better can stay native per extension so their titles, posters and episode names are used as-is

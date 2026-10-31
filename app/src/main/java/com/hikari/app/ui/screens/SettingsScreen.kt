@@ -103,6 +103,7 @@ import androidx.compose.material.icons.filled.RestorePage
 import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.SaveAlt
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.SettingsBackupRestore
 import androidx.compose.material.icons.filled.Shield
@@ -6953,6 +6954,16 @@ private fun AnimeMetadataIntegrationCard(app: HikariApp) {
         installed.filter { it.config.enabled && it.config.type.isFamilyEngine }
             .sortedBy { it.config.name.ifBlank { it.config.id }.lowercase() }
     }
+    var nativeQuery by remember { mutableStateOf("") }
+    val shownProviders = remember(videoProviders, nativeQuery) {
+        val q = nativeQuery.trim().lowercase()
+        if (q.isBlank()) videoProviders
+        else videoProviders.filter { p ->
+            p.config.name.ifBlank { p.config.id }.lowercase().contains(q) ||
+                p.config.id.lowercase().contains(q) ||
+                p.config.type.groupLabel.lowercase().contains(q)
+        }
+    }
 
     Column(Modifier.padding(16.dp)) {
         SettingsCardHeading(Icons.Filled.AutoAwesome, tr("Metadata sources"))
@@ -7024,8 +7035,26 @@ private fun AnimeMetadataIntegrationCard(app: HikariApp) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 8.dp),
             )
+        } else {
+            Spacer(Modifier.height(10.dp))
+            OutlinedTextField(
+                value = nativeQuery,
+                onValueChange = { nativeQuery = it },
+                placeholder = { Text(tr("Search sources…")) },
+                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth().tvTextFieldKeys(nativeQuery),
+            )
         }
-        for (p in videoProviders) {
+        if (shownProviders.isEmpty() && videoProviders.isNotEmpty()) {
+            Text(
+                tr("No sources match that search."),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 8.dp),
+            )
+        }
+        for (p in shownProviders) {
             val id = p.config.id
             SettingsToggle(
                 label = p.config.name.ifBlank { id },
