@@ -137,9 +137,6 @@ import com.hikari.app.ui.theme.rememberGlassTokens
 import com.hikari.app.tv.TvMode
 import com.hikari.app.tv.TvMouseCursorOverlay
 import com.hikari.app.tv.TvNavRail
-import com.hikari.app.tv.TvTopNav
-import com.hikari.app.tv.TvTopNavMetrics
-import com.hikari.app.tv.TvUiStyle
 import com.hikari.app.tv.TvUi
 import androidx.compose.runtime.collectAsState
 
@@ -1226,10 +1223,6 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
     // padded in from the screen edges (see TvUi), and the focus ring every
     // clickable inherits from MainActivity's TvFocusProvider.
     val isTv = TvMode.current()
-    // Which television interface is drawn (Settings → Customize → TV interface):
-    // the original left rail, or the Nuvio-style bar along the top. A Compose
-    // state, so switching it re-lays-out the app on the spot. Phones ignore it.
-    val tvTopNav = isTv && TvUiStyle.isNuvio
     // The gap kept clear of the screen's edges on a television ("overscan" —
     // see TvUi.DEFAULT_OVERSCAN_DP for why televisions need one at all).
     val overscanFlow = remember { app.store.tvOverscanFlow() }
@@ -1480,15 +1473,7 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
                         // reported band of empty screen beside the detail page on
                         // a television.
                         .then(
-                            if (isTv && showBar) {
-                                // Rail layout: the page starts to the right of
-                                // the rail. Nuvio layout: it starts under the
-                                // top bar instead and uses the full width.
-                                if (tvTopNav) Modifier.padding(top = TvTopNavMetrics.HEIGHT)
-                                else Modifier.padding(start = TvUi.railWidth())
-                            } else {
-                                Modifier
-                            }
+                            if (isTv && showBar) Modifier.padding(start = TvUi.railWidth()) else Modifier
                         )
                 ) {
             composable(Routes.HOME) { HomeScreen(nav) }
@@ -1728,22 +1713,12 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
         // (see TvNavRail for why the platform does it that way), and it is
         // where the remote's focus starts.
         if (showBar && isTv) {
-            if (tvTopNav) {
-                // Nuvio-style interface: the same tabs in a slim bar along the
-                // top edge (see TvTopNav).
-                TvTopNav(
-                    currentRoute = tabRoute,
-                    onNavigate = { route -> Routes.navigateTab(nav, route) },
-                    modifier = Modifier.align(Alignment.TopCenter),
-                )
-            } else {
-                TvNavRail(
-                    currentRoute = tabRoute,
-                    hidden = visibleTabs,
-                    onNavigate = { route -> Routes.navigateTab(nav, route) },
-                    modifier = Modifier.align(Alignment.CenterStart),
-                )
-            }
+            TvNavRail(
+                currentRoute = tabRoute,
+                hidden = visibleTabs,
+                onNavigate = { route -> Routes.navigateTab(nav, route) },
+                modifier = Modifier.align(Alignment.CenterStart),
+            )
         }
         // Remote-mouse cursor (Home header toggle): a D-pad-driven pointer
         // over every screen, so a Cloudflare checkbox and any other
