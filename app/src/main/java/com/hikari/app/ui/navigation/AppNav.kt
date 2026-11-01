@@ -3,6 +3,21 @@ import com.hikari.app.i18n.tr
 
 import android.net.Uri
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.offset
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.unit.IntOffset
+import kotlin.math.abs
+import kotlin.math.roundToInt
+import kotlinx.coroutines.delay
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
@@ -122,6 +137,9 @@ import com.hikari.app.ui.theme.rememberGlassTokens
 import com.hikari.app.tv.TvMode
 import com.hikari.app.tv.TvMouseCursorOverlay
 import com.hikari.app.tv.TvNavRail
+import com.hikari.app.tv.TvTopNav
+import com.hikari.app.tv.TvTopNavMetrics
+import com.hikari.app.tv.TvUiStyle
 import com.hikari.app.tv.TvUi
 import androidx.compose.runtime.collectAsState
 
@@ -788,6 +806,41 @@ private fun AppBottomBar(
         },
         label = "barIcon",
     )
+    // ---- Liquid-glass sliding lens -------------------------------------
+    // One glass lens slides behind the buttons. Press on the bar and it swells,
+    // drag and it follows the finger (stretching a little while it travels),
+    // let go and it springs onto the nearest button and opens that tab.
+    val selectedIndex = tabs.indexOfFirst { it.route == currentRoute }
+    var dragPos by remember { mutableStateOf<Float?>(null) }
+    var settleIdx by remember { mutableStateOf<Int?>(null) }
+    var pressed by remember { mutableStateOf(false) }
+    LaunchedEffect(selectedIndex) { settleIdx = null }
+    LaunchedEffect(settleIdx) {
+        if (settleIdx != null) {
+            delay(700)
+            settleIdx = null
+        }
+    }
+    val lensTarget = (dragPos ?: settleIdx?.toFloat() ?: selectedIndex.toFloat()).coerceAtLeast(0f)
+    val lensIdx by animateFloatAsState(
+        targetValue = lensTarget,
+        animationSpec = if (dragPos != null) {
+            spring(dampingRatio = 1f, stiffness = Spring.StiffnessHigh)
+        } else {
+            spring(dampingRatio = 0.62f, stiffness = 380f)
+        },
+        label = "barLensIdx",
+    )
+    val lensVisible = selectedIndex >= 0 || dragPos != null || settleIdx != null
+    val lensAlpha by animateFloatAsState(if (lensVisible) 1f else 0f, label = "barLensAlpha")
+    val press by animateFloatAsState(
+        targetValue = if (pressed) 1f else 0f,
+        animationSpec = spring(dampingRatio = 0.55f, stiffness = Spring.StiffnessMedium),
+        label = "barLensPress",
+    )
+    val tabsNow by rememberUpdatedState(tabs)
+    val selectedNow by rememberUpdatedState(selectedIndex)
+    val navigateNow by rememberUpdatedState(onNavigate)
     Box(
         modifier = modifier
             .fillMaxWidth()
@@ -914,33 +967,115 @@ private fun AppBottomBar(
                         (availPx * 0.97f * 100f * fontScale / widestRef).coerceIn(6f, 11.5f)
                     }
                     val labelScale = densityNow.fontScale.coerceAtLeast(0.5f)
+                    // The glass lens, drawn BEHIND the buttons. Its lane is the
+                    // same width as one equal-weight button slot of the Row below.
+                    val laneDp = (maxWidth - 4.dp) / tabs.size
+                    val lanePx = with(densityNow) { laneDp.toPx() }
+                    val lensPadPx = with(densityNow) { 2.dp.toPx() }
+                    val lensTopPx = with(densityNow) { 5.dp.toPx() }
+                    val lensShape = RoundedCornerShape(50)
+                    val lensTravel = abs(lensTarget - lensIdx).coerceAtMost(1.5f)
+                    val lensSheen = if (glass.dark) Color.White else primary
+                    val lensFillTop = lensSheen.copy(alpha = 0.14f + 0.12f * press)
+                    val lensFillBottom = primary.copy(alpha = 0.10f + 0.10f * press)
+                    val lensEdgeTop = lensSheen.copy(alpha = 0.40f)
+                    val lensEdgeBottom = lensSheen.copy(alpha = 0.06f)
+                    Box(
+                        Modifier
+                            .offset {
+                                IntOffset(
+                                    (lensPadPx + lanePx * lensIdx).roundToInt(),
+                                    lensTopPx.roundToInt()
+                                )
+                            }
+                            .size(laneDp, tabHeight)
+                            .graphicsLayer {
+                                scaleX = (1f + 0.16f * press) * (1f + 0.10f * lensTravel)
+                                scaleY = (1f + 0.14f * press) * (1f - 0.03f * lensTravel)
+                                alpha = lensAlpha
+                            }
+                            .clip(lensShape)
+                            .background(Brush.verticalGradient(listOf(lensFillTop, lensFillBottom)))
+                            .border(
+                                1.dp,
+                                Brush.verticalGradient(listOf(lensEdgeTop, lensEdgeBottom)),
+                                lensShape
+                            )
+                    )
                     Row(
                         Modifier
                             .fillMaxWidth()
                             .height(barHeight)
+                            // Observes the touch in the Initial pass WITHOUT
+                            // consuming it, so a plain tap still reaches the
+                            // button's own click; only a drag is handled here.
+                            .pointerInput(tabs.size) {
+                                val padPx = 2.dp.toPx()
+                                val slop = viewConfiguration.touchSlop
+                                awaitEachGesture {
+                                    val down = awaitFirstDown(
+                                        requireUnconsumed = false,
+                                        pass = PointerEventPass.Initial
+                                    )
+                                    val count = tabsNow.size
+                                    val slotPx = ((size.width - padPx * 2f) / count).coerceAtLeast(1f)
+                                    val maxIdx = (count - 1).toFloat()
+                                    var dragged = false
+                                    pressed = true
+                                    dragPos = (((down.position.x - padPx) / slotPx) - 0.5f).coerceIn(0f, maxIdx)
+                                    while (true) {
+                                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                        if (!change.pressed) break
+                                        if (!dragged && (change.position - down.position).getDistance() > slop) {
+                                            dragged = true
+                                        }
+                                        dragPos = (((change.position.x - padPx) / slotPx) - 0.5f).coerceIn(0f, maxIdx)
+                                    }
+                                    val target = (dragPos ?: 0f).roundToInt().coerceIn(0, count - 1)
+                                    dragPos = null
+                                    pressed = false
+                                    settleIdx = target
+                                    if (dragged && target != selectedNow) {
+                                        navigateNow(tabsNow[target].route)
+                                    }
+                                }
+                            }
                             .padding(horizontal = 2.dp, vertical = 5.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        tabs.forEach { tab ->
-                            val selected = currentRoute == tab.route
+                        tabs.forEachIndexed { index, tab ->
+                            // 1 when the lens is right on this button, 0 once it
+                            // is a whole slot away. Drives colour and magnify.
+                            val near = (1f - abs(lensIdx - index)).coerceIn(0f, 1f) * lensAlpha
+                            val selected = near > 0.5f
+                            val tabTint = androidx.compose.ui.graphics.lerp(muted, primary, near)
+                            val iconZoom = 1f + near * (0.06f + 0.22f * press)
+                            val textZoom = 1f + near * (0.03f + 0.10f * press)
                             Column(
                                 Modifier
                                     .weight(1f)
                                     .height(tabHeight)
-                                    // A fully round pill, not a rounded square — that
-                                    // is what marks the active tab in the reference
-                                    // design.
-                                    .clip(RoundedCornerShape(50))
-                                    .background(if (selected) primary.copy(alpha = 0.18f) else Color.Transparent)
-                                    .clickable { onNavigate(tab.route) },
+                                    // The active marker is the sliding glass lens
+                                    // behind the Row, so the cell itself is bare and
+                                    // has no ripple of its own.
+                                    .clickable(
+                                        interactionSource = remember(tab.route) { MutableInteractionSource() },
+                                        indication = null
+                                    ) { onNavigate(tab.route) },
                                 horizontalAlignment = Alignment.CenterHorizontally,
                                 verticalArrangement = Arrangement.Center
                             ) {
                                 Icon(
                                     tab.icon,
                                     contentDescription = if (withLabels) null else tr(tab.label),
-                                    modifier = Modifier.size(iconSize),
-                                    tint = if (selected) primary else muted
+                                    modifier = Modifier
+                                        .size(iconSize)
+                                        .graphicsLayer {
+                                            scaleX = iconZoom
+                                            scaleY = iconZoom
+                                        },
+                                    tint = tabTint
                                 )
                                 if (labelHeight > 0.dp) {
                                     Spacer(Modifier.height(2.dp))
@@ -957,10 +1092,14 @@ private fun AppBottomBar(
                                         letterSpacing = 0.sp,
                                         textAlign = TextAlign.Center,
                                         fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                                        color = if (selected) primary else muted,
+                                        color = tabTint,
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .alpha(labelAlpha)
+                                            .graphicsLayer {
+                                                scaleX = textZoom
+                                                scaleY = textZoom
+                                            }
                                     )
                                 }
                             }
@@ -1087,6 +1226,10 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
     // padded in from the screen edges (see TvUi), and the focus ring every
     // clickable inherits from MainActivity's TvFocusProvider.
     val isTv = TvMode.current()
+    // Which television interface is drawn (Settings → Customize → TV interface):
+    // the original left rail, or the Nuvio-style bar along the top. A Compose
+    // state, so switching it re-lays-out the app on the spot. Phones ignore it.
+    val tvTopNav = isTv && TvUiStyle.isNuvio
     // The gap kept clear of the screen's edges on a television ("overscan" —
     // see TvUi.DEFAULT_OVERSCAN_DP for why televisions need one at all).
     val overscanFlow = remember { app.store.tvOverscanFlow() }
@@ -1337,7 +1480,15 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
                         // reported band of empty screen beside the detail page on
                         // a television.
                         .then(
-                            if (isTv && showBar) Modifier.padding(start = TvUi.railWidth()) else Modifier
+                            if (isTv && showBar) {
+                                // Rail layout: the page starts to the right of
+                                // the rail. Nuvio layout: it starts under the
+                                // top bar instead and uses the full width.
+                                if (tvTopNav) Modifier.padding(top = TvTopNavMetrics.HEIGHT)
+                                else Modifier.padding(start = TvUi.railWidth())
+                            } else {
+                                Modifier
+                            }
                         )
                 ) {
             composable(Routes.HOME) { HomeScreen(nav) }
@@ -1577,12 +1728,22 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
         // (see TvNavRail for why the platform does it that way), and it is
         // where the remote's focus starts.
         if (showBar && isTv) {
-            TvNavRail(
-                currentRoute = tabRoute,
-                hidden = visibleTabs,
-                onNavigate = { route -> Routes.navigateTab(nav, route) },
-                modifier = Modifier.align(Alignment.CenterStart),
-            )
+            if (tvTopNav) {
+                // Nuvio-style interface: the same tabs in a slim bar along the
+                // top edge (see TvTopNav).
+                TvTopNav(
+                    currentRoute = tabRoute,
+                    onNavigate = { route -> Routes.navigateTab(nav, route) },
+                    modifier = Modifier.align(Alignment.TopCenter),
+                )
+            } else {
+                TvNavRail(
+                    currentRoute = tabRoute,
+                    hidden = visibleTabs,
+                    onNavigate = { route -> Routes.navigateTab(nav, route) },
+                    modifier = Modifier.align(Alignment.CenterStart),
+                )
+            }
         }
         // Remote-mouse cursor (Home header toggle): a D-pad-driven pointer
         // over every screen, so a Cloudflare checkbox and any other
