@@ -6,6 +6,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,12 +23,14 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoStories
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkBorder
+import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
@@ -40,7 +43,10 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -54,9 +60,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavHostController
@@ -125,6 +133,18 @@ fun MangaDetailScreen(
     var chapters by remember { mutableStateOf<List<MangaChapter>>(MangaStore.chaptersFor(key).orEmpty()) }
     var followed by remember { mutableStateOf(MangaStore.isFollowed(key)) }
     var newestFirst by remember { mutableStateOf(true) }
+    // Chapters | Comments tab below the characters row — tappable AND
+    // swipable (a horizontal drag anywhere on the list flips it).
+    var tab by remember { mutableIntStateOf(0) }
+    // Decoration that fills in behind the instantly-painted list: character
+    // portraits, forum threads / reviews, and external chapter subtitles.
+    // All run in parallel with the provider fetch, so they cost no wait.
+    var characters by remember { mutableStateOf<List<MangaMetadataRepository.MangaCharacter>>(emptyList()) }
+    var threads by remember { mutableStateOf<List<MangaMetadataRepository.MangaThread>>(emptyList()) }
+    var reviews by remember { mutableStateOf<List<MangaMetadataRepository.MangaReview>>(emptyList()) }
+    var chapterHints by remember { mutableStateOf<Map<Int, String>>(emptyMap()) }
+    var extAnilistId by remember { mutableIntStateOf(0) }
+    var commentsLoading by remember { mutableStateOf(true) }
     // Bumped by the refresh button (and by the follow toggle, which changes what
     // the header draws) so the load effect runs again on demand.
     var reload by remember { mutableIntStateOf(0) }
@@ -245,6 +265,33 @@ fun MangaDetailScreen(
             fresh,
             runCatching { externalDeferred.await() }.getOrNull(),
         )
+        // Decoration fan-out: one cached external record feeds all four, so
+        // the extra lookups are one AniList search + at most one keyed
+        // PornHwaDB read per title per day — and the chapter list below never
+        // waits for any of them (it paints from the store first, as before).
+        val extTitle = title
+        scope.launch {
+            val charsD = async(Dispatchers.IO) {
+                runCatching { MangaMetadataRepository.fetchCharacters(app, extTitle) }.getOrDefault(emptyList())
+            }
+            val threadsD = async(Dispatchers.IO) {
+                runCatching { MangaMetadataRepository.fetchThreads(app, extTitle) }.getOrDefault(emptyList())
+            }
+            val reviewsD = async(Dispatchers.IO) {
+                runCatching { MangaMetadataRepository.fetchReviews(app, extTitle) }.getOrDefault(emptyList())
+            }
+            val hintsD = async(Dispatchers.IO) {
+                runCatching { MangaMetadataRepository.fetchChapterHints(app, extTitle) }.getOrDefault(emptyMap())
+            }
+            characters = runCatching { charsD.await() }.getOrDefault(emptyList())
+            threads = runCatching { threadsD.await() }.getOrDefault(emptyList())
+            reviews = runCatching { reviewsD.await() }.getOrDefault(emptyList())
+            chapterHints = runCatching { hintsD.await() }.getOrDefault(emptyMap())
+            extAnilistId = runCatching {
+                MangaMetadataRepository.fetchExternal(app, extTitle)
+            }.getOrNull()?.anilistId ?: 0
+            commentsLoading = false
+        }
         val cached = MangaStore.chaptersFor(key)
         if (cached.isNullOrEmpty()) {
             withContext(Dispatchers.IO) {
@@ -353,7 +400,10 @@ fun MangaDetailScreen(
             // Chapter list position held per title (see ScrollKeeper): Back
             // from a chapter lands where the list was.
             state = com.hikari.app.ui.components.keptListState("mangaDetail:$key"),
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.fillMaxSize().mangaTabSwipe(
+                onLeft = { tab = 1 },
+                onRight = { tab = 0 },
+            ),
             contentPadding = PaddingValues(
                 start = 16.dp,
                 end = 16.dp,
@@ -517,6 +567,47 @@ fun MangaDetailScreen(
                 }
             }
 
+            if (characters.isNotEmpty()) {
+                item(key = "detail-chars") {
+                    Column(Modifier.padding(top = 14.dp)) {
+                        Text(
+                            tr("Characters"),
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Spacer(Modifier.height(10.dp))
+                        LazyRow(
+                            horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        ) {
+                            items(characters.size, key = { i -> "mc-" + i }) { i ->
+                                CharacterCircle(characters[i])
+                            }
+                        }
+                    }
+                }
+            }
+
+            item(key = "detail-tabs") {
+                TabRow(
+                    selectedTabIndex = tab,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 14.dp),
+                ) {
+                    Tab(
+                        selected = tab == 0,
+                        onClick = { tab = 0 },
+                        text = { Text(tr("Chapters")) },
+                    )
+                    Tab(
+                        selected = tab == 1,
+                        onClick = { tab = 1 },
+                        text = { Text(tr("Comments")) },
+                    )
+                }
+            }
+
+            if (tab == 0) {
             item(key = "detail-chapters-head") {
                 Row(
                     Modifier
@@ -582,6 +673,7 @@ fun MangaDetailScreen(
                     isCurrent = progress?.chapterUrl == chapter.url,
                     pageLabel = progress?.takeIf { it.chapterUrl == chapter.url }?.pageLabel,
                     readState = readMarks[chapter.url],
+                    hint = chapterHintFor(chapter, chapterHints),
                     onClick = {
                         openChapter(nav, providerId, mangaUrl, title, posterUrl, chapter)
                     },
@@ -597,6 +689,25 @@ fun MangaDetailScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(vertical = 18.dp),
+                    )
+                }
+            }
+            } // if (tab == 0): chapters
+
+            if (tab == 1) {
+                item(key = "detail-comments") {
+                    CommentsTab(
+                        nav = nav,
+                        providerId = providerId,
+                        title = title,
+                        threads = threads,
+                        reviews = reviews,
+                        anilistId = extAnilistId,
+                        loading = commentsLoading,
+                        onThreadsChanged = { threads = it },
+                        onLoginNeeded = {
+                            Routes.safeNavigate(nav, Routes.SETTINGS)
+                        },
                     )
                 }
             }
@@ -669,6 +780,338 @@ private fun GenreChip(
     }
 }
 
+/** A horizontal drag anywhere on the list flips the Chapters | Comments tab:
+ *  left reaches Comments, right returns to Chapters. Inner horizontal rows
+ *  (genres, characters) keep their own scrolling — a swipe that starts on
+ *  them still scrolls them, exactly like every nested-scroll app. */
+private fun Modifier.mangaTabSwipe(onLeft: () -> Unit, onRight: () -> Unit): Modifier =
+    pointerInput(onLeft, onRight) {
+        var total = 0f
+        detectHorizontalDragGestures(
+            onDragStart = { total = 0f },
+            onHorizontalDrag = { _, amount -> total += amount },
+            onDragEnd = {
+                if (total <= -90f) onLeft()
+                else if (total >= 90f) onRight()
+            },
+        )
+    }
+
+/** The external subtitle for [chapter], if the adult DB describes that number. */
+private fun chapterHintFor(chapter: MangaChapter, hints: Map<Int, String>): String? {
+    if (hints.isEmpty()) return null
+    val n = if (chapter.number >= 0f) chapter.number.toInt()
+    else Regex("""\d+""").find(chapter.name)?.value?.toIntOrNull() ?: -1
+    if (n <= 0) return null
+    return hints[n]?.takeIf { it.isNotBlank() }
+}
+
+/** "3 months ago" from an AniList epoch-seconds timestamp. */
+private fun fmtAgo(sec: Long): String {
+    if (sec <= 0L) return ""
+    val mins = (System.currentTimeMillis() / 1000L - sec) / 60L
+    if (mins < 1L) return "just now"
+    if (mins < 60L) return "$mins min ago"
+    val hours = mins / 60L
+    if (hours < 24L) return "$hours h ago"
+    val days = hours / 24L
+    if (days < 30L) return "$days d ago"
+    val months = days / 30L
+    if (months < 12L) return "$months mo ago"
+    return "${months / 12L} y ago"
+}
+
+/** One character: circular portrait with the name underneath. */
+@Composable
+private fun CharacterCircle(c: MangaMetadataRepository.MangaCharacter) {
+    Column(
+        Modifier.width(72.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Box(
+            Modifier
+                .size(64.dp)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.surfaceVariant),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                c.name.firstOrNull()?.uppercase() ?: "?",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            AsyncImage(
+                model = c.imageUrl,
+                contentDescription = c.name,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop,
+            )
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            c.name,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center,
+        )
+    }
+}
+
+/**
+ * The Comments tab: AniList forum threads about the title (tap one to read
+ * it, "New thread" to write one — posting needs the AniList sign-in), plus
+ * PornHwaDB reviews for adult titles. Nothing here blocks the chapter list:
+ * it all fills in behind it.
+ */
+@Composable
+private fun CommentsTab(
+    nav: NavHostController,
+    providerId: String,
+    title: String,
+    threads: List<MangaMetadataRepository.MangaThread>,
+    reviews: List<MangaMetadataRepository.MangaReview>,
+    anilistId: Int,
+    loading: Boolean,
+    onThreadsChanged: (List<MangaMetadataRepository.MangaThread>) -> Unit,
+    onLoginNeeded: () -> Unit,
+) {
+    val context = LocalContext.current
+    val app = context.applicationContext as HikariApp
+    val scope = rememberCoroutineScope()
+    var showNew by remember { mutableStateOf(false) }
+    var showLogin by remember { mutableStateOf(false) }
+    var newTitle by remember { mutableStateOf("") }
+    var newBody by remember { mutableStateOf("") }
+    var posting by remember { mutableStateOf(false) }
+    var postError by remember { mutableStateOf<String?>(null) }
+
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = 10.dp, bottom = 8.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                tr("Comments"),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f),
+            )
+            if (anilistId > 0) {
+                TextButton(onClick = {
+                    newTitle = ""
+                    newBody = ""
+                    postError = null
+                    showNew = true
+                }) {
+                    Icon(Icons.Filled.Forum, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(tr("New thread"))
+                }
+            }
+        }
+        if (loading && threads.isEmpty() && reviews.isEmpty()) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 24.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                CircularProgressIndicator(Modifier.size(24.dp))
+            }
+        }
+        threads.forEach { t ->
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clickable {
+                        context.startActivity(
+                            Intent(context, WebViewActivity::class.java).apply {
+                                putExtra("url", t.url)
+                                putExtra("title", t.title)
+                                putExtra("providerId", providerId)
+                            }
+                        )
+                    }
+                    .padding(vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        t.title,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    val sub = listOfNotNull(
+                        (if (t.replyCount > 0) tr("%s replies").replace("%s", t.replyCount.toString()) else null),
+                        (if (t.viewCount > 0) tr("%s views").replace("%s", t.viewCount.toString()) else null),
+                        t.replyUser,
+                        fmtAgo(t.repliedAtSec).takeIf { it.isNotBlank() },
+                    ).joinToString("  ·  ")
+                    if (sub.isNotBlank()) {
+                        Text(
+                            sub,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(top = 2.dp),
+                        )
+                    }
+                }
+            }
+        }
+        reviews.forEach { r ->
+            Column(Modifier.padding(vertical = 10.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        r.user,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.weight(1f),
+                    )
+                    if (r.rating != null) {
+                        Text(
+                            r.rating.toString(),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    if (r.createdAt.isNotBlank()) {
+                        Text(
+                            "  ·  " + r.createdAt,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                Text(
+                    r.text,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 8,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            }
+        }
+        if (!loading && threads.isEmpty() && reviews.isEmpty()) {
+            Text(
+                if (anilistId > 0) tr("No threads yet — start the first one.")
+                else tr("No comments found for this title."),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(vertical = 16.dp),
+            )
+        }
+    }
+
+    if (showNew) {
+        AlertDialog(
+            onDismissRequest = { if (!posting) showNew = false },
+            title = { Text(tr("New thread")) },
+            text = {
+                Column {
+                    OutlinedTextField(
+                        value = newTitle,
+                        onValueChange = { newTitle = it },
+                        label = { Text(tr("Title")) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = newBody,
+                        onValueChange = { newBody = it },
+                        label = { Text(tr("Message")) },
+                        minLines = 4,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    if (!postError.isNullOrBlank()) {
+                        Text(
+                            postError.orEmpty(),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(top = 8.dp),
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    enabled = !posting && newTitle.isNotBlank() && newBody.isNotBlank(),
+                    onClick = {
+                        posting = true
+                        postError = null
+                        scope.launch {
+                            val res = withContext(Dispatchers.IO) {
+                                MangaMetadataRepository.postThread(app, title, newTitle, newBody)
+                            }
+                            posting = false
+                            res.onSuccess {
+                                showNew = false
+                                android.widget.Toast.makeText(
+                                    context,
+                                    I18n.t("Thread posted"),
+                                    android.widget.Toast.LENGTH_SHORT,
+                                ).show()
+                                onThreadsChanged(
+                                    runCatching {
+                                        withContext(Dispatchers.IO) {
+                                            MangaMetadataRepository.fetchThreads(app, title)
+                                        }
+                                    }.getOrDefault(threads)
+                                )
+                            }.onFailure { e ->
+                                if (e.message == "NOT_SIGNED_IN") {
+                                    showNew = false
+                                    showLogin = true
+                                } else {
+                                    postError = e.message
+                                }
+                            }
+                        }
+                    },
+                ) {
+                    Text(if (posting) tr("Posting…") else tr("Post"))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { if (!posting) showNew = false }) {
+                    Text(tr("Cancel"))
+                }
+            },
+        )
+    }
+
+    if (showLogin) {
+        AlertDialog(
+            onDismissRequest = { showLogin = false },
+            title = { Text(tr("AniList sign-in needed")) },
+            text = { Text(tr("Posting a comment needs your AniList login — the same one under Settings → Trackers.")) },
+            confirmButton = {
+                Button(onClick = {
+                    showLogin = false
+                    onLoginNeeded()
+                }) {
+                    Text(tr("Open Settings"))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showLogin = false }) {
+                    Text(tr("Cancel"))
+                }
+            },
+        )
+    }
+}
+
 /** One chapter: its name, its scanlator/date, where the reader is in it, and its read mark. */
 @Composable
 private fun ChapterRow(
@@ -676,6 +1119,7 @@ private fun ChapterRow(
     isCurrent: Boolean,
     pageLabel: String?,
     readState: com.hikari.app.manga.MangaChapterRead?,
+    hint: String? = null,
     onClick: () -> Unit,
 ) {
     Row(
@@ -708,6 +1152,7 @@ private fun ChapterRow(
                 overflow = TextOverflow.Ellipsis,
             )
             val sub = listOfNotNull(
+                hint?.takeIf { it.isNotBlank() },
                 chapter.scanlator?.takeIf { it.isNotBlank() },
                 fmtDate(chapter.dateUpload),
                 pageLabel?.let { tr("page %s").replace("%s", it) },
