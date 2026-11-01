@@ -1,3 +1,6 @@
+## 0.12.25 (continuous build only)
+
+- Manga metadata now wins: AniList (every title) and PornHwaDB (adult titles, key set) blurbs/genres/covers/scores replace the provider's row, whose text is only the fallback when neither source knows the title — and the external lookup runs in parallel with the provider fetch, so it costs no extra wait
 ## 0.12.24 (continuous build only)
 
 - Continue-reading split: the cover resumes reading, the title + chapter lines open the title's detail page (Manga tab shelf and History/My Stuff shelf; library cards open detail either way)

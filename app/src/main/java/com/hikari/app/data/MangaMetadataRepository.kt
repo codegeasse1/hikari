@@ -13,12 +13,11 @@ import java.util.concurrent.ConcurrentHashMap
  * title, plus PornHwaDB for adult titles when the user pasted their own
  * free key (Settings → Integrations → Metadata sources).
  *
- * The provider's own row always wins — this only fills blanks (blurb,
- * genres, cover, score) on the detail page, exactly like the anime chain
- * (see [AnimeMetadataRepository]). Every source runs fenced: one refusing
- * or mistranslating only loses its own fields. A candidate that cannot
- * score 55+ against the known spellings never paints the row. The key is
- * never logged, only sent to pornhwadb.com in the `X-API-Key` header.
+ * External metadata WINS: AniList/PornHwaDB blurbs, genres, covers and
+ * scores replace the provider's own row, whose text is only the fallback
+ * when neither source knows the title. A candidate that cannot score 55+
+ * against the known spellings never paints the row. The key is never
+ * logged, only sent to pornhwadb.com in the `X-API-Key` header.
  */
 object MangaMetadataRepository {
     /** Where the user fetches their own free key (opened from Settings). */
@@ -44,23 +43,24 @@ object MangaMetadataRepository {
     }
 
     /**
-     * The detail page's row with blanks filled from AniList (every title)
-     * and PornHwaDB (adult titles, key required). Returns [base] untouched
-     * when both toggles are off, both lookups miss, or they add nothing.
+     * The external record for [fallbackTitle] (AniList, plus PornHwaDB for
+     * adult/unmatched titles when its key is set), or null when neither
+     * source knows it. Cached per title per day. Run this alongside the
+     * provider fetch (see the detail screen) so it costs no extra wait.
      */
-    suspend fun enrichForDetail(app: HikariApp, base: MediaItem, fallbackTitle: String): MediaItem {
-        val title = base.searchTitle.ifBlank { fallbackTitle.trim() }
-        if (title.isBlank()) return base
+    suspend fun fetchExternal(app: HikariApp, fallbackTitle: String): MangaMeta? {
+        val title = fallbackTitle.trim()
+        if (title.isBlank()) return null
         val store = app.store
         val wantAnilist = runCatching { store.mangaAnilist() }.getOrDefault(true)
         val wantPwdb = runCatching { store.adultManhwa() }.getOrDefault(false)
-        if (!wantAnilist && !wantPwdb) return base
+        if (!wantAnilist && !wantPwdb) return null
         val pwdbKey = if (wantPwdb) runCatching { store.pornhwaApiKey() }.getOrDefault("").trim() else ""
         // The key state rides in the cache key: saving a key later must not
         // serve the keyless answer (and clearing it must not serve the
         // keyed one).
-        val ck = (if (pwdbKey.isNotEmpty()) "P:" else "A:") + title.trim().lowercase()
-        cache[ck]?.let { if (System.currentTimeMillis() - it.at < TTL_MS) return applyMeta(base, it.meta) }
+        val ck = (if (pwdbKey.isNotEmpty()) "P:" else "A:") + title.lowercase()
+        cache[ck]?.let { if (System.currentTimeMillis() - it.at < TTL_MS) return it.meta }
         val anilist = if (wantAnilist) {
             runCatching { withContext(Dispatchers.IO) { fetchAnilistManga(title) } }.getOrNull()
         } else null
@@ -85,24 +85,29 @@ object MangaMetadataRepository {
             "manga metadata for \"" + title.take(80) + "\" from " + (merged?.source ?: "none") +
                 " (anilist=" + (anilist != null) + " pwdb=" + (pwdb != null) + ")",
         )
-        return applyMeta(base, merged)
+        return merged
     }
 
-    private fun applyMeta(base: MediaItem, meta: MangaMeta?): MediaItem {
-        if (meta == null) return base
-        val desc = base.overview?.takeIf { it.isNotBlank() }
-            ?: meta.description?.takeIf { it.isNotBlank() } ?: base.overview
-        val genres = if (base.genres.isNotEmpty()) base.genres else meta.genres
-        val poster = base.posterUrl?.takeIf { it.isNotBlank() }
-            ?: meta.coverUrl?.takeIf { it.isNotBlank() } ?: base.posterUrl
-        val rating = base.rating ?: meta.rating ?: base.rating
+    /**
+     * The detail page's row: the external record wins wherever it has
+     * something, the provider's row is only the fallback per field. Null
+     * [ext] returns [base] untouched.
+     */
+    fun mergeExternalFirst(base: MediaItem, ext: MangaMeta?): MediaItem {
+        if (ext == null) return base
+        val desc = ext.description?.takeIf { it.isNotBlank() }
+            ?: base.overview?.takeIf { it.isNotBlank() } ?: base.overview
+        val genres = if (ext.genres.isNotEmpty()) ext.genres else base.genres
+        val poster = ext.coverUrl?.takeIf { it.isNotBlank() }
+            ?: base.posterUrl?.takeIf { it.isNotBlank() } ?: base.posterUrl
+        val rating = ext.rating ?: base.rating ?: base.rating
         if (desc == base.overview && genres == base.genres && poster == base.posterUrl && rating == base.rating) return base
         return base.copy(
             overview = desc,
             genres = genres,
             posterUrl = poster,
             rating = rating,
-            metadataSource = base.metadataSource ?: meta.source,
+            metadataSource = ext.source,
         )
     }
 

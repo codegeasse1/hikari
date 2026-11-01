@@ -78,6 +78,7 @@ import com.hikari.app.ui.navigation.LocalTaskbarInset
 import com.hikari.app.ui.navigation.Routes
 import com.hikari.app.web.WebViewActivity
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
@@ -233,14 +234,21 @@ fun MangaDetailScreen(
         val fresh = withContext(Dispatchers.IO) {
             runCatching { provider.getMeta(base) }.getOrDefault(base)
         }
-        // External metadata blank-fill (see MangaMetadataRepository): AniList
-        // manga records for every title, PornHwaDB for adult ones when its
-        // key is set. Provider art/text always wins — these only fill blanks.
-        // Chapters below still resolve from "fresh", the provider's own row.
-        val decorated = withContext(Dispatchers.IO) {
-            runCatching { MangaMetadataRepository.enrichForDetail(app, fresh, title) }.getOrNull()
+        // External metadata (AniList/PornHwaDB) is fetched in parallel with
+        // the provider row so it costs no extra wait, and it WINS: the
+        // provider's text is only the fallback when neither source knows
+        // the title (see MangaMetadataRepository).
+        val externalDeferred = async(Dispatchers.IO) {
+            runCatching { MangaMetadataRepository.fetchExternal(app, title) }.getOrNull()
         }
-        meta = decorated ?: fresh
+        val fresh = withContext(Dispatchers.IO) {
+            runCatching { provider.getMeta(base) }.getOrDefault(base)
+        }
+        meta = MangaMetadataRepository.mergeExternalFirst(
+            fresh,
+            runCatching { externalDeferred.await() }.getOrNull(),
+            title,
+        )
         val cached = MangaStore.chaptersFor(key)
         if (cached.isNullOrEmpty()) {
             withContext(Dispatchers.IO) {
