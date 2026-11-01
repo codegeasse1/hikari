@@ -1241,97 +1241,95 @@ private class BReader(val b: ByteArray) {
         key: String,
     ): List<JSONObject>? {
         val main = Handler(Looper.getMainLooper())
-        try {
-            val keyLit = JSONObject.quote(key)
-            // Fires the page's own fetch and parks the combined answer on
-            // window.__tbResult; the poll below reads it back. Tokens are
-            // scraped from the rendered DOM + window.yunData when present —
-            // whatever subset the page holds goes on the call exactly the
-            // way the official client's calls carry it.
-            val fire = "(function(){" +
-                "window.__tbResult='';" +
-                "(async function(){" +
-                "try{" +
-                "var html=document.documentElement.outerHTML;" +
-                "var yd='';" +
-                "try{if(window.yunData)yd=JSON.stringify(window.yunData);}catch(e){}" +
-                "var blob=html+'\\n'+yd;" +
-                "function m2(re){var x=blob.match(re);return x?(x[1]||''):'';}" +
-                "var jsToken=m2(/\"jsToken\"\\s*:\\s*\"([^\"]+)\"/)||m2(/window\\.jsToken\\s*=\\s*['\"]([^'\"]+)['\"]/);" +
-                "var randsk=m2(/\"randsk\"\\s*:\\s*\"([^\"]+)\"/);" +
-                "var sekey=m2(/\"sekey\"\\s*:\\s*\"([^\"]+)\"/);" +
-                "if(!sekey&&randsk){try{sekey=decodeURIComponent(randsk);}catch(e){sekey=randsk;}}" +
-                "var sign=m2(/\"sign\"\\s*:\\s*\"([A-Za-z0-9+\\/=\\-_]{8,})\"/);" +
-                "var ts=m2(/\"timestamp\"\\s*[:=]\\s*\"?(\\d{10,13})/);" +
-                "if(ts&&ts.length>10)ts=ts.substring(0,10);" +
-                "var shareid=m2(/\"shareid\"\\s*:\\s*\"?(\\d{6,})/)||m2(/\"share_id\"\\s*:\\s*\"?(\\d{6,})/);" +
-                "var uk=m2(/\"share_uk\"\\s*:\\s*\"?(\\d{6,})/)||m2(/\"uk\"\\s*:\\s*\"?(\\d{6,})/);" +
-                "var base='/share/list?app_id=250528&web=1&channel=dubox&clienttype=0';" +
-                "if(jsToken)base+='&jsToken='+encodeURIComponent(jsToken);" +
-                "if(sekey)base+='&sekey='+encodeURIComponent(sekey);" +
-                "if(sign)base+='&sign='+sign;" +
-                "if(ts)base+='&timestamp='+ts;" +
-                "if(shareid)base+='&shareid='+shareid;" +
-                "if(uk)base+='&uk='+uk;" +
-                "base+='&shorturl='+encodeURIComponent(" + keyLit + ")+'&by=name&order=asc&num=1000&page=1';" +
-                "function tok(){return (jsToken?'T':'')+(sekey?'S':'')+(sign?'G':'')+(shareid?'I':'');}" +
-                "async function get(dir){" +
-                "var q=base+(dir?'&dir='+encodeURIComponent(dir):'&dir=&root=1');" +
-                "try{var r=await fetch(q,{credentials:'include'});return await r.text();}catch(e){return '';}" +
-                "};" +
-                "var root=await get('');" +
-                "var out={tok:tok(),errno:-99,root:root,more:[]};" +
-                "try{" +
-                "var j=JSON.parse(root);" +
-                "out.errno=(j&&(typeof j.errno!=='undefined'))?j.errno:-98;" +
-                "if(j&&j.errno===0&&j.list){var n=0;" +
-                "for(var i=0;i<j.list.length&&n<3;i++){var e=j.list[i];" +
-                "if((e.isdir===1||e.category===6)&&e.path){out.more.push(await get(e.path));n++;}}}" +
-                "}catch(e){}" +
-                "var s=JSON.stringify(out);" +
-                "window.__tbResult=s.length>400000?s.substring(0,400000):s;" +
-                "}catch(e){window.__tbResult='{\"tok\":\"ERR\",\"errno\":-97,\"root\":\"\",\"more\":[]}';}" +
-                "})();})()"
-            main.post { runCatching { web.evaluateJavascript(fire) {} } }
-            var raw = ""
-            for (i in 0 until 20) {
-                kotlinx.coroutines.delay(500)
-                raw = jsEval(web, "window.__tbResult||''") ?: ""
-                if (raw.isNotBlank()) break
-            }
-            if (raw.isBlank() || !raw.trimStart().startsWith("{")) {
-                Logs.log("NetStream", "terabox: web page-list no result for $origin")
-                return null
-            }
-            val wrap = runCatching { JSONObject(raw) }.getOrNull()
-            if (wrap == null) {
-                Logs.log("NetStream", "terabox: web page-list unreadable result for $origin")
-                return null
-            }
-            val tok = wrap.optString("tok").take(8)
-            val errno = wrap.optInt("errno", -98)
-            Logs.log("NetStream", "terabox: web page-list errno=$errno tok=$tok for $origin")
-            if (errno != 0) return null
-            val entries = ArrayList<JSONObject>()
-            fun absorb(text: String?) {
-                val arr = runCatching { JSONObject(text ?: "").optJSONArray("list") }.getOrNull() ?: return
-                for (i in 0 until arr.length()) {
-                    arr.optJSONObject(i)?.let { entries += it }
-                }
-            }
-            absorb(wrap.optString("root"))
-            val more = wrap.optJSONArray("more")
-            if (more != null) {
-                for (i in 0 until more.length()) absorb(more.optString(i))
-            }
-            if (entries.isEmpty()) return emptyList()
-            var noDlink = 0
-            for (e in entries) {
-                if (e.optString("dlink").isBlank()) noDlink++
-            }
-            Logs.log("NetStream", "terabox: web page-list entries=${entries.size} noDlink=$noDlink for $origin")
-            return entries
+        val keyLit = JSONObject.quote(key)
+        // Fires the page's own fetch and parks the combined answer on
+        // window.__tbResult; the poll below reads it back. Tokens are
+        // scraped from the rendered DOM + window.yunData when present —
+        // whatever subset the page holds goes on the call exactly the
+        // way the official client's calls carry it.
+        val fire = "(function(){" +
+            "window.__tbResult='';" +
+            "(async function(){" +
+            "try{" +
+            "var html=document.documentElement.outerHTML;" +
+            "var yd='';" +
+            "try{if(window.yunData)yd=JSON.stringify(window.yunData);}catch(e){}" +
+            "var blob=html+'\\n'+yd;" +
+            "function m2(re){var x=blob.match(re);return x?(x[1]||''):'';}" +
+            "var jsToken=m2(/\"jsToken\"\\s*:\\s*\"([^\"]+)\"/)||m2(/window\\.jsToken\\s*=\\s*['\"]([^'\"]+)['\"]/);" +
+            "var randsk=m2(/\"randsk\"\\s*:\\s*\"([^\"]+)\"/);" +
+            "var sekey=m2(/\"sekey\"\\s*:\\s*\"([^\"]+)\"/);" +
+            "if(!sekey&&randsk){try{sekey=decodeURIComponent(randsk);}catch(e){sekey=randsk;}}" +
+            "var sign=m2(/\"sign\"\\s*:\\s*\"([A-Za-z0-9+\\/=\\-_]{8,})\"/);" +
+            "var ts=m2(/\"timestamp\"\\s*[:=]\\s*\"?(\\d{10,13})/);" +
+            "if(ts&&ts.length>10)ts=ts.substring(0,10);" +
+            "var shareid=m2(/\"shareid\"\\s*:\\s*\"?(\\d{6,})/)||m2(/\"share_id\"\\s*:\\s*\"?(\\d{6,})/);" +
+            "var uk=m2(/\"share_uk\"\\s*:\\s*\"?(\\d{6,})/)||m2(/\"uk\"\\s*:\\s*\"?(\\d{6,})/);" +
+            "var base='/share/list?app_id=250528&web=1&channel=dubox&clienttype=0';" +
+            "if(jsToken)base+='&jsToken='+encodeURIComponent(jsToken);" +
+            "if(sekey)base+='&sekey='+encodeURIComponent(sekey);" +
+            "if(sign)base+='&sign='+sign;" +
+            "if(ts)base+='&timestamp='+ts;" +
+            "if(shareid)base+='&shareid='+shareid;" +
+            "if(uk)base+='&uk='+uk;" +
+            "base+='&shorturl='+encodeURIComponent(" + keyLit + ")+'&by=name&order=asc&num=1000&page=1';" +
+            "function tok(){return (jsToken?'T':'')+(sekey?'S':'')+(sign?'G':'')+(shareid?'I':'');}" +
+            "async function get(dir){" +
+            "var q=base+(dir?'&dir='+encodeURIComponent(dir):'&dir=&root=1');" +
+            "try{var r=await fetch(q,{credentials:'include'});return await r.text();}catch(e){return '';}" +
+            "};" +
+            "var root=await get('');" +
+            "var out={tok:tok(),errno:-99,root:root,more:[]};" +
+            "try{" +
+            "var j=JSON.parse(root);" +
+            "out.errno=(j&&(typeof j.errno!=='undefined'))?j.errno:-98;" +
+            "if(j&&j.errno===0&&j.list){var n=0;" +
+            "for(var i=0;i<j.list.length&&n<3;i++){var e=j.list[i];" +
+            "if((e.isdir===1||e.category===6)&&e.path){out.more.push(await get(e.path));n++;}}}" +
+            "}catch(e){}" +
+            "var s=JSON.stringify(out);" +
+            "window.__tbResult=s.length>400000?s.substring(0,400000):s;" +
+            "}catch(e){window.__tbResult='{\"tok\":\"ERR\",\"errno\":-97,\"root\":\"\",\"more\":[]}';}" +
+            "})();})()"
+        main.post { runCatching { web.evaluateJavascript(fire) {} } }
+        var raw = ""
+        for (i in 0 until 20) {
+            kotlinx.coroutines.delay(500)
+            raw = jsEval(web, "window.__tbResult||''") ?: ""
+            if (raw.isNotBlank()) break
         }
+        if (raw.isBlank() || !raw.trimStart().startsWith("{")) {
+            Logs.log("NetStream", "terabox: web page-list no result for $origin")
+            return null
+        }
+        val wrap = runCatching { JSONObject(raw) }.getOrNull()
+        if (wrap == null) {
+            Logs.log("NetStream", "terabox: web page-list unreadable result for $origin")
+            return null
+        }
+        val tok = wrap.optString("tok").take(8)
+        val errno = wrap.optInt("errno", -98)
+        Logs.log("NetStream", "terabox: web page-list errno=$errno tok=$tok for $origin")
+        if (errno != 0) return null
+        val entries = ArrayList<JSONObject>()
+        fun absorb(text: String?) {
+            val arr = runCatching { JSONObject(text ?: "").optJSONArray("list") }.getOrNull() ?: return
+            for (i in 0 until arr.length()) {
+                arr.optJSONObject(i)?.let { entries += it }
+            }
+        }
+        absorb(wrap.optString("root"))
+        val more = wrap.optJSONArray("more")
+        if (more != null) {
+            for (i in 0 until more.length()) absorb(more.optString(i))
+        }
+        if (entries.isEmpty()) return emptyList()
+        var noDlink = 0
+        for (e in entries) {
+            if (e.optString("dlink").isBlank()) noDlink++
+        }
+        Logs.log("NetStream", "terabox: web page-list entries=${entries.size} noDlink=$noDlink for $origin")
+        return entries
     }
 
     /** Unquote an evaluateJavascript result (a JSON string literal). */
