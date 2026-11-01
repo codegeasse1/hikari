@@ -1,5 +1,6 @@
-## 0.12.22 (continuous build only)
+## 0.12.23 (continuous build only)
 
+- Terabox 105 chain, log-driven round: the sign+timestamp are now read from the metadata answer itself (its keys carry exactly those alongside randsk/shareid/uk — the share page never had them), and a share whose metadata already embeds its file `list` resolves straight from it with no list call at all; the in-page fetch runs in the same WebView load as the session read (one load, not two, so it fits the lookup budgets) with the replay also re-signed from the metadata; plus a short-key-only probe (no shareid/uk — never tried until now)
 - Terabox in-page resolution: a refused list is now re-run as the share page's own same-origin fetch inside the hidden WebView (the page's real cookies + JS state, shaped from the tokens the page itself embeds — jsToken, randsk/sekey, sign+timestamp, shareid+uk — with root + one folder level in one run), because plain-HTTP replay of a gate that only the rendered page passes kept answering 105; the sekey reader now decodes the official `randsk` field (earlier builds only looked for a literal `sekey` and sent none), and the log names the metadata's real field names, the page's token markers, the in-page errno + token shapes, and how many bundles the recon actually fetched
 
 ## 0.12.21 (continuous build only)

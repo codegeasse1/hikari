@@ -669,7 +669,10 @@ private class BReader(val b: ByteArray) {
         }
         val tokensErrno = runCatching { JSONObject(tokens).optInt("errno", -1) }.getOrDefault(-1)
         var sekey = boxSekeyOf(tokens)
-        var sig = boxSignOf(shareHtml)
+        // The metadata answer carries the share's own sign+timestamp (its
+        // keys prove it) while the bot-walled share page usually has neither
+        // — read both, page first.
+        var sig = boxSignOf(shareHtml) ?: boxSignOf(tokens)
         var ids = boxShareIdsOf(tokens)
         Logs.log(
             "NetStream",
@@ -687,7 +690,24 @@ private class BReader(val b: ByteArray) {
             return emptyList()
         }
 
-        var list = boxList(origin, key, token, jar, sekey, sig, ids, pageUrl = url)
+        // Some mirrors embed the share's file list in the metadata answer
+        // itself (its keys carry exactly that alongside randsk/sign/
+        // timestamp/shareid/uk) — when its entries already carry dlinks,
+        // no list call is needed at all.
+        val infoEntries = if (tokensErrno == 0) boxInfoList(tokens) else null
+        if (infoEntries != null) {
+            var infoDlink = 0
+            for (e in infoEntries) {
+                if (e.optString("dlink").isNotBlank()) infoDlink++
+            }
+            Logs.log("NetStream", "terabox: shorturlinfo list=${infoEntries.size} dlink=$infoDlink for $origin")
+        }
+        var list: List<JSONObject>? = if (infoEntries != null && infoEntries.any { it.optString("dlink").isNotBlank() }) {
+            Logs.log("NetStream", "terabox: resolving from shorturlinfo list for $origin")
+            infoEntries
+        } else {
+            boxList(origin, key, token, jar, sekey, sig, ids, pageUrl = url)
+        }
         if (list == null) {
             // A fresh page read (new cookies + token) is what a "verify" answer
             // asks for; one retry is enough for a challenge that is really just
@@ -713,8 +733,14 @@ private class BReader(val b: ByteArray) {
                 sekey = boxSekeyOf(retryTokens) ?: sekey
                 ids = boxShareIdsOf(retryTokens) ?: ids
             }
-            sig = boxSignOf(retryHome) ?: sig
-            list = boxList(origin, key, jsTokenOf(retryHome), retryJar, sekey, sig, ids, pageUrl = url)
+            sig = boxSignOf(retryHome) ?: boxSignOf(retryTokens) ?: sig
+            val retryInfo = boxInfoList(retryTokens)
+            list = if (retryInfo != null && retryInfo.any { it.optString("dlink").isNotBlank() }) {
+                Logs.log("NetStream", "terabox: resolving from shorturlinfo list for $origin")
+                retryInfo
+            } else {
+                boxList(origin, key, jsTokenOf(retryHome), retryJar, sekey, sig, ids, pageUrl = url)
+            }
             // Family-wide fallback (bounded, 2 extra hosts): some mirrors refuse
             // the list call with errno 105 while the canonical backend answers
             // the same key. Same credentials, same key — never per-mirror code.
@@ -981,6 +1007,27 @@ private class BReader(val b: ByteArray) {
     }
 
     /**
+     * Entries straight from the metadata answer: some mirrors embed the
+     * share's file `list` in shorturlinfo itself (its top-level keys carry
+     * exactly that alongside randsk/sign/timestamp/shareid/uk), in which
+     * case no list call is needed at all. The entries parse the same way as
+     * [boxListPage]. Null when the answer carries no list.
+     */
+    private fun boxInfoList(tokens: String?): List<JSONObject>? {
+        if (tokens.isNullOrBlank()) return null
+        val root = runCatching { JSONObject(tokens) }.getOrNull() ?: return null
+        val arr = root.optJSONArray("list")
+            ?: root.optJSONArray("shorturlinfo")?.optJSONObject(0)?.optJSONArray("list")
+            ?: root.optJSONObject("data")?.optJSONArray("list")
+            ?: return null
+        val out = ArrayList<JSONObject>(arr.length())
+        for (i in 0 until arr.length()) {
+            arr.optJSONObject(i)?.let { out += it }
+        }
+        return out
+    }
+
+    /**
      * The same list call with a real browser session: the share page loads in
      * a hidden WebView (real cookies, real JS-set values — the gate a plain
      * GET never passes), then the metadata + list calls replay with that
@@ -995,88 +1042,113 @@ private class BReader(val b: ByteArray) {
         sig: Pair<String, Long>?,
         ids: Pair<String, String>?,
     ): List<JSONObject>? {
-        val (html, cookies) = boxWebSession(pageUrl) ?: run {
+        // One page load, not two: the live view stays up so the page's own
+        // list fetch runs inside it right after the read below — a second
+        // load never fits the attempt budgets (see boxWebPageFetch).
+        val sess = boxWebViewSession(pageUrl) ?: run {
             Logs.log("NetStream", "terabox: web session empty for $origin")
             return null
         }
+        val (html, cookies, web) = sess
         if (cookies.isEmpty() && html.isBlank()) {
             Logs.log("NetStream", "terabox: web session empty for $origin")
+            val main = Handler(Looper.getMainLooper())
+            main.post {
+                runCatching { web.stopLoading() }
+                runCatching { web.destroy() }
+            }
             return null
         }
-        val jar = LinkedList(cookies.distinct())
-        var webToken = jsTokenOf(html)
-        var webSig = boxSignOf(html) ?: sig
-        var webSekey = sekey
-        var webIds = ids
-        // The metadata call re-read under the browser session: a rotated
-        // sekey or missing ids must not doom the replay.
-        val meta = fetchText(
-            "$origin/api/shorturlinfo?shorturl=$key&root=1",
-            BOX_UA,
-            jar,
-            referer = pageUrl,
-        )
-        if (!meta.isNullOrBlank() &&
-            runCatching { JSONObject(meta).optInt("errno", -1) }.getOrDefault(-1) == 0
-        ) {
-            webSekey = boxSekeyOf(meta) ?: webSekey
-            webIds = boxShareIdsOf(meta) ?: webIds
+        try {
+            val jar = LinkedList(cookies.distinct())
+            var webToken = jsTokenOf(html)
+            var webSig = boxSignOf(html) ?: sig
+            var webSekey = sekey
+            var webIds = ids
+            // The metadata call re-read under the browser session: a rotated
+            // sekey or missing ids must not doom the replay. The re-read is
+            // also the freshest sign+timestamp (the metadata answer carries
+            // its own — the page often has none).
+            val meta = fetchText(
+                "$origin/api/shorturlinfo?shorturl=$key&root=1",
+                BOX_UA,
+                jar,
+                referer = pageUrl,
+            )
+            if (!meta.isNullOrBlank() &&
+                runCatching { JSONObject(meta).optInt("errno", -1) }.getOrDefault(-1) == 0
+            ) {
+                webSekey = boxSekeyOf(meta) ?: webSekey
+                webIds = boxShareIdsOf(meta) ?: webIds
+                webSig = boxSignOf(meta) ?: webSig
+            }
+            Logs.log(
+                "NetStream",
+                "terabox: web session page ${html.length} chars cookies=${jar.size}" +
+                    " (" + jar.map { it.substringBefore('=') }.distinct().joinToString(",").take(200) + ")" +
+                    " token=" + (if (webToken.isNotBlank()) "yes" else "none") +
+                    " sekey=" + (if (!webSekey.isNullOrBlank()) "yes" else "none") +
+                    " sign=" + (if (webSig != null) "yes" else "none") +
+                    " ids=" + (if (webIds != null) "yes" else "none"),
+            )
+            // What the rendered page actually carries (token-shaped markers), so
+            // the next report shows whether the gate stripped the page or just
+            // the API answer — presence only, never values.
+            val markers = listOf("yunData", "jsToken", "randsk", "\"sign\"", "\"timestamp\"", "shareid")
+            Logs.log(
+                "NetStream",
+                "terabox: web page markers=" +
+                    markers.joinToString(" ") { it + "=" + (if (html.contains(it, ignoreCase = true)) "yes" else "no") },
+            )
+            // The list call from inside the page itself (same-origin fetch with
+            // the page's real cookies and JS state — the official client's own
+            // call, which plain-HTTP replay can only imitate).
+            boxWebPageFetch(web, origin, key)?.let {
+                Logs.log("NetStream", "terabox: list answered via web page-list for $origin")
+                return it
+            }
+            val out = boxList(origin, key, webToken, jar, webSekey, webSig, webIds, pageUrl = pageUrl)
+            if (out != null) {
+                Logs.log("NetStream", "terabox: list answered via web session for $origin")
+            } else {
+                // The replay lost too: read the official client's own bundles
+                // for the endpoints the DOM never carries (best effort, bounded).
+                withTimeoutOrNull(25_000) { boxBundleRecon(html, jar, pageUrl, origin, meta) }
+            }
+            return out
+        } finally {
+            val main = Handler(Looper.getMainLooper())
+            main.post {
+                runCatching { web.stopLoading() }
+                runCatching { web.destroy() }
+            }
         }
-        Logs.log(
-            "NetStream",
-            "terabox: web session page ${html.length} chars cookies=${jar.size}" +
-                " (" + jar.map { it.substringBefore('=') }.distinct().joinToString(",").take(200) + ")" +
-                " token=" + (if (webToken.isNotBlank()) "yes" else "none") +
-                " sekey=" + (if (!webSekey.isNullOrBlank()) "yes" else "none") +
-                " sign=" + (if (webSig != null) "yes" else "none") +
-                " ids=" + (if (webIds != null) "yes" else "none"),
-        )
-        // What the rendered page actually carries (token-shaped markers), so
-        // the next report shows whether the gate stripped the page or just
-        // the API answer — presence only, never values.
-        val markers = listOf("yunData", "jsToken", "randsk", "\"sign\"", "\"timestamp\"", "shareid")
-        Logs.log(
-            "NetStream",
-            "terabox: web page markers=" +
-                markers.joinToString(" ") { it + "=" + (if (html.contains(it, ignoreCase = true)) "yes" else "no") },
-        )
-        // The list call from inside the page itself (same-origin fetch with
-        // the page's real cookies and JS state — the official client's own
-        // call, which plain-HTTP replay can only imitate).
-        boxWebPageList(origin, pageUrl, key)?.let {
-            Logs.log("NetStream", "terabox: list answered via web page-list for $origin")
-            return it
-        }
-        val out = boxList(origin, key, webToken, jar, webSekey, webSig, webIds, pageUrl = pageUrl)
-        if (out != null) {
-            Logs.log("NetStream", "terabox: list answered via web session for $origin")
-        } else {
-            // The replay lost too: read the official client's own bundles
-            // for the endpoints the DOM never carries (best effort, bounded).
-            withTimeoutOrNull(25_000) { boxBundleRecon(html, jar, pageUrl, origin, meta) }
-        }
-        return out
     }
 
     /**
      * The share page in a real browser: a hidden WebView loads it (cookies +
      * JS run exactly like the user's own browser, which is what passes the
-     * box's session gate), then the rendered HTML and the session cookies
-     * come back. Bounded and never fatal — null on anything unexpected,
-     * including devices with no WebView provider.
+     * box's session gate), then the rendered HTML, the session cookies AND
+     * the live view come back — the view stays up so the caller can run the
+     * page's own list fetch inside it (one load, not two) before destroying
+     * it in its own finally. Bounded and never fatal — null on anything
+     * unexpected, including devices with no WebView provider; the watchdog
+     * destroys the view on every path the caller never takes.
      */
-    private suspend fun boxWebSession(pageUrl: String): Pair<String, List<String>>? {
+    private suspend fun boxWebViewSession(pageUrl: String): Triple<String, List<String>, WebView>? {
         // The main thread only HOSTS the view — it is never blocked: the
         // load runs there, the caller waits on a deferred from its own
         // stage thread, and both the settle read and the watchdog below
-        // destroy the view whatever happens first.
-        val done = CompletableDeferred<Pair<String, List<String>>?>()
+        // finish the deferred whatever happens first.
+        val done = CompletableDeferred<Triple<String, List<String>, WebView?>?>()
         val main = Handler(Looper.getMainLooper())
         val holder = arrayOfNulls<WebView>(1)
-        fun finish(value: Pair<String, List<String>>?) {
+        fun finish(value: Triple<String, List<String>, WebView?>?) {
             if (done.isCompleted) return
-            runCatching { holder[0]?.destroy() }
-            holder[0] = null
+            if (value?.third == null) {
+                runCatching { holder[0]?.destroy() }
+                holder[0] = null
+            }
             done.complete(value)
         }
         main.post {
@@ -1103,7 +1175,7 @@ private class BReader(val b: ByteArray) {
                                 view.evaluateJavascript(
                                     "(function(){return document.documentElement.outerHTML})()",
                                 ) { raw ->
-                                    finish(Pair(unquoteJs(raw), cookies))
+                                    finish(Triple(unquoteJs(raw), cookies, view))
                                 }
                             } catch (_: Throwable) {
                                 finish(null)
@@ -1117,9 +1189,18 @@ private class BReader(val b: ByteArray) {
             }
         }
         // Whatever the page does (hang, challenge, redirect loop), the
-        // view is gone after ~11s; the caller's own timeout is the backstop.
+        // deferred resolves after ~11s; the caller's own timeout is the backstop.
         main.postDelayed({ finish(null) }, 11_000)
-        return withTimeoutOrNull(12_000) { done.await() }
+        val sess = withTimeoutOrNull(12_000) { done.await() }
+        val web = sess?.third
+        if (sess == null || web == null) {
+            main.post {
+                runCatching { holder[0]?.destroy() }
+                holder[0] = null
+            }
+            return null
+        }
+        return Triple(sess.first, sess.second, web)
     }
 
     /** One evaluateJavascript on [web] from a background thread: posts the
@@ -1142,62 +1223,24 @@ private class BReader(val b: ByteArray) {
 
     /**
      * The share's list call run from INSIDE its own rendered page (see the
-     * errno=105 chain): a hidden WebView loads the share, then the list
+     * errno=105 chain): on the live view the share loaded in, the list
      * request goes out as the page's own same-origin `fetch` — carrying the
      * page's real cookies plus whatever JS-set proof a plain-HTTP replay can
      * never hold — with the call shaped from the tokens the page itself
      * embeds (`jsToken`, `randsk`/`sekey`, `sign`+`timestamp`,
      * `shareid`+`uk`, falling back to whatever subset exists). Root plus one
      * folder level come back in a single script run; the entries parse the
-     * same way as [boxListPage]. Null when the view never settles, the page
-     * returns nothing, or the in-page call is refused too (logged with the
-     * page's own token shapes + errno — the honest report when the gate is
-     * the device/IP rather than the call shape).
+     * same way as [boxListPage]. The caller owns the view (it destroys it);
+     * null when the page returns nothing or the in-page call is refused too
+     * (logged with the page's own token shapes + errno — the honest report
+     * when the gate is the device/IP rather than the call shape).
      */
-    private suspend fun boxWebPageList(
+    private suspend fun boxWebPageFetch(
+        web: WebView,
         origin: String,
-        pageUrl: String,
         key: String,
     ): List<JSONObject>? {
         val main = Handler(Looper.getMainLooper())
-        val holder = arrayOfNulls<WebView>(1)
-        val viewDone = CompletableDeferred<WebView?>()
-        fun destroy() {
-            main.post {
-                runCatching { holder[0]?.stopLoading() }
-                runCatching { holder[0]?.destroy() }
-                holder[0] = null
-            }
-        }
-        main.post {
-            try {
-                val web = WebView(HikariApp.instance.applicationContext)
-                holder[0] = web
-                web.settings.javaScriptEnabled = true
-                web.settings.domStorageEnabled = true
-                web.settings.mediaPlaybackRequiresUserGesture = false
-                web.webViewClient = object : WebViewClient() {
-                    var settled = false
-                    override fun onPageFinished(view: WebView, url: String) {
-                        if (settled) return
-                        settled = true
-                        main.postDelayed({
-                            if (!viewDone.isCompleted) viewDone.complete(view)
-                        }, 2500)
-                    }
-                }
-                web.loadUrl(pageUrl)
-            } catch (_: Throwable) {
-                if (!viewDone.isCompleted) viewDone.complete(null)
-            }
-        }
-        main.postDelayed({ if (!viewDone.isCompleted) viewDone.complete(null) }, 12_000)
-        val web = withTimeoutOrNull(13_000) { viewDone.await() }
-        if (web == null) {
-            destroy()
-            Logs.log("NetStream", "terabox: web page-list no view for $origin")
-            return null
-        }
         try {
             val keyLit = JSONObject.quote(key)
             // Fires the page's own fetch and parks the combined answer on
@@ -1288,8 +1331,6 @@ private class BReader(val b: ByteArray) {
             }
             Logs.log("NetStream", "terabox: web page-list entries=${entries.size} noDlink=$noDlink for $origin")
             return entries
-        } finally {
-            destroy()
         }
     }
 
@@ -1361,6 +1402,15 @@ private class BReader(val b: ByteArray) {
                 return boxList(origin, key, jsToken, jar, sekey, sig, ids, pageUrl, noToken)
             }
         Logs.log("NetStream", "terabox: probe notoken refused for $origin")
+        // Same call naming the share by short key only: no probe has ever
+        // gone out without the metadata ids riding along, and some mirrors
+        // refuse a call the ids name instead of the key.
+        boxListPage(origin, key, jsToken, jar, sekey, sig, null, pageUrl, dir = null)
+            ?.let {
+                Logs.log("NetStream", "terabox: probe noids errno=0 entries=${it.size} for $origin")
+                return boxList(origin, key, jsToken, jar, sekey, sig, null, pageUrl)
+            }
+        Logs.log("NetStream", "terabox: probe noids refused for $origin")
         val browserCfg = BoxCallCfg(ua = Http.UA)
         boxListPage(origin, key, jsToken, jar, sekey, sig, ids, pageUrl, dir = null, cfg = browserCfg)
             ?.let {
