@@ -1,4 +1,9 @@
 ## 0.12.25 (continuous build only)
+### Added
+- Introduced a new **Immersive Banner** style for the Home screen.
+- Features edge-to-edge artwork with a large, centered title for a cinematic experience.
+
+## 0.12.25 (continuous build only)
 
 - Manga metadata now wins: AniList (every title) and PornHwaDB (adult titles, key set) blurbs/genres/covers/scores replace the provider's row, whose text is only the fallback when neither source knows the title — and the external lookup runs in parallel with the provider fetch, so it costs no extra wait
 ## 0.12.24 (continuous build only)
