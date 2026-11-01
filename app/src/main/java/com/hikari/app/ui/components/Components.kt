@@ -533,6 +533,11 @@ fun GlassSearchField(
     trailing: (@Composable () -> Unit)? = null,
     /** When set, the inner text field takes focus through this requester. */
     focusRequester: androidx.compose.ui.focus.FocusRequester? = null,
+    /** Keyboard action key (default: unchanged). The search screen uses Search. */
+    keyboardOptions: androidx.compose.foundation.text.KeyboardOptions =
+        androidx.compose.foundation.text.KeyboardOptions.Default,
+    keyboardActions: androidx.compose.foundation.text.KeyboardActions =
+        androidx.compose.foundation.text.KeyboardActions.Default,
 ) {
     val glass = rememberGlassTokens()
     // Television search field: flat elevated-black pill with a hairline edge
@@ -580,6 +585,8 @@ fun GlassSearchField(
                     value = value,
                     onValueChange = onValueChange,
                     singleLine = true,
+                    keyboardOptions = keyboardOptions,
+                    keyboardActions = keyboardActions,
                     textStyle = MaterialTheme.typography.bodyMedium.copy(
                         color = if (tv) com.hikari.app.tv.TvDesktop.TextPrimary
                         else MaterialTheme.colorScheme.onSurface
