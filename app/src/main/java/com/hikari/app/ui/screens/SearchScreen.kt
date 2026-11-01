@@ -273,6 +273,28 @@ class SearchViewModel(
         }
     }
 
+    /**
+     * Type-ahead suggestions (titles only) for what is being typed. A short
+     * debounce keeps it from asking TMDB on every keystroke, and a newer query
+     * cancels the older lookup. Never starts a search by itself.
+     */
+    private val _suggestions = MutableStateFlow<List<SearchSuggestion>>(emptyList())
+    val suggestions: StateFlow<List<SearchSuggestion>> = _suggestions.asStateFlow()
+
+    init {
+        viewModelScope.launch {
+            _query.debounce(200).distinctUntilChanged().collectLatest { q ->
+                if (q.trim().length < 2) {
+                    _suggestions.value = emptyList()
+                    return@collectLatest
+                }
+                // fetch() swallows network errors itself and rethrows only
+                // cancellation, so a newer keystroke never blanks the list.
+                _suggestions.value = SearchSuggestionsApi.fetch(q)
+            }
+        }
+    }
+
     fun setQuery(q: String) {
         _query.value = q
         savedState["query"] = q
@@ -321,6 +343,7 @@ fun SearchScreen(
     val selected by vm.selectedProviders.collectAsState()
     val providers by vm.providers.collectAsState()
     val history by vm.history.collectAsState(initial = emptyList())
+    val suggestions by vm.suggestions.collectAsState()
     // `initial` is required for a plain Flow (a StateFlow carries its own), and
     // it doubles as "no catalogs yet" for the first frame.
     val collections by vm.userCollections.collectAsState(initial = emptyList())
@@ -333,6 +356,9 @@ fun SearchScreen(
     var langMenu by remember { mutableStateOf(false) }
     var translating by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    // True while the user is typing: the suggestion list is shown. Picking a
+    // suggestion or pressing the keyboard's search key closes it.
+    var suggestOpen by remember { mutableStateOf(false) }
 
     // Television overscan: sets that crop the frame (~5-10% on every edge)
     // cut whatever the results grid draws against it — the "posters are cut
@@ -511,6 +537,7 @@ fun SearchScreen(
     // turns a Chinese title back into English when it was already translated.
     fun toggleTranslate() {
         if (translating) return
+        suggestOpen = false
         val restore = translatedFrom
         if (restore != null) {
             vm.setQuery(restore)
@@ -541,13 +568,22 @@ fun SearchScreen(
     var providerKind by remember { mutableStateOf<ProviderType?>(null) }
         GlassSearchField(
             value = query,
-            onValueChange = { vm.setQuery(it); translatedFrom = null },
+            onValueChange = { vm.setQuery(it); translatedFrom = null; suggestOpen = true },
             placeholder = when {
                 selected.isEmpty() -> "Search across all providers…"
                 soleName != null -> "Search in $soleName…"
                 else -> "Search in ${selected.size} selected sources…"
             },
             focusRequester = searchFocus,
+            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                imeAction = androidx.compose.ui.text.input.ImeAction.Search,
+            ),
+            keyboardActions = androidx.compose.foundation.text.KeyboardActions(
+                onSearch = {
+                    suggestOpen = false
+                    keyboard?.hide()
+                },
+            ),
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(
@@ -694,6 +730,7 @@ fun SearchScreen(
                         // to a query the user did not type this time.
                         onPick = {
                             translatedFrom = null
+                            suggestOpen = false
                             vm.setQuery(past)
                         },
                         onDelete = { vm.forgetSearch(past) },
@@ -967,7 +1004,26 @@ fun SearchScreen(
         if (searching) {
             LinearProgressIndicator(Modifier.fillMaxWidth())
         }
-        if (query.isBlank() && results.isEmpty() && collectionHits.isEmpty()) {
+        // Type-ahead suggestions replace the results area while typing (phones
+        // only); a tap on one, or the keyboard's search key, brings the results back.
+        val showSuggestions = !searchIsTv && suggestOpen &&
+            query.trim().length >= 2 && suggestions.isNotEmpty()
+        if (showSuggestions) {
+            SearchSuggestionList(
+                suggestions = suggestions,
+                onPick = { title ->
+                    translatedFrom = null
+                    suggestOpen = false
+                    vm.setQuery(title)
+                    keyboard?.hide()
+                },
+                onFill = { title ->
+                    translatedFrom = null
+                    vm.setQuery(title)
+                },
+                modifier = Modifier.weight(1f),
+            )
+        } else if (query.isBlank() && results.isEmpty() && collectionHits.isEmpty()) {
             EmptyState(
                 title = tr("Search"),
                 subtitle = tr("Type something to search across every provider."),
