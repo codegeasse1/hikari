@@ -433,11 +433,37 @@ fun MangaScreen(nav: NavHostController, initialQuery: String = "", initialGenre:
     // gate's composable helper cannot be called from within it.
     val visibleResults = rememberVisibleItems(results)
 
+    // Grid item keys in composition order, mirroring the items below: Back
+    // from a reader lands on the tapped cell even when the read just added
+    // whole history/library sections above the saved spot — a bare index
+    // would park one section too low (see ScrollKeeper's anchor + follow).
+    val mangaQueryActive = typed.isNotBlank() || genreTag.isNotBlank()
+    val mangaGridKeys = buildList {
+        add("manga-header")
+        if (mangaQueryActive) {
+            add("manga-engines")
+            if (searching && results.isEmpty()) add("manga-searching")
+            else if (results.isEmpty()) add("manga-no-results")
+            else {
+                visibleResults.forEach { add("res-" + it.uniqueId) }
+                if (searching) add("manga-searching-more")
+                if (searchTargets.any { searchVm.pagesDone[it.config.id] != true }) add("manga-load-more")
+            }
+        }
+        if (progress.isNotEmpty()) add("manga-continue")
+        if (library.isNotEmpty()) {
+            add("manga-lib-head")
+            library.forEach { add("lib-" + it.key) }
+        }
+        add("manga-browse")
+    }
+
     LazyVerticalGrid(
         columns = GridCells.Adaptive(minSize = TvUi.gridMinFor(104)),
         // Results position held per query (see ScrollKeeper): Back from a
-        // title lands where the grid was.
-        state = com.hikari.app.ui.components.keptGridState("manga:$typed|$genreTag|$enginePick|$engineKey"),
+        // title lands on the tapped cell — anchor + follow while late rows
+        // stream in, not the stale index.
+        state = com.hikari.app.ui.components.keptGridState("manga:$typed|$genreTag|$enginePick|$engineKey", itemKeys = mangaGridKeys),
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(
             start = 16.dp,
@@ -690,7 +716,9 @@ fun MangaScreen(nav: NavHostController, initialQuery: String = "", initialGenre:
                         items(progress, key = { "prog-" + it.mangaKey }) { p ->
                             ContinueCard(
                                 progress = p,
-                                onClick = {
+                                // The cover resumes reading; the title opens the
+                                // detail page (see ContinueCard).
+                                onCoverClick = {
                                     // Novels resume in the text reader, manga
                                     // in the image reader (see
                                     // Routes.readingRoute) — never the image
@@ -702,6 +730,12 @@ fun MangaScreen(nav: NavHostController, initialQuery: String = "", initialGenre:
                                         Routes.readingRoute(
                                             p.providerId, p.mangaUrl, p.chapterUrl, p.title, p.posterUrl,
                                         )
+                                    )
+                                },
+                                onTitleClick = {
+                                    Routes.safeNavigate(
+                                        nav,
+                                        Routes.mangaDetail(p.providerId, p.mangaUrl, p.title, p.posterUrl),
                                     )
                                 },
                                 onDelete = { MangaStore.clearProgress(p.mangaKey) },
@@ -1319,20 +1353,23 @@ private fun MangaSection(
 @Composable
 private fun ContinueCard(
     progress: MangaProgress,
-    onClick: () -> Unit,
+    onCoverClick: () -> Unit,
+    /** Where the title + chapter lines go (the detail page); the cover by default. */
+    onTitleClick: (() -> Unit)? = null,
     onDelete: (() -> Unit)? = null,
 ) {
+    val goTitle = onTitleClick ?: onCoverClick
     Column(
         Modifier
             .width(116.dp)
-            .clickable(onClick = onClick)
     ) {
         Box(
             Modifier
                 .fillMaxWidth()
                 .aspectRatio(2f / 3f)
                 .clip(RoundedCornerShape(12.dp))
-                .background(MaterialTheme.colorScheme.surfaceVariant),
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+                .clickable(onClick = onCoverClick),
             contentAlignment = Alignment.Center,
         ) {
             MangaFallback(modifier = Modifier.size(28.dp))
@@ -1397,7 +1434,7 @@ private fun ContinueCard(
             fontWeight = FontWeight.Medium,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(top = 6.dp, start = 2.dp, end = 2.dp),
+            modifier = Modifier.padding(top = 6.dp, start = 2.dp, end = 2.dp).clickable(onClick = goTitle),
         )
         Text(
             progress.chapterName,
@@ -1405,7 +1442,7 @@ private fun ContinueCard(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(start = 2.dp, end = 2.dp),
+            modifier = Modifier.padding(start = 2.dp, end = 2.dp).clickable(onClick = goTitle),
         )
     }
 }
@@ -1576,7 +1613,9 @@ fun MangaContinueShelf(nav: NavHostController) {
             items(progress, key = { "my-prog-" + it.mangaKey }) { p ->
                 ContinueCard(
                     progress = p,
-                    onClick = {
+                    // Cover resumes, title opens the detail page — same split
+                    // as the Manga tab's own shelf above.
+                    onCoverClick = {
                         // Same novel/manga rule as every other opener (see
                         // Routes.readingRoute): this shelf serves History and
                         // My Stuff too, so it must not assume the image
@@ -1584,6 +1623,12 @@ fun MangaContinueShelf(nav: NavHostController) {
                         Routes.safeNavigate(
                             nav,
                             Routes.readingRoute(p.providerId, p.mangaUrl, p.chapterUrl, p.title, p.posterUrl),
+                        )
+                    },
+                    onTitleClick = {
+                        Routes.safeNavigate(
+                            nav,
+                            Routes.mangaDetail(p.providerId, p.mangaUrl, p.title, p.posterUrl),
                         )
                     },
                     onDelete = { MangaStore.clearProgress(p.mangaKey) },
@@ -1677,6 +1722,8 @@ private fun LibraryMangaCard(rec: MangaRecord, onClick: () -> Unit) {
             pages = p?.pages ?: 0,
             at = p?.at ?: 0L,
         ),
-        onClick = onClick,
+        // The detail page either way — the cover/title split only matters
+        // on history shelves, where the cover must keep resuming.
+        onCoverClick = onClick,
     )
 }

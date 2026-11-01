@@ -1,3 +1,8 @@
+## 0.12.24 (continuous build only)
+
+- Continue-reading split: the cover resumes reading, the title + chapter lines open the title's detail page (Manga tab shelf and History/My Stuff shelf; library cards open detail either way)
+- Manga tab Back position fixed: the grid now restores by anchored item (with follow while late rows stream in) instead of a bare index, so a read that adds history/library sections above no longer parks the return one section too low
+- Manga metadata: keyless AniList manga records (blurbs, genres, covers) fill the detail page's blanks for every title, toggle in Settings → Integrations → Metadata sources; adult titles additionally enrich from PornHwaDB when its toggle is on with your own free key (get it from pornhwadb.com → Profile → Settings → Developer, paste + Save — the key is checked on save, stored locally, and only ever sent to pornhwadb.com)
 ## 0.12.23 (continuous build only)
 
 - Terabox 105 chain, log-driven round: the sign+timestamp are now read from the metadata answer itself (its keys carry exactly those alongside randsk/shareid/uk — the share page never had them), and a share whose metadata already embeds its file `list` resolves straight from it with no list call at all; the in-page fetch runs in the same WebView load as the session read (one load, not two, so it fits the lookup budgets) with the replay also re-signed from the metadata; plus a short-key-only probe (no shareid/uk — never tried until now)

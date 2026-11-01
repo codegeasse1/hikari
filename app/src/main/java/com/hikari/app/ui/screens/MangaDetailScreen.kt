@@ -63,6 +63,7 @@ import androidx.navigation.NavHostController
 import coil.compose.AsyncImage
 import com.hikari.app.HikariApp
 import com.hikari.app.data.MediaItem
+import com.hikari.app.data.MangaMetadataRepository
 import com.hikari.app.data.MediaType
 import com.hikari.app.i18n.I18n
 import com.hikari.app.i18n.tr
@@ -232,7 +233,14 @@ fun MangaDetailScreen(
         val fresh = withContext(Dispatchers.IO) {
             runCatching { provider.getMeta(base) }.getOrDefault(base)
         }
-        meta = fresh
+        // External metadata blank-fill (see MangaMetadataRepository): AniList
+        // manga records for every title, PornHwaDB for adult ones when its
+        // key is set. Provider art/text always wins — these only fill blanks.
+        // Chapters below still resolve from "fresh", the provider's own row.
+        val decorated = withContext(Dispatchers.IO) {
+            runCatching { MangaMetadataRepository.enrichForDetail(app, fresh, title) }.getOrNull()
+        }
+        meta = decorated ?: fresh
         val cached = MangaStore.chaptersFor(key)
         if (cached.isNullOrEmpty()) {
             withContext(Dispatchers.IO) {

@@ -565,6 +565,15 @@ class AppStore(private val ctx: Context) {
         /** Optional Simkl app ID (free at simkl.com/developer, no login) so
          *  Simkl metadata works without connecting the Simkl tracker. */
         val ANIME_SIMKL_APP_ID = stringPreferencesKey("animeMetaSimklAppId")
+        /** Manga metadata: keyless AniList manga records for every title
+         *  (blurbs, genres, covers). On unless the user switches it off. */
+        val MANGA_ANILIST = booleanPreferencesKey("mangaMetaAnilist")
+        /** Adult manhwa metadata from PornHwaDB, with the user's own key
+         *  below. Off until a key is saved. */
+        val ADULT_MANHWA = booleanPreferencesKey("adultManhwaMeta")
+        /** The user's own PornHwaDB API key (free at pornhwadb.com — Settings
+         *  → Integrations → Metadata sources says where; never bundled). */
+        val PORNHWA_API_KEY = stringPreferencesKey("pornhwaApiKey")
         /** Movies & series metadata from TMDB (no login, bundled keys). */
         val VIDEO_TMDB = booleanPreferencesKey("videoMetaTmdb")
         /** Provider ids shown with extension-own metadata only: no TMDB /
@@ -1110,6 +1119,15 @@ class AppStore(private val ctx: Context) {
     fun animeSimklAppIdFlow(): Flow<String> = store.data.map { it[K.ANIME_SIMKL_APP_ID] ?: "" }.distinctUntilChanged().flowOn(Dispatchers.Default)
     suspend fun animeSimklAppId(): String = animeSimklAppIdFlow().first()
     suspend fun setAnimeSimklAppId(value: String) { write("ANIME_SIMKL_APP_ID") { it[K.ANIME_SIMKL_APP_ID] = value } }
+    fun mangaAnilistFlow(): Flow<Boolean> = store.data.map { it[K.MANGA_ANILIST] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
+    suspend fun mangaAnilist(): Boolean = mangaAnilistFlow().first()
+    suspend fun setMangaAnilist(value: Boolean) { write("MANGA_ANILIST") { it[K.MANGA_ANILIST] = value } }
+    fun adultManhwaFlow(): Flow<Boolean> = store.data.map { it[K.ADULT_MANHWA] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
+    suspend fun adultManhwa(): Boolean = adultManhwaFlow().first()
+    suspend fun setAdultManhwa(value: Boolean) { write("ADULT_MANHWA") { it[K.ADULT_MANHWA] = value } }
+    fun pornhwaApiKeyFlow(): Flow<String> = store.data.map { it[K.PORNHWA_API_KEY] ?: "" }.distinctUntilChanged().flowOn(Dispatchers.Default)
+    suspend fun pornhwaApiKey(): String = pornhwaApiKeyFlow().first()
+    suspend fun setPornhwaApiKey(value: String) { write("PORNHWA_API_KEY") { it[K.PORNHWA_API_KEY] = value } }
     fun videoTmdbFlow(): Flow<Boolean> = store.data.map { it[K.VIDEO_TMDB] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
     suspend fun videoTmdb(): Boolean = videoTmdbFlow().first()
     suspend fun setVideoTmdb(value: Boolean) { write("VIDEO_TMDB") { it[K.VIDEO_TMDB] = value } }

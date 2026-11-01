@@ -170,6 +170,7 @@ import androidx.navigation.NavHostController
 import com.hikari.app.BuildConfig
 import com.hikari.app.HikariApp
 import com.hikari.app.data.BackupManager
+import com.hikari.app.data.MangaMetadataRepository
 import com.hikari.app.data.ProviderType
 import com.hikari.app.data.Ratings
 import com.hikari.app.data.TmdbLang
@@ -617,7 +618,7 @@ private fun searchSettings(rawQuery: String): List<SettingsSearchEntry> {
         "content" to "content adult nsfw filter",
         "downloads" to "downloads offline save",
         "trackers" to "trackers sync library anilist mal kitsu simkl trakt",
-        "integrations" to "integrations tmdb mdblist anime metadata ratings anilist simkl",
+        "integrations" to "integrations tmdb mdblist anime manga metadata ratings anilist simkl pornhwa manhwa",
         "catalog" to "catalog collections personal folders",
         "privacy" to "privacy ads block user agent webview",
         "logs" to "logs diagnostics crash report",
@@ -650,7 +651,7 @@ private fun searchSettings(rawQuery: String): List<SettingsSearchEntry> {
     section("sec-ask-where", "Ask where to play", servers, "servers", null, "player.start", "ask where play extension selected scope choice")
     section("sec-server-search", "Server search", servers, "servers", null, null, "server search all extensions nuvio stremio cloudstream hikari anymex aniyomi skystream sora vega choose")
     section("sec-tracker-servers", "Tracker servers", servers, "servers", null, null, "tracker servers search")
-    section("sec-anime-meta", "Anime Metadata", "Integrations", "integrations", "integrations.anime", null, "anime metadata anilist simkl episodes")
+    section("sec-anime-meta", "Anime Metadata", "Integrations", "integrations", "integrations.anime", null, "anime manga manhwa manhua pornhwa adult metadata anilist simkl episodes")
     section("sec-tmdb", "TMDB Enrichment", "Integrations", "integrations", "integrations.tmdb", "integrations.tmdb.main", "tmdb artwork metadata episodes credits")
     section("sec-tmdb-mod", "TMDB modules", "Integrations", "integrations", "integrations.tmdb", "integrations.tmdb.modules", "tmdb modules artwork")
     section("sec-mdb", "MDBList Ratings", "Integrations", "integrations", "integrations.mdblist", "integrations.mdblist.main", "ratings imdb rotten tomatoes")
@@ -6948,6 +6949,13 @@ private fun AnimeMetadataIntegrationCard(app: HikariApp) {
     val savedSimklId by remember { app.store.animeSimklAppIdFlow() }.collectAsState(initial = "")
     var draftSimklId by remember { mutableStateOf("") }
     LaunchedEffect(savedSimklId) { draftSimklId = savedSimklId }
+    val context = LocalContext.current
+    val mangaAnilist by remember { app.store.mangaAnilistFlow() }.collectAsState(initial = true)
+    val adultManhwa by remember { app.store.adultManhwaFlow() }.collectAsState(initial = false)
+    val savedPwdbKey by remember { app.store.pornhwaApiKeyFlow() }.collectAsState(initial = "")
+    var draftPwdbKey by remember { mutableStateOf("") }
+    LaunchedEffect(savedPwdbKey) { draftPwdbKey = savedPwdbKey }
+    var checkingPwdb by remember { mutableStateOf(false) }
     val native by remember { app.store.nativeProvidersFlow() }.collectAsState(initial = emptySet())
     val installed by app.providers.providers.collectAsState()
     val videoProviders = remember(installed) {
@@ -7022,6 +7030,69 @@ private fun AnimeMetadataIntegrationCard(app: HikariApp) {
             checked = videoTmdb,
             onCheckedChange = { on -> scope.launch { runCatching { app.store.setVideoTmdb(on) } } },
         )
+        Spacer(Modifier.height(14.dp))
+        Text(tr("Manga"), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+        SettingsToggle(
+            label = tr("AniList"),
+            supporting = tr("Manhwa, manhua and manga blurbs, genres and covers from AniList"),
+            checked = mangaAnilist,
+            onCheckedChange = { on -> scope.launch { runCatching { app.store.setMangaAnilist(on) } } },
+        )
+        SettingsToggle(
+            label = tr("Adult manhwa (PornHwaDB)"),
+            supporting = tr("Adult titles enriched from PornHwaDB — needs your free API key below"),
+            checked = adultManhwa,
+            onCheckedChange = { on -> scope.launch { runCatching { app.store.setAdultManhwa(on) } } },
+        )
+        if (adultManhwa) {
+            Text(
+                tr("Get your free key from pornhwadb.com — Profile, Settings, Developer tab — then paste it below."),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp, bottom = 10.dp),
+            )
+            TextButton(
+                onClick = {
+                    runCatching {
+                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(MangaMetadataRepository.GET_KEY_URL)))
+                    }
+                },
+            ) {
+                Icon(Icons.Filled.OpenInNew, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text(tr("Get a key from PornHwaDB"))
+            }
+            ApiKeyEditor(
+                label = "PornHwaDB API key",
+                value = draftPwdbKey,
+                savedValue = savedPwdbKey,
+                onValueChange = { draftPwdbKey = it },
+                onSave = {
+                    scope.launch {
+                        val key = draftPwdbKey.trim()
+                        runCatching { app.store.setPornhwaApiKey(key) }
+                        if (key.isEmpty()) return@launch
+                        checkingPwdb = true
+                        val code = runCatching { MangaMetadataRepository.checkApiKey(key) }.getOrDefault(-1)
+                        checkingPwdb = false
+                        val msg = when (code) {
+                            200 -> "PornHwaDB key saved — adult manhwa metadata is on"
+                            401 -> "That key was rejected (401) — check it on pornhwadb.com"
+                            else -> "Key saved, but PornHwaDB did not answer — it will retry when a title opens"
+                        }
+                        Toast.makeText(context, I18n.t(msg), Toast.LENGTH_LONG).show()
+                    }
+                },
+            )
+            if (checkingPwdb) {
+                Text(
+                    tr("Checking key..."),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            }
+        }
         Spacer(Modifier.height(14.dp))
         Text(tr("Extension metadata"), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
         if (!LocalHideHelp.current) Text(
