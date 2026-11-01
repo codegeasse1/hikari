@@ -304,14 +304,11 @@ private enum class SettingsFolder(
         "Television layout, screen edges & performance",
         Icons.Filled.Tv,
     ),
-    // Pick the look of the television interface (the original rail, or the
-    // Nuvio-style top bar). Offered on both kinds of device, like TV & Remote:
-    // a phone user can pick it ahead of time, and it applies whenever the TV
-    // layout is on. Stored by com.hikari.app.tv.TvUiStyle.
+    // An empty folder for now: a home for the app's personal customizations.
     CUSTOMIZE(
         "customize",
         "Customize",
-        "Choose the TV interface style",
+        "Personalize the app",
         Icons.Filled.Tune,
     ),
     PLAYER(
@@ -621,7 +618,7 @@ private fun searchSettings(rawQuery: String): List<SettingsSearchEntry> {
         "layout" to "layout posters taskbar scale fullscreen ratings navigation",
         "performance" to "performance lag stutter battery speed",
         "tv" to "tv television remote overscan",
-        "customize" to "customize ui interface style nuvio tv layout navigation top bar rail",
+        "customize" to "customize personalize",
         "player" to "player video audio subtitles controls gestures loading enhance",
         "servers" to "playback servers play search extensions wait ask scope",
         "network" to "network dns slow internet",
@@ -1125,7 +1122,7 @@ fun SettingsScreen(nav: NavHostController) {
                     item { SettingsCard { TvRemoteCard() } }
                 }
                 SettingsFolder.CUSTOMIZE -> {
-                    item { SettingsCard(top = 2.dp) { TvInterfaceStyleCard() } }
+                    // Nothing in here yet.
                 }
                 SettingsFolder.CATALOG -> {
                     item {
@@ -3274,87 +3271,6 @@ private fun TvTextSizeCard(app: HikariApp) {
                 scope.launch { runCatching { app.store.setTvTextScale(slider.roundToInt()) } }
             },
         )
-    }
-}
-
-/**
- * Settings → Customize → TV interface: which television interface is drawn.
- *
- *  - Default: the original TV layout, with the navigation rail down the left.
- *  - Nuvio: the Nuvio-style layout, with the navigation bar along the top and
- *    the page using the full width.
- *
- * It only changes anything while the TV layout is on ([TvMode]); a phone keeps
- * its bottom taskbar. The pick applies immediately (no restart) and is stored
- * by [com.hikari.app.tv.TvUiStyle]. A [ChoiceDialog] is used on purpose — it is
- * what the remote already walks everywhere else in Settings.
- */
-@Composable
-private fun TvInterfaceStyleCard() {
-    var menuOpen by remember { mutableStateOf(false) }
-    val style = com.hikari.app.tv.TvUiStyle.style
-    val defaultLabel = tr("Default")
-    val nuvioLabel = tr("Nuvio")
-    val currentLabel = if (style == com.hikari.app.tv.TvUiStyle.NUVIO) {
-        nuvioLabel + " — " + tr("navigation bar on top")
-    } else {
-        defaultLabel + " — " + tr("navigation rail on the left")
-    }
-    Column {
-        ListItem(
-            leadingContent = {
-                Icon(
-                    Icons.Filled.Tv,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                )
-            },
-            headlineContent = { Text(tr("TV interface")) },
-            supportingContent = { Text(currentLabel) },
-            trailingContent = {
-                Icon(
-                    Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            },
-            modifier = Modifier.clickable { menuOpen = true },
-        )
-        if (menuOpen) {
-            ChoiceDialog(
-                title = tr("TV interface"),
-                items = listOf(
-                    ChoiceItem(
-                        com.hikari.app.tv.TvUiStyle.DEFAULT,
-                        defaultLabel,
-                        supporting = tr("The original TV layout, with the navigation rail on the left"),
-                    ),
-                    ChoiceItem(
-                        com.hikari.app.tv.TvUiStyle.NUVIO,
-                        nuvioLabel,
-                        supporting = tr("Nuvio-style layout, with the navigation bar along the top"),
-                    ),
-                ),
-                selectedKey = style,
-                onPick = { pick ->
-                    menuOpen = false
-                    com.hikari.app.tv.TvUiStyle.setStyle(pick)
-                },
-                onDismiss = { menuOpen = false },
-            )
-        }
-        if (!LocalHideHelp.current) {
-            Text(
-                tr(
-                    "Applies to the TV layout only — a phone keeps its bottom taskbar. " +
-                        "The change takes effect immediately, no restart. " +
-                        "Turn the TV layout on in TV & Remote → Layout."
-                ),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 14.dp),
-            )
-        }
     }
 }
 
