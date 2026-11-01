@@ -8575,6 +8575,16 @@ class PlayerActivity : ComponentActivity() {
         // No engine chips and no section headings: the reference Sources sheet
         // is one flat origin-first list, so the list holds rows only.
         val list = optionList()
+        // Horizontal phone sheet (in-player or the Horizontal setting): the
+        // rows run edge to edge like the reference page — the container's
+        // own side inset is dropped (row internals keep their padding, so
+        // nothing reads squeezed). Vertical keeps its box padding; TV keeps
+        // its remote-friendly inset.
+        if (!com.hikari.app.tv.TvMode.isTv &&
+            (forceHorizontal || !com.hikari.app.player.ServerLayouts.isVertical())
+        ) {
+            list.setPadding(0, list.paddingTop, 0, list.paddingBottom)
+        }
 
         // Source filter pills (All + every engine that has landed): the strip
         // lives in the FIXED header under the found line (see serverHeader),
@@ -8811,7 +8821,13 @@ class PlayerActivity : ComponentActivity() {
                     LinearLayout.LayoutParams.WRAP_CONTENT
                 ).apply {
                     val topMargin = if (first) (2 * density).toInt() else (7 * density).toInt()
-                    setMargins((4 * density).toInt(), topMargin, (4 * density).toInt(), (4 * density).toInt())
+                    // Flush with the rows on the horizontal phone sheet (see
+                    // the list padding above) — otherwise the header floats
+                    // inside margins the rows no longer have.
+                    val sideMargin = if (!com.hikari.app.tv.TvMode.isTv &&
+                        (forceHorizontal || !com.hikari.app.player.ServerLayouts.isVertical())
+                    ) 0 else (4 * density).toInt()
+                    setMargins(sideMargin, topMargin, sideMargin, (4 * density).toInt())
                 }
                 return hv
             }
@@ -9408,16 +9424,19 @@ class PlayerActivity : ComponentActivity() {
             // TV keeps this compact like the small-title reference: a wide
             // logo at 55% of a landscape screen renders very tall and pushes
             // the server list to the bottom, so on TV the logo is narrower
-            // AND height-capped — the rows start mid-screen again.
+            // AND height-capped — the rows start mid-screen again. The same
+            // cap binds the phone: the header logo is decoration above the
+            // box, never the page — whatever its size, it cannot push the
+            // server box down or overlap it.
             val tvHead = com.hikari.app.tv.TvMode.isTv
             serverHeader.addView(ImageView(this).apply {
                 scaleType = ImageView.ScaleType.FIT_CENTER
                 adjustViewBounds = true
-                if (tvHead) maxHeight = (96 * density).toInt()
+                maxHeight = ((if (tvHead) 84 else 110) * density).toInt()
                 runCatching { load(logoModel) }
             }, LinearLayout.LayoutParams(
-                (resources.displayMetrics.widthPixels * (if (tvHead) 0.30f else 0.55f)).toInt()
-                    .coerceAtMost(((if (tvHead) 300 else 420) * density).toInt()),
+                (resources.displayMetrics.widthPixels * (if (tvHead) 0.24f else 0.55f)).toInt()
+                    .coerceAtMost(((if (tvHead) 240 else 420) * density).toInt()),
                 LinearLayout.LayoutParams.WRAP_CONTENT
             ).apply {
                 gravity = Gravity.CENTER_HORIZONTAL
@@ -16146,6 +16165,14 @@ class PlayerActivity : ComponentActivity() {
                 val widthFrac = ((if (tvLayout) 0.82f else 0.78f) * (loadingLogoPercent / 100f)).coerceIn(0.2f, 1f)
                 val screenW = resources.displayMetrics.widthPixels
                 visibility = View.VISIBLE
+                // The loading wordmark sits BEHIND the server sheet on TV
+                // (the sheet opens over the cover while picking): height-cap
+                // it so a tall wordmark can't swallow the sheet's own small
+                // header — the cinematic look stays, the box keeps its room.
+                if (tvLayout) {
+                    adjustViewBounds = true
+                    maxHeight = (140 * resources.displayMetrics.density).toInt()
+                }
                 val lp = layoutParams
                 if (lp != null) {
                     lp.width = (screenW * widthFrac).toInt()

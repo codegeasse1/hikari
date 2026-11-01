@@ -1,3 +1,9 @@
+## 0.12.21 (continuous build only)
+
+- Terabox recon fix: the bundle scan now includes the client's own CDN hosts (same-origin-only saw nothing) and the rendered page is scanned for embedded file data (fs_id, names, links, title) so a single-file share can resolve without any list call
+- In-player horizontal server rows run edge to edge on phones (container inset dropped, row padding kept) instead of floating in side margins
+- Server header logo height-capped on every screen (phone too) and smaller on TV, and the TV loading wordmark capped, so the title always sits small above the server box and can never push it down or overlap it
+
 ## 0.12.20 (continuous build only)
 
 - Terabox recon round: a refused list on an existing share now tries several cheap call shapes in order (browser XHR headers, no token, browser user agent, canonical host with its own session) with first success winning and every shape logged, and the browser-rendered share page's own script bundles are scanned for the token/list endpoints the page never carries — the next log names the exact winner or the official client's real call

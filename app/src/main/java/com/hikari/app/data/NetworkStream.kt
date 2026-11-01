@@ -1225,6 +1225,30 @@ private class BReader(val b: ByteArray) {
         val srcs = Regex("""<script[^>]+src="([^"]+)"""").findAll(html)
             .map { it.groupValues[1].trim() }.filter { it.isNotBlank() }.toList()
         Logs.log("NetStream", "terabox: recon scripts=" + srcs.size)
+        // The rendered page itself may already carry the file (title, size,
+        // a link): scan the DOM for file data too, not just the bundles —
+        // a share of one file embeds it, and then no list call is needed.
+        val title = Regex("""<title[^>]*>(.*?)</title>""", RegexOption.DOT_MATCHES_ALL)
+            .find(html)?.groupValues?.get(1)?.trim()?.take(160)
+        if (!title.isNullOrBlank()) {
+            Logs.log("NetStream", "terabox: recon page title=" + title)
+        }
+        val domNeedles = listOf("fs_id", "server_filename", "dlink", "file_name", "playUrl", "video_url", "downloadLink")
+        var domShown = 0
+        for (n in domNeedles) {
+            if (domShown >= 12) break
+            var idx = html.indexOf(n, ignoreCase = true)
+            var takes = 0
+            while (idx >= 0 && takes < 2 && domShown < 12) {
+                val lo = (idx - 60).coerceAtLeast(0)
+                val hi = (idx + n.length + 60).coerceAtMost(html.length)
+                val ctx = html.substring(lo, hi).replace(Regex("\\s+"), " ")
+                Logs.log("NetStream", "terabox: recon [dom:" + n + "] ..." + ctx.take(220) + "...")
+                domShown++
+                takes++
+                idx = html.indexOf(n, idx + 1, ignoreCase = true)
+            }
+        }
         val needles = listOf("share/list", "jsToken", "getJsToken", "getSign", "shorturlinfo", "dlink", "/api/")
         var shown = 0
         for (raw in srcs) {
@@ -1235,7 +1259,11 @@ private class BReader(val b: ByteArray) {
                 raw.startsWith("/") -> origin + raw
                 else -> continue
             }
-            if (!abs.startsWith(origin) || !abs.substringBefore('?').endsWith(".js")) continue
+            // The client's own code lives on its CDN (teraboxcdn), not the
+            // mirror host — same-origin-only missed it entirely last round.
+            val host = abs.substringAfter("://").substringBefore('/')
+            if (!abs.startsWith(origin) && !host.endsWith("teraboxcdn.com")) continue
+            if (!abs.substringBefore('?').endsWith(".js")) continue
             val js = withTimeoutOrNull(10_000) {
                 fetchText(abs, BOX_UA, jar, referer = pageUrl)
             } ?: continue
