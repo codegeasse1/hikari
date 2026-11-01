@@ -1,5 +1,12 @@
 ## 0.12.26 (continuous build only)
 
+## added 
+- Added search suggestions to improve the search experience.
+- Introduced a glass-style sliding effect for a smoother, more modern UI.
+
+
+## 0.12.26 (continuous build only)
+
 - Manga detail page: Characters row (circular portraits + names, horizontal scroll) below the genres — AniList for every title, PornHwaDB characters for adult titles with a key; Chapters | Comments tabs below it, tappable and swipable (drag left for Comments, right for Chapters); Comments shows the title's AniList forum threads (tap to read, New thread to post — posting needs the AniList sign-in under Settings → Trackers) or PornHwaDB reviews for adult titles; chapter rows gain external subtitles when PornHwaDB describes that chapter number, else the extension's own rows exactly as before — everything fills in behind the instantly-painted list
 ## 0.12.25 (continuous build only)
 ### Added
