@@ -1,3 +1,7 @@
+## 0.12.22 (continuous build only)
+
+- Terabox in-page resolution: a refused list is now re-run as the share page's own same-origin fetch inside the hidden WebView (the page's real cookies + JS state, shaped from the tokens the page itself embeds — jsToken, randsk/sekey, sign+timestamp, shareid+uk — with root + one folder level in one run), because plain-HTTP replay of a gate that only the rendered page passes kept answering 105; the sekey reader now decodes the official `randsk` field (earlier builds only looked for a literal `sekey` and sent none), and the log names the metadata's real field names, the page's token markers, the in-page errno + token shapes, and how many bundles the recon actually fetched
+
 ## 0.12.21 (continuous build only)
 
 - Terabox recon fix: the bundle scan now includes the client's own CDN hosts (same-origin-only saw nothing) and the rendered page is scanned for embedded file data (fs_id, names, links, title) so a single-file share can resolve without any list call

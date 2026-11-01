@@ -8,6 +8,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
+import java.net.URLDecoder
 import java.net.URLEncoder
 import java.util.IdentityHashMap
 import java.util.LinkedList
@@ -598,13 +599,13 @@ private class BReader(val b: ByteArray) {
      *  1. the host's home page, for `jsToken` (an anti-bot token the API refuses
      *     requests without) and for the cookies it sets;
      *  2. `/api/shorturlinfo?shorturl=<key>&root=1` — the share's metadata,
-     *     including its `sekey` for password-gated shares;
+     *     including its `randsk` (URL-decoded to the list call's `sekey`);
      *  3. `/share/list?…&shorturl=<key>&root=1&sekey=<sekey>&sign=<sign>&
      *     timestamp=<ts>` — its entries, `dlink` per file. `sign`+`timestamp`
      *     are the share page's own signature (Baidu-family request signing —
-     *     a list call without them is refused with errno 105, which is the
-     *     whole failure class; public shares carry no `sekey` at all, so the
-     *     old "missing sekey" theory of 105 was wrong). The call also carries
+     *     a list call without them is refused with errno 105; the sekey is
+     *     the decoded `randsk`, which earlier builds never read — the other
+     *     half of the 105 chain). The call also carries
      *     the share's own `shareid`+`uk` from the metadata answer — the web
      *     client's own identifiers — because some mirrors refuse a call the
      *     short key alone names.
@@ -678,6 +679,9 @@ private class BReader(val b: ByteArray) {
                 " sign=" + (if (sig != null) "yes" else "none") +
                 " ids=" + (if (ids != null) "yes" else "none"),
         )
+        // The metadata's own field names (randsk vs sekey, id shapes), so the
+        // next report shows what the mirror actually sends — bounded.
+        Logs.log("NetStream", "terabox: shorturlinfo keys=" + runCatching { JSONObject(tokens).keys().asSequence().toList() }.getOrDefault(emptyList()).joinToString(",").take(300))
         if (boxShareLocked(tokens)) {
             Logs.log("NetStream", "terabox: share needs a password/extraction code for $origin")
             return emptyList()
@@ -770,14 +774,27 @@ private class BReader(val b: ByteArray) {
     }
 
     /** The share's `sekey` inside a shorturlinfo answer — the list call's
-     *  password for THAT share. Top level first, then the first
+     *  password for THAT share. The official field is `randsk` (URL-encoded:
+     *  the sekey is its decoded form); a literal `sekey` is the fallback some
+     *  mirrors send decoded already. Top level first, then the first
      *  `shorturlinfo` entry, then a `data` object; null when absent. */
-    private fun boxSekeyOf(tokens: String): String? {        val root = runCatching { JSONObject(tokens) }.getOrNull() ?: return null
-        root.optString("sekey").takeIf { it.isNotBlank() }?.let { return it }
-        root.optJSONArray("shorturlinfo")?.optJSONObject(0)
-            ?.optString("sekey")?.takeIf { it.isNotBlank() }?.let { return it }
-        root.optJSONObject("data")?.optString("sekey")
-            ?.takeIf { it.isNotBlank() }?.let { return it }
+    private fun boxSekeyOf(tokens: String): String? {
+        val root = runCatching { JSONObject(tokens) }.getOrNull() ?: return null
+        val scopes = listOf(
+            root,
+            root.optJSONArray("shorturlinfo")?.optJSONObject(0),
+            root.optJSONObject("data"),
+        )
+        for (o in scopes) {
+            if (o == null) continue
+            o.optString("sekey").takeIf { it.isNotBlank() }?.let { return it }
+            val randsk = o.optString("randsk").takeIf { it.isNotBlank() } ?: continue
+            // A value with no escapes decodes to itself, so decoding
+            // unconditionally is safe; the raw value stays the fallback.
+            runCatching { URLDecoder.decode(randsk, "UTF-8") }
+                .getOrNull()?.takeIf { it.isNotBlank() }?.let { return it }
+            return randsk
+        }
         return null
     }
 
@@ -1014,6 +1031,22 @@ private class BReader(val b: ByteArray) {
                 " sign=" + (if (webSig != null) "yes" else "none") +
                 " ids=" + (if (webIds != null) "yes" else "none"),
         )
+        // What the rendered page actually carries (token-shaped markers), so
+        // the next report shows whether the gate stripped the page or just
+        // the API answer — presence only, never values.
+        val markers = listOf("yunData", "jsToken", "randsk", "\"sign\"", "\"timestamp\"", "shareid")
+        Logs.log(
+            "NetStream",
+            "terabox: web page markers=" +
+                markers.joinToString(" ") { it + "=" + (if (html.contains(it, ignoreCase = true)) "yes" else "no") },
+        )
+        // The list call from inside the page itself (same-origin fetch with
+        // the page's real cookies and JS state — the official client's own
+        // call, which plain-HTTP replay can only imitate).
+        boxWebPageList(origin, pageUrl, key)?.let {
+            Logs.log("NetStream", "terabox: list answered via web page-list for $origin")
+            return it
+        }
         val out = boxList(origin, key, webToken, jar, webSekey, webSig, webIds, pageUrl = pageUrl)
         if (out != null) {
             Logs.log("NetStream", "terabox: list answered via web session for $origin")
@@ -1087,6 +1120,177 @@ private class BReader(val b: ByteArray) {
         // view is gone after ~11s; the caller's own timeout is the backstop.
         main.postDelayed({ finish(null) }, 11_000)
         return withTimeoutOrNull(12_000) { done.await() }
+    }
+
+    /** One evaluateJavascript on [web] from a background thread: posts the
+     *  evaluation to the main thread, waits for its callback, unquotes. */
+    private suspend fun jsEval(web: WebView, expr: String): String? {
+        val done = CompletableDeferred<String?>()
+        val main = Handler(Looper.getMainLooper())
+        main.post {
+            try {
+                web.evaluateJavascript(expr) { raw ->
+                    if (!done.isCompleted) done.complete(unquoteJs(raw))
+                }
+            } catch (_: Throwable) {
+                if (!done.isCompleted) done.complete(null)
+            }
+        }
+        main.postDelayed({ if (!done.isCompleted) done.complete(null) }, 8000)
+        return withTimeoutOrNull(9000) { done.await() }
+    }
+
+    /**
+     * The share's list call run from INSIDE its own rendered page (see the
+     * errno=105 chain): a hidden WebView loads the share, then the list
+     * request goes out as the page's own same-origin `fetch` — carrying the
+     * page's real cookies plus whatever JS-set proof a plain-HTTP replay can
+     * never hold — with the call shaped from the tokens the page itself
+     * embeds (`jsToken`, `randsk`/`sekey`, `sign`+`timestamp`,
+     * `shareid`+`uk`, falling back to whatever subset exists). Root plus one
+     * folder level come back in a single script run; the entries parse the
+     * same way as [boxListPage]. Null when the view never settles, the page
+     * returns nothing, or the in-page call is refused too (logged with the
+     * page's own token shapes + errno — the honest report when the gate is
+     * the device/IP rather than the call shape).
+     */
+    private suspend fun boxWebPageList(
+        origin: String,
+        pageUrl: String,
+        key: String,
+    ): List<JSONObject>? {
+        val main = Handler(Looper.getMainLooper())
+        val holder = arrayOfNulls<WebView>(1)
+        val viewDone = CompletableDeferred<WebView?>()
+        fun destroy() {
+            main.post {
+                runCatching { holder[0]?.stopLoading() }
+                runCatching { holder[0]?.destroy() }
+                holder[0] = null
+            }
+        }
+        main.post {
+            try {
+                val web = WebView(HikariApp.instance.applicationContext)
+                holder[0] = web
+                web.settings.javaScriptEnabled = true
+                web.settings.domStorageEnabled = true
+                web.settings.mediaPlaybackRequiresUserGesture = false
+                web.webViewClient = object : WebViewClient() {
+                    var settled = false
+                    override fun onPageFinished(view: WebView, url: String) {
+                        if (settled) return
+                        settled = true
+                        main.postDelayed({
+                            if (!viewDone.isCompleted) viewDone.complete(view)
+                        }, 2500)
+                    }
+                }
+                web.loadUrl(pageUrl)
+            } catch (_: Throwable) {
+                if (!viewDone.isCompleted) viewDone.complete(null)
+            }
+        }
+        main.postDelayed({ if (!viewDone.isCompleted) viewDone.complete(null) }, 12_000)
+        val web = withTimeoutOrNull(13_000) { viewDone.await() }
+        if (web == null) {
+            destroy()
+            Logs.log("NetStream", "terabox: web page-list no view for $origin")
+            return null
+        }
+        try {
+            val keyLit = JSONObject.quote(key)
+            // Fires the page's own fetch and parks the combined answer on
+            // window.__tbResult; the poll below reads it back. Tokens are
+            // scraped from the rendered DOM + window.yunData when present —
+            // whatever subset the page holds goes on the call exactly the
+            // way the official client's calls carry it.
+            val fire = "(function(){" +
+                "window.__tbResult='';" +
+                "(async function(){" +
+                "try{" +
+                "var html=document.documentElement.outerHTML;" +
+                "var yd='';" +
+                "try{if(window.yunData)yd=JSON.stringify(window.yunData);}catch(e){}" +
+                "var blob=html+'\\n'+yd;" +
+                "function m2(re){var x=blob.match(re);return x?(x[1]||''):'';}" +
+                "var jsToken=m2(/\"jsToken\"\\s*:\\s*\"([^\"]+)\"/)||m2(/window\\.jsToken\\s*=\\s*['\"]([^'\"]+)['\"]/);" +
+                "var randsk=m2(/\"randsk\"\\s*:\\s*\"([^\"]+)\"/);" +
+                "var sekey=m2(/\"sekey\"\\s*:\\s*\"([^\"]+)\"/);" +
+                "if(!sekey&&randsk){try{sekey=decodeURIComponent(randsk);}catch(e){sekey=randsk;}}" +
+                "var sign=m2(/\"sign\"\\s*:\\s*\"([A-Za-z0-9+\\/=\\-_]{8,})\"/);" +
+                "var ts=m2(/\"timestamp\"\\s*[:=]\\s*\"?(\\d{10,13})/);" +
+                "if(ts&&ts.length>10)ts=ts.substring(0,10);" +
+                "var shareid=m2(/\"shareid\"\\s*:\\s*\"?(\\d{6,})/)||m2(/\"share_id\"\\s*:\\s*\"?(\\d{6,})/);" +
+                "var uk=m2(/\"share_uk\"\\s*:\\s*\"?(\\d{6,})/)||m2(/\"uk\"\\s*:\\s*\"?(\\d{6,})/);" +
+                "var base='/share/list?app_id=250528&web=1&channel=dubox&clienttype=0';" +
+                "if(jsToken)base+='&jsToken='+encodeURIComponent(jsToken);" +
+                "if(sekey)base+='&sekey='+encodeURIComponent(sekey);" +
+                "if(sign)base+='&sign='+sign;" +
+                "if(ts)base+='&timestamp='+ts;" +
+                "if(shareid)base+='&shareid='+shareid;" +
+                "if(uk)base+='&uk='+uk;" +
+                "base+='&shorturl='+encodeURIComponent(" + keyLit + ")+'&by=name&order=asc&num=1000&page=1';" +
+                "function tok(){return (jsToken?'T':'')+(sekey?'S':'')+(sign?'G':'')+(shareid?'I':'');}" +
+                "async function get(dir){" +
+                "var q=base+(dir?'&dir='+encodeURIComponent(dir):'&dir=&root=1');" +
+                "try{var r=await fetch(q,{credentials:'include'});return await r.text();}catch(e){return '';}" +
+                "};" +
+                "var root=await get('');" +
+                "var out={tok:tok(),errno:-99,root:root,more:[]};" +
+                "try{" +
+                "var j=JSON.parse(root);" +
+                "out.errno=(j&&(typeof j.errno!=='undefined'))?j.errno:-98;" +
+                "if(j&&j.errno===0&&j.list){var n=0;" +
+                "for(var i=0;i<j.list.length&&n<3;i++){var e=j.list[i];" +
+                "if((e.isdir===1||e.category===6)&&e.path){out.more.push(await get(e.path));n++;}}}" +
+                "}catch(e){}" +
+                "var s=JSON.stringify(out);" +
+                "window.__tbResult=s.length>400000?s.substring(0,400000):s;" +
+                "}catch(e){window.__tbResult='{\"tok\":\"ERR\",\"errno\":-97,\"root\":\"\",\"more\":[]}';}" +
+                "})();})()"
+            main.post { runCatching { web.evaluateJavascript(fire) {} } }
+            var raw = ""
+            for (i in 0 until 20) {
+                kotlinx.coroutines.delay(500)
+                raw = jsEval(web, "window.__tbResult||''") ?: ""
+                if (raw.isNotBlank()) break
+            }
+            if (raw.isBlank() || !raw.trimStart().startsWith("{")) {
+                Logs.log("NetStream", "terabox: web page-list no result for $origin")
+                return null
+            }
+            val wrap = runCatching { JSONObject(raw) }.getOrNull()
+            if (wrap == null) {
+                Logs.log("NetStream", "terabox: web page-list unreadable result for $origin")
+                return null
+            }
+            val tok = wrap.optString("tok").take(8)
+            val errno = wrap.optInt("errno", -98)
+            Logs.log("NetStream", "terabox: web page-list errno=$errno tok=$tok for $origin")
+            if (errno != 0) return null
+            val entries = ArrayList<JSONObject>()
+            fun absorb(text: String?) {
+                val arr = runCatching { JSONObject(text ?: "").optJSONArray("list") }.getOrNull() ?: return
+                for (i in 0 until arr.length()) {
+                    arr.optJSONObject(i)?.let { entries += it }
+                }
+            }
+            absorb(wrap.optString("root"))
+            val more = wrap.optJSONArray("more")
+            if (more != null) {
+                for (i in 0 until more.length()) absorb(more.optString(i))
+            }
+            if (entries.isEmpty()) return emptyList()
+            var noDlink = 0
+            for (e in entries) {
+                if (e.optString("dlink").isBlank()) noDlink++
+            }
+            Logs.log("NetStream", "terabox: web page-list entries=${entries.size} noDlink=$noDlink for $origin")
+            return entries
+        } finally {
+            destroy()
+        }
     }
 
     /** Unquote an evaluateJavascript result (a JSON string literal). */
@@ -1251,12 +1455,16 @@ private class BReader(val b: ByteArray) {
         }
         val needles = listOf("share/list", "jsToken", "getJsToken", "getSign", "shorturlinfo", "dlink", "/api/")
         var shown = 0
+        var fetched = 0
         for (raw in srcs) {
             if (shown >= 15) break
+            // Page-relative bundle paths (no leading slash) resolve against
+            // the mirror root — skipping them blinded the last round.
             val abs = when {
                 raw.startsWith("http") -> raw
                 raw.startsWith("//") -> "https:$raw"
                 raw.startsWith("/") -> origin + raw
+                raw.endsWith(".js") || raw.contains(".js?") -> origin + "/" + raw.trimStart('/')
                 else -> continue
             }
             // The client's own code lives on its CDN (teraboxcdn), not the
@@ -1268,6 +1476,7 @@ private class BReader(val b: ByteArray) {
                 fetchText(abs, BOX_UA, jar, referer = pageUrl)
             } ?: continue
             if (js.length > 2_000_000) continue
+            fetched++
             for (n in needles) {
                 if (shown >= 15) break
                 var idx = js.indexOf(n, ignoreCase = true)
@@ -1283,6 +1492,7 @@ private class BReader(val b: ByteArray) {
                 }
             }
         }
+        Logs.log("NetStream", "terabox: recon bundles=" + fetched + "/" + srcs.size)
     }
 
     private fun isBoxFolder(e: JSONObject): Boolean =
@@ -1387,6 +1597,7 @@ private class BReader(val b: ByteArray) {
      *  line; both spellings are in the wild. */
     private fun jsTokenOf(html: String): String {
         Regex("\"jsToken\"\\s*:\\s*\"([^\"]+)\"").find(html)?.let { return it.groupValues[1] }
+        Regex("'jsToken'\\s*:\\s*'([^']+)'").find(html)?.let { return it.groupValues[1] }
         Regex("window\\.jsToken\\s*=\\s*['\"]([^'\"]+)['\"]").find(html)
             ?.let { return it.groupValues[1] }
         return ""
