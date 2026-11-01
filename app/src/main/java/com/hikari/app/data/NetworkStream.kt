@@ -726,6 +726,12 @@ private class BReader(val b: ByteArray) {
                     list = boxWebList(origin, url, key, sekey, sig, ids)
                 }
                 if (list == null) {
+                    // Same root call, several cheap shapes (XHR headers, no
+                    // token, browser UA, canonical session) — first errno=0
+                    // wins; every shape is logged for the next report.
+                    list = boxProbeList(origin, key, jsTokenOf(retryHome), retryJar, sekey, sig, ids, pageUrl = url)
+                }
+                if (list == null) {
                     val retryToken = jsTokenOf(retryHome)
                     val fallbacks = listOf("https://www.terabox.com", "https://terabox.com")
                         .filter { it != origin }
@@ -865,6 +871,15 @@ private class BReader(val b: ByteArray) {
         return android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
     }
 
+    /** Call-shape overrides for one list attempt (see the variant probe):
+     *  the UA the call presents, extra headers, and whether the token stays
+     *  off the query. Defaults reproduce the long-standing call exactly. */
+    private data class BoxCallCfg(
+        val ua: String = BOX_UA,
+        val extra: Map<String, String> = emptyMap(),
+        val skipToken: Boolean = false,
+    )
+
     /** `/share/list` for one share — the account of the entries at its root,
      *  plus (bounded) the video files inside any folder it holds. */
     private suspend fun boxList(
@@ -876,8 +891,9 @@ private class BReader(val b: ByteArray) {
         sig: Pair<String, Long>?,
         ids: Pair<String, String>?,
         pageUrl: String,
+        cfg: BoxCallCfg = BoxCallCfg(),
     ): List<JSONObject>? {
-        val root = boxListPage(origin, key, jsToken, jar, sekey, sig, ids, pageUrl, dir = null) ?: return null
+        val root = boxListPage(origin, key, jsToken, jar, sekey, sig, ids, pageUrl, dir = null, cfg = cfg) ?: return null
         val out = ArrayList<JSONObject>(root)
         // A share of a season is a folder of episodes: one level down, and at
         // most a few folders, keeps a huge share from turning into a hundred
@@ -889,7 +905,7 @@ private class BReader(val b: ByteArray) {
             val dir = e.optString("path").trim()
             if (dir.isBlank()) continue
             folders++
-            out += boxListPage(origin, key, jsToken, jar, sekey, sig, ids, pageUrl, dir = dir).orEmpty()
+            out += boxListPage(origin, key, jsToken, jar, sekey, sig, ids, pageUrl, dir = dir, cfg = cfg).orEmpty()
         }
         return out
     }
@@ -904,13 +920,14 @@ private class BReader(val b: ByteArray) {
         ids: Pair<String, String>?,
         pageUrl: String,
         dir: String?,
+        cfg: BoxCallCfg = BoxCallCfg(),
     ): List<JSONObject>? {
         val query = buildString {
             append("$origin/share/list?$BOX_APP_QUERY")
             // The token can carry URL-hostile characters — encode it exactly
             // like the sekey below (an unencoded token breaks the whole query
             // and the call is refused as if it were never signed).
-            if (jsToken.isNotBlank()) append("&jsToken=").append(URLEncoder.encode(jsToken, "UTF-8"))
+            if (jsToken.isNotBlank() && !cfg.skipToken) append("&jsToken=").append(URLEncoder.encode(jsToken, "UTF-8"))
             if (!sekey.isNullOrBlank()) append("&sekey=").append(URLEncoder.encode(sekey, "UTF-8"))
             // The page's own signature — the web client's calls always carry
             // it, and the endpoint refuses unsigned calls with errno 105.
@@ -931,7 +948,7 @@ private class BReader(val b: ByteArray) {
                 append("&dir=").append(URLEncoder.encode(dir, "UTF-8"))
             }
         }
-        val text = fetchText(query, BOX_UA, jar, referer = pageUrl) ?: return null
+        val text = fetchText(query, cfg.ua, jar, referer = pageUrl, extra = cfg.extra) ?: return null
         val json = runCatching { JSONObject(text) }.getOrNull() ?: return null
         val errno = json.optInt("errno", -1)
         if (errno != 0) {
@@ -991,6 +1008,7 @@ private class BReader(val b: ByteArray) {
         Logs.log(
             "NetStream",
             "terabox: web session page ${html.length} chars cookies=${jar.size}" +
+                " (" + jar.map { it.substringBefore('=') }.distinct().joinToString(",").take(200) + ")" +
                 " token=" + (if (webToken.isNotBlank()) "yes" else "none") +
                 " sekey=" + (if (!webSekey.isNullOrBlank()) "yes" else "none") +
                 " sign=" + (if (webSig != null) "yes" else "none") +
@@ -999,6 +1017,10 @@ private class BReader(val b: ByteArray) {
         val out = boxList(origin, key, webToken, jar, webSekey, webSig, webIds, pageUrl = pageUrl)
         if (out != null) {
             Logs.log("NetStream", "terabox: list answered via web session for $origin")
+        } else {
+            // The replay lost too: read the official client's own bundles
+            // for the endpoints the DOM never carries (best effort, bounded).
+            withTimeoutOrNull(25_000) { boxBundleRecon(html, jar, pageUrl, origin, meta) }
         }
         return out
     }
@@ -1101,6 +1123,138 @@ private class BReader(val b: ByteArray) {
             }
         }
         return sb.toString()
+    }
+
+    /**
+     * Variant probe for a refused list on an existing share (see the
+     * errno=105 chain): the same root call in several cheap shapes, each
+     * logged with its own name, first errno=0 wins and feeds the full list
+     * (folders included). Null when every shape is refused — honest-empty.
+     */
+    private suspend fun boxProbeList(
+        origin: String,
+        key: String,
+        jsToken: String,
+        jar: MutableList<String>,
+        sekey: String?,
+        sig: Pair<String, Long>?,
+        ids: Pair<String, String>?,
+        pageUrl: String,
+    ): List<JSONObject>? {
+        val xhr = BoxCallCfg(
+            extra = mapOf("X-Requested-With" to "XMLHttpRequest", "Origin" to origin),
+        )
+        boxListPage(origin, key, jsToken, jar, sekey, sig, ids, pageUrl, dir = null, cfg = xhr)
+            ?.let {
+                Logs.log("NetStream", "terabox: probe xhr errno=0 entries=${it.size} for $origin")
+                return boxList(origin, key, jsToken, jar, sekey, sig, ids, pageUrl, xhr)
+            }
+        Logs.log("NetStream", "terabox: probe xhr refused for $origin")
+        val noToken = BoxCallCfg(skipToken = true)
+        boxListPage(origin, key, jsToken, jar, sekey, sig, ids, pageUrl, dir = null, cfg = noToken)
+            ?.let {
+                Logs.log("NetStream", "terabox: probe notoken errno=0 entries=${it.size} for $origin")
+                return boxList(origin, key, jsToken, jar, sekey, sig, ids, pageUrl, noToken)
+            }
+        Logs.log("NetStream", "terabox: probe notoken refused for $origin")
+        val browserCfg = BoxCallCfg(ua = Http.UA)
+        boxListPage(origin, key, jsToken, jar, sekey, sig, ids, pageUrl, dir = null, cfg = browserCfg)
+            ?.let {
+                Logs.log("NetStream", "terabox: probe browser-ua errno=0 entries=${it.size} for $origin")
+                return boxList(origin, key, jsToken, jar, sekey, sig, ids, pageUrl, browserCfg)
+            }
+        Logs.log("NetStream", "terabox: probe browser-ua refused for $origin")
+        // The canonical backend with its own session: some mirrors gate the
+        // list while the canonical host answers the same key.
+        val canon = "https://www.terabox.com"
+        if (canon != origin) {
+            val cjar = LinkedList<String>()
+            if (cjar.none { it.substringBefore('=').trim().equals("browserid", ignoreCase = true) }) {
+                cjar.add("browserid=" + freshBrowserId())
+            }
+            val cpage = fetchText("$canon/s/$key", BOX_UA, cjar, referer = canon)
+            val ctoken = if (!cpage.isNullOrBlank()) jsTokenOf(cpage) else ""
+            val cmeta = fetchText(
+                "$canon/api/shorturlinfo?shorturl=$key&root=1",
+                BOX_UA,
+                cjar,
+                referer = "$canon/s/$key",
+            )
+            val cerrno = runCatching { JSONObject(cmeta ?: "").optInt("errno", -1) }.getOrDefault(-1)
+            Logs.log(
+                "NetStream",
+                "terabox: probe canon shorturlinfo errno=$cerrno token=" +
+                    (if (ctoken.isNotBlank()) "yes" else "none"),
+            )
+            if (cerrno == 0 && !cmeta.isNullOrBlank()) {
+                val csekey = boxSekeyOf(cmeta)
+                val cids = boxShareIdsOf(cmeta)
+                val csig = if (!cpage.isNullOrBlank()) boxSignOf(cpage) else null
+                boxListPage(canon, key, ctoken, cjar, csekey, csig, cids, "$canon/s/$key", dir = null)
+                    ?.let {
+                        Logs.log("NetStream", "terabox: probe canon errno=0 entries=${it.size} for $origin")
+                        return boxList(canon, key, ctoken, cjar, csekey, csig, cids, "$canon/s/$key")
+                    }
+                Logs.log("NetStream", "terabox: probe canon refused for $origin")
+            }
+        }
+        return null
+    }
+
+    /**
+     * Reconnaissance on the browser-rendered share page (see [boxWebList]):
+     * the official client's own bundle URLs sit in the DOM, and same-origin
+     * bundles are fetched (bounded) and scanned for the token/list endpoints
+     * the DOM never carries. Findings go to the shared log for the next
+     * report; nothing here changes the result — best effort only.
+     */
+    private suspend fun boxBundleRecon(
+        html: String,
+        webJar: List<String>,
+        pageUrl: String,
+        origin: String,
+        meta: String?,
+    ) {
+        if (!meta.isNullOrBlank()) {
+            val keys = runCatching {
+                JSONObject(meta).keys().asSequence().toList()
+            }.getOrDefault(emptyList())
+            Logs.log("NetStream", "terabox: recon shorturlinfo keys=" + keys.joinToString(",").take(300))
+        }
+        val jar = LinkedList(webJar.distinct())
+        val srcs = Regex("""<script[^>]+src="([^"]+)"""").findAll(html)
+            .map { it.groupValues[1].trim() }.filter { it.isNotBlank() }.toList()
+        Logs.log("NetStream", "terabox: recon scripts=" + srcs.size)
+        val needles = listOf("share/list", "jsToken", "getJsToken", "getSign", "shorturlinfo", "dlink", "/api/")
+        var shown = 0
+        for (raw in srcs) {
+            if (shown >= 15) break
+            val abs = when {
+                raw.startsWith("http") -> raw
+                raw.startsWith("//") -> "https:$raw"
+                raw.startsWith("/") -> origin + raw
+                else -> continue
+            }
+            if (!abs.startsWith(origin) || !abs.substringBefore('?').endsWith(".js")) continue
+            val js = withTimeoutOrNull(10_000) {
+                fetchText(abs, BOX_UA, jar, referer = pageUrl)
+            } ?: continue
+            if (js.length > 2_000_000) continue
+            for (n in needles) {
+                if (shown >= 15) break
+                var idx = js.indexOf(n, ignoreCase = true)
+                var takes = 0
+                while (idx >= 0 && takes < 2 && shown < 15) {
+                    val lo = (idx - 60).coerceAtLeast(0)
+                    val hi = (idx + n.length + 60).coerceAtMost(js.length)
+                    val ctx = js.substring(lo, hi).replace(Regex("\\s+"), " ")
+                    Logs.log("NetStream", "terabox: recon [$n] ..." + ctx.take(220) + "...")
+                    shown++
+                    takes++
+                    idx = js.indexOf(n, idx + 1, ignoreCase = true)
+                }
+            }
+        }
     }
 
     private fun isBoxFolder(e: JSONObject): Boolean =
@@ -1228,12 +1382,14 @@ private class BReader(val b: ByteArray) {
         ua: String?,
         jar: MutableList<String>,
         referer: String? = null,
+        extra: Map<String, String> = emptyMap(),
     ): String? {
         val headers = LinkedHashMap<String, String>()
         if (!ua.isNullOrBlank()) headers["User-Agent"] = ua
         if (!referer.isNullOrBlank()) headers["Referer"] = referer
         if (jar.isNotEmpty()) headers["Cookie"] = jar.joinToString("; ")
         headers["Accept"] = "*/*"
+        extra.forEach { (k, v) -> if (k.isNotBlank() && v.isNotBlank()) headers[k] = v }
         return try {
             Http.get(url, headers).use { response ->
                 response.headers.values("Set-Cookie").forEach { raw ->

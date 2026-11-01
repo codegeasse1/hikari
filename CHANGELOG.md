@@ -1,3 +1,7 @@
+## 0.12.20 (continuous build only)
+
+- Terabox recon round: a refused list on an existing share now tries several cheap call shapes in order (browser XHR headers, no token, browser user agent, canonical host with its own session) with first success winning and every shape logged, and the browser-rendered share page's own script bundles are scanned for the token/list endpoints the page never carries — the next log names the exact winner or the official client's real call
+
 ## 0.12.19 (continuous build only)
 
 - In-player server list always horizontal: the Source pill and the failover back-to-list open the horizontal rows even with the Vertical page layout set (outside the player the setting still rules), so the sheet fits the playing video instead of cramping portrait cards over it
