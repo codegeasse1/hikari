@@ -231,9 +231,6 @@ fun MangaDetailScreen(
             posterUrl = posterUrl.takeIf { it.isNotBlank() },
             rawType = "manga",
         )
-        val fresh = withContext(Dispatchers.IO) {
-            runCatching { provider.getMeta(base) }.getOrDefault(base)
-        }
         // External metadata (AniList/PornHwaDB) is fetched in parallel with
         // the provider row so it costs no extra wait, and it WINS: the
         // provider's text is only the fallback when neither source knows
@@ -247,7 +244,6 @@ fun MangaDetailScreen(
         meta = MangaMetadataRepository.mergeExternalFirst(
             fresh,
             runCatching { externalDeferred.await() }.getOrNull(),
-            title,
         )
         val cached = MangaStore.chaptersFor(key)
         if (cached.isNullOrEmpty()) {
