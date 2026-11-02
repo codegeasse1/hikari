@@ -6286,7 +6286,7 @@ fun DetailScreen(
                         Row(
                             Modifier
                                 .fillMaxWidth()
-                                .background(MaterialTheme.colorScheme.background.copy(alpha = 0.98f))
+                                .background(com.hikari.app.ui.pageFill(0.98f))
                                 .padding(horizontal = 16.dp, vertical = 4.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -9904,7 +9904,7 @@ private fun EpisodeRow(
                 .fillMaxWidth()
                 .background(
                     if (tvRow) Color.Transparent
-                    else MaterialTheme.colorScheme.background.copy(alpha = 0.98f)
+                    else com.hikari.app.ui.pageFill(0.98f)
                 )
         })
             .clickable(onClick = onClick)
