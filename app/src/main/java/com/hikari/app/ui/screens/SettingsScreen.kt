@@ -618,7 +618,7 @@ private fun searchSettings(rawQuery: String): List<SettingsSearchEntry> {
         "layout" to "layout posters taskbar scale fullscreen ratings navigation",
         "performance" to "performance lag stutter battery speed",
         "tv" to "tv television remote overscan",
-        "customize" to "customize personalize",
+        "customize" to "customize personalize player ui buttons icon size colour color shape",
         "player" to "player video audio subtitles controls gestures loading enhance",
         "servers" to "playback servers play search extensions wait ask scope",
         "network" to "network dns slow internet",
@@ -654,6 +654,7 @@ private fun searchSettings(rawQuery: String): List<SettingsSearchEntry> {
         val sub = subKey?.let { settingsFolderByKey(it) }
         out += SettingsSearchEntry(key, title, path, folder, sub, sectionId, keywords)
     }
+    section("sec-player-style", "Player UI style", "Customize", "customize", null, null, "player ui style buttons icons size bigger colour color shape round square circle position move opacity customize")
     val servers = "Playback & Servers"
     section("sec-play-start", "Playback start", servers, "servers", null, "player.start", "playback start play first server wait")
     section("sec-ask-where", "Ask where to play", servers, "servers", null, "player.start", "ask where play extension selected scope choice")
@@ -699,6 +700,9 @@ fun SettingsScreen(nav: NavHostController) {
     // back always has an obvious target.
     var openSub by remember { mutableStateOf<SettingsFolder?>(null) }
     var showPlayerControls by remember { mutableStateOf(false) }
+    // Settings -> Customize -> Player UI style: its own full page, like the
+    // Player controls editor (a live preview + one editor per button).
+    var showPlayerStyle by remember { mutableStateOf(false) }
     var showStats by remember { mutableStateOf(false) }
     var showPair by remember { mutableStateOf(false) }
     var showLogs by remember { mutableStateOf(false) }
@@ -770,9 +774,10 @@ fun SettingsScreen(nav: NavHostController) {
     // it as one.
     BackHandler(
         enabled = openSub != null || (openFolder != null && !isTv) || showStats || showLogs ||
-            showPair || showProfiles || showPlayerControls,
+            showPair || showProfiles || showPlayerControls || showPlayerStyle,
     ) {
         when {
+            showPlayerStyle -> showPlayerStyle = false
             showPlayerControls -> showPlayerControls = false
             showLogs -> showLogs = false
             showStats -> showStats = false
@@ -787,6 +792,13 @@ fun SettingsScreen(nav: NavHostController) {
     // four-way placement each does not fit in one card).
     if (showPlayerControls) {
         PlayerControlsPage(app, onBack = { showPlayerControls = false })
+        return
+    }
+
+    // The Player UI style editor (Customize folder) is a full screen as well:
+    // a pinned live preview above one editor per button.
+    if (showPlayerStyle) {
+        PlayerStylePage(app, onBack = { showPlayerStyle = false })
         return
     }
 
@@ -1134,6 +1146,7 @@ fun SettingsScreen(nav: NavHostController) {
                             }
                         }
                     }
+                    item { SettingsCard { PlayerStyleCard(onOpen = { showPlayerStyle = true }) } }
                 }
                 SettingsFolder.CATALOG -> {
                     item {
@@ -8407,6 +8420,28 @@ private fun AdBlockingCard(app: HikariApp) {
 
 
 // ---- Player controls & video enhance (Player folder) ----
+
+/** Opens the full-screen Player UI style editor (Customize folder). */
+@Composable
+private fun PlayerStyleCard(onOpen: () -> Unit) {
+    Column(Modifier.padding(16.dp)) {
+        Text(
+            tr("Player UI style"),
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            tr("Make the player buttons bigger, recolour them, change their shape and move them"),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(12.dp))
+        OutlinedButton(onClick = onOpen, shape = GlassShape) {
+            Text(tr("Customize player buttons"))
+        }
+    }
+}
 
 /** Opens the full-screen Player controls editor. */
 @Composable
