@@ -124,8 +124,11 @@ object CustomBackground {
         image = null
     }
 
-    /** Live change while the slider moves; [saveDim] stores it when it stops. */
-    fun setDim(value: Float) {
+    /**
+     * Live change while the slider moves; [saveDim] stores it when it stops.
+     * (Not named setDim: that is the JVM name of [dim]'s own setter.)
+     */
+    fun updateDim(value: Float) {
         dim = value.coerceIn(0f, MAX_DIM)
     }
 
@@ -336,7 +339,7 @@ fun CustomBackgroundContent() {
         }
         Slider(
             value = CustomBackground.dim,
-            onValueChange = { CustomBackground.setDim(it) },
+            onValueChange = { CustomBackground.updateDim(it) },
             onValueChangeFinished = { CustomBackground.saveDim(context) },
             valueRange = 0f..0.9f,
         )
