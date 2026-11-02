@@ -1,4 +1,8 @@
 ## 0.12.26 (continuous build only)
+## added
+- new Custom Background (BG) Option in Setting
+
+## 0.12.26 (continuous build only)
 
 ## added 
 - Added search suggestions to improve the search experience.
