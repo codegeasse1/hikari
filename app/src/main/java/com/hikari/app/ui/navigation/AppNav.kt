@@ -1391,6 +1391,10 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
             }
             else -> Unit
         }
+        // The user's own picture (Settings -> Customize -> Custom background):
+        // drawn over the theme backdrop, under the transparent Scaffold. Draws
+        // nothing until a picture is chosen.
+        com.hikari.app.ui.CustomBackgroundLayer()
         Scaffold(
             // Transparent: the backdrop above is the page, so the cards' glass
             // has something to sit on (see the comment on the backdrop).
