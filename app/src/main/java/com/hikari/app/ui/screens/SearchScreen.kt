@@ -395,16 +395,10 @@ fun SearchScreen(
     val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
     var searchAutoFocused by rememberSaveable { mutableStateOf(false) }
     val searchIsTv = TvMode.current()
-    // Phones show results only for a SUBMITTED search (the box text equals what
-    // was submitted). Television has no search key, so it keeps searching on its
-    // own a moment after the typing stops.
-    val resultsMode = searchIsTv || (query.isNotBlank() && query.trim() == submitted)
-    LaunchedEffect(query, searchIsTv) {
-        if (searchIsTv) {
-            kotlinx.coroutines.delay(400)
-            vm.submit(query)
-        }
-    }
+    // Results show only for a SUBMITTED search (the box text equals what was
+    // submitted): phone and television alike. While typing, the suggestion list
+    // is what shows; the keyboard's search key or a picked suggestion submits.
+    val resultsMode = query.isNotBlank() && query.trim() == submitted
     LaunchedEffect(Unit) {
         if (searchAutoFocused) return@LaunchedEffect
         searchAutoFocused = true
@@ -672,57 +666,6 @@ fun SearchScreen(
                 }
             }
         )
-        // Television's provider box trigger: the same exact Select
-        // Provider dialog as Home — the box only, no feed mixer here.
-        if (searchIsTv && (providers.isNotEmpty() || collections.isNotEmpty())) {
-            val tvScopeLabel = when {
-                selected.isEmpty() -> tr("All providers")
-                soleName != null -> soleName
-                else -> I18n.t("%s sources").replace("%s", selected.size.toString())
-            }
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 20.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Surface(
-                    onClick = { showProviders = true },
-                    shape = RoundedCornerShape(50),
-                    color = TvDesktop.SurfaceCard,
-                    border = BorderStroke(1.dp, TvDesktop.GlassEdge),
-                    modifier = Modifier.tvPress { showProviders = true },
-                ) {
-                    Row(
-                        Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Icon(
-                            Icons.Filled.Tune,
-                            contentDescription = null,
-                            tint = TvDesktop.TextMuted,
-                            modifier = Modifier.size(16.dp),
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            tvScopeLabel,
-                            style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.SemiBold,
-                            color = TvDesktop.TextPrimary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        Icon(
-                            Icons.Filled.KeyboardArrowDown,
-                            contentDescription = tr("Choose providers"),
-                            tint = TvDesktop.TextMuted,
-                            modifier = Modifier.size(16.dp),
-                        )
-                    }
-                }
-            }
-        }
         // ---- Recent searches ----
         //
         // Shown only while the box is EMPTY: once a search is running or has
@@ -842,7 +785,7 @@ fun SearchScreen(
         //
         // Television hides the whole block: the TV screen is provider
         // selection + the search box only.
-        if (!searchIsTv) {
+        run {
             // ---- Every filter in ONE slim row ----
             // Type/year/genre are compact selector pills — NOT one pill per
             // option. Each opens its own box (like the provider pill opens
@@ -872,6 +815,7 @@ fun SearchScreen(
             // (no truncation, no collapsing second line), and the results get
             // all the room below. Television keeps its own screen (provider
             // selection + search box only).
+            if (!searchIsTv) {
             LazyRow(
                 contentPadding = PaddingValues(horizontal = 16.dp),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -944,6 +888,30 @@ fun SearchScreen(
                         onClick = { showGenreFilter = true },
                     )
                 }
+            }
+            } else {
+                // Television: the same four pills in one line, so the poster
+                // grid below gets the room. Each opens the same picker box.
+                val tvScopeLabel = when {
+                    selected.isEmpty() -> tr("All providers")
+                    soleName != null -> soleName
+                    else -> I18n.t("%s sources").replace("%s", selected.size.toString())
+                }
+                TvSearchFilterRow(
+                    showScope = providers.isNotEmpty() || collections.isNotEmpty(),
+                    scopeLabel = tvScopeLabel,
+                    scopeActive = selected.isNotEmpty(),
+                    onScope = { showProviders = true },
+                    typeLabel = typeLabel,
+                    typeActive = kindFilter != SearchKindFilter.ALL,
+                    onType = { showTypeFilter = true },
+                    yearLabel = yearLabel,
+                    yearActive = yearsFilter.isNotEmpty(),
+                    onYear = { showYearFilter = true },
+                    genreLabel = genreLabel,
+                    genreActive = genreFilter.isNotEmpty(),
+                    onGenre = { showGenreFilter = true },
+                )
             }
             if (showTypeFilter) {
                 ChoiceDialog(
@@ -1039,29 +1007,43 @@ fun SearchScreen(
         }
         // Type-ahead suggestions replace the results area while typing (phones
         // only); a tap on one, or the keyboard's search key, brings the results back.
-        val showSuggestions = !searchIsTv && suggestOpen && query.trim().length >= 2
+        val showSuggestions = suggestOpen && query.trim().length >= 2
         if (showSuggestions) {
-            SearchSuggestionList(
-                // Nothing found for what is typed (a typo, a half-word): offer the
-                // typed text itself as the one row, so the list is never blank.
-                suggestions = if (suggestions.isEmpty()) {
-                    listOf(SearchSuggestion(query.trim(), isSeries = false, isTypedText = true))
-                } else {
-                    suggestions
-                },
-                onPick = { title ->
-                    translatedFrom = null
-                    suggestOpen = false
-                    vm.setQuery(title)
-                    vm.submit(title)
-                    keyboard?.hide()
-                },
-                onFill = { title ->
-                    translatedFrom = null
-                    vm.setQuery(title)
-                },
-                modifier = Modifier.weight(1f),
-            )
+            val typedText = query.trim()
+            val pickSuggestion: (String) -> Unit = { title ->
+                translatedFrom = null
+                suggestOpen = false
+                vm.setQuery(title)
+                vm.submit(title)
+                keyboard?.hide()
+            }
+            if (searchIsTv) {
+                // The typed text always leads, so one press of OK runs exactly
+                // what was typed; the title suggestions follow it.
+                TvSearchSuggestionList(
+                    suggestions = listOf(
+                        SearchSuggestion(typedText, isSeries = false, isTypedText = true),
+                    ) + suggestions.filter { !it.title.equals(typedText, ignoreCase = true) },
+                    onPick = pickSuggestion,
+                    modifier = Modifier.weight(1f),
+                )
+            } else {
+                SearchSuggestionList(
+                    // Nothing found for what is typed (a typo, a half-word): offer the
+                    // typed text itself as the one row, so the list is never blank.
+                    suggestions = if (suggestions.isEmpty()) {
+                        listOf(SearchSuggestion(typedText, isSeries = false, isTypedText = true))
+                    } else {
+                        suggestions
+                    },
+                    onPick = pickSuggestion,
+                    onFill = { title ->
+                        translatedFrom = null
+                        vm.setQuery(title)
+                    },
+                    modifier = Modifier.weight(1f),
+                )
+            }
         } else if (!resultsMode || (query.isBlank() && results.isEmpty() && collectionHits.isEmpty())) {
             EmptyState(
                 title = tr("Search"),
