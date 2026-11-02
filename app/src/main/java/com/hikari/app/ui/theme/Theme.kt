@@ -9,6 +9,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
@@ -153,7 +154,12 @@ private fun amoledColors(accent: HikariAccent) = darkColorScheme(
 @Composable
 fun pageBackground(): Color {
     val bg = MaterialTheme.colorScheme.background
-    return if (bg.alpha >= 0.99f) bg else HikariBg
+    return when {
+        bg.alpha >= 0.99f -> bg
+        // See-through page colour over a light theme (custom background picture).
+        bg.luminance() > 0.5f -> HikariLightBg
+        else -> HikariBg
+    }
 }
 
 @Composable
@@ -194,6 +200,17 @@ fun HikariTheme(
         HikariThemeMode.GLASS -> glassColors(accent)
         HikariThemeMode.AMOLED -> amoledColors(accent)
     }
+    // While the user has a picture set as the app background (Settings ->
+    // Customize -> Custom background) every page must let it show through. The
+    // scheme's page colour is made see-through for that (the Dark Glass theme
+    // already works this way), and the real colour is kept in
+    // LocalPageScrim for the darkness layer that sits over the picture.
+    val hasPicture = com.hikari.app.ui.CustomBackground.image != null
+    val shownScheme = if (hasPicture) {
+        scheme.copy(background = scheme.background.copy(alpha = 0f))
+    } else {
+        scheme
+    }
     CompositionLocalProvider(
         LocalDensity provides density,
         // Belt-and-braces: a transparent Scaffold/Material container reports
@@ -202,9 +219,10 @@ fun HikariTheme(
         // the dark/glass/AMOLED themes. Seeding the local here (and on the
         // navigation Scaffold) keeps unstyled content readable everywhere.
         LocalContentColor provides scheme.onBackground,
+        com.hikari.app.ui.LocalPageScrim provides scheme.background,
     ) {
         MaterialTheme(
-            colorScheme = scheme,
+            colorScheme = shownScheme,
             typography = typographyWith(fontFamily),
             content = content,
         )
