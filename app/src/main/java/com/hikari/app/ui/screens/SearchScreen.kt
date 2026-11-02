@@ -148,6 +148,21 @@ class SearchViewModel(
     private val _query = MutableStateFlow(savedState.get<String>("query") ?: "")
     val query: StateFlow<String> = _query.asStateFlow()
 
+    /**
+     * The query the user actually SUBMITTED (keyboard search key, a tapped
+     * suggestion, a recent-search chip). Results follow THIS, never the raw
+     * text box, so nothing is searched or shown while the user is still typing.
+     * Kept in the SavedStateHandle for the same reason the query is.
+     */
+    private val _submitted = MutableStateFlow((savedState.get<String>("submitted") ?: "").trim())
+    val submitted: StateFlow<String> = _submitted.asStateFlow()
+
+    fun submit(q: String) {
+        val t = q.trim()
+        _submitted.value = t
+        savedState["submitted"] = t
+    }
+
     /** Selected provider ids to search in. EMPTY = search ALL providers.
      *
      *  A key is either an extension's id or a personal catalog's
@@ -202,7 +217,7 @@ class SearchViewModel(
 
     init {
         viewModelScope.launch {
-            combine(_query.debounce(400).distinctUntilChanged(), _selectedProviders) { q, sel ->
+            combine(_submitted, _selectedProviders) { q, sel ->
                 q to sel
             }
                 .collectLatest { (q, selection) ->
@@ -298,6 +313,9 @@ class SearchViewModel(
     fun setQuery(q: String) {
         _query.value = q
         savedState["query"] = q
+        // An emptied box also clears the search, so old results never sit
+        // under a blank query.
+        if (q.isBlank()) submit("")
     }
 
     /** "All sources" — empty set means every provider. */
@@ -344,6 +362,7 @@ fun SearchScreen(
     val providers by vm.providers.collectAsState()
     val history by vm.history.collectAsState(initial = emptyList())
     val suggestions by vm.suggestions.collectAsState()
+    val submitted by vm.submitted.collectAsState()
     // `initial` is required for a plain Flow (a StateFlow carries its own), and
     // it doubles as "no catalogs yet" for the first frame.
     val collections by vm.userCollections.collectAsState(initial = emptyList())
@@ -376,6 +395,16 @@ fun SearchScreen(
     val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
     var searchAutoFocused by rememberSaveable { mutableStateOf(false) }
     val searchIsTv = TvMode.current()
+    // Phones show results only for a SUBMITTED search (the box text equals what
+    // was submitted). Television has no search key, so it keeps searching on its
+    // own a moment after the typing stops.
+    val resultsMode = searchIsTv || (query.isNotBlank() && query.trim() == submitted)
+    LaunchedEffect(query, searchIsTv) {
+        if (searchIsTv) {
+            kotlinx.coroutines.delay(400)
+            vm.submit(query)
+        }
+    }
     LaunchedEffect(Unit) {
         if (searchAutoFocused) return@LaunchedEffect
         searchAutoFocused = true
@@ -527,7 +556,7 @@ fun SearchScreen(
     }
 
     LaunchedEffect(Unit) {
-        if (initialQuery.isNotBlank()) vm.setQuery(initialQuery)
+        if (initialQuery.isNotBlank()) { vm.setQuery(initialQuery); vm.submit(initialQuery) }
         if (initialProvider.isNotBlank()) vm.selectProvider(initialProvider)
     }
 
@@ -541,6 +570,7 @@ fun SearchScreen(
         val restore = translatedFrom
         if (restore != null) {
             vm.setQuery(restore)
+            vm.submit(restore)
             translatedFrom = null
             return
         }
@@ -553,6 +583,7 @@ fun SearchScreen(
             if (out.isNotBlank() && out != src) {
                 translatedFrom = src
                 vm.setQuery(out)
+                vm.submit(out)
             }
         }
     }
@@ -581,6 +612,7 @@ fun SearchScreen(
             keyboardActions = androidx.compose.foundation.text.KeyboardActions(
                 onSearch = {
                     suggestOpen = false
+                    vm.submit(vm.query.value)
                     keyboard?.hide()
                 },
             ),
@@ -732,6 +764,7 @@ fun SearchScreen(
                             translatedFrom = null
                             suggestOpen = false
                             vm.setQuery(past)
+                            vm.submit(past)
                         },
                         onDelete = { vm.forgetSearch(past) },
                     )
@@ -957,7 +990,7 @@ fun SearchScreen(
                     },
                 )
             }
-            if ((filterOn || activeEngine.isNotBlank()) && results.isNotEmpty()) {
+            if ((filterOn || activeEngine.isNotBlank()) && results.isNotEmpty() && resultsMode) {
                 Column(Modifier.padding(horizontal = 16.dp, vertical = 2.dp)) {
                     Text(
                         if (visible.isEmpty()) {
@@ -1006,15 +1039,21 @@ fun SearchScreen(
         }
         // Type-ahead suggestions replace the results area while typing (phones
         // only); a tap on one, or the keyboard's search key, brings the results back.
-        val showSuggestions = !searchIsTv && suggestOpen &&
-            query.trim().length >= 2 && suggestions.isNotEmpty()
+        val showSuggestions = !searchIsTv && suggestOpen && query.trim().length >= 2
         if (showSuggestions) {
             SearchSuggestionList(
-                suggestions = suggestions,
+                // Nothing found for what is typed (a typo, a half-word): offer the
+                // typed text itself as the one row, so the list is never blank.
+                suggestions = if (suggestions.isEmpty()) {
+                    listOf(SearchSuggestion(query.trim(), isSeries = false, isTypedText = true))
+                } else {
+                    suggestions
+                },
                 onPick = { title ->
                     translatedFrom = null
                     suggestOpen = false
                     vm.setQuery(title)
+                    vm.submit(title)
                     keyboard?.hide()
                 },
                 onFill = { title ->
@@ -1023,7 +1062,7 @@ fun SearchScreen(
                 },
                 modifier = Modifier.weight(1f),
             )
-        } else if (query.isBlank() && results.isEmpty() && collectionHits.isEmpty()) {
+        } else if (!resultsMode || (query.isBlank() && results.isEmpty() && collectionHits.isEmpty())) {
             EmptyState(
                 title = tr("Search"),
                 subtitle = tr("Type something to search across every provider."),
