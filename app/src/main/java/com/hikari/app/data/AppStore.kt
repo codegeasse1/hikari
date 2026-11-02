@@ -103,6 +103,10 @@ class AppStore(private val ctx: Context) {
         val PLAYER_ACCENT = stringPreferencesKey("playerAccent")
         val THEME_LINKED = booleanPreferencesKey("themeLinked")
         val PLAYER_CONTROLS = stringPreferencesKey("playerControls")
+        /** The viewer's own look for the player's buttons, as
+         *  [com.hikari.app.player.PlayerUiStyle] JSON (Settings -> Customize ->
+         *  Player UI style). Blank means "not customised". */
+        val PLAYER_UI_STYLE = stringPreferencesKey("playerUiStyle")
         val PLAYER_ENHANCE = stringPreferencesKey("playerEnhance")
         /** True once the user has worked the video-enhance picker themselves, so
          *  the television layout stops forcing its own (light) preset. See
@@ -3705,6 +3709,17 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
 
     suspend fun setPlayerControls(json: String) {
         write("PLAYER_CONTROLS") { it[K.PLAYER_CONTROLS] = json }
+    }
+
+    /** The player's custom button look, as [com.hikari.app.player.PlayerUiStyle]
+     *  JSON (Settings -> Customize -> Player UI style). Blank = untouched. */
+    fun playerUiStyleFlow(): Flow<String> =
+        store.data.map { it[K.PLAYER_UI_STYLE] ?: "" }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun playerUiStyle(): String = playerUiStyleFlow().first()
+
+    suspend fun setPlayerUiStyle(json: String) {
+        write("PLAYER_UI_STYLE") { it[K.PLAYER_UI_STYLE] = json }
     }
 
     /**
