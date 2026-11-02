@@ -1122,7 +1122,18 @@ fun SettingsScreen(nav: NavHostController) {
                     item { SettingsCard { TvRemoteCard() } }
                 }
                 SettingsFolder.CUSTOMIZE -> {
-                    // Nothing in here yet.
+                    item {
+                        SettingsCard(top = 2.dp) {
+                            SettingsSection(
+                                id = "customize.background",
+                                icon = Icons.Filled.Wallpaper,
+                                title = tr("Custom background"),
+                                summary = tr("Use your own picture as the app background"),
+                            ) {
+                                com.hikari.app.ui.CustomBackgroundContent()
+                            }
+                        }
+                    }
                 }
                 SettingsFolder.CATALOG -> {
                     item {
