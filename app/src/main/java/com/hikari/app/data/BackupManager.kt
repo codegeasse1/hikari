@@ -56,16 +56,17 @@ import java.util.Locale
  *    must never decide for the device receiving it.
  *
  * Extension code travels as *references* (`{path, url}`), not bytes: every
- * repo-installed extension can be fetched again from the source URL its
- * provider row already remembers, so embedding all of them made backups
- * hundreds of megabytes for no reason (a few hundred extensions reached
- * ~235 MB of base64). Only files with no known source (sideloaded) still
- * carry bytes, and Nuvio per-provider settings always do — they are user
- * data, not re-downloadable code. The restore re-downloads the references in
- * the background after reporting success; old backups that still embed every
- * file restore exactly as before, and an older Hikari reading a new file
- * simply restores the settings plus the sideloaded files (it skips the
- * section it does not know).
+ * repo-installed single-file extension can be fetched again from the source
+ * URL its provider row already remembers, so embedding all of them made
+ * backups hundreds of megabytes for no reason (a few hundred extensions
+ * reached ~235 MB of base64). Files with no direct source (sideloaded files,
+ * provider directories, installers whose source is an archive/manifest and
+ * Nuvio per-provider settings) still carry bytes — settings are user data,
+ * not re-downloadable code. The restore writes the embedded files and
+ * re-downloads the references in the background after reporting success; old
+ * backups that still embed every file restore exactly as before, and an older
+ * Hikari reading a new file simply restores the settings plus the sideloaded
+ * files (it skips the section it does not know).
  *
  * The format is a plain JSON object so a support chat can be told "open it in a
  * text editor" and the user can see it contains no video and no app lock.
@@ -82,9 +83,9 @@ object BackupManager {
 
     /**
      * The only directories a restore may write into, relative to `filesDir`:
-     * `<files>/cs3` and `<files>/hiki` are the installed extensions,
-     * `<files>/nuvio/scrapers` and `<files>/nuvio/settings` the Nuvio
-     * scrapers and their per-provider settings.
+     * every installed-extension family lives under one of these roots
+     * (CS3/Hiki bundles, Nuvio scrapers/settings, manga/anime extension
+     * copies, and the JS/provider module families).
      *
      * This is the security boundary of the whole feature: a backup file is
      * something the user picked from anywhere (a download, a chat attachment),
@@ -93,7 +94,14 @@ object BackupManager {
      * therefore only ever replace extensions and their settings, never write an
      * arbitrary file into the app's storage.
      */
-    private val FILE_ROOTS = listOf("cs3", "hiki", "nuvio/scrapers", "nuvio/settings")
+    private val FILE_ROOTS = listOf(
+        "cs3", "hiki",
+        "nuvio/scrapers", "nuvio/settings",
+        "manga/exts", "aniyomi/exts",
+        "anymex/modules", "lnreader/plugins",
+        "skystream/plugins", "sora/modules",
+        "vega/providers", "zangetsu/providers",
+    )
 
     /** Nothing legitimate in those directories is anywhere near this big; the
      *  cap keeps a corrupt/hostile file from being expanded into the app's
@@ -273,7 +281,9 @@ object BackupManager {
             // Encoded off the writer thread in small parallel batches (see
             // [writeBackupFiles]): a large extension set used to back up at
             // single-core speed here — the "backup takes a minute" report.
-            // Only sideloaded files reach this — see above.
+            // Only files without a re-downloadable reference reach this —
+            // sideloaded files plus provider-directory members and installers
+            // whose source is an archive/manifest — see above.
             writeBackupFiles(app, w, onProgress, embedRels)
             w.endArray()
             w.name("profiles").beginObject()
@@ -306,7 +316,7 @@ object BackupManager {
     private const val BACKUP_ENCODE_PARALLEL = 16
 
     /**
-     * The `files` array of the backup: one object per sideloaded extension
+     * The `files` array of the backup: one object per embedded extension
      * file, emitted in walk order. Small batches encode concurrently while
      * the writer itself stays strictly sequential (JsonWriter is not
      * thread-safe — only this coroutine touches it).
@@ -407,7 +417,7 @@ object BackupManager {
     /**
      * Every extension/scraper file, as `(relative path, bytes)`.
      *
-     * Walks the four [FILE_ROOTS] rather than listing known extensions so a
+     * Walks every extension family in [FILE_ROOTS] rather than listing known extensions so a
      * plugin family added later is carried automatically; a file that cannot be
      * read is skipped rather than failing the whole backup (a locked or
      * half-written file must not cost the user their settings).
@@ -454,20 +464,31 @@ object BackupManager {
     /**
      * Installed extension file (relative path) -> the URL it can be fetched
      * from again. Provider rows remember both halves: `url` is the local file
-     * (CS3, Hiki and Nuvio rows all store the absolute path there) and `extra`
-     * is the source URL it was installed from ([AppStore.sourceUrlOf] strips
-     * the Hiki `|index` suffix). Only files under the backed-up roots qualify,
-     * and Nuvio *settings* never do — they are user data, not re-downloadable
+     * and `extra` is the direct downloadable artifact it was installed from
+     * ([AppStore.sourceUrlOf] strips the Hiki `|index` suffix). Only
+     * single-file artifacts with a direct source URL qualify (repo APKs and
+     * scripts such as CS3/Hiki/Nuvio/Manga/Aniyomi/Anymex/LNReader);
+     * provider directories, and installers whose source is an archive or a
+     * manifest that only points at the real script, stay embedded instead.
+     * Nuvio *settings* never do — they are user data, not re-downloadable
      * code, so they stay embedded.
      */
     private suspend fun collectExtensionRefs(app: HikariApp): Map<String, String> {
         val out = LinkedHashMap<String, String>()
         val providers = runCatching { app.store.providers() }.getOrDefault(emptyList())
         for (p in providers) {
-            if (p.type != ProviderType.CS3 && p.type != ProviderType.HIKARI && p.type != ProviderType.NUVIO) continue
+            if (p.type != ProviderType.CS3 && p.type != ProviderType.HIKARI &&
+                p.type != ProviderType.NUVIO && p.type != ProviderType.MANGA &&
+                p.type != ProviderType.ANIYOMI && p.type != ProviderType.ANYMEX &&
+                p.type != ProviderType.ANYMEX_MANGA
+            ) continue
             val url = runCatching { app.store.sourceUrlOf(p) }.getOrDefault("")
             if (!url.startsWith("http://") && !url.startsWith("https://")) continue
             if (p.url.isBlank()) continue
+            // References are only for single files whose source URL is the
+            // file itself. Provider directories (and installers whose source
+            // is an archive/manifest) stay embedded via [collectFileRels].
+            if (!File(p.url).isFile) continue
             val rel = runCatching {
                 File(p.url).relativeTo(app.filesDir).invariantSeparatorsPath
             }.getOrNull() ?: continue

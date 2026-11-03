@@ -1,3 +1,7 @@
+## 0.12.27 (continuous build only)
+
+- Backup/restore now carries every installed extension family (manga/anime extension copies plus SkyStream/Sora/Vega/Zangetsu/Anymex/LNReader modules, alongside CS3/Hiki/Nuvio), so a restore brings the binaries back too and extensions work without Repair all; repo single-file artifacts re-download, everything else is embedded
+
 ## 0.12.26 (continuous build only)
 ## added
 - new Custom Background (BG) Option in Setting
