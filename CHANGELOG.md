@@ -1,3 +1,10 @@
+## 0.12.28 (continuous build only)
+
+- TV home hero is full-bleed now: the artwork melts into the background with no glass card/box around it
+- Player UI style: "Where it sits" moved up between size and shape in every button editor
+- Integrations renames Anime Metadata to Custom metadata tweaks
+- Appearance & Theme drops the Provider catalogs row
+
 ## 0.12.27 (continuous build only)
 
 - Backup/restore now carries every installed extension family (manga/anime extension copies plus SkyStream/Sora/Vega/Zangetsu/Anymex/LNReader modules, alongside CS3/Hiki/Nuvio), so a restore brings the binaries back too and extensions work without Repair all; repo single-file artifacts re-download, everything else is embedded

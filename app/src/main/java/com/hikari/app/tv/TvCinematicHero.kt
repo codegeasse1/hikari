@@ -124,18 +124,16 @@ fun TvCinematicHero(
     // never moves.
     val ts = TvUi.scale()
     BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
-        // A television banner, not a cinema screen: about a third of the
-        // viewport (capped well below fullscreen) so shelves stay visible
-        // under it, the way the reference client's home looks. The user's own
-        // hero-size setting still scales it from here.
-        val h = (((maxHeight * 0.24f).value * scale.coerceIn(0.5f, 1.5f)).coerceIn(120f, 300f)).dp
+        // Full-bleed merged hero: the artwork runs edge to edge and melts
+        // into the page background through the scrims below — no card, no
+        // border, no rounded clip. Taller than the old boxed banner so the
+        // face/art reads like the reference, with shelves still below it.
+        // The user's own hero-size setting still scales it from here.
+        val h = (((maxHeight * 0.46f).value * scale.coerceIn(0.5f, 1.5f)).coerceIn(200f, 520f)).dp
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 20.dp)
                 .height(h)
-                .clip(RoundedCornerShape(TvDesktop.CornerLarge))
-                .border(1.dp, TvDesktop.GlassEdge, RoundedCornerShape(TvDesktop.CornerLarge))
                 // Left/Right steps through featured titles. Preview (not the
                 // plain handler) so the focus system never sees the keypress
                 // and the hero keeps focus while browsing.
@@ -159,7 +157,7 @@ fun TvCinematicHero(
                     }
                 }
                 .clickable { onOpen(item) }
-                .tvFocusRing(TvDesktop.CornerLarge),
+                .tvFocusRing(0.dp),
         ) {
             // Stepping between titles crossfades the art (the reference's
             // screen-state crossfade): an instant swap reads as a flicker on a
@@ -217,8 +215,8 @@ fun TvCinematicHero(
             Column(
                 modifier = Modifier
                     .align(Alignment.BottomStart)
-                    .fillMaxWidth(0.62f)
-                    .padding(start = (28.dp * ts), end = (12.dp * ts), bottom = (22.dp * ts)),
+                    .fillMaxWidth(0.55f)
+                    .padding(start = (44.dp * ts), end = (16.dp * ts), bottom = (26.dp * ts)),
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -342,7 +340,7 @@ fun TvCinematicHero(
                     active = index,
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
-                        .padding(end = 24.dp, bottom = 24.dp),
+                        .padding(end = 44.dp, bottom = 26.dp),
                 )
             }
         }

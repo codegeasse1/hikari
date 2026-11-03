@@ -371,7 +371,7 @@ private enum class SettingsFolder(
     INTEGRATIONS(
         "integrations",
         "Integrations",
-        "TMDB enrichment, MDBList ratings, anime metadata & more",
+        "TMDB enrichment, MDBList ratings, custom metadata & more",
         Icons.Filled.ViewCarousel,
     ),
     INTEGRATIONS_TMDB(
@@ -390,7 +390,7 @@ private enum class SettingsFolder(
     ),
     INTEGRATIONS_ANIME(
         "integrations.anime",
-        "Anime Metadata",
+        "Custom metadata tweaks",
         "AniList-first titles, episodes & next-airing",
         Icons.Filled.AutoAwesome,
         parent = "integrations",
@@ -635,7 +635,7 @@ private fun searchSettings(rawQuery: String): List<SettingsSearchEntry> {
         "clear-data" to "clear data delete reset",
         "integrations.tmdb" to "tmdb artwork metadata episodes credits",
         "integrations.mdblist" to "ratings imdb rotten tomatoes",
-        "integrations.anime" to "anime anilist simkl episodes",
+        "integrations.anime" to "custom tweaks anime anilist simkl episodes",
     )
     val out = ArrayList<SettingsSearchEntry>()
     for (f in SettingsFolder.entries) {
@@ -660,7 +660,7 @@ private fun searchSettings(rawQuery: String): List<SettingsSearchEntry> {
     section("sec-ask-where", "Ask where to play", servers, "servers", null, "player.start", "ask where play extension selected scope choice")
     section("sec-server-search", "Server search", servers, "servers", null, null, "server search all extensions nuvio stremio cloudstream hikari anymex aniyomi skystream sora vega choose")
     section("sec-tracker-servers", "Tracker servers", servers, "servers", null, null, "tracker servers search")
-    section("sec-anime-meta", "Anime Metadata", "Integrations", "integrations", "integrations.anime", null, "anime manga manhwa manhua pornhwa adult metadata anilist simkl episodes")
+    section("sec-anime-meta", "Custom metadata tweaks", "Integrations", "integrations", "integrations.anime", null, "custom tweaks anime manga manhwa manhua pornhwa adult metadata anilist simkl episodes")
     section("sec-tmdb", "TMDB Enrichment", "Integrations", "integrations", "integrations.tmdb", "integrations.tmdb.main", "tmdb artwork metadata episodes credits")
     section("sec-tmdb-mod", "TMDB modules", "Integrations", "integrations", "integrations.tmdb", "integrations.tmdb.modules", "tmdb modules artwork")
     section("sec-mdb", "MDBList Ratings", "Integrations", "integrations", "integrations.mdblist", "integrations.mdblist.main", "ratings imdb rotten tomatoes")
@@ -978,7 +978,6 @@ fun SettingsScreen(nav: NavHostController) {
                 }
                 SettingsFolder.APPEARANCE -> {
                     item { SettingsCard(top = 2.dp) { LanguageCard(app, appLanguage) } }
-                    item { SettingsCard { ProviderCatalogSettingsCard(app) } }
                     item {
                         SettingsCard {
                             Box {
@@ -4327,26 +4326,6 @@ private fun NavBarCard(app: HikariApp) {
  * own default so the titles stay as released; the explicit list is for the
  * people who want, say, Japanese titles inside an English app.
  */
-@Composable
-private fun ProviderCatalogSettingsCard(app: HikariApp) {
-    val scope = rememberCoroutineScope()
-    val enabled by app.store.providerCatalogsEnabledFlow().collectAsState(initial = true)
-    ListItem(
-        leadingContent = { Icon(Icons.Filled.ViewCarousel, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-        headlineContent = { Text(tr("Provider catalogs")) },
-        supportingContent = { Text(if (enabled) tr("Show Nuvio and Stremio catalogs on Home") else tr("Use Cinemeta as the catalog fallback")) },
-        trailingContent = {
-            Switch(
-                checked = enabled,
-                onCheckedChange = { scope.launch { app.store.setProviderCatalogsEnabled(it) } },
-                modifier = Modifier.tvToggle(enabled) { scope.launch { app.store.setProviderCatalogsEnabled(it) } }
-            )
-        },
-        modifier = Modifier.fillMaxWidth()
-    )
-}
-
-
 @Composable
 private fun ApiKeyEditor(
     label: String,

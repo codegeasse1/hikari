@@ -412,6 +412,27 @@ private fun ElementCard(
                         Spacer(Modifier.height(10.dp))
                     }
 
+                    // ---- Position (moved up: size, where it sits, shape) ----
+                    if (slot != null) {
+                        Spacer(Modifier.height(10.dp))
+                        Text(tr("Where it sits"), style = MaterialTheme.typography.bodyMedium)
+                        Spacer(Modifier.height(6.dp))
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            for (option in PlayerControlSlot.entries) {
+                                SlotChoice(
+                                    label = option.label,
+                                    selected = slot == option,
+                                    modifier = Modifier.weight(1f),
+                                    onClick = { onSlot(option) },
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(12.dp))
+                    }
+
                     // ---- Shape ----
                     if (PlayerElements.hasShape(kind)) {
                         Text(tr("Shape"), style = MaterialTheme.typography.bodyMedium)
@@ -475,25 +496,6 @@ private fun ElementCard(
                         },
                     )
 
-                    // ---- Position ----
-                    if (slot != null) {
-                        Spacer(Modifier.height(12.dp))
-                        Text(tr("Where it sits"), style = MaterialTheme.typography.bodyMedium)
-                        Spacer(Modifier.height(6.dp))
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        ) {
-                            for (option in PlayerControlSlot.entries) {
-                                SlotChoice(
-                                    label = option.label,
-                                    selected = slot == option,
-                                    modifier = Modifier.weight(1f),
-                                    onClick = { onSlot(option) },
-                                )
-                            }
-                        }
-                    }
                     if (info.key != PlayerElements.ALL) {
                         Spacer(Modifier.height(12.dp))
                         var xSlider by remember(info.key, st.dx) { mutableStateOf(st.dx.toFloat()) }
