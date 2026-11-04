@@ -682,6 +682,8 @@ fun TrackerShelfScreen(nav: NavHostController, source: String, shelfKey: String,
     var items by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
+    // tr() is @Composable: read every string HERE, never inside LaunchedEffect.
+    val shelfNotFound = tr("Shelf not found.")
     LaunchedEffect(source, shelfKey) {
         loading = true
         error = null
@@ -698,7 +700,7 @@ fun TrackerShelfScreen(nav: NavHostController, source: String, shelfKey: String,
             }
         }
         if (result.isFailure && shelf == null) error = result.exceptionOrNull()?.message
-        else if (shelf == null) error = tr("Shelf not found.")
+        else if (shelf == null) error = shelfNotFound
         loading = false
     }
     Column(Modifier.fillMaxSize()) {
