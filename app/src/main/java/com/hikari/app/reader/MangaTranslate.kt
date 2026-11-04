@@ -77,6 +77,9 @@ enum class MangaOrigLang(val code: String, val label: String) {
 /** Language the page text is translated into. */
 enum class MangaTargetLang(val code: String, val label: String) {
     EN("en", "English"),
+    JA("ja", "Japanese"),
+    KO("ko", "Korean"),
+    ZH("zh", "Chinese"),
     BN("bn", "Bengali"),
     HI("hi", "Hindi"),
     ID("id", "Indonesian"),
@@ -277,10 +280,20 @@ object MangaTranslateRuntime {
             return@withContext emptyList()
         }
         grouped.mapIndexedNotNull { i, b ->
-            val t = translated.getOrNull(i)?.trim().orEmpty()
-            if (t.isBlank() || t == texts.getOrNull(i)) null else TLBox(b.l, b.t, b.r, b.b, b.text, t)
+            val raw = translated.getOrNull(i)?.trim().orEmpty()
+            val t = cleanTrans(raw)
+            if (t.isBlank() || t == texts.getOrNull(i)) null
+            else if (!hasTargetScript(t, st.target)) null
+            else TLBox(b.l, b.t, b.r, b.b, b.text, t)
         }
     }
+
+    /**
+     * Batch text translation with the runtime's settings (also used by the
+     * novel reader for plain paragraphs).
+     */
+    suspend fun translateTexts(texts: List<String>, st: MangaTranslateSettings): List<String?> =
+        translateAll(texts, st)
 
     // ---- OCR ----
 
@@ -822,13 +835,12 @@ class TranslationOverlayView @JvmOverloads constructor(
             val w = r - l; val h = btm - t
             if (w < 8 || h < 8) continue
             if (r < 0 || l > width || btm < 0 || t > height) continue
-            // Manga-style bubble: a solid white OVAL cover over the source
-            // glyphs (an oval's corners stay inside the bubble — a rectangle's
-            // square corners poke out past the outline onto the art), then the
-            // translation grown to fill the bubble the way the original
-            // lettering did.
-            val padX = 3f
-            val padY = 3f
+            // Tight RECTANGLE over every source glyph (never smaller): anything
+            // less leaves the old English/Chinese peeking at the corners (the
+            // inscribed oval did exactly that). Corners are softly rounded and
+            // growth is capped, so it still sits inside the bubble.
+            val padX = 4f
+            val padY = 4f
             val el = l - padX; val et = t - padY
             val er = r + padX; val eb = btm + padY
             val ew = er - el; val eh = eb - et
@@ -841,11 +853,12 @@ class TranslationOverlayView @JvmOverloads constructor(
             var f = fit(b.trans, boxW, boxH) ?: continue
             val needH = f.layout.height + 8f
             if (needH > boxH) {
-                boxH = min(needH, eh * 1.4f)
+                boxH = min(needH, eh * 1.35f)
                 fit(b.trans, boxW, boxH)?.let { f = it }
             }
             val cy = (et + eb) / 2f
-            canvas.drawOval(RectF(el, cy - boxH / 2f, er, cy + boxH / 2f), boxPaint)
+            val rad = min(boxW, boxH) * 0.30f
+            canvas.drawRoundRect(RectF(el, cy - boxH / 2f, er, cy + boxH / 2f), rad, rad, boxPaint)
             val key = "${(boxW / 6).toInt()}x${(boxH / 6).toInt()}|${b.trans.hashCode()}"
             fitted[index] = key to f
             canvas.save()
@@ -865,6 +878,27 @@ class TranslationOverlayView @JvmOverloads constructor(
             if (ch in '\u0900'..'\u097F') dev++
         }
         return total > 0 && dev * 2 >= total
+    }
+
+    /** Strip batch-numbering and quote junk the engines echo. */
+    private fun cleanTrans(t: String): String {
+        var s = t.trim()
+        s = s.replace(Regex("""^\s*(?:\d{1,3}[.)]\s*)+"""), "")
+        s = s.replace(Regex("""^['"`:;,.\s\-]+"""), "")
+        s = s.replace(Regex("""['"`:;,.\s\-]+$"""), "")
+        return s.replace(Regex("""\s+"""), " ").trim()
+    }
+
+    /** Non-Latin targets must contain the target script, else the box is an untranslated echo. */
+    private fun hasTargetScript(t: String, target: MangaTargetLang): Boolean {
+        val range = when (target) {
+            MangaTargetLang.HI -> '\u0900'..'\u097F'
+            MangaTargetLang.BN -> '\u0980'..'\u09FF'
+            MangaTargetLang.AR -> '\u0600'..'\u06FF'
+            MangaTargetLang.RU -> '\u0400'..'\u04FF'
+            else -> return true
+        }
+        return t.any { it in range }
     }
 
     /**

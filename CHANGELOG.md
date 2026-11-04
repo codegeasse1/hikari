@@ -1,3 +1,11 @@
+## 0.12.34 (continuous build only)
+
+- Manga Translate cover reworked: tight rectangle over the old words (nothing peeks through anymore), softly rounded + smaller growth so it still sits inside the bubble; short Hindi labels stay big
+- Translation junk filter: numbering/quote echoes dropped, and boxes whose translation holds none of the target script fall back to the original instead of floating half-English in the bubble
+- Novel reader floating Translate button (bottom-right): same auto-detect/language/engine/key options as manga, per-novel or global, chapters translate in place with cache
+- Novel chapters open at the top now: every chapter keeps its own position; a fresh Next chapter starts from the beginning instead of the previous chapter's middle
+- HdHub-type seek fixed properly: the range bridge now downloads through the player's own session (cookies/headers/interceptors), so those hosts answer it like the app; temp files are wiped on player close and leftovers on the next play — manual downloads live elsewhere and are never touched
+
 ## 0.12.33 (continuous build only)
 
 - Seek/skip fixed on servers that restarted from 00:00: those links now play through a local range bridge (downloads once to a temp file the player deletes on close, so app size doesn't grow)

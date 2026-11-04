@@ -7,6 +7,7 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.concurrent.thread
+import com.hikari.app.data.Logs
 import okhttp3.OkHttpClient
 import okhttp3.Request
 
@@ -26,6 +27,7 @@ object SeekBridge {
         val id: String,
         val remote: String,
         val file: File,
+        val client: OkHttpClient,
         @Volatile var length: Long = -1L,
         @Volatile var mime: String = "video/mp4",
         @Volatile var done: Boolean = false,
@@ -36,14 +38,23 @@ object SeekBridge {
     private var server: ServerSocket? = null
     private var port: Int = 0
     private val lock = Any()
-    private val http: OkHttpClient by lazy { OkHttpClient.Builder().followRedirects(true).build() }
+    // No own HTTP client on purpose: the fetch runs through the caller's playback client
+    // (shared cookies, extractor headers, video interceptors), so hosts answer the bridge
+    // exactly like the app. Temp files live ONLY in cacheDir/seekbridge — manual downloads
+    // live in the downloads folder and are never listed, read or deleted here.
 
     /**
      * Bridge URL for [remote], starting the download on first call. Same
      * remote returns the same URL (no second download). Null when the bridge
      * cannot start — the caller then plays the direct URL as before.
      */
-    fun open(remote: String, headers: Map<String, String>, ua: String, cacheDir: File): String? {
+    fun open(
+        remote: String,
+        headers: Map<String, String>,
+        ua: String,
+        cacheDir: File,
+        client: OkHttpClient,
+    ): String? {
         return try {
             synchronized(lock) {
                 sessions.values.firstOrNull { it.remote == remote }?.let {
@@ -55,7 +66,13 @@ object SeekBridge {
                 ensureServer()
                 val dir = File(cacheDir, "seekbridge").apply { mkdirs() }
                 val id = System.nanoTime().toString(36)
-                val s = Session(id, remote, File(dir, "sb_$id.bin"))
+                dir.listFiles()?.forEach { f ->
+                    if (f.isFile && f.name.startsWith("sb_") && sessions.values.none { it.file == f }) {
+                        runCatching { f.delete() }
+                    }
+                }
+                val s = Session(id, remote, File(dir, "sb_$id.bin"), client)
+                Logs.log("Player", "seek-bridge open")
                 sessions[id] = s
                 thread(name = "seekbridge-fetch", isDaemon = true) { fetch(s, headers, ua) }
                 "http://127.0.0.1:$port/play?id=$id"
@@ -119,7 +136,7 @@ object SeekBridge {
                 if (k.equals("Accept-Encoding", ignoreCase = true)) continue
                 runCatching { rb.header(k, v) }
             }
-            http.newCall(rb.build()).execute().use { resp ->
+            s.client.newCall(rb.build()).execute().use { resp ->
                 if (!resp.isSuccessful) {
                     s.failed = true
                     return
@@ -143,6 +160,7 @@ object SeekBridge {
                 }
                 if (s.length <= 0) s.length = s.file.length()
                 s.done = true
+                Logs.log("Player", "seek-bridge ready")
             }
         } catch (e: Exception) {
             // Died mid-download with bytes on disk: serve what we have.
@@ -151,6 +169,7 @@ object SeekBridge {
                 s.done = true
             } else {
                 s.failed = true
+                Logs.log("Player", "seek-bridge fetch failed")
             }
         }
     }

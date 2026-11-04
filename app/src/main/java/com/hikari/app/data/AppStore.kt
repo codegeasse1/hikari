@@ -472,6 +472,8 @@ class AppStore(private val ctx: Context) {
     val MANGA_SERIES_MODES = stringPreferencesKey("mangaSeriesModes")
     val MANGA_TRANSLATE_SETTINGS = stringPreferencesKey("mangaTranslateSettings")
     val MANGA_TRANSLATE_SERIES = stringPreferencesKey("mangaTranslateSeries")
+    val NOVEL_TRANSLATE_SETTINGS = stringPreferencesKey("novelTranslateSettings")
+    val NOVEL_TRANSLATE_SERIES = stringPreferencesKey("novelTranslateSeries")
     /** Engine ids the reader pinned to the top of the Manga tab's Browse list. */
     val PINNED_MANGA_ENGINES = stringSetPreferencesKey("pinnedMangaEngines")
     /**
@@ -3278,6 +3280,20 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
 
     suspend fun setMangaTranslateSeriesJson(json: String) {
         write("MANGA_TRANSLATE_SERIES") { it[K.MANGA_TRANSLATE_SERIES] = json }
+    }
+
+    fun novelTranslateSettingsFlow(): Flow<String?> =
+        store.data.map { it[K.NOVEL_TRANSLATE_SETTINGS] }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun setNovelTranslateSettingsJson(json: String) {
+        write("NOVEL_TRANSLATE_SETTINGS") { it[K.NOVEL_TRANSLATE_SETTINGS] = json }
+    }
+
+    fun novelTranslateSeriesFlow(): Flow<String?> =
+        store.data.map { it[K.NOVEL_TRANSLATE_SERIES] }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun setNovelTranslateSeriesJson(json: String) {
+        write("NOVEL_TRANSLATE_SERIES") { it[K.NOVEL_TRANSLATE_SERIES] = json }
     }
 
     /**

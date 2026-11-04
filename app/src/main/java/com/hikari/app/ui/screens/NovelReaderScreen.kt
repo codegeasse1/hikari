@@ -22,11 +22,14 @@ import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -36,6 +39,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -58,6 +62,15 @@ import com.hikari.app.manga.MangaChapter
 import com.hikari.app.manga.MangaProgress
 import com.hikari.app.manga.MangaStore
 import com.hikari.app.manga.NovelHighlight
+import com.hikari.app.reader.MangaOrigLang
+import com.hikari.app.reader.MangaTargetLang
+import com.hikari.app.reader.MangaTranslateEngine
+import com.hikari.app.reader.MangaTranslateRuntime
+import com.hikari.app.reader.MangaTranslateSettings
+import com.hikari.app.reader.NovelTranslateRuntime
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import org.json.JSONObject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -121,6 +134,16 @@ fun NovelReaderScreen(
     // free-dragged range, which can never be re-tapped exactly).
     var hlErase by remember { mutableStateOf(false) }
     var highlights by remember { mutableStateOf<List<NovelHighlight>>(emptyList()) }
+    // Translator (floating button): same engines + languages as manga text.
+    var showTranslate by remember { mutableStateOf(false) }
+    var novelTranslate by remember { mutableStateOf(MangaTranslateSettings.DEFAULTS) }
+    var novelSeries by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    var novelOnly by remember { mutableStateOf(false) }
+    var translatedParas by remember { mutableStateOf<List<String>?>(null) }
+    var translating by remember { mutableStateOf(false) }
+    var keyText by remember { mutableStateOf("") }
+    val chapterPages = remember { mutableMapOf<String, Int>() }
+    val scope = rememberCoroutineScope()
 
     val item = remember(providerId, mangaUrl, title, posterUrl) {
         MediaItem(
@@ -148,12 +171,32 @@ fun NovelReaderScreen(
         if (chapter.isBlank()) chapter = chapters.firstOrNull()?.url.orEmpty()
     }
 
+    // Translator settings (global + per-novel, same shape as manga).
+    fun parseNovelSeries(raw: String?): Map<String, String> {
+        if (raw.isNullOrBlank()) return emptyMap()
+        return try {
+            val o = JSONObject(raw)
+            buildMap { for (k in o.keys()) put(k, o.optString(k)) }
+        } catch (e: Exception) { emptyMap() }
+    }
+    LaunchedEffect(key) {
+        novelTranslate = MangaTranslateSettings.fromJson(app.store.novelTranslateSettingsFlow().first())
+        novelSeries = parseNovelSeries(app.store.novelTranslateSeriesFlow().first())
+    }
+
     // Load the chapter text, restore the saved position, then follow it.
     val listState = rememberLazyListState()
     LaunchedEffect(key, chapter, reload) {
         paragraphs = emptyList()
+        translatedParas = null
+        translating = false
         error = null
         loading = true
+        // This chapter's own saved spot, read BEFORE the load below overwrites
+        // the single-slot progress with page 0 (a fresh Next chapter then has
+        // none and correctly starts at the top).
+        val prevSaved = MangaStore.progressFor(key)?.takeIf { it.chapterUrl == chapter }
+        val prevOwn = chapterPages[chapter]
         val idx0 = chapters.indexOfFirst { it.url == chapter }
         Logs.log("Novel", "chapter [$providerId] ${mangaUrl.take(60)} tap idx=$idx0/${chapters.size} id=${chapter.take(80)} attempt=$reload")
         val xt0 = SystemClock.elapsedRealtime()
@@ -208,16 +251,24 @@ fun NovelReaderScreen(
                 at = System.currentTimeMillis(),
             )
         )
-        val saved = MangaStore.progressFor(key)?.takeIf { it.chapterUrl == chapter }
-        if (saved != null && saved.page in paras.indices && saved.page > 0) {
-            runCatching { listState.scrollToItem(saved.page) }
+        // Drop the previous chapter's scroll position first, then go to this
+        // chapter's own spot (same-chapter reopen) or stay at the top.
+        runCatching { listState.scrollToItem(0) }
+        val target = prevOwn?.takeIf { it in paras.indices && it > 0 }
+            ?: prevSaved?.takeIf { it.page in paras.indices && it.page > 0 }?.page
+            ?: 0
+        if (target > 0) {
+            runCatching { listState.scrollToItem(target) }
         }
+        val st0 = novelSeries[key]?.let { MangaTranslateSettings.fromJson(it) } ?: novelTranslate
+        if (st0.enabled) translateWith(st0)
         var last = -1
         while (true) {
             delay(1500)
             val at = listState.firstVisibleItemIndex
             if (at != last && at in paras.indices) {
                 last = at
+                chapterPages[chapter] = at
                 MangaStore.setProgress(
                     MangaProgress(
                         mangaKey = key,
@@ -235,6 +286,42 @@ fun NovelReaderScreen(
                 )
             }
         }
+    }
+
+    val novelEffective = novelSeries[key]?.let { MangaTranslateSettings.fromJson(it) } ?: novelTranslate
+
+    /** Translate the loaded paragraphs with [st] (cached per chapter+settings). */
+    fun translateWith(st: MangaTranslateSettings) {
+        if (!st.enabled || paragraphs.isEmpty()) {
+            if (!st.enabled) { translatedParas = null; translating = false }
+            return
+        }
+        translating = true
+        val parasNow = paragraphs
+        val chNow = chapter
+        val sizeNow = paragraphs.size
+        scope.launch(Dispatchers.Default) {
+            NovelTranslateRuntime.configure(app)
+            val r = NovelTranslateRuntime.translateChapter(providerId + "|" + mangaUrl + "|" + chNow, parasNow, st)
+            if (chapter == chNow && paragraphs.size == sizeNow) {
+                translatedParas = r
+                translating = false
+            }
+        }
+    }
+
+    fun saveNovel(next: MangaTranslateSettings) {
+        if (novelOnly) {
+            val map = novelSeries + (key to next.toJson().toString())
+            novelSeries = map
+            val o = JSONObject()
+            for ((k, v) in map) o.put(k, v)
+            scope.launch { app.store.setNovelTranslateSeriesJson(o.toString()) }
+        } else {
+            novelTranslate = next
+            scope.launch { app.store.setNovelTranslateSettingsJson(next.toJson().toString()) }
+        }
+        translateWith(next)
     }
 
     fun stepChapter(next: Boolean) {
@@ -329,11 +416,12 @@ fun NovelReaderScreen(
         else -> Color(0xFF9E9E9E)
     }
 
-    Column(
+    Box(
         modifier = Modifier
             .fillMaxSize()
             .background(bg)
     ) {
+    Column(modifier = Modifier.fillMaxSize()) {
         // Top bar: back, title, theme, font size.
         Row(
             modifier = Modifier
@@ -463,6 +551,14 @@ fun NovelReaderScreen(
                 }
             }
         }
+        if (translating && !loading && error == null) {
+            Text(
+                text = "Translating...",
+                style = MaterialTheme.typography.labelSmall,
+                color = dim,
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 2.dp),
+            )
+        }
         when {
             loading -> {
                 Box(
@@ -501,8 +597,9 @@ fun NovelReaderScreen(
                             modifier = Modifier.padding(top = 8.dp, bottom = 16.dp),
                         )
                     }
-                    items(paragraphs.size) { idx ->
-                        val para = paragraphs[idx]
+                    val shownParas = translatedParas?.takeIf { it.size == paragraphs.size } ?: paragraphs
+                    items(shownParas.size) { idx ->
+                        val para = shownParas[idx]
                         // Saved ranges render as background spans. Three ways to
                         // mark: in Mark mode a tap marks the word / line /
                         // paragraph under the finger (tap again in the same
@@ -512,7 +609,7 @@ fun NovelReaderScreen(
                         // In ANY mode a long-press (~0.5s) on a word starts a
                         // copy-like selection — drag to the wanted word or
                         // line and release to commit it in the current color.
-                        val paraHl = highlights.filter { it.paraIndex == idx }
+                        val paraHl = if (translatedParas != null) emptyList<NovelHighlight>() else highlights.filter { it.paraIndex == idx }
                         var layout by remember(para) { mutableStateOf<TextLayoutResult?>(null) }
                         var liveSel by remember(para) { mutableStateOf<Pair<Int, Int>?>(null) }
                         val annotated = remember(para, paraHl, liveSel, hlColor) {
@@ -610,6 +707,82 @@ fun NovelReaderScreen(
                 }
             }
         }
+        // Floating translator: same engines + languages as manga.
+        if (!loading && error == null) {
+            FloatingActionButton(
+                onClick = { keyText = novelEffective.geminiKey; showTranslate = true },
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(20.dp),
+                containerColor = if (novelEffective.enabled) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.surfaceVariant,
+            ) {
+                Icon(Icons.Filled.Translate, contentDescription = "Translate")
+            }
+        }
+        }
+    }
+
+    if (showTranslate) {
+        AlertDialog(
+            onDismissRequest = { showTranslate = false },
+            confirmButton = {},
+            title = { Text("Translate") },
+            text = {
+                Column {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                        Text("Translate chapters", modifier = Modifier.weight(1f))
+                        TextButton(onClick = { saveNovel(novelEffective.copy(enabled = !novelEffective.enabled)) }) {
+                            Text(if (novelEffective.enabled) "On" else "Off")
+                        }
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                        Text("Original language", modifier = Modifier.weight(1f))
+                        TextButton(onClick = {
+                            val all = MangaOrigLang.entries
+                            val nx = all[(all.indexOf(novelEffective.orig) + 1) % all.size]
+                            saveNovel(novelEffective.copy(orig = nx))
+                        }) { Text(novelEffective.orig.label) }
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                        Text("Translate to", modifier = Modifier.weight(1f))
+                        TextButton(onClick = {
+                            val all = MangaTargetLang.entries
+                            val nx = all[(all.indexOf(novelEffective.target) + 1) % all.size]
+                            saveNovel(novelEffective.copy(target = nx))
+                        }) { Text(novelEffective.target.label) }
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                        Text("Engine", modifier = Modifier.weight(1f))
+                        TextButton(onClick = {
+                            val all = MangaTranslateEngine.entries
+                            val nx = all[(all.indexOf(novelEffective.engine) + 1) % all.size]
+                            saveNovel(novelEffective.copy(engine = nx))
+                        }) { Text(novelEffective.engine.title) }
+                    }
+                    if (novelEffective.engine == MangaTranslateEngine.GEMINI) {
+                        OutlinedTextField(
+                            value = keyText,
+                            onValueChange = { keyText = it },
+                            label = { Text("Gemini API key") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        TextButton(onClick = { saveNovel(novelEffective.copy(geminiKey = keyText.trim())) }) {
+                            Text("Save key")
+                        }
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                        Text("This novel only", modifier = Modifier.weight(1f))
+                        TextButton(onClick = { novelOnly = !novelOnly }) {
+                            Text(if (novelOnly) "On" else "Off")
+                        }
+                    }
+                    if (translating) Text("Translating...", style = MaterialTheme.typography.labelSmall, color = dim)
+                    TextButton(onClick = { showTranslate = false }) { Text("Close") }
+                }
+            },
+        )
     }
 
     if (showChapters) {

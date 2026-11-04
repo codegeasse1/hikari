@@ -13697,7 +13697,7 @@ class PlayerActivity : ComponentActivity() {
         // error). Subtitles are fetched and validated in the background and
         // only added if their content is actually a subtitle.
         val mime = mainMimeOf(src)
-        val itemBuilder = MediaItem.Builder().setUri(bridgedPlayUri(src, sourceHeaders, ua))
+        val itemBuilder = MediaItem.Builder().setUri(bridgedPlayUri(src, sourceHeaders, ua, playbackClient))
         if (mime != null) itemBuilder.setMimeType(mime)
         // A subtitle the user added themselves is attached EAGERLY, unlike the
         // provider's (which are deferred and validated in the background because
@@ -15480,7 +15480,12 @@ class PlayerActivity : ComponentActivity() {
      * answers ExoPlayer's ranges from it — skip/scrub then behave normally.
      * HLS/DASH, torrents, Telegram files, DRM and loopback URLs are untouched.
      */
-    private fun bridgedPlayUri(src: PlayerSource, headers: Map<String, String>, ua: String): String {
+    private fun bridgedPlayUri(
+        src: PlayerSource,
+        headers: Map<String, String>,
+        ua: String,
+        client: OkHttpClient,
+    ): String {
         if (src.drm != null || src.isTorrent) return src.url
         if (src.isM3u8 || src.isMpd) return src.url
         val u = src.url
@@ -15488,7 +15493,7 @@ class PlayerActivity : ComponentActivity() {
         if (isLoopbackHost(u) || u.startsWith("hikari-td:")) return u
         val low = u.lowercase()
         if (low.contains(".m3u8") || low.contains(".mpd") || low.contains("master.txt")) return u
-        return SeekBridge.open(u, headers, ua, cacheDir) ?: u
+        return SeekBridge.open(u, headers, ua, cacheDir, client) ?: u
     }
 
     /** The main-media mime for [src] (HLS/DASH), or null to let media3 sniff the
