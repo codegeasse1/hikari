@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -104,7 +105,8 @@
              plausible integer, nothing else reads it. -->
         <meta-data
             android:name="com.google.android.gms.version"
-            android:value="12451000" />
+            android:value="12451000"
+            tools:replace="android:value" />
 
         <!-- MainActivity has NO launcher intent-filter of its own: the launcher
              entry is one of the activity-aliases below, each carrying a
