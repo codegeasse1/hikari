@@ -1380,7 +1380,16 @@ class TranslationOverlayView @JvmOverloads constructor(
             // Hide pass: covers every source pixel plus margin.
             // Hide pass: covers every source pixel plus margin (dialogue
             // only - art lettering below skips the cover on purpose).
-            if (!b.art) canvas.drawRect(el, et, er, eb, boxPaint)
+            // Page bounds in this view's px: nothing (cover or translation) may
+            // ever be drawn outside the page itself (the old "text runs off the
+            // left edge" bug) - every rect below is clamped into these.
+            val pg0 = try { loc(0f, 0f) } catch (e: Exception) { null }
+            val pg1 = try { loc(imgW, imgH) } catch (e: Exception) { null }
+            val pgL = if (pg0 != null && pg1 != null) max(0f, min(pg0.x, pg1.x)) else 0f
+            val pgT = if (pg0 != null && pg1 != null) max(0f, min(pg0.y, pg1.y)) else 0f
+            val pgR = if (pg0 != null && pg1 != null) min(width.toFloat(), max(pg0.x, pg1.x)) else width.toFloat()
+            val pgB = if (pg0 != null && pg1 != null) min(height.toFloat(), max(pg0.y, pg1.y)) else height.toFloat()
+            if (!b.art) canvas.drawRect(max(el, pgL), max(et, pgT), min(er, pgR), min(eb, pgB), boxPaint)
             val srcW = er - el
             val srcH = eb - et
             if (b.art) {
@@ -1415,6 +1424,10 @@ class TranslationOverlayView @JvmOverloads constructor(
             var boxCy = (et + eb) / 2f
             var roomW = 0f
             var roomH = 0f
+            var roomL = 0f
+            var roomT = 0f
+            var roomR = 0f
+            var roomB = 0f
             var hasRoom = false
             if (b.br > b.bl && b.bb > b.bt) {
                 try {
@@ -1428,6 +1441,10 @@ class TranslationOverlayView @JvmOverloads constructor(
                         if (nr - nl >= 12 && nb - nt >= 12 && nr - nl <= srcW * 4f && nb - nt <= srcH * 4f && nl <= el && nt <= et && nr >= er && nb >= eb) {
                             roomW = nr - nl
                             roomH = nb - nt
+                            roomL = nl
+                            roomT = nt
+                            roomR = nr
+                            roomB = nb
                             hasRoom = true
                         }
                     }
@@ -1449,8 +1466,29 @@ class TranslationOverlayView @JvmOverloads constructor(
             if (f.layout.height > boxH * 0.92f) {
                 f = shrinkToFit(b.trans, boxW, boxH * 0.92f) ?: continue
             }
-            val cx = (el + er) / 2f
-            val cy = (et + eb) / 2f
+            // Placement: start centered on the source text, then SHIFT the box
+            // (never resize it past the room) so it sits fully inside the
+            // bubble room, and finally inside the page. A partially-OCR'd
+            // source (box skewed to one side of the bubble) used to drag the
+            // translation out of the bubble and off the left edge.
+            var cx = (el + er) / 2f
+            var cy = (et + eb) / 2f
+            if (hasRoom) {
+                val minCx = roomL + boxW / 2f
+                val maxCx = roomR - boxW / 2f
+                if (minCx <= maxCx) cx = cx.coerceIn(minCx, maxCx) else cx = (roomL + roomR) / 2f
+                val minCy = roomT + boxH / 2f
+                val maxCy = roomB - boxH / 2f
+                if (minCy <= maxCy) cy = cy.coerceIn(minCy, maxCy) else cy = (roomT + roomB) / 2f
+            }
+            val pageW = pgR - pgL
+            val pageH = pgB - pgT
+            if (pageW > 8f && pageH > 8f) {
+                val hw = min(boxW, pageW) / 2f
+                val hh = min(boxH, pageH) / 2f
+                cx = cx.coerceIn(pgL + hw, pgR - hw)
+                cy = cy.coerceIn(pgT + hh, pgB - hh)
+            }
             val rad = min(boxW, boxH) * 0.30f
             canvas.drawRoundRect(RectF(cx - boxW / 2f, cy - boxH / 2f, cx + boxW / 2f, cy + boxH / 2f), rad, rad, boxPaint)
             val key = "${(boxW / 6).toInt()}x${(boxH / 6).toInt()}|${b.trans.hashCode()}"
