@@ -239,7 +239,11 @@ object MangaTranslateRuntime {
             return@withContext emptyList()
         }
         if (raw.isEmpty()) return@withContext emptyList()
-        val texts = raw.map { it.text }
+        // Stacked lines of one bubble become ONE block: translating them
+        // together keeps the sentence whole and renders one clean bubble.
+        val grouped = groupBubbles(raw)
+        if (grouped.isEmpty()) return@withContext emptyList()
+        val texts = grouped.map { cleanOcr(it.text) }
         val translated = try {
             translateAll(texts, st)
         } catch (e: CancellationException) {
@@ -247,9 +251,9 @@ object MangaTranslateRuntime {
         } catch (e: Exception) {
             return@withContext emptyList()
         }
-        raw.mapIndexedNotNull { i, b ->
+        grouped.mapIndexedNotNull { i, b ->
             val t = translated.getOrNull(i)?.trim().orEmpty()
-            if (t.isBlank() || t == b.text.trim()) null else TLBox(b.l, b.t, b.r, b.b, b.text, t)
+            if (t.isBlank() || t == texts.getOrNull(i)) null else TLBox(b.l, b.t, b.r, b.b, b.text, t)
         }
     }
 
@@ -425,6 +429,51 @@ object MangaTranslateRuntime {
 
     private fun area(b: RawBox): Float = max(0f, b.r - b.l) * max(0f, b.b - b.t)
 
+    /**
+     * Stacked text lines of one speech bubble become one block (union bounds,
+     * words joined). Thresholds stay conservative: neighbouring bubbles keep
+     * their own blocks.
+     */
+    private fun groupBubbles(boxes: List<RawBox>): List<RawBox> {
+        if (boxes.size < 2) return boxes
+        val sorted = boxes.sortedWith(compareBy({ it.t }, { it.l }))
+        val groups = ArrayList<MutableList<RawBox>>()
+        for (b in sorted) {
+            val g = groups.lastOrNull()
+            if (g != null && sameBubble(g.last(), b)) g.add(b)
+            else groups.add(mutableListOf(b))
+        }
+        return groups.map { g ->
+            if (g.size == 1) g[0]
+            else RawBox(
+                l = g.minOf { it.l }, t = g.minOf { it.t },
+                r = g.maxOf { it.r }, b = g.maxOf { it.b },
+                text = g.joinToString(" ") { it.text },
+            )
+        }
+    }
+
+    /** True when [b] reads as the next line inside [a]'s bubble. */
+    private fun sameBubble(a: RawBox, b: RawBox): Boolean {
+        val lineH = min(a.b - a.t, b.b - b.t).coerceAtLeast(1f)
+        // A side-by-side bubble starts way above a's bottom; the next bubble
+        // starts way below it. A next line starts right around a's bottom.
+        if (b.t < a.b - lineH * 1.2f) return false
+        if (b.t > a.b + lineH * 1.1f) return false
+        val inter = min(a.r, b.r) - max(a.l, b.l)
+        if (inter <= 0) return false
+        val narrow = min(a.r - a.l, b.r - b.l).coerceAtLeast(1f)
+        return inter >= narrow * 0.4f
+    }
+
+    /** OCR joins lines with odd spacing — normalize before translating. */
+    private fun cleanOcr(t: String): String {
+        return t.replace(Regex("\\s+"), " ")
+            .replace(Regex("\\s+([,.!?;:%)\\]])"), "$1")
+            .replace(Regex("([(\\[])\\s+"), "$1")
+            .trim()
+    }
+
     // ---- Translation ----
 
     private fun mlCode(code: String): String = when (code) {
@@ -515,6 +564,10 @@ object MangaTranslateRuntime {
             if (mapped != null) {
                 val result: MutableList<String?> = texts.map { null }.toMutableList()
                 for ((i, _) in nonBlank) result[i] = mapped[i]
+                // Lines the batch dropped get one call each.
+                for ((i, t) in nonBlank) {
+                    if (result[i] == null) result[i] = gtxOne(t, sl, st.target.code)
+                }
                 return@withContext result
             }
             // Fallback: one call per line.
@@ -563,8 +616,9 @@ object MangaTranslateRuntime {
             val prompt = JSONObject().put(
                 "text",
                 "Translate these numbered manga/manhwa speech lines from $origLabel to ${st.target.label}. " +
-                    "Write natural comic dialogue a character would actually say: short punchy lines, " +
-                    "same meaning and tone, names of people/places/titles transliterated never translated. " +
+                    "Write like a professional manhwa translator: fluent dialogue that sounds actually spoken, never word-for-word; " +
+                    "keep the same meaning, tone and energy (a shout stays a shout, a whisper stays a whisper); " +
+                    "names of people, places and titles transliterated, never translated; exclamation and question marks kept with their full force. " +
                     "Reply with ONLY the translations, one per line, keeping the same numbers " +
                     "in the form \"1. ...\". Do not add explanations.\n$numbered",
             ).toString()
@@ -743,11 +797,12 @@ class TranslationOverlayView @JvmOverloads constructor(
             val w = r - l; val h = btm - t
             if (w < 8 || h < 8) continue
             if (r < 0 || l > width || btm < 0 || t > height) continue
-            // Manga-style bubble: a solid white cover pushed past the source
-            // glyphs, then the translation grown to fill the bubble the way the
+            // Manga-style bubble: a solid white cover exactly over the source
+            // glyphs (it must never spill past the bubble outline onto the art),
+            // then the translation grown to fill the bubble the way the
             // original lettering did.
-            val padX = w * 0.07f + 5f
-            val padY = h * 0.09f + 5f
+            val padX = 3f
+            val padY = 3f
             val el = l - padX; val et = t - padY
             val er = r + padX; val eb = btm + padY
             val ew = er - el; val eh = eb - et
@@ -767,25 +822,33 @@ class TranslationOverlayView @JvmOverloads constructor(
         }
     }
 
-    /** Grow-to-fill centered layout for one bubble: start big, shrink to fit. */
+    /**
+     * Grow-to-fill centered layout for one bubble: start big, shrink until it
+     * fits INSIDE the bubble. Never overflows: the loop only stops when the
+     * laid-out height fits, or the floor size is reached.
+     */
     private fun fit(text: String, w: Float, h: Float): Fitted? {
         if (text.isBlank() || w <= 14 || h <= 14) return null
-        var size = min(h * 0.55f, w * 0.30f).coerceIn(10f, 160f)
-        val availW = (w * 0.88f).coerceAtLeast(8f)
-        val availH = (h * 0.86f).coerceAtLeast(8f)
+        var size = min(h * 0.50f, w * 0.28f).coerceIn(9f, 120f)
+        val availW = (w * 0.96f).coerceAtLeast(8f)
+        val availH = (h * 0.94f).coerceAtLeast(8f)
         // Fresh paint per layout: StaticLayout draws with its paint live, so a
         // shared paint resized for the next box would corrupt this one.
         val paint = TextPaint(textPaint)
         while (size >= 8f) {
             paint.textSize = size
-            val layout = StaticLayout.Builder.obtain(text, 0, text.length, paint, availW.toInt())
+            val builder = StaticLayout.Builder.obtain(text, 0, text.length, paint, availW.toInt())
                 .setAlignment(android.text.Layout.Alignment.ALIGN_CENTER)
                 .setIncludePad(false)
-                .build()
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                builder.setBreakStrategy(android.text.Layout.BREAK_STRATEGY_HIGH_QUALITY)
+                builder.setHyphenationFrequency(android.text.Layout.HYPHENATION_FREQUENCY_NONE)
+            }
+            val layout = builder.build()
             if (layout.height <= availH) {
                 return Fitted(-layout.width / 2f, 0f, layout)
             }
-            size *= 0.90f
+            size *= 0.92f
         }
         return null
     }

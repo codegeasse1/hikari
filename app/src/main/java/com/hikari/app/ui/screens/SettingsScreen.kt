@@ -655,6 +655,7 @@ private fun searchSettings(rawQuery: String): List<SettingsSearchEntry> {
         out += SettingsSearchEntry(key, title, path, folder, sub, sectionId, keywords)
     }
     section("sec-player-style", "Player UI style", "Customize", "customize", null, null, "player ui style buttons icons size bigger colour color shape round square circle position move opacity customize")
+    section("sec-player-gestures", "Player gestures & decoder", "Customize", "customize", null, null, "player gestures decoder brightness volume swipe slide seek pinch zoom hardware software video")
     val servers = "Playback & Servers"
     section("sec-play-start", "Playback start", servers, "servers", null, "player.start", "playback start play first server wait")
     section("sec-ask-where", "Ask where to play", servers, "servers", null, "player.start", "ask where play extension selected scope choice")
@@ -699,10 +700,10 @@ fun SettingsScreen(nav: NavHostController) {
     // Poster styling…). Two levels is the whole tree, so two slots is enough and
     // back always has an obvious target.
     var openSub by remember { mutableStateOf<SettingsFolder?>(null) }
-    var showPlayerControls by remember { mutableStateOf(false) }
-    // Settings -> Customize -> Player UI style: its own full page, like the
-    // Player controls editor (a live preview + one editor per button).
+    // Settings -> Customize -> Player UI style: its own full page (a live
+    // preview + one editor per button). Gestures & decoder is a full page too.
     var showPlayerStyle by remember { mutableStateOf(false) }
+    var showPlayerGestures by remember { mutableStateOf(false) }
     var showStats by remember { mutableStateOf(false) }
     var showPair by remember { mutableStateOf(false) }
     var showLogs by remember { mutableStateOf(false) }
@@ -774,11 +775,11 @@ fun SettingsScreen(nav: NavHostController) {
     // it as one.
     BackHandler(
         enabled = openSub != null || (openFolder != null && !isTv) || showStats || showLogs ||
-            showPair || showProfiles || showPlayerControls || showPlayerStyle,
+            showPair || showProfiles || showPlayerStyle || showPlayerGestures,
     ) {
         when {
             showPlayerStyle -> showPlayerStyle = false
-            showPlayerControls -> showPlayerControls = false
+            showPlayerGestures -> showPlayerGestures = false
             showLogs -> showLogs = false
             showStats -> showStats = false
             showPair -> showPair = false
@@ -788,10 +789,9 @@ fun SettingsScreen(nav: NavHostController) {
         }
     }
 
-    // The Player controls editor is its own full screen (fifteen controls × a
-    // four-way placement each does not fit in one card).
-    if (showPlayerControls) {
-        PlayerControlsPage(app, onBack = { showPlayerControls = false })
+    // Gestures & decoder (Customize folder) is a full screen as well.
+    if (showPlayerGestures) {
+        PlayerGesturesPage(app, onBack = { showPlayerGestures = false })
         return
     }
 
@@ -890,12 +890,7 @@ fun SettingsScreen(nav: NavHostController) {
             }
             when (sub ?: folder) {
                 SettingsFolder.PLAYER -> {
-                    item {
-                        SettingsCard(top = 2.dp) {
-                            PlayerControlsCard(onOpen = { showPlayerControls = true })
-                        }
-                    }
-                    item { SettingsCard { VideoEnhanceCard(app) } }
+                    item { SettingsCard(top = 2.dp) { VideoEnhanceCard(app) } }
                     item { SettingsCard { PlayerUiCard(app) } }
                     item { SettingsCard { HoldToFastForwardCard(app) } }
                     item { SettingsCard { PlayerIconLabelsCard(app) } }
@@ -1146,6 +1141,7 @@ fun SettingsScreen(nav: NavHostController) {
                         }
                     }
                     item { SettingsCard { PlayerStyleCard(onOpen = { showPlayerStyle = true }) } }
+                    item { SettingsCard { PlayerGesturesCard(onOpen = { showPlayerGestures = true }) } }
                 }
                 SettingsFolder.CATALOG -> {
                     item {
@@ -8422,24 +8418,24 @@ private fun PlayerStyleCard(onOpen: () -> Unit) {
     }
 }
 
-/** Opens the full-screen Player controls editor. */
+/** Opens the full-screen Player gestures & decoder page (Customize folder). */
 @Composable
-private fun PlayerControlsCard(onOpen: () -> Unit) {
+private fun PlayerGesturesCard(onOpen: () -> Unit) {
     Column(Modifier.padding(16.dp)) {
         Text(
-            tr("Player controls"),
+            tr("Player gestures & decoder"),
             style = MaterialTheme.typography.titleSmall,
             color = MaterialTheme.colorScheme.primary
         )
         Spacer(Modifier.height(6.dp))
         Text(
-            tr("Where each button sits, or hide it"),
+            tr("Swipes, pinch-to-zoom and the video decoder"),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Spacer(Modifier.height(12.dp))
         OutlinedButton(onClick = onOpen, shape = GlassShape) {
-            Text(tr("Edit control layout"))
+            Text(tr("Open gestures & decoder"))
         }
     }
 }

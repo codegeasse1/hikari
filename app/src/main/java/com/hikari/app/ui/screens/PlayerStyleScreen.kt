@@ -7,8 +7,6 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -37,7 +35,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -77,7 +74,6 @@ import com.hikari.app.player.PlayerUiPresets
 import com.hikari.app.player.PlayerUiStyle
 import com.hikari.app.ui.components.GlassCard
 import com.hikari.app.ui.components.SettingsPageHeader
-import com.hikari.app.tv.tvToggle
 import com.hikari.app.ui.navigation.LocalTaskbarInset
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
@@ -103,8 +99,8 @@ import kotlin.math.roundToInt
 
 private const val GAP_OFF = -1f
 
-/** Cards in the list BEFORE the element editors (presets, gap, gestures, hint). */
-private const val CARDS_BEFORE_ELEMENTS = 4
+/** Cards in the list BEFORE the element editors (presets, gap, hint). */
+private const val CARDS_BEFORE_ELEMENTS = 3
 
 private fun gapToSlider(v: Int): Float = if (v < 0) GAP_OFF else v.toFloat()
 
@@ -152,14 +148,6 @@ fun PlayerStylePage(app: HikariApp, onBack: () -> Unit) {
     var layout by remember { mutableStateOf(PlayerControlsConfig.defaults()) }
     LaunchedEffect(slotJson) { layout = PlayerControlsConfig.decode(slotJson) }
 
-    // Gestures live here now (moved out of Player controls): they are part of
-    // how the player feels, and this page already owns the full preview.
-    val swipesFlow = remember { app.store.playerSwipesFlow() }
-    val swipesOn by swipesFlow.collectAsState(initial = true)
-    val slideSeekFlow = remember { app.store.playerSlideSeekFlow() }
-    val slideSeekOn by slideSeekFlow.collectAsState(initial = true)
-    val pinchZoomFlow = remember { app.store.playerPinchZoomFlow() }
-    val pinchZoomOn by pinchZoomFlow.collectAsState(initial = false)
 
     var openKey by remember { mutableStateOf<String?>(null) }
 
@@ -296,51 +284,6 @@ fun PlayerStylePage(app: HikariApp, onBack: () -> Unit) {
                                 val v = sliderToGap(gapSlider)
                                 gapSlider = gapToSlider(v)
                                 save(style.copy(gapDp = v))
-                            },
-                        )
-                    }
-                }
-            }
-
-            item(key = "gestures") {
-                GlassCard(Modifier.fillMaxWidth().padding(top = 8.dp)) {
-                    Column(Modifier.padding(14.dp)) {
-                        Text(
-                            tr("Gestures"),
-                            style = MaterialTheme.typography.titleSmall,
-                            color = MaterialTheme.colorScheme.primary,
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        GestureRow(
-                            title = tr("Brightness & volume swipes"),
-                            desc = tr("Drag up or down on the video: the left half changes the brightness, the right half the volume. Off means the surface only plays."),
-                            checked = swipesOn,
-                            onChange = { on ->
-                                scope.launch {
-                                    runCatching { app.store.setPlayerSwipes(on) }
-                                }
-                            },
-                        )
-                        Spacer(Modifier.height(10.dp))
-                        GestureRow(
-                            title = tr("Slide to seek"),
-                            desc = tr("Drag left or right on the video to scrub the timeline, with the landing time previewed. Off means sideways drags do nothing."),
-                            checked = slideSeekOn,
-                            onChange = { on ->
-                                scope.launch {
-                                    runCatching { app.store.setPlayerSlideSeek(on) }
-                                }
-                            },
-                        )
-                        Spacer(Modifier.height(10.dp))
-                        GestureRow(
-                            title = tr("Pinch to zoom"),
-                            desc = tr("Pinch with two fingers on the video to zoom the picture, up to 4x. Off means pinches do nothing. The zoom resets when the server changes."),
-                            checked = pinchZoomOn,
-                            onChange = { on ->
-                                scope.launch {
-                                    runCatching { app.store.setPlayerPinchZoom(on) }
-                                }
                             },
                         )
                     }
@@ -806,10 +749,10 @@ private fun pickMod(ctx: MockCtx, key: String, shape: Shape): Modifier {
 /**
  * A mock of the player overlay that follows [style] AND [layout] as they
  * change: every movable button is drawn where the layout puts it (top bar,
- * bottom left/right, hidden), so the preview matches the Player controls page.
- * Tapping any button opens its editor below.
+ * bottom row, hidden). The bottom row is compact and scrolls sideways so it
+ * always stays on ONE line no matter how many buttons sit there. Tapping any
+ * button opens its editor below.
  */
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun OverlayMock(
     style: PlayerUiStyle,
@@ -924,25 +867,16 @@ private fun OverlayMock(
                     MockText(PlayerElements.DURATION, "1:20:00", style.get(PlayerElements.DURATION), 11, ctx)
                 }
                 Spacer(Modifier.height(6.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(Modifier.weight(1f)) {
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(gap.dp),
-                            verticalArrangement = Arrangement.spacedBy(gap.dp),
-                        ) {
-                            for (c in PlayerControl.entries.filter { (layout[it] ?: it.defaultSlot) == PlayerControlSlot.BOTTOM_LEFT }) {
-                                MockPill(PlayerElements.pillKey(c), controlIcon(c), pill(c), ctx)
-                            }
-                        }
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    for (c in PlayerControl.entries.filter { (layout[it] ?: it.defaultSlot) == PlayerControlSlot.BOTTOM_LEFT }) {
+                        MockPill(PlayerElements.pillKey(c), controlIcon(c), pill(c), ctx, compact = true)
                     }
-                    Spacer(Modifier.width(6.dp))
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(gap.dp),
-                        verticalArrangement = Arrangement.spacedBy(gap.dp),
-                    ) {
-                        for (c in PlayerControl.entries.filter { (layout[it] ?: it.defaultSlot) == PlayerControlSlot.BOTTOM_RIGHT }) {
-                            MockPill(PlayerElements.pillKey(c), controlIcon(c), pill(c), ctx)
-                        }
+                    for (c in PlayerControl.entries.filter { (layout[it] ?: it.defaultSlot) == PlayerControlSlot.BOTTOM_RIGHT }) {
+                        MockPill(PlayerElements.pillKey(c), controlIcon(c), pill(c), ctx, compact = true)
                     }
                 }
                 val hiddenKeys = PlayerControl.entries.filter { (layout[it] ?: it.defaultSlot) == PlayerControlSlot.HIDDEN }
@@ -986,8 +920,10 @@ private fun MockText(
 }
 
 @Composable
-private fun MockPill(key: String, iconRes: Int, st: ElementStyle, ctx: MockCtx) {
-    val iconDp = if (st.sizeDp > 0) st.sizeDp else 24
+private fun MockPill(key: String, iconRes: Int, st: ElementStyle, ctx: MockCtx, compact: Boolean = false) {
+    // Preview-only compact pills for the crowded bottom row: small glyphs so
+    // the whole row fits on one line. Tapping still opens the button's editor.
+    val iconDp = if (compact) 13 else if (st.sizeDp > 0) st.sizeDp else 24
     val shape = shapeFor(st.shape)
     Box(
         Modifier
@@ -996,7 +932,7 @@ private fun MockPill(key: String, iconRes: Int, st: ElementStyle, ctx: MockCtx) 
             .clip(shape)
             .background(fillOf(st))
             .then(pickMod(ctx, key, shape))
-            .padding(7.dp),
+            .padding(if (compact) 4.dp else 7.dp),
         contentAlignment = Alignment.Center,
     ) {
         Icon(
@@ -1026,26 +962,6 @@ private fun controlIcon(control: PlayerControl): Int = when (control) {
     PlayerControl.RESIZE -> R.drawable.ic_resize
     PlayerControl.ENHANCE -> R.drawable.ic_enhance
     PlayerControl.EXTERNAL -> R.drawable.ic_external
-}
-
-@Composable
-private fun GestureRow(title: String, desc: String, checked: Boolean, onChange: (Boolean) -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.titleSmall)
-            Text(
-                desc,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        Spacer(Modifier.width(10.dp))
-        Switch(
-            checked = checked,
-            onCheckedChange = onChange,
-            modifier = Modifier.tvToggle(checked) { onChange(it) },
-        )
-    }
 }
 
 @Composable

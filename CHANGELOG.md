@@ -1,3 +1,9 @@
+## 0.12.31 (continuous build only)
+
+- Manga Translate bubbles stay inside the outline now: tight covers that never spill onto the art, stacked bubble lines translated as one sentence so the wording reads naturally, deeper shrink-to-fit so long lines always fit, cleaner OCR text before translating, and a pro-translator Gemini prompt
+- Customize preview bottom row is always one line: compact pills in a sideways-scrolling row, still tappable to open each button's editor
+- New Customize → Player gestures & decoder page (gestures + video decoder moved there); Settings → Player → Player controls removed — placement lives in each button's "Where it sits" editor
+
 ## 0.12.30 (continuous build only)
 
 - Manga Translate looks like real lettering now: solid white bubble covers (no ghost of the source text showing through), translation grown to fill the bubble like the original, and more natural manga-style dialogue (Google Translate now uses the whole bubble set as context, Gemini prompt tuned for comic speech)
