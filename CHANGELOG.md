@@ -1,3 +1,7 @@
+## 0.12.44 (continuous build only)
+
+- Manga Translate starts instantly on toggle: the OCR/translation models now download in the background when the reader opens (before the toggle is ever flipped), the first OCR pass waits for a still-downloading model instead of reporting "no text", and the open page retries with backoff for minutes with the Translating badge up — the translation appears on the open page by itself, no close/reopen or scrolling needed
+
 ## 0.12.43 (continuous build only)
 
 - Manga Translate centering fixed at the root: StaticLayout already centers lines, so the paint textAlign is now LEFT (CENTER double-shifted every line into a right-edge-aligned block sitting left of the bubble) — Hindi now draws truly centered in every bubble

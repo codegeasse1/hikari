@@ -39,6 +39,7 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -221,6 +222,59 @@ object MangaTranslateRuntime {
         if (dir == null) {
             dir = File(ctx.applicationContext.filesDir, "manga_translate").apply { mkdirs() }
             scope.launchBlock { prune() }
+            // The OCR/translation models download on first use: without this
+            // the first toggle fails every tile (the download is still
+            // running), the page comes back empty and the open page never
+            // fills in. Warming here — while the user is still opening the
+            // manga — means the engines are usually ready before the toggle.
+            scope.launchBlock { warmupEngines() }
+        }
+    }
+
+    /**
+     * Force the on-device models to download long before the first real
+     * page needs them. A tiny blank bitmap through each recognizer (plus
+     * one language-ID probe) is enough to start the download; failed passes
+     * just mean "still downloading", so wait and try again (bounded, a few
+     * minutes, fire-and-forget — the reader never waits on this).
+     */
+    private suspend fun warmupEngines() {
+        val blank = try {
+            Bitmap.createBitmap(64, 64, Bitmap.Config.ARGB_8888).apply { eraseColor(AndroidColor.WHITE) }
+        } catch (e: Exception) {
+            null
+        } ?: return
+        try {
+            val img = InputImage.fromBitmap(blank, 0)
+            val recs = listOf(latinRec, jaRec, koRec, zhRec, hiRec)
+            val waits = longArrayOf(0, 10_000, 20_000, 30_000, 60_000, 120_000)
+            for (w in waits) {
+                if (w > 0) delay(w)
+                var ok = 0
+                for (r in recs) {
+                    try {
+                        r.process(img).awaitTask()
+                        ok++
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        // Module still downloading — a later pass retries.
+                    }
+                }
+                try {
+                    langIdentifier.identifyLanguage("hello").awaitTask()
+                    ok++
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                }
+                if (ok >= recs.size + 1) return
+            }
+        } finally {
+            try {
+                blank.recycle()
+            } catch (e: Exception) {
+            }
         }
     }
 
@@ -436,6 +490,12 @@ object MangaTranslateRuntime {
      * OCR over vertical tiles (a strip can be 15k px tall — never one
      * bitmap). Boxes come back in full-image pixels, one [RawBox] per text
      * block (roughly one bubble).
+     *
+     * First-use model download is the slow part: calls made while the
+     * module downloads FAIL per tile. Those all-failed passes wait and
+     * retry (bounded, a few minutes) instead of reporting "no text" — a
+     * pass where the engine ANSWERED (zero failures) but saw nothing is a
+     * genuinely blank page and returns at once.
      */
     private suspend fun ocrPage(file: File, imgW: Int, imgH: Int, orig: MangaOrigLang): List<RawBox> {
         val dec = try {
@@ -448,28 +508,8 @@ object MangaTranslateRuntime {
             val h = if (dec.height > 0) dec.height else imgH
             if (w <= 0 || h <= 0) return emptyList()
             val sample = max(1, ceil(w / 1600.0).toInt())
-            val tw = w / sample
             val tileH = 1800
             val overlap = 80
-            val tiles = ArrayList<Pair<Int, Bitmap>>()
-            var y = 0
-            while (y * 1L * sample < h) {
-                val y0s = y
-                val y1s = min(y + tileH, ceil(h.toDouble() / sample).toInt().coerceAtLeast(1))
-                val rect = Rect(0, y0s * sample, w, min(h, y1s * sample))
-                if (rect.height() <= 0) break
-                val opts = BitmapFactory.Options().apply { inSampleSize = sample }
-                val bmp = try {
-                    dec.decodeRegion(rect, opts)
-                } catch (e: Exception) {
-                    null
-                }
-                if (bmp != null) tiles.add(y0s to bmp)
-                y = y1s - overlap
-                if (y1s * 1L * sample >= h) break
-                if (tiles.size > 24) break
-            }
-            if (tiles.isEmpty()) return emptyList()
             val fixed = when (orig) {
                 MangaOrigLang.JA -> Script.JA
                 MangaOrigLang.KO -> Script.KO
@@ -478,35 +518,66 @@ object MangaTranslateRuntime {
                 MangaOrigLang.EN -> Script.LATIN
                 MangaOrigLang.AUTO -> null
             }
-            val script = fixed ?: detectScript(tiles)
-            val rec = recFor(script)
-            val out = ArrayList<RawBox>()
-            for ((y0s, bmp) in tiles) {
-                try {
-                    val text = rec.process(InputImage.fromBitmap(bmp, 0)).awaitTask()
-                    for (block in text.textBlocks) {
-                        val box = block.boundingBox ?: continue
-                        val t = block.text?.trim().orEmpty()
-                        if (t.length < 2) continue
-                        out.add(
-                            RawBox(
-                                l = (box.left + 0) * sample.toFloat(),
-                                t = (y0s + box.top) * sample.toFloat(),
-                                r = (box.right) * sample.toFloat(),
-                                b = (y0s + box.bottom) * sample.toFloat(),
-                                text = t,
-                            )
-                        )
+            // 0s, 5s, 15s, 30s, 60s, 120s between passes (~4 min cover).
+            val waits = longArrayOf(0, 5_000, 15_000, 30_000, 60_000, 120_000)
+            for (attempt in waits.indices) {
+                if (attempt > 0) delay(waits[attempt])
+                val tiles = ArrayList<Pair<Int, Bitmap>>()
+                var y = 0
+                while (y * 1L * sample < h) {
+                    val y0s = y
+                    val y1s = min(y + tileH, ceil(h.toDouble() / sample).toInt().coerceAtLeast(1))
+                    val rect = Rect(0, y0s * sample, w, min(h, y1s * sample))
+                    if (rect.height() <= 0) break
+                    val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+                    val bmp = try {
+                        dec.decodeRegion(rect, opts)
+                    } catch (e: Exception) {
+                        null
                     }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    // One bad tile never kills the page.
-                } finally {
-                    if (!bmp.isRecycled) bmp.recycle()
+                    if (bmp != null) tiles.add(y0s to bmp)
+                    y = y1s - overlap
+                    if (y1s * 1L * sample >= h) break
+                    if (tiles.size > 24) break
                 }
+                if (tiles.isEmpty()) return emptyList()
+                val script = fixed ?: detectScript(tiles)
+                val rec = recFor(script)
+                val out = ArrayList<RawBox>()
+                var failed = 0
+                for ((y0s, bmp) in tiles) {
+                    try {
+                        val text = rec.process(InputImage.fromBitmap(bmp, 0)).awaitTask()
+                        for (block in text.textBlocks) {
+                            val box = block.boundingBox ?: continue
+                            val t = block.text?.trim().orEmpty()
+                            if (t.length < 2) continue
+                            out.add(
+                                RawBox(
+                                    l = (box.left + 0) * sample.toFloat(),
+                                    t = (y0s + box.top) * sample.toFloat(),
+                                    r = (box.right) * sample.toFloat(),
+                                    b = (y0s + box.bottom) * sample.toFloat(),
+                                    text = t,
+                                )
+                            )
+                        }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        // One bad tile never kills the page; every tile
+                        // failing at once means the engine isn't ready.
+                        failed++
+                    } finally {
+                        if (!bmp.isRecycled) bmp.recycle()
+                    }
+                }
+                if (out.isNotEmpty()) return mergeRows(out)
+                // Engine answered fine but saw no text: a truly blank page.
+                if (failed == 0) return emptyList()
+                // Otherwise the model is still downloading — next pass waits.
             }
-            return mergeRows(out)
+            return emptyList()
         } finally {
             try {
                 dec.recycle()

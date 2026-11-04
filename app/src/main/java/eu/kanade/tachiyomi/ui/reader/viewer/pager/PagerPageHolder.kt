@@ -24,6 +24,14 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
+ * Backoff between translation retries on the open page (5s, 15s, 30s, 60s,
+ * 120s — about 4 minutes of cover). A first-use model download or a
+ * rate-limited engine fails fast for a while, then succeeds; the retries
+ * let the page fill in by itself instead of needing a scroll or reopen.
+ */
+private val TL_RETRY_MS = longArrayOf(5_000L, 15_000L, 30_000L, 60_000L, 120_000L)
+
+/**
  * View of the ViewPager that contains one page of a chapter (ported from chimahon's
  * PagerPageHolder, minus OCR / panel navigation / dual-page merging). Downloads the page's bytes
  * once to the on-device cache file (single-flighted with the reader's preload loop via
@@ -229,24 +237,29 @@ class PagerPageHolder(
         badge.layoutParams = FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT, Gravity.CENTER)
         addView(badge)
         tlBadge = badge
-        // A stuck badge is worse than none: it always comes down.
-        postDelayed({ if (tlBadge === badge) { removeView(badge); if (tlBadge === badge) tlBadge = null } }, 45000)
+        // A stuck badge is worse than none: it always comes down — but only
+        // once the work is truly done. Across retries the page keeps saying
+        // it is working, so a slow first run reads as working, not broken.
+        postDelayed({ if (tlBadge === badge) { removeView(badge); if (tlBadge === badge) tlBadge = null } }, 300000)
         tlJob = scope.launch {
             val boxes = MangaTranslateRuntime.translatePage(pageKey, file, imgW, imgH)
             if (tlPageKey != pageKey) return@launch
-            if (tlBadge === badge) { removeView(badge); tlBadge = null }
             val list = boxes.filter { it.trans.isNotBlank() }
             if (list.isEmpty()) {
-                // Delayed retries: transient engine/rate-limit failures then
-                // resolve on the open page, without any restart (6s, then 20s).
-                if (retry < 2 && MangaTranslateRuntime.settings.enabled) {
-                    delay(if (retry == 0) 6000 else 20000)
+                // Longer backoff retries (see TL_RETRY_MS): a first-use model
+                // download or a rate-limited engine needs minutes, not
+                // seconds. The open page fills in by itself — the badge stays
+                // up until it does (or the budget runs out), so nothing needs
+                // a scroll or a reopen to appear.
+                if (retry < TL_RETRY_MS.size && MangaTranslateRuntime.settings.enabled) {
+                    delay(TL_RETRY_MS[retry])
                     if (tlPageKey == pageKey && MangaTranslateRuntime.settings.enabled) {
                         bindTranslation(pageKey, file, imgW, imgH, retry + 1)
-                    }
-                }
+                    } else if (tlBadge === badge) { removeView(badge); tlBadge = null }
+                } else if (tlBadge === badge) { removeView(badge); tlBadge = null }
                 return@launch
             }
+            if (tlBadge === badge) { removeView(badge); tlBadge = null }
             val ov = TranslationOverlayView(context)
             ov.layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
             ov.setContent(imgW.toFloat(), imgH.toFloat(), list, ::locateTranslationPoint)
