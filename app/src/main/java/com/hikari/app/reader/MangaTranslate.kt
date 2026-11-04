@@ -315,7 +315,7 @@ object MangaTranslateRuntime {
             else if (hasLeftoverSource(t, texts.getOrNull(i).orEmpty(), st.target)) null
             else {
                 val o = bubbles.getOrNull(i)
-                if (o != null) TLBox(b.l, b.t, b.r, b.b, b.text, t, o.l, o.t, o.r, o.b)
+                if (o != null) TLBox(b.l, b.t, b.r, b.b, b.text, t, o.left, o.top, o.right, o.bottom)
                 else TLBox(b.l, b.t, b.r, b.b, b.text, t)
             }
         }
