@@ -574,9 +574,17 @@ object MangaTranslateRuntime {
             }
         }
         if (letters < 3 || upper * 10 < letters * 7) return t
-        return t.lowercase().replace(Regex("(^|[.!?\"“'\\(\\[]\\s*)([a-z])")) {
-            it.groupValues[1] + it.groupValues[2].uppercase()
-        })
+        // Sentence case without regex: capitalize the first letter and any
+        // letter following a sentence-ending mark.
+        val lower = t.lowercase()
+        val sb = StringBuilder(lower.length)
+        var capNext = true
+        for (ch in lower) {
+            sb.append(if (capNext && ch.isLetter()) ch.uppercaseChar() else ch)
+            if (ch == '.' || ch == '!' || ch == '?' || ch == '।' || ch == '。') capNext = true
+            else if (ch.isLetter()) capNext = false
+        }
+        return sb.toString()
     }
 
     /**
