@@ -184,6 +184,42 @@ fun NovelReaderScreen(
         novelSeries = parseNovelSeries(app.store.novelTranslateSeriesFlow().first())
     }
 
+    val novelEffective = novelSeries[key]?.let { MangaTranslateSettings.fromJson(it) } ?: novelTranslate
+
+    /** Translate the loaded paragraphs with [st] (cached per chapter+settings). */
+    fun translateWith(st: MangaTranslateSettings) {
+        if (!st.enabled || paragraphs.isEmpty()) {
+            if (!st.enabled) { translatedParas = null; translating = false }
+            return
+        }
+        translating = true
+        val parasNow = paragraphs
+        val chNow = chapter
+        val sizeNow = paragraphs.size
+        scope.launch(Dispatchers.Default) {
+            NovelTranslateRuntime.configure(app)
+            val r = NovelTranslateRuntime.translateChapter(providerId + "|" + mangaUrl + "|" + chNow, parasNow, st)
+            if (chapter == chNow && paragraphs.size == sizeNow) {
+                translatedParas = r
+                translating = false
+            }
+        }
+    }
+
+    fun saveNovel(next: MangaTranslateSettings) {
+        if (novelOnly) {
+            val map = novelSeries + (key to next.toJson().toString())
+            novelSeries = map
+            val o = JSONObject()
+            for ((k, v) in map) o.put(k, v)
+            scope.launch { app.store.setNovelTranslateSeriesJson(o.toString()) }
+        } else {
+            novelTranslate = next
+            scope.launch { app.store.setNovelTranslateSettingsJson(next.toJson().toString()) }
+        }
+        translateWith(next)
+    }
+
     // Load the chapter text, restore the saved position, then follow it.
     val listState = rememberLazyListState()
     LaunchedEffect(key, chapter, reload) {
@@ -286,42 +322,6 @@ fun NovelReaderScreen(
                 )
             }
         }
-    }
-
-    val novelEffective = novelSeries[key]?.let { MangaTranslateSettings.fromJson(it) } ?: novelTranslate
-
-    /** Translate the loaded paragraphs with [st] (cached per chapter+settings). */
-    fun translateWith(st: MangaTranslateSettings) {
-        if (!st.enabled || paragraphs.isEmpty()) {
-            if (!st.enabled) { translatedParas = null; translating = false }
-            return
-        }
-        translating = true
-        val parasNow = paragraphs
-        val chNow = chapter
-        val sizeNow = paragraphs.size
-        scope.launch(Dispatchers.Default) {
-            NovelTranslateRuntime.configure(app)
-            val r = NovelTranslateRuntime.translateChapter(providerId + "|" + mangaUrl + "|" + chNow, parasNow, st)
-            if (chapter == chNow && paragraphs.size == sizeNow) {
-                translatedParas = r
-                translating = false
-            }
-        }
-    }
-
-    fun saveNovel(next: MangaTranslateSettings) {
-        if (novelOnly) {
-            val map = novelSeries + (key to next.toJson().toString())
-            novelSeries = map
-            val o = JSONObject()
-            for ((k, v) in map) o.put(k, v)
-            scope.launch { app.store.setNovelTranslateSeriesJson(o.toString()) }
-        } else {
-            novelTranslate = next
-            scope.launch { app.store.setNovelTranslateSettingsJson(next.toJson().toString()) }
-        }
-        translateWith(next)
     }
 
     fun stepChapter(next: Boolean) {
@@ -707,6 +707,7 @@ fun NovelReaderScreen(
                 }
             }
         }
+        } // reader column
         // Floating translator: same engines + languages as manga.
         if (!loading && error == null) {
             FloatingActionButton(
@@ -719,7 +720,6 @@ fun NovelReaderScreen(
             ) {
                 Icon(Icons.Filled.Translate, contentDescription = "Translate")
             }
-        }
         }
     }
 

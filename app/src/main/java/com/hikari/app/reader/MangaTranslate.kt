@@ -274,6 +274,28 @@ object MangaTranslateRuntime {
         val texts = grouped.map { cleanOcr(it.text) }
         val translated = try {
             translateAll(texts, st)
+
+    /** Strip batch-numbering and quote junk the engines echo. */
+    private fun cleanTrans(t: String): String {
+        var s = t.trim()
+        s = s.replace(Regex("""^\s*(?:\d{1,3}[.)]\s*)+"""), "")
+        s = s.replace(Regex("""^['"`:;,.\s\-]+"""), "")
+        s = s.replace(Regex("""['"`:;,.\s\-]+$"""), "")
+        return s.replace(Regex("""\s+"""), " ").trim()
+    }
+
+    /** Non-Latin targets must contain the target script, else the box is an untranslated echo. */
+    private fun hasTargetScript(t: String, target: MangaTargetLang): Boolean {
+        val range = when (target) {
+            MangaTargetLang.HI -> '\u0900'..'\u097F'
+            MangaTargetLang.BN -> '\u0980'..'\u09FF'
+            MangaTargetLang.AR -> '\u0600'..'\u06FF'
+            MangaTargetLang.RU -> '\u0400'..'\u04FF'
+            else -> return true
+        }
+        return t.any { it in range }
+    }
+
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -878,27 +900,6 @@ class TranslationOverlayView @JvmOverloads constructor(
             if (ch in '\u0900'..'\u097F') dev++
         }
         return total > 0 && dev * 2 >= total
-    }
-
-    /** Strip batch-numbering and quote junk the engines echo. */
-    private fun cleanTrans(t: String): String {
-        var s = t.trim()
-        s = s.replace(Regex("""^\s*(?:\d{1,3}[.)]\s*)+"""), "")
-        s = s.replace(Regex("""^['"`:;,.\s\-]+"""), "")
-        s = s.replace(Regex("""['"`:;,.\s\-]+$"""), "")
-        return s.replace(Regex("""\s+"""), " ").trim()
-    }
-
-    /** Non-Latin targets must contain the target script, else the box is an untranslated echo. */
-    private fun hasTargetScript(t: String, target: MangaTargetLang): Boolean {
-        val range = when (target) {
-            MangaTargetLang.HI -> '\u0900'..'\u097F'
-            MangaTargetLang.BN -> '\u0980'..'\u09FF'
-            MangaTargetLang.AR -> '\u0600'..'\u06FF'
-            MangaTargetLang.RU -> '\u0400'..'\u04FF'
-            else -> return true
-        }
-        return t.any { it in range }
     }
 
     /**
