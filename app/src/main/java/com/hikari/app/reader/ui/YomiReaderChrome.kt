@@ -71,6 +71,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
@@ -78,6 +79,13 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import com.hikari.app.reader.MangaOrigLang
+import com.hikari.app.reader.MangaTargetLang
+import com.hikari.app.reader.MangaTranslateEngine
+import com.hikari.app.reader.MangaTranslateUi
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -224,6 +232,7 @@ fun YomiReaderChrome(
     onResetSettings: () -> Unit,
     seriesOverrideEnabled: Boolean,
     onToggleSeriesOverride: () -> Unit,
+    translateUi: MangaTranslateUi,
     chapters: List<ReaderChapter>,
     activeChapterId: String,
     /** Dedup-aware index of the chapter being read (see MangaReaderScreen):
@@ -399,6 +408,7 @@ fun YomiReaderChrome(
                 onResetSettings = onResetSettings,
                 seriesOverrideEnabled = seriesOverrideEnabled,
                 onToggleSeriesOverride = onToggleSeriesOverride,
+                translateUi = translateUi,
             )
         }
 
@@ -882,6 +892,7 @@ private fun ReaderSettingsSheet(
     onResetSettings: () -> Unit,
     seriesOverrideEnabled: Boolean,
     onToggleSeriesOverride: () -> Unit,
+    translateUi: MangaTranslateUi,
 ) {
     var tab by remember { mutableStateOf(0) }
     val tabs = listOf("Reading mode", "General", "Color")
@@ -920,6 +931,7 @@ private fun ReaderSettingsSheet(
                     onSelectReaderFit = onSelectReaderFit,
                     seriesOverrideEnabled = seriesOverrideEnabled,
                     onToggleSeriesOverride = onToggleSeriesOverride,
+                    translateUi = translateUi,
                     cropBorders = cropBorders,
                     onToggleCropBorders = onToggleCropBorders,
                     cropBordersPaged = cropBordersPaged,
@@ -1035,6 +1047,7 @@ private fun ColumnScope.SettingsReadingModeTab(
     onSelectReaderFit: (ReaderFit) -> Unit,
     seriesOverrideEnabled: Boolean,
     onToggleSeriesOverride: () -> Unit,
+    translateUi: MangaTranslateUi,
     cropBorders: Boolean,
     onToggleCropBorders: () -> Unit,
     cropBordersPaged: Boolean,
@@ -1082,6 +1095,7 @@ private fun ColumnScope.SettingsReadingModeTab(
             onCheckedChange = { onToggleSeriesOverride() },
         )
     }
+    TranslateDubSection(translateUi)
     SectionCard("Reading mode") {
         val modes = listOf(
             "Paged left-to-right" to ReaderMode.LEFT_TO_RIGHT,
@@ -1199,6 +1213,198 @@ private fun ColumnScope.SettingsReadingModeTab(
 }
 
 @Composable
+@Composable
+private fun ColumnScope.TranslateDubSection(t: MangaTranslateUi) {
+    var showOrig by remember { mutableStateOf(false) }
+    var showTarget by remember { mutableStateOf(false) }
+    var showEngine by remember { mutableStateOf(false) }
+    SectionCard("Translate / Dub") {
+        ToggleRow(
+            label = "Translate manga pages",
+            subtitle = "Replace the text on pages with a translation",
+            checked = t.enabled,
+            onCheckedChange = { t.onToggle() },
+        )
+        Text(
+            text = "Detect text on pages and replace it with a translation (on-device, first use downloads language models)",
+            style = MaterialTheme.typography.bodySmall.copy(color = Muted),
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
+        )
+        if (t.enabled) {
+            TranslateRow(
+                label = "Original language",
+                value = t.orig.label,
+                onClick = { showOrig = true },
+            )
+            TranslateRow(
+                label = "Translate to",
+                value = t.target.label,
+                onClick = { showTarget = true },
+            )
+            TranslateRow(
+                label = "Translation engine",
+                value = t.engine.title,
+                subtitle = t.engine.subtitle,
+                onClick = { showEngine = true },
+            )
+            if (t.engine == MangaTranslateEngine.GEMINI) {
+                var keyText by remember(t.geminiKey) { mutableStateOf(t.geminiKey) }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    OutlinedTextField(
+                        value = keyText,
+                        onValueChange = { keyText = it },
+                        label = { Text("Gemini API key") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        modifier = Modifier.weight(1f),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    TextButton(
+                        onClick = { t.onSaveKey(keyText.trim()) },
+                        colors = ButtonDefaults.textButtonColors(contentColor = Accent),
+                    ) {
+                        Text("Save")
+                    }
+                }
+            }
+        }
+    }
+    if (showOrig) {
+        TranslatePickDialog(
+            title = "Original language",
+            options = MangaOrigLang.entries.map { it.label },
+            selected = MangaOrigLang.entries.indexOf(t.orig),
+            onDismiss = { showOrig = false },
+            onPick = { t.onOrig(MangaOrigLang.entries[it]); showOrig = false },
+        )
+    }
+    if (showTarget) {
+        TranslatePickDialog(
+            title = "Translate to",
+            options = MangaTargetLang.entries.map { it.label },
+            selected = MangaTargetLang.entries.indexOf(t.target),
+            onDismiss = { showTarget = false },
+            onPick = { t.onTarget(MangaTargetLang.entries[it]); showTarget = false },
+        )
+    }
+    if (showEngine) {
+        TranslatePickDialog(
+            title = "Translation engine",
+            options = MangaTranslateEngine.entries.map { it.title },
+            subtitles = MangaTranslateEngine.entries.map { it.subtitle },
+            selected = MangaTranslateEngine.entries.indexOf(t.engine),
+            onDismiss = { showEngine = false },
+            onPick = { t.onEngine(MangaTranslateEngine.entries[it]); showEngine = false },
+        )
+    }
+}
+
+@Composable
+private fun TranslateRow(
+    label: String,
+    value: String,
+    subtitle: String? = null,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onClick() }
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodyMedium.copy(color = OnDark),
+            )
+            if (subtitle != null) {
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall.copy(color = Muted),
+                )
+            }
+        }
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodyMedium.copy(color = Accent),
+        )
+        Icon(
+            Icons.Filled.KeyboardArrowDown,
+            contentDescription = null,
+            tint = Muted,
+        )
+    }
+}
+
+@Composable
+private fun TranslatePickDialog(
+    title: String,
+    options: List<String>,
+    selected: Int,
+    onDismiss: () -> Unit,
+    onPick: (Int) -> Unit,
+    subtitles: List<String>? = null,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = SheetColor,
+        title = {
+            Text(
+                text = title,
+                fontWeight = FontWeight.Bold,
+                color = OnDark,
+            )
+        },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                options.forEachIndexed { i, label ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onPick(i) }
+                            .padding(vertical = 9.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                text = label,
+                                style = MaterialTheme.typography.bodyLarge.copy(
+                                    color = if (i == selected) Accent else OnDark,
+                                    fontWeight = if (i == selected) FontWeight.SemiBold else FontWeight.Normal,
+                                ),
+                            )
+                            subtitles?.getOrNull(i)?.let { sub ->
+                                Text(
+                                    text = sub,
+                                    style = MaterialTheme.typography.bodySmall.copy(color = Muted),
+                                )
+                            }
+                        }
+                        if (i == selected) {
+                            Icon(Icons.Filled.Check, contentDescription = null, tint = Accent)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = onDismiss,
+                colors = ButtonDefaults.textButtonColors(contentColor = Accent),
+            ) {
+                Text("Done")
+            }
+        },
+    )
+}
+
 private fun ColumnScope.WebtoonSettingsSection(
     cropBorders: Boolean,
     onToggleCropBorders: () -> Unit,

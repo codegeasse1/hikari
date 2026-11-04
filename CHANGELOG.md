@@ -1,3 +1,7 @@
+## 0.12.29 (continuous build only)
+
+- Manga reader Translate / Dub: new section below "Apply to this manga only" with master toggle, Original language (Auto/Japanese/Chinese/Korean/Hindi/English), Translate to (11 languages), Translation engine (ML Kit offline, Google Translate online, Gemini best with your API key) and per-series scope; text on pages is detected and replaced in place, cached per page
+
 ## 0.12.28 (continuous build only)
 
 - TV home hero is full-bleed now: the artwork melts into the background with no glass card/box around it

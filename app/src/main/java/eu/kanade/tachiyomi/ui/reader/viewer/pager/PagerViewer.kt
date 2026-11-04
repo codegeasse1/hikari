@@ -127,6 +127,11 @@ abstract class PagerViewer(val context: Context) {
         }
     }
 
+    /** Public re-bind for page-translation changes (see [reloadPages]). */
+    fun refreshPages() {
+        reloadPages()
+    }
+
     /** Sets the reader background color. */
     fun setTheme(bgColor: Int, textColor: Int) {
         pager.setBackgroundColor(bgColor)

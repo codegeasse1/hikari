@@ -20,8 +20,8 @@ android {
         applicationId = "com.hikari.app"
         minSdk = 24
        targetSdk = 34
-        versionCode = 417
-        versionName = "0.12.28"
+        versionCode = 418
+        versionName = "0.12.29"
         // CI injects the exact commit SHA the APK was built from, so the
         // in-app update checker can compare it against main's HEAD.
         val gitSha = System.getenv("GIT_SHA") ?: "unknown"
@@ -400,6 +400,16 @@ dependencies {
     }
     implementation("androidx.recyclerview:recyclerview:1.4.0")
     implementation("androidx.viewpager:viewpager:1.1.0")
+    // Manga page translation ("Translate / Dub"): on-device OCR (Latin + CJK +
+    // Devanagari scripts) and on-device translation (models download on first
+    // use). Google Translate and Gemini need no library (plain HTTPS).
+    implementation("com.google.mlkit:text-recognition:16.0.1")
+    implementation("com.google.mlkit:text-recognition-japanese:16.0.1")
+    implementation("com.google.mlkit:text-recognition-korean:16.0.1")
+    implementation("com.google.mlkit:text-recognition-chinese:16.0.1")
+    implementation("com.google.mlkit:text-recognition-devanagari:16.0.1")
+    implementation("com.google.mlkit:translate:17.0.3")
+    implementation("com.google.mlkit:language-id:17.0.6")
     implementation(libs.kotlinx.serialization.json)
     // Two kotlinx.serialization modules nothing in Hikari's own source touches,
     // added because ANIYOMI EXTENSIONS link against them BY NAME:

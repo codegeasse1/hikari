@@ -71,6 +71,9 @@ import com.hikari.app.manga.MangaProvider
 import com.hikari.app.manga.MangaReadMode
 import com.hikari.app.manga.MangaStore
 import com.hikari.app.reader.ColorFilterMode
+import com.hikari.app.reader.MangaTranslateRuntime
+import com.hikari.app.reader.MangaTranslateSettings
+import com.hikari.app.reader.MangaTranslateUi
 import com.hikari.app.reader.ReaderBg
 import com.hikari.app.reader.ReaderChapter
 import com.hikari.app.reader.ReaderFit
@@ -215,6 +218,8 @@ fun MangaReaderScreen(
     // `mangaKey -> ReaderMode name`. Presence of the key IS the override being
     // on, so one map carries both "enabled" and "which mode".
     var seriesModes by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    var translateGlobal by remember { mutableStateOf(MangaTranslateSettings.DEFAULTS) }
+    var translateSeries by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     LaunchedEffect(key) {
         val raw = app.store.mangaReaderSettingsJsonFlow().first()
         settings = if (raw.isNullOrBlank()) {
@@ -230,6 +235,8 @@ fun MangaReaderScreen(
             ReaderSettings.fromJson(raw)
         }
         seriesModes = parseSeriesModes(app.store.mangaSeriesModesFlow().first())
+        translateGlobal = MangaTranslateSettings.fromJson(app.store.mangaTranslateSettingsFlow().first())
+        translateSeries = parseSeriesModes(app.store.mangaTranslateSeriesFlow().first())
     }
 
     /** Writes [next] through to the store (the reader changes settings from its
@@ -238,6 +245,9 @@ fun MangaReaderScreen(
         settings = next
         scope.launch { app.store.setMangaReaderSettingsJson(next.toJson().toString()) }
     }
+
+    LaunchedEffect(Unit) { MangaTranslateRuntime.configure(app) }
+    LaunchedEffect(translateEffective) { MangaTranslateRuntime.settings = translateEffective }
 
     /** Whether this manga is on the library shelf — the chrome's bookmark button,
      *  mirrored in state because [MangaStore] is not a flow this screen observes. */
@@ -248,6 +258,26 @@ fun MangaReaderScreen(
         val o = JSONObject()
         for ((k, v) in next) o.put(k, v)
         scope.launch { app.store.setMangaSeriesModesJson(o.toString()) }
+    }
+
+    fun saveTranslateSeries(next: Map<String, String>) {
+        translateSeries = next
+        val o = JSONObject()
+        for ((k, v) in next) o.put(k, v)
+        scope.launch { app.store.setMangaTranslateSeriesJson(o.toString()) }
+    }
+
+    val translateEffective = translateSeries[key]?.let { MangaTranslateSettings.fromJson(it) }
+        ?: translateGlobal
+
+    fun saveTranslate(next: MangaTranslateSettings) {
+        if (seriesOverrideEnabled) saveTranslateSeries(translateSeries + (key to next.toJson().toString()))
+        else {
+            translateGlobal = next
+            scope.launch { app.store.setMangaTranslateSettingsJson(next.toJson().toString()) }
+        }
+        viewerRef.value?.reloadPages()
+        pagerRef.value?.refreshPages()
     }
 
     // The mode in force: the per-series override when this manga has one,
@@ -1404,6 +1434,18 @@ fun MangaReaderScreen(
                 if (seriesOverrideEnabled) saveSeriesModes(seriesModes - key)
                 else saveSeriesModes(seriesModes + (key to readerMode.name))
             },
+            translateUi = MangaTranslateUi(
+                enabled = translateEffective.enabled,
+                onToggle = { saveTranslate(translateEffective.copy(enabled = !translateEffective.enabled)) },
+                orig = translateEffective.orig,
+                onOrig = { saveTranslate(translateEffective.copy(orig = it)) },
+                target = translateEffective.target,
+                onTarget = { saveTranslate(translateEffective.copy(target = it)) },
+                engine = translateEffective.engine,
+                onEngine = { saveTranslate(translateEffective.copy(engine = it)) },
+                geminiKey = translateEffective.geminiKey,
+                onSaveKey = { saveTranslate(translateEffective.copy(geminiKey = it)) },
+            ),
             chapters = chromeChapters,
             activeChapterId = activeChapterUrl,
             initialChapterIndex = chapterInitialIndex,

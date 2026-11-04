@@ -1,5 +1,6 @@
 package eu.kanade.tachiyomi.ui.reader.viewer.webtoon
 
+import android.graphics.PointF
 import android.os.SystemClock
 import android.view.Gravity
 import android.view.ViewGroup
@@ -7,6 +8,7 @@ import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.widget.Button
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
@@ -14,6 +16,9 @@ import androidx.core.view.isVisible
 import androidx.recyclerview.widget.RecyclerView
 import com.hikari.app.reader.cache.WebtoonPageCache
 import eu.kanade.tachiyomi.ui.reader.viewer.ReaderDiagnostics
+import com.davemorrissey.labs.subscaleview.SubsamplingScaleImageView
+import com.hikari.app.reader.MangaTranslateRuntime
+import com.hikari.app.reader.TranslationOverlayView
 import eu.kanade.tachiyomi.ui.reader.viewer.ReaderPageImageView
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -48,6 +53,13 @@ class WebtoonPageHolder(
     private var item: WebtoonItem.Page? = null
 
     private val scope = MainScope()
+
+    /** Page-translation overlay state (see [bindTranslation]). */
+    private var tlJob: Job? = null
+    private var tlPageKey: String? = null
+    private var tlImgW: Int = 0
+    private var tlImgH: Int = 0
+    private var tlOverlay: TranslationOverlayView? = null
 
     /** Job for loading the page. */
     private var loadJob: Job? = null
@@ -162,6 +174,7 @@ class WebtoonPageHolder(
                     ),
                 )
                 frame.colorFilter = viewer.colorFilter
+                bindTranslation(item.desc.imageUrl, file, meta?.width ?: 0, meta?.height ?: 0)
                 val bindDt = SystemClock.elapsedRealtime() - bindT0
                 if (bindDt >= 40) ReaderDiagnostics.logFor(label, "bind work ${bindDt}ms")
             } catch (e: CancellationException) {
@@ -266,8 +279,69 @@ class WebtoonPageHolder(
         autoJob = null
         autoTriesLeft = AUTO_RETRY_MAX
         removeErrorLayout()
+        cancelTranslation()
         frame.recycle()
         progressContainer.isVisible = true
+    }
+
+    /** Starts (or clears) the translation overlay for the just-bound page. */
+    private fun bindTranslation(pageKey: String, file: java.io.File, imgW: Int, imgH: Int) {
+        tlJob?.cancel()
+        tlJob = null
+        tlOverlay?.let { frame.removeView(it) }
+        tlOverlay = null
+        tlPageKey = pageKey
+        tlImgW = imgW
+        tlImgH = imgH
+        if (!MangaTranslateRuntime.settings.enabled || imgW <= 0 || imgH <= 0) return
+        tlJob = scope.launch {
+            val boxes = MangaTranslateRuntime.translatePage(pageKey, file, imgW, imgH)
+            if (tlPageKey != pageKey) return@launch
+            val list = boxes.filter { it.trans.isNotBlank() }
+            if (list.isEmpty()) return@launch
+            val ov = TranslationOverlayView(frame.context)
+            ov.layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
+            ov.setContent(imgW.toFloat(), imgH.toFloat(), list, ::locateTranslationPoint)
+            frame.addView(ov)
+            tlOverlay = ov
+        }
+    }
+
+    private fun cancelTranslation() {
+        tlJob?.cancel()
+        tlJob = null
+        tlPageKey = null
+        tlOverlay?.let { frame.removeView(it) }
+        tlOverlay = null
+    }
+
+    /** Full-image pixel -> frame pixel, for the translation overlay. */
+    private fun locateTranslationPoint(px: Float, py: Float): PointF? {
+        val iv = frame.getImageView() ?: return null
+        return try {
+            when {
+                iv is SubsamplingScaleImageView && iv.sWidth > 0 -> {
+                    val r = android.graphics.RectF(px, py, px + 1, py + 1)
+                    iv.sourceToViewRect(r)
+                    PointF(r.left + iv.left, r.top + iv.top)
+                }
+                iv is ImageView -> {
+                    val d = iv.drawable ?: return null
+                    val dw = d.intrinsicWidth
+                    if (dw <= 0 || tlImgW <= 0) return null
+                    val sc = dw.toFloat() / tlImgW
+                    val pts = floatArrayOf(px * sc, py * sc)
+                    iv.imageMatrix.mapPoints(pts)
+                    PointF(pts[0] + iv.left, pts[1] + iv.top)
+                }
+                else -> {
+                    if (tlImgW <= 0 || tlImgH <= 0) return null
+                    PointF(iv.left + px / tlImgW * iv.width, iv.top + py / tlImgH * iv.height)
+                }
+            }
+        } catch (e: Exception) {
+            null
+        }
     }
 
     /** Called when the image is decoded and going to be displayed. */
