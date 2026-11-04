@@ -1,3 +1,9 @@
+## 0.12.42 (continuous build only)
+
+- Manga Translate centering fixed for real: the box anchors on the bubble/room center (a partial OCR box no longer drags Hindi left), mixed Latin leftovers are stripped but the Hindi + white cover stay (no half-English garbage), and only tall glyphs on dark art count as SFX (dialogue never draws huge stroked spill)
+- Manga Translate retries twice on the open page (6s, 20s) so rate-limited pages fill in without a restart
+- Library type pills (All / Anime / Movies / Series / Manga) always show when there is anything to filter and filter the tracker shelves too (AniList Watching/Reading etc.), with counts covering saved + tracker
+
 ## 0.12.39 (continuous build only)
 
 - Manga Translate adaptive centering: translation centers in the measured white room around the text (directional ink scans, leak-proof), so Hindi or any language sits in the bubble middle instead of hugging the English edge — still width-fixed, 1.35x height cap, shrink-to-fit, never a spill

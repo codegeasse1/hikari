@@ -123,6 +123,7 @@ fun LibraryScreen(nav: NavHostController, embedded: Boolean = false) {
     val typeOf: (MediaItem) -> String = { item ->
         when {
             item.providerId.startsWith("aniyomi|") || item.rawType == "aniyomi" || item.rawType == "anime" -> "anime"
+            item.rawType == "manga" -> "manga"
             item.type == MediaType.MOVIE -> "movie"
             item.type == MediaType.SERIES -> "series"
             else -> "other"
@@ -140,8 +141,7 @@ fun LibraryScreen(nav: NavHostController, embedded: Boolean = false) {
         val id = activeCategory
         val base = if (id == null) saved else saved.filter { filed[it.uniqueId].orEmpty().contains(id) }
         when (activeType) {
-            "anime", "movie", "series" -> base.filter { typeOf(it) == activeType }
-            "manga" -> emptyList()
+            "anime", "movie", "series", "manga" -> base.filter { typeOf(it) == activeType }
             else -> base
         }
     }
@@ -162,6 +162,16 @@ fun LibraryScreen(nav: NavHostController, embedded: Boolean = false) {
             remoteShelves = result.getOrDefault(emptyList())
             remoteError = result.exceptionOrNull()?.message
             remoteLoading = false
+        }
+    }
+    // Type pills filter BOTH the saved grid and the tracker shelves (an AniList
+    // Watching shelf is anime, its Reading shelf is manga). Counts cover both.
+    val trackerItems = remember(remoteShelves) { remoteShelves.flatMap { it.items } }
+    val visibleShelves = remember(remoteShelves, activeType) {
+        if (activeType == null) remoteShelves
+        else remoteShelves.mapNotNull { shelf ->
+            val items = shelf.items.filter { typeOf(it) == activeType }
+            if (items.isEmpty()) null else shelf.copy(items = items)
         }
     }
 
@@ -214,6 +224,40 @@ fun LibraryScreen(nav: NavHostController, embedded: Boolean = false) {
                 }
             }
         }
+        // Type sections row — All / Anime / Movies / Series / Manga — always
+        // visible when there is anything to filter (saved, tracker or manga),
+        // and above the shelves so the filter is found without scrolling.
+        if (saved.isNotEmpty() || hasManga || remoteShelves.isNotEmpty()) {
+            item(key = "library-type", span = { GridItemSpan(maxLineSpan) }) {
+                LazyRow(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 2.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    item(key = "type-all") {
+                        LibraryChip(
+                            label = labelAll,
+                            count = saved.size + mangaCount + trackerItems.size,
+                            selected = activeType == null,
+                        ) { activeType = null }
+                    }
+                    val types = listOf(
+                        Triple("anime", labelAnime, saved.count { typeOf(it) == "anime" } + trackerItems.count { typeOf(it) == "anime" }),
+                        Triple("movie", labelMovies, saved.count { typeOf(it) == "movie" } + trackerItems.count { typeOf(it) == "movie" }),
+                        Triple("series", labelSeries, saved.count { typeOf(it) == "series" } + trackerItems.count { typeOf(it) == "series" }),
+                        Triple("manga", labelManga, mangaCount + trackerItems.count { typeOf(it) == "manga" }),
+                    )
+                    items(types, key = { ti -> "type-" + ti.first }) { t ->
+                        LibraryChip(
+                            label = t.second,
+                            count = t.third,
+                            selected = activeType == t.first,
+                        ) { activeType = if (activeType == t.first) null else t.first }
+                    }
+                }
+            }
+        }
         if (trackerSource != "nuvio") {
             item(key = "tracker-library-header", span = { GridItemSpan(maxLineSpan) }) {
                 Column(Modifier.padding(top = 4.dp, bottom = 2.dp)) {
@@ -224,7 +268,7 @@ fun LibraryScreen(nav: NavHostController, embedded: Boolean = false) {
                     else if (!remoteError.isNullOrBlank()) Text(remoteError.orEmpty(), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
                 }
             }
-            remoteShelves.forEachIndexed { shelfIndex, shelf ->
+            visibleShelves.forEachIndexed { shelfIndex, shelf ->
                 item(key = "tracker-shelf-${shelf.key}-$shelfIndex", span = { GridItemSpan(maxLineSpan) }) {
                     Column {
                         Text(shelf.title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
@@ -262,38 +306,6 @@ fun LibraryScreen(nav: NavHostController, embedded: Boolean = false) {
             // the video library exactly as it was.
             item(key = "library-manga", span = { GridItemSpan(maxLineSpan) }) {
                 MangaLibraryShelf(nav)
-            }
-        }
-        // Type sections row — scrolls horizontally like the category chips.
-        if (saved.isNotEmpty() || hasManga) {
-            item(key = "library-type", span = { GridItemSpan(maxLineSpan) }) {
-                LazyRow(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(bottom = 2.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    item(key = "type-all") {
-                        LibraryChip(
-                            label = labelAll,
-                            count = saved.size + mangaCount,
-                            selected = activeType == null,
-                        ) { activeType = null }
-                    }
-                    val types = listOf(
-                        Triple("anime", labelAnime, saved.count { typeOf(it) == "anime" }),
-                        Triple("movie", labelMovies, saved.count { typeOf(it) == "movie" }),
-                        Triple("series", labelSeries, saved.count { typeOf(it) == "series" }),
-                        Triple("manga", labelManga, mangaCount),
-                    )
-                    items(types, key = { ti -> "type-" + ti.first }) { t ->
-                        LibraryChip(
-                            label = t.second,
-                            count = t.third,
-                            selected = activeType == t.first,
-                        ) { activeType = if (activeType == t.first) null else t.first }
-                    }
-                }
             }
         }
         if (saved.isNotEmpty()) {

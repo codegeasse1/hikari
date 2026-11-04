@@ -243,7 +243,7 @@ object MangaTranslateRuntime {
     ): List<TLBox> {
         if (!st.enabled || imgW <= 0 || imgH <= 0) return emptyList()
         val d = dir ?: return emptyList()
-        val hk = sha1("$pageKey|${st.orig.name}|${st.target.name}|${st.engine.name}|${st.geminiKey}|v8")
+        val hk = sha1("$pageKey|${st.orig.name}|${st.target.name}|${st.engine.name}|${st.geminiKey}|v9")
         val cacheFile = File(d, "$hk.json")
         readCache(cacheFile)?.let { return it }
         val def = inflight.getOrPut(hk) { scope.async { runTranslate(file, imgW, imgH, st) } }
@@ -321,23 +321,37 @@ object MangaTranslateRuntime {
         val bubbles = detectBubbles(file, imgW, imgH, kept)
         kept.mapIndexedNotNull { i, b ->
             val raw = translated.getOrNull(i)?.trim().orEmpty()
-            val t = cleanTrans(raw)
+            var t = cleanTrans(raw)
             if (t.isBlank() || t.equals(texts.getOrNull(i), ignoreCase = true)) null
             else if (!hasTargetScript(t, st.target)) null
-            else if (hasLeftoverSource(t, texts.getOrNull(i).orEmpty(), st.target)) null
             else {
+                // Mixed-script leak (Hindi + leftover Latin like "HER NAME IS"):
+                // strip the Latin words but KEEP the Hindi + the white cover, so
+                // no half-English garbage is ever drawn huge across the bubble.
+                if (hasLeftoverSource(t, texts.getOrNull(i).orEmpty(), st.target)) {
+                    val stripped = cleanTrans(stripLatinWords(t))
+                    if (stripped.isBlank() || !hasTargetScript(stripped, st.target) ||
+                        hasLeftoverSource(stripped, texts.getOrNull(i).orEmpty(), st.target)
+                    ) null
+                    else {
+                        t = stripped
+                        t
+                    }
+                } else t
+            }?.let { tt ->
                 val rm = rooms.getOrNull(i)
                 val bub = bubbles.getOrNull(i)
-                // Outline wins over room wins over SFX: a found bubble IS the
-                // bubble (any language centers in it); a white room is
-                // dialogue even on dark panels; only a missing outline+room
-                // on dark borders is art lettering.
-                if (bub != null) TLBox(b.l, b.t, b.r, b.b, b.text, t, bub.left, bub.top, bub.right, bub.bottom, false)
-                else if (rm != null && (rm.room != null || rm.art)) {
-                    val o = rm.room
-                    if (o != null) TLBox(b.l, b.t, b.r, b.b, b.text, t, o.left, o.top, o.right, o.bottom, false)
-                    else TLBox(b.l, b.t, b.r, b.b, b.text, t, art = rm.art)
-                } else TLBox(b.l, b.t, b.r, b.b, b.text, t)
+                // Outline wins over room; art lettering ONLY when the glyphs are
+                // truly large SFX on dark art (tall boxes, dark crop border).
+                // Small/medium text with no room is still dialogue (white cover,
+                // centered on the source) — never huge stroked spill.
+                val isArt = (rm?.art == true) && (b.b - b.t) >= imgW * 0.045f
+                if (bub != null) TLBox(b.l, b.t, b.r, b.b, b.text, tt, bub.left, bub.top, bub.right, bub.bottom, false)
+                else if (rm?.room != null) {
+                    val o = rm.room!!
+                    TLBox(b.l, b.t, b.r, b.b, b.text, tt, o.left, o.top, o.right, o.bottom, false)
+                } else if (isArt) TLBox(b.l, b.t, b.r, b.b, b.text, tt, art = true)
+                else TLBox(b.l, b.t, b.r, b.b, b.text, tt)
             }
         }
     }
@@ -625,8 +639,9 @@ object MangaTranslateRuntime {
                 }
                 // Bubble or SFX? Decided AFTER the room scan below: a found
                 // white room is dialogue even on a dark panel (the crop border
-                // catches panel art); only a missing room + dark border is SFX.
-                val borderDark = borderWhite.toFloat() / max(1, border) < 0.5f
+                // catches panel art); only a missing room + a clearly dark
+                // border (white < 35%, not 50%) + tall glyphs is SFX.
+                val borderDark = borderWhite.toFloat() / max(1, border) < 0.35f
                 // Text box in crop space.
                 val tl = (((b.l - cl).toFloat() / cw * dw).toInt()).coerceIn(0, dw - 1)
                 val tr = (((b.r - cl).toFloat() / cw * dw).toInt()).coerceIn(0, dw - 1)
@@ -965,10 +980,16 @@ object MangaTranslateRuntime {
         }
         if (!needLatinFree) return false
         // Strict: for Latin-free targets ANY surviving Latin word is a leak
-        // (transliterated leftovers like "RA" inside Hindi). Drop the box
-        // instead of drawing mixed garbage huge across the bubble.
+        // (transliterated leftovers like "RA" inside Hindi). The caller strips
+        // the Latin words but keeps the rest + the white cover, instead of
+        // drawing mixed garbage huge across the bubble.
         if (Regex("[A-Za-z]{2,}").containsMatchIn(trans)) return true
         return false
+    }
+
+    /** Remove Latin words (2+ letters) for Latin-free targets, keep the rest. */
+    private fun stripLatinWords(t: String): String {
+        return t.replace(Regex("[A-Za-z]{2,}"), " ").replace(Regex("\\s+"), " ").trim()
     }
 
     // ---- Translation ----
@@ -1413,13 +1434,10 @@ class TranslationOverlayView @JvmOverloads constructor(
                 continue
             }
             // Dialogue geometry (spill-proof by construction): the ANCHOR is
-            // always the source-text center — the English source was typeset
-            // centered in its bubble, so the source center IS the bubble
-            // center in any language. Room scans on white page backgrounds
-            // leak through thin outlines onto the page and dragged the old
-            // room-center anchor left of the bubble; the room is used only
-            // for SIZE (capped), never for position. Box and text share the
-            // source center, so neither drifts left.
+            // the BUBBLE/room center — the source was typeset centered in its
+            // bubble, but a PARTIAL OCR box is skewed to one side, so anchoring
+            // on the source center dragged Hindi left of the bubble. A found
+            // room/outline IS the bubble: any language centers in it.
             var boxCx = (el + er) / 2f
             var boxCy = (et + eb) / 2f
             var roomW = 0f
@@ -1466,13 +1484,11 @@ class TranslationOverlayView @JvmOverloads constructor(
             if (f.layout.height > boxH * 0.92f) {
                 f = shrinkToFit(b.trans, boxW, boxH * 0.92f) ?: continue
             }
-            // Placement: start centered on the source text, then SHIFT the box
-            // (never resize it past the room) so it sits fully inside the
-            // bubble room, and finally inside the page. A partially-OCR'd
-            // source (box skewed to one side of the bubble) used to drag the
-            // translation out of the bubble and off the left edge.
-            var cx = (el + er) / 2f
-            var cy = (et + eb) / 2f
+            // Placement: the bubble/room CENTER (never the skewed source box),
+            // then clamped inside the page. A partially-OCR'd source used to
+            // drag the translation out of the bubble and off the left edge.
+            var cx = if (hasRoom) (roomL + roomR) / 2f else (el + er) / 2f
+            var cy = if (hasRoom) (roomT + roomB) / 2f else (et + eb) / 2f
             if (hasRoom) {
                 val minCx = roomL + boxW / 2f
                 val maxCx = roomR - boxW / 2f

@@ -237,10 +237,10 @@ class PagerPageHolder(
             if (tlBadge === badge) { removeView(badge); tlBadge = null }
             val list = boxes.filter { it.trans.isNotBlank() }
             if (list.isEmpty()) {
-                // One delayed retry: transient engine/rate-limit failures then
-                // resolve on the open page, without any restart.
-                if (retry < 1 && MangaTranslateRuntime.settings.enabled) {
-                    delay(6000)
+                // Delayed retries: transient engine/rate-limit failures then
+                // resolve on the open page, without any restart (6s, then 20s).
+                if (retry < 2 && MangaTranslateRuntime.settings.enabled) {
+                    delay(if (retry == 0) 6000 else 20000)
                     if (tlPageKey == pageKey && MangaTranslateRuntime.settings.enabled) {
                         bindTranslation(pageKey, file, imgW, imgH, retry + 1)
                     }
