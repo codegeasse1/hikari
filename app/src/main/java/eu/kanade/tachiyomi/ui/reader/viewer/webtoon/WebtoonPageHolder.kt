@@ -61,6 +61,7 @@ class WebtoonPageHolder(
     private var tlImgH: Int = 0
     private var tlOverlay: TranslationOverlayView? = null
     private var tlFile: java.io.File? = null
+    private var tlBadge: TextView? = null
 
     /** Re-runs the overlay when the translate switch flips (no scroll needed). */
     private val tlRefreshListener: () -> Unit = { frame.post { refreshTranslation(); frame.postDelayed({ if (tlOverlay == null && MangaTranslateRuntime.settings.enabled) refreshTranslation() }, 600) } }
@@ -294,21 +295,47 @@ class WebtoonPageHolder(
     }
 
     /** Starts (or clears) the translation overlay for the just-bound page. */
-    private fun bindTranslation(pageKey: String, file: java.io.File, imgW: Int, imgH: Int) {
+    private fun bindTranslation(pageKey: String, file: java.io.File, imgW: Int, imgH: Int, retry: Int = 0) {
         tlJob?.cancel()
         tlJob = null
         tlOverlay?.let { frame.removeView(it) }
         tlOverlay = null
+        tlBadge?.let { frame.removeView(it) }
+        tlBadge = null
         tlPageKey = pageKey
         tlFile = file
         tlImgW = imgW
         tlImgH = imgH
         if (!MangaTranslateRuntime.settings.enabled || imgW <= 0 || imgH <= 0) return
+        // Instant feedback: the page says it is working right away, so a slow
+        // first run (model download + tiled OCR + network) no longer reads as
+        // "not translating" and no restart is needed to see it finish.
+        val badge = TextView(frame.context).apply {
+            text = "Translating..."
+            gravity = Gravity.CENTER
+            setPadding(24, 12, 24, 12)
+        }
+        badge.layoutParams = FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT, Gravity.CENTER)
+        frame.addView(badge)
+        tlBadge = badge
+        // A stuck badge is worse than none: it always comes down.
+        frame.postDelayed({ if (tlBadge === badge) { frame.removeView(badge); if (tlBadge === badge) tlBadge = null } }, 45000)
         tlJob = scope.launch {
             val boxes = MangaTranslateRuntime.translatePage(pageKey, file, imgW, imgH)
             if (tlPageKey != pageKey) return@launch
+            if (tlBadge === badge) { frame.removeView(badge); tlBadge = null }
             val list = boxes.filter { it.trans.isNotBlank() }
-            if (list.isEmpty()) return@launch
+            if (list.isEmpty()) {
+                // One delayed retry: transient engine/rate-limit failures then
+                // resolve on the open page, without any restart.
+                if (retry < 1 && MangaTranslateRuntime.settings.enabled) {
+                    delay(6000)
+                    if (tlPageKey == pageKey && MangaTranslateRuntime.settings.enabled) {
+                        bindTranslation(pageKey, file, imgW, imgH, retry + 1)
+                    }
+                }
+                return@launch
+            }
             val ov = TranslationOverlayView(frame.context)
             ov.layoutParams = FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
             ov.setContent(imgW.toFloat(), imgH.toFloat(), list, ::locateTranslationPoint)
@@ -324,6 +351,8 @@ class WebtoonPageHolder(
         tlFile = null
         tlOverlay?.let { frame.removeView(it) }
         tlOverlay = null
+        tlBadge?.let { frame.removeView(it) }
+        tlBadge = null
     }
 
     /** Settings changed (toggle on/off): redo the open page in place. */

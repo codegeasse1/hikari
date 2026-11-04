@@ -52,6 +52,7 @@ import androidx.compose.ui.unit.dp
 import androidx.navigation.NavHostController
 import com.hikari.app.HikariApp
 import com.hikari.app.data.LibraryCategory
+import com.hikari.app.data.MediaType
 import com.hikari.app.data.MediaItem
 import com.hikari.app.data.TrackerLibraryRepository
 import com.hikari.app.ui.Artwork
@@ -98,6 +99,10 @@ fun LibraryScreen(nav: NavHostController, embedded: Boolean = false) {
     val filed by filedFlow.collectAsState(initial = emptyMap())
 
     var activeCategory by remember { mutableStateOf<String?>(null) }
+    // Type sections: Anime / Movies / Series / Manga (null = everything).
+    // Horizontally scrollable pills above the grid, like the Library |
+    // History | Downloads strip — the shelf is one page per type.
+    var activeType by remember { mutableStateOf<String?>(null) }
     var moving by remember { mutableStateOf<MediaItem?>(null) }
     var managing by remember { mutableStateOf(false) }
     val style = rememberPosterStyle()
@@ -112,9 +117,26 @@ fun LibraryScreen(nav: NavHostController, embedded: Boolean = false) {
         if (id != null && categories.none { it.id == id }) activeCategory = null
     }
 
-    val shown = remember(saved, activeCategory, filed) {
+    // Anime = Aniyomi extensions (no movie/series concept at catalog time);
+    // Movies/Series = the saved video type; Manga lives in MangaStore on its
+    // own shelf below, not in this grid.
+    val typeOf: (MediaItem) -> String = { item ->
+        when {
+            item.providerId.startsWith("aniyomi|") || item.rawType == "aniyomi" || item.rawType == "anime" -> "anime"
+            item.type == MediaType.MOVIE -> "movie"
+            item.type == MediaType.SERIES -> "series"
+            else -> "other"
+        }
+    }
+    val mangaCount = remember(mangaRev) { com.hikari.app.manga.MangaStore.library().size }
+    val shown = remember(saved, activeCategory, filed, activeType) {
         val id = activeCategory
-        if (id == null) saved else saved.filter { filed[it.uniqueId].orEmpty().contains(id) }
+        val base = if (id == null) saved else saved.filter { filed[it.uniqueId].orEmpty().contains(id) }
+        when (activeType) {
+            "anime", "movie", "series" -> base.filter { typeOf(it) == activeType }
+            "manga" -> emptyList()
+            else -> base
+        }
     }
     // The saved items the adult-content switch allows (see [NsfwGate]): the grid
     // AND its empty state read this, so hiding an adult title cannot leave a blank
@@ -141,7 +163,7 @@ fun LibraryScreen(nav: NavHostController, embedded: Boolean = false) {
     LazyVerticalGrid(
         columns = GridCells.Adaptive(minSize = TvUi.gridMinFor(104)),
         // Library position held per category (see ScrollKeeper).
-        state = com.hikari.app.ui.components.keptGridState("library:$activeCategory"),
+        state = com.hikari.app.ui.components.keptGridState("library:$activeCategory:$activeType"),
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(
             start = 16.dp,
@@ -226,13 +248,45 @@ fun LibraryScreen(nav: NavHostController, embedded: Boolean = false) {
             }
         }
 
-        if (hasManga) {
+        if (hasManga && (activeType == null || activeType == "manga")) {
             // Followed manga, beside the video library: "My Stuff" is where the
             // things that are yours live, and a manga is one of them. Only added
             // when there is something to show, so an install with no manga keeps
             // the video library exactly as it was.
             item(key = "library-manga", span = { GridItemSpan(maxLineSpan) }) {
                 MangaLibraryShelf(nav)
+            }
+        }
+        // Type sections row — scrolls horizontally like the category chips.
+        if (saved.isNotEmpty() || hasManga) {
+            item(key = "library-type", span = { GridItemSpan(maxLineSpan) }) {
+                LazyRow(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 2.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    item(key = "type-all") {
+                        LibraryChip(
+                            label = tr("All"),
+                            count = saved.size + mangaCount,
+                            selected = activeType == null,
+                        ) { activeType = null }
+                    }
+                    val types = listOf(
+                        Triple("anime", tr("Anime"), saved.count { typeOf(it) == "anime" }),
+                        Triple("movie", tr("Movies"), saved.count { typeOf(it) == "movie" }),
+                        Triple("series", tr("Series"), saved.count { typeOf(it) == "series" }),
+                        Triple("manga", tr("Manga"), mangaCount),
+                    )
+                    items(types, key = { ti -> "type-" + ti.first }) { t ->
+                        LibraryChip(
+                            label = t.second,
+                            count = t.third,
+                            selected = activeType == t.first,
+                        ) { activeType = if (activeType == t.first) null else t.first }
+                    }
+                }
             }
         }
         if (saved.isNotEmpty()) {
@@ -260,7 +314,22 @@ fun LibraryScreen(nav: NavHostController, embedded: Boolean = false) {
                 }
             }
         }
-        if (saved.isEmpty()) {
+        if (activeType == "manga" && !hasManga) {
+            item(key = "library-manga-empty", span = { GridItemSpan(maxLineSpan) }) {
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 40.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        tr("No manga followed yet."),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        } else if (saved.isEmpty()) {
             item(key = "library-empty", span = { GridItemSpan(maxLineSpan) }) {
                 EmptyState(
                     title = tr("Your library is empty"),

@@ -243,7 +243,7 @@ object MangaTranslateRuntime {
     ): List<TLBox> {
         if (!st.enabled || imgW <= 0 || imgH <= 0) return emptyList()
         val d = dir ?: return emptyList()
-        val hk = sha1("$pageKey|${st.orig.name}|${st.target.name}|${st.engine.name}|${st.geminiKey}|v7")
+        val hk = sha1("$pageKey|${st.orig.name}|${st.target.name}|${st.engine.name}|${st.geminiKey}|v8")
         val cacheFile = File(d, "$hk.json")
         readCache(cacheFile)?.let { return it }
         val def = inflight.getOrPut(hk) { scope.async { runTranslate(file, imgW, imgH, st) } }
@@ -315,6 +315,10 @@ object MangaTranslateRuntime {
         // gets centered in its real white room (any language stays centered),
         // art lettering skips the white cover and draws stroked instead.
         val rooms = measureRooms(file, imgW, imgH, kept)
+        // Bubble outlines (the ink ovals themselves): the only anchor that is
+        // the bubble on white pages too, where the directional room scan can
+        // leak through thin outlines. A found outline centers + sizes the box.
+        val bubbles = detectBubbles(file, imgW, imgH, kept)
         kept.mapIndexedNotNull { i, b ->
             val raw = translated.getOrNull(i)?.trim().orEmpty()
             val t = cleanTrans(raw)
@@ -323,12 +327,14 @@ object MangaTranslateRuntime {
             else if (hasLeftoverSource(t, texts.getOrNull(i).orEmpty(), st.target)) null
             else {
                 val rm = rooms.getOrNull(i)
-                if (rm != null && (rm.room != null || rm.art)) {
+                val bub = bubbles.getOrNull(i)
+                // Outline wins over room wins over SFX: a found bubble IS the
+                // bubble (any language centers in it); a white room is
+                // dialogue even on dark panels; only a missing outline+room
+                // on dark borders is art lettering.
+                if (bub != null) TLBox(b.l, b.t, b.r, b.b, b.text, t, bub.left, bub.top, bub.right, bub.bottom, false)
+                else if (rm != null && (rm.room != null || rm.art)) {
                     val o = rm.room
-                    // White room wins: a measured bubble interior is dialogue,
-                    // never SFX — even when the crop border caught dark panel
-                    // art (red/brown panels tripped the old border test and
-                    // drew huge stroked Hindi across the page).
                     if (o != null) TLBox(b.l, b.t, b.r, b.b, b.text, t, o.left, o.top, o.right, o.bottom, false)
                     else TLBox(b.l, b.t, b.r, b.b, b.text, t, art = rm.art)
                 } else TLBox(b.l, b.t, b.r, b.b, b.text, t)
@@ -651,29 +657,34 @@ object MangaTranslateRuntime {
                     return wn * 100 >= n * 98
                 }
                 var lx = tl
-                var steps = 0
-                while (lx > 0 && steps < maxX && colWhite(lx - 1, tt, tb)) {
+                var stepsL = 0
+                while (lx > 0 && stepsL < maxX && colWhite(lx - 1, tt, tb)) {
                     lx--
-                    steps++
+                    stepsL++
                 }
                 var rx = tr
-                steps = 0
-                while (rx < dw - 1 && steps < maxX && colWhite(rx + 1, tt, tb)) {
+                var stepsR = 0
+                while (rx < dw - 1 && stepsR < maxX && colWhite(rx + 1, tt, tb)) {
                     rx++
-                    steps++
+                    stepsR++
                 }
                 var ty = tt
-                steps = 0
-                while (ty > 0 && steps < maxY && rowWhite(ty - 1, lx, rx)) {
+                var stepsT = 0
+                while (ty > 0 && stepsT < maxY && rowWhite(ty - 1, lx, rx)) {
                     ty--
-                    steps++
+                    stepsT++
                 }
                 var by = tb
-                steps = 0
-                while (by < dh - 1 && steps < maxY && rowWhite(by + 1, lx, rx)) {
+                var stepsB = 0
+                while (by < dh - 1 && stepsB < maxY && rowWhite(by + 1, lx, rx)) {
                     by++
-                    steps++
+                    stepsB++
                 }
+                // A side that runs to its max reach without touching ink never
+                // found the bubble wall — it leaked (thin outlines on white
+                // pages). A leaked room drags the box off-center, so drop it
+                // and let the outline (or the centered source box) decide.
+                if (stepsL >= maxX || stepsR >= maxX || stepsT >= maxY || stepsB >= maxY) return Room(null, borderDark)
                 // Back to full-image pixels, inset slightly so ink stays out.
                 val fl = cl + lx.toFloat() / dw * cw + 1f
                 val ft = ct + ty.toFloat() / dh * ch + 1f
@@ -723,10 +734,12 @@ object MangaTranslateRuntime {
         return try {
             val bw = (b.r - b.l).coerceAtLeast(1f)
             val bh = (b.b - b.t).coerceAtLeast(1f)
-            // Crop generously so the whole bubble is inside, but capped so a
-            // neighbouring bubble can't merge in through the crop.
-            val ex = bw * 1.1f
-            val ey = bh * 1.1f
+            // Crop wide enough to hold the WHOLE bubble on white pages (the
+            // old 1.1x crop never saw the outline, so no outline was ever
+            // found where it matters). A merged neighbour is rejected below
+            // by the width guard instead.
+            val ex = bw * 2.0f
+            val ey = bh * 2.0f
             val cl = max(0f, b.l - ex).toInt()
             val ct = max(0f, b.t - ey).toInt()
             val cr = min(w.toFloat(), b.r + ex).toInt()
@@ -843,6 +856,9 @@ object MangaTranslateRuntime {
                 // Must still contain the text, with sane proportions.
                 if (out.right - out.left < bw * 0.5f) return null
                 if (out.bottom - out.top < bh * 0.5f) return null
+                // Merged two neighbouring bubbles through the gutter: not a
+                // bubble, and centering in it would sit between bubbles.
+                if (out.right - out.left > bw * 6f) return null
                 if (out.left > b.l || out.top > b.t || out.right < b.r || out.bottom < b.b) {
                     // Outline missed the text (outline gap leaked out): clamp
                     // to a padded text box instead of a wrong bubble.
@@ -888,17 +904,17 @@ object MangaTranslateRuntime {
         // bubble starts below the outline gap. A next line inside the SAME
         // bubble starts right around a's bottom, well aligned with it.
         if (b.t < a.b - lineH * 0.6f) return false
-        if (b.t > a.b + lineH * 1.0f) return false
+        if (b.t > a.b + lineH * 1.6f) return false
         val inter = min(a.r, b.r) - max(a.l, b.l)
         if (inter <= 0) return false
         val narrow = min(a.r - a.l, b.r - b.l).coerceAtLeast(1f)
-        if (inter < narrow * 0.5f) return false
+        if (inter < narrow * 0.4f) return false
         // Joint bubbles sit side-by-side / diagonally: their centers drift
         // apart even when the x-ranges touch. Lines of one bubble share a center.
         val ca = (a.l + a.r) / 2f
         val cb = (b.l + b.r) / 2f
         val wide = max(a.r - a.l, b.r - b.l).coerceAtLeast(1f)
-        return kotlin.math.abs(cb - ca) <= wide * 0.6f
+        return kotlin.math.abs(cb - ca) <= wide * 0.8f
     }
 
     /** OCR joins lines with odd spacing — normalize before translating. */
@@ -948,10 +964,11 @@ object MangaTranslateRuntime {
             else -> false
         }
         if (!needLatinFree) return false
-        val srcWords = Regex("[A-Za-z]{2,}").findAll(src).map { it.value.lowercase() }.toSet()
-        if (srcWords.isEmpty()) return false
-        val transWords = Regex("[A-Za-z]{2,}").findAll(trans).map { it.value.lowercase() }.toSet()
-        return transWords.any { it in srcWords }
+        // Strict: for Latin-free targets ANY surviving Latin word is a leak
+        // (transliterated leftovers like "RA" inside Hindi). Drop the box
+        // instead of drawing mixed garbage huge across the bubble.
+        if (Regex("[A-Za-z]{2,}").containsMatchIn(trans)) return true
+        return false
     }
 
     // ---- Translation ----
