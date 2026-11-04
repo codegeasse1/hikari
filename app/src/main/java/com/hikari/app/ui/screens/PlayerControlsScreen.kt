@@ -4,36 +4,27 @@ import com.hikari.app.ui.components.LocalHideHelp
 import com.hikari.app.i18n.tr
 
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -47,9 +38,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -62,24 +50,20 @@ import com.hikari.app.ui.components.GlassCard
 import com.hikari.app.ui.components.GlassShape
 import com.hikari.app.ui.components.SettingsPageHeader
 import com.hikari.app.ui.navigation.LocalTaskbarInset
-import com.hikari.app.tv.tvToggle
 import kotlinx.coroutines.launch
 
 /**
  * Settings → Player → Player controls: choose where each player button sits
  * (the reference streaming apps call this a "control layout").
  *
- * The page is deliberately a full screen rather than one more settings card:
- * fifteen controls each need a four-way placement choice, which cannot be
- * expressed as a switch. It is drawn as a schematic of the player overlay —
- * top bar, bottom row (left/right ends) and a Hidden bucket — so the result is
- * visible at a glance instead of being a list of raw setting values.
+ * Just the placement lists (top bar, bottom left/right, hidden): the live
+ * preview, the look of every button and the gestures live in
+ * Customize → Player UI style, so this page no longer duplicates them.
  *
  * The back button, the centre play/pause cluster and the title/badges are fixed
  * and are not offered here: with them gone there is no way to leave, pause or
  * identify what is playing.
  */
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun PlayerControlsPage(app: HikariApp, onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
@@ -87,23 +71,9 @@ fun PlayerControlsPage(app: HikariApp, onBack: () -> Unit) {
     val json by jsonFlow.collectAsState(initial = "")
     var layout by remember { mutableStateOf(PlayerControlsConfig.defaults()) }
     var moveMenuFor by remember { mutableStateOf<PlayerControl?>(null) }
-    // Preview style: the player shows buttons as ICONS (most of them have no
-    // text), so the schematic opens as the truer picture — the actual glyphs
-    // the user will see — and can be switched to the button names to check one
-    // that reads oddly as a glyph.
-    var iconsPreview by remember { mutableStateOf(true) }
     // Page position held across visits (see ScrollKeeper).
     val listState = com.hikari.app.ui.components.keptListState("playerControls")
 
-    // Brightness/volume swipes (AppStore.playerSwipesFlow, ON by default),
-    // plus slide-to-seek (AppStore.playerSlideSeekFlow, ON by default),
-    // plus pinch-to-zoom (AppStore.playerPinchZoomFlow, OFF by default).
-    val swipesFlow = remember { app.store.playerSwipesFlow() }
-    val swipesOn by swipesFlow.collectAsState(initial = true)
-    val slideSeekFlow = remember { app.store.playerSlideSeekFlow() }
-    val slideSeekOn by slideSeekFlow.collectAsState(initial = true)
-    val pinchZoomFlow = remember { app.store.playerPinchZoomFlow() }
-    val pinchZoomOn by pinchZoomFlow.collectAsState(initial = false)
     // Video decoder choice (AppStore.playerDecoderModeFlow, Best by default).
     val decoderModeFlow = remember { app.store.playerDecoderModeFlow() }
     val decoderMode by decoderModeFlow.collectAsState(initial = "auto")
@@ -162,133 +132,16 @@ fun PlayerControlsPage(app: HikariApp, onBack: () -> Unit) {
             )
         }
 
-        item {
-            GlassCard(Modifier.fillMaxWidth().padding(top = 12.dp)) {
-                Column(Modifier.padding(14.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            tr("Preview"),
-                            style = MaterialTheme.typography.titleSmall,
-                            color = MaterialTheme.colorScheme.primary,
-                        )
-                        Spacer(Modifier.weight(1f))
-                        PreviewStyleToggle(icons = iconsPreview) { iconsPreview = it }
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    OverlaySketch(layout, icons = iconsPreview)
-                }
-            }
-        }
-
-        // ---- Gestures that are not a button --------------------------------
-        //
-        // Brightness/volume swipes are part of the player's surface rather than
-        // its chrome, so they cannot be placed like the fifteen controls above —
-        // but they ARE something a user may want off (a stray drag while
-        // scrubbing, or a child's fingers on the screen, changing the volume
-        // mid-film). Hence a switch here, next to the layout it belongs to.
-        item(key = "gestures") {
+        // Video decoder choice (kept here; gestures moved to Customize → Player UI style).
+        item(key = "video") {
             GlassCard(Modifier.fillMaxWidth().padding(top = 12.dp)) {
                 Column(Modifier.padding(14.dp)) {
                     Text(
-                        tr("Gestures"),
+                        tr("Video"),
                         style = MaterialTheme.typography.titleSmall,
                         color = MaterialTheme.colorScheme.primary,
                     )
                     Spacer(Modifier.height(8.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                tr("Brightness & volume swipes"),
-                                style = MaterialTheme.typography.titleSmall,
-                            )
-                            if (!LocalHideHelp.current) {
-                            Text(
-                                tr("Drag up or down on the video: the left half changes the brightness, the right half the volume. Off means the surface only plays."),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            }
-                        }
-                        Spacer(Modifier.width(10.dp))
-                        Switch(
-                            checked = swipesOn,
-                            onCheckedChange = { on ->
-                                scope.launch {
-                                    runCatching { app.store.setPlayerSwipes(on) }
-                                }
-                            },
-                            // See [Modifier.tvToggle].
-                            modifier = Modifier.tvToggle(swipesOn) { on ->
-                                scope.launch {
-                                    runCatching { app.store.setPlayerSwipes(on) }
-                                }
-                            },
-                        )
-                    }
-                    Spacer(Modifier.height(10.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                tr("Slide to seek"),
-                                style = MaterialTheme.typography.titleSmall,
-                            )
-                            if (!LocalHideHelp.current) {
-                            Text(
-                                tr("Drag left or right on the video to scrub the timeline, with the landing time previewed. Off means sideways drags do nothing."),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            }
-                        }
-                        Spacer(Modifier.width(10.dp))
-                        Switch(
-                            checked = slideSeekOn,
-                            onCheckedChange = { on ->
-                                scope.launch {
-                                    runCatching { app.store.setPlayerSlideSeek(on) }
-                                }
-                            },
-                            // See [Modifier.tvToggle].
-                            modifier = Modifier.tvToggle(slideSeekOn) { on ->
-                                scope.launch {
-                                    runCatching { app.store.setPlayerSlideSeek(on) }
-                                }
-                            },
-                        )
-                    }
-                    Spacer(Modifier.height(10.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                tr("Pinch to zoom"),
-                                style = MaterialTheme.typography.titleSmall,
-                            )
-                            if (!LocalHideHelp.current) {
-                            Text(
-                                tr("Pinch with two fingers on the video to zoom the picture, up to 4x. Off means pinches do nothing. The zoom resets when the server changes."),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            }
-                        }
-                        Spacer(Modifier.width(10.dp))
-                        Switch(
-                            checked = pinchZoomOn,
-                            onCheckedChange = { on ->
-                                scope.launch {
-                                    runCatching { app.store.setPlayerPinchZoom(on) }
-                                }
-                            },
-                            // See [Modifier.tvToggle].
-                            modifier = Modifier.tvToggle(pinchZoomOn) { on ->
-                                scope.launch {
-                                    runCatching { app.store.setPlayerPinchZoom(on) }
-                                }
-                            },
-                        )
-                    }
-                    Spacer(Modifier.height(10.dp))
                     Column {
                         Text(
                             tr("Video decoder"),
@@ -468,168 +321,6 @@ fun PlayerControlsPage(app: HikariApp, onBack: () -> Unit) {
     }
 }
 
-/**
- * A schematic of the player overlay: the fixed furniture (back arrow, title,
- * play circle) plus the buttons the user has placed, so the layout can be read
- * without leaving the settings page.
- *
- * [icons] draws each chip as the real glyph the player uses instead of its name
- * — the default, because that is what the overlay actually looks like.
- *
- * The whole sketch sits on a stand-in video frame (a bundled still) rather than
- * a flat black panel: the point of a preview is "this is the player", and a
- * photo behind the chrome makes the placement of the bottom row, the play ring
- * and the chips immediately obvious. A scrim over the still keeps every chip
- * legible no matter how bright the frame behind it is.
- */
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun OverlaySketch(layout: Map<PlayerControl, PlayerControlSlot>, icons: Boolean) {
-    val accent = MaterialTheme.colorScheme.primary
-
-    fun inSlot(slot: PlayerControlSlot): List<PlayerControl> =
-        PlayerControl.entries.filter { (layout[it] ?: it.defaultSlot) == slot }
-
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
-    ) {
-        Image(
-            painter = painterResource(R.drawable.player_preview_still),
-            contentDescription = null,
-            contentScale = ContentScale.Crop,
-            modifier = Modifier.matchParentSize(),
-        )
-        Box(
-            Modifier
-                .matchParentSize()
-                .background(
-                    Brush.verticalGradient(
-                        listOf(Color(0x7A070A14), Color(0xE0070A14)),
-                    )
-                )
-        )
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .heightIn(min = 176.dp)
-                .padding(10.dp),
-        ) {
-            // Top bar: back arrow, title, then the user's top-bar buttons.
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                SketchBox("←", accent, filled = false)
-                Spacer(Modifier.width(6.dp))
-                Box(
-                    Modifier
-                        .weight(1f)
-                        .height(18.dp)
-                        .clip(RoundedCornerShape(5.dp))
-                        .background(Color(0xFF2A3352))
-                )
-                Spacer(Modifier.width(6.dp))
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                    inSlot(PlayerControlSlot.TOP_BAR).forEach { SketchChip(it.label, accent, if (icons) controlIcon(it) else null) }
-                }
-            }
-
-            Spacer(Modifier.height(14.dp))
-
-            // Centre: the fixed play/pause circle.
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Box(
-                    Modifier
-                        .size(30.dp)
-                        .clip(RoundedCornerShape(15.dp))
-                        .background(accent.copy(alpha = 0.34f)),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(
-                        Icons.Filled.PlayArrow,
-                        contentDescription = null,
-                        tint = accent,
-                        modifier = Modifier.size(18.dp),
-                    )
-                }
-            }
-
-            Spacer(Modifier.height(14.dp))
-
-            // Bottom row: progress bar, then left and right button groups.
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .height(3.dp)
-                    .clip(RoundedCornerShape(2.dp))
-                    .background(accent.copy(alpha = 0.55f))
-            )
-            Spacer(Modifier.height(8.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.weight(1f)) {
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(5.dp),
-                        verticalArrangement = Arrangement.spacedBy(5.dp),
-                    ) {
-                        inSlot(PlayerControlSlot.BOTTOM_LEFT).forEach { SketchChip(it.label, accent, if (icons) controlIcon(it) else null) }
-                    }
-                }
-                Spacer(Modifier.width(6.dp))
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(5.dp),
-                    verticalArrangement = Arrangement.spacedBy(5.dp),
-                ) {
-                    inSlot(PlayerControlSlot.BOTTOM_RIGHT).forEach { SketchChip(it.label, accent, if (icons) controlIcon(it) else null) }
-                }
-            }
-
-            val hidden = inSlot(PlayerControlSlot.HIDDEN)
-            if (hidden.isNotEmpty()) {
-                Spacer(Modifier.height(10.dp))
-                Text(
-                    tr("Hidden: ") + hidden.joinToString(", ") { it.label },
-                    style = MaterialTheme.typography.labelSmall,
-                    color = Color(0xFF8A90A8),
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun SketchChip(label: String, accent: Color, iconRes: Int? = null) {
-    Box(
-        Modifier
-            .clip(RoundedCornerShape(5.dp))
-            .background(accent.copy(alpha = 0.34f))
-            .padding(
-                horizontal = if (iconRes != null) 4.dp else 5.dp,
-                vertical = if (iconRes != null) 4.dp else 3.dp,
-            ),
-        contentAlignment = Alignment.Center,
-    ) {
-        if (iconRes != null) {
-            Icon(
-                painterResource(iconRes),
-                contentDescription = label,
-                tint = Color(0xFFEDF0F9),
-                modifier = Modifier.size(12.dp),
-            )
-        } else {
-            Text(
-                label,
-                style = MaterialTheme.typography.labelSmall,
-                color = Color(0xFFEDF0F9),
-            )
-        }
-    }
-}
-
-/** The real glyph the player draws for [control], so the preview (and the rows)
- *  match what a user sees in the overlay. */
 private fun controlIcon(control: PlayerControl): Int = when (control) {
     PlayerControl.FAVORITE -> R.drawable.ic_heart
     PlayerControl.DOWNLOAD -> R.drawable.ic_download
@@ -649,53 +340,3 @@ private fun controlIcon(control: PlayerControl): Int = when (control) {
     PlayerControl.EXTERNAL -> R.drawable.ic_external
 }
 
-/** Words | Icons switch for the preview card. */
-@Composable
-private fun PreviewStyleToggle(icons: Boolean, onChange: (Boolean) -> Unit) {
-    Row(
-        Modifier
-            .clip(GlassShape)
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-            .padding(2.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        listOf("Words" to false, "Icons" to true).forEach { (label, wantsIcons) ->
-            val selected = icons == wantsIcons
-            Box(
-                Modifier
-                    .clip(GlassShape)
-                    .background(
-                        if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
-                        else Color.Transparent
-                    )
-                    .clickable { onChange(wantsIcons) }
-                    .padding(horizontal = 10.dp, vertical = 4.dp),
-            ) {
-                Text(
-                    label,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (selected) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun SketchBox(label: String, accent: Color, filled: Boolean) {
-    Box(
-        Modifier
-            .size(18.dp)
-            .clip(RoundedCornerShape(5.dp))
-            .background(if (filled) accent.copy(alpha = 0.35f) else Color(0xFF2A3352)),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            label,
-            style = MaterialTheme.typography.labelSmall,
-            color = Color(0xFFEDF0F9),
-        )
-    }
-}

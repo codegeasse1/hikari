@@ -506,10 +506,34 @@ object MangaTranslateRuntime {
     private suspend fun translateGoogle(texts: List<String>, st: MangaTranslateSettings): List<String?> =
         withContext(Dispatchers.IO) {
             val sl = if (st.orig == MangaOrigLang.AUTO) "auto" else st.orig.code
-            texts.map { t ->
-                if (t.isBlank()) null else gtxOne(t, sl, st.target.code)
+            val nonBlank = texts.mapIndexedNotNull { i, t -> if (t.isBlank()) null else i to t }
+            if (nonBlank.isEmpty()) return@withContext texts.map { null }
+            // One batched call so the lines are translated with each other as
+            // context, like speech in the same scene — then mapped back by number.
+            val numbered = nonBlank.joinToString("\n") { (i, t) -> "${i + 1}. ${t.replace('\n', ' ')}" }
+            val mapped = parseNumbered(gtxOne(numbered, sl, st.target.code), nonBlank.size)
+            if (mapped != null) {
+                val result: MutableList<String?> = texts.map { null }.toMutableList()
+                for ((i, _) in nonBlank) result[i] = mapped[i]
+                return@withContext result
             }
+            // Fallback: one call per line.
+            texts.map { t -> if (t.isBlank()) null else gtxOne(t, sl, st.target.code) }
         }
+
+    /** "1. ..." numbered reply -> index map. Null when too few lines survived. */
+    private fun parseNumbered(reply: String?, count: Int): Map<Int, String>? {
+        if (reply.isNullOrBlank()) return null
+        val lineRe = Regex("""^\s*(\d+)[.)]\s?(.*)$""")
+        val mapped = HashMap<Int, String>()
+        for (line in reply.lines()) {
+            val m = lineRe.find(line.trimEnd()) ?: continue
+            val n = m.groupValues[1].toIntOrNull() ?: continue
+            val v = m.groupValues[2].trim()
+            if (v.isNotEmpty()) mapped[n - 1] = v
+        }
+        return if (mapped.size >= count / 2) mapped else null
+    }
 
     private fun gtxOne(text: String, sl: String, tl: String): String? {
         return try {
@@ -538,7 +562,9 @@ object MangaTranslateRuntime {
             val numbered = nonBlank.joinToString("\n") { (i, t) -> "${i + 1}. ${t.replace('\n', ' ')}" }
             val prompt = JSONObject().put(
                 "text",
-                "Translate these numbered manga speech lines from $origLabel to ${st.target.label}. " +
+                "Translate these numbered manga/manhwa speech lines from $origLabel to ${st.target.label}. " +
+                    "Write natural comic dialogue a character would actually say: short punchy lines, " +
+                    "same meaning and tone, names of people/places/titles transliterated never translated. " +
                     "Reply with ONLY the translations, one per line, keeping the same numbers " +
                     "in the form \"1. ...\". Do not add explanations.\n$numbered",
             ).toString()
@@ -556,16 +582,10 @@ object MangaTranslateRuntime {
                     ?.optJSONObject(0)
                     ?.optString("text")
                     .orEmpty()
-                val mapped = HashMap<Int, String>()
-                val lineRe = Regex("""^\s*(\d+)[.)]\s?(.*)$""")
-                for (line in out.lines()) {
-                    val m = lineRe.find(line.trimEnd()) ?: continue
-                    val n = m.groupValues[1].toIntOrNull() ?: continue
-                    mapped[n - 1] = m.groupValues[2].trim()
-                }
+                val mapped = parseNumbered(out, nonBlank.size) ?: emptyMap()
                 // Numbered reply: map by number; unnumbered fallback: in order.
                 val result: MutableList<String?> = texts.map { null }.toMutableList()
-                if (mapped.size >= nonBlank.size / 2) {
+                if (mapped.isNotEmpty()) {
                     for ((i, _) in nonBlank) result[i] = mapped[i]?.ifEmpty { null }
                 } else {
                     val lines = out.lines().map { it.trim() }.filter { it.isNotEmpty() }.takeLast(nonBlank.size)
@@ -648,14 +668,10 @@ class TranslationOverlayView @JvmOverloads constructor(
     var locator: ((Float, Float) -> PointF?)? = null
 
     private val boxPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        // Fully opaque: no trace of the source lettering may show through.
         color = AndroidColor.WHITE
-        alpha = 235
+        alpha = 255
         style = Paint.Style.FILL
-    }
-    private val edgePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0xFF9AA0A6.toInt()
-        style = Paint.Style.STROKE
-        strokeWidth = 1f
     }
     private val textPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
         color = AndroidColor.BLACK
@@ -727,29 +743,36 @@ class TranslationOverlayView @JvmOverloads constructor(
             val w = r - l; val h = btm - t
             if (w < 8 || h < 8) continue
             if (r < 0 || l > width || btm < 0 || t > height) continue
-            val rect = RectF(l, t, r, btm)
-            canvas.drawRoundRect(rect, 7f, 7f, boxPaint)
-            canvas.drawRoundRect(rect, 7f, 7f, edgePaint)
-            val key = "${(w / 6).toInt()}x${(h / 6).toInt()}"
+            // Manga-style bubble: a solid white cover pushed past the source
+            // glyphs, then the translation grown to fill the bubble the way the
+            // original lettering did.
+            val padX = w * 0.07f + 5f
+            val padY = h * 0.09f + 5f
+            val el = l - padX; val et = t - padY
+            val er = r + padX; val eb = btm + padY
+            val ew = er - el; val eh = eb - et
+            if (ew < 12 || eh < 12) continue
+            canvas.drawRoundRect(RectF(el, et, er, eb), 12f, 12f, boxPaint)
+            val key = "${(ew / 6).toInt()}x${(eh / 6).toInt()}|${b.trans.hashCode()}"
             val cached = fitted[index]
             val f = if (cached != null && cached.first == key) {
                 cached.second
             } else {
-                fit(b.trans, w, h)?.also { fitted[index] = key to it } ?: continue
+                fit(b.trans, ew, eh)?.also { fitted[index] = key to it } ?: continue
             }
             canvas.save()
-            canvas.translate(l + w / 2f, t + (h - f.layout.height) / 2f)
+            canvas.translate(el + ew / 2f, et + (eh - f.layout.height) / 2f)
             f.layout.draw(canvas)
             canvas.restore()
         }
     }
 
-    /** Shrink-to-fit centered layout for one box. */
+    /** Grow-to-fill centered layout for one bubble: start big, shrink to fit. */
     private fun fit(text: String, w: Float, h: Float): Fitted? {
-        if (text.isBlank() || w <= 12 || h <= 12) return null
-        var size = (h * 0.30f).coerceIn(9f, 26f)
-        val availW = (w - 10).coerceAtLeast(4f)
-        val availH = h - 8
+        if (text.isBlank() || w <= 14 || h <= 14) return null
+        var size = min(h * 0.55f, w * 0.30f).coerceIn(10f, 160f)
+        val availW = (w * 0.88f).coerceAtLeast(8f)
+        val availH = (h * 0.86f).coerceAtLeast(8f)
         // Fresh paint per layout: StaticLayout draws with its paint live, so a
         // shared paint resized for the next box would corrupt this one.
         val paint = TextPaint(textPaint)
@@ -762,7 +785,7 @@ class TranslationOverlayView @JvmOverloads constructor(
             if (layout.height <= availH) {
                 return Fitted(-layout.width / 2f, 0f, layout)
             }
-            size *= 0.88f
+            size *= 0.90f
         }
         return null
     }

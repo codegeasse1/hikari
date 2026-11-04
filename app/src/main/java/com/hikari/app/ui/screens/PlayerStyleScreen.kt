@@ -7,6 +7,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -15,6 +17,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -27,20 +30,14 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Download
-import androidx.compose.material.icons.filled.Favorite
-import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
-import androidx.compose.material.icons.filled.Speed
-import androidx.compose.material.icons.filled.Subtitles
-import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -61,11 +58,13 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.hikari.app.HikariApp
+import com.hikari.app.R
 import com.hikari.app.i18n.tr
 import com.hikari.app.player.ElementStyle
 import com.hikari.app.player.PlayerButtonShape
@@ -78,6 +77,7 @@ import com.hikari.app.player.PlayerUiPresets
 import com.hikari.app.player.PlayerUiStyle
 import com.hikari.app.ui.components.GlassCard
 import com.hikari.app.ui.components.SettingsPageHeader
+import com.hikari.app.tv.tvToggle
 import com.hikari.app.ui.navigation.LocalTaskbarInset
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
@@ -103,8 +103,8 @@ import kotlin.math.roundToInt
 
 private const val GAP_OFF = -1f
 
-/** Cards in the list BEFORE the element editors (presets, gap, hint). */
-private const val CARDS_BEFORE_ELEMENTS = 3
+/** Cards in the list BEFORE the element editors (presets, gap, gestures, hint). */
+private const val CARDS_BEFORE_ELEMENTS = 4
 
 private fun gapToSlider(v: Int): Float = if (v < 0) GAP_OFF else v.toFloat()
 
@@ -151,6 +151,15 @@ fun PlayerStylePage(app: HikariApp, onBack: () -> Unit) {
     val slotJson by slotFlow.collectAsState(initial = "")
     var layout by remember { mutableStateOf(PlayerControlsConfig.defaults()) }
     LaunchedEffect(slotJson) { layout = PlayerControlsConfig.decode(slotJson) }
+
+    // Gestures live here now (moved out of Player controls): they are part of
+    // how the player feels, and this page already owns the full preview.
+    val swipesFlow = remember { app.store.playerSwipesFlow() }
+    val swipesOn by swipesFlow.collectAsState(initial = true)
+    val slideSeekFlow = remember { app.store.playerSlideSeekFlow() }
+    val slideSeekOn by slideSeekFlow.collectAsState(initial = true)
+    val pinchZoomFlow = remember { app.store.playerPinchZoomFlow() }
+    val pinchZoomOn by pinchZoomFlow.collectAsState(initial = false)
 
     var openKey by remember { mutableStateOf<String?>(null) }
 
@@ -208,6 +217,7 @@ fun PlayerStylePage(app: HikariApp, onBack: () -> Unit) {
             if (pinPreview) {
                 PreviewCard(
                     style = shownStyle,
+                    layout = layout,
                     selected = openKey,
                     pinned = true,
                     onTogglePin = { pinPreview = false },
@@ -233,6 +243,7 @@ fun PlayerStylePage(app: HikariApp, onBack: () -> Unit) {
                 item(key = "preview") {
                     PreviewCard(
                         style = shownStyle,
+                        layout = layout,
                         selected = openKey,
                         pinned = false,
                         onTogglePin = { pinPreview = true },
@@ -291,6 +302,51 @@ fun PlayerStylePage(app: HikariApp, onBack: () -> Unit) {
                 }
             }
 
+            item(key = "gestures") {
+                GlassCard(Modifier.fillMaxWidth().padding(top = 8.dp)) {
+                    Column(Modifier.padding(14.dp)) {
+                        Text(
+                            tr("Gestures"),
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        GestureRow(
+                            title = tr("Brightness & volume swipes"),
+                            desc = tr("Drag up or down on the video: the left half changes the brightness, the right half the volume. Off means the surface only plays."),
+                            checked = swipesOn,
+                            onChange = { on ->
+                                scope.launch {
+                                    runCatching { app.store.setPlayerSwipes(on) }
+                                }
+                            },
+                        )
+                        Spacer(Modifier.height(10.dp))
+                        GestureRow(
+                            title = tr("Slide to seek"),
+                            desc = tr("Drag left or right on the video to scrub the timeline, with the landing time previewed. Off means sideways drags do nothing."),
+                            checked = slideSeekOn,
+                            onChange = { on ->
+                                scope.launch {
+                                    runCatching { app.store.setPlayerSlideSeek(on) }
+                                }
+                            },
+                        )
+                        Spacer(Modifier.height(10.dp))
+                        GestureRow(
+                            title = tr("Pinch to zoom"),
+                            desc = tr("Pinch with two fingers on the video to zoom the picture, up to 4x. Off means pinches do nothing. The zoom resets when the server changes."),
+                            checked = pinchZoomOn,
+                            onChange = { on ->
+                                scope.launch {
+                                    runCatching { app.store.setPlayerPinchZoom(on) }
+                                }
+                            },
+                        )
+                    }
+                }
+            }
+
             item(key = "hint") {
                 Text(
                     tr("Tap a button in the preview, or an element below, to edit it. \"All buttons\" changes every button at once; an element's own settings win over it. Changes apply the next time the player opens."),
@@ -318,6 +374,7 @@ fun PlayerStylePage(app: HikariApp, onBack: () -> Unit) {
 @Composable
 private fun PreviewCard(
     style: PlayerUiStyle,
+    layout: Map<PlayerControl, PlayerControlSlot>,
     selected: String?,
     pinned: Boolean,
     onTogglePin: () -> Unit,
@@ -338,7 +395,7 @@ private fun PreviewCard(
                 }
             }
             Box(Modifier.padding(end = 8.dp)) {
-                OverlayMock(style, MockCtx(selected, onPick), mockHeight)
+                OverlayMock(style, layout, MockCtx(selected, onPick), mockHeight)
             }
         }
     }
@@ -746,9 +803,20 @@ private fun pickMod(ctx: MockCtx, key: String, shape: Shape): Modifier {
     return ring.clickable { ctx.onPick(key) }
 }
 
-/** A mock of the player overlay that follows [style] as it changes. */
+/**
+ * A mock of the player overlay that follows [style] AND [layout] as they
+ * change: every movable button is drawn where the layout puts it (top bar,
+ * bottom left/right, hidden), so the preview matches the Player controls page.
+ * Tapping any button opens its editor below.
+ */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun OverlayMock(style: PlayerUiStyle, ctx: MockCtx, height: Dp) {
+private fun OverlayMock(
+    style: PlayerUiStyle,
+    layout: Map<PlayerControl, PlayerControlSlot>,
+    ctx: MockCtx,
+    height: Dp,
+) {
     val gap = if (style.gapDp >= 0) style.gapDp else 4
 
     fun pill(c: PlayerControl): ElementStyle = style.resolved(PlayerElements.pillKey(c))
@@ -766,7 +834,7 @@ private fun OverlayMock(style: PlayerUiStyle, ctx: MockCtx, height: Dp) {
         Column(
             Modifier
                 .fillMaxWidth()
-                .height(height)
+                .heightIn(min = height)
                 .padding(10.dp),
             verticalArrangement = Arrangement.SpaceBetween,
         ) {
@@ -787,10 +855,9 @@ private fun OverlayMock(style: PlayerUiStyle, ctx: MockCtx, height: Dp) {
                     modifier = Modifier.weight(1f),
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(gap.dp)) {
-                    MockPill(PlayerElements.pillKey(PlayerControl.FAVORITE), Icons.Filled.Favorite, pill(PlayerControl.FAVORITE), ctx)
-                    MockPill(PlayerElements.pillKey(PlayerControl.DOWNLOAD), Icons.Filled.Download, pill(PlayerControl.DOWNLOAD), ctx)
-                    MockPill(PlayerElements.pillKey(PlayerControl.OPTIONS), Icons.Filled.Settings, pill(PlayerControl.OPTIONS), ctx)
-                    MockPill(PlayerElements.pillKey(PlayerControl.LOCK), Icons.Filled.Lock, pill(PlayerControl.LOCK), ctx)
+                    for (c in PlayerControl.entries.filter { (layout[it] ?: it.defaultSlot) == PlayerControlSlot.TOP_BAR }) {
+                        MockPill(PlayerElements.pillKey(c), controlIcon(c), pill(c), ctx)
+                    }
                 }
             }
 
@@ -857,13 +924,35 @@ private fun OverlayMock(style: PlayerUiStyle, ctx: MockCtx, height: Dp) {
                     MockText(PlayerElements.DURATION, "1:20:00", style.get(PlayerElements.DURATION), 11, ctx)
                 }
                 Spacer(Modifier.height(6.dp))
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(gap.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    MockPill(PlayerElements.pillKey(PlayerControl.SPEED), Icons.Filled.Speed, pill(PlayerControl.SPEED), ctx)
-                    MockPill(PlayerElements.pillKey(PlayerControl.EPISODES), Icons.Filled.VideoLibrary, pill(PlayerControl.EPISODES), ctx)
-                    MockPill(PlayerElements.pillKey(PlayerControl.SUBS), Icons.Filled.Subtitles, pill(PlayerControl.SUBS), ctx)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.weight(1f)) {
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(gap.dp),
+                            verticalArrangement = Arrangement.spacedBy(gap.dp),
+                        ) {
+                            for (c in PlayerControl.entries.filter { (layout[it] ?: it.defaultSlot) == PlayerControlSlot.BOTTOM_LEFT }) {
+                                MockPill(PlayerElements.pillKey(c), controlIcon(c), pill(c), ctx)
+                            }
+                        }
+                    }
+                    Spacer(Modifier.width(6.dp))
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(gap.dp),
+                        verticalArrangement = Arrangement.spacedBy(gap.dp),
+                    ) {
+                        for (c in PlayerControl.entries.filter { (layout[it] ?: it.defaultSlot) == PlayerControlSlot.BOTTOM_RIGHT }) {
+                            MockPill(PlayerElements.pillKey(c), controlIcon(c), pill(c), ctx)
+                        }
+                    }
+                }
+                val hiddenKeys = PlayerControl.entries.filter { (layout[it] ?: it.defaultSlot) == PlayerControlSlot.HIDDEN }
+                if (hiddenKeys.isNotEmpty()) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        tr("Hidden: ") + hiddenKeys.joinToString(", ") { it.label },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
         }
@@ -897,7 +986,7 @@ private fun MockText(
 }
 
 @Composable
-private fun MockPill(key: String, icon: ImageVector, st: ElementStyle, ctx: MockCtx) {
+private fun MockPill(key: String, iconRes: Int, st: ElementStyle, ctx: MockCtx) {
     val iconDp = if (st.sizeDp > 0) st.sizeDp else 24
     val shape = shapeFor(st.shape)
     Box(
@@ -911,10 +1000,50 @@ private fun MockPill(key: String, icon: ImageVector, st: ElementStyle, ctx: Mock
         contentAlignment = Alignment.Center,
     ) {
         Icon(
-            icon,
+            painterResource(iconRes),
             contentDescription = null,
             tint = tintOf(st),
             modifier = Modifier.size(iconDp.dp),
+        )
+    }
+}
+
+/** The real glyph the player draws for [control], so the preview matches the overlay. */
+private fun controlIcon(control: PlayerControl): Int = when (control) {
+    PlayerControl.FAVORITE -> R.drawable.ic_heart
+    PlayerControl.DOWNLOAD -> R.drawable.ic_download
+    PlayerControl.PIP -> R.drawable.ic_pip
+    PlayerControl.OPTIONS -> R.drawable.ic_settings
+    PlayerControl.LOCK -> R.drawable.ic_lock
+    PlayerControl.SPEED -> R.drawable.ic_speed
+    PlayerControl.EPISODES -> R.drawable.ic_episodes
+    PlayerControl.SOURCES -> R.drawable.ic_server
+    PlayerControl.QUALITY -> R.drawable.ic_quality
+    PlayerControl.AUDIO -> R.drawable.ic_audio
+    PlayerControl.SUBS -> R.drawable.ic_subtitles
+    PlayerControl.ROTATE -> R.drawable.ic_rotate
+    PlayerControl.SKIP -> R.drawable.ic_skip
+    PlayerControl.RESIZE -> R.drawable.ic_resize
+    PlayerControl.ENHANCE -> R.drawable.ic_enhance
+    PlayerControl.EXTERNAL -> R.drawable.ic_external
+}
+
+@Composable
+private fun GestureRow(title: String, desc: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.titleSmall)
+            Text(
+                desc,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Spacer(Modifier.width(10.dp))
+        Switch(
+            checked = checked,
+            onCheckedChange = onChange,
+            modifier = Modifier.tvToggle(checked) { onChange(it) },
         )
     }
 }

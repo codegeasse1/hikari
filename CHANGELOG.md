@@ -1,3 +1,9 @@
+## 0.12.30 (continuous build only)
+
+- Manga Translate looks like real lettering now: solid white bubble covers (no ghost of the source text showing through), translation grown to fill the bubble like the original, and more natural manga-style dialogue (Google Translate now uses the whole bubble set as context, Gemini prompt tuned for comic speech)
+- Customize → Player UI style preview shows every button where the layout puts it (top bar, bottom left/right, hidden) with the player's real glyphs; tapping any button in the preview opens its editor; Gestures moved here from Player controls
+- Settings → Player → Player controls is now just the placement lists (preview and gestures removed — they live in Customize)
+
 ## 0.12.29 (continuous build only)
 
 - Manga reader Translate / Dub: new section below "Apply to this manga only" with master toggle, Original language (Auto/Japanese/Chinese/Korean/Hindi/English), Translate to (11 languages), Translation engine (ML Kit offline, Google Translate online, Gemini best with your API key) and per-series scope; text on pages is detected and replaced in place, cached per page
