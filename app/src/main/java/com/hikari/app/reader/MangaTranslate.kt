@@ -243,7 +243,7 @@ object MangaTranslateRuntime {
     ): List<TLBox> {
         if (!st.enabled || imgW <= 0 || imgH <= 0) return emptyList()
         val d = dir ?: return emptyList()
-        val hk = sha1("$pageKey|${st.orig.name}|${st.target.name}|${st.engine.name}|${st.geminiKey}|v5")
+        val hk = sha1("$pageKey|${st.orig.name}|${st.target.name}|${st.engine.name}|${st.geminiKey}|v6")
         val cacheFile = File(d, "$hk.json")
         readCache(cacheFile)?.let { return it }
         val def = inflight.getOrPut(hk) { scope.async { runTranslate(file, imgW, imgH, st) } }
@@ -325,7 +325,11 @@ object MangaTranslateRuntime {
                 val rm = rooms.getOrNull(i)
                 if (rm != null && (rm.room != null || rm.art)) {
                     val o = rm.room
-                    if (o != null) TLBox(b.l, b.t, b.r, b.b, b.text, t, o.left, o.top, o.right, o.bottom, rm.art)
+                    // White room wins: a measured bubble interior is dialogue,
+                    // never SFX — even when the crop border caught dark panel
+                    // art (red/brown panels tripped the old border test and
+                    // drew huge stroked Hindi across the page).
+                    if (o != null) TLBox(b.l, b.t, b.r, b.b, b.text, t, o.left, o.top, o.right, o.bottom, false)
                     else TLBox(b.l, b.t, b.r, b.b, b.text, t, art = rm.art)
                 } else TLBox(b.l, b.t, b.r, b.b, b.text, t)
             }
@@ -613,9 +617,10 @@ object MangaTranslateRuntime {
                         if (white[y * dw + x]) borderWhite++
                     }
                 }
-                if (borderWhite.toFloat() / max(1, border) < 0.5f) {
-                    return Room(null, true)
-                }
+                // Bubble or SFX? Decided AFTER the room scan below: a found
+                // white room is dialogue even on a dark panel (the crop border
+                // catches panel art); only a missing room + dark border is SFX.
+                val borderDark = borderWhite.toFloat() / max(1, border) < 0.5f
                 // Text box in crop space.
                 val tl = (((b.l - cl).toFloat() / cw * dw).toInt()).coerceIn(0, dw - 1)
                 val tr = (((b.r - cl).toFloat() / cw * dw).toInt()).coerceIn(0, dw - 1)
@@ -674,7 +679,7 @@ object MangaTranslateRuntime {
                 val ft = ct + ty.toFloat() / dh * ch + 1f
                 val fr = cl + (rx + 1).toFloat() / dw * cw - 1f
                 val fb = ct + (by + 1).toFloat() / dh * ch - 1f
-                if (fr - fl < 12 || fb - ft < 12) return Room(null, false)
+                if (fr - fl < 12 || fb - ft < 12) return Room(null, borderDark)
                 Room(RectF(fl, ft, fr, fb), false)
             } finally {
                 if (!bmp.isRecycled) bmp.recycle()
@@ -1366,7 +1371,9 @@ class TranslationOverlayView @JvmOverloads constructor(
                 // and half-hides big glyphs - the BANG double-show).
                 // Translated words draw straight on the art, white with a
                 // black outline, sized to the original lettering.
-                val st = fitStroked(b.trans, srcW * 2f, srcH * 2.5f, (srcH * 0.9f).coerceAtLeast(10f))
+                // Capped to the source neighbourhood so true SFX stays inside
+                // it instead of spilling huge across the panel.
+                val st = fitStroked(b.trans, srcW * 1.25f, srcH * 1.5f, min(srcW * 0.35f, srcH * 0.60f).coerceAtLeast(10f))
                     ?: continue
                 val acx = (el + er) / 2f
                 val acy = (et + eb) / 2f
@@ -1379,15 +1386,18 @@ class TranslationOverlayView @JvmOverloads constructor(
                 canvas.restore()
                 continue
             }
-            // Dialogue geometry (spill-proof by construction): the box
-            // is the source text box plus a small pad - width NEVER grows,
-            // height grows at most 1.35x for a readable size. Center comes
-            // from the measured white room when sane (any language lands in
-            // the bubble middle, never hugging the English text edge),
-            // else the source middle. The words can never leave the box in
-            // any of the four directions, so nothing lands on the art.
-            var ccx = (el + er) / 2f
-            var ccy = (et + eb) / 2f
+            // Dialogue geometry (spill-proof by construction): the box IS the
+            // measured white room when sane (bubble middle + bubble size, so
+            // any language lands centered and sized to the bubble — never
+            // hugging the English text edge, never spilling left), else the
+            // source text box plus pad. Height is capped to the room — long
+            // Hindi shrinks to fit INSIDE instead of bursting onto the art.
+            // Box and text share one center, so neither drifts.
+            var boxCx = (el + er) / 2f
+            var boxCy = (et + eb) / 2f
+            var roomW = 0f
+            var roomH = 0f
+            var hasRoom = false
             if (b.br > b.bl && b.bb > b.bt) {
                 try {
                     val q1 = loc(b.bl, b.bt)
@@ -1398,19 +1408,22 @@ class TranslationOverlayView @JvmOverloads constructor(
                         val nr = Math.max(q1.x, q2.x)
                         val nb = Math.max(q1.y, q2.y)
                         if (nr - nl >= 12 && nb - nt >= 12 && nr - nl <= srcW * 4f && nb - nt <= srcH * 4f && nl <= el && nt <= et && nr >= er && nb >= eb) {
-                            ccx = (nl + nr) / 2f
-                            ccy = (nt + nb) / 2f
+                            boxCx = (nl + nr) / 2f
+                            boxCy = (nt + nb) / 2f
+                            roomW = nr - nl
+                            roomH = nb - nt
+                            hasRoom = true
                         }
                     }
                 } catch (e: Exception) {
                 }
             }
-            val boxW = srcW
-            var boxH = srcH
+            val boxW = if (hasRoom) roomW.coerceAtLeast(16f) else srcW
+            var boxH = if (hasRoom) roomH.coerceAtLeast(16f) else srcH
             var f = fit(b.trans, boxW, boxH) ?: continue
             val needH = f.layout.height + 8f
             if (needH > boxH) {
-                boxH = min(needH, srcH * 1.35f)
+                boxH = if (hasRoom) roomH.coerceAtLeast(16f) else min(needH, srcH * 1.35f)
                 fit(b.trans, boxW, boxH)?.let { f = it }
             }
             // Floor-size words can still stand taller than the capped box:
@@ -1418,10 +1431,10 @@ class TranslationOverlayView @JvmOverloads constructor(
             if (f.layout.height > boxH * 0.92f) {
                 f = shrinkToFit(b.trans, boxW, boxH * 0.92f) ?: continue
             }
-            val cx = ccx
-            val cy = ccy
+            val cx = boxCx
+            val cy = boxCy
             val rad = min(boxW, boxH) * 0.30f
-            canvas.drawRoundRect(RectF(el, cy - boxH / 2f, er, cy + boxH / 2f), rad, rad, boxPaint)
+            canvas.drawRoundRect(RectF(cx - boxW / 2f, cy - boxH / 2f, cx + boxW / 2f, cy + boxH / 2f), rad, rad, boxPaint)
             val key = "${(boxW / 6).toInt()}x${(boxH / 6).toInt()}|${b.trans.hashCode()}"
             fitted[index] = key to f
             canvas.save()
@@ -1452,15 +1465,22 @@ class TranslationOverlayView @JvmOverloads constructor(
      */
     private fun fit(text: String, w: Float, h: Float): Fitted? {
         if (text.isBlank() || w <= 14 || h <= 14) return null
+        // Centered (ALIGN_CENTER below + one shared center in onDraw) and
+        // sized to the bubble: short labels keep a MODEST floor (the old
+        // 0.24/min-44px floor drew one-word Hindi huge), Devanagari starts
+        // smaller with wider side bearing (taller glyphs + matras spill at
+        // Latin metrics and looked "left side" when clipped).
+        val dev = isDevanagari(text)
         val short = text.length <= 26
         val floor = when {
-            short -> max(13f, min(w, h) * 0.24f).coerceAtMost(44f)
-            isDevanagari(text) -> 12f
-            else -> 11f
+            short -> max(11f, min(w, h) * 0.16f).coerceAtMost(26f)
+            dev -> 10.5f
+            else -> 10f
         }
-        var size = min(h * 0.55f, w * 0.30f).coerceIn(floor, 140f)
-        val availW = (w * 0.94f).coerceAtLeast(8f)
-        val availH = (h * 0.92f).coerceAtLeast(8f)
+        val startRaw = min(h * 0.55f, w * 0.30f)
+        var size = (if (dev) startRaw * 0.80f else startRaw).coerceIn(floor, 140f)
+        val availW = (w * if (dev) 0.86f else 0.94f).coerceAtLeast(8f)
+        val availH = (h * if (dev) 0.88f else 0.92f).coerceAtLeast(8f)
         // Fresh paint per layout: StaticLayout draws with its paint live, so a
         // shared paint resized for the next box would corrupt this one.
         val paint = TextPaint(textPaint)
