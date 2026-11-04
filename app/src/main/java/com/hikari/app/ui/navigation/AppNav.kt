@@ -132,6 +132,7 @@ import com.hikari.app.ui.screens.SettingsScreen
 import com.hikari.app.ui.screens.StatsScreen
 import com.hikari.app.ui.screens.TelegramScreen
 import com.hikari.app.ui.screens.TmdbGridScreen
+import com.hikari.app.ui.screens.TrackerShelfScreen
 import com.hikari.app.ui.theme.HikariThemeMode
 import com.hikari.app.ui.theme.rememberGlassTokens
 import com.hikari.app.tv.TvMode
@@ -150,6 +151,18 @@ object Routes {
     const val DOWNLOADS = "downloads"
     /** Titles saved with the player's heart (the favourites store). */
     const val LIBRARY = "library"
+    /**
+     * One tracker shelf (an AniList/MAL/Kitsu/Shikimori/Simkl/Trakt
+     * Watchlist/Reading/... list) as a full catalogue grid: every Library
+     * shelf row's "Show all" lands here, so a shelf of 80 manga is browsable
+     * without sideways scrolling. Back returns to the Library row.
+     */
+    const val TRACKER_SHELF = "tracker-shelf?source={source}&key={key}&title={title}&filter={filter}"
+
+    /** Opens one tracker shelf as a full grid (see [TRACKER_SHELF]). */
+    fun trackerShelf(source: String, shelfKey: String, title: String, filter: String = ""): String =
+        "tracker-shelf?source=${Uri.encode(source)}&key=${Uri.encode(shelfKey)}" +
+            "&title=${Uri.encode(title.take(200))}&filter=${Uri.encode(filter)}"
     /**
      * The IPTV tab. Hidden by default — it appears in the taskbar only once the
      * user switches it on in Settings → Taskbar buttons (see
@@ -1498,6 +1511,21 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
             // opens the same screen on its own section (see MyStuffScreen), so
             // every existing link to History/Downloads still lands correctly.
             composable(Routes.LIBRARY) { MyStuffScreen(nav, MyStuff.LIBRARY) }
+            composable(
+                route = Routes.TRACKER_SHELF,
+                arguments = listOf(
+                    navArgument("source") { type = NavType.StringType; defaultValue = "" },
+                    navArgument("key") { type = NavType.StringType; defaultValue = "" },
+                    navArgument("title") { type = NavType.StringType; defaultValue = "" },
+                    navArgument("filter") { type = NavType.StringType; defaultValue = "" },
+                )
+            ) { entry ->
+                val tSource = Uri.decode(entry.arguments?.getString("source").orEmpty())
+                val tKey = Uri.decode(entry.arguments?.getString("key").orEmpty())
+                val tTitle = Uri.decode(entry.arguments?.getString("title").orEmpty())
+                val tFilter = Uri.decode(entry.arguments?.getString("filter").orEmpty())
+                TrackerShelfScreen(nav, tSource, tKey, tTitle, tFilter)
+            }
             composable(Routes.HISTORY) { MyStuffScreen(nav, MyStuff.HISTORY) }
             composable(Routes.DOWNLOADS) { MyStuffScreen(nav, MyStuff.DOWNLOADS) }
             composable(Routes.IPTV) { IptvScreen(nav) }

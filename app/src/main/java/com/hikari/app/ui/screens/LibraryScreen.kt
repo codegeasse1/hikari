@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -25,6 +26,7 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Category
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.LibraryAdd
@@ -33,6 +35,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -271,27 +274,52 @@ fun LibraryScreen(nav: NavHostController, embedded: Boolean = false) {
             visibleShelves.forEachIndexed { shelfIndex, shelf ->
                 item(key = "tracker-shelf-${shelf.key}-$shelfIndex", span = { GridItemSpan(maxLineSpan) }) {
                     Column {
-                        Text(shelf.title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                shelf.title,
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.weight(1f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                shelf.items.size.toString(),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            TextButton(onClick = {
+                                Routes.safeNavigate(
+                                    nav,
+                                    Routes.trackerShelf(trackerSource, shelf.key, shelf.title, activeType.orEmpty()),
+                                )
+                            }) {
+                                Text(tr("Show all"))
+                            }
+                        }
                         LazyRow(
                             modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                             horizontalArrangement = Arrangement.spacedBy(12.dp),
                         ) {
-                            items(shelf.items, key = { it.uniqueId }) { item ->
-                                TrackerLibraryCard(item = item, onClick = {
-                                    // Manga rows (AniList / MAL / Kitsu /
-                                    // Shikimori / Simkl manga shelves) open in
-                                    // the manga section: the title is searched
-                                    // across every installed manga engine, and
-                                    // the match opens from there.
-                                    if (item.rawType == "manga") {
-                                        Routes.safeNavigate(nav, Routes.mangaSearch(item.title))
-                                    } else {
-                                        Routes.safeNavigate(nav, Routes.detail(
-                                            providerId = item.providerId, type = item.type, mediaId = item.id,
-                                            title = item.title, posterUrl = item.posterUrl, rawType = item.rawType,
-                                        ))
-                                    }
-                                })
+                            // One horizontal line: the first 12 posters, then a
+                            // Show-all tile when the shelf holds more — the full
+                            // shelf opens as a 3-per-line catalogue grid.
+                            items(shelf.items.take(12), key = { it.uniqueId }) { item ->
+                                TrackerLibraryCard(item = item, onClick = { openTrackerItem(nav, item) })
+                            }
+                            if (shelf.items.size > 12) {
+                                item(key = "${shelf.key}-showall") {
+                                    ShowAllTile(
+                                        remaining = shelf.items.size - 12,
+                                        onClick = {
+                                            Routes.safeNavigate(
+                                                nav,
+                                                Routes.trackerShelf(trackerSource, shelf.key, shelf.title, activeType.orEmpty()),
+                                            )
+                                        },
+                                    )
+                                }
                             }
                         }
                     }
@@ -577,5 +605,175 @@ private fun TrackerLibraryCard(item: MediaItem, onClick: () -> Unit) {
         Text(item.title, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Medium,
             color = if (tvLib) com.hikari.app.tv.TvDesktop.TextPrimary else Color.Unspecified,
             maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 6.dp))
+    }
+}
+
+/** One tracker row's door: manga rows search the manga engines, everything else opens the video detail. */
+private fun openTrackerItem(nav: NavHostController, item: MediaItem) {
+    // Manga rows (AniList / MAL / Kitsu / Shikimori / Simkl manga shelves)
+    // open in the manga section: the title is searched across every
+    // installed manga engine, and the match opens from there.
+    if (item.rawType == "manga") {
+        Routes.safeNavigate(nav, Routes.mangaSearch(item.title))
+    } else {
+        Routes.safeNavigate(
+            nav,
+            Routes.detail(
+                providerId = item.providerId, type = item.type, mediaId = item.id,
+                title = item.title, posterUrl = item.posterUrl, rawType = item.rawType,
+            ),
+        )
+    }
+}
+
+/** Trailing tile of a tracker row: opens the whole shelf as a catalogue grid. */
+@Composable
+private fun ShowAllTile(remaining: Int, onClick: () -> Unit) {
+    val tvLib = com.hikari.app.tv.TvMode.current()
+    Column(modifier = Modifier.width(if (tvLib) 280.dp else 112.dp)) {
+        Surface(
+            onClick = onClick,
+            shape = RoundedCornerShape(if (tvLib) 8.dp else 12.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+            modifier = Modifier.fillMaxWidth().aspectRatio(if (tvLib) 16f / 9f else 0.67f),
+        ) {
+            Column(
+                Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text(
+                    tr("Show all"),
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    if (remaining > 0) "+$remaining" else "",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        Text(
+            tr("Show all"),
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(top = 6.dp),
+        )
+    }
+}
+
+/**
+ * One tracker shelf as a full catalogue grid (3 posters per line, like the
+ * extension catalogue): every shelf row's "Show all" lands here, so a shelf
+ * of 80 manga is browsable without sideways scrolling. Back returns to the
+ * Library row it came from.
+ */
+@Composable
+fun TrackerShelfScreen(nav: NavHostController, source: String, shelfKey: String, title: String, filter: String = "") {
+    val context = LocalContext.current
+    val app = context.applicationContext as HikariApp
+    val style = rememberPosterStyle()
+    val tvLib = com.hikari.app.tv.TvMode.current()
+    var items by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
+    var loading by remember { mutableStateOf(true) }
+    var error by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(source, shelfKey) {
+        loading = true
+        error = null
+        val result = TrackerLibraryRepository.load(app, source)
+        val shelf = result.getOrNull()?.firstOrNull { it.key == shelfKey }
+        val all = shelf?.items.orEmpty()
+        items = if (filter.isBlank()) all else all.filter {
+            when (filter) {
+                "anime" -> it.providerId.startsWith("aniyomi|") || it.rawType == "aniyomi" || it.rawType == "anime"
+                "manga" -> it.rawType == "manga"
+                "movie" -> it.type == MediaType.MOVIE
+                "series" -> it.type == MediaType.SERIES
+                else -> true
+            }
+        }
+        if (result.isFailure && shelf == null) error = result.exceptionOrNull()?.message
+        else if (shelf == null) error = tr("Shelf not found.")
+        loading = false
+    }
+    Column(Modifier.fillMaxSize()) {
+        Row(
+            Modifier.fillMaxWidth().padding(start = 4.dp, end = 16.dp, top = 12.dp, bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = { nav.popBackStack() }) {
+                Icon(
+                    Icons.Filled.ArrowBack,
+                    contentDescription = tr("Back"),
+                    tint = MaterialTheme.colorScheme.onSurface,
+                )
+            }
+            Column(Modifier.weight(1f)) {
+                Text(
+                    if (title.isNotBlank()) title else tr("Tracker library"),
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    if (items.size == 1) I18n.t("%s title").replace("%s", "1")
+                    else I18n.t("%s titles").replace("%s", items.size.toString()),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        when {
+            loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text(tr("Loading…"), style = MaterialTheme.typography.bodyMedium)
+            }
+            !error.isNullOrBlank() -> Box(
+                Modifier.fillMaxSize().padding(24.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(error.orEmpty(), style = MaterialTheme.typography.bodyMedium)
+            }
+            items.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text(tr("Nothing here."), style = MaterialTheme.typography.bodyMedium)
+            }
+            else -> LazyVerticalGrid(
+                columns = GridCells.Fixed(3),
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(
+                    start = 16.dp, end = 16.dp, top = 8.dp,
+                    bottom = LocalTaskbarInset.current + 16.dp,
+                ),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                items(items, key = { it.uniqueId }) { item ->
+                    Column(Modifier.clickable(onClick = { openTrackerItem(nav, item) })) {
+                        PosterArt(
+                            model = if (tvLib) Artwork.backdropModel(item) else Artwork.model(item),
+                            contentDescription = item.title,
+                            style = style,
+                            modifier = Modifier.fillMaxWidth()
+                                .aspectRatio(if (tvLib) 16f / 9f else 0.67f)
+                                .clip(RoundedCornerShape(if (tvLib) 8.dp else 12.dp)),
+                        )
+                        Text(
+                            item.title,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Medium,
+                            color = if (tvLib) com.hikari.app.tv.TvDesktop.TextPrimary else Color.Unspecified,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(top = 6.dp),
+                        )
+                    }
+                }
+            }
+        }
     }
 }

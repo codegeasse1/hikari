@@ -1,3 +1,8 @@
+## 0.12.43 (continuous build only)
+
+- Manga Translate centering fixed at the root: StaticLayout already centers lines, so the paint textAlign is now LEFT (CENTER double-shifted every line into a right-edge-aligned block sitting left of the bubble) — Hindi now draws truly centered in every bubble
+- Library tracker rows: one horizontal line of the first 12 posters + Show-all tile/button; Show all opens the whole shelf as a catalogue grid (3 posters per line), back returns to the row
+
 ## 0.12.42 (continuous build only)
 
 - Manga Translate centering fixed for real: the box anchors on the bubble/room center (a partial OCR box no longer drags Hindi left), mixed Latin leftovers are stripped but the Hindi + white cover stay (no half-English garbage), and only tall glyphs on dark art count as SFX (dialogue never draws huge stroked spill)

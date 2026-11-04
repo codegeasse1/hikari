@@ -1305,19 +1305,25 @@ class TranslationOverlayView @JvmOverloads constructor(
     private val textPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
         color = AndroidColor.BLACK
         typeface = android.graphics.Typeface.DEFAULT_BOLD
-        textAlign = Paint.Align.CENTER
+        // MUST stay LEFT: line centering comes from StaticLayout's own
+        // ALIGN_CENTER. A CENTER textAlign here double-shifts every line
+        // (lines end up right-edge-aligned in the layout's left half), which
+        // is exactly the "Hindi hugs the left / spills left" bug.
+        textAlign = Paint.Align.LEFT
     }
 
     private val sfxFillPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
         color = AndroidColor.WHITE
         typeface = android.graphics.Typeface.DEFAULT_BOLD
-        textAlign = Paint.Align.CENTER
+        // Same as textPaint: StaticLayout centers, paint must not.
+        textAlign = Paint.Align.LEFT
     }
 
     private val sfxStrokePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
         color = AndroidColor.BLACK
         typeface = android.graphics.Typeface.DEFAULT_BOLD
-        textAlign = Paint.Align.CENTER
+        // Same as textPaint: StaticLayout centers, paint must not.
+        textAlign = Paint.Align.LEFT
         style = Paint.Style.STROKE
         strokeJoin = Paint.Join.ROUND
         strokeCap = Paint.Cap.ROUND
