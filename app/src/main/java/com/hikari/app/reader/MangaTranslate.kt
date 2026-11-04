@@ -243,7 +243,7 @@ object MangaTranslateRuntime {
     ): List<TLBox> {
         if (!st.enabled || imgW <= 0 || imgH <= 0) return emptyList()
         val d = dir ?: return emptyList()
-        val hk = sha1("$pageKey|${st.orig.name}|${st.target.name}|${st.engine.name}|${st.geminiKey}|v6")
+        val hk = sha1("$pageKey|${st.orig.name}|${st.target.name}|${st.engine.name}|${st.geminiKey}|v7")
         val cacheFile = File(d, "$hk.json")
         readCache(cacheFile)?.let { return it }
         val def = inflight.getOrPut(hk) { scope.async { runTranslate(file, imgW, imgH, st) } }
@@ -1386,13 +1386,14 @@ class TranslationOverlayView @JvmOverloads constructor(
                 canvas.restore()
                 continue
             }
-            // Dialogue geometry (spill-proof by construction): the box IS the
-            // measured white room when sane (bubble middle + bubble size, so
-            // any language lands centered and sized to the bubble — never
-            // hugging the English text edge, never spilling left), else the
-            // source text box plus pad. Height is capped to the room — long
-            // Hindi shrinks to fit INSIDE instead of bursting onto the art.
-            // Box and text share one center, so neither drifts.
+            // Dialogue geometry (spill-proof by construction): the ANCHOR is
+            // always the source-text center — the English source was typeset
+            // centered in its bubble, so the source center IS the bubble
+            // center in any language. Room scans on white page backgrounds
+            // leak through thin outlines onto the page and dragged the old
+            // room-center anchor left of the bubble; the room is used only
+            // for SIZE (capped), never for position. Box and text share the
+            // source center, so neither drifts left.
             var boxCx = (el + er) / 2f
             var boxCy = (et + eb) / 2f
             var roomW = 0f
@@ -1408,8 +1409,6 @@ class TranslationOverlayView @JvmOverloads constructor(
                         val nr = Math.max(q1.x, q2.x)
                         val nb = Math.max(q1.y, q2.y)
                         if (nr - nl >= 12 && nb - nt >= 12 && nr - nl <= srcW * 4f && nb - nt <= srcH * 4f && nl <= el && nt <= et && nr >= er && nb >= eb) {
-                            boxCx = (nl + nr) / 2f
-                            boxCy = (nt + nb) / 2f
                             roomW = nr - nl
                             roomH = nb - nt
                             hasRoom = true
@@ -1418,12 +1417,14 @@ class TranslationOverlayView @JvmOverloads constructor(
                 } catch (e: Exception) {
                 }
             }
-            val boxW = if (hasRoom) roomW.coerceAtLeast(16f) else srcW
-            var boxH = if (hasRoom) roomH.coerceAtLeast(16f) else srcH
+            // Room sizes the box (capped: Hindi runs longer than English, but
+            // a leaked oversized room must not blow the words past the ink).
+            val boxW = if (hasRoom) min(roomW, srcW * 2.2f).coerceAtLeast(16f) else srcW
+            var boxH = if (hasRoom) min(roomH, srcH * 2.5f).coerceAtLeast(16f) else srcH
             var f = fit(b.trans, boxW, boxH) ?: continue
             val needH = f.layout.height + 8f
             if (needH > boxH) {
-                boxH = if (hasRoom) roomH.coerceAtLeast(16f) else min(needH, srcH * 1.35f)
+                boxH = if (hasRoom) min(roomH, srcH * 2.5f).coerceAtLeast(16f) else min(needH, srcH * 1.35f)
                 fit(b.trans, boxW, boxH)?.let { f = it }
             }
             // Floor-size words can still stand taller than the capped box:
@@ -1431,8 +1432,8 @@ class TranslationOverlayView @JvmOverloads constructor(
             if (f.layout.height > boxH * 0.92f) {
                 f = shrinkToFit(b.trans, boxW, boxH * 0.92f) ?: continue
             }
-            val cx = boxCx
-            val cy = boxCy
+            val cx = (el + er) / 2f
+            val cy = (et + eb) / 2f
             val rad = min(boxW, boxH) * 0.30f
             canvas.drawRoundRect(RectF(cx - boxW / 2f, cy - boxH / 2f, cx + boxW / 2f, cy + boxH / 2f), rad, rad, boxPaint)
             val key = "${(boxW / 6).toInt()}x${(boxH / 6).toInt()}|${b.trans.hashCode()}"
