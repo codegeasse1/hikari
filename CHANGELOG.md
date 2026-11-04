@@ -1,3 +1,8 @@
+## 0.12.36 (continuous build only)
+
+- Manga Translate overflow fixed: the white bubble outline around each text is detected now, words are fitted and shrunk inside it (down to 8px) instead of growing past it — no more text spilling left onto the art, in any bubble
+- TV home hero back to the 0.12.0 glass box: smaller rounded card with glass edge (~a third of the viewport) plus the dimmed ambient backdrop behind the feed, instead of the full-bleed banner
+
 ## 0.12.35 (continuous build only)
 
 - Manga Translate bubbles keep their oval bubble shape and grow to fit long Hindi text (joint bubbles stay two bubbles, no more square block); cover hides every source word with margin to spare

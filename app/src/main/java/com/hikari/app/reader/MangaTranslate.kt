@@ -154,7 +154,9 @@ data class MangaTranslateUi(
     val onSaveKey: (String) -> Unit,
 )
 
-/** One translated text block, in full-image pixels. */
+/** One translated text block, in full-image pixels. [bl,bt,br,bb] is the
+ *  detected white bubble outline around the text — the overlay never draws
+ *  past it (falls back to the text box when detection finds nothing). */
 data class TLBox(
     val l: Float,
     val t: Float,
@@ -162,6 +164,10 @@ data class TLBox(
     val b: Float,
     val text: String,
     val trans: String,
+    val bl: Float = 0f,
+    val bt: Float = 0f,
+    val br: Float = 0f,
+    val bb: Float = 0f,
 )
 
 private data class RawBox(val l: Float, val t: Float, val r: Float, val b: Float, val text: String)
@@ -236,7 +242,7 @@ object MangaTranslateRuntime {
     ): List<TLBox> {
         if (!st.enabled || imgW <= 0 || imgH <= 0) return emptyList()
         val d = dir ?: return emptyList()
-        val hk = sha1("$pageKey|${st.orig.name}|${st.target.name}|${st.engine.name}|${st.geminiKey}|v3")
+        val hk = sha1("$pageKey|${st.orig.name}|${st.target.name}|${st.engine.name}|${st.geminiKey}|v4")
         val cacheFile = File(d, "$hk.json")
         readCache(cacheFile)?.let { return it }
         val def = inflight.getOrPut(hk) { scope.async { runTranslate(file, imgW, imgH, st) } }
@@ -297,13 +303,21 @@ object MangaTranslateRuntime {
                 } else tr
             }
         }
+        // White bubble outline around each box: the overlay fits the words
+        // INSIDE this outline and shrinks the font instead of growing past
+        // it, so text can never spill onto the art (the 0.12.35 overflow).
+        val bubbles = detectBubbles(file, imgW, imgH, grouped)
         grouped.mapIndexedNotNull { i, b ->
             val raw = translated.getOrNull(i)?.trim().orEmpty()
             val t = cleanTrans(raw)
             if (t.isBlank() || t.equals(texts.getOrNull(i), ignoreCase = true)) null
             else if (!hasTargetScript(t, st.target)) null
             else if (hasLeftoverSource(t, texts.getOrNull(i).orEmpty(), st.target)) null
-            else TLBox(b.l, b.t, b.r, b.b, b.text, t)
+            else {
+                val o = bubbles.getOrNull(i)
+                if (o != null) TLBox(b.l, b.t, b.r, b.b, b.text, t, o.l, o.t, o.r, o.b)
+                else TLBox(b.l, b.t, b.r, b.b, b.text, t)
+            }
         }
     }
 
@@ -507,6 +521,171 @@ object MangaTranslateRuntime {
     }
 
     private fun area(b: RawBox): Float = max(0f, b.r - b.l) * max(0f, b.b - b.t)
+
+    /**
+     * White bubble outline around each text box, in full-image pixels (null
+     * when nothing sane is found). The bubble interior is the white connected
+     * region holding the text: flood-fill it on a small downscaled crop and
+     * take its bounds, inset slightly so the overlay stays inside the ink.
+     * Rejects regions touching 3+ crop edges (that's page background, not a
+     * bubble) and tiny slivers (a gap between letters, not the bubble).
+     */
+    private fun detectBubbles(file: File, imgW: Int, imgH: Int, boxes: List<RawBox>): List<RectF?> {
+        if (boxes.isEmpty()) return emptyList()
+        val dec = try {
+            BitmapRegionDecoder.newInstance(file.absolutePath, false)
+        } catch (e: Exception) {
+            null
+        } ?: return boxes.map { null }
+        return try {
+            val w = if (dec.width > 0) dec.width else imgW
+            val h = if (dec.height > 0) dec.height else imgH
+            if (w <= 0 || h <= 0) boxes.map { null }
+            else boxes.map { detectOne(dec, w, h, it) }
+        } catch (e: Exception) {
+            boxes.map { null }
+        } finally {
+            try {
+                dec.recycle()
+            } catch (e: Exception) {
+            }
+        }
+    }
+
+    private fun detectOne(dec: BitmapRegionDecoder, w: Int, h: Int, b: RawBox): RectF? {
+        return try {
+            val bw = (b.r - b.l).coerceAtLeast(1f)
+            val bh = (b.b - b.t).coerceAtLeast(1f)
+            // Crop generously so the whole bubble is inside, but capped so a
+            // neighbouring bubble can't merge in through the crop.
+            val ex = bw * 1.1f
+            val ey = bh * 1.1f
+            val cl = max(0f, b.l - ex).toInt()
+            val ct = max(0f, b.t - ey).toInt()
+            val cr = min(w.toFloat(), b.r + ex).toInt()
+            val cb = min(h.toFloat(), b.b + ey).toInt()
+            val cw = cr - cl
+            val ch = cb - ct
+            if (cw < 16 || ch < 16) return null
+            val scale = min(1f, 160f / max(cw, ch))
+            val sw = max(10, (cw * scale).toInt())
+            val sh = max(10, (ch * scale).toInt())
+            val sample = max(1, min(cw / sw, ch / sh))
+            val bmp = dec.decodeRegion(
+                Rect(cl, ct, cr, cb),
+                BitmapFactory.Options().apply { inSampleSize = sample },
+            ) ?: return null
+            try {
+                val dw = bmp.width
+                val dh = bmp.height
+                if (dw < 10 || dh < 10) return null
+                val px = IntArray(dw * dh)
+                bmp.getPixels(px, 0, dw, 0, 0, dw, dh)
+                val white = BooleanArray(dw * dh)
+                for (i in px.indices) {
+                    val p = px[i]
+                    white[i] = ((p shr 16) and 0xff) > 195 &&
+                        ((p shr 8) and 0xff) > 195 && (p and 0xff) > 195
+                }
+                // Seeds: white pixels overlapping the OCR text box (crop space).
+                // The text sits inside its bubble, so the fill starts there.
+                val tl = (((b.l - cl).toFloat() / cw * dw).toInt()).coerceIn(0, dw - 1)
+                val tr = (((b.r - cl).toFloat() / cw * dw).toInt()).coerceIn(0, dw - 1)
+                val tt = (((b.t - ct).toFloat() / ch * dh).toInt()).coerceIn(0, dh - 1)
+                val tb = (((b.b - ct).toFloat() / ch * dh).toInt()).coerceIn(0, dh - 1)
+                val seen = BooleanArray(dw * dh)
+                val queue = ArrayDeque<Int>()
+                for (y in tt..tb) {
+                    for (x in tl..tr) {
+                        val i = y * dw + x
+                        if (white[i] && !seen[i]) {
+                            seen[i] = true
+                            queue.add(i)
+                        }
+                    }
+                }
+                if (queue.isEmpty()) {
+                    // Text pixels aren't white (dark bubble?): try the box
+                    // center — a white interior still fills from there.
+                    val cx = (tl + tr) / 2
+                    val cy = (tt + tb) / 2
+                    val i = cy * dw + cx
+                    if (!white[i]) return null
+                    seen[i] = true
+                    queue.add(i)
+                }
+                var minX = dw
+                var minY = dh
+                var maxX = -1
+                var maxY = -1
+                var count = 0
+                var touches = 0
+                var touchL = false
+                var touchR = false
+                var touchT = false
+                var touchB = false
+                while (queue.isNotEmpty()) {
+                    val i = queue.removeFirst()
+                    val x = i % dw
+                    val y = i / dw
+                    count++
+                    if (x < minX) minX = x
+                    if (x > maxX) maxX = x
+                    if (y < minY) minY = y
+                    if (y > maxY) maxY = y
+                    if (x == 0) touchL = true
+                    if (x == dw - 1) touchR = true
+                    if (y == 0) touchT = true
+                    if (y == dh - 1) touchB = true
+                    if (x > 0 && white[i - 1] && !seen[i - 1]) {
+                        seen[i - 1] = true
+                        queue.add(i - 1)
+                    }
+                    if (x < dw - 1 && white[i + 1] && !seen[i + 1]) {
+                        seen[i + 1] = true
+                        queue.add(i + 1)
+                    }
+                    if (y > 0 && white[i - dw] && !seen[i - dw]) {
+                        seen[i - dw] = true
+                        queue.add(i - dw)
+                    }
+                    if (y < dh - 1 && white[i + dw] && !seen[i + dw]) {
+                        seen[i + dw] = true
+                        queue.add(i + dw)
+                    }
+                }
+                touches = (if (touchL) 1 else 0) + (if (touchR) 1 else 0) +
+                    (if (touchT) 1 else 0) + (if (touchB) 1 else 0)
+                // Page background floods the whole crop (3-4 edges); a real
+                // bubble interior touches at most the side it opens through.
+                if (touches >= 3) return null
+                // Sliver between glyphs, not a bubble.
+                if (count < dw * dh * 0.02f) return null
+                if (maxX < minX || maxY < minY) return null
+                // Back to full-image pixels, inset so the oval stays inside ink.
+                val fl = cl + minX.toFloat() / dw * cw
+                val ft = ct + minY.toFloat() / dh * ch
+                val fr = cl + (maxX + 1).toFloat() / dw * cw
+                val fb = ct + (maxY + 1).toFloat() / dh * ch
+                val ix = max(2f, (fr - fl) * 0.03f)
+                val iy = max(2f, (fb - ft) * 0.03f)
+                val out = RectF(fl + ix, ft + iy, fr - ix, fb - iy)
+                // Must still contain the text, with sane proportions.
+                if (out.right - out.left < bw * 0.5f) return null
+                if (out.bottom - out.top < bh * 0.5f) return null
+                if (out.left > b.l || out.top > b.t || out.right < b.r || out.bottom < b.b) {
+                    // Outline missed the text (outline gap leaked out): clamp
+                    // to a padded text box instead of a wrong bubble.
+                    return RectF(b.l - bw * 0.15f, b.t - bh * 0.15f, b.r + bw * 0.15f, b.b + bh * 0.15f)
+                }
+                out
+            } finally {
+                if (!bmp.isRecycled) bmp.recycle()
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
 
     /**
      * Stacked text lines of one speech bubble become one block (union bounds,
@@ -840,11 +1019,18 @@ object MangaTranslateRuntime {
                 for (i in 0 until arr.length()) {
                     val b = arr.optJSONObject(i) ?: continue
                     val tr = b.optString("trans").ifEmpty { continue }
+                    val l = b.optDouble("l").toFloat()
+                    val t = b.optDouble("t").toFloat()
+                    val r = b.optDouble("r").toFloat()
+                    val bb = b.optDouble("b").toFloat()
                     out.add(
                         TLBox(
-                            b.optDouble("l").toFloat(), b.optDouble("t").toFloat(),
-                            b.optDouble("r").toFloat(), b.optDouble("b").toFloat(),
+                            l, t, r, bb,
                             b.optString("text"), tr,
+                            b.optDouble("bl", l.toDouble()).toFloat(),
+                            b.optDouble("bt", t.toDouble()).toFloat(),
+                            b.optDouble("br", r.toDouble()).toFloat(),
+                            b.optDouble("bb", bb.toDouble()).toFloat(),
                         )
                     )
                 }
@@ -861,6 +1047,7 @@ object MangaTranslateRuntime {
                 arr.put(
                     JSONObject().put("l", b.l).put("t", b.t).put("r", b.r).put("b", b.b)
                         .put("text", b.text).put("trans", b.trans)
+                        .put("bl", b.bl).put("bt", b.bt).put("br", b.br).put("bb", b.bb)
                 )
             }
             f.writeText(JSONObject().put("blocks", arr).toString())
@@ -975,38 +1162,51 @@ class TranslationOverlayView @JvmOverloads constructor(
             val w = r - l; val h = btm - t
             if (w < 8 || h < 8) continue
             if (r < 0 || l > width || btm < 0 || t > height) continue
-            // Same bubble format, grown to fit: first a white RECT over the
-            // source glyphs (proportional pad, never smaller — this is what
-            // hides the old lettering), then the translation sits in an OVAL
-            // bubble on top, grown as needed. Square corners are gone; the
-            // joint-bubble case stays two ovals because grouping no longer
-            // merges separate bubbles (see sameBubble).
+            // Same bubble format, kept INSIDE the real outline: first a white
+            // RECT over the source glyphs (proportional pad — this hides the
+            // old lettering), then the translation in an OVAL fitted inside
+            // the detected bubble outline. Long text gets SMALLER words that
+            // stay inside the bubble — the oval never grows past the outline
+            // onto the art (the 0.12.35 left-spill).
             val pad = max(10f, min(w, h) * 0.10f)
             val el = l - pad; val et = t - pad
             val er = r + pad; val eb = btm + pad
             // Hide pass: covers every source pixel plus margin.
             canvas.drawRect(el, et, er, eb, boxPaint)
-            val ew = er - el; val eh = eb - et
-            if (ew < 12 || eh < 12) continue
-            // Floor-size text can still be taller/wider than a thin source
-            // box: grow the bubble (bounded, centered) instead of shrinking
-            // the words to nothing. Two passes — refit into the grown box.
-            var boxW = ew * 1.12f
-            var boxH = eh * 1.12f
-            var f = fit(b.trans, boxW, boxH) ?: continue
-            val needH = f.layout.height / 0.92f + 10f
-            if (needH > boxH) {
-                boxH = min(needH, eh * 1.9f)
-                fit(b.trans, boxW, boxH)?.let { f = it }
+            // Bubble outline in view space. Missing/degenerate (old cache,
+            // detection miss) falls back to the padded source box.
+            var capL = el
+            var capT = et
+            var capR = er
+            var capB = eb
+            if (b.br > b.bl && b.bb > b.bt) {
+                try {
+                    val q1 = loc(b.bl, b.bt)
+                    val q2 = loc(b.br, b.bb)
+                    if (q1 != null && q2 != null) {
+                        val nl = min(q1.x, q2.x); val nt = min(q1.y, q2.y)
+                        val nr = max(q1.x, q2.x); val nb = max(q1.y, q2.y)
+                        if (nr - nl >= 12 && nb - nt >= 12) {
+                            capL = nl; capT = nt; capR = nr; capB = nb
+                        }
+                    }
+                } catch (e: Exception) {
+                }
             }
-            if (f.layout.width > boxW * 0.94f) {
-                boxW = min(f.layout.width / 0.94f, ew * 1.6f)
-                fit(b.trans, boxW, boxH)?.let { f = it }
-            }
-            val cx = (el + er) / 2f
-            val cy = (et + eb) / 2f
-            canvas.drawOval(RectF(cx - boxW / 2f, cy - boxH / 2f, cx + boxW / 2f, cy + boxH / 2f), boxPaint)
-            val key = "${(boxW / 6).toInt()}x${(boxH / 6).toInt()}|${b.trans.hashCode()}"
+            val capW = capR - capL
+            val capH = capB - capT
+            if (capW < 14 || capH < 14) continue
+            // Words live inside the outline with an ink margin; shrink the
+            // font down to 8px before ever touching the edge.
+            val availW = capW * 0.84f
+            val availH = capH * 0.84f
+            val f = fitBubble(b.trans, availW, availH) ?: continue
+            val cx = (capL + capR) / 2f
+            val cy = (capT + capB) / 2f
+            val ow = min(capW * 0.96f, f.layout.width + 14f)
+            val oh = min(capH * 0.96f, f.layout.height + 12f)
+            canvas.drawOval(RectF(cx - ow / 2f, cy - oh / 2f, cx + ow / 2f, cy + oh / 2f), boxPaint)
+            val key = "${(availW / 6).toInt()}x${(availH / 6).toInt()}|${b.trans.hashCode()}"
             fitted[index] = key to f
             canvas.save()
             canvas.translate(cx - f.layout.width / 2f, cy - f.layout.height / 2f)
@@ -1068,6 +1268,43 @@ class TranslationOverlayView @JvmOverloads constructor(
         }
         // Even the floor overflows: hand back the floor layout and let the
         // caller grow the cover (bounded, oval) instead of shrinking to dust.
+        return last?.let { Fitted(-it.width / 2f, 0f, it) }
+    }
+
+    /**
+     * Shrink-to-fit INSIDE a known bubble outline: start big, shrink until
+     * the words fit — down to an 8px floor, never past the outline. Long
+     * translations get smaller words that stay inside the bubble instead of
+     * an oval bursting through the edge onto the art.
+     */
+    private fun fitBubble(text: String, w: Float, h: Float): Fitted? {
+        if (text.isBlank() || w < 16 || h < 16) return null
+        var size = min(h * 0.52f, w * 0.30f).coerceIn(8f, 140f)
+        val availW = (w * 0.96f).coerceAtLeast(8f)
+        val availH = (h * 0.94f).coerceAtLeast(8f)
+        // Fresh paint per layout: StaticLayout draws with its paint live, so a
+        // shared paint resized for the next box would corrupt this one.
+        val paint = TextPaint(textPaint)
+        var last: StaticLayout? = null
+        while (true) {
+            paint.textSize = size
+            val builder = StaticLayout.Builder.obtain(text, 0, text.length, paint, availW.toInt())
+                .setAlignment(android.text.Layout.Alignment.ALIGN_CENTER)
+                .setIncludePad(false)
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                builder.setBreakStrategy(android.text.Layout.BREAK_STRATEGY_HIGH_QUALITY)
+                builder.setHyphenationFrequency(android.text.Layout.HYPHENATION_FREQUENCY_NONE)
+            }
+            val layout = builder.build()
+            last = layout
+            if (layout.height <= availH) {
+                return Fitted(-layout.width / 2f, 0f, layout)
+            }
+            if (size <= 8.5f) break
+            size = max(8f, size * 0.90f)
+        }
+        // Even 8px overflows (extreme): hand it back anyway — clamped oval,
+        // centered, still inside the outline.
         return last?.let { Fitted(-it.width / 2f, 0f, it) }
     }
 }
