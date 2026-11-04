@@ -8588,8 +8588,11 @@ class PlayerActivity : ComponentActivity() {
         switchToEpisode(next, fromAutoplay = true)
     }
 
-    /** The Source pill: the same grouped picker, dismissible without a pick. */
-    private fun showSourcesDialog() = showServerChooser(forceHorizontal = true)
+    /** The Source pill: the same grouped picker, dismissible without a pick.
+     *  Horizontal only on television (the sheet overlays the video there) —
+     *  phones follow the page-layout setting (vertical by default). */
+    private fun showSourcesDialog() =
+        showServerChooser(forceHorizontal = com.hikari.app.tv.TvMode.isTv)
 
     /** The fixed section order: the engine the user opened the title from first
      *  — the other repos of THAT engine are the closest thing to "my
@@ -15092,7 +15095,9 @@ class PlayerActivity : ComponentActivity() {
                     pickedByUser = false
                     noSubsRetry = false
                     if (downloadFlowActive) openDownloadPending = true
-                    showServerChooser(forceHorizontal = true)
+                    // Television keeps the horizontal rows here; phones
+                    // follow the page-layout setting (vertical by default).
+                    showServerChooser(forceHorizontal = com.hikari.app.tv.TvMode.isTv)
                 }
                 2 -> {
                     // Stop asking from now on — persist it so the next video

@@ -1496,9 +1496,17 @@ class AppStore(private val ctx: Context) {
 
     suspend fun heroStyle(): String = heroStyleFlow().first()
 
-    /** The Sources sheet's page layout (Settings → Playback & Servers). */
+    /** The Sources sheet's page layout (Settings → Playback & Servers).
+     *  Fresh installs open vertical on phones (cards + portrait art) and
+     *  horizontal on televisions — a stored choice always wins. */
     fun serverLayoutFlow(): Flow<String> =
-        store.data.map { com.hikari.app.player.ServerLayouts.namespace(it[K.SERVER_LAYOUT] ?: com.hikari.app.player.ServerLayouts.HORIZONTAL) }
+        store.data.map {
+            com.hikari.app.player.ServerLayouts.namespace(
+                it[K.SERVER_LAYOUT]
+                    ?: if (com.hikari.app.tv.TvMode.isTv) com.hikari.app.player.ServerLayouts.HORIZONTAL
+                    else com.hikari.app.player.ServerLayouts.VERTICAL
+            )
+        }
             .distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun serverLayout(): String = serverLayoutFlow().first()

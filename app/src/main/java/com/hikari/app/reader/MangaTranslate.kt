@@ -154,9 +154,9 @@ data class MangaTranslateUi(
     val onSaveKey: (String) -> Unit,
 )
 
-/** One translated text block, in full-image pixels. [bl,bt,br,bb] is the
- *  detected white bubble outline around the text — the overlay never draws
- *  past it (falls back to the text box when detection finds nothing). */
+/** One translated text block, in full-image pixels. [bl,bt,br,bb] carries the
+ *  measured white room around the text (for centering in any language);
+ *  [art] marks art lettering/SFX (drawn stroked, no white cover). */
 data class TLBox(
     val l: Float,
     val t: Float,
@@ -168,6 +168,7 @@ data class TLBox(
     val bt: Float = 0f,
     val br: Float = 0f,
     val bb: Float = 0f,
+    val art: Boolean = false,
 )
 
 private data class RawBox(val l: Float, val t: Float, val r: Float, val b: Float, val text: String)
@@ -242,7 +243,7 @@ object MangaTranslateRuntime {
     ): List<TLBox> {
         if (!st.enabled || imgW <= 0 || imgH <= 0) return emptyList()
         val d = dir ?: return emptyList()
-        val hk = sha1("$pageKey|${st.orig.name}|${st.target.name}|${st.engine.name}|${st.geminiKey}|v4")
+        val hk = sha1("$pageKey|${st.orig.name}|${st.target.name}|${st.engine.name}|${st.geminiKey}|v5")
         val cacheFile = File(d, "$hk.json")
         readCache(cacheFile)?.let { return it }
         val def = inflight.getOrPut(hk) { scope.async { runTranslate(file, imgW, imgH, st) } }
@@ -277,7 +278,14 @@ object MangaTranslateRuntime {
         // together keeps the sentence whole and renders one clean bubble.
         val grouped = groupBubbles(raw)
         if (grouped.isEmpty()) return@withContext emptyList()
-        val texts = grouped.map { cleanOcr(it.text) }
+        // Tiny-text gate: site-credit strips and speck noise (a few px tall)
+        // never become garbled transliterations. Real dialogue ("?!" included)
+        // is far taller, so only physical specks are dropped.
+        val kept = if (imgW > 0) {
+            grouped.filter { (it.b - it.t) >= imgW * 0.012f }
+        } else grouped
+        if (kept.isEmpty()) return@withContext emptyList()
+        val texts = kept.map { cleanOcr(it.text) }
         // ALL-CAPS shouting ("LET GO! LET ME GO!") translates badly as-is:
         // Google keeps words like GO in Latin. Sentence-case it for the
         // engine; the equality check below still uses the original.
@@ -303,13 +311,24 @@ object MangaTranslateRuntime {
                 } else tr
             }
         }
-        grouped.mapIndexedNotNull { i, b ->
+        // White room + art/SFX class per box (one shared decoder): dialogue
+        // gets centered in its real white room (any language stays centered),
+        // art lettering skips the white cover and draws stroked instead.
+        val rooms = measureRooms(file, imgW, imgH, kept)
+        kept.mapIndexedNotNull { i, b ->
             val raw = translated.getOrNull(i)?.trim().orEmpty()
             val t = cleanTrans(raw)
             if (t.isBlank() || t.equals(texts.getOrNull(i), ignoreCase = true)) null
             else if (!hasTargetScript(t, st.target)) null
             else if (hasLeftoverSource(t, texts.getOrNull(i).orEmpty(), st.target)) null
-            else TLBox(b.l, b.t, b.r, b.b, b.text, t)
+            else {
+                val rm = rooms.getOrNull(i)
+                if (rm != null && (rm.room != null || rm.art)) {
+                    val o = rm.room
+                    if (o != null) TLBox(b.l, b.t, b.r, b.b, b.text, t, o.left, o.top, o.right, o.bottom, rm.art)
+                    else TLBox(b.l, b.t, b.r, b.b, b.text, t, art = rm.art)
+                } else TLBox(b.l, b.t, b.r, b.b, b.text, t)
+            }
         }
     }
 
@@ -513,6 +532,157 @@ object MangaTranslateRuntime {
     }
 
     private fun area(b: RawBox): Float = max(0f, b.r - b.l) * max(0f, b.b - b.t)
+
+    /** White room around one text box + whether it sits on art (SFX). */
+    private data class Room(val room: RectF?, val art: Boolean)
+
+    /**
+     * Per-box white room, measured with directional scans that stop at ink —
+     * never a flood fill, so nothing can leak. The room is the white space
+     * holding the text (bubble interior or dialogue panel), used to CENTER
+     * the translation in any language. Boxes whose crop border is mostly
+     * non-white sit on art (SFX lettering): room null, art true.
+     */
+    private fun measureRooms(file: File, imgW: Int, imgH: Int, boxes: List<RawBox>): List<Room> {
+        if (boxes.isEmpty()) return emptyList()
+        val dec = try {
+            BitmapRegionDecoder.newInstance(file.absolutePath, false)
+        } catch (e: Exception) {
+            null
+        } ?: return boxes.map { Room(null, false) }
+        return try {
+            val w = if (dec.width > 0) dec.width else imgW
+            val h = if (dec.height > 0) dec.height else imgH
+            if (w <= 0 || h <= 0) boxes.map { Room(null, false) }
+            else boxes.map { measureOne(dec, w, h, it) }
+        } catch (e: Exception) {
+            boxes.map { Room(null, false) }
+        } finally {
+            try {
+                dec.recycle()
+            } catch (e: Exception) {
+            }
+        }
+    }
+
+    private fun measureOne(dec: BitmapRegionDecoder, w: Int, h: Int, b: RawBox): Room {
+        return try {
+            val bw = (b.r - b.l).coerceAtLeast(1f)
+            val bh = (b.b - b.t).coerceAtLeast(1f)
+            val ex = bw * 1.0f
+            val ey = bh * 1.0f
+            val cl = max(0f, b.l - ex).toInt()
+            val ct = max(0f, b.t - ey).toInt()
+            val cr = min(w.toFloat(), b.r + ex).toInt()
+            val cb = min(h.toFloat(), b.b + ey).toInt()
+            val cw = cr - cl
+            val ch = cb - ct
+            if (cw < 16 || ch < 16) return Room(null, false)
+            val scale = min(1f, 160f / max(cw, ch))
+            val sw = max(10, (cw * scale).toInt())
+            val sh = max(10, (ch * scale).toInt())
+            val bmp = dec.decodeRegion(
+                Rect(cl, ct, cr, cb),
+                BitmapFactory.Options().apply { inSampleSize = max(1, min(cw / sw, ch / sw)) },
+            ) ?: return Room(null, false)
+            try {
+                val dw = bmp.width
+                val dh = bmp.height
+                if (dw < 10 || dh < 10) return Room(null, false)
+                val px = IntArray(dw * dh)
+                bmp.getPixels(px, 0, dw, 0, 0, dw, dh)
+                val white = BooleanArray(dw * dh)
+                for (i in px.indices) {
+                    val p = px[i]
+                    white[i] = ((p shr 16) and 0xff) > 195 &&
+                        ((p shr 8) and 0xff) > 195 && (p and 0xff) > 195
+                }
+                // Art test: how much of the crop BORDER is white? Bubbles
+                // and dialogue panels sit in white; SFX sits on art.
+                var border = 0
+                var borderWhite = 0
+                for (x in 0 until dw) {
+                    for (y in intArrayOf(0, dh - 1)) {
+                        border++
+                        if (white[y * dw + x]) borderWhite++
+                    }
+                }
+                for (y in 1 until dh - 1) {
+                    for (x in intArrayOf(0, dw - 1)) {
+                        border++
+                        if (white[y * dw + x]) borderWhite++
+                    }
+                }
+                if (borderWhite.toFloat() / max(1, border) < 0.5f) {
+                    return Room(null, true)
+                }
+                // Text box in crop space.
+                val tl = (((b.l - cl).toFloat() / cw * dw).toInt()).coerceIn(0, dw - 1)
+                val tr = (((b.r - cl).toFloat() / cw * dw).toInt()).coerceIn(0, dw - 1)
+                val tt = (((b.t - ct).toFloat() / ch * dh).toInt()).coerceIn(0, dh - 1)
+                val tb = (((b.b - ct).toFloat() / ch * dh).toInt()).coerceIn(0, dh - 1)
+                // Directional max reach: 1.5x the text dim each side (stops a
+                // gap-leak from running to the page margin).
+                val maxX = (1.5f * (tr - tl + 1)).toInt().coerceAtLeast(4)
+                val maxY = (1.5f * (tb - tt + 1)).toInt().coerceAtLeast(4)
+                // A row/col counts as white when 98%+ white (anti-aliased
+                // edges and specks must not stop the scan; real ink does).
+                fun colWhite(x: Int, y0: Int, y1: Int): Boolean {
+                    var n = 0
+                    var wn = 0
+                    for (y in y0..y1) {
+                        n++
+                        if (white[y * dw + x]) wn++
+                    }
+                    return wn * 100 >= n * 98
+                }
+                fun rowWhite(y: Int, x0: Int, x1: Int): Boolean {
+                    var n = 0
+                    var wn = 0
+                    for (x in x0..x1) {
+                        n++
+                        if (white[y * dw + x]) wn++
+                    }
+                    return wn * 100 >= n * 98
+                }
+                var lx = tl
+                var steps = 0
+                while (lx > 0 && steps < maxX && colWhite(lx - 1, tt, tb)) {
+                    lx--
+                    steps++
+                }
+                var rx = tr
+                steps = 0
+                while (rx < dw - 1 && steps < maxX && colWhite(rx + 1, tt, tb)) {
+                    rx++
+                    steps++
+                }
+                var ty = tt
+                steps = 0
+                while (ty > 0 && steps < maxY && rowWhite(ty - 1, lx, rx)) {
+                    ty--
+                    steps++
+                }
+                var by = tb
+                steps = 0
+                while (by < dh - 1 && steps < maxY && rowWhite(by + 1, lx, rx)) {
+                    by++
+                    steps++
+                }
+                // Back to full-image pixels, inset slightly so ink stays out.
+                val fl = cl + lx.toFloat() / dw * cw + 1f
+                val ft = ct + ty.toFloat() / dh * ch + 1f
+                val fr = cl + (rx + 1).toFloat() / dw * cw - 1f
+                val fb = ct + (by + 1).toFloat() / dh * ch - 1f
+                if (fr - fl < 12 || fb - ft < 12) return Room(null, false)
+                Room(RectF(fl, ft, fr, fb), false)
+            } finally {
+                if (!bmp.isRecycled) bmp.recycle()
+            }
+        } catch (e: Exception) {
+            Room(null, false)
+        }
+    }
 
     /**
      * White bubble outline around each text box, in full-image pixels (null
@@ -1026,6 +1196,7 @@ object MangaTranslateRuntime {
                             b.optDouble("bt", t.toDouble()).toFloat(),
                             b.optDouble("br", r.toDouble()).toFloat(),
                             b.optDouble("bb", bb.toDouble()).toFloat(),
+                            b.optBoolean("art", false),
                         )
                     )
                 }
@@ -1043,6 +1214,7 @@ object MangaTranslateRuntime {
                     JSONObject().put("l", b.l).put("t", b.t).put("r", b.r).put("b", b.b)
                         .put("text", b.text).put("trans", b.trans)
                         .put("bl", b.bl).put("bt", b.bt).put("br", b.br).put("bb", b.bb)
+                        .put("art", b.art)
                 )
             }
             f.writeText(JSONObject().put("blocks", arr).toString())
@@ -1093,7 +1265,25 @@ class TranslationOverlayView @JvmOverloads constructor(
         textAlign = Paint.Align.CENTER
     }
 
+    private val sfxFillPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = AndroidColor.WHITE
+        typeface = android.graphics.Typeface.DEFAULT_BOLD
+        textAlign = Paint.Align.CENTER
+    }
+
+    private val sfxStrokePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = AndroidColor.BLACK
+        typeface = android.graphics.Typeface.DEFAULT_BOLD
+        textAlign = Paint.Align.CENTER
+        style = Paint.Style.STROKE
+        strokeJoin = Paint.Join.ROUND
+        strokeCap = Paint.Cap.ROUND
+    }
+
     private data class Fitted(val x: Float, val y: Float, val layout: StaticLayout)
+
+    /** Fill + outline layouts for one art-lettering translation. */
+    private data class Stroked(val fill: Fitted, val stroke: Fitted)
     private val fitted = HashMap<Int, Pair<String, Fitted>>()
 
     private var loopOn = false
@@ -1166,15 +1356,55 @@ class TranslationOverlayView @JvmOverloads constructor(
             val el = l - pad; val et = t - pad
             val er = r + pad; val eb = btm + pad
             // Hide pass: covers every source pixel plus margin.
-            canvas.drawRect(el, et, er, eb, boxPaint)
-            // 0.12.34 geometry (spill-proof by construction): the box is the
-            // source text box plus a small pad — width NEVER grows, height
-            // grows at most 1.35x for readability. Long Hindi first gets that
-            // room so it stays a good reading size, then the font shrinks to
-            // fit inside — the words can never leave the box in any of the
-            // four directions, so nothing lands on the art.
+            // Hide pass: covers every source pixel plus margin (dialogue
+            // only - art lettering below skips the cover on purpose).
+            if (!b.art) canvas.drawRect(el, et, er, eb, boxPaint)
             val srcW = er - el
             val srcH = eb - et
+            if (b.art) {
+                // SFX / art lettering: NO white box (a box stickers the art
+                // and half-hides big glyphs - the BANG double-show).
+                // Translated words draw straight on the art, white with a
+                // black outline, sized to the original lettering.
+                val st = fitStroked(b.trans, srcW * 2f, srcH * 2.5f, (srcH * 0.9f).coerceAtLeast(10f))
+                    ?: continue
+                val acx = (el + er) / 2f
+                val acy = (et + eb) / 2f
+                val akey = "sfx" + (srcW / 6).toInt().toString() + "x" + (srcH / 6).toInt().toString() + "|" + b.trans.hashCode().toString()
+                fitted[index] = akey to st.fill
+                canvas.save()
+                canvas.translate(acx - st.fill.layout.width / 2f, acy - st.fill.layout.height / 2f)
+                st.stroke.layout.draw(canvas)
+                st.fill.layout.draw(canvas)
+                canvas.restore()
+                continue
+            }
+            // Dialogue geometry (spill-proof by construction): the box
+            // is the source text box plus a small pad - width NEVER grows,
+            // height grows at most 1.35x for a readable size. Center comes
+            // from the measured white room when sane (any language lands in
+            // the bubble middle, never hugging the English text edge),
+            // else the source middle. The words can never leave the box in
+            // any of the four directions, so nothing lands on the art.
+            var ccx = (el + er) / 2f
+            var ccy = (et + eb) / 2f
+            if (b.br > b.bl && b.bb > b.bt) {
+                try {
+                    val q1 = loc(b.bl, b.bt)
+                    val q2 = loc(b.br, b.bb)
+                    if (q1 != null && q2 != null) {
+                        val nl = Math.min(q1.x, q2.x)
+                        val nt = Math.min(q1.y, q2.y)
+                        val nr = Math.max(q1.x, q2.x)
+                        val nb = Math.max(q1.y, q2.y)
+                        if (nr - nl >= 12 && nb - nt >= 12 && nr - nl <= srcW * 4f && nb - nt <= srcH * 4f && nl <= el && nt <= et && nr >= er && nb >= eb) {
+                            ccx = (nl + nr) / 2f
+                            ccy = (nt + nb) / 2f
+                        }
+                    }
+                } catch (e: Exception) {
+                }
+            }
             val boxW = srcW
             var boxH = srcH
             var f = fit(b.trans, boxW, boxH) ?: continue
@@ -1188,8 +1418,8 @@ class TranslationOverlayView @JvmOverloads constructor(
             if (f.layout.height > boxH * 0.92f) {
                 f = shrinkToFit(b.trans, boxW, boxH * 0.92f) ?: continue
             }
-            val cx = (el + er) / 2f
-            val cy = (et + eb) / 2f
+            val cx = ccx
+            val cy = ccy
             val rad = min(boxW, boxH) * 0.30f
             canvas.drawRoundRect(RectF(el, cy - boxH / 2f, er, cy + boxH / 2f), rad, rad, boxPaint)
             val key = "${(boxW / 6).toInt()}x${(boxH / 6).toInt()}|${b.trans.hashCode()}"
@@ -1255,6 +1485,53 @@ class TranslationOverlayView @JvmOverloads constructor(
         // Even the floor overflows: hand back the floor layout and let the
         // caller grow the cover (bounded, oval) instead of shrinking to dust.
         return last?.let { Fitted(-it.width / 2f, 0f, it) }
+    }
+
+    /**
+     * Art-lettering fit (SFX on the art): white fill + black outline,
+     * sized to the original glyphs. Starts at the source height and only
+     * shrinks (down to 8px) - never a white box, never a spill.
+     */
+    private fun fitStroked(text: String, w: Float, h: Float, startSize: Float): Stroked? {
+        if (text.isBlank() || w < 16 || h < 16) return null
+        var size = startSize.coerceIn(8f, 160f)
+        val availW = (w * 0.96f).coerceAtLeast(8f)
+        val availH = h.coerceAtLeast(8f)
+        val fill = TextPaint(sfxFillPaint)
+        val stroke = TextPaint(sfxStrokePaint)
+        var lastFill: StaticLayout? = null
+        var lastStroke: StaticLayout? = null
+        while (true) {
+            fill.textSize = size
+            stroke.textSize = size
+            stroke.strokeWidth = Math.max(1.5f, size * 0.14f)
+            val fb = StaticLayout.Builder.obtain(text, 0, text.length, fill, availW.toInt())
+                .setAlignment(android.text.Layout.Alignment.ALIGN_CENTER)
+                .setIncludePad(false)
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                fb.setBreakStrategy(android.text.Layout.BREAK_STRATEGY_HIGH_QUALITY)
+                fb.setHyphenationFrequency(android.text.Layout.HYPHENATION_FREQUENCY_NONE)
+            }
+            val fl = fb.build()
+            val sb = StaticLayout.Builder.obtain(text, 0, text.length, stroke, availW.toInt())
+                .setAlignment(android.text.Layout.Alignment.ALIGN_CENTER)
+                .setIncludePad(false)
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                sb.setBreakStrategy(android.text.Layout.BREAK_STRATEGY_HIGH_QUALITY)
+                sb.setHyphenationFrequency(android.text.Layout.HYPHENATION_FREQUENCY_NONE)
+            }
+            val sl = sb.build()
+            lastFill = fl
+            lastStroke = sl
+            if (fl.height <= availH) {
+                return Stroked(Fitted(-fl.width / 2f, 0f, fl), Fitted(-sl.width / 2f, 0f, sl))
+            }
+            if (size <= 8.5f) break
+            size = Math.max(8f, size - 1f)
+        }
+        return if (lastFill != null && lastStroke != null) {
+            Stroked(Fitted(-lastFill.width / 2f, 0f, lastFill), Fitted(-lastStroke.width / 2f, 0f, lastStroke))
+        } else null
     }
 
     /**

@@ -1,3 +1,10 @@
+## 0.12.39 (continuous build only)
+
+- Manga Translate adaptive centering: translation centers in the measured white room around the text (directional ink scans, leak-proof), so Hindi or any language sits in the bubble middle instead of hugging the English edge — still width-fixed, 1.35x height cap, shrink-to-fit, never a spill
+- Manga SFX on art (BOOM/HUFF/SCRATCH/BANG): detected separately, translated with no white box — white words with black outline sized to the original lettering, so no stickers and no half-hidden originals
+- Manga tiny-text gate: site-credit strips and speck noise no longer become garbled transliterations
+- Servers page default: vertical cards on phones (in-player picker + servers screen), horizontal rows stay on TV; a stored choice always wins
+
 ## 0.12.38 (continuous build only)
 
 - Manga Translate spill fixed for good: box is the source text box again (width never grows, height at most 1.35x for readable-size Hindi), font shrinks below the floor (to 8px) instead of spilling up/down/left/right, opaque rect over source glyphs stays — translations sit inside bubbles like 0.12.34 with no ghosting; grouping, full-translation and novel fixes unchanged
