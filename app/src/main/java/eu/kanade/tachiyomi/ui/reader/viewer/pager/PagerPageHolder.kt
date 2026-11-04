@@ -234,7 +234,8 @@ class PagerPageHolder(
         return try {
             when {
                 iv is SubsamplingScaleImageView && iv.sWidth > 0 -> {
-                    val p = iv.sourceToViewCoord(px, py)
+                    val p = PointF()
+                    iv.sourceToViewCoord(px, py, p)
                     PointF(p.x + iv.left, p.y + iv.top)
                 }
                 iv is ImageView -> {
