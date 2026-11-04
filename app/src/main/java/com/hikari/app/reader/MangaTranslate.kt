@@ -659,6 +659,9 @@ object MangaTranslateRuntime {
                 // Page background floods the whole crop (3-4 edges); a real
                 // bubble interior touches at most the side it opens through.
                 if (touches >= 3) return null
+                // Crop sitting fully INSIDE a big bubble (or on blank page)
+                // fills ~everything: ambiguous, not a usable outline.
+                if (count > dw * dh * 0.85f) return null
                 // Sliver between glyphs, not a bubble.
                 if (count < dw * dh * 0.02f) return null
                 if (maxX < minX || maxY < minY) return null
@@ -1173,12 +1176,17 @@ class TranslationOverlayView @JvmOverloads constructor(
             val er = r + pad; val eb = btm + pad
             // Hide pass: covers every source pixel plus margin.
             canvas.drawRect(el, et, er, eb, boxPaint)
-            // Bubble outline in view space. Missing/degenerate (old cache,
-            // detection miss) falls back to the padded source box.
-            var capL = el
-            var capT = et
-            var capR = er
-            var capB = eb
+            // Bubble center for the words: the detected outline's middle when
+            // sane, else the source text's middle. Detection is trusted only
+            // when the region contains the source box and runs at most 3x
+            // its sides — a leaked page-sized region is rejected (the 0.12.36
+            // giant-spill) and the words stay on the source box instead.
+            val srcW = er - el
+            val srcH = eb - et
+            var ccx = (el + er) / 2f
+            var ccy = (et + eb) / 2f
+            var detW = 0f
+            var detH = 0f
             if (b.br > b.bl && b.bb > b.bt) {
                 try {
                     val q1 = loc(b.bl, b.bt)
@@ -1186,23 +1194,31 @@ class TranslationOverlayView @JvmOverloads constructor(
                     if (q1 != null && q2 != null) {
                         val nl = min(q1.x, q2.x); val nt = min(q1.y, q2.y)
                         val nr = max(q1.x, q2.x); val nb = max(q1.y, q2.y)
-                        if (nr - nl >= 12 && nb - nt >= 12) {
-                            capL = nl; capT = nt; capR = nr; capB = nb
+                        val dw = nr - nl; val dh = nb - nt
+                        if (dw >= 12 && dh >= 12 && dw <= srcW * 3f && dh <= srcH * 3f &&
+                            nl <= el && nt <= et && nr >= er && nb >= eb
+                        ) {
+                            detW = dw; detH = dh
+                            ccx = (nl + nr) / 2f; ccy = (nt + nb) / 2f
                         }
                     }
                 } catch (e: Exception) {
                 }
             }
-            val capW = capR - capL
-            val capH = capB - capT
+            // Hard growth cap (0.12.34's bounded growth, tightened): the oval
+            // never exceeds 2x the source box in either side. Whatever the
+            // detection says, spill is structurally impossible — and the font
+            // below only ever shrinks to fit inside.
+            val capW = min(if (detW > 0) detW else Float.MAX_VALUE, srcW * 2f)
+            val capH = min(if (detH > 0) detH else Float.MAX_VALUE, srcH * 2f)
             if (capW < 14 || capH < 14) continue
-            // Words live inside the outline with an ink margin; shrink the
-            // font down to 8px before ever touching the edge.
+            // Words live inside the cap with an ink margin; shrink the font
+            // down to 8px before ever touching the edge.
             val availW = capW * 0.84f
             val availH = capH * 0.84f
             val f = fitBubble(b.trans, availW, availH) ?: continue
-            val cx = (capL + capR) / 2f
-            val cy = (capT + capB) / 2f
+            val cx = ccx
+            val cy = ccy
             val ow = min(capW * 0.96f, f.layout.width + 14f)
             val oh = min(capH * 0.96f, f.layout.height + 12f)
             canvas.drawOval(RectF(cx - ow / 2f, cy - oh / 2f, cx + ow / 2f, cy + oh / 2f), boxPaint)

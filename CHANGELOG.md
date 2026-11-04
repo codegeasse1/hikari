@@ -1,3 +1,7 @@
+## 0.12.37 (continuous build only)
+
+- Manga Translate spill-proof: the bubble outline is only trusted when it contains the text and runs at most 3x its sides (leaked page-sized regions rejected, full-inside crops rejected), the oval is hard-capped at 2x the source box, and the font only shrinks (down to 8px) to fit inside — giant spill is structurally impossible; opaque hide rect over source glyphs stays, so no ghosting either
+
 ## 0.12.36 (continuous build only)
 
 - Manga Translate overflow fixed: the white bubble outline around each text is detected now, words are fitted and shrunk inside it (down to 8px) instead of growing past it — no more text spilling left onto the art, in any bubble
