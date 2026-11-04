@@ -303,21 +303,13 @@ object MangaTranslateRuntime {
                 } else tr
             }
         }
-        // White bubble outline around each box: the overlay fits the words
-        // INSIDE this outline and shrinks the font instead of growing past
-        // it, so text can never spill onto the art (the 0.12.35 overflow).
-        val bubbles = detectBubbles(file, imgW, imgH, grouped)
         grouped.mapIndexedNotNull { i, b ->
             val raw = translated.getOrNull(i)?.trim().orEmpty()
             val t = cleanTrans(raw)
             if (t.isBlank() || t.equals(texts.getOrNull(i), ignoreCase = true)) null
             else if (!hasTargetScript(t, st.target)) null
             else if (hasLeftoverSource(t, texts.getOrNull(i).orEmpty(), st.target)) null
-            else {
-                val o = bubbles.getOrNull(i)
-                if (o != null) TLBox(b.l, b.t, b.r, b.b, b.text, t, o.left, o.top, o.right, o.bottom)
-                else TLBox(b.l, b.t, b.r, b.b, b.text, t)
-            }
+            else TLBox(b.l, b.t, b.r, b.b, b.text, t)
         }
     }
 
@@ -1165,64 +1157,42 @@ class TranslationOverlayView @JvmOverloads constructor(
             val w = r - l; val h = btm - t
             if (w < 8 || h < 8) continue
             if (r < 0 || l > width || btm < 0 || t > height) continue
-            // Same bubble format, kept INSIDE the real outline: first a white
-            // RECT over the source glyphs (proportional pad — this hides the
-            // old lettering), then the translation in an OVAL fitted inside
-            // the detected bubble outline. Long text gets SMALLER words that
-            // stay inside the bubble — the oval never grows past the outline
-            // onto the art (the 0.12.35 left-spill).
+            // Hide the source first, then the translation: a white RECT over
+            // the source glyphs (proportional pad — no old lettering shows
+            // through), then the translation in a softly rounded box that
+            // never leaves the source neighbourhood (width fixed, 1.35x
+            // height cap, font shrinks to fit).
             val pad = max(10f, min(w, h) * 0.10f)
             val el = l - pad; val et = t - pad
             val er = r + pad; val eb = btm + pad
             // Hide pass: covers every source pixel plus margin.
             canvas.drawRect(el, et, er, eb, boxPaint)
-            // Bubble center for the words: the detected outline's middle when
-            // sane, else the source text's middle. Detection is trusted only
-            // when the region contains the source box and runs at most 3x
-            // its sides — a leaked page-sized region is rejected (the 0.12.36
-            // giant-spill) and the words stay on the source box instead.
+            // 0.12.34 geometry (spill-proof by construction): the box is the
+            // source text box plus a small pad — width NEVER grows, height
+            // grows at most 1.35x for readability. Long Hindi first gets that
+            // room so it stays a good reading size, then the font shrinks to
+            // fit inside — the words can never leave the box in any of the
+            // four directions, so nothing lands on the art.
             val srcW = er - el
             val srcH = eb - et
-            var ccx = (el + er) / 2f
-            var ccy = (et + eb) / 2f
-            var detW = 0f
-            var detH = 0f
-            if (b.br > b.bl && b.bb > b.bt) {
-                try {
-                    val q1 = loc(b.bl, b.bt)
-                    val q2 = loc(b.br, b.bb)
-                    if (q1 != null && q2 != null) {
-                        val nl = min(q1.x, q2.x); val nt = min(q1.y, q2.y)
-                        val nr = max(q1.x, q2.x); val nb = max(q1.y, q2.y)
-                        val dw = nr - nl; val dh = nb - nt
-                        if (dw >= 12 && dh >= 12 && dw <= srcW * 3f && dh <= srcH * 3f &&
-                            nl <= el && nt <= et && nr >= er && nb >= eb
-                        ) {
-                            detW = dw; detH = dh
-                            ccx = (nl + nr) / 2f; ccy = (nt + nb) / 2f
-                        }
-                    }
-                } catch (e: Exception) {
-                }
+            val boxW = srcW
+            var boxH = srcH
+            var f = fit(b.trans, boxW, boxH) ?: continue
+            val needH = f.layout.height + 8f
+            if (needH > boxH) {
+                boxH = min(needH, srcH * 1.35f)
+                fit(b.trans, boxW, boxH)?.let { f = it }
             }
-            // Hard growth cap (0.12.34's bounded growth, tightened): the oval
-            // never exceeds 2x the source box in either side. Whatever the
-            // detection says, spill is structurally impossible — and the font
-            // below only ever shrinks to fit inside.
-            val capW = min(if (detW > 0) detW else Float.MAX_VALUE, srcW * 2f)
-            val capH = min(if (detH > 0) detH else Float.MAX_VALUE, srcH * 2f)
-            if (capW < 14 || capH < 14) continue
-            // Words live inside the cap with an ink margin; shrink the font
-            // down to 8px before ever touching the edge.
-            val availW = capW * 0.84f
-            val availH = capH * 0.84f
-            val f = fitBubble(b.trans, availW, availH) ?: continue
-            val cx = ccx
-            val cy = ccy
-            val ow = min(capW * 0.96f, f.layout.width + 14f)
-            val oh = min(capH * 0.96f, f.layout.height + 12f)
-            canvas.drawOval(RectF(cx - ow / 2f, cy - oh / 2f, cx + ow / 2f, cy + oh / 2f), boxPaint)
-            val key = "${(availW / 6).toInt()}x${(availH / 6).toInt()}|${b.trans.hashCode()}"
+            // Floor-size words can still stand taller than the capped box:
+            // shrink below the floor (down to 8px) rather than spill up/down.
+            if (f.layout.height > boxH * 0.92f) {
+                f = shrinkToFit(b.trans, boxW, boxH * 0.92f) ?: continue
+            }
+            val cx = (el + er) / 2f
+            val cy = (et + eb) / 2f
+            val rad = min(boxW, boxH) * 0.30f
+            canvas.drawRoundRect(RectF(el, cy - boxH / 2f, er, cy + boxH / 2f), rad, rad, boxPaint)
+            val key = "${(boxW / 6).toInt()}x${(boxH / 6).toInt()}|${b.trans.hashCode()}"
             fitted[index] = key to f
             canvas.save()
             canvas.translate(cx - f.layout.width / 2f, cy - f.layout.height / 2f)
@@ -1284,6 +1254,38 @@ class TranslationOverlayView @JvmOverloads constructor(
         }
         // Even the floor overflows: hand back the floor layout and let the
         // caller grow the cover (bounded, oval) instead of shrinking to dust.
+        return last?.let { Fitted(-it.width / 2f, 0f, it) }
+    }
+
+    /**
+     * Last-resort shrink below the readable floor (down to 8px): guarantees
+     * the words fit a capped box vertically so nothing spills up/down. Only
+     * reached when even the floor layout stands taller than the 1.35x cap.
+     */
+    private fun shrinkToFit(text: String, w: Float, h: Float): Fitted? {
+        if (text.isBlank() || w < 16 || h < 16) return null
+        var size = 11f
+        val availW = (w * 0.94f).coerceAtLeast(8f)
+        val availH = h.coerceAtLeast(8f)
+        val paint = TextPaint(textPaint)
+        var last: StaticLayout? = null
+        while (true) {
+            paint.textSize = size
+            val builder = StaticLayout.Builder.obtain(text, 0, text.length, paint, availW.toInt())
+                .setAlignment(android.text.Layout.Alignment.ALIGN_CENTER)
+                .setIncludePad(false)
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                builder.setBreakStrategy(android.text.Layout.BREAK_STRATEGY_HIGH_QUALITY)
+                builder.setHyphenationFrequency(android.text.Layout.HYPHENATION_FREQUENCY_NONE)
+            }
+            val layout = builder.build()
+            last = layout
+            if (layout.height <= availH) {
+                return Fitted(-layout.width / 2f, 0f, layout)
+            }
+            if (size <= 8.5f) break
+            size = max(8f, size - 1f)
+        }
         return last?.let { Fitted(-it.width / 2f, 0f, it) }
     }
 
