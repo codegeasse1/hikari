@@ -275,6 +275,27 @@ object MangaTranslateRuntime {
         val translated = try {
             translateAll(texts, st)
 
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return@withContext emptyList()
+        }
+        grouped.mapIndexedNotNull { i, b ->
+            val raw = translated.getOrNull(i)?.trim().orEmpty()
+            val t = cleanTrans(raw)
+            if (t.isBlank() || t == texts.getOrNull(i)) null
+            else if (!hasTargetScript(t, st.target)) null
+            else TLBox(b.l, b.t, b.r, b.b, b.text, t)
+        }
+    }
+
+    /**
+     * Batch text translation with the runtime's settings (also used by the
+     * novel reader for plain paragraphs).
+     */
+    suspend fun translateTexts(texts: List<String>, st: MangaTranslateSettings): List<String?> =
+        translateAll(texts, st)
+
     /** Strip batch-numbering and quote junk the engines echo. */
     private fun cleanTrans(t: String): String {
         var s = t.trim()
@@ -296,26 +317,6 @@ object MangaTranslateRuntime {
         return t.any { it in range }
     }
 
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            return@withContext emptyList()
-        }
-        grouped.mapIndexedNotNull { i, b ->
-            val raw = translated.getOrNull(i)?.trim().orEmpty()
-            val t = cleanTrans(raw)
-            if (t.isBlank() || t == texts.getOrNull(i)) null
-            else if (!hasTargetScript(t, st.target)) null
-            else TLBox(b.l, b.t, b.r, b.b, b.text, t)
-        }
-    }
-
-    /**
-     * Batch text translation with the runtime's settings (also used by the
-     * novel reader for plain paragraphs).
-     */
-    suspend fun translateTexts(texts: List<String>, st: MangaTranslateSettings): List<String?> =
-        translateAll(texts, st)
 
     // ---- OCR ----
 
