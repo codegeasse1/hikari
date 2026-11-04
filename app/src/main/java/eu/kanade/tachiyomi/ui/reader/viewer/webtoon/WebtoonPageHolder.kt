@@ -54,10 +54,6 @@ class WebtoonPageHolder(
 
     private val scope = MainScope()
 
-    init {
-        MangaTranslateRuntime.addListener(tlRefreshListener)
-    }
-
     /** Page-translation overlay state (see [bindTranslation]). */
     private var tlJob: Job? = null
     private var tlPageKey: String? = null
@@ -68,6 +64,10 @@ class WebtoonPageHolder(
 
     /** Re-runs the overlay when the translate switch flips (no scroll needed). */
     private val tlRefreshListener: () -> Unit = { frame.post { refreshTranslation() } }
+
+    init {
+        MangaTranslateRuntime.addListener(tlRefreshListener)
+    }
 
     /** Job for loading the page. */
     private var loadJob: Job? = null
