@@ -1213,7 +1213,6 @@ private fun ColumnScope.SettingsReadingModeTab(
 }
 
 @Composable
-@Composable
 private fun ColumnScope.TranslateDubSection(t: MangaTranslateUi) {
     var showOrig by remember { mutableStateOf(false) }
     var showTarget by remember { mutableStateOf(false) }
@@ -1405,6 +1404,7 @@ private fun TranslatePickDialog(
     )
 }
 
+@Composable
 private fun ColumnScope.WebtoonSettingsSection(
     cropBorders: Boolean,
     onToggleCropBorders: () -> Unit,

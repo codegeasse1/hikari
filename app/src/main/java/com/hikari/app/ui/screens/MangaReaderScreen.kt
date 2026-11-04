@@ -246,9 +246,6 @@ fun MangaReaderScreen(
         scope.launch { app.store.setMangaReaderSettingsJson(next.toJson().toString()) }
     }
 
-    LaunchedEffect(Unit) { MangaTranslateRuntime.configure(app) }
-    LaunchedEffect(translateEffective) { MangaTranslateRuntime.settings = translateEffective }
-
     /** Whether this manga is on the library shelf — the chrome's bookmark button,
      *  mirrored in state because [MangaStore] is not a flow this screen observes. */
     var followed by remember(key) { mutableStateOf(MangaStore.isFollowed(key)) }
@@ -258,26 +255,6 @@ fun MangaReaderScreen(
         val o = JSONObject()
         for ((k, v) in next) o.put(k, v)
         scope.launch { app.store.setMangaSeriesModesJson(o.toString()) }
-    }
-
-    fun saveTranslateSeries(next: Map<String, String>) {
-        translateSeries = next
-        val o = JSONObject()
-        for ((k, v) in next) o.put(k, v)
-        scope.launch { app.store.setMangaTranslateSeriesJson(o.toString()) }
-    }
-
-    val translateEffective = translateSeries[key]?.let { MangaTranslateSettings.fromJson(it) }
-        ?: translateGlobal
-
-    fun saveTranslate(next: MangaTranslateSettings) {
-        if (seriesOverrideEnabled) saveTranslateSeries(translateSeries + (key to next.toJson().toString()))
-        else {
-            translateGlobal = next
-            scope.launch { app.store.setMangaTranslateSettingsJson(next.toJson().toString()) }
-        }
-        viewerRef.value?.reloadPages()
-        pagerRef.value?.refreshPages()
     }
 
     // The mode in force: the per-series override when this manga has one,
@@ -430,6 +407,30 @@ fun MangaReaderScreen(
     var userScrolling by remember { mutableStateOf(false) }
     val viewerRef = remember(chapter) { mutableStateOf<WebtoonViewer?>(null) }
     val pagerRef = remember(chapter) { mutableStateOf<PagerViewer?>(null) }
+
+    LaunchedEffect(Unit) { MangaTranslateRuntime.configure(app) }
+
+    val translateEffective = translateSeries[key]?.let { MangaTranslateSettings.fromJson(it) }
+        ?: translateGlobal
+
+    LaunchedEffect(translateEffective) { MangaTranslateRuntime.settings = translateEffective }
+
+    fun saveTranslateSeries(next: Map<String, String>) {
+        translateSeries = next
+        val o = JSONObject()
+        for ((k, v) in next) o.put(k, v)
+        scope.launch { app.store.setMangaTranslateSeriesJson(o.toString()) }
+    }
+
+    fun saveTranslate(next: MangaTranslateSettings) {
+        if (seriesOverrideEnabled) saveTranslateSeries(translateSeries + (key to next.toJson().toString()))
+        else {
+            translateGlobal = next
+            scope.launch { app.store.setMangaTranslateSettingsJson(next.toJson().toString()) }
+        }
+        viewerRef.value?.reloadPages()
+        pagerRef.value?.refreshPages()
+    }
 
     val prevForStream = remember(navChapters, chapter) {
         neighbourOf(chapter, -1, navChapters, chapters)

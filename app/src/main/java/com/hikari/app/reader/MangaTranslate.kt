@@ -15,7 +15,7 @@ import android.text.TextPaint
 import android.util.AttributeSet
 import android.view.View
 import com.google.android.gms.tasks.Task
-import com.google.mlkit.nl.language.LanguageIdentification
+import com.google.mlkit.nl.languageid.LanguageIdentification
 import com.google.mlkit.nl.translate.TranslateLanguage
 import com.google.mlkit.nl.translate.Translation
 import com.google.mlkit.nl.translate.Translator
@@ -24,7 +24,7 @@ import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.Text
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.TextRecognizer
-import com.google.mlkit.vision.text.TextRecognizerOptions
+import com.google.mlkit.vision.text.latin.LatinTextRecognizerOptions
 import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions
 import com.google.mlkit.vision.text.devanagari.DevanagariTextRecognizerOptions
 import com.google.mlkit.vision.text.japanese.JapaneseTextRecognizerOptions
@@ -256,7 +256,7 @@ object MangaTranslateRuntime {
     // ---- OCR ----
 
     private val latinRec: TextRecognizer by lazy {
-        TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+        TextRecognition.getClient(LatinTextRecognizerOptions.DEFAULT_OPTIONS)
     }
     private val jaRec: TextRecognizer by lazy {
         TextRecognition.getClient(JapaneseTextRecognizerOptions.Builder().build())
@@ -473,7 +473,7 @@ object MangaTranslateRuntime {
             try {
                 // First use downloads the language models (any network is fine).
                 client.downloadModelIfNeeded(
-                    com.google.mlkit.nl.translate.DownloadConditions.Builder().build()
+                    com.google.mlkit.common.model.DownloadConditions.Builder().build()
                 ).awaitTask()
             } catch (e: CancellationException) {
                 throw e

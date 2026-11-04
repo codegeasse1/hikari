@@ -321,7 +321,7 @@ class WebtoonPageHolder(
         return try {
             when {
                 iv is SubsamplingScaleImageView && iv.sWidth > 0 -> {
-                    val r = android.graphics.RectF(px, py, px + 1, py + 1)
+                    val r = android.graphics.Rect(px.toInt(), py.toInt(), px.toInt() + 1, py.toInt() + 1)
                     iv.sourceToViewRect(r)
                     PointF(r.left + iv.left, r.top + iv.top)
                 }
