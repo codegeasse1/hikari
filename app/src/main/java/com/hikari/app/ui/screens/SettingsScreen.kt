@@ -40,6 +40,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.gestures.detectDragGestures
@@ -129,6 +130,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.ui.window.Dialog
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Slider
@@ -371,7 +373,7 @@ private enum class SettingsFolder(
     INTEGRATIONS(
         "integrations",
         "Integrations",
-        "TMDB enrichment, MDBList ratings, custom metadata & more",
+        "Custom metadata tweaks & more",
         Icons.Filled.ViewCarousel,
     ),
     INTEGRATIONS_TMDB(
@@ -619,7 +621,7 @@ private fun searchSettings(rawQuery: String): List<SettingsSearchEntry> {
         "performance" to "performance lag stutter battery speed",
         "tv" to "tv television remote overscan",
         "customize" to "customize personalize player ui buttons icon size colour color shape",
-        "player" to "player video audio subtitles controls gestures loading enhance",
+        "player" to "player video audio subtitles gestures loading enhance",
         "servers" to "playback servers play search extensions wait ask scope",
         "network" to "network dns slow internet",
         "sources" to "sources extensions repos userscripts verification",
@@ -948,8 +950,14 @@ fun SettingsScreen(nav: NavHostController) {
                     item { SettingsCard(top = 2.dp) { TrackersCard(app) } }
                 }
                 SettingsFolder.INTEGRATIONS -> {
+                    // TMDB Enrichment + MDBList Ratings stay installed but hidden:
+                    // their switches now live in Custom metadata tweaks.
                     SettingsFolder.entries
-                        .filter { it.parent == SettingsFolder.INTEGRATIONS.key }
+                        .filter {
+                            it.parent == SettingsFolder.INTEGRATIONS.key &&
+                                it.key != SettingsFolder.INTEGRATIONS_TMDB.key &&
+                                it.key != SettingsFolder.INTEGRATIONS_MDBLIST.key
+                        }
                         .forEach { target ->
                             item {
                                 SettingsFolderRow(
@@ -961,7 +969,6 @@ fun SettingsScreen(nav: NavHostController) {
                 }
                 SettingsFolder.INTEGRATIONS_TMDB -> {
                     item { SettingsCard(top = 2.dp) { TmdbIntegrationCard(app) } }
-                    item { SettingsCard { TmdbLanguageCard(app, appLanguage) } }
                     item { SettingsCard { TmdbModulesCard(app) } }
                 }
                 SettingsFolder.INTEGRATIONS_MDBLIST -> {
@@ -973,6 +980,7 @@ fun SettingsScreen(nav: NavHostController) {
                 }
                 SettingsFolder.APPEARANCE -> {
                     item { SettingsCard(top = 2.dp) { LanguageCard(app, appLanguage) } }
+                    item { SettingsCard { TmdbLanguageCard(app, appLanguage) } }
                     item {
                         SettingsCard {
                             Box {
@@ -4405,10 +4413,8 @@ private fun TmdbIntegrationCard(app: HikariApp) {
     }
 }
 
-@Composable
-private fun TmdbModulesCard(app: HikariApp) {
-    val scope = rememberCoroutineScope()
-    val modules = listOf(
+/** Every TMDB enrichment module (shared by the old Modules card + the floating window). */
+private val TmdbModuleDefs = listOf(
         Triple("trailers", "Trailers", "Trailer candidates from TMDB videos for the detail trailer section"),
         Triple("artwork", "Artwork", "Logo and backdrop images from TMDB"),
         Triple("basic", "Basic Info", "Description, genres, and rating from TMDB"),
@@ -4421,6 +4427,33 @@ private fun TmdbModulesCard(app: HikariApp) {
         Triple("more_like", "More Like This", "TMDB recommendation backdrops on the detail page"),
         Triple("collections", "Collections", "TMDB movie collections in release order"),
     )
+
+/** The module on/off rows (one shared list, two hosts). */
+@Composable
+private fun TmdbModuleToggleList(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    TmdbModuleDefs.forEachIndexed { index, module ->
+        val (key, title, description) = module
+        val moduleEnabled by remember(key) { app.store.tmdbModuleFlow(key) }.collectAsState(initial = true)
+        SettingsToggle(
+            label = tr(title),
+            supporting = tr(description),
+            checked = moduleEnabled,
+            onCheckedChange = { value ->
+                scope.launch { runCatching { app.store.setTmdbModule(key, value) } }
+            },
+        )
+        if (index != TmdbModuleDefs.lastIndex) {
+            HorizontalDivider(
+                modifier = Modifier.padding(top = 10.dp),
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
+            )
+        }
+    }
+}
+
+@Composable
+private fun TmdbModulesCard(app: HikariApp) {
     Column(Modifier.padding(16.dp)) {
         SettingsSection(
             id = "integrations.tmdb.modules",
@@ -4428,23 +4461,37 @@ private fun TmdbModulesCard(app: HikariApp) {
             title = tr("Modules"),
             summary = tr("Choose which TMDB enrichments are requested"),
         ) {
-            modules.forEachIndexed { index, module ->
-                val (key, title, description) = module
-                val moduleEnabled by remember(key) { app.store.tmdbModuleFlow(key) }.collectAsState(initial = true)
-                SettingsToggle(
-                    label = tr(title),
-                    supporting = tr(description),
-                    checked = moduleEnabled,
-                    onCheckedChange = { value ->
-                        scope.launch { runCatching { app.store.setTmdbModule(key, value) } }
-                    },
+            TmdbModuleToggleList(app)
+        }
+    }
+}
+
+/** Floating TMDB modules window (opened from Custom metadata tweaks). */
+@Composable
+private fun TmdbModulesDialog(app: HikariApp, onDismiss: () -> Unit) {
+    Dialog(onDismissRequest = onDismiss) {
+        GlassCard(Modifier.fillMaxWidth()) {
+            Column(
+                Modifier
+                    .padding(16.dp)
+                    .heightIn(max = 480.dp)
+                    .verticalScroll(rememberScrollState()),
+            ) {
+                Text(
+                    tr("Modules"),
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.primary,
                 )
-                if (index != modules.lastIndex) {
-                    HorizontalDivider(
-                        modifier = Modifier.padding(top = 10.dp),
-                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
-                    )
-                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    tr("Choose which TMDB enrichments are requested"),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(10.dp))
+                TmdbModuleToggleList(app)
+                Spacer(Modifier.height(12.dp))
+                TextButton(onClick = onDismiss) { Text(tr("Close")) }
             }
         }
     }
@@ -6999,6 +7046,7 @@ private fun AnimeMetadataIntegrationCard(app: HikariApp) {
             .sortedBy { it.config.name.ifBlank { it.config.id }.lowercase() }
     }
     var nativeQuery by remember { mutableStateOf("") }
+    var modulesOpen by remember { mutableStateOf(false) }
     val shownProviders = remember(videoProviders, nativeQuery) {
         val q = nativeQuery.trim().lowercase()
         if (q.isBlank()) videoProviders
@@ -7066,6 +7114,11 @@ private fun AnimeMetadataIntegrationCard(app: HikariApp) {
             checked = videoTmdb,
             onCheckedChange = { on -> scope.launch { runCatching { app.store.setVideoTmdb(on) } } },
         )
+        Spacer(Modifier.height(10.dp))
+        OutlinedButton(onClick = { modulesOpen = true }, shape = GlassShape) {
+            Text(tr("TMDB modules"))
+        }
+        if (modulesOpen) TmdbModulesDialog(app, onDismiss = { modulesOpen = false })
         Spacer(Modifier.height(14.dp))
         Text(tr("Manga"), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
         SettingsToggle(

@@ -174,8 +174,33 @@ private suspend fun <T> Task<T>.awaitTask(): T = suspendCancellableCoroutine { c
  * result (including "no text") is cached, so scrolling back costs nothing.
  */
 object MangaTranslateRuntime {
+    /**
+     * Flipping this (the reader settings sheet writes it on every toggle)
+     * pings every visible page holder so the open page translates instantly
+     * when turned on — and drops its overlay instantly when turned off —
+     * with no scrolling needed.
+     */
     @Volatile
     var settings: MangaTranslateSettings = MangaTranslateSettings.DEFAULTS
+        set(v) {
+            field = v
+            notifyChanged()
+        }
+
+    private val listeners = java.util.concurrent.CopyOnWriteArraySet<() -> Unit>()
+
+    /** Visible page holders register here; fired on every settings write. */
+    fun addListener(l: () -> Unit) {
+        listeners.add(l)
+    }
+
+    fun removeListener(l: () -> Unit) {
+        listeners.remove(l)
+    }
+
+    private fun notifyChanged() {
+        for (l in listeners) runCatching { l() }
+    }
 
     private var dir: File? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -459,11 +484,11 @@ object MangaTranslateRuntime {
         // A side-by-side bubble starts way above a's bottom; the next bubble
         // starts way below it. A next line starts right around a's bottom.
         if (b.t < a.b - lineH * 1.2f) return false
-        if (b.t > a.b + lineH * 1.1f) return false
+        if (b.t > a.b + lineH * 1.6f) return false
         val inter = min(a.r, b.r) - max(a.l, b.l)
         if (inter <= 0) return false
         val narrow = min(a.r - a.l, b.r - b.l).coerceAtLeast(1f)
-        return inter >= narrow * 0.4f
+        return inter >= narrow * 0.3f
     }
 
     /** OCR joins lines with odd spacing — normalize before translating. */
@@ -807,16 +832,23 @@ class TranslationOverlayView @JvmOverloads constructor(
             val er = r + padX; val eb = btm + padY
             val ew = er - el; val eh = eb - et
             if (ew < 12 || eh < 12) continue
-            canvas.drawRoundRect(RectF(el, et, er, eb), 12f, 12f, boxPaint)
-            val key = "${(ew / 6).toInt()}x${(eh / 6).toInt()}|${b.trans.hashCode()}"
-            val cached = fitted[index]
-            val f = if (cached != null && cached.first == key) {
-                cached.second
-            } else {
-                fit(b.trans, ew, eh)?.also { fitted[index] = key to it } ?: continue
+            // Floor-size text can still be taller than a thin source box: grow
+            // the cover (bounded, centered) instead of shrinking the words to
+            // nothing. Two passes — refit into the grown box so the words use it.
+            var boxW = ew
+            var boxH = eh
+            var f = fit(b.trans, boxW, boxH) ?: continue
+            val needH = f.layout.height + 8f
+            if (needH > boxH) {
+                boxH = min(needH, eh * 2.2f)
+                fit(b.trans, boxW, boxH)?.let { f = it }
             }
+            val cy = (et + eb) / 2f
+            canvas.drawRoundRect(RectF(el, cy - boxH / 2f, er, cy + boxH / 2f), 8f, 8f, boxPaint)
+            val key = "${(boxW / 6).toInt()}x${(boxH / 6).toInt()}|${b.trans.hashCode()}"
+            fitted[index] = key to f
             canvas.save()
-            canvas.translate(el + ew / 2f, et + (eh - f.layout.height) / 2f)
+            canvas.translate(el + boxW / 2f, cy - f.layout.height / 2f)
             f.layout.draw(canvas)
             canvas.restore()
         }
@@ -824,12 +856,13 @@ class TranslationOverlayView @JvmOverloads constructor(
 
     /**
      * Grow-to-fill centered layout for one bubble: start big, shrink until it
-     * fits INSIDE the bubble. Never overflows: the loop only stops when the
-     * laid-out height fits, or the floor size is reached.
+     * fits. The floor is an always-readable 11px — if even that overflows the
+     * source box, the caller grows the white cover instead (see onDraw), so
+     * text is never shrunk to an unreadable speck.
      */
     private fun fit(text: String, w: Float, h: Float): Fitted? {
         if (text.isBlank() || w <= 14 || h <= 14) return null
-        var size = min(h * 0.50f, w * 0.28f).coerceIn(9f, 120f)
+        var size = min(h * 0.50f, w * 0.28f).coerceIn(9f, 120f).coerceAtLeast(11f)
         val availW = (w * 0.96f).coerceAtLeast(8f)
         val availH = (h * 0.94f).coerceAtLeast(8f)
         // Fresh paint per layout: StaticLayout draws with its paint live, so a
@@ -845,7 +878,7 @@ class TranslationOverlayView @JvmOverloads constructor(
                 builder.setHyphenationFrequency(android.text.Layout.HYPHENATION_FREQUENCY_NONE)
             }
             val layout = builder.build()
-            if (layout.height <= availH) {
+            if (layout.height <= availH || size <= 11f) {
                 return Fitted(-layout.width / 2f, 0f, layout)
             }
             size *= 0.92f

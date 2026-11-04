@@ -54,12 +54,20 @@ class WebtoonPageHolder(
 
     private val scope = MainScope()
 
+    init {
+        MangaTranslateRuntime.addListener(tlRefreshListener)
+    }
+
     /** Page-translation overlay state (see [bindTranslation]). */
     private var tlJob: Job? = null
     private var tlPageKey: String? = null
     private var tlImgW: Int = 0
     private var tlImgH: Int = 0
     private var tlOverlay: TranslationOverlayView? = null
+    private var tlFile: java.io.File? = null
+
+    /** Re-runs the overlay when the translate switch flips (no scroll needed). */
+    private val tlRefreshListener: () -> Unit = { frame.post { refreshTranslation() } }
 
     /** Job for loading the page. */
     private var loadJob: Job? = null
@@ -273,6 +281,7 @@ class WebtoonPageHolder(
 
     /** Called when the view is recycled and added to the view pool. */
     fun recycle() {
+        MangaTranslateRuntime.removeListener(tlRefreshListener)
         loadJob?.cancel()
         loadJob = null
         autoJob?.cancel()
@@ -291,6 +300,7 @@ class WebtoonPageHolder(
         tlOverlay?.let { frame.removeView(it) }
         tlOverlay = null
         tlPageKey = pageKey
+        tlFile = file
         tlImgW = imgW
         tlImgH = imgH
         if (!MangaTranslateRuntime.settings.enabled || imgW <= 0 || imgH <= 0) return
@@ -311,8 +321,20 @@ class WebtoonPageHolder(
         tlJob?.cancel()
         tlJob = null
         tlPageKey = null
+        tlFile = null
         tlOverlay?.let { frame.removeView(it) }
         tlOverlay = null
+    }
+
+    /** Settings changed (toggle on/off): redo the open page in place. */
+    fun refreshTranslation() {
+        val key = tlPageKey
+        val f = tlFile
+        if (key == null || f == null || !f.exists() || tlImgW <= 0 || tlImgH <= 0) {
+            if (!MangaTranslateRuntime.settings.enabled) cancelTranslation()
+            return
+        }
+        bindTranslation(key, f, tlImgW, tlImgH)
     }
 
     /** Full-image pixel -> frame pixel, for the translation overlay. */

@@ -54,6 +54,10 @@ class PagerPageHolder(
     private var tlImgW: Int = 0
     private var tlImgH: Int = 0
     private var tlOverlay: TranslationOverlayView? = null
+    private var tlFile: java.io.File? = null
+
+    /** Re-runs the overlay when the translate switch flips (no scroll needed). */
+    private val tlRefreshListener: () -> Unit = { post { refreshTranslation() } }
 
     /** Job for loading the page. */
     private var loadJob: Job? = null
@@ -79,6 +83,8 @@ class PagerPageHolder(
             progressBar,
             FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT, Gravity.CENTER),
         )
+
+        MangaTranslateRuntime.addListener(tlRefreshListener)
 
         onImageLoaded = { onImageDecoded() }
         onImageLoadError = { setError() }
@@ -122,6 +128,7 @@ class PagerPageHolder(
 
     /** Called when the view is recycled by the pager. */
     fun onRecycled() {
+        MangaTranslateRuntime.removeListener(tlRefreshListener)
         loadJob?.cancel()
         loadJob = null
         autoJob?.cancel()
@@ -204,6 +211,7 @@ class PagerPageHolder(
         tlOverlay?.let { removeView(it) }
         tlOverlay = null
         tlPageKey = pageKey
+        tlFile = file
         tlImgW = imgW
         tlImgH = imgH
         if (!MangaTranslateRuntime.settings.enabled || imgW <= 0 || imgH <= 0) return
@@ -224,8 +232,20 @@ class PagerPageHolder(
         tlJob?.cancel()
         tlJob = null
         tlPageKey = null
+        tlFile = null
         tlOverlay?.let { removeView(it) }
         tlOverlay = null
+    }
+
+    /** Settings changed (toggle on/off): redo the open page in place. */
+    fun refreshTranslation() {
+        val key = tlPageKey
+        val f = tlFile
+        if (key == null || f == null || !f.exists() || tlImgW <= 0 || tlImgH <= 0) {
+            if (!MangaTranslateRuntime.settings.enabled) cancelTranslation()
+            return
+        }
+        bindTranslation(key, f, tlImgW, tlImgH)
     }
 
     /** Full-image pixel -> this view pixel, for the translation overlay. */

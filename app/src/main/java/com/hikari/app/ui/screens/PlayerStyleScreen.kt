@@ -785,21 +785,21 @@ private fun OverlayMock(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 MockIconButton(
                     PlayerElements.BACK, Icons.AutoMirrored.Filled.ArrowBack,
-                    style.resolved(PlayerElements.BACK), 30, ctx,
+                    style.resolved(PlayerElements.BACK), 26, ctx,
                 )
                 Spacer(Modifier.width(8.dp))
                 MockText(
                     PlayerElements.TITLE,
                     "Mirzapur: The Movie",
                     style.get(PlayerElements.TITLE),
-                    13,
+                    12,
                     ctx,
                     bold = true,
                     modifier = Modifier.weight(1f),
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(gap.dp)) {
                     for (c in PlayerControl.entries.filter { (layout[it] ?: it.defaultSlot) == PlayerControlSlot.TOP_BAR }) {
-                        MockPill(PlayerElements.pillKey(c), controlIcon(c), pill(c), ctx)
+                        MockPill(PlayerElements.pillKey(c), controlIcon(c), pill(c), ctx, compact = true)
                     }
                 }
             }

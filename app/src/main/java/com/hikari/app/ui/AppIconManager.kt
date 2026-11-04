@@ -56,7 +56,7 @@ val AppIconVariants: List<AppIconVariant> = listOf(
 object AppIconManager {
 
     /** The alias that ships enabled in the manifest. */
-    const val DEFAULT_KEY = "classic"
+    const val DEFAULT_KEY = "sakura"
 
     fun byKey(key: String): AppIconVariant =
         AppIconVariants.firstOrNull { it.key == key } ?: AppIconVariants.first()

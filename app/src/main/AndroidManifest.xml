@@ -195,12 +195,12 @@
             </intent-filter>
         </activity>
 
-        <!-- The official Hikari icon: the only alias enabled in the manifest,
+        <!-- The Sakura icon: the only alias enabled in the manifest,
              i.e. what a fresh install (and a factory-reset state) shows. -->
         <activity-alias
             android:name="com.hikari.app.icon.Classic"
             android:targetActivity=".MainActivity"
-            android:enabled="true"
+            android:enabled="false"
             android:exported="true"
             android:icon="@mipmap/ic_launcher"
             android:roundIcon="@mipmap/ic_launcher_round"
@@ -270,7 +270,7 @@
         <activity-alias
             android:name="com.hikari.app.icon.Sakura"
             android:targetActivity=".MainActivity"
-            android:enabled="false"
+            android:enabled="true"
             android:exported="true"
             android:icon="@mipmap/ic_launcher_v6"
             android:roundIcon="@mipmap/ic_launcher_v6"

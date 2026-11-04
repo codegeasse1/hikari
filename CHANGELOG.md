@@ -1,3 +1,11 @@
+## 0.12.32 (continuous build only)
+
+- Translate: no more tiny specks — 11px readable floor with bounded cover growth instead of shrinking to nothing, wider bubble grouping so split lines translate as one
+- Translation is instant now: flipping the switch translates the open page right away, turning it off reverts to the original immediately (no scrolling needed)
+- Customize preview top row slimmed (smaller back button, title and pills) to match the compact bottom row
+- Sakura is the default app icon now
+- Integrations hides the TMDB Enrichment + MDBList Ratings rows (still installed, still searchable): TMDB modules moved into Custom metadata tweaks below the Movies & series toggle as a floating window, Title language (TMDB) moved to Appearance & Theme below App language
+
 ## 0.12.31 (continuous build only)
 
 - Manga Translate bubbles stay inside the outline now: tight covers that never spill onto the art, stacked bubble lines translated as one sentence so the wording reads naturally, deeper shrink-to-fit so long lines always fit, cleaner OCR text before translating, and a pro-translator Gemini prompt
