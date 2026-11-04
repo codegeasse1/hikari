@@ -24,7 +24,7 @@ import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.Text
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.TextRecognizer
-import com.google.mlkit.vision.text.latin.LatinTextRecognizerOptions
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions
 import com.google.mlkit.vision.text.devanagari.DevanagariTextRecognizerOptions
 import com.google.mlkit.vision.text.japanese.JapaneseTextRecognizerOptions
@@ -256,7 +256,7 @@ object MangaTranslateRuntime {
     // ---- OCR ----
 
     private val latinRec: TextRecognizer by lazy {
-        TextRecognition.getClient(LatinTextRecognizerOptions.DEFAULT_OPTIONS)
+        TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
     }
     private val jaRec: TextRecognizer by lazy {
         TextRecognition.getClient(JapaneseTextRecognizerOptions.Builder().build())
