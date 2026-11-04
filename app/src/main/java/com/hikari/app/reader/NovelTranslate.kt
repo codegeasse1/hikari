@@ -50,7 +50,7 @@ object NovelTranslateRuntime {
     ): List<String>? {
         if (!st.enabled || paras.isEmpty()) return null
         val d = dir ?: return null
-        val hk = sha1("$pageKey|${st.orig.name}|${st.target.name}|${st.engine.name}|${st.geminiKey}")
+        val hk = sha1("$pageKey|${st.orig.name}|${st.target.name}|${st.engine.name}|${st.geminiKey}|v3")
         val cacheFile = File(d, "$hk.json")
         readCache(cacheFile, paras.size)?.let { return it }
         val def = inflight.getOrPut(hk) { scope.async { runTranslate(paras, st) } }
@@ -73,8 +73,12 @@ object NovelTranslateRuntime {
     ): List<String>? = withContext(Dispatchers.IO) {
         val out = ArrayList<String>(paras.size)
         var anyTranslated = false
-        // The manga batch call is one URL: keep chunks small enough for it.
-        for (chunk in paras.chunked(40)) {
+        // Google rides one GET URL per batch: long novel paras blew past the
+        // URL limit, so the whole chapter failed and the reader kept the
+        // original ("Google does nothing"). Small chunks for Google, big for
+        // the rest. Cache key v3 above drops the old all-original results.
+        val chunkSize = if (st.engine == MangaTranslateEngine.GOOGLE) 6 else 40
+        for (chunk in paras.chunked(chunkSize)) {
             val tr = try {
                 MangaTranslateRuntime.translateTexts(chunk, st)
             } catch (e: CancellationException) {

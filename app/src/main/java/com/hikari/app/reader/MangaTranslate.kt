@@ -236,7 +236,7 @@ object MangaTranslateRuntime {
     ): List<TLBox> {
         if (!st.enabled || imgW <= 0 || imgH <= 0) return emptyList()
         val d = dir ?: return emptyList()
-        val hk = sha1("$pageKey|${st.orig.name}|${st.target.name}|${st.engine.name}|${st.geminiKey}")
+        val hk = sha1("$pageKey|${st.orig.name}|${st.target.name}|${st.engine.name}|${st.geminiKey}|v3")
         val cacheFile = File(d, "$hk.json")
         readCache(cacheFile)?.let { return it }
         val def = inflight.getOrPut(hk) { scope.async { runTranslate(file, imgW, imgH, st) } }
@@ -272,19 +272,37 @@ object MangaTranslateRuntime {
         val grouped = groupBubbles(raw)
         if (grouped.isEmpty()) return@withContext emptyList()
         val texts = grouped.map { cleanOcr(it.text) }
-        val translated = try {
-            translateAll(texts, st)
+        // ALL-CAPS shouting ("LET GO! LET ME GO!") translates badly as-is:
+        // Google keeps words like GO in Latin. Sentence-case it for the
+        // engine; the equality check below still uses the original.
+        val sendTexts = texts.map { normalizeCaps(it) }
+        var translated = try {
+            translateAll(sendTexts, st)
 
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             return@withContext emptyList()
         }
+        // Second chance for boxes whose translation still leaks source-script
+        // words (e.g. Hindi "मैं GO वापस..."): retry that one box alone in
+        // sentence case. Whatever still leaks after the retry is dropped.
+        if (st.engine == MangaTranslateEngine.GOOGLE) {
+            val sl = if (st.orig == MangaOrigLang.AUTO) "auto" else st.orig.code
+            translated = translated.mapIndexed { i, tr ->
+                val t = tr?.trim().orEmpty()
+                if (t.isNotBlank() && hasLeftoverSource(t, texts.getOrNull(i).orEmpty(), st.target)) {
+                    gtxOne(normalizeCaps(texts.getOrNull(i).orEmpty()), sl, st.target.code)?.trim()
+                        ?.takeIf { it.isNotEmpty() } ?: tr
+                } else tr
+            }
+        }
         grouped.mapIndexedNotNull { i, b ->
             val raw = translated.getOrNull(i)?.trim().orEmpty()
             val t = cleanTrans(raw)
-            if (t.isBlank() || t == texts.getOrNull(i)) null
+            if (t.isBlank() || t.equals(texts.getOrNull(i), ignoreCase = true)) null
             else if (!hasTargetScript(t, st.target)) null
+            else if (hasLeftoverSource(t, texts.getOrNull(i).orEmpty(), st.target)) null
             else TLBox(b.l, b.t, b.r, b.b, b.text, t)
         }
     }
@@ -517,14 +535,21 @@ object MangaTranslateRuntime {
     /** True when [b] reads as the next line inside [a]'s bubble. */
     private fun sameBubble(a: RawBox, b: RawBox): Boolean {
         val lineH = min(a.b - a.t, b.b - b.t).coerceAtLeast(1f)
-        // A side-by-side bubble starts way above a's bottom; the next bubble
-        // starts way below it. A next line starts right around a's bottom.
-        if (b.t < a.b - lineH * 1.2f) return false
-        if (b.t > a.b + lineH * 1.6f) return false
+        // A side-by-side bubble starts way above a's bottom; a SEPARATE joint
+        // bubble starts below the outline gap. A next line inside the SAME
+        // bubble starts right around a's bottom, well aligned with it.
+        if (b.t < a.b - lineH * 0.6f) return false
+        if (b.t > a.b + lineH * 1.0f) return false
         val inter = min(a.r, b.r) - max(a.l, b.l)
         if (inter <= 0) return false
         val narrow = min(a.r - a.l, b.r - b.l).coerceAtLeast(1f)
-        return inter >= narrow * 0.3f
+        if (inter < narrow * 0.5f) return false
+        // Joint bubbles sit side-by-side / diagonally: their centers drift
+        // apart even when the x-ranges touch. Lines of one bubble share a center.
+        val ca = (a.l + a.r) / 2f
+        val cb = (b.l + b.r) / 2f
+        val wide = max(a.r - a.l, b.r - b.l).coerceAtLeast(1f)
+        return kotlin.math.abs(cb - ca) <= wide * 0.6f
     }
 
     /** OCR joins lines with odd spacing — normalize before translating. */
@@ -533,6 +558,43 @@ object MangaTranslateRuntime {
             .replace(Regex("\\s+([,.!?;:%)\\]])"), "$1")
             .replace(Regex("([(\\[])\\s+"), "$1")
             .trim()
+    }
+
+    /**
+     * Shout-case ("LET GO! LET ME GO!") makes Google echo words back in
+     * Latin ("मैं GO वापस..."). When 70%+ of the letters are uppercase,
+     * send sentence case instead — same words, far fuller translation.
+     */
+    private fun normalizeCaps(t: String): String {
+        var letters = 0; var upper = 0
+        for (ch in t) {
+            if (ch.isLetter()) {
+                letters++
+                if (ch.isUpperCase()) upper++
+            }
+        }
+        if (letters < 3 || upper * 10 < letters * 7) return t
+        return t.lowercase().replace(Regex("(^|[.!?\"“'\\(\\[]\\s*)([a-z])")) {
+            it.groupValues[1] + it.groupValues[2].uppercase()
+        })
+    }
+
+    /**
+     * True when the translation still carries source-script words (e.g. a
+     * Latin "GO" inside a Hindi reply that also matches the source box).
+     * Single letters and numbers never count — only words of 2+ letters.
+     */
+    private fun hasLeftoverSource(trans: String, src: String, target: MangaTargetLang): Boolean {
+        val needLatinFree = when (target) {
+            MangaTargetLang.HI, MangaTargetLang.BN,
+            MangaTargetLang.AR, MangaTargetLang.RU -> true
+            else -> false
+        }
+        if (!needLatinFree) return false
+        val srcWords = Regex("[A-Za-z]{2,}").findAll(src).map { it.value.lowercase() }.toSet()
+        if (srcWords.isEmpty()) return false
+        val transWords = Regex("[A-Za-z]{2,}").findAll(trans).map { it.value.lowercase() }.toSet()
+        return transWords.any { it in srcWords }
     }
 
     // ---- Translation ----
@@ -616,23 +678,29 @@ object MangaTranslateRuntime {
     private suspend fun translateGoogle(texts: List<String>, st: MangaTranslateSettings): List<String?> =
         withContext(Dispatchers.IO) {
             val sl = if (st.orig == MangaOrigLang.AUTO) "auto" else st.orig.code
-            val nonBlank = texts.mapIndexedNotNull { i, t -> if (t.isBlank()) null else i to t }
+            // Sentence-case shouty lines before sending (see normalizeCaps):
+            // novel paras ride this same path and shout too.
+            val send = texts.map { if (it.isBlank()) it else normalizeCaps(it) }
+            val nonBlank = send.mapIndexedNotNull { i, t -> if (t.isBlank()) null else i to t }
             if (nonBlank.isEmpty()) return@withContext texts.map { null }
             // One batched call so the lines are translated with each other as
             // context, like speech in the same scene — then mapped back by number.
+            // Long batches are split so the GET URL never blows past the limit
+            // (the novel reader's 40-para chunks did exactly that: batch 414s,
+            // every per-para retry too long as well, so Google "did nothing").
             val numbered = nonBlank.joinToString("\n") { (i, t) -> "${i + 1}. ${t.replace('\n', ' ')}" }
-            val mapped = parseNumbered(gtxOne(numbered, sl, st.target.code), nonBlank.size)
+            val mapped = parseNumbered(gtxChunked(numbered, sl, st.target.code), nonBlank.size)
             if (mapped != null) {
                 val result: MutableList<String?> = texts.map { null }.toMutableList()
                 for ((i, _) in nonBlank) result[i] = mapped[i]
                 // Lines the batch dropped get one call each.
                 for ((i, t) in nonBlank) {
-                    if (result[i] == null) result[i] = gtxOne(t, sl, st.target.code)
+                    if (result[i] == null) result[i] = gtxChunked(t, sl, st.target.code)
                 }
                 return@withContext result
             }
             // Fallback: one call per line.
-            texts.map { t -> if (t.isBlank()) null else gtxOne(t, sl, st.target.code) }
+            texts.mapIndexed { i, t -> if (t.isBlank()) null else gtxChunked(send[i], sl, st.target.code) }
         }
 
     /** "1. ..." numbered reply -> index map. Null when too few lines survived. */
@@ -664,6 +732,47 @@ object MangaTranslateRuntime {
         } catch (e: Exception) {
             null
         }
+    }
+
+    /**
+     * Long text (novel paragraphs, big batches) blows past the GET URL
+     * limit and Google answers 414 — the "Google does nothing" bug. Split
+     * on sentence boundaries into ~1200-char pieces, translate each, join.
+     */
+    private fun gtxChunked(text: String, sl: String, tl: String): String? {
+        if (text.length <= 1500) return gtxOne(text, sl, tl)
+        val parts = ArrayList<String>()
+        val sb = StringBuilder()
+        val sentences = text.split(Regex("(?<=[.!?।。…])\\s+"))
+        for (s in sentences) {
+            if (sb.length + s.length + 1 > 1200 && sb.isNotEmpty()) {
+                parts.add(sb.toString())
+                sb.clear()
+            }
+            if (s.length > 1200) {
+                if (sb.isNotEmpty()) {
+                    parts.add(sb.toString())
+                    sb.clear()
+                }
+                var k = 0
+                while (k < s.length) {
+                    parts.add(s.substring(k, min(k + 1200, s.length)))
+                    k += 1200
+                }
+            } else {
+                if (sb.isNotEmpty()) sb.append(' ')
+                sb.append(s)
+            }
+        }
+        if (sb.isNotEmpty()) parts.add(sb.toString())
+        if (parts.isEmpty()) return gtxOne(text, sl, tl)
+        val out = StringBuilder()
+        for (p in parts) {
+            val tr = gtxOne(p, sl, tl) ?: return null
+            if (out.isNotEmpty()) out.append(' ')
+            out.append(tr)
+        }
+        return out.toString().trim().ifEmpty { null }
     }
 
     private suspend fun translateGemini(texts: List<String>, st: MangaTranslateSettings): List<String?> =
@@ -858,34 +967,41 @@ class TranslationOverlayView @JvmOverloads constructor(
             val w = r - l; val h = btm - t
             if (w < 8 || h < 8) continue
             if (r < 0 || l > width || btm < 0 || t > height) continue
-            // Tight RECTANGLE over every source glyph (never smaller): anything
-            // less leaves the old English/Chinese peeking at the corners (the
-            // inscribed oval did exactly that). Corners are softly rounded and
-            // growth is capped, so it still sits inside the bubble.
-            val padX = 4f
-            val padY = 4f
-            val el = l - padX; val et = t - padY
-            val er = r + padX; val eb = btm + padY
+            // Same bubble format, grown to fit: first a white RECT over the
+            // source glyphs (proportional pad, never smaller — this is what
+            // hides the old lettering), then the translation sits in an OVAL
+            // bubble on top, grown as needed. Square corners are gone; the
+            // joint-bubble case stays two ovals because grouping no longer
+            // merges separate bubbles (see sameBubble).
+            val pad = max(10f, min(w, h) * 0.10f)
+            val el = l - pad; val et = t - pad
+            val er = r + pad; val eb = btm + pad
+            // Hide pass: covers every source pixel plus margin.
+            canvas.drawRect(el, et, er, eb, boxPaint)
             val ew = er - el; val eh = eb - et
             if (ew < 12 || eh < 12) continue
-            // Floor-size text can still be taller than a thin source box: grow
-            // the cover (bounded, centered) instead of shrinking the words to
-            // nothing. Two passes — refit into the grown box so the words use it.
-            var boxW = ew
-            var boxH = eh
+            // Floor-size text can still be taller/wider than a thin source
+            // box: grow the bubble (bounded, centered) instead of shrinking
+            // the words to nothing. Two passes — refit into the grown box.
+            var boxW = ew * 1.12f
+            var boxH = eh * 1.12f
             var f = fit(b.trans, boxW, boxH) ?: continue
-            val needH = f.layout.height + 8f
+            val needH = f.layout.height / 0.92f + 10f
             if (needH > boxH) {
-                boxH = min(needH, eh * 1.35f)
+                boxH = min(needH, eh * 1.9f)
                 fit(b.trans, boxW, boxH)?.let { f = it }
             }
+            if (f.layout.width > boxW * 0.94f) {
+                boxW = min(f.layout.width / 0.94f, ew * 1.6f)
+                fit(b.trans, boxW, boxH)?.let { f = it }
+            }
+            val cx = (el + er) / 2f
             val cy = (et + eb) / 2f
-            val rad = min(boxW, boxH) * 0.30f
-            canvas.drawRoundRect(RectF(el, cy - boxH / 2f, er, cy + boxH / 2f), rad, rad, boxPaint)
+            canvas.drawOval(RectF(cx - boxW / 2f, cy - boxH / 2f, cx + boxW / 2f, cy + boxH / 2f), boxPaint)
             val key = "${(boxW / 6).toInt()}x${(boxH / 6).toInt()}|${b.trans.hashCode()}"
             fitted[index] = key to f
             canvas.save()
-            canvas.translate(el + boxW / 2f, cy - f.layout.height / 2f)
+            canvas.translate(cx - f.layout.width / 2f, cy - f.layout.height / 2f)
             f.layout.draw(canvas)
             canvas.restore()
         }

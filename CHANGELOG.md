@@ -1,3 +1,10 @@
+## 0.12.35 (continuous build only)
+
+- Manga Translate bubbles keep their oval bubble shape and grow to fit long Hindi text (joint bubbles stay two bubbles, no more square block); cover hides every source word with margin to spare
+- Manga Translate misses fixed: shout-case lines (LET GO! LET ME GO!) are sentence-cased for the engine with a retry pass, so nothing stays English and no stray GO leaks into Hindi — old partial caches are invalidated
+- Novel Translate rows open scrollable pickers (Original language / Translate to / Engine) instead of tapping through one by one
+- Novel Google Translate fixed: long chapters are split into small URL-safe chunks, so Google translates instead of silently keeping the original
+
 ## 0.12.34 (continuous build only)
 
 - Manga Translate cover reworked: tight rectangle over the old words (nothing peeks through anymore), softly rounded + smaller growth so it still sits inside the bubble; short Hindi labels stay big

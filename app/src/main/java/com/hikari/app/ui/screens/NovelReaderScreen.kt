@@ -136,6 +136,9 @@ fun NovelReaderScreen(
     var highlights by remember { mutableStateOf<List<NovelHighlight>>(emptyList()) }
     // Translator (floating button): same engines + languages as manga text.
     var showTranslate by remember { mutableStateOf(false) }
+    var showOrigPicker by remember { mutableStateOf(false) }
+    var showTargetPicker by remember { mutableStateOf(false) }
+    var showEnginePicker by remember { mutableStateOf(false) }
     var novelTranslate by remember { mutableStateOf(MangaTranslateSettings.DEFAULTS) }
     var novelSeries by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var novelOnly by remember { mutableStateOf(false) }
@@ -736,29 +739,32 @@ fun NovelReaderScreen(
                             Text(if (novelEffective.enabled) "On" else "Off")
                         }
                     }
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { showOrigPicker = true },
+                    ) {
                         Text("Original language", modifier = Modifier.weight(1f))
-                        TextButton(onClick = {
-                            val all = MangaOrigLang.entries
-                            val nx = all[(all.indexOf(novelEffective.orig) + 1) % all.size]
-                            saveNovel(novelEffective.copy(orig = nx))
-                        }) { Text(novelEffective.orig.label) }
+                        TextButton(onClick = { showOrigPicker = true }) { Text(novelEffective.orig.label) }
                     }
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { showTargetPicker = true },
+                    ) {
                         Text("Translate to", modifier = Modifier.weight(1f))
-                        TextButton(onClick = {
-                            val all = MangaTargetLang.entries
-                            val nx = all[(all.indexOf(novelEffective.target) + 1) % all.size]
-                            saveNovel(novelEffective.copy(target = nx))
-                        }) { Text(novelEffective.target.label) }
+                        TextButton(onClick = { showTargetPicker = true }) { Text(novelEffective.target.label) }
                     }
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { showEnginePicker = true },
+                    ) {
                         Text("Engine", modifier = Modifier.weight(1f))
-                        TextButton(onClick = {
-                            val all = MangaTranslateEngine.entries
-                            val nx = all[(all.indexOf(novelEffective.engine) + 1) % all.size]
-                            saveNovel(novelEffective.copy(engine = nx))
-                        }) { Text(novelEffective.engine.title) }
+                        TextButton(onClick = { showEnginePicker = true }) { Text(novelEffective.engine.title) }
                     }
                     if (novelEffective.engine == MangaTranslateEngine.GEMINI) {
                         OutlinedTextField(
@@ -780,6 +786,110 @@ fun NovelReaderScreen(
                     }
                     if (translating) Text("Translating...", style = MaterialTheme.typography.labelSmall, color = dim)
                     TextButton(onClick = { showTranslate = false }) { Text("Close") }
+                }
+            },
+        )
+    }
+
+    if (showOrigPicker) {
+        AlertDialog(
+            onDismissRequest = { showOrigPicker = false },
+            confirmButton = {},
+            title = { Text("Original language") },
+            text = {
+                LazyColumn(modifier = Modifier.fillMaxWidth()) {
+                    items(MangaOrigLang.entries.size) { i ->
+                        val o = MangaOrigLang.entries[i]
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    saveNovel(novelEffective.copy(orig = o))
+                                    showOrigPicker = false
+                                }
+                                .padding(vertical = 10.dp, horizontal = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = o.label,
+                                color = if (o == novelEffective.orig) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurface,
+                                fontWeight = if (o == novelEffective.orig) FontWeight.Bold else FontWeight.Normal,
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                    }
+                }
+            },
+        )
+    }
+
+    if (showTargetPicker) {
+        AlertDialog(
+            onDismissRequest = { showTargetPicker = false },
+            confirmButton = {},
+            title = { Text("Translate to") },
+            text = {
+                LazyColumn(modifier = Modifier.fillMaxWidth()) {
+                    items(MangaTargetLang.entries.size) { i ->
+                        val o = MangaTargetLang.entries[i]
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    saveNovel(novelEffective.copy(target = o))
+                                    showTargetPicker = false
+                                }
+                                .padding(vertical = 10.dp, horizontal = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = o.label,
+                                color = if (o == novelEffective.target) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurface,
+                                fontWeight = if (o == novelEffective.target) FontWeight.Bold else FontWeight.Normal,
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                    }
+                }
+            },
+        )
+    }
+
+    if (showEnginePicker) {
+        AlertDialog(
+            onDismissRequest = { showEnginePicker = false },
+            confirmButton = {},
+            title = { Text("Engine") },
+            text = {
+                Column {
+                    MangaTranslateEngine.entries.forEach { o ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    saveNovel(novelEffective.copy(engine = o))
+                                    showEnginePicker = false
+                                }
+                                .padding(vertical = 10.dp, horizontal = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = o.title,
+                                    color = if (o == novelEffective.engine) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.onSurface,
+                                    fontWeight = if (o == novelEffective.engine) FontWeight.Bold else FontWeight.Normal,
+                                )
+                                Text(
+                                    text = o.subtitle,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
                 }
             },
         )
