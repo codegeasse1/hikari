@@ -57,7 +57,7 @@ class PagerPageHolder(
     private var tlFile: java.io.File? = null
 
     /** Re-runs the overlay when the translate switch flips (no scroll needed). */
-    private val tlRefreshListener: () -> Unit = { post { refreshTranslation() } }
+    private val tlRefreshListener: () -> Unit = { post { refreshTranslation(); postDelayed({ if (tlOverlay == null && MangaTranslateRuntime.settings.enabled) refreshTranslation() }, 600) } } }
 
     /** Job for loading the page. */
     private var loadJob: Job? = null

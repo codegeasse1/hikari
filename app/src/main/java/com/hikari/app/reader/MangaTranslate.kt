@@ -822,10 +822,11 @@ class TranslationOverlayView @JvmOverloads constructor(
             val w = r - l; val h = btm - t
             if (w < 8 || h < 8) continue
             if (r < 0 || l > width || btm < 0 || t > height) continue
-            // Manga-style bubble: a solid white cover exactly over the source
-            // glyphs (it must never spill past the bubble outline onto the art),
-            // then the translation grown to fill the bubble the way the
-            // original lettering did.
+            // Manga-style bubble: a solid white OVAL cover over the source
+            // glyphs (an oval's corners stay inside the bubble — a rectangle's
+            // square corners poke out past the outline onto the art), then the
+            // translation grown to fill the bubble the way the original
+            // lettering did.
             val padX = 3f
             val padY = 3f
             val el = l - padX; val et = t - padY
@@ -840,11 +841,11 @@ class TranslationOverlayView @JvmOverloads constructor(
             var f = fit(b.trans, boxW, boxH) ?: continue
             val needH = f.layout.height + 8f
             if (needH > boxH) {
-                boxH = min(needH, eh * 2.2f)
+                boxH = min(needH, eh * 1.4f)
                 fit(b.trans, boxW, boxH)?.let { f = it }
             }
             val cy = (et + eb) / 2f
-            canvas.drawRoundRect(RectF(el, cy - boxH / 2f, er, cy + boxH / 2f), 8f, 8f, boxPaint)
+            canvas.drawOval(RectF(el, cy - boxH / 2f, er, cy + boxH / 2f), boxPaint)
             val key = "${(boxW / 6).toInt()}x${(boxH / 6).toInt()}|${b.trans.hashCode()}"
             fitted[index] = key to f
             canvas.save()
@@ -854,21 +855,41 @@ class TranslationOverlayView @JvmOverloads constructor(
         }
     }
 
+    /** True when most of the text is Devanagari (Hindi): taller glyph metrics. */
+    private fun isDevanagari(t: String): Boolean {
+        var dev = 0
+        var total = 0
+        for (ch in t) {
+            if (ch.isWhitespace()) continue
+            total++
+            if (ch in '\u0900'..'\u097F') dev++
+        }
+        return total > 0 && dev * 2 >= total
+    }
+
     /**
      * Grow-to-fill centered layout for one bubble: start big, shrink until it
-     * fits. The floor is an always-readable 11px — if even that overflows the
-     * source box, the caller grows the white cover instead (see onDraw), so
-     * text is never shrunk to an unreadable speck.
+     * fits — but short labels ("THIS IS.."-class, one or two Hindi words) keep
+     * a high floor so they render BIG like the original lettering instead of a
+     * tiny speck, and the final pass always returns a layout (the caller grows
+     * the oval cover when even the floor overflows) instead of dropping the box.
      */
     private fun fit(text: String, w: Float, h: Float): Fitted? {
         if (text.isBlank() || w <= 14 || h <= 14) return null
-        var size = min(h * 0.50f, w * 0.28f).coerceIn(9f, 120f).coerceAtLeast(11f)
-        val availW = (w * 0.96f).coerceAtLeast(8f)
-        val availH = (h * 0.94f).coerceAtLeast(8f)
+        val short = text.length <= 26
+        val floor = when {
+            short -> max(13f, min(w, h) * 0.24f).coerceAtMost(44f)
+            isDevanagari(text) -> 12f
+            else -> 11f
+        }
+        var size = min(h * 0.55f, w * 0.30f).coerceIn(floor, 140f)
+        val availW = (w * 0.94f).coerceAtLeast(8f)
+        val availH = (h * 0.92f).coerceAtLeast(8f)
         // Fresh paint per layout: StaticLayout draws with its paint live, so a
         // shared paint resized for the next box would corrupt this one.
         val paint = TextPaint(textPaint)
-        while (size >= 8f) {
+        var last: StaticLayout? = null
+        while (true) {
             paint.textSize = size
             val builder = StaticLayout.Builder.obtain(text, 0, text.length, paint, availW.toInt())
                 .setAlignment(android.text.Layout.Alignment.ALIGN_CENTER)
@@ -878,11 +899,15 @@ class TranslationOverlayView @JvmOverloads constructor(
                 builder.setHyphenationFrequency(android.text.Layout.HYPHENATION_FREQUENCY_NONE)
             }
             val layout = builder.build()
-            if (layout.height <= availH || size <= 11f) {
+            last = layout
+            if (layout.height <= availH) {
                 return Fitted(-layout.width / 2f, 0f, layout)
             }
-            size *= 0.92f
+            if (size <= floor + 0.5f) break
+            size = max(floor, size * 0.90f)
         }
-        return null
+        // Even the floor overflows: hand back the floor layout and let the
+        // caller grow the cover (bounded, oval) instead of shrinking to dust.
+        return last?.let { Fitted(-it.width / 2f, 0f, it) }
     }
 }

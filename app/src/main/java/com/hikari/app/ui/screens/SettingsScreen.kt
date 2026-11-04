@@ -4470,7 +4470,14 @@ private fun TmdbModulesCard(app: HikariApp) {
 @Composable
 private fun TmdbModulesDialog(app: HikariApp, onDismiss: () -> Unit) {
     Dialog(onDismissRequest = onDismiss) {
-        GlassCard(Modifier.fillMaxWidth()) {
+        // Opaque surface, not translucent glass: the settings list behind
+        // used to show through and double every line of text.
+        androidx.compose.material3.Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(20.dp),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 6.dp,
+        ) {
             Column(
                 Modifier
                     .padding(16.dp)

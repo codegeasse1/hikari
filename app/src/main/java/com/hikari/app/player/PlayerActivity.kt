@@ -112,6 +112,7 @@ import com.hikari.app.data.ServerMeta
 import com.hikari.app.data.WatchProgress
 import com.hikari.app.data.WatchStats
 import com.hikari.app.download.DownloadEngine
+import com.hikari.app.player.SeekBridge
 import com.hikari.app.download.DownloadKind
 import com.hikari.app.download.DownloadStatus
 import com.hikari.app.download.DownloadTask
@@ -13696,7 +13697,7 @@ class PlayerActivity : ComponentActivity() {
         // error). Subtitles are fetched and validated in the background and
         // only added if their content is actually a subtitle.
         val mime = mainMimeOf(src)
-        val itemBuilder = MediaItem.Builder().setUri(src.url)
+        val itemBuilder = MediaItem.Builder().setUri(bridgedPlayUri(src, sourceHeaders, ua))
         if (mime != null) itemBuilder.setMimeType(mime)
         // A subtitle the user added themselves is attached EAGERLY, unlike the
         // provider's (which are deferred and validated in the background because
@@ -15470,6 +15471,26 @@ class PlayerActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * HTTP(S) progressive file behind a host that ignores Range (the "skip
+     * restarts from 00:00" servers): ExoPlayer asks for bytes N- and the host
+     * answers from byte 0, so every seek replays from the start. Route those
+     * through the localhost range bridge, which downloads once into a temp
+     * file (deleted when the player closes, so app size never grows) and
+     * answers ExoPlayer's ranges from it — skip/scrub then behave normally.
+     * HLS/DASH, torrents, Telegram files, DRM and loopback URLs are untouched.
+     */
+    private fun bridgedPlayUri(src: PlayerSource, headers: Map<String, String>, ua: String): String {
+        if (src.drm != null || src.isTorrent) return src.url
+        if (src.isM3u8 || src.isMpd) return src.url
+        val u = src.url
+        if (!u.startsWith("http")) return u
+        if (isLoopbackHost(u) || u.startsWith("hikari-td:")) return u
+        val low = u.lowercase()
+        if (low.contains(".m3u8") || low.contains(".mpd") || low.contains("master.txt")) return u
+        return SeekBridge.open(u, headers, ua, cacheDir) ?: u
+    }
+
     /** The main-media mime for [src] (HLS/DASH), or null to let media3 sniff the
      *  container itself. */
     private fun mainMimeOf(src: PlayerSource): String? = when {
@@ -15488,7 +15509,7 @@ class PlayerActivity : ComponentActivity() {
         configs: List<MediaItem.SubtitleConfiguration>,
     ): MediaItem {
         val all = if (userSubs.isEmpty()) configs else configs + userSubConfigs()
-        val item = MediaItem.Builder().setUri(src.url).setSubtitleConfigurations(all)
+        val item = MediaItem.Builder().setUri(SeekBridge.current(src.url) ?: src.url).setSubtitleConfigurations(all)
         mainMimeOf(src)?.let { item.setMimeType(it) }
         return item.build()
     }
@@ -17810,6 +17831,7 @@ class PlayerActivity : ComponentActivity() {
             p.release()
         }
         player = null
+        SeekBridge.stop()
         // Last Telegram file's local bytes go with the session (see [Td.forgetPlayedFile]).
         if (lastPlayedUrl.isNotBlank()) {
             releaseTelegramFile(lastPlayedUrl)

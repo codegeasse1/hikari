@@ -1,3 +1,10 @@
+## 0.12.33 (continuous build only)
+
+- Seek/skip fixed on servers that restarted from 00:00: those links now play through a local range bridge (downloads once to a temp file the player deletes on close, so app size doesn't grow)
+- Manga Translate: short bubbles (THIS IS..-type) render big like the original instead of a tiny speck; long translations stay inside the bubble — oval cover, no square corners spilling onto the art
+- Translate switch applies to the open page instantly both ways, no scroll needed
+- TMDB modules window is solid now, no overlapping text behind it
+
 ## 0.12.32 (continuous build only)
 
 - Translate: no more tiny specks — 11px readable floor with bounded cover growth instead of shrinking to nothing, wider bubble grouping so split lines translate as one

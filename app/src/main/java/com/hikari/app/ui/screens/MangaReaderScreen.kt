@@ -423,6 +423,11 @@ fun MangaReaderScreen(
     }
 
     fun saveTranslate(next: MangaTranslateSettings) {
+        // Synchronous: holders rebind on this write instantly (the
+        // LaunchedEffect below fires a frame later — after reloadPages already
+        // rebound them against the STALE value, which is why the open page
+        // waited for a scroll in both directions).
+        MangaTranslateRuntime.settings = next
         if (seriesOverrideEnabled) saveTranslateSeries(translateSeries + (key to next.toJson().toString()))
         else {
             translateGlobal = next

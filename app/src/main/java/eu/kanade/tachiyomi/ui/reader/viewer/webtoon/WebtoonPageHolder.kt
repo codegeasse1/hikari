@@ -63,7 +63,7 @@ class WebtoonPageHolder(
     private var tlFile: java.io.File? = null
 
     /** Re-runs the overlay when the translate switch flips (no scroll needed). */
-    private val tlRefreshListener: () -> Unit = { frame.post { refreshTranslation() } }
+    private val tlRefreshListener: () -> Unit = { frame.post { refreshTranslation(); frame.postDelayed({ if (tlOverlay == null && MangaTranslateRuntime.settings.enabled) refreshTranslation() }, 600) } } }
 
     init {
         MangaTranslateRuntime.addListener(tlRefreshListener)
