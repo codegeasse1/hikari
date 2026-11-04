@@ -129,6 +129,13 @@ fun LibraryScreen(nav: NavHostController, embedded: Boolean = false) {
         }
     }
     val mangaCount = remember(mangaRev) { com.hikari.app.manga.MangaStore.library().size }
+    // Labels are read HERE (composable position): tr() cannot run inside a
+    // LazyRow/LazyVerticalGrid item scope.
+    val labelAll = tr("All")
+    val labelAnime = tr("Anime")
+    val labelMovies = tr("Movies")
+    val labelSeries = tr("Series")
+    val labelManga = tr("Manga")
     val shown = remember(saved, activeCategory, filed, activeType) {
         val id = activeCategory
         val base = if (id == null) saved else saved.filter { filed[it.uniqueId].orEmpty().contains(id) }
@@ -268,16 +275,16 @@ fun LibraryScreen(nav: NavHostController, embedded: Boolean = false) {
                 ) {
                     item(key = "type-all") {
                         LibraryChip(
-                            label = tr("All"),
+                            label = labelAll,
                             count = saved.size + mangaCount,
                             selected = activeType == null,
                         ) { activeType = null }
                     }
                     val types = listOf(
-                        Triple("anime", tr("Anime"), saved.count { typeOf(it) == "anime" }),
-                        Triple("movie", tr("Movies"), saved.count { typeOf(it) == "movie" }),
-                        Triple("series", tr("Series"), saved.count { typeOf(it) == "series" }),
-                        Triple("manga", tr("Manga"), mangaCount),
+                        Triple("anime", labelAnime, saved.count { typeOf(it) == "anime" }),
+                        Triple("movie", labelMovies, saved.count { typeOf(it) == "movie" }),
+                        Triple("series", labelSeries, saved.count { typeOf(it) == "series" }),
+                        Triple("manga", labelManga, mangaCount),
                     )
                     items(types, key = { ti -> "type-" + ti.first }) { t ->
                         LibraryChip(
