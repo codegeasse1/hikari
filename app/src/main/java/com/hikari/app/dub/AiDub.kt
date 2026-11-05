@@ -404,7 +404,7 @@ class AiDubManager(private val appCtx: Context) {
                     val dataDir = if (espeakDir.isDirectory) espeakDir.absolutePath
                     else found.dir.absolutePath
                     piper = OfflineTts(
-                        getOfflineTtsConfig(
+                        config = getOfflineTtsConfig(
                             modelDir = found.dir.absolutePath,
                             modelName = found.onnx,
                             acousticModelName = "",

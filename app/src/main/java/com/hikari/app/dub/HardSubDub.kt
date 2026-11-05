@@ -3,11 +3,11 @@ package com.hikari.app.dub
 import android.app.Activity
 import android.graphics.Bitmap
 import android.graphics.Color
-import android.graphics.PixelCopy
 import android.os.Handler
 import android.os.Looper
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.PixelCopy
 import android.view.PixelCopy.OnPixelCopyFinishedListener
 import android.view.SurfaceView
 import android.view.TextureView
@@ -59,10 +59,10 @@ class HardSubDub(
     private var emptyStreak = 0
 
     private val latin by lazy {
-        TextRecognition.getClient(TextRecognizerOptions.DEFAULT)
+        TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
     }
     private val chinese by lazy {
-        TextRecognition.getClient(ChineseTextRecognizerOptions.DEFAULT)
+        TextRecognition.getClient(ChineseTextRecognizerOptions.Builder().build()_OPTIONS)
     }
 
     fun onPlayingChanged(playing: Boolean) {
