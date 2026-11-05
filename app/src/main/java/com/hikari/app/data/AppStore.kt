@@ -2614,12 +2614,20 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
      * old [setHomeProvider] preference is kept in step so a build that predates
      * multi-select (and the Search tab's scope, which reads the same string)
      * still agrees with what Home shows.
+     *
+     * Both keys go down in ONE store transaction: two separate writes let the
+     * pick watcher observe multi=empty with the single key still holding the
+     * old provider and revert the "All Plugins" tap back to it — the first
+     * All tap after a single pick always lost, the second one sticking only
+     * because the multi write was then a no-op.
      */
     suspend fun setHomeProviders(ids: Set<String>) {
         val list = ids.filter { it.isNotBlank() }.toList()
-        write("HOME_PROVIDERS") { it[K.HOME_PROVIDERS] = encodeStringList(list) }
-        if (list.size <= 1) {
-            write("HOME_PROVIDER") { it[K.HOME_PROVIDER] = list.firstOrNull().orEmpty() }
+        write("HOME_PROVIDERS") {
+            it[K.HOME_PROVIDERS] = encodeStringList(list)
+            if (list.size <= 1) {
+                it[K.HOME_PROVIDER] = list.firstOrNull().orEmpty()
+            }
         }
     }
 

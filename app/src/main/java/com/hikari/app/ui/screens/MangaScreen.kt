@@ -746,38 +746,9 @@ fun MangaScreen(nav: NavHostController, initialQuery: String = "", initialGenre:
             }
         }
 
-        if (library.isNotEmpty()) {
-            item(key = "manga-lib-head", span = { GridItemSpan(maxLineSpan) }) {
-                MangaSection(
-                    title = tr("In your library"),
-                    count = library.size,
-                ) { Spacer(Modifier.height(4.dp)) }
-            }
-            items(library, key = { "lib-" + it.key }) { rec ->
-                MangaPosterCard(
-                    posterUrl = rec.posterUrl,
-                    title = rec.title,
-                    subtitle = rec.providerName,
-                    providerId = rec.providerId,
-                    badge = {
-                        val p = MangaStore.progressFor(rec.key)
-                        if (p != null && p.pages > 0) {
-                            Text(
-                                p.pageLabel,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.primary,
-                            )
-                        }
-                    },
-                    onClick = {
-                        Routes.safeNavigate(
-                            nav,
-                            Routes.mangaDetail(rec.providerId, rec.url, rec.title, rec.posterUrl),
-                        )
-                    },
-                )
-            }
-        }
+        // NOTE: no "In your library" row here on purpose. Followed manga
+        // already live under My Stuff → Library → Manga; duplicating them
+        // above the engines only pushed Browse (and its engine search) down.
 
         item(key = "manga-browse", span = { GridItemSpan(maxLineSpan) }) {
             MangaSection(title = tr("Browse"), count = engines.size) {

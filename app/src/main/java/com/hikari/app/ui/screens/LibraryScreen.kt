@@ -30,9 +30,11 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Category
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.LibraryAdd
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -684,6 +686,10 @@ fun TrackerShelfScreen(nav: NavHostController, source: String, shelfKey: String,
     var error by remember { mutableStateOf<String?>(null) }
     // tr() is @Composable: read every string HERE, never inside LaunchedEffect.
     val shelfNotFound = tr("Shelf not found.")
+    // Instant find inside a big shelf (80+ synced manga): narrows the grid
+    // as you type, so the title is one word away instead of a long scroll.
+    var query by remember { mutableStateOf("") }
+    val searchPlaceholder = tr("Search this shelf…")
     LaunchedEffect(source, shelfKey) {
         loading = true
         error = null
@@ -731,6 +737,33 @@ fun TrackerShelfScreen(nav: NavHostController, source: String, shelfKey: String,
                 )
             }
         }
+        OutlinedTextField(
+            value = query,
+            onValueChange = { query = it },
+            singleLine = true,
+            textStyle = MaterialTheme.typography.bodyMedium,
+            placeholder = {
+                Text(
+                    searchPlaceholder,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            },
+            leadingIcon = {
+                Icon(
+                    Icons.Filled.Search,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp),
+                )
+            },
+            shape = RoundedCornerShape(10.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 4.dp),
+        )
+        val shown = if (query.isBlank()) items
+        else items.filter { it.title.contains(query, ignoreCase = true) }
         when {
             loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text(tr("Loading…"), style = MaterialTheme.typography.bodyMedium)
@@ -744,6 +777,12 @@ fun TrackerShelfScreen(nav: NavHostController, source: String, shelfKey: String,
             items.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text(tr("Nothing here."), style = MaterialTheme.typography.bodyMedium)
             }
+            shown.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text(
+                    I18n.t("No title matches \"%s\".").replace("%s", query),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
             else -> LazyVerticalGrid(
                 columns = GridCells.Fixed(3),
                 modifier = Modifier.fillMaxSize(),
@@ -754,7 +793,7 @@ fun TrackerShelfScreen(nav: NavHostController, source: String, shelfKey: String,
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                items(items, key = { it.uniqueId }) { item ->
+                items(shown, key = { it.uniqueId }) { item ->
                     Column(Modifier.clickable(onClick = { openTrackerItem(nav, item) })) {
                         PosterArt(
                             model = if (tvLib) Artwork.backdropModel(item) else Artwork.model(item),

@@ -2139,7 +2139,11 @@ internal fun ProviderPickerSheet(
                     }
                     Spacer(Modifier.width(8.dp))
                     FilledTonalButton(
-                        onClick = { if (multi) working = emptyList() else onPick(null) },
+                        // "All Plugins" is an action, not a working-set edit:
+                        // in multi mode it applies All at once (Done), instead
+                        // of just clearing the ticks and stranding the user on
+                        // a sheet whose Close would then save nothing.
+                        onClick = { if (multi) onDone(emptyList()) else onPick(null) },
                         shape = RoundedCornerShape(10.dp),
                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                     ) {

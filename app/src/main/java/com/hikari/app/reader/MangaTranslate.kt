@@ -39,9 +39,13 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.coroutines.resume
@@ -353,26 +357,42 @@ object MangaTranslateRuntime {
             return@withContext emptyList()
         }
         // Second chance for boxes whose translation still leaks source-script
-        // words (e.g. Hindi "मैं GO वापस..."): retry that one box alone in
-        // sentence case. Whatever still leaks after the retry is dropped.
+        // words (e.g. Hindi "मैं GO वापस..."): retry those boxes alone in
+        // sentence case, several at once. Whatever still leaks after the
+        // retry is dropped.
         if (st.engine == MangaTranslateEngine.GOOGLE) {
             val sl = if (st.orig == MangaOrigLang.AUTO) "auto" else st.orig.code
-            translated = translated.mapIndexed { i, tr ->
-                val t = tr?.trim().orEmpty()
-                if (t.isNotBlank() && hasLeftoverSource(t, texts.getOrNull(i).orEmpty(), st.target)) {
-                    gtxOne(normalizeCaps(texts.getOrNull(i).orEmpty()), sl, st.target.code)?.trim()
-                        ?.takeIf { it.isNotEmpty() } ?: tr
-                } else tr
+            val gtxSem = Semaphore(4)
+            translated = coroutineScope {
+                translated.mapIndexed { i, tr ->
+                    async {
+                        gtxSem.withPermit {
+                            val t = tr?.trim().orEmpty()
+                            if (t.isNotBlank() && hasLeftoverSource(t, texts.getOrNull(i).orEmpty(), st.target)) {
+                                gtxOne(normalizeCaps(texts.getOrNull(i).orEmpty()), sl, st.target.code)?.trim()
+                                    ?.takeIf { it.isNotEmpty() } ?: tr
+                            } else tr
+                        }
+                    }
+                }.awaitAll()
             }
         }
-        // White room + art/SFX class per box (one shared decoder): dialogue
-        // gets centered in its real white room (any language stays centered),
-        // art lettering skips the white cover and draws stroked instead.
-        val rooms = measureRooms(file, imgW, imgH, kept)
+        // White room + art/SFX class per box (one shared decoder each): the
+        // two scans are independent, so run them together — each decodes the
+        // page again, and sequential scans were a third of the wait.
+        val roomScan = coroutineScope {
+            val roomsD = async(Dispatchers.IO) { measureRooms(file, imgW, imgH, kept) }
+            val bubblesD = async(Dispatchers.IO) { detectBubbles(file, imgW, imgH, kept) }
+            roomsD.await() to bubblesD.await()
+        }
+        // Dialogue gets centered in its real white room (any language stays
+        // centered), art lettering skips the white cover and draws stroked
+        // instead.
+        val rooms = roomScan.first
         // Bubble outlines (the ink ovals themselves): the only anchor that is
         // the bubble on white pages too, where the directional room scan can
         // leak through thin outlines. A found outline centers + sizes the box.
-        val bubbles = detectBubbles(file, imgW, imgH, kept)
+        val bubbles = roomScan.second
         kept.mapIndexedNotNull { i, b ->
             val raw = translated.getOrNull(i)?.trim().orEmpty()
             var t = cleanTrans(raw)
@@ -457,12 +477,18 @@ object MangaTranslateRuntime {
         TextRecognition.getClient(DevanagariTextRecognizerOptions.Builder().build())
     }
 
-    private fun recFor(script: Script): TextRecognizer = when (script) {
-        Script.LATIN -> latinRec
-        Script.JA -> jaRec
-        Script.KO -> koRec
-        Script.ZH -> zhRec
-        Script.HI -> hiRec
+    /**
+     * A freshly-built client for [script] (same options as the shared one).
+     * A recognizer answers one image at a time, so parallel tile OCR gives
+     * each lane its own client; the on-device model underneath is shared, so
+     * this costs no extra download.
+     */
+    private fun newRec(script: Script): TextRecognizer = when (script) {
+        Script.LATIN -> TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+        Script.JA -> TextRecognition.getClient(JapaneseTextRecognizerOptions.Builder().build())
+        Script.KO -> TextRecognition.getClient(KoreanTextRecognizerOptions.Builder().build())
+        Script.ZH -> TextRecognition.getClient(ChineseTextRecognizerOptions.Builder().build())
+        Script.HI -> TextRecognition.getClient(DevanagariTextRecognizerOptions.Builder().build())
     }
 
     private enum class Script { LATIN, JA, KO, ZH, HI }
@@ -542,35 +568,33 @@ object MangaTranslateRuntime {
                 }
                 if (tiles.isEmpty()) return emptyList()
                 val script = fixed ?: detectScript(tiles)
-                val rec = recFor(script)
+                // Tiles decode up front; OCR them 3 at a time, each lane on
+                // its own client (a client answers one image at a time).
+                // Order is restored by index so the overlap fold is stable.
+                val sem = Semaphore(3)
+                val pool = List(3) { newRec(script) }
+                val parts = coroutineScope {
+                    tiles.mapIndexed { i, (y0s, bmp) ->
+                        async {
+                            sem.withPermit {
+                                val rec = pool[i % pool.size]
+                                try {
+                                    Triple(i, ocrTile(rec, bmp, y0s, sample), false)
+                                } catch (e: CancellationException) {
+                                    throw e
+                                } catch (e: Exception) {
+                                    Triple(i, emptyList<RawBox>(), true)
+                                } finally {
+                                    if (!bmp.isRecycled) bmp.recycle()
+                                }
+                            }
+                        }
+                    }.awaitAll()
+                }.sortedBy { it.first }
                 val out = ArrayList<RawBox>()
                 var failed = 0
-                for ((y0s, bmp) in tiles) {
-                    try {
-                        val text = rec.process(InputImage.fromBitmap(bmp, 0)).awaitTask()
-                        for (block in text.textBlocks) {
-                            val box = block.boundingBox ?: continue
-                            val t = block.text?.trim().orEmpty()
-                            if (t.length < 2) continue
-                            out.add(
-                                RawBox(
-                                    l = (box.left + 0) * sample.toFloat(),
-                                    t = (y0s + box.top) * sample.toFloat(),
-                                    r = (box.right) * sample.toFloat(),
-                                    b = (y0s + box.bottom) * sample.toFloat(),
-                                    text = t,
-                                )
-                            )
-                        }
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        // One bad tile never kills the page; every tile
-                        // failing at once means the engine isn't ready.
-                        failed++
-                    } finally {
-                        if (!bmp.isRecycled) bmp.recycle()
-                    }
+                for ((_, boxes, bad) in parts) {
+                    if (bad) failed++ else out.addAll(boxes)
                 }
                 if (out.isNotEmpty()) return mergeRows(out)
                 // Engine answered fine but saw no text: a truly blank page.
@@ -586,17 +610,66 @@ object MangaTranslateRuntime {
         }
     }
 
-    /** First tile through Latin: CJK text reveals its own script. */
+    /**
+     * First tile decides the script. Latin is tried first (fast path: most
+     * scanlations are Latin already); when it sees almost nothing — vertical
+     * Japanese, clean Korean/Chinese pages, the whole "manga never
+     * translates" class — every recognizer is asked on the same tile at once
+     * and the one that actually reads something wins. Bounded to this probe,
+     * so the common path costs nothing extra.
+     */
     private suspend fun detectScript(tiles: List<Pair<Int, Bitmap>>): Script {
         val (_, first) = tiles.first()
-        return try {
-            val text = latinRec.process(InputImage.fromBitmap(first, 0)).awaitTask()
-            val probe = text.textBlocks.joinToString("\n") { it.text ?: "" }.take(2000)
-            val s = scriptOf(probe)
-            if (s != Script.LATIN || probe.trim().length >= 4) s else Script.LATIN
+        val latinProbe = try {
+            latinRec.process(InputImage.fromBitmap(first, 0)).awaitTask()
+                .textBlocks.joinToString("\n") { it.text ?: "" }.take(2000)
         } catch (e: Exception) {
-            Script.LATIN
+            ""
         }
+        if (latinProbe.trim().length >= 4) return scriptOf(latinProbe)
+        val img = InputImage.fromBitmap(first, 0)
+        val cands = coroutineScope {
+            listOf(
+                async { Script.JA to readLen(jaRec, img) },
+                async { Script.KO to readLen(koRec, img) },
+                async { Script.ZH to readLen(zhRec, img) },
+                async { Script.HI to readLen(hiRec, img) },
+            ).awaitAll()
+        }
+        val best = cands.maxByOrNull { it.second }
+        return if (best != null && best.second >= 2) best.first else Script.LATIN
+    }
+
+    /** How much text [rec] reads on [img] (0 when the model is still down). */
+    private suspend fun readLen(rec: TextRecognizer, img: InputImage): Int {
+        return try {
+            rec.process(img).awaitTask().textBlocks.sumOf { it.text?.trim()?.length ?: 0 }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            0
+        }
+    }
+
+    /** OCR of one vertical tile, in full-image pixels (see [ocrPage]). */
+    private suspend fun ocrTile(rec: TextRecognizer, bmp: Bitmap, y0s: Int, sample: Int): List<RawBox> {
+        val out = ArrayList<RawBox>()
+        val text = rec.process(InputImage.fromBitmap(bmp, 0)).awaitTask()
+        for (block in text.textBlocks) {
+            val box = block.boundingBox ?: continue
+            val t = block.text?.trim().orEmpty()
+            if (t.length < 2) continue
+            out.add(
+                RawBox(
+                    l = (box.left + 0) * sample.toFloat(),
+                    t = (y0s + box.top) * sample.toFloat(),
+                    r = (box.right) * sample.toFloat(),
+                    b = (y0s + box.bottom) * sample.toFloat(),
+                    text = t,
+                )
+            )
+        }
+        return out
     }
 
     /**
@@ -1156,17 +1229,39 @@ object MangaTranslateRuntime {
             // every per-para retry too long as well, so Google "did nothing").
             val numbered = nonBlank.joinToString("\n") { (i, t) -> "${i + 1}. ${t.replace('\n', ' ')}" }
             val mapped = parseNumbered(gtxChunked(numbered, sl, st.target.code), nonBlank.size)
+            // Several gtx calls at once (bounded): a page holds dozens of
+            // lines and sequential calls were most of the network wait.
+            val gtxSem = Semaphore(4)
             if (mapped != null) {
                 val result: MutableList<String?> = texts.map { null }.toMutableList()
                 for ((i, _) in nonBlank) result[i] = mapped[i]
                 // Lines the batch dropped get one call each.
-                for ((i, t) in nonBlank) {
-                    if (result[i] == null) result[i] = gtxChunked(t, sl, st.target.code)
+                val missing = nonBlank.filter { (i, _) -> result[i] == null }
+                if (missing.isNotEmpty()) {
+                    val filled = coroutineScope {
+                        missing.map { (i, t) ->
+                            async {
+                                gtxSem.withPermit { i to gtxChunked(t, sl, st.target.code) }
+                            }
+                        }.awaitAll()
+                    }
+                    for ((i, tr) in filled) result[i] = tr
                 }
                 return@withContext result
             }
             // Fallback: one call per line.
-            texts.mapIndexed { i, t -> if (t.isBlank()) null else gtxChunked(send[i], sl, st.target.code) }
+            if (texts.none { it.isNotBlank() }) return@withContext texts.map { null }
+            val done = coroutineScope {
+                texts.mapIndexed { i, t ->
+                    async {
+                        if (t.isBlank()) i to null
+                        else gtxSem.withPermit { i to gtxChunked(send[i], sl, st.target.code) }
+                    }
+                }.awaitAll()
+            }
+            val out = texts.map { null as String? }.toMutableList()
+            for ((i, tr) in done) out[i] = tr
+            out
         }
 
     /** "1. ..." numbered reply -> index map. Null when too few lines survived. */
@@ -1451,22 +1546,33 @@ class TranslationOverlayView @JvmOverloads constructor(
         super.onDraw(canvas)
         val loc = locator ?: return
         if (imgW <= 0 || imgH <= 0) return
+        // A drawing bug must NEVER take the app down (the 0.12.44
+        // coerceIn crash): each box draws defensively, so one bad box is
+        // skipped and the rest still paint.
         for ((index, b) in boxes.withIndex()) {
+            try {
+                drawOne(canvas, loc, index, b)
+            } catch (e: Exception) {
+            }
+        }
+    }
+
+    private fun drawOne(canvas: Canvas, loc: (Float, Float) -> PointF?, index: Int, b: TLBox) {
             val p1 = try {
                 loc(b.l, b.t)
             } catch (e: Exception) {
                 null
-            } ?: continue
+            } ?: return
             val p2 = try {
                 loc(b.r, b.b)
             } catch (e: Exception) {
                 null
-            } ?: continue
+            } ?: return
             val l = min(p1.x, p2.x); val t = min(p1.y, p2.y)
             val r = max(p1.x, p2.x); val btm = max(p1.y, p2.y)
             val w = r - l; val h = btm - t
-            if (w < 8 || h < 8) continue
-            if (r < 0 || l > width || btm < 0 || t > height) continue
+            if (w < 8 || h < 8) return
+            if (r < 0 || l > width || btm < 0 || t > height) return
             // Hide the source first, then the translation: a white RECT over
             // the source glyphs (proportional pad — no old lettering shows
             // through), then the translation in a softly rounded box that
@@ -1498,7 +1604,7 @@ class TranslationOverlayView @JvmOverloads constructor(
                 // Capped to the source neighbourhood so true SFX stays inside
                 // it instead of spilling huge across the panel.
                 val st = fitStroked(b.trans, srcW * 1.25f, srcH * 1.5f, min(srcW * 0.35f, srcH * 0.60f).coerceAtLeast(10f))
-                    ?: continue
+                    ?: return
                 val acx = (el + er) / 2f
                 val acy = (et + eb) / 2f
                 val akey = "sfx" + (srcW / 6).toInt().toString() + "x" + (srcH / 6).toInt().toString() + "|" + b.trans.hashCode().toString()
@@ -1508,7 +1614,7 @@ class TranslationOverlayView @JvmOverloads constructor(
                 st.stroke.layout.draw(canvas)
                 st.fill.layout.draw(canvas)
                 canvas.restore()
-                continue
+                return
             }
             // Dialogue geometry (spill-proof by construction): the ANCHOR is
             // the BUBBLE/room center — the source was typeset centered in its
@@ -1550,7 +1656,7 @@ class TranslationOverlayView @JvmOverloads constructor(
             // a leaked oversized room must not blow the words past the ink).
             val boxW = if (hasRoom) min(roomW, srcW * 2.2f).coerceAtLeast(16f) else srcW
             var boxH = if (hasRoom) min(roomH, srcH * 2.5f).coerceAtLeast(16f) else srcH
-            var f = fit(b.trans, boxW, boxH) ?: continue
+            var f = fit(b.trans, boxW, boxH) ?: return
             val needH = f.layout.height + 8f
             if (needH > boxH) {
                 boxH = if (hasRoom) min(roomH, srcH * 2.5f).coerceAtLeast(16f) else min(needH, srcH * 1.35f)
@@ -1559,7 +1665,7 @@ class TranslationOverlayView @JvmOverloads constructor(
             // Floor-size words can still stand taller than the capped box:
             // shrink below the floor (down to 8px) rather than spill up/down.
             if (f.layout.height > boxH * 0.92f) {
-                f = shrinkToFit(b.trans, boxW, boxH * 0.92f) ?: continue
+                f = shrinkToFit(b.trans, boxW, boxH * 0.92f) ?: return
             }
             // Placement: the bubble/room CENTER (never the skewed source box),
             // then clamped inside the page. A partially-OCR'd source used to
@@ -1579,8 +1685,17 @@ class TranslationOverlayView @JvmOverloads constructor(
             if (pageW > 8f && pageH > 8f) {
                 val hw = min(boxW, pageW) / 2f
                 val hh = min(boxH, pageH) / 2f
-                cx = cx.coerceIn(pgL + hw, pgR - hw)
-                cy = cy.coerceIn(pgT + hh, pgB - hh)
+                // Float dust can invert these by 1 ulp when the box spans
+                // the page (pgL + hw a hair above pgR - hw): coerceIn then
+                // throws and takes the whole app down (see the 0.12.44
+                // crash: "maximum 540.0 is less than minimum 540.00006").
+                // An inverted range just means "center it".
+                val loX = pgL + hw
+                val hiX = pgR - hw
+                cx = if (loX <= hiX) cx.coerceIn(loX, hiX) else (pgL + pgR) / 2f
+                val loY = pgT + hh
+                val hiY = pgB - hh
+                cy = if (loY <= hiY) cy.coerceIn(loY, hiY) else (pgT + pgB) / 2f
             }
             val rad = min(boxW, boxH) * 0.30f
             canvas.drawRoundRect(RectF(cx - boxW / 2f, cy - boxH / 2f, cx + boxW / 2f, cy + boxH / 2f), rad, rad, boxPaint)
@@ -1591,7 +1706,6 @@ class TranslationOverlayView @JvmOverloads constructor(
             f.layout.draw(canvas)
             canvas.restore()
         }
-    }
 
     /** True when most of the text is Devanagari (Hindi): taller glyph metrics. */
     private fun isDevanagari(t: String): Boolean {

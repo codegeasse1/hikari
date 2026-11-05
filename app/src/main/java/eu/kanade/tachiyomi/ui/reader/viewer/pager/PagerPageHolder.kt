@@ -114,6 +114,19 @@ class PagerPageHolder(
                 // Everything the render needs (dims, animated, tall) comes from cached metadata —
                 // no bounds decode, no header read on the main thread.
                 val meta = WebtoonPageCache.meta(page.desc, viewer.cacheDir)
+                var iw = meta?.width ?: 0
+                var ih = meta?.height ?: 0
+                if ((iw <= 0 || ih <= 0) && file.exists() && file.length() > 0) {
+                    // Metadata missed (evicted sidecar, exotic file): read
+                    // the size straight off the file instead of skipping
+                    // translation silently — a bounds decode costs nothing
+                    // next to the download that just happened.
+                    val d = WebtoonPageCache.dimensions(page.desc, viewer.cacheDir)
+                    if (d != null) {
+                        iw = d.first
+                        ih = d.second
+                    }
+                }
                 decodeWidthPx = viewer.decodeWidth
                 setImage(
                     file,
@@ -121,7 +134,7 @@ class PagerPageHolder(
                     viewer.config.readerPageConfig().copy(isTallImage = meta?.isTall),
                 )
                 colorFilter = viewer.colorFilter
-                bindTranslation(page.desc.imageUrl, file, meta?.width ?: 0, meta?.height ?: 0)
+                bindTranslation(page.desc.imageUrl, file, iw, ih)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
@@ -256,6 +269,14 @@ class PagerPageHolder(
                     if (tlPageKey == pageKey && MangaTranslateRuntime.settings.enabled) {
                         bindTranslation(pageKey, file, imgW, imgH, retry + 1)
                     } else if (tlBadge === badge) { removeView(badge); tlBadge = null }
+                } else if (tlPageKey == pageKey && MangaTranslateRuntime.settings.enabled && tlBadge === badge) {
+                    // Spent the retry budget with nothing to show (offline
+                    // engine, rate limit): say so, and let a tap retry at
+                    // once — instead of a blank page that only a scroll
+                    // would ever fix.
+                    badge.text = "Translation failed — tap to retry"
+                    badge.isClickable = true
+                    badge.setOnClickListener { bindTranslation(pageKey, file, imgW, imgH, 0) }
                 } else if (tlBadge === badge) { removeView(badge); tlBadge = null }
                 return@launch
             }

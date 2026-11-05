@@ -1,3 +1,11 @@
+## 0.12.45 (continuous build only)
+
+- Fixed the crash on opening a manga: float dust could invert the overlay's page clamp by 1 ulp (maximum 540.0 < minimum 540.00006) and coerceIn throws on an empty range — the clamp now falls back to center, and each box draws defensively so a drawing bug can never take the app down again
+- Manga translates like manhwa now: when Latin OCR sees almost nothing (vertical Japanese, clean CJK pages) every recognizer is asked at once and the one that reads something wins; tile OCR runs 3 lanes in parallel, room + bubble scans run together, and translation calls go out several at a time — plus a dims fallback so no page is ever silently skipped, and a "tap to retry" badge if the engines stay offline
+- Manga tab: the "In your library" row is gone (followed manga already live under My Stuff → Library → Manga)
+- Library Show-all grids have a search field — instant find inside big synced shelves
+- Provider "All Plugins (Global)" applies on the first tap: the Home pick's two preferences now save in one transaction (two separate writes let the watcher see All + the stale single pick and revert to the old provider), and in multi-select the pill applies All at once
+
 ## 0.12.44 (continuous build only)
 
 - Manga Translate starts instantly on toggle: the OCR/translation models now download in the background when the reader opens (before the toggle is ever flipped), the first OCR pass waits for a still-downloading model instead of reporting "no text", and the open page retries with backoff for minutes with the Translating badge up — the translation appears on the open page by itself, no close/reopen or scrolling needed
