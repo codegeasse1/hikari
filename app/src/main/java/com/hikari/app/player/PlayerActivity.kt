@@ -302,18 +302,9 @@ class PlayerActivity : ComponentActivity() {
     /** AI Dub: speaks subtitles (or burned-in on-video text) in the dub
      *  language with a device or Piper voice, ducking server audio. One
      *  instance for the whole player so every server switch, re-prepare and
-     *  dialog rebuild reaches the same state. */
-    private val aiDub = AiDubManager(applicationContext).also { m ->
-        m.onSpeakingChanged = { speaking ->
-            val p = player
-            if (speaking) {
-                aiDubSavedVolume = p?.volume ?: 1f
-                runCatching { p?.volume = 0.12f }
-            } else {
-                runCatching { if (p != null) p.volume = aiDubSavedVolume }
-            }
-        }
-    }
+     *  dialog rebuild reaches the same state. Set in onCreate — never in a
+     *  field initializer (the Activity has no Context until attach). */
+    private lateinit var aiDub: AiDubManager
     private var aiDubSavedVolume = 1f
     private var hardSubDub: HardSubDub? = null
     private var aiDubSheet: Dialog? = null
@@ -2008,6 +1999,20 @@ class PlayerActivity : ComponentActivity() {
         hideSystemUi()
 
         playerView = findViewById(R.id.player_view)
+        // AI Dub owner: needs a real Context, so it is built here in
+        // onCreate — a field initializer would crash in <init> (no Context
+        // until the Activity is attached).
+        aiDub = AiDubManager(applicationContext).also { m ->
+            m.onSpeakingChanged = { speaking ->
+                val p = player
+                if (speaking) {
+                    aiDubSavedVolume = p?.volume ?: 1f
+                    runCatching { p?.volume = 0.12f }
+                } else {
+                    runCatching { if (p != null) p.volume = aiDubSavedVolume }
+                }
+            }
+        }
         // The progress bar is a real focus target on TV. Once it owns focus,
         // Left/Right scrubs the video instead of jumping between the buttons.
         // This complements the normal hidden-controller D-pad seek path.
@@ -18020,7 +18025,7 @@ class PlayerActivity : ComponentActivity() {
 
     override fun onPause() {
         if (isFinishing) silencePlaybackForExit()
-        aiDub.onActivityPause()
+        if (::aiDub.isInitialized) aiDub.onActivityPause()
         super.onPause()
     }
 
@@ -18081,7 +18086,7 @@ class PlayerActivity : ComponentActivity() {
         hudHideTask = null
         SlowNetTip.onPlaybackEnd()
         stopDualAudio()
-        aiDub.release()
+        if (::aiDub.isInitialized) aiDub.release()
         hardSubDub?.release()
         hardSubDub = null
         watchdogTask?.let { bufferingWatchdog.removeCallbacks(it) }
