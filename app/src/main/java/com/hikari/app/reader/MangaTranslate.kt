@@ -45,8 +45,10 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.coroutines.resume
@@ -1357,11 +1359,25 @@ object MangaTranslateRuntime {
     }
 
     /** OCR joins lines with odd spacing — normalize before translating. */
+    /**
+     * OCR joins lines with odd spacing — normalize before translating. Also
+     * repairs lettering stutters ("O-OBVIOUSLY!", "S-S-SO SCARY", OCR-misread
+     * "0-0- ..."): the echoed head letter used to ride into the engine and
+     * come back as Latin junk ("0-0- साथ..."), so strip it and send the real
+     * word instead. Digit heads (0-/1-) are the same stutter with O/I misread
+     * by OCR. Legit dashes ("X-MEN", "20-30") never match: a strip needs the
+     * same letter repeated, or a 0/1 head in front of a real word.
+     */
     private fun cleanOcr(t: String): String {
-        return t.replace(Regex("\\s+"), " ")
+        var s = t.replace(Regex("\\s+"), " ")
             .replace(Regex("\\s+([,.!?;:%)\\]])"), "$1")
             .replace(Regex("([(\\[])\\s+"), "$1")
             .trim()
+        s = s.replace(Regex("""^([A-Za-z])\s*-\s*(?:\1\s*-\s*)+""", RegexOption.IGNORE_CASE), "")
+        s = s.replace(Regex("""^([01])\s*-\s*(?:[01]\s*-\s*)+"""), "")
+        s = s.replace(Regex("""^([A-Za-z])\s*-\s*(?=\1[A-Za-z])""", RegexOption.IGNORE_CASE), "")
+        s = s.replace(Regex("""^[01]\s*-\s*(?=[A-Za-z]{2})"""), "")
+        return s.trim()
     }
 
     /**
@@ -1446,6 +1462,15 @@ object MangaTranslateRuntime {
     private fun trNote(sig: String) {
         if (trSeen.add(sig)) Logs.log("Manga", "tl-tr " + sig)
     }
+
+    /**
+     * App-wide Google gate: every gtx request on every page (and the novel
+     * reader) serializes here with >=250ms between calls. The old code fired
+     * 4 concurrent calls per page on every open page at once and Google
+     * 429'd the burst — the stuck "Translating N..." badge.
+     */
+    private val gtxGate = Mutex()
+    private var gtxLastAt = 0L
 
     private suspend fun translateAll(texts: List<String>, st: MangaTranslateSettings): List<String?> {
         return when (st.engine) {
@@ -1571,54 +1596,82 @@ object MangaTranslateRuntime {
         return if (mapped.size >= count / 2) mapped else null
     }
 
-    private fun gtxOne(text: String, sl: String, tl: String): String? {
-        return try {
-            val q = URLEncoder.encode(text, "UTF-8")
-            val url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=$sl&tl=$tl&dt=t&q=$q"
-            com.hikari.app.net.Http.getQuiet(url).use { resp ->
-                if (!resp.isSuccessful) {
-                    trNote("gtx-http-" + resp.code)
-                    return null
-                }
-                val raw = try {
-                    resp.body?.string()
-                } catch (e: Exception) {
-                    trNote("gtx-body-" + e.javaClass.simpleName)
-                    return null
-                } ?: run {
-                    trNote("gtx-empty-body")
-                    return null
-                }
-                try {
-                    val root = JSONArray(raw)
-                    val segs = root.optJSONArray(0) ?: run {
-                        trNote("gtx-no-segs")
-                        return null
-                    }
-                    val sb = StringBuilder()
-                    for (i in 0 until segs.length()) {
-                        sb.append(segs.optJSONArray(i)?.optString(0).orEmpty())
-                    }
-                    sb.toString().trim().ifEmpty { null }
-                } catch (e: Exception) {
-                    trNote("gtx-parse")
-                    null
-                }
-            }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            trNote("gtx-err-" + e.javaClass.simpleName)
-            null
-        }
-    }
-
     /**
+     * One gtx call through the app-wide gate (see [gtxGate]): serialized,
+     * paced, and retried with backoff on HTTP 429 (3 retries: 1s/4s/9s plus
+     * jitter, each attempt re-entering the gate so the backoff sleep never
+     * blocks other pages). 429s are burst-throttles as often as dead IPs, so
+     * a few spaced retries turn most of them into translations — and when the
+     * IP is truly burned the log still names it (tl-tr gtx-http-429).
+     */
+    private suspend fun gtxOne(text: String, sl: String, tl: String): String? {
+        val q = URLEncoder.encode(text, "UTF-8")
+        val url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=" + sl + "&tl=" + tl + "&dt=t&q=" + q
+        var attempt = 0
+        while (true) {
+            var code = -1
+            var raw: String? = null
+            var broken = false
+            try {
+                gtxGate.withLock {
+                    val wait = 250 - (System.currentTimeMillis() - gtxLastAt)
+                    if (wait > 0) delay(wait)
+                    com.hikari.app.net.Http.getQuiet(url).use { resp ->
+                        code = resp.code
+                        raw = try {
+                            resp.body?.string()
+                        } catch (e: Exception) {
+                            trNote("gtx-body-" + e.javaClass.simpleName)
+                            broken = true
+                            null
+                        }
+                    }
+                    gtxLastAt = System.currentTimeMillis()
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                trNote("gtx-err-" + e.javaClass.simpleName)
+                return null
+            }
+            if (broken) return null
+            if (code == 429 && attempt < 3) {
+                attempt++
+                trNote("gtx-retry429")
+                delay(1000L * attempt * attempt + (Math.random() * 500).toLong())
+                continue
+            }
+            if (code !in 200..299) {
+                trNote("gtx-http-" + code)
+                return null
+            }
+            val body = raw ?: run {
+                trNote("gtx-empty-body")
+                return null
+            }
+            try {
+                val root = JSONArray(body)
+                val segs = root.optJSONArray(0) ?: run {
+                    trNote("gtx-no-segs")
+                    return null
+                }
+                val sb = StringBuilder()
+                for (i in 0 until segs.length()) {
+                    sb.append(segs.optJSONArray(i)?.optString(0).orEmpty())
+                }
+                return sb.toString().trim().ifEmpty { null }
+            } catch (e: Exception) {
+                trNote("gtx-parse")
+                return null
+            }
+        }
+    }    /**
      * Long text (novel paragraphs, big batches) blows past the GET URL
      * limit and Google answers 414 — the "Google does nothing" bug. Split
      * on sentence boundaries into ~1200-char pieces, translate each, join.
      */
-    private fun gtxChunked(text: String, sl: String, tl: String): String? {
+    // suspend: every piece paces through the app-wide gtx gate (see gtxOne).
+    private suspend fun gtxChunked(text: String, sl: String, tl: String): String? {
         if (text.length <= 1500) return gtxOne(text, sl, tl)
         val parts = ArrayList<String>()
         val sb = StringBuilder()

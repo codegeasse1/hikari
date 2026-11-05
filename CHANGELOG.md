@@ -1,3 +1,8 @@
+## 0.12.51 (continuous build only)
+
+- Google Translate survives rate-limits: every translation request app-wide now goes one at a time, 250ms apart, with backoff retries on HTTP 429 (1s/4s/9s + jitter) — the burst of concurrent calls that got the IP throttled (stuck "Translating N..." badge) is gone. If the IP itself is burned, retries cannot conjure quota, and the log still names it (tl-tr gtx-http-429)
+- Lettering stutters stop poisoning translations: "O-OBVIOUSLY!" / "S-S-SO SCARY" (and OCR-misread "0-0- ...") are repaired to the real word before sending, so ML Kit and Google no longer echo "0-0- साथ..." junk into bubbles. ML Kit stays an offline model — cleaner and more readable now, but true scanlator-style naturalness still needs an online engine
+
 ## 0.12.50 (continuous build only)
 
 - Manga translate logging is now end-to-end: every page logs its settings + file facts on entry (tl-page start), cache hits (tl-page cache-hit), the engine call going out (tl-tr run with engine/orig/target/box count), per-page Google totals (tl-tr google batch/lines with ok counts), and every distinct engine failure mode once (tl-tr gtx-http-429, timeouts, parse, ML Kit download/identify, Gemini key/network) — plus each holder attempt (tl-hold pager/webtoon with retry/status/boxes). Next log will name the failure instead of showing replies=0 with no reason.
