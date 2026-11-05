@@ -299,9 +299,8 @@ dependencies {
     // fetched from the official sherpa-onnx release in CI (see build.yml);
     // run that same download for a local build.
     implementation(files("libs/sherpa-onnx.aar"))
-    // piper-phonemize - espeak text frontend for Piper voices (JitPack; the
-    // repo already resolves JitPack in settings.gradle.kts).
-    implementation("com.github.csukuangfj.piper.phonemize:piper-phonemize:v1.5.9")
+    // Piper voices run on sherpa-onnx 1.13.8 (espeak-ng built into the
+    // AAR, dataDir from the voice pack) — no piper-phonemize needed.
     // tar.bz2 voice packs from the official sherpa tts-models release.
     implementation("org.apache.commons:commons-compress:1.26.0")
     // TorrServer ÃÂ¢ÃÂÃÂ the Go torrent engine CloudStream's own Torrent object uses.

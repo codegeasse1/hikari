@@ -10,14 +10,11 @@ import android.os.Build
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.widget.Toast
-import com.github.csukuangfj.piper.phonemize.piperPhonemizeInitialize
-import com.github.csukuangfj.piper.phonemize.piperPhonemizeText
 import com.hikari.app.reader.MangaOrigLang
 import com.hikari.app.reader.MangaTranslateEngine
 import com.hikari.app.reader.MangaTranslateRuntime
 import com.hikari.app.reader.MangaTranslateSettings
 import com.hikari.app.reader.MangaTargetLang
-import com.k2fsa.sherpa.onnx.GenerationConfig
 import com.k2fsa.sherpa.onnx.OfflineTts
 import com.k2fsa.sherpa.onnx.getOfflineTtsConfig
 import java.util.Locale
@@ -107,7 +104,6 @@ class AiDubManager(private val appCtx: Context) {
 
     private var piper: OfflineTts? = null
     private var piperId: String? = null
-    private var phonemizeInit = false
     private var pipeStop = false
     private var pipeTrack: AudioTrack? = null
 
@@ -395,19 +391,30 @@ class AiDubManager(private val appCtx: Context) {
                         withContext(Dispatchers.Main) { speakSystem(text, L) }
                         return@launch
                     }
-                if (!phonemizeInit) {
-                    piperPhonemizeInitialize(appCtx)
-                    phonemizeInit = true
-                }
                 if (piperId != found.id) {
                     try {
                         piper?.free()
                     } catch (e: Exception) {
                     }
+                    // sherpa-onnx 1.13.8: espeak-ng is built into the AAR.
+                    // dataDir points at the voice pack's espeak-ng-data dir
+                    // (shipped inside every tts-models tarball); plain
+                    // generate() phonemizes internally. No piper-phonemize.
+                    val espeakDir = java.io.File(found.dir, "espeak-ng-data")
+                    val dataDir = if (espeakDir.isDirectory) espeakDir.absolutePath
+                    else found.dir.absolutePath
                     piper = OfflineTts(
                         getOfflineTtsConfig(
                             modelDir = found.dir.absolutePath,
                             modelName = found.onnx,
+                            acousticModelName = "",
+                            vocoder = "",
+                            voices = "",
+                            lexicon = "",
+                            dataDir = dataDir,
+                            dictDir = "",
+                            ruleFsts = "",
+                            ruleFars = "",
                         ),
                     )
                     piperId = found.id
@@ -417,16 +424,12 @@ class AiDubManager(private val appCtx: Context) {
                         withContext(Dispatchers.Main) { speakSystem(text, L) }
                         return@launch
                     }
-                val tag = engine.lang().ifEmpty { L.espeakTag }
-                val codepoints = phonemize(text, tag)
-                    ?: run {
-                        withContext(Dispatchers.Main) { speakSystem(text, L) }
-                        return@launch
-                    }
-                val audio = engine.generateWithConfig(
-                    "",
-                    GenerationConfig(speed = 1.0f, phonemeCodepoints = codepoints),
-                )
+                val audio = try {
+                    engine.generate(text, 0, 1.0f)
+                } catch (e: Exception) {
+                    withContext(Dispatchers.Main) { speakSystem(text, L) }
+                    return@launch
+                }
                 if (audio.samples.isEmpty()) {
                     withContext(Dispatchers.Main) { speakSystem(text, L) }
                     return@launch
@@ -445,21 +448,6 @@ class AiDubManager(private val appCtx: Context) {
         }
     }
 
-    private fun phonemize(text: String, tag: String): Array<IntArray>? {
-        return try {
-            val res = piperPhonemizeText(text, tag) ?: return null
-            try {
-                Array(res.numSentences) { i -> res.getPhonemes(i) }
-            } finally {
-                try {
-                    res.close()
-                } catch (e: Exception) {
-                }
-            }
-        } catch (e: Exception) {
-            null
-        }
-    }
 
     private fun playPcm(samples: FloatArray, sampleRate: Int) {
         stopPipeTrack()
