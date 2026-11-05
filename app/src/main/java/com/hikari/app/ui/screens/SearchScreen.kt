@@ -8,6 +8,7 @@ import com.hikari.app.i18n.trTag
 import com.hikari.app.i18n.I18n
 import com.hikari.app.ui.components.GlassSearchField
 
+import androidx.activity.compose.BackHandler
 import android.app.Application
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
@@ -1177,6 +1178,13 @@ fun SearchScreen(
                 var expandedProvider by rememberSaveable { mutableStateOf<String?>(null) }
                 val effectiveExpanded = if (tvSearch) null
                     else expandedProvider?.takeIf { groupedVisible.containsKey(it) }
+                // Phone Back from a drilled-in provider returns to its shelves,
+                // not to the previous tab: without this the system back pops
+                // the whole Search route (landing on Home) instead of just
+                // collapsing the expanded grid.
+                BackHandler(enabled = !tvSearch && effectiveExpanded != null) {
+                    expandedProvider = null
+                }
                 val gridSource = if (effectiveExpanded != null) groupedVisible.getValue(effectiveExpanded) else visible
                 val gridItems = rememberVisibleItems(gridSource)
                 val searchKeys = remember(gridItems) { gridItems.map { it.uniqueId } }

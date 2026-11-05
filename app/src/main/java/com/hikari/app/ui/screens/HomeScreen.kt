@@ -3544,11 +3544,16 @@ private fun HomeSearchOverlay(
     val app = context.applicationContext as HikariApp
     val repo = remember { ContentRepository(app.providers) }
     val label = providerName?.takeIf { it.isNotBlank() } ?: tr("these extensions")
-    var kindKey by remember { mutableStateOf(HOME_KIND_ALL) }
+    var kindKey by rememberSaveable { mutableStateOf(HOME_KIND_ALL) }
     var typed by rememberSaveable { mutableStateOf("") }
     var applied by rememberSaveable { mutableStateOf("") }
-    var results by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
-    var searching by remember { mutableStateOf(false) }
+    // Results plus scan live in the process-wide HomeSearchSession, NOT here:
+    // the overlay leaves the composition while a title plays, which wipes plain
+    // remember state -- and on return the restored query re-ran the whole scan
+    // from page 1. The session keeps the job plus hits across the visit, so coming
+    // back re-shows everything found and resumes the same scan instead.
+    val results by HomeSearchSession.results.collectAsState()
+    val searching by HomeSearchSession.searching.collectAsState()
     val focusRequester = remember { FocusRequester() }
 
     // Search-bar translator: the same control the Search tab carries on its
@@ -3590,27 +3595,16 @@ private fun HomeSearchOverlay(
     // reason — a remote has no pointer to tap the field with.)
     LaunchedEffect(Unit) { runCatching { focusRequester.requestFocus() } }
 
-    // One request per typed word. A new query replaces the previous effect, which
-    // cancels the old scan with it — so a stale page can never land under a newer
-    // query.
+    // One request per typed word. The scan itself lives in [HomeSearchSession]:
+    // a repeat call with the same query + providers is a no-op that keeps the
+    // running job and its partial results — which is what makes returning from
+    // a title resume instead of restarting from page 1. Only a genuinely new
+    // query (or provider set) cancels the in-flight scan.
     LaunchedEffect(applied, providerIds) {
         if (applied.isBlank() || providerIds.isEmpty()) {
-            results = emptyList()
-            searching = false
-            return@LaunchedEffect
-        }
-        searching = true
-        try {
-            repo.searchStreaming(applied, providerIds = providerIds).collect { raw ->
-                results = withContext(Dispatchers.IO) { raw.map { it.shrinkPoster() } }
-            }
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (_: Throwable) {
-            // Whatever pages already landed stay on screen; the empty state below
-            // says the rest did not arrive (see [engineFailureReason]).
-        } finally {
-            searching = false
+            HomeSearchSession.clear()
+        } else {
+            HomeSearchSession.search(repo, applied, providerIds)
         }
     }
 

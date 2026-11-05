@@ -37,7 +37,7 @@ import java.io.File
  * Items are stored already tokenized (tiny disk-cache tokens, see
  * [PosterLoader.tokenize]) so holding a hundred posters in memory stays cheap.
  */
-object SearchSession {
+open class SearchSessionScope(private val snapshotName: String) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var job: Job? = null
     private var currentKey: String? = null
@@ -196,7 +196,7 @@ object SearchSession {
 
     private fun snapshotFile(): File? = runCatching {
         val dir = File(HikariApp.instance.filesDir, "search").apply { mkdirs() }
-        File(dir, "search_session.json")
+        File(dir, snapshotName)
     }.getOrNull()
 
     private fun writeSnapshot(key: String, items: List<MediaItem>) {
@@ -277,3 +277,18 @@ object SearchSession {
         else copy(posterUrl = p, backdropUrl = b)
     }
 }
+
+/**
+ * The Search tab scan owner (see SearchSessionScope): a singleton so
+ * existing callers are untouched.
+ */
+object SearchSession : SearchSessionScope("search_session.json")
+
+/**
+ * Home in-place search overlay scan owner (the scope pill plus Searching X
+ * only line). A session of its own so it never cancels (or shows) the Search
+ * tab scan and vice versa. Same resume-instead-of-restart contract: the
+ * overlay leaves the composition while a title plays, so holding the job and
+ * hits here keeps a visit to a title from restarting the search from page 1.
+ */
+object HomeSearchSession : SearchSessionScope("home_search_session.json")

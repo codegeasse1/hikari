@@ -1,3 +1,8 @@
+## 0.12.48 (continuous build only)
+
+- Search "See all" Back now returns to the shelves: drilling into a provider's own grid and pressing the phone Back button collapses back to that provider's shelf row instead of popping the whole Search screen to Home
+- Home search survives opening a title: the in-place search scan now lives in its own process-wide session (like the Search tab already did), so going into a movie and coming back re-shows everything already found and resumes the same scan instead of restarting from page 1 — the kind chip (All/Movies/Series/Anime) is remembered too, and it never fights the Search tab's own scan
+
 ## 0.12.47 (continuous build only)
 
 - Manga stops spinning "Translating..." on pages it can never translate: same-language pairs (English page, English target — the default) short-circuit at once, echo-only results report "Already English" instead of retrying for minutes, truly blank pages say "No text found", and only real failures (downloading models, dead network) keep retrying — the badge also narrates each stage (Reading… / Translating 12…), so a stuck page says where it is stuck
