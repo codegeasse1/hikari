@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Resources that nothing in our own code references directly, but that ARE
+  resolved by name at runtime — so the resource shrinker cannot see them and
+  must be told to leave them alone.
+
+  `@id/exo_*` are media3-ui's own view ids. PlayerActivity finds them with
+  `resources.getIdentifier(name, "id", packageName)` (see `exoView`), because
+  the app is built with `android.nonTransitiveRClass = true` and therefore has
+  no R.id of its own for a library's ids.
+
+  The launcher icon variants and `@xml/locales_config` are reachable today
+  (manifest activity-aliases, `AppIconManager`); they are listed only so that a
+  future refactor cannot quietly take them out.
+
+  Everything else under res/ is fair game for the shrinker.
+-->
+<resources xmlns:tools="http://schemas.android.com/tools"
+    tools:keep="@id/exo_*,@mipmap/ic_launcher*,@drawable/ic_launcher*,@xml/locales_config" />

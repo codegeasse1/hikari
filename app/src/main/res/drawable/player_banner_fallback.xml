@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The loading cover's own background, drawn UNDER the backdrop ImageView.
+
+     It only becomes visible when there is no artwork to show: the provider
+     sent no poster/backdrop, or the user picked a loading style that draws no
+     art at all (MINIMAL). Previously the cover's background was flat #000000,
+     so in exactly those cases the whole "finding your best server" wait — which
+     can run for minutes across every installed extension — happened over a pure
+     black screen that is indistinguishable from a crashed app. Reported as
+     "in some see the loading screen showing black".
+
+     A deep vertical wash in the app's own accent family, plus a soft centred
+     bloom where the title block sits, so the cover reads as "working on it"
+     rather than "dead". Alpha is deliberately low: the white title, the episode
+     line and the status spinner must stay the brightest things on screen. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:angle="270"
+                android:startColor="#FF121A2B"
+                android:centerColor="#FF0C1220"
+                android:endColor="#FF05070E" />
+        </shape>
+    </item>
+    <item android:gravity="center">
+        <shape android:shape="oval">
+            <size
+                android:width="620dp"
+                android:height="620dp" />
+            <gradient
+                android:type="radial"
+                android:gradientRadius="310dp"
+                android:startColor="#40F5C569"
+                android:centerColor="#1A6E8BFF"
+                android:endColor="#00000000" />
+        </shape>
+    </item>
+</layer-list>

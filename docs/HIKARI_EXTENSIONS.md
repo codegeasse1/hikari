@@ -1,0 +1,234 @@
+# Hikari extensions (`.hiki`)
+
+A Hikari extension is a small dexed JAR implementing Hikari's own provider API
+(`com.hikari.ext.HikariProvider`). It plugs into Home, search, detail and the
+player exactly like a Stremio addon or a CloudStream `.cs3` plugin — but it is
+written against Hikari's SDK, so the fixes are made **in the SDK once** and
+every extension benefits, instead of fighting CloudStream's desktop assumptions
+(no-op WebView resolver, missing context, plugin-specific Cloudflare hacks).
+
+The SDK classes live in the Hikari APK (`com.hikari.ext`), so:
+
+- the app resolves them at runtime — extensions only need to be **dexed**, not
+  bundled with the API;
+- extensions can use the same platform libraries the app uses: `org.json`,
+  `org.jsoup`, and all of `HikariNet`.
+
+## The API in one screen
+
+```kotlin
+interface HikariProvider {
+    val id: String                  // stable slug, e.g. "yts"
+    val name: String
+    val mainUrl: String
+    val description: String get() = ""
+    val version: Int get() = 1
+    val iconUrl: String? get() = null
+    val tvTypes: Set<HikariMediaType> get() = setOf(MOVIE, SERIES)
+
+    fun catalogs(): List<HikariCatalog> = emptyList()
+    suspend fun getCatalog(catalog: HikariCatalog, page: Int): List<HikariMedia> = emptyList()
+    suspend fun search(query: String, page: Int): List<HikariMedia> = emptyList()
+    suspend fun getMeta(media: HikariMedia): HikariMedia = media
+    suspend fun getEpisodes(media: HikariMedia): List<HikariEpisode>? = null
+    suspend fun getStreams(media: HikariMedia, episode: HikariEpisode?): List<HikariStream>  // required
+}
+```
+
+A minimal extension implements `search` + `getStreams` (or `catalogs` +
+`getCatalog` for a catalog-only source). Everything else has a safe default.
+
+**`page` is 1-based.** The first page is `1`, and every caller passes `1` (the
+catalog pager starts at 1, `skip` is computed as `(page - 1) * 100`). An
+extension that has no real pagination should return its content for `page <= 1`
+and an empty list for anything higher — guarding on `page > 0` makes the
+provider look permanently empty (this exact off-by-one made every installed
+SkyStream extension report "Couldn't load …" on Home and answer every search in
+5ms with "no matching title").
+
+## CloudStream plugins inside a Hikari extension (the bridge)
+
+The extensions in the Hikari repository (Anime, CNC Verse, Phisher) do not
+reimplement their sources — they ship the original CloudStream `.cs3` plugins
+and load them through a bridge (`Cs3BridgeProvider`) that presents each plugin
+as an ordinary `HikariProvider`. Two rules make that work, and both used to be
+broken:
+
+- **A catalogue is a home ROW, not a page.** `HomePageList` rows are what a
+  CloudStream plugin publishes; each row belongs to a named page and carries
+  its own `data` (the request's URL/args). The bridge therefore emits one
+  catalogue per row, with an id of `row:<page>:<row>` (falling back to
+  `page:<index>` when the row has no name), and calls the plugin's
+  `getMainPage(MainPageRequest(row name, row data, false))`. Asking instead for
+  a single flattened catalogue named "Home" — with the string `"Home"` used as
+  both the id and the requested page — matches no page in the plugin, so every
+  plugin answered with nothing.
+- **A local failure is never an empty result.** "The archive has no bundled
+  plugin", "the plugin's `load()` threw", "it registered no provider", "the page
+  parsed to nothing" and "the site genuinely returned no items" all used to
+  collapse into the same silent empty list, which the app could only render as
+  "Nothing came back from this extension". The bridge now throws an
+  `IllegalStateException` naming the extension and the specific reason for every
+  local failure, and its load is bounded (45s budget, a 60s retry cooldown, a
+  12s window to find the host activity and a 3s poll for plugin registration).
+
+The app records those reasons per provider in
+`HikariProviderAdapter.catalogErrors` and Home (and the catalogue screen) show
+them under the empty state, so an extension that cannot load says *why* rather
+than pointing at a Cloudflare verification page it never touches. Stream
+failures stay silent on catalogues and are reported through `streamErrors`.
+
+### The row-id parser: the page index is not the row index
+
+A catalogue id is `row:<page>:<row>`, and `getCatalog` has to turn it back into
+two numbers — which page of the plugin's `mainPage` list, and which
+`HomePageList` inside it. The bridge parsed BOTH with one helper that read the
+first number of the id, so the "row index" it matched against was really the
+page index: every Home row was sliced out of its page at position 0, so a row
+that was not the first one came back as some other tray's items (and, when
+names were missing, as an empty list). That is the shape of the report "this
+extension loads its catalogue in CloudStream, but shows nothing in Hikari".
+`pageIndexOf` and `rowIndexOf` now parse the two numbers separately, names are
+matched first with the row index only breaking ties (plugins like CNC Verse
+re-read their whole home page on every call, so a mirror's tray order is not
+stable between reads), and a row that still looks empty is re-read once before
+the provider reports it.
+
+### A catalogue item with no title is still an item
+
+CloudStream's `newAnimeSearchResponse(name, url)` is happy to be handed an
+**empty name** — and some plugins build their whole home page that way, because
+they mean "draw this as a poster card" (CNC Verse's NetflixMirror does exactly
+this; its own `search()` passes the real title, which is why search worked while
+the catalogue did not). Both CS3 hosts used to drop any item whose name was
+blank, so a catalogue that WAS loading correctly arrived at the UI as zero rows.
+Only a blank **url** is dropped now: without a link there is nothing to open,
+but a poster-only card is content the plugin deliberately published.
+
+### The host class the bridge talks to must survive R8
+
+A `.hiki` extension is compiled against a **stub** of `com.hikari.app.HikariApp`
+(the extensions repo's `stubs/HikariAppStub.kt`) so its bundled CloudStream
+plugins can reach a live Activity through `HikariApp.mainActivity` /
+`HikariApp.instance`. Those are Kotlin companion members on the real class, and
+release builds run R8 in full mode, which *staticises* a companion object: the
+methods move to the host class, the `Companion` field is removed and the
+companion class is deleted. The app's own call sites are rewritten by R8 so
+nothing notices — but the extension's plugin is already-compiled bytecode that
+names the field and class directly, so it dies with
+
+```
+NoSuchFieldError: No field Companion of type Lcom/hikari/app/HikariApp$Companion;
+in class Lcom/hikari/app/HikariApp; ... (declaration of 'com.hikari.app.HikariApp'
+appears in base.apk! classes2.dex)
+```
+
+`app/proguard-rules.pro` therefore keeps the class, its companion and the
+`Companion` field (see section 3d of that file). **Any future refactor that
+moves the Activity/instance accessors off `HikariApp`'s companion silently
+breaks every installed extension**, so change the stubs and this rule together.
+
+## Publishing the repository (`fileHash`)
+
+The repository index (`repo.json`) **must carry a `fileHash` per entry**
+(`"sha256-<hex>"`) for `.hiki`, `.jar` and native `.cs3` files. The update check
+reads it as
+
+```kotlin
+val hash = plugin.fileHash ?: continue     // ← an entry without one is skipped
+if (!hash.startsWith("sha256-")) continue
+```
+
+so a repository that omits it can never offer an update to anything already
+installed on a device, and a fix published later can never reach it. `build.sh`
+in the extensions repo computes the digest for every published artifact.
+
+## Extensions behind a verification wall are skipped silently
+
+If an extension answers with a browser-verification wall (its own error text is
+a challenge page, or its declared site is a host that already answered a
+challenge we could not pass), Hikari does **not** search it again for the rest
+of the session: no search slot, no cold plugin load, no entry in the server
+chooser's progress line, and no message about the block anywhere in the UI. The
+record expires after 10 minutes, so an extension becomes askable again on its
+own. The globe (WebView) button still opens the extension's own site if the user
+wants to look.
+
+## The SDK helpers (`HikariNet`)
+
+```kotlin
+HikariNet.getString(url, headers)                       // body text (null on failure)
+HikariNet.getJson(url, headers)                         // org.json JSONObject?
+HikariNet.getBytes(url, headers)                        // ByteArray?
+HikariNet.fetch(url, headers)                           // status + url + body
+HikariNet.browserHeaders                                // desktop Chrome fingerprint
+
+// The StreamHG/hgcloud-style helper: runs a page in a real Android WebView and
+// returns every request whose URL matched the capture regex (e.g. the m3u8 the
+// player JS fires), with its headers:
+val hits = HikariNet.resolveWithWebView(embedUrl, Regex("(m3u8|master\\.txt)"))
+hits.firstOrNull()?.let { HikariStream("Stream", it.url, headers = it.headers, isM3u8 = true) }
+```
+
+All requests go through the app's hardened stack: redirects, generous timeouts,
+browser User-Agent, Conscrypt TLS.
+
+## Stream shapes
+
+| Playback mode        | Set on `HikariStream`                                   |
+|----------------------|---------------------------------------------------------|
+| HLS / direct         | `url` (+ optional `headers`, `isM3u8`/`isMpd`)          |
+| Torrent              | `isTorrent = true`, `infoHash`, `trackers` (+ `fileIdx`)|
+| YouTube              | `ytId`                                                  |
+| External/browser     | `externalUrl = true`, `url`                             |
+
+Torrents are played by the app's built-in TorrServer engine.
+
+## Building an extension
+
+1. Write your provider against `com.hikari.ext` (grab the classes from the
+   `app/src/main/java/com/hikari/ext` sources in this repo).
+2. Compile and **dex** the jar so Android can load it (a plain `.jar` won't
+   load on device):
+
+   ```bash
+   # compile against the SDK classes on your classpath
+   kotlinc -classpath com.hikari.ext.* -d classes src/... 
+   # put classes + manifest.json into a jar
+   jar cf MyExtension.jar -C classes . -C manifestdir manifest.json
+   # dex the jar
+   d8 MyExtension.jar --output .
+   # d8 emits classes.dex next to MyExtension.jar — repack into the .hiki
+   jar cf MyExtension.hiki MyExtension.jar classes.dex manifest.json
+   ```
+
+   (Simplest reliable shape: the `.hiki` is a jar containing `classes.dex`
+   plus `manifest.json`.)
+
+3. `manifest.json`:
+
+   ```json
+   {
+     "name": "My Extension",
+     "version": 1,
+     "mainClass": "com.example.MyProvider"
+   }
+   ```
+
+   `mainClass` may be an array if one file ships several providers — each
+   becomes a separate installable provider.
+
+4. Install in the app: Extensions → **Install .hiki from URL** or
+   **Pick .hiki file**. Failed loads surface the real error on the card.
+
+## Reference implementation
+
+A complete example provider lives in the repo's `docs/` history: the **YTS**
+provider (`com.hikari.ext.providers.YtsProvider`, `yts.mx`) was a full working
+provider against a public JSON API (torrents → TorrServer), and it was the
+cleanest template for a new extension. It used to ship in the APK and be
+auto-registered on first run; **0.10.49 removed it** (it exposed no catalogue,
+so there was nothing to browse in it) along with the auto-registration. If you
+want to start from it, copy the class from an older release's sources, change
+`id`/`name`/`mainUrl`, and install your build as a `.hiki` — see the sections
+above.

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Loading cover EFFECT "Sheen": a band of light that sweeps across the cover,
+     the way a glossy print catches the light when it is tilted. The view this
+     is set on is rotated ~16° and slid from one edge to the other (see
+     PlayerActivity.showLoadingBanner), so the band reads as a diagonal
+     highlight moving over the artwork rather than a static stripe. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <gradient
+        android:angle="0"
+        android:startColor="@android:color/transparent"
+        android:centerColor="#29FFFFFF"
+        android:endColor="@android:color/transparent" />
+</shape>

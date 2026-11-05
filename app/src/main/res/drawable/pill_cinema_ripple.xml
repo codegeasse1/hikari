@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The CINEMA skin's control chips: a flat, square-ish plate (MX Player /
+     desktop video player style) rather than the rounded glass pill. -->
+<ripple xmlns:android="http://schemas.android.com/apk/res/android"
+    android:color="#4DFFFFFF">
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="#2EFFFFFF" />
+            <corners android:radius="5dp" />
+        </shape>
+    </item>
+</ripple>

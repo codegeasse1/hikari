@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Pill chip used for the player's Fit / Speed / Server / Skip / Quality /
+     Audio / Sub controls. A solid slate fill (instead of a barely-visible
+     translucent white) gives the bottom toolbar the defined, modern look of
+     the reference player; the hairline stroke separates it from bright video. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#CC3A4048" />
+    <stroke android:width="1dp" android:color="#26FFFFFF" />
+    <corners android:radius="20dp" />
+</shape>
