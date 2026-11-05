@@ -3,8 +3,10 @@ package com.hikari.app.data
 import com.hikari.app.HikariApp
 import com.hikari.app.net.Http
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -256,8 +258,11 @@ object TrackerLibraryRepository {
         // Anime lists, then manga lists: a tracker that also holds manga shows
         // both — manga rows carry rawType "manga", which is what sends their
         // tap to the manga engines instead of the video detail page.
+        aniListAuthFailed = false
         val animeLists=aniListCollection(app, account, "ANIME")
-            ?: return Result.failure(IllegalStateException("AniList did not return a library."))
+            ?: return Result.failure(IllegalStateException(
+                if (aniListAuthFailed) "AniList login expired (HTTP 401) — reconnect AniList in Settings → Trackers."
+                else "AniList did not return a library (network or rate-limit) — tap the error to retry."))
         for(i in 0 until animeLists.length()){
             val l=animeLists.optJSONObject(i)?:continue;val name=l.optString("name").ifBlank{"AniList"};val a=l.optJSONArray("entries")?:JSONArray()
             val items=buildList{for(j in 0 until a.length())aniListMedia(a.optJSONObject(j)?.optJSONObject("media"))?.let(::add)}.distinctBy{it.uniqueId}
@@ -271,35 +276,90 @@ object TrackerLibraryRepository {
         }
         return Result.success(out)
     }
+    /** Set when AniList answers 401: the token is dead, not the network. */
+    private var aniListAuthFailed = false
+
     private suspend fun aniListCollection(app: HikariApp, account: com.hikari.app.data.TrackerAccount, type: String): JSONArray? {
         val query = "query(\$name:String){MediaListCollection(userName: \$name,type:"+type+"){lists{name entries{media{id title{userPreferred english romaji} coverImage{large} startDate{year} averageScore nextAiringEpisode{airingAt episode}}}}}}"
         // AniList's MediaListCollection is user-specific. The access token
         // must be sent as a Bearer token; without it a connected account can still
         // return an empty/unauthorized collection.
-        val raw = Http.postStringQuiet(
-            "https://graphql.anilist.co",
-            JSONObject()
-                .put("query", query)
-                .put("variables", JSONObject().put("name", anilistUser(app, account)))
-                .toString(),
-            mapOf(
-                "Authorization" to "Bearer " + account.token,
-                "Accept" to "application/json",
-                "Content-Type" to "application/json",
-            ),
-        ) ?: return null
-        return runCatching {
-            JSONObject(raw).optJSONObject("data")?.optJSONObject("MediaListCollection")?.optJSONArray("lists")?:JSONArray()
-        }.getOrDefault(JSONArray())
+        val user = anilistUser(app, account)
+        if (user.isBlank()) return null
+        val body = JSONObject()
+            .put("query", query)
+            .put("variables", JSONObject().put("name", user))
+            .toString()
+        val headers = mapOf(
+            "Authorization" to "Bearer " + account.token,
+            "Accept" to "application/json",
+            "Content-Type" to "application/json",
+        )
+        // 429/5xx + network blips retry with backoff (AniList rate-limits
+        // bursts — the searches tripping 429 in the same minute prove the
+        // window was hot, and that is exactly the transient "did not return
+        // a library" a reopen fixed). 401/other 4xx never retry: the login
+        // itself is dead.
+        val waits = longArrayOf(0, 2_000, 6_000, 15_000)
+        for (attempt in waits.indices) {
+            if (attempt > 0) delay(waits[attempt])
+            val code: Int
+            val raw: String?
+            try {
+                Http.post("https://graphql.anilist.co", body, headers).use { r ->
+                    code = r.code
+                    raw = if (r.isSuccessful) r.body?.string() else null
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Logs.log("Tracker", "anilist " + type + " attempt=" + attempt + " network-error")
+                continue
+            }
+            if (code == 401) {
+                aniListAuthFailed = true
+                Logs.log("Tracker", "anilist " + type + " attempt=" + attempt + " HTTP 401")
+                return null
+            }
+            if (code == 429 || code >= 500) {
+                Logs.log("Tracker", "anilist " + type + " attempt=" + attempt + " HTTP " + code)
+                continue
+            }
+            if (raw == null) {
+                Logs.log("Tracker", "anilist " + type + " attempt=" + attempt + " HTTP " + code)
+                return null
+            }
+            val lists = runCatching {
+                JSONObject(raw).optJSONObject("data")?.optJSONObject("MediaListCollection")?.optJSONArray("lists") ?: JSONArray()
+            }.getOrDefault(JSONArray())
+            Logs.log("Tracker", "anilist " + type + " attempt=" + attempt + " lists=" + lists.length())
+            return lists
+        }
+        return null
     }
     private suspend fun anilistUser(app: HikariApp, account: com.hikari.app.data.TrackerAccount): String {
         if (account.user.isNotBlank()) return account.user
-        val raw = Http.postStringQuiet(
-            "https://graphql.anilist.co",
-            JSONObject().put("query", "{Viewer{name}}").toString(),
-            mapOf("Authorization" to "Bearer " + account.token, "Accept" to "application/json", "Content-Type" to "application/json"),
-        ) ?: return ""
-        return JSONObject(raw).optJSONObject("data")?.optJSONObject("Viewer")?.optString("name").orEmpty()
+        val body = JSONObject().put("query", "{Viewer{name}}").toString()
+        val headers = mapOf("Authorization" to "Bearer " + account.token, "Accept" to "application/json", "Content-Type" to "application/json")
+        val waits = longArrayOf(0, 2_000, 6_000)
+        for (attempt in waits.indices) {
+            if (attempt > 0) delay(waits[attempt])
+            try {
+                Http.post("https://graphql.anilist.co", body, headers).use { r ->
+                    if (r.code == 401) {
+                        aniListAuthFailed = true
+                        return ""
+                    }
+                    if (!r.isSuccessful) return@use
+                    val name = JSONObject(r.body?.string().orEmpty()).optJSONObject("data")?.optJSONObject("Viewer")?.optString("name").orEmpty()
+                    if (name.isNotBlank()) return name
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+            }
+        }
+        return ""
     }
     private suspend fun loadMal(app:HikariApp):Result<List<Shelf>>{
         val account=app.store.trackers().firstOrNull{it.kind==TrackerKind.MAL}

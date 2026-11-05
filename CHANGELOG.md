@@ -1,3 +1,8 @@
+## 0.12.46 (continuous build only)
+
+- Manga translates dense pages now: the script probe reads top/middle/bottom tiles (a credits strip at the top no longer picks the wrong recognizer for the whole page), a page the winner still blanks gets a second chance with the runner-up script, then one full-resolution re-pass for tiny hand-lettering the tile scale smeared — plus Manga-tag log lines (probe, boxes, failures) so the next log shows why a page stayed blank
+- AniList library survives rate-limits: the collection query retries with backoff on 429/5xx and network blips (the transient "did not return a library" a reopen fixed), a real 401 says the login expired instead, and tapping the tracker error retries the load in place — library header and Show-all shelf both
+
 ## 0.12.45 (continuous build only)
 
 - Fixed the crash on opening a manga: float dust could invert the overlay's page clamp by 1 ulp (maximum 540.0 < minimum 540.00006) and coerceIn throws on an empty range — the clamp now falls back to center, and each box draws defensively so a drawing bug can never take the app down again

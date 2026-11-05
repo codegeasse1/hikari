@@ -29,6 +29,7 @@ import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions
 import com.google.mlkit.vision.text.devanagari.DevanagariTextRecognizerOptions
 import com.google.mlkit.vision.text.japanese.JapaneseTextRecognizerOptions
 import com.google.mlkit.vision.text.korean.KoreanTextRecognizerOptions
+import com.hikari.app.data.Logs
 import java.io.File
 import java.net.URLEncoder
 import java.security.MessageDigest
@@ -301,7 +302,9 @@ object MangaTranslateRuntime {
     ): List<TLBox> {
         if (!st.enabled || imgW <= 0 || imgH <= 0) return emptyList()
         val d = dir ?: return emptyList()
-        val hk = sha1("$pageKey|${st.orig.name}|${st.target.name}|${st.engine.name}|${st.geminiKey}|v9")
+        // v10: multi-tile script probe + runner-up second chance + full-res
+        // re-pass change what a page yields, so older partial caches rescan.
+        val hk = sha1("$pageKey|${st.orig.name}|${st.target.name}|${st.engine.name}|${st.geminiKey}|v10")
         val cacheFile = File(d, "$hk.json")
         readCache(cacheFile)?.let { return it }
         val def = inflight.getOrPut(hk) { scope.async { runTranslate(file, imgW, imgH, st) } }
@@ -427,6 +430,8 @@ object MangaTranslateRuntime {
                 } else if (isArt) TLBox(b.l, b.t, b.r, b.b, b.text, tt, art = true)
                 else TLBox(b.l, b.t, b.r, b.b, b.text, tt)
             }
+        }.also { done ->
+            Logs.log("Manga", "tl-page raw=" + raw.size + " grouped=" + grouped.size + " kept=" + kept.size + " translated=" + translated.count { !it.isNullOrBlank() } + " final=" + done.size)
         }
     }
 
@@ -546,59 +551,51 @@ object MangaTranslateRuntime {
             }
             // 0s, 5s, 15s, 30s, 60s, 120s between passes (~4 min cover).
             val waits = longArrayOf(0, 5_000, 15_000, 30_000, 60_000, 120_000)
+            var scripts: Pair<Script, Script?>? = null
             for (attempt in waits.indices) {
                 if (attempt > 0) delay(waits[attempt])
-                val tiles = ArrayList<Pair<Int, Bitmap>>()
-                var y = 0
-                while (y * 1L * sample < h) {
-                    val y0s = y
-                    val y1s = min(y + tileH, ceil(h.toDouble() / sample).toInt().coerceAtLeast(1))
-                    val rect = Rect(0, y0s * sample, w, min(h, y1s * sample))
-                    if (rect.height() <= 0) break
-                    val opts = BitmapFactory.Options().apply { inSampleSize = sample }
-                    val bmp = try {
-                        dec.decodeRegion(rect, opts)
-                    } catch (e: Exception) {
-                        null
-                    }
-                    if (bmp != null) tiles.add(y0s to bmp)
-                    y = y1s - overlap
-                    if (y1s * 1L * sample >= h) break
-                    if (tiles.size > 24) break
-                }
+                val tiles = decodeTiles(dec, w, h, sample, tileH, overlap, 24)
                 if (tiles.isEmpty()) return emptyList()
-                val script = fixed ?: detectScript(tiles)
-                // Tiles decode up front; OCR them 3 at a time, each lane on
-                // its own client (a client answers one image at a time).
-                // Order is restored by index so the overlap fold is stable.
-                val sem = Semaphore(3)
-                val pool = List(3) { newRec(script) }
-                val parts = coroutineScope {
-                    tiles.mapIndexed { i, (y0s, bmp) ->
-                        async {
-                            sem.withPermit {
-                                val rec = pool[i % pool.size]
-                                try {
-                                    Triple(i, ocrTile(rec, bmp, y0s, sample), false)
-                                } catch (e: CancellationException) {
-                                    throw e
-                                } catch (e: Exception) {
-                                    Triple(i, emptyList<RawBox>(), true)
-                                } finally {
-                                    if (!bmp.isRecycled) bmp.recycle()
-                                }
-                            }
-                        }
-                    }.awaitAll()
-                }.sortedBy { it.first }
-                val out = ArrayList<RawBox>()
-                var failed = 0
-                for ((_, boxes, bad) in parts) {
-                    if (bad) failed++ else out.addAll(boxes)
+                if (scripts == null) {
+                    scripts = if (fixed != null) Pair<Script, Script?>(fixed, null) else detectScripts(tiles)
                 }
-                if (out.isNotEmpty()) return mergeRows(out)
-                // Engine answered fine but saw no text: a truly blank page.
-                if (failed == 0) return emptyList()
+                val scr = scripts ?: return emptyList()
+                val (primary, runner) = scr
+                val (out, failed) = ocrTiles(tiles, primary, sample)
+                if (out.isNotEmpty()) {
+                    recycleTiles(tiles)
+                    Logs.log("Manga", "tl-ocr pass=" + attempt + " script=" + primary + " tiles=" + tiles.size + " boxes=" + out.size + " failed=" + failed)
+                    return mergeRows(out)
+                }
+                // Primary answered fine but saw nothing: a sparse or mixed
+                // page (English art with vertical Japanese SFX, tiny
+                // hand-lettering the tile scale smears). Second chance with
+                // the runner-up script on the same tiles before blanking.
+                if (failed == 0 && runner != null) {
+                    val (out2, failed2) = ocrTiles(tiles, runner, sample)
+                    if (out2.isNotEmpty()) {
+                        recycleTiles(tiles)
+                        Logs.log("Manga", "tl-ocr pass=" + attempt + " script=" + primary + "+" + runner + " tiles=" + tiles.size + " boxes=" + out2.size)
+                        return mergeRows(out2)
+                    }
+                    if (failed2 > 0) {
+                        recycleTiles(tiles)
+                        continue
+                    }
+                }
+                if (failed == 0) {
+                    // Engine answered fine but saw no text. A truly blank
+                    // page returns here — after one full-resolution re-pass,
+                    // since tiny text the tile scale smeared is often crisp
+                    // at full res.
+                    recycleTiles(tiles)
+                    val (hiOut, hiFailed) = fullResOcr(dec, w, h, primary, runner)
+                    if (hiOut.isNotEmpty()) return hiOut
+                    if (hiFailed > 0) continue
+                    Logs.log("Manga", "tl-ocr script=" + primary + " blank page")
+                    return emptyList()
+                }
+                recycleTiles(tiles)
                 // Otherwise the model is still downloading — next pass waits.
             }
             return emptyList()
@@ -610,34 +607,177 @@ object MangaTranslateRuntime {
         }
     }
 
+    /** One vertical-tile decode of [dec] (see [ocrPage]). */
+    private fun decodeTiles(
+        dec: BitmapRegionDecoder,
+        w: Int,
+        h: Int,
+        sample: Int,
+        tileH: Int,
+        overlap: Int,
+        cap: Int,
+    ): ArrayList<Pair<Int, Bitmap>> {
+        val tiles = ArrayList<Pair<Int, Bitmap>>()
+        var y = 0
+        while (y * 1L * sample < h) {
+            val y0s = y
+            val y1s = min(y + tileH, ceil(h.toDouble() / sample).toInt().coerceAtLeast(1))
+            val rect = Rect(0, y0s * sample, w, min(h, y1s * sample))
+            if (rect.height() <= 0) break
+            val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+            val bmp = try {
+                dec.decodeRegion(rect, opts)
+            } catch (e: Exception) {
+                null
+            }
+            if (bmp != null) tiles.add(y0s to bmp)
+            y = y1s - overlap
+            if (y1s * 1L * sample >= h) break
+            if (tiles.size > cap) break
+        }
+        return tiles
+    }
+
     /**
-     * First tile decides the script. Latin is tried first (fast path: most
-     * scanlations are Latin already); when it sees almost nothing — vertical
-     * Japanese, clean Korean/Chinese pages, the whole "manga never
-     * translates" class — every recognizer is asked on the same tile at once
-     * and the one that actually reads something wins. Bounded to this probe,
-     * so the common path costs nothing extra.
+     * OCR of decoded tiles, 3 at a time, each lane on its own client (a
+     * client answers one image at a time). Order is restored by index so
+     * the overlap fold is stable. Returns the boxes plus how many tiles
+     * threw (a still-downloading model fails every tile it touches).
      */
-    private suspend fun detectScript(tiles: List<Pair<Int, Bitmap>>): Script {
-        val (_, first) = tiles.first()
-        val latinProbe = try {
-            latinRec.process(InputImage.fromBitmap(first, 0)).awaitTask()
-                .textBlocks.joinToString("\n") { it.text ?: "" }.take(2000)
-        } catch (e: Exception) {
-            ""
+    private suspend fun ocrTiles(
+        tiles: List<Pair<Int, Bitmap>>,
+        script: Script,
+        sample: Int,
+    ): Pair<List<RawBox>, Int> {
+        val sem = Semaphore(3)
+        val pool = List(3) { newRec(script) }
+        val parts = coroutineScope {
+            tiles.mapIndexed { i, (y0s, bmp) ->
+                async {
+                    sem.withPermit {
+                        val rec = pool[i % pool.size]
+                        try {
+                            Triple(i, ocrTile(rec, bmp, y0s, sample), false)
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            Triple(i, emptyList<RawBox>(), true)
+                        }
+                    }
+                }
+            }.awaitAll()
+        }.sortedBy { it.first }
+        val out = ArrayList<RawBox>()
+        var failed = 0
+        for ((_, boxes, bad) in parts) {
+            if (bad) failed++ else out.addAll(boxes)
         }
-        if (latinProbe.trim().length >= 4) return scriptOf(latinProbe)
-        val img = InputImage.fromBitmap(first, 0)
-        val cands = coroutineScope {
+        return out to failed
+    }
+
+    private fun recycleTiles(tiles: List<Pair<Int, Bitmap>>) {
+        for ((_, bmp) in tiles) {
+            try {
+                if (!bmp.isRecycled) bmp.recycle()
+            } catch (e: Exception) {
+            }
+        }
+    }
+
+    /**
+     * One full-resolution pass (no downsampling) for pages the fast tile
+     * pass blanked: tiny hand-lettering the 1600px scale smears is often
+     * crisp at full res. Boxes come back merged; the failure count tells
+     * the caller whether a model is still downloading (wait) or the page
+     * is truly blank (stop).
+     */
+    private suspend fun fullResOcr(
+        dec: BitmapRegionDecoder,
+        w: Int,
+        h: Int,
+        primary: Script,
+        runner: Script?,
+    ): Pair<List<RawBox>, Int> {
+        val tiles = decodeTiles(dec, w, h, 1, 1200, 80, 40)
+        if (tiles.isEmpty()) return emptyList<RawBox>() to 1
+        val (out, failed) = ocrTiles(tiles, primary, 1)
+        if (out.isNotEmpty()) {
+            recycleTiles(tiles)
+            Logs.log("Manga", "tl-ocr fullres script=" + primary + " tiles=" + tiles.size + " boxes=" + out.size)
+            return mergeRows(out) to 0
+        }
+        if (failed == 0 && runner != null) {
+            val (out2, failed2) = ocrTiles(tiles, runner, 1)
+            recycleTiles(tiles)
+            if (out2.isNotEmpty()) {
+                Logs.log("Manga", "tl-ocr fullres script=" + primary + "+" + runner + " tiles=" + tiles.size + " boxes=" + out2.size)
+                return mergeRows(out2) to 0
+            }
+            return emptyList<RawBox>() to failed2
+        }
+        recycleTiles(tiles)
+        if (failed == 0) Logs.log("Manga", "tl-ocr fullres script=" + primary + " blank page")
+        return emptyList<RawBox>() to failed
+    }
+
+    /**
+     * Up to three tiles (top/middle/bottom) decide the script — a credits
+     * strip at the top must not pick the recognizer for the whole page.
+     * Latin is tried first (fast path: most scanlations are Latin); when it
+     * sees almost nothing — vertical Japanese, clean Korean/Chinese pages,
+     * the old "manga never translates" class — every recognizer is asked
+     * on the same tiles at once and the one that actually reads something
+     * wins. The runner-up comes back too, so a page the winner still
+     * blanks gets a second chance with it instead of staying empty.
+     * Bounded to this probe, so the common path costs nothing extra.
+     */
+    private suspend fun detectScripts(tiles: List<Pair<Int, Bitmap>>): Pair<Script, Script?> {
+        val first = tiles.firstOrNull()
+        val mid = tiles.getOrNull(tiles.size / 2)
+        val last = tiles.lastOrNull()
+        val probeTiles = listOfNotNull(
+            first,
+            mid?.takeIf { it.first != first?.first },
+            last?.takeIf { it.first != first?.first && it.first != mid?.first },
+        ).take(3)
+        var latinTotal = 0
+        val latinText = StringBuilder()
+        for ((_, bmp) in probeTiles) {
+            try {
+                val t = latinRec.process(InputImage.fromBitmap(bmp, 0)).awaitTask()
+                    .textBlocks.joinToString("\n") { it.text ?: "" }.take(2000)
+                latinTotal += t.trim().length
+                if (latinText.length < 2000) latinText.append(t, 0, min(2000 - latinText.length, t.length))
+            } catch (e: Exception) {
+            }
+        }
+        if (latinTotal >= 4) {
+            val primary = scriptOf(latinText.toString())
+            Logs.log("Manga", "tl-probe latin=" + latinTotal + " script=" + primary)
+            return primary to null
+        }
+        val ranked = coroutineScope {
             listOf(
-                async { Script.JA to readLen(jaRec, img) },
-                async { Script.KO to readLen(koRec, img) },
-                async { Script.ZH to readLen(zhRec, img) },
-                async { Script.HI to readLen(hiRec, img) },
+                async { Script.JA to probeLen(jaRec, probeTiles) },
+                async { Script.KO to probeLen(koRec, probeTiles) },
+                async { Script.ZH to probeLen(zhRec, probeTiles) },
+                async { Script.HI to probeLen(hiRec, probeTiles) },
             ).awaitAll()
+        }.sortedByDescending { it.second }
+        Logs.log("Manga", "tl-probe multi " + ranked.joinToString(" ") { it.first.name + "=" + it.second })
+        val best = ranked.firstOrNull()
+        if (best == null || best.second < 2) return Script.LATIN to null
+        val second = ranked.getOrNull(1)?.takeIf { it.second >= 2 && it.first != best.first }?.first
+        return best.first to second
+    }
+
+    /** How much text [rec] reads across the probe tiles (0 when the model is still down). */
+    private suspend fun probeLen(rec: TextRecognizer, tiles: List<Pair<Int, Bitmap>>): Int {
+        var total = 0
+        for ((_, bmp) in tiles) {
+            total += readLen(rec, InputImage.fromBitmap(bmp, 0))
         }
-        val best = cands.maxByOrNull { it.second }
-        return if (best != null && best.second >= 2) best.first else Script.LATIN
+        return total
     }
 
     /** How much text [rec] reads on [img] (0 when the model is still down). */

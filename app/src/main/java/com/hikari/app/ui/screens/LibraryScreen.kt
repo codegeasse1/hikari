@@ -157,7 +157,10 @@ fun LibraryScreen(nav: NavHostController, embedded: Boolean = false) {
     var remoteShelves by remember { mutableStateOf<List<TrackerLibraryRepository.Shelf>>(emptyList()) }
     var remoteError by remember { mutableStateOf<String?>(null) }
     var remoteLoading by remember { mutableStateOf(false) }
-    LaunchedEffect(trackerSource) {
+    // Tapping the tracker error retries the load in place — a transient
+    // rate-limit no longer needs an app restart to clear.
+    var trackerRetry by remember { mutableStateOf(0) }
+    LaunchedEffect(trackerSource, trackerRetry) {
         if (trackerSource == "nuvio") {
             remoteShelves = emptyList()
             remoteError = null
@@ -270,7 +273,12 @@ fun LibraryScreen(nav: NavHostController, embedded: Boolean = false) {
                     Text(tr("Watchlists and personal lists from your connected tracker"),
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     if (remoteLoading) Text(tr("Loading…"), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
-                    else if (!remoteError.isNullOrBlank()) Text(remoteError.orEmpty(), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+                    else if (!remoteError.isNullOrBlank()) Text(
+                        remoteError.orEmpty(),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.clickable { trackerRetry++ },
+                    )
                 }
             }
             visibleShelves.forEachIndexed { shelfIndex, shelf ->
@@ -684,13 +692,16 @@ fun TrackerShelfScreen(nav: NavHostController, source: String, shelfKey: String,
     var items by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
+    // Same tap-to-retry as the library header: a transient tracker failure
+    // reloads in place instead of needing a reopen.
+    var shelfRetry by remember { mutableStateOf(0) }
     // tr() is @Composable: read every string HERE, never inside LaunchedEffect.
     val shelfNotFound = tr("Shelf not found.")
     // Instant find inside a big shelf (80+ synced manga): narrows the grid
     // as you type, so the title is one word away instead of a long scroll.
     var query by remember { mutableStateOf("") }
     val searchPlaceholder = tr("Search this shelf…")
-    LaunchedEffect(source, shelfKey) {
+    LaunchedEffect(source, shelfKey, shelfRetry) {
         loading = true
         error = null
         val result = TrackerLibraryRepository.load(app, source)
@@ -772,7 +783,11 @@ fun TrackerShelfScreen(nav: NavHostController, source: String, shelfKey: String,
                 Modifier.fillMaxSize().padding(24.dp),
                 contentAlignment = Alignment.Center,
             ) {
-                Text(error.orEmpty(), style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    error.orEmpty(),
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.clickable { shelfRetry++ },
+                )
             }
             items.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text(tr("Nothing here."), style = MaterialTheme.typography.bodyMedium)
