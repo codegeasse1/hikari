@@ -1,3 +1,8 @@
+## 0.12.47 (continuous build only)
+
+- Manga stops spinning "Translating..." on pages it can never translate: same-language pairs (English page, English target — the default) short-circuit at once, echo-only results report "Already English" instead of retrying for minutes, truly blank pages say "No text found", and only real failures (downloading models, dead network) keep retrying — the badge also narrates each stage (Reading… / Translating 12…), so a stuck page says where it is stuck
+- (0.12.46 notes below still apply: multi-tile probe, runner-up + full-res second chance, AniList 429 retry + tap-to-retry)
+
 ## 0.12.46 (continuous build only)
 
 - Manga translates dense pages now: the script probe reads top/middle/bottom tiles (a credits strip at the top no longer picks the wrong recognizer for the whole page), a page the winner still blanks gets a second chance with the runner-up script, then one full-resolution re-pass for tiny hand-lettering the tile scale smeared — plus Manga-tag log lines (probe, boxes, failures) so the next log shows why a page stayed blank

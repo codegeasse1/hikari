@@ -220,7 +220,7 @@ object MangaTranslateRuntime {
 
     private var dir: File? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private val inflight = ConcurrentHashMap<String, Deferred<List<TLBox>>>()
+    private val inflight = ConcurrentHashMap<String, Deferred<TLPage>>()
 
     /** Point at the app's files dir once (the cache lives under it). */
     fun configure(ctx: Context) {
@@ -289,9 +289,20 @@ object MangaTranslateRuntime {
     }
 
     /**
-     * Translated blocks for one page image, in full-image pixels. Empty when
-     * translation is off, the page has no text, or every engine failed — the
-     * caller then simply draws no overlay.
+     * What a page translation produced — and whether trying again could
+     * help. The holders retry only when a retry could succeed; a page that
+     * is already in the target language (or holds no text) clears its badge
+     * at once instead of spinning "Translating..." through the retry budget.
+     */
+    enum class TLStatus { OK, BLANK_PAGE, ALREADY_TARGET, ENGINE_FAILED, OCR_PENDING }
+
+    /** One page's translation result (see [TLStatus]). */
+    data class TLPage(val boxes: List<TLBox>, val status: TLStatus, val note: String)
+
+    /**
+     * Translated blocks for one page image, in full-image pixels. [onStatus]
+     * reports each stage ("Reading…", "Translating 12…", "No text found")
+     * for the holder badge, so a stuck page says where it is stuck.
      */
     suspend fun translatePage(
         pageKey: String,
@@ -299,23 +310,33 @@ object MangaTranslateRuntime {
         imgW: Int,
         imgH: Int,
         st: MangaTranslateSettings = settings,
-    ): List<TLBox> {
-        if (!st.enabled || imgW <= 0 || imgH <= 0) return emptyList()
-        val d = dir ?: return emptyList()
+        onStatus: (String) -> Unit = {},
+    ): TLPage {
+        if (!st.enabled || imgW <= 0 || imgH <= 0) return TLPage(emptyList(), TLStatus.BLANK_PAGE, "")
+        if (st.orig != MangaOrigLang.AUTO && st.orig.code == st.target.code) {
+            // Same-language pair (English page, English target) can never
+            // produce a box: every echo is dropped below. Say so at once
+            // instead of burning the retry budget on a stuck badge.
+            val note = "Already " + st.target.label
+            Logs.log("Manga", "tl-page already-target")
+            onStatus(note)
+            return TLPage(emptyList(), TLStatus.ALREADY_TARGET, note)
+        }
+        val d = dir ?: return TLPage(emptyList(), TLStatus.ENGINE_FAILED, "")
         // v10: multi-tile script probe + runner-up second chance + full-res
         // re-pass change what a page yields, so older partial caches rescan.
         val hk = sha1("$pageKey|${st.orig.name}|${st.target.name}|${st.engine.name}|${st.geminiKey}|v10")
         val cacheFile = File(d, "$hk.json")
-        readCache(cacheFile)?.let { return it }
-        val def = inflight.getOrPut(hk) { scope.async { runTranslate(file, imgW, imgH, st) } }
+        readCache(cacheFile)?.let { return TLPage(it, TLStatus.OK, "") }
+        val def = inflight.getOrPut(hk) { scope.async { runTranslate(file, imgW, imgH, st, onStatus) } }
         return try {
             val result = def.await()
-            if (result.isNotEmpty()) writeCache(cacheFile, result)
+            if (result.boxes.isNotEmpty()) writeCache(cacheFile, result.boxes)
             result
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            emptyList()
+            TLPage(emptyList(), TLStatus.ENGINE_FAILED, "")
         } finally {
             if (def.isCompleted) inflight.remove(hk, def)
         }
@@ -326,26 +347,40 @@ object MangaTranslateRuntime {
         imgW: Int,
         imgH: Int,
         st: MangaTranslateSettings,
-    ): List<TLBox> = withContext(Dispatchers.IO) {
-        val raw = try {
-            ocrPage(file, imgW, imgH, st.orig)
+        onStatus: (String) -> Unit,
+    ): TLPage = withContext(Dispatchers.IO) {
+        onStatus("Reading…")
+        val (raw, downloading) = try {
+            ocrPage(file, imgW, imgH, st.orig, onStatus)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            return@withContext emptyList()
+            return@withContext TLPage(emptyList(), TLStatus.ENGINE_FAILED, "")
         }
-        if (raw.isEmpty()) return@withContext emptyList()
+        if (raw.isEmpty()) {
+            Logs.log("Manga", "tl-page raw=0 downloading=" + downloading)
+            return@withContext if (downloading) TLPage(emptyList(), TLStatus.OCR_PENDING, "")
+            else {
+                onStatus("No text found")
+                TLPage(emptyList(), TLStatus.BLANK_PAGE, "No text found")
+            }
+        }
         // Stacked lines of one bubble become ONE block: translating them
         // together keeps the sentence whole and renders one clean bubble.
         val grouped = groupBubbles(raw)
-        if (grouped.isEmpty()) return@withContext emptyList()
+        if (grouped.isEmpty()) return@withContext TLPage(emptyList(), TLStatus.BLANK_PAGE, "No text found")
         // Tiny-text gate: site-credit strips and speck noise (a few px tall)
         // never become garbled transliterations. Real dialogue ("?!" included)
         // is far taller, so only physical specks are dropped.
         val kept = if (imgW > 0) {
             grouped.filter { (it.b - it.t) >= imgW * 0.012f }
         } else grouped
-        if (kept.isEmpty()) return@withContext emptyList()
+        if (kept.isEmpty()) {
+            Logs.log("Manga", "tl-page raw=" + raw.size + " grouped=" + grouped.size + " kept=0 (tiny-text gate)")
+            onStatus("No text found")
+            return@withContext TLPage(emptyList(), TLStatus.BLANK_PAGE, "No text found")
+        }
+        onStatus("Translating " + kept.size + "…")
         val texts = kept.map { cleanOcr(it.text) }
         // ALL-CAPS shouting ("LET GO! LET ME GO!") translates badly as-is:
         // Google keeps words like GO in Latin. Sentence-case it for the
@@ -357,7 +392,7 @@ object MangaTranslateRuntime {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            return@withContext emptyList()
+            return@withContext TLPage(emptyList(), TLStatus.ENGINE_FAILED, "")
         }
         // Second chance for boxes whose translation still leaks source-script
         // words (e.g. Hindi "मैं GO वापस..."): retry those boxes alone in
@@ -396,7 +431,7 @@ object MangaTranslateRuntime {
         // the bubble on white pages too, where the directional room scan can
         // leak through thin outlines. A found outline centers + sizes the box.
         val bubbles = roomScan.second
-        kept.mapIndexedNotNull { i, b ->
+        val done = kept.mapIndexedNotNull { i, b ->
             val raw = translated.getOrNull(i)?.trim().orEmpty()
             var t = cleanTrans(raw)
             if (t.isBlank() || t.equals(texts.getOrNull(i), ignoreCase = true)) null
@@ -430,9 +465,24 @@ object MangaTranslateRuntime {
                 } else if (isArt) TLBox(b.l, b.t, b.r, b.b, b.text, tt, art = true)
                 else TLBox(b.l, b.t, b.r, b.b, b.text, tt)
             }
-        }.also { done ->
-            Logs.log("Manga", "tl-page raw=" + raw.size + " grouped=" + grouped.size + " kept=" + kept.size + " translated=" + translated.count { !it.isNullOrBlank() } + " final=" + done.size)
         }
+        if (done.isEmpty()) {
+            // Text was found but nothing survived: either every engine
+            // reply failed (network/rate-limit — a retry may help) or every
+            // reply echoed the source (page already in the target language —
+            // retrying would spin the badge forever, so the holder clears).
+            val anyReply = translated.any { !it.isNullOrBlank() }
+            Logs.log("Manga", "tl-page raw=" + raw.size + " kept=" + kept.size + " replies=" + translated.count { !it.isNullOrBlank() } + " final=0")
+            return@withContext if (anyReply) {
+                val note = "Already " + st.target.label
+                onStatus(note)
+                TLPage(emptyList(), TLStatus.ALREADY_TARGET, note)
+            } else {
+                TLPage(emptyList(), TLStatus.ENGINE_FAILED, "")
+            }
+        }
+        Logs.log("Manga", "tl-page raw=" + raw.size + " grouped=" + grouped.size + " kept=" + kept.size + " translated=" + translated.count { !it.isNullOrBlank() } + " final=" + done.size)
+        return@withContext TLPage(done, TLStatus.OK, "")
     }
 
     /**
@@ -528,16 +578,22 @@ object MangaTranslateRuntime {
      * pass where the engine ANSWERED (zero failures) but saw nothing is a
      * genuinely blank page and returns at once.
      */
-    private suspend fun ocrPage(file: File, imgW: Int, imgH: Int, orig: MangaOrigLang): List<RawBox> {
+    /**
+     * OCR over vertical tiles (see [ocrPage] docs for the pass structure).
+     * Returns the boxes plus whether the models may still be downloading: a
+     * retry can only help while the engines are still answering with
+     * failures — a clean empty pass means the page holds no (readable) text.
+     */
+    private suspend fun ocrPage(file: File, imgW: Int, imgH: Int, orig: MangaOrigLang, onStatus: (String) -> Unit): Pair<List<RawBox>, Boolean> {
         val dec = try {
-            BitmapRegionDecoder.newInstance(file.absolutePath, false) ?: return emptyList()
+            BitmapRegionDecoder.newInstance(file.absolutePath, false) ?: return emptyList<RawBox>() to false
         } catch (e: Exception) {
-            return emptyList()
+            return emptyList<RawBox>() to false
         }
         try {
             val w = if (dec.width > 0) dec.width else imgW
             val h = if (dec.height > 0) dec.height else imgH
-            if (w <= 0 || h <= 0) return emptyList()
+            if (w <= 0 || h <= 0) return emptyList<RawBox>() to false
             val sample = max(1, ceil(w / 1600.0).toInt())
             val tileH = 1800
             val overlap = 80
@@ -555,17 +611,17 @@ object MangaTranslateRuntime {
             for (attempt in waits.indices) {
                 if (attempt > 0) delay(waits[attempt])
                 val tiles = decodeTiles(dec, w, h, sample, tileH, overlap, 24)
-                if (tiles.isEmpty()) return emptyList()
+                if (tiles.isEmpty()) return emptyList<RawBox>() to false
                 if (scripts == null) {
                     scripts = if (fixed != null) Pair<Script, Script?>(fixed, null) else detectScripts(tiles)
                 }
-                val scr = scripts ?: return emptyList()
+                val scr = scripts ?: return emptyList<RawBox>() to false
                 val (primary, runner) = scr
                 val (out, failed) = ocrTiles(tiles, primary, sample)
                 if (out.isNotEmpty()) {
                     recycleTiles(tiles)
                     Logs.log("Manga", "tl-ocr pass=" + attempt + " script=" + primary + " tiles=" + tiles.size + " boxes=" + out.size + " failed=" + failed)
-                    return mergeRows(out)
+                    return mergeRows(out) to false
                 }
                 // Primary answered fine but saw nothing: a sparse or mixed
                 // page (English art with vertical Japanese SFX, tiny
@@ -576,7 +632,7 @@ object MangaTranslateRuntime {
                     if (out2.isNotEmpty()) {
                         recycleTiles(tiles)
                         Logs.log("Manga", "tl-ocr pass=" + attempt + " script=" + primary + "+" + runner + " tiles=" + tiles.size + " boxes=" + out2.size)
-                        return mergeRows(out2)
+                        return mergeRows(out2) to false
                     }
                     if (failed2 > 0) {
                         recycleTiles(tiles)
@@ -589,16 +645,17 @@ object MangaTranslateRuntime {
                     // since tiny text the tile scale smeared is often crisp
                     // at full res.
                     recycleTiles(tiles)
+                    onStatus("Reading… (hi-res pass)")
                     val (hiOut, hiFailed) = fullResOcr(dec, w, h, primary, runner)
-                    if (hiOut.isNotEmpty()) return hiOut
+                    if (hiOut.isNotEmpty()) return hiOut to false
                     if (hiFailed > 0) continue
                     Logs.log("Manga", "tl-ocr script=" + primary + " blank page")
-                    return emptyList()
+                    return emptyList<RawBox>() to false
                 }
                 recycleTiles(tiles)
                 // Otherwise the model is still downloading — next pass waits.
             }
-            return emptyList()
+            return emptyList<RawBox>() to true
         } finally {
             try {
                 dec.recycle()

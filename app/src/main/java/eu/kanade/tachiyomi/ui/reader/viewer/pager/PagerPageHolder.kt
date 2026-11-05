@@ -255,10 +255,26 @@ class PagerPageHolder(
         // it is working, so a slow first run reads as working, not broken.
         postDelayed({ if (tlBadge === badge) { removeView(badge); if (tlBadge === badge) tlBadge = null } }, 300000)
         tlJob = scope.launch {
-            val boxes = MangaTranslateRuntime.translatePage(pageKey, file, imgW, imgH)
+            val res = MangaTranslateRuntime.translatePage(pageKey, file, imgW, imgH, onStatus = { s ->
+                if (tlPageKey == pageKey && tlBadge === badge) badge.post {
+                    if (tlPageKey == pageKey && tlBadge === badge) badge.text = s
+                }
+            })
             if (tlPageKey != pageKey) return@launch
-            val list = boxes.filter { it.trans.isNotBlank() }
+            val list = res.boxes.filter { it.trans.isNotBlank() }
             if (list.isEmpty()) {
+                if (res.status == MangaTranslateRuntime.TLStatus.ALREADY_TARGET || res.status == MangaTranslateRuntime.TLStatus.BLANK_PAGE) {
+                    // Nothing a retry could fix: the page is already in the
+                    // target language, or it holds no readable text. Say so
+                    // briefly instead of spinning "Translating..." through
+                    // the whole retry budget.
+                    if (tlBadge === badge) {
+                        badge.post { if (tlBadge === badge && tlPageKey == pageKey) badge.text = res.note.ifBlank { "Nothing to translate" } }
+                        delay(2500)
+                        if (tlBadge === badge && tlPageKey == pageKey) { removeView(badge); tlBadge = null }
+                    }
+                    return@launch
+                }
                 // Longer backoff retries (see TL_RETRY_MS): a first-use model
                 // download or a rate-limited engine needs minutes, not
                 // seconds. The open page fills in by itself — the badge stays
