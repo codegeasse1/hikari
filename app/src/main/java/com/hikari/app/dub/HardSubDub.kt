@@ -62,7 +62,7 @@ class HardSubDub(
         TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
     }
     private val chinese by lazy {
-        TextRecognition.getClient(ChineseTextRecognizerOptions.Builder().build()_OPTIONS)
+        TextRecognition.getClient(ChineseTextRecognizerOptions.Builder().build())
     }
 
     fun onPlayingChanged(playing: Boolean) {
