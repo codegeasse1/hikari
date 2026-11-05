@@ -129,10 +129,6 @@ class AiDubManager(private val appCtx: Context) {
             .apply()
     }
 
-    fun setEngine(e: String) {
-        engine = e
-    }
-
     fun currentLang(): AiDubLang = AiDubLangs.byCode(lang)
 
     // ---- subtitle entry points (called from the player's listener) ----

@@ -12325,7 +12325,7 @@ class PlayerActivity : ComponentActivity() {
             aiDubSheet = null
             when {
                 which == 0 -> {
-                    aiDub.setEngine(AiDubManager.ENGINE_SYSTEM)
+                    aiDub.engine = AiDubManager.ENGINE_SYSTEM
                     aiDub.enabled = true
                     aiDub.save()
                     toastAiDub()
@@ -12335,7 +12335,7 @@ class PlayerActivity : ComponentActivity() {
                         Toast.makeText(this, I18n.t("Piper needs a 64-bit phone"), Toast.LENGTH_SHORT).show()
                         return@showGlassMenu
                     }
-                    aiDub.setEngine(AiDubManager.ENGINE_PIPER)
+                    aiDub.engine = AiDubManager.ENGINE_PIPER
                     aiDub.enabled = true
                     aiDub.save()
                     Toast.makeText(this, aiDub.piperHint(), Toast.LENGTH_SHORT).show()
