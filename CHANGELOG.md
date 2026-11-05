@@ -1,3 +1,7 @@
+## 0.12.49 (continuous build only)
+
+- Manga "No text found" was a lie on some pages: when the region decoder rejects a page file (mid-download partial, or a format it can't handle while the viewer shows it fine) the scan died in a silent early exit and every page got stamped blank. Those paths now log the facts (tl-decode lines: file size, dimensions), fall back to a plain full-bitmap OCR pass through the same probe + recognizers, and otherwise mark the page retryable so it keeps trying with backoff (then tap-to-retry) instead of a permanent "No text found" — genuinely blank pages still report at once, and previously mis-stamped pages rescan on their own (blanks were never cached)
+
 ## 0.12.48 (continuous build only)
 
 - Search "See all" Back now returns to the shelves: drilling into a provider's own grid and pressing the phone Back button collapses back to that provider's shelf row instead of popping the whole Search screen to Home

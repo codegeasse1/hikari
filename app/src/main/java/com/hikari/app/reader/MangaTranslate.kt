@@ -312,7 +312,12 @@ object MangaTranslateRuntime {
         st: MangaTranslateSettings = settings,
         onStatus: (String) -> Unit = {},
     ): TLPage {
-        if (!st.enabled || imgW <= 0 || imgH <= 0) return TLPage(emptyList(), TLStatus.BLANK_PAGE, "")
+        if (!st.enabled || imgW <= 0 || imgH <= 0) {
+            // Enabled but dimension-less is a caller bug, not a blank page:
+            // say so instead of stamping "No text found" on it.
+            if (st.enabled) Logs.log("Manga", "tl-page skip img=" + imgW + "x" + imgH)
+            return TLPage(emptyList(), TLStatus.BLANK_PAGE, "")
+        }
         if (st.orig != MangaOrigLang.AUTO && st.orig.code == st.target.code) {
             // Same-language pair (English page, English target) can never
             // produce a box: every echo is dropped below. Say so at once
@@ -322,7 +327,10 @@ object MangaTranslateRuntime {
             onStatus(note)
             return TLPage(emptyList(), TLStatus.ALREADY_TARGET, note)
         }
-        val d = dir ?: return TLPage(emptyList(), TLStatus.ENGINE_FAILED, "")
+        val d = dir ?: run {
+            Logs.log("Manga", "tl-page no-dir")
+            return TLPage(emptyList(), TLStatus.ENGINE_FAILED, "")
+        }
         // v10: multi-tile script probe + runner-up second chance + full-res
         // re-pass change what a page yields, so older partial caches rescan.
         val hk = sha1("$pageKey|${st.orig.name}|${st.target.name}|${st.engine.name}|${st.geminiKey}|v10")
@@ -336,6 +344,7 @@ object MangaTranslateRuntime {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
+            Logs.log("Manga", "tl-page error=" + e.javaClass.simpleName)
             TLPage(emptyList(), TLStatus.ENGINE_FAILED, "")
         } finally {
             if (def.isCompleted) inflight.remove(hk, def)
@@ -355,6 +364,7 @@ object MangaTranslateRuntime {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
+            Logs.log("Manga", "tl-run error=" + e.javaClass.simpleName)
             return@withContext TLPage(emptyList(), TLStatus.ENGINE_FAILED, "")
         }
         if (raw.isEmpty()) {
@@ -585,33 +595,42 @@ object MangaTranslateRuntime {
      * failures — a clean empty pass means the page holds no (readable) text.
      */
     private suspend fun ocrPage(file: File, imgW: Int, imgH: Int, orig: MangaOrigLang, onStatus: (String) -> Unit): Pair<List<RawBox>, Boolean> {
-        val dec = try {
-            BitmapRegionDecoder.newInstance(file.absolutePath, false) ?: return emptyList<RawBox>() to false
+        val dec: BitmapRegionDecoder? = try {
+            BitmapRegionDecoder.newInstance(file.absolutePath, false)
         } catch (e: Exception) {
-            return emptyList<RawBox>() to false
+            null
+        }
+        if (dec == null) {
+            // The region decoder rejects the file (a mid-download partial, or
+            // a format it cannot handle while the viewer itself shows it
+            // fine). This is never a blank page: log the facts, try a plain
+            // full decode, and otherwise mark it retryable so holder backoff
+            // re-tries instead of stamping "No text found".
+            Logs.log("Manga", "tl-decode region-fail exists=" + file.exists() + " len=" + runCatching { file.length() }.getOrDefault(-1L) + " ext=" + file.name.substringAfterLast('.', ""))
+            fullDecodeFallback(file, orig)?.let { return it to false }
+            return emptyList<RawBox>() to true
         }
         try {
             val w = if (dec.width > 0) dec.width else imgW
             val h = if (dec.height > 0) dec.height else imgH
-            if (w <= 0 || h <= 0) return emptyList<RawBox>() to false
+            if (w <= 0 || h <= 0) {
+                Logs.log("Manga", "tl-decode dims dec=" + runCatching { dec.width }.getOrDefault(-1) + "x" + runCatching { dec.height }.getOrDefault(-1) + " arg=" + imgW + "x" + imgH)
+                return emptyList<RawBox>() to true
+            }
             val sample = max(1, ceil(w / 1600.0).toInt())
             val tileH = 1800
             val overlap = 80
-            val fixed = when (orig) {
-                MangaOrigLang.JA -> Script.JA
-                MangaOrigLang.KO -> Script.KO
-                MangaOrigLang.ZH -> Script.ZH
-                MangaOrigLang.HI -> Script.HI
-                MangaOrigLang.EN -> Script.LATIN
-                MangaOrigLang.AUTO -> null
-            }
+            val fixed = fixedScriptFor(orig)
             // 0s, 5s, 15s, 30s, 60s, 120s between passes (~4 min cover).
             val waits = longArrayOf(0, 5_000, 15_000, 30_000, 60_000, 120_000)
             var scripts: Pair<Script, Script?>? = null
             for (attempt in waits.indices) {
                 if (attempt > 0) delay(waits[attempt])
                 val tiles = decodeTiles(dec, w, h, sample, tileH, overlap, 24)
-                if (tiles.isEmpty()) return emptyList<RawBox>() to false
+                if (tiles.isEmpty()) {
+                    Logs.log("Manga", "tl-decode no-tiles w=" + w + " h=" + h + " sample=" + sample)
+                    return emptyList<RawBox>() to true
+                }
                 if (scripts == null) {
                     scripts = if (fixed != null) Pair<Script, Script?>(fixed, null) else detectScripts(tiles)
                 }
@@ -661,6 +680,65 @@ object MangaTranslateRuntime {
                 dec.recycle()
             } catch (e: Exception) {
             }
+        }
+    }
+
+    /** Fixed recognizer for an explicit source language, null when the
+     *  probe must decide (see [detectScripts]). */
+    private fun fixedScriptFor(orig: MangaOrigLang): Script? = when (orig) {
+        MangaOrigLang.JA -> Script.JA
+        MangaOrigLang.KO -> Script.KO
+        MangaOrigLang.ZH -> Script.ZH
+        MangaOrigLang.HI -> Script.HI
+        MangaOrigLang.EN -> Script.LATIN
+        MangaOrigLang.AUTO -> null
+    }
+
+    /**
+     * Plain full-bitmap OCR for files the region decoder rejects (see the
+     * `dec == null` branch in [ocrPage]): a mid-download partial or a format
+     * it cannot handle while the viewer itself shows it fine. The bitmap is
+     * downsampled to the same ~1600px width the tiled path uses, then goes
+     * through the same probe + primary + runner-up path — boxes come back
+     * in full-image pixels exactly like the tiled path. Null when even this
+     * cannot read the file (the caller marks the page retryable).
+     */
+    private suspend fun fullDecodeFallback(file: File, orig: MangaOrigLang): List<RawBox>? {
+        val path = file.absolutePath
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        try {
+            BitmapFactory.decodeFile(path, bounds)
+        } catch (e: Exception) {
+            return null
+        }
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        val sw = max(1, ceil(bounds.outWidth / 1600.0).toInt())
+        val bmp = try {
+            BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = sw })
+        } catch (e: Exception) {
+            null
+        } ?: return null
+        val tiles = arrayListOf(0 to bmp)
+        try {
+            if (bmp.width <= 0 || bmp.height <= 0) return null
+            val fixed = fixedScriptFor(orig)
+            val scripts = if (fixed != null) Pair<Script, Script?>(fixed, null) else detectScripts(tiles)
+            val (primary, runner) = scripts
+            val (out, failed) = ocrTiles(tiles, primary, sw)
+            if (out.isNotEmpty()) {
+                Logs.log("Manga", "tl-ocr fullbmp script=" + primary + " boxes=" + out.size + " failed=" + failed)
+                return mergeRows(out)
+            }
+            if (failed == 0 && runner != null) {
+                val (out2, _) = ocrTiles(tiles, runner, sw)
+                if (out2.isNotEmpty()) {
+                    Logs.log("Manga", "tl-ocr fullbmp script=" + primary + "+" + runner + " boxes=" + out2.size)
+                    return mergeRows(out2)
+                }
+            }
+            return null
+        } finally {
+            recycleTiles(tiles)
         }
     }
 
