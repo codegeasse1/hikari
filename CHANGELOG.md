@@ -1,3 +1,11 @@
+## 0.12.52 (continuous build only)
+
+- AI Dub in the player Audio menu: speaks subtitles in Hindi, English, Spanish, French, Urdu, Arabic, Bengali, German, Russian, Portuguese, Turkish, Indonesian, Italian, Japanese, Korean and Chinese
+- Two dub voices: instant System TTS plus natural offline Piper voices (~20 MB download per language, 64-bit phones only)
+- Server audio ducks automatically while the dub speaks, then comes back up
+- Hardcoded subtitle translation for videos with burned-in subs (donghua Chinese+English): reads, translates, overlays and speaks them
+- Per-language System/Piper readiness, voice storage controls, and Stop, all in the AI Dub sheet
+
 ## 0.12.51 (continuous build only)
 
 - Added manga translation in reader settings

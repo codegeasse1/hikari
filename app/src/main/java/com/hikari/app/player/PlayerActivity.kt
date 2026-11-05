@@ -87,6 +87,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.drm.DefaultDrmSessionManager
 import androidx.media3.exoplayer.drm.FrameworkMediaDrm
 import androidx.media3.exoplayer.drm.HttpMediaDrmCallback
+import androidx.media3.common.text.Cue
 import androidx.media3.exoplayer.drm.LocalMediaDrmCallback
 import androidx.media3.exoplayer.drm.MediaDrmCallback
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
@@ -117,6 +118,9 @@ import com.hikari.app.download.DownloadKind
 import com.hikari.app.download.DownloadStatus
 import com.hikari.app.download.DownloadTask
 import com.hikari.app.download.DownloadsRepository
+import com.hikari.app.dub.AiDubLangs
+import com.hikari.app.dub.AiDubManager
+import com.hikari.app.dub.HardSubDub
 import com.hikari.app.i18n.I18n
 import com.hikari.app.net.Http
 import com.hikari.app.net.NetTuning
@@ -294,6 +298,43 @@ class PlayerActivity : ComponentActivity() {
 
     private var player: ExoPlayer? = null
     private var playerView: PlayerView? = null
+
+    /** AI Dub: speaks subtitles (or burned-in on-video text) in the dub
+     *  language with a device or Piper voice, ducking server audio. One
+     *  instance for the whole player so every server switch, re-prepare and
+     *  dialog rebuild reaches the same state. */
+    private val aiDub = AiDubManager(applicationContext).also { m ->
+        m.onSpeakingChanged = { speaking ->
+            val p = player
+            if (speaking) {
+                aiDubSavedVolume = p?.volume ?: 1f
+                runCatching { p?.volume = 0.12f }
+            } else {
+                runCatching { if (p != null) p.volume = aiDubSavedVolume }
+            }
+        }
+    }
+    private var aiDubSavedVolume = 1f
+    private var hardSubDub: HardSubDub? = null
+    private var aiDubSheet: Dialog? = null
+
+    /** Second listener, never folded into [listener]: dub + hardsubs only. */
+    private val aiDubListener = object : Player.Listener {
+        override fun onCues(cues: List<Cue>) {
+            aiDub.onProviderCues(cues.lastOrNull()?.text?.toString().orEmpty())
+        }
+        override fun onIsPlayingChanged(isPlaying: Boolean) {
+            aiDub.onPlayingChanged(isPlaying)
+            hardSubDub?.onPlayingChanged(isPlaying)
+        }
+        override fun onPositionDiscontinuity(
+            oldPosition: Player.PositionInfo,
+            newPosition: Player.PositionInfo,
+            reason: Int,
+        ) {
+            if (reason == Player.DISCONTINUITY_REASON_SEEK) aiDub.onSeek()
+        }
+    }
 
     /**
      * Smooth playback at FULL quality: the picture is never stepped down — no
@@ -12119,13 +12160,22 @@ class PlayerActivity : ComponentActivity() {
                 )
             )
         }
-        if (groups.isEmpty() && variantMap.isEmpty()) {
-            Toast.makeText(this, I18n.t("No separate audio tracks on this stream"), Toast.LENGTH_SHORT).show()
-            return
-        }
+        // No in-stream tracks and no server variants: the dialog still opens
+        // with Default + AI Dub, which needs no audio track of its own.
         // The dual-server audio switch lives here, as its own last row: with
         // it on, tapping an audio server below asks Audio-only vs Audio+video
         // (see [showDualAudioChoice]) instead of switching servers outright.
+        // AI Dub: speaks the subtitles (or burned-in text) in the dub
+        // language with a device or Piper voice, ducking server audio.
+        val aiDubIndex = options.size
+        options.add(
+            GlassOption(
+                label = I18n.t("AI Dub"),
+                sub = aiDubStatus(),
+                badge = if (aiDub.enabled) I18n.t("On") else I18n.t("Off"),
+                selected = aiDub.enabled,
+            )
+        )
         val dualToggleIndex = options.size
         options.add(
             GlassOption(
@@ -12149,6 +12199,10 @@ class PlayerActivity : ComponentActivity() {
             }
             variantMap[which]?.let {
                 if (dualAudioOn) showDualAudioChoice(it) else switchAudioVariant(it)
+                return@showGlassMenu
+            }
+            if (which == aiDubIndex) {
+                showAiDubSheet()
                 return@showGlassMenu
             }
             if (which == 0) {
@@ -12199,6 +12253,207 @@ class PlayerActivity : ComponentActivity() {
             }
         }
     }
+
+    /** AI Dub sheet: two engine pills (System = instant device voices, Piper
+     *  = natural offline voice, 64-bit phones only), one row per dub
+     *  language with its System / Piper readiness, the hardcoded-subtitle
+     *  toggle, voice storage, and Stop. */
+    private fun showAiDubSheet() {
+        aiDub.load()
+        val langs = AiDubLangs.all
+        val opts = mutableListOf<GlassOption>()
+        opts.add(
+            GlassOption(
+                label = I18n.t("Engine: System TTS"),
+                sub = aiDub.systemSummary(),
+                badge = if (aiDub.engine == AiDubManager.ENGINE_SYSTEM && aiDub.enabled) I18n.t("On") else null,
+                selected = aiDub.engine == AiDubManager.ENGINE_SYSTEM && aiDub.enabled,
+            )
+        )
+        opts.add(
+            GlassOption(
+                label = I18n.t("Engine: Piper (natural)"),
+                sub = aiDub.piperSummary(),
+                badge = if (aiDub.engine == AiDubManager.ENGINE_PIPER && aiDub.enabled) I18n.t("On")
+                else if (!aiDub.piperOk) I18n.t("64-bit only") else null,
+                selected = aiDub.engine == AiDubManager.ENGINE_PIPER && aiDub.enabled,
+            )
+        )
+        for (L in langs) {
+            opts.add(
+                GlassOption(
+                    label = L.label,
+                    sub = aiDubLangSub(L),
+                    selected = L.code == aiDub.lang && aiDub.enabled,
+                )
+            )
+        }
+        val hardIdx = opts.size
+        opts.add(
+            GlassOption(
+                label = I18n.t("Translate hardcoded subs"),
+                sub = if (aiDub.hardsub) I18n.t("On \u2014 reads text burned into the video")
+                else I18n.t("Off \u2014 for videos with no subtitle track"),
+                badge = if (aiDub.hardsub) I18n.t("On") else I18n.t("Off"),
+                selected = aiDub.hardsub,
+            )
+        )
+        val clearIdx: Int
+        val mb = aiDub.piperMB()
+        if (mb > 0) {
+            clearIdx = opts.size
+            opts.add(
+                GlassOption(
+                    label = I18n.t("Delete Piper voices"),
+                    sub = I18n.t("%d MB on this phone").replace("%d", mb.toString()),
+                )
+            )
+        } else clearIdx = -1
+        val stopIdx = opts.size
+        opts.add(
+            GlassOption(
+                label = I18n.t("Stop AI Dub"),
+                sub = I18n.t("Back to the server audio"),
+            )
+        )
+        aiDubSheet = showGlassMenu(
+            I18n.t("AI Dub"),
+            opts,
+            hint = I18n.t("Speaks the subtitles in your language. Server audio ducks underneath."),
+            iconRes = R.drawable.ic_audio,
+        ) { which ->
+            aiDubSheet = null
+            when {
+                which == 0 -> {
+                    aiDub.setEngine(AiDubManager.ENGINE_SYSTEM)
+                    aiDub.enabled = true
+                    aiDub.save()
+                    toastAiDub()
+                }
+                which == 1 -> {
+                    if (!aiDub.piperOk) {
+                        Toast.makeText(this, I18n.t("Piper needs a 64-bit phone"), Toast.LENGTH_SHORT).show()
+                        return@showGlassMenu
+                    }
+                    aiDub.setEngine(AiDubManager.ENGINE_PIPER)
+                    aiDub.enabled = true
+                    aiDub.save()
+                    Toast.makeText(this, aiDub.piperHint(), Toast.LENGTH_SHORT).show()
+                    aiDub.ensurePiperForCurrent { ok ->
+                        Toast.makeText(
+                            this,
+                            if (ok) aiDub.piperHint() else I18n.t("Piper voice download failed \u2014 check connection"),
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                        if (aiDubSheet?.isShowing == true) {
+                            aiDubSheet?.dismiss()
+                            showAiDubSheet()
+                        }
+                    }
+                    toastAiDub()
+                }
+                which in 2 until hardIdx -> {
+                    val L = langs[which - 2]
+                    aiDub.lang = L.code
+                    aiDub.enabled = true
+                    aiDub.save()
+                    if (aiDub.engine == AiDubManager.ENGINE_PIPER &&
+                        L.piperTarball != null && !aiDub.piperVoiceReady(L)
+                    ) {
+                        Toast.makeText(
+                            this,
+                            I18n.t("Downloading Piper voice (~20 MB)\u2026"),
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                        aiDub.downloadPiper(L) { ok ->
+                            Toast.makeText(
+                                this,
+                                if (ok) I18n.t("Piper voice ready") else I18n.t("Download failed \u2014 check connection"),
+                                Toast.LENGTH_SHORT,
+                            ).show()
+                            if (aiDubSheet?.isShowing == true) {
+                                aiDubSheet?.dismiss()
+                                showAiDubSheet()
+                            }
+                        }
+                    } else if (aiDub.engine == AiDubManager.ENGINE_SYSTEM) {
+                        val known = aiDub.systemVoiceKnown(L)
+                        if (known == false) {
+                            Toast.makeText(
+                                this,
+                                I18n.t("No system voice for this language \u2014 install one in the system TTS settings"),
+                                Toast.LENGTH_LONG,
+                            ).show()
+                        }
+                    }
+                    toastAiDub()
+                }
+                which == hardIdx -> {
+                    aiDub.hardsub = !aiDub.hardsub
+                    aiDub.save()
+                    ensureHardSub()
+                    toastAiDub()
+                }
+                mb > 0 && which == clearIdx -> {
+                    aiDub.clearPiper()
+                    toastAiDub()
+                }
+                which == stopIdx -> {
+                    aiDub.enabled = false
+                    aiDub.save()
+                    aiDub.stopSpeech(clearInput = true)
+                    toastAiDub()
+                }
+            }
+        }
+    }
+
+    private fun aiDubStatus(): String {
+        aiDub.load()
+        if (!aiDub.enabled) return I18n.t("Off \u2014 speak subtitles in your language")
+        val eng = if (aiDub.engine == AiDubManager.ENGINE_PIPER) "Piper" else "System"
+        return eng + " \u00b7 " + AiDubLangs.byCode(aiDub.lang).label
+    }
+
+    private fun aiDubLangSub(L: com.hikari.app.dub.AiDubLang): String {
+        val parts = ArrayList<String>()
+        when (aiDub.systemVoiceKnown(L)) {
+            true -> parts.add(I18n.t("System ready"))
+            false -> parts.add(I18n.t("No system voice"))
+            null -> parts.add(I18n.t("System\u2026"))
+        }
+        val t = L.piperTarball
+        if (!aiDub.piperOk) parts.add(I18n.t("Piper needs 64-bit"))
+        else if (t == null) parts.add(I18n.t("No Piper voice"))
+        else if (aiDub.piperVoiceReady(L)) parts.add(I18n.t("Piper ready"))
+        else parts.add(I18n.t("Piper ~20 MB"))
+        return parts.joinToString(" \u00b7 ")
+    }
+
+    private fun toastAiDub() {
+        aiDub.load()
+        val msg = if (!aiDub.enabled) I18n.t("AI Dub off")
+        else {
+            val eng = if (aiDub.engine == AiDubManager.ENGINE_PIPER) "Piper" else "System"
+            "AI Dub: " + eng + " \u00b7 " + AiDubLangs.byCode(aiDub.lang).label
+        }
+        Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+    }
+
+    private fun ensureHardSub() {
+        if (!aiDub.enabled || !aiDub.hardsub) {
+            hardSubDub?.onPlayingChanged(false)
+            return
+        }
+        var hs = hardSubDub
+        if (hs == null) {
+            val pv = playerView ?: return
+            hs = HardSubDub(this, pv, { player }, aiDub)
+            hardSubDub = hs
+        }
+        hs.onPlayingChanged(player?.isPlaying == true)
+    }
+
 
     /** Language words an extension bakes into a server name when it ships a
      *  release in several audio languages as separate streams. */
@@ -13688,6 +13943,8 @@ class PlayerActivity : ComponentActivity() {
         }
         player.trackSelectionParameters = trackSel.build()
         player.addListener(listener)
+        player.addListener(aiDubListener)
+        ensureHardSub()
         playerView?.player = player
         // A dual-audio pairing survives an effects-pipeline re-arm (which
         // bypasses [playSource]): the rebuilt video player is muted again here
@@ -17763,6 +18020,7 @@ class PlayerActivity : ComponentActivity() {
 
     override fun onPause() {
         if (isFinishing) silencePlaybackForExit()
+        aiDub.onActivityPause()
         super.onPause()
     }
 
@@ -17823,6 +18081,9 @@ class PlayerActivity : ComponentActivity() {
         hudHideTask = null
         SlowNetTip.onPlaybackEnd()
         stopDualAudio()
+        aiDub.release()
+        hardSubDub?.release()
+        hardSubDub = null
         watchdogTask?.let { bufferingWatchdog.removeCallbacks(it) }
         watchdogTask = null
         liveReconnectTask?.let { bufferingWatchdog.removeCallbacks(it) }

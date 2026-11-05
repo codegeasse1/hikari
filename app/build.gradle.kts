@@ -20,8 +20,8 @@ android {
         applicationId = "com.hikari.app"
         minSdk = 24
        targetSdk = 34
-        versionCode = 440
-        versionName = "0.12.51"
+        versionCode = 441
+        versionName = "0.12.52"
         // CI injects the exact commit SHA the APK was built from, so the
         // in-app update checker can compare it against main's HEAD.
         val gitSha = System.getenv("GIT_SHA") ?: "unknown"
@@ -295,6 +295,15 @@ dependencies {
     // NuvioMobile app bundles) vendored as an AAR in app/libs/. Runs provider
     // JS in an embedded QuickJS VM instead of a WebView.
     implementation(files("libs/quickjs-kt-android-1.0.5-nuvio.aar"))
+    // Sherpa-ONNX - offline neural TTS (Piper voices) for AI Dub. The AAR is
+    // fetched from the official sherpa-onnx release in CI (see build.yml);
+    // run that same download for a local build.
+    implementation(files("libs/sherpa-onnx.aar"))
+    // piper-phonemize - espeak text frontend for Piper voices (JitPack; the
+    // repo already resolves JitPack in settings.gradle.kts).
+    implementation("com.github.csukuangfj.piper.phonemize:piper-phonemize:v1.5.9")
+    // tar.bz2 voice packs from the official sherpa tts-models release.
+    implementation("org.apache.commons:commons-compress:1.26.0")
     // TorrServer ÃÂ¢ÃÂÃÂ the Go torrent engine CloudStream's own Torrent object uses.
     // Lets Stremio torrent addons (Torrentio, Comet, MediaFusionÃÂ¢ÃÂÃÂ¦) actually play:
     // magnet/infoHash streams become HLS served from a local TorrServer process.

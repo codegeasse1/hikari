@@ -81,6 +81,19 @@ jobs:
           # dependency re-downloads but makes builds deterministic.
           cache-disabled: true
 
+      - name: Fetch sherpa-onnx AAR (AI Dub TTS engine)
+        run: |
+          mkdir -p app/libs
+          if [ ! -f app/libs/sherpa-onnx.aar ]; then
+            for i in 1 2 3 4 5; do
+              curl -L --fail --retry 3 -o app/libs/sherpa-onnx.aar \
+                https://github.com/k2-fsa/sherpa-onnx/releases/download/v2.0.1/sherpa-onnx-2.0.1.aar && break
+              echo "sherpa AAR download attempt $i failed, retrying..."
+              sleep 10
+            done
+          fi
+          ls -la app/libs/sherpa-onnx.aar
+
       - name: Build APKs (debug + release)
         env:
           GIT_SHA: ${{ github.sha }}

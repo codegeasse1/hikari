@@ -98,6 +98,8 @@ enum class MangaTargetLang(val code: String, val label: String) {
     FR("fr", "French"),
     DE("de", "German"),
     TR("tr", "Turkish"),
+    UR("ur", "Urdu"),
+    IT("it", "Italian"),
 }
 
 /** The whole translate surface as one JSON blob (global or per-series). */
@@ -1446,6 +1448,8 @@ object MangaTranslateRuntime {
         "fr" -> TranslateLanguage.FRENCH
         "de" -> TranslateLanguage.GERMAN
         "tr" -> TranslateLanguage.TURKISH
+        "ur" -> TranslateLanguage.URDU
+        "it" -> TranslateLanguage.ITALIAN
         "ja" -> TranslateLanguage.JAPANESE
         "ko" -> TranslateLanguage.KOREAN
         "zh" -> TranslateLanguage.CHINESE
