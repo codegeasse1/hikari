@@ -1,3 +1,7 @@
+## 0.12.50 (continuous build only)
+
+- Manga translate logging is now end-to-end: every page logs its settings + file facts on entry (tl-page start), cache hits (tl-page cache-hit), the engine call going out (tl-tr run with engine/orig/target/box count), per-page Google totals (tl-tr google batch/lines with ok counts), and every distinct engine failure mode once (tl-tr gtx-http-429, timeouts, parse, ML Kit download/identify, Gemini key/network) — plus each holder attempt (tl-hold pager/webtoon with retry/status/boxes). Next log will name the failure instead of showing replies=0 with no reason.
+
 ## 0.12.49 (continuous build only)
 
 - Manga "No text found" was a lie on some pages: when the region decoder rejects a page file (mid-download partial, or a format it can't handle while the viewer shows it fine) the scan died in a silent early exit and every page got stamped blank. Those paths now log the facts (tl-decode lines: file size, dimensions), fall back to a plain full-bitmap OCR pass through the same probe + recognizers, and otherwise mark the page retryable so it keeps trying with backoff (then tap-to-retry) instead of a permanent "No text found" — genuinely blank pages still report at once, and previously mis-stamped pages rescan on their own (blanks were never cached)

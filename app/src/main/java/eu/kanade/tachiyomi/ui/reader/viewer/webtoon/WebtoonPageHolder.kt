@@ -17,6 +17,7 @@ import androidx.recyclerview.widget.RecyclerView
 import com.hikari.app.reader.cache.WebtoonPageCache
 import eu.kanade.tachiyomi.ui.reader.viewer.ReaderDiagnostics
 import com.davemorrissey.labs.subscaleview.SubsamplingScaleImageView
+import com.hikari.app.data.Logs
 import com.hikari.app.reader.MangaTranslateRuntime
 import com.hikari.app.reader.TranslationOverlayView
 import eu.kanade.tachiyomi.ui.reader.viewer.ReaderPageImageView
@@ -349,6 +350,7 @@ class WebtoonPageHolder(
             })
             if (tlPageKey != pageKey) return@launch
             val list = res.boxes.filter { it.trans.isNotBlank() }
+            Logs.log("Manga", "tl-hold webtoon retry=" + retry + " status=" + res.status.name + " boxes=" + list.size + " note=" + res.note)
             if (list.isEmpty()) {
                 if (res.status == MangaTranslateRuntime.TLStatus.ALREADY_TARGET || res.status == MangaTranslateRuntime.TLStatus.BLANK_PAGE) {
                     // Nothing a retry could fix: the page is already in the

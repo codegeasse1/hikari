@@ -331,11 +331,15 @@ object MangaTranslateRuntime {
             Logs.log("Manga", "tl-page no-dir")
             return TLPage(emptyList(), TLStatus.ENGINE_FAILED, "")
         }
+        Logs.log("Manga", "tl-page start img=" + imgW + "x" + imgH + " orig=" + st.orig.name + " target=" + st.target.name + " engine=" + st.engine.name + " file=" + file.exists() + "/" + runCatching { file.length() }.getOrDefault(-1L))
         // v10: multi-tile script probe + runner-up second chance + full-res
         // re-pass change what a page yields, so older partial caches rescan.
         val hk = sha1("$pageKey|${st.orig.name}|${st.target.name}|${st.engine.name}|${st.geminiKey}|v10")
         val cacheFile = File(d, "$hk.json")
-        readCache(cacheFile)?.let { return TLPage(it, TLStatus.OK, "") }
+        readCache(cacheFile)?.let {
+            Logs.log("Manga", "tl-page cache-hit boxes=" + it.size)
+            return TLPage(it, TLStatus.OK, "")
+        }
         val def = inflight.getOrPut(hk) { scope.async { runTranslate(file, imgW, imgH, st, onStatus) } }
         return try {
             val result = def.await()
@@ -392,6 +396,7 @@ object MangaTranslateRuntime {
         }
         onStatus("Translating " + kept.size + "…")
         val texts = kept.map { cleanOcr(it.text) }
+        Logs.log("Manga", "tl-tr run engine=" + st.engine.name + " orig=" + st.orig.name + " target=" + st.target.code + " boxes=" + texts.size)
         // ALL-CAPS shouting ("LET GO! LET ME GO!") translates badly as-is:
         // Google keeps words like GO in Latin. Sentence-case it for the
         // engine; the equality check below still uses the original.
@@ -1433,6 +1438,15 @@ object MangaTranslateRuntime {
 
     private val translators = ConcurrentHashMap<String, Translator>()
 
+    /** First-seen translation-call failure signatures, logged once per
+     *  process: names every failure mode (http code, timeout, parse, key)
+     *  without per-box log spam. Per-page totals ride the tl-tr lines in
+     *  [translateGoogle]/[runTranslate] instead. */
+    private val trSeen = ConcurrentHashMap.newKeySet<String>()
+    private fun trNote(sig: String) {
+        if (trSeen.add(sig)) Logs.log("Manga", "tl-tr " + sig)
+    }
+
     private suspend fun translateAll(texts: List<String>, st: MangaTranslateSettings): List<String?> {
         return when (st.engine) {
             MangaTranslateEngine.MLKIT -> translateMlKit(texts, st)
@@ -1464,6 +1478,7 @@ object MangaTranslateRuntime {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                trNote("mlkit-download-" + e.javaClass.simpleName)
                 return@withContext texts.map { null }
             }
             texts.map { t ->
@@ -1485,6 +1500,7 @@ object MangaTranslateRuntime {
             val tag = langIdentifier.identifyLanguage(text).awaitTask()
             if (tag == "und") null else mlCode(tag.substringBefore('-'))
         } catch (e: Exception) {
+            trNote("mlkit-identify-" + e.javaClass.simpleName)
             null
         }
     }
@@ -1522,6 +1538,7 @@ object MangaTranslateRuntime {
                     }
                     for ((i, tr) in filled) result[i] = tr
                 }
+                Logs.log("Manga", "tl-tr google batch boxes=" + texts.size + " mapped=" + mapped.size + " refetch=" + missing.size + " ok=" + result.count { !it.isNullOrBlank() })
                 return@withContext result
             }
             // Fallback: one call per line.
@@ -1536,6 +1553,7 @@ object MangaTranslateRuntime {
             }
             val out = texts.map { null as String? }.toMutableList()
             for ((i, tr) in done) out[i] = tr
+            Logs.log("Manga", "tl-tr google lines boxes=" + texts.size + " ok=" + out.count { !it.isNullOrBlank() })
             out
         }
 
@@ -1557,15 +1575,40 @@ object MangaTranslateRuntime {
         return try {
             val q = URLEncoder.encode(text, "UTF-8")
             val url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=$sl&tl=$tl&dt=t&q=$q"
-            val raw = com.hikari.app.net.Http.getStringQuiet(url) ?: return null
-            val root = JSONArray(raw)
-            val segs = root.optJSONArray(0) ?: return null
-            val sb = StringBuilder()
-            for (i in 0 until segs.length()) {
-                sb.append(segs.optJSONArray(i)?.optString(0).orEmpty())
+            com.hikari.app.net.Http.getQuiet(url).use { resp ->
+                if (!resp.isSuccessful) {
+                    trNote("gtx-http-" + resp.code)
+                    return null
+                }
+                val raw = try {
+                    resp.body?.string()
+                } catch (e: Exception) {
+                    trNote("gtx-body-" + e.javaClass.simpleName)
+                    return null
+                } ?: run {
+                    trNote("gtx-empty-body")
+                    return null
+                }
+                try {
+                    val root = JSONArray(raw)
+                    val segs = root.optJSONArray(0) ?: run {
+                        trNote("gtx-no-segs")
+                        return null
+                    }
+                    val sb = StringBuilder()
+                    for (i in 0 until segs.length()) {
+                        sb.append(segs.optJSONArray(i)?.optString(0).orEmpty())
+                    }
+                    sb.toString().trim().ifEmpty { null }
+                } catch (e: Exception) {
+                    trNote("gtx-parse")
+                    null
+                }
             }
-            sb.toString().trim().ifEmpty { null }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
+            trNote("gtx-err-" + e.javaClass.simpleName)
             null
         }
     }
@@ -1614,7 +1657,10 @@ object MangaTranslateRuntime {
     private suspend fun translateGemini(texts: List<String>, st: MangaTranslateSettings): List<String?> =
         withContext(Dispatchers.IO) {
             val key = st.geminiKey.trim()
-            if (key.isEmpty()) return@withContext texts.map { null }
+            if (key.isEmpty()) {
+                trNote("gemini-no-key")
+                return@withContext texts.map { null }
+            }
             val nonBlank = texts.mapIndexedNotNull { i, t -> if (t.isBlank()) null else i to t }
             if (nonBlank.isEmpty()) return@withContext texts.map { null }
             val origLabel = st.orig.label
@@ -1632,7 +1678,11 @@ object MangaTranslateRuntime {
                 .put("contents", JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", prompt)))))
                 .toString()
             val url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=$key"
-            val raw = com.hikari.app.net.Http.postStringQuiet(url, body) ?: return@withContext texts.map { null }
+            val raw = com.hikari.app.net.Http.postStringQuiet(url, body)
+            if (raw == null) {
+                trNote("gemini-http-fail")
+                return@withContext texts.map { null }
+            }
             try {
                 val root = JSONObject(raw)
                 val out = root.optJSONArray("candidates")

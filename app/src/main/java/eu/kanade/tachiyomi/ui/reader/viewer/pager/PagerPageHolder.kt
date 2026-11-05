@@ -12,6 +12,7 @@ import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.core.view.isVisible
+import com.hikari.app.data.Logs
 import com.hikari.app.reader.cache.WebtoonPageCache
 import com.davemorrissey.labs.subscaleview.SubsamplingScaleImageView
 import com.hikari.app.reader.MangaTranslateRuntime
@@ -262,6 +263,7 @@ class PagerPageHolder(
             })
             if (tlPageKey != pageKey) return@launch
             val list = res.boxes.filter { it.trans.isNotBlank() }
+            Logs.log("Manga", "tl-hold pager retry=" + retry + " status=" + res.status.name + " boxes=" + list.size + " note=" + res.note)
             if (list.isEmpty()) {
                 if (res.status == MangaTranslateRuntime.TLStatus.ALREADY_TARGET || res.status == MangaTranslateRuntime.TLStatus.BLANK_PAGE) {
                     // Nothing a retry could fix: the page is already in the
