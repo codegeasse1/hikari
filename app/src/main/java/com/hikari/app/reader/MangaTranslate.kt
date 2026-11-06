@@ -7,6 +7,7 @@ import android.graphics.BitmapRegionDecoder
 import android.graphics.Canvas
 import android.graphics.Color as AndroidColor
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.PointF
 import android.graphics.Rect
 import android.graphics.RectF
@@ -2080,10 +2081,14 @@ class TranslationOverlayView @JvmOverloads constructor(
                 cy = if (loY <= hiY) cy.coerceIn(loY, hiY) else (pgT + pgB) / 2f
             }
             val rad = min(boxW, boxH) * 0.30f
-            canvas.drawRoundRect(RectF(cx - boxW / 2f, cy - boxH / 2f, cx + boxW / 2f, cy + boxH / 2f), rad, rad, boxPaint)
+            // The words draw CLIPPED to the cover: even an extreme translation
+            // can no longer spill outside the bubble and run down the page.
+            val cover = RectF(cx - boxW / 2f, cy - boxH / 2f, cx + boxW / 2f, cy + boxH / 2f)
+            canvas.drawRoundRect(cover, rad, rad, boxPaint)
             val key = "${(boxW / 6).toInt()}x${(boxH / 6).toInt()}|${b.trans.hashCode()}"
             fitted[index] = key to f
             canvas.save()
+            canvas.clipPath(Path().apply { addRoundRect(cover, rad, rad, Path.Direction.CW) })
             canvas.translate(cx - f.layout.width / 2f, cy - f.layout.height / 2f)
             f.layout.draw(canvas)
             canvas.restore()
@@ -2147,9 +2152,40 @@ class TranslationOverlayView @JvmOverloads constructor(
             if (size <= floor + 0.5f) break
             size = max(floor, size * 0.90f)
         }
-        // Even the floor overflows: hand back the floor layout and let the
-        // caller grow the cover (bounded, oval) instead of shrinking to dust.
+        // The floor itself overflows (Hindi runs long): shrink on down to a
+        // 6px hard floor so the words stay INSIDE the bubble. The cover never
+        // grows past the room (see drawOne) and the draw is clipped to it, so
+        // shrinking — not spilling — is the only way out.
+        var small: StaticLayout? = last
+        var tiny = floor
+        while (small != null && small.height > availH && tiny > 6.5f) {
+            tiny = max(6f, tiny - 1f)
+            small = buildCentered(text, tiny, availW)
+            if (small.height <= availH) {
+                return Fitted(-small.width / 2f, 0f, small)
+            }
+        }
+        last = small
+        // Even 6px overflows: hand back the smallest layout — drawOne clips it
+        // to the cover, so nothing spills down the page.
         return last?.let { Fitted(-it.width / 2f, 0f, it) }
+    }
+
+    /** One centered layout at [size]px: the shared builder for the hard-floor
+     *  shrink pass (see [fit]). Fresh paint per layout — StaticLayout draws
+     *  with its paint live, so a shared paint resized for the next box would
+     *  corrupt this one. */
+    private fun buildCentered(text: String, size: Float, availW: Float): StaticLayout {
+        val paint = TextPaint(textPaint)
+        paint.textSize = size
+        val builder = StaticLayout.Builder.obtain(text, 0, text.length, paint, availW.toInt())
+            .setAlignment(android.text.Layout.Alignment.ALIGN_CENTER)
+            .setIncludePad(false)
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+            builder.setBreakStrategy(android.text.Layout.BREAK_STRATEGY_HIGH_QUALITY)
+            builder.setHyphenationFrequency(android.text.Layout.HYPHENATION_FREQUENCY_NONE)
+        }
+        return builder.build()
     }
 
     /**
@@ -2200,7 +2236,7 @@ class TranslationOverlayView @JvmOverloads constructor(
     }
 
     /**
-     * Last-resort shrink below the readable floor (down to 8px): guarantees
+     * Last-resort shrink below the readable floor (down to 6px): guarantees
      * the words fit a capped box vertically so nothing spills up/down. Only
      * reached when even the floor layout stands taller than the 1.35x cap.
      */
@@ -2225,8 +2261,8 @@ class TranslationOverlayView @JvmOverloads constructor(
             if (layout.height <= availH) {
                 return Fitted(-layout.width / 2f, 0f, layout)
             }
-            if (size <= 8.5f) break
-            size = max(8f, size - 1f)
+            if (size <= 6.5f) break
+            size = max(6f, size - 1f)
         }
         return last?.let { Fitted(-it.width / 2f, 0f, it) }
     }
