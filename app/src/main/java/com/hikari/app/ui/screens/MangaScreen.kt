@@ -1601,9 +1601,7 @@ internal fun rememberMangaRevision(): Int {
 @Composable
 fun MangaContinueShelf(nav: NavHostController) {
     val rev = rememberMangaRevision()
-    val progress = remember(rev, wantNovel) {
-        MangaStore.progress().filter { isNovelEngineId(it.providerId) == wantNovel }
-    }
+    val progress = remember(rev) { MangaStore.progress() }
     if (progress.isEmpty()) return
     var confirmingClear by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxWidth().padding(top = 4.dp)) {
