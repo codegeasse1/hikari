@@ -54,6 +54,9 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Mouse
 import androidx.compose.material.icons.filled.Public
+import com.hikari.app.ui.SourceLangs
+import com.hikari.app.ui.ProviderFlags
+import com.hikari.app.ui.components.LangTag
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Tune
@@ -717,7 +720,9 @@ fun TvSelectProviderDialog(
                         val provider = matchingProviders[idx]
                         val id = provider.config.id
                         val repoTag = if (provider.config.name in duplicateNames) { repoLabels[id]?.takeIf { it.isNotBlank() } } else null
-                        RefProviderCard(name = provider.config.name, repoTag = repoTag, subtitle = refProviderSubtitle(provider), selected = id in selection, iconUrl = provider.config.iconUrl, iconName = provider.config.name, onClick = { onPick(id) }, compact = true, modifier = if (shownCollections.isEmpty() && idx == 0) Modifier.focusRequester(firstCardReq).focusProperties { up = toggleReq } else Modifier)
+                        val pCode = SourceLangs.codeOf(provider)
+                        val pFlag = ProviderFlags.flagFor(pCode)
+                        RefProviderCard(name = provider.config.name, repoTag = repoTag, subtitle = refProviderSubtitle(provider), selected = id in selection, iconUrl = provider.config.iconUrl, iconName = provider.config.name, onClick = { onPick(id) }, compact = true, modifier = if (shownCollections.isEmpty() && idx == 0) Modifier.focusRequester(firstCardReq).focusProperties { up = toggleReq } else Modifier, langCode = pCode, flag = pFlag)
                     }
                 }
             }
@@ -854,6 +859,8 @@ private fun RefProviderCard(
     onClick: () -> Unit,
     compact: Boolean = false,
     modifier: Modifier = Modifier,
+    langCode: String? = null,
+    flag: String? = null,
 ) {
     Surface(
         onClick = onClick,
@@ -882,6 +889,14 @@ private fun RefProviderCard(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    if (!flag.isNullOrBlank()) {
+                        Text(
+                            flag,
+                            fontSize = 12.sp,
+                            maxLines = 1,
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                    }
                     ShrinkText(
                         text = name,
                         baseSize = if (compact) 11.sp else 13.sp,
@@ -889,6 +904,10 @@ private fun RefProviderCard(
                         fontWeight = FontWeight.SemiBold,
                         modifier = Modifier.weight(1f, fill = false),
                     )
+                    if (!langCode.isNullOrBlank()) {
+                        Spacer(modifier = Modifier.width(4.dp))
+                        LangTag(langCode)
+                    }
                     if (!repoTag.isNullOrBlank()) {
                         Spacer(modifier = Modifier.width(4.dp))
                         Text(
@@ -1982,6 +2001,8 @@ fun TvProviderCard(
     /** Country flag ("🇮🇳") drawn before the name, null when the row's
      *  language is not known (see ProviderFlags — never guessed). */
     flag: String? = null,
+    /** ISO language code for the LangTag chip (EN/HI/CN/Multi), null draws none. */
+    langCode: String? = null,
     /** Phone picker actions (pin, pack caret) — null on TV, which has none. */
     trailing: (@Composable () -> Unit)? = null,
 ) {
@@ -2049,6 +2070,10 @@ fun TvProviderCard(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f, fill = false),
                 )
+                if (!langCode.isNullOrBlank()) {
+                    Spacer(Modifier.width(4.dp))
+                    LangTag(langCode)
+                }
                 if (!tag.isNullOrBlank()) {
                     Spacer(Modifier.width(4.dp))
                     Text(
