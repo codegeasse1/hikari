@@ -15077,6 +15077,9 @@ class PlayerActivity : ComponentActivity() {
      *  3-second countdown after which it switches automatically if the user
      *  doesn't answer. Switching instantly moves to the next source. */
     private fun promptSlowServer(torrent: Boolean, waitedSeconds: Long = 20L) {
+        // Two watchdogs can race here 60ms apart — the second must be a silent
+        // no-op, including in the log.
+        if (slowDialog != null) return
         com.hikari.app.data.Logs.log(
             "Player",
             "slow path \"${sources.getOrNull(currentIndex)?.name ?: "?"}\" " +
@@ -15863,6 +15866,28 @@ class PlayerActivity : ComponentActivity() {
         if (isLoopbackHost(u) || u.startsWith("hikari-td:")) return u
         val low = u.lowercase()
         if (low.contains(".m3u8") || low.contains(".mpd") || low.contains("master.txt")) return u
+        // Verified video plays DIRECT — the bridge downloads the whole file to
+        // disk first, which is what stalled Pixeldrain 20s while the other app
+        // played the same link in seconds. Same for real media files and the
+        // big CDNs (pixeldrain/R2/googleusercontent): they all support Range,
+        // so the bridge's re-download buys nothing and only adds latency +
+        // gigabytes of temp files. The bridge stays for genuinely unknown
+        // extension-less hosts that ignore Range (the "seek restarts" class).
+        if (StreamProbe.cached(u) != null) return u
+        val host = runCatching { java.net.URI(u).host?.lowercase() }.getOrNull().orEmpty()
+        if (host == "pixeldrain.dev" || host.endsWith(".pixeldrain.dev") ||
+            host.endsWith(".r2.cloudflarestorage.com") ||
+            host.endsWith(".googleusercontent.com") ||
+            host.contains("hubcloud") || host.contains("hubdrive") || host.contains("hblinks") ||
+            host.contains("pixel.") || host.contains("gpdl.")
+        ) return u
+        val path = u.substringBefore('?').substringBefore('#').lowercase()
+        if (path.endsWith(".mp4") || path.endsWith(".mkv") || path.endsWith(".webm") ||
+            path.endsWith(".mov") || path.endsWith(".m4v") || path.endsWith(".avi") ||
+            path.endsWith(".flv") || path.endsWith(".ts") || path.endsWith(".m4s") ||
+            path.endsWith(".mp3") || path.endsWith(".m4a") || path.endsWith(".aac") ||
+            path.endsWith(".ogg") || path.endsWith(".ogv") || path.endsWith(".wav")
+        ) return u
         return SeekBridge.open(u, headers, ua, cacheDir, client) ?: u
     }
 
