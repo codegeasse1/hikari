@@ -145,6 +145,7 @@ import com.hikari.app.tv.TvProviderCard
 import com.hikari.app.tv.TvProviderIcon
 import com.hikari.app.tv.TvUi
 import com.hikari.app.ui.Artwork
+import com.hikari.app.ui.SourceLangs
 import com.hikari.app.ui.FlagIcon
 import com.hikari.app.ui.PosterLoader
 import com.hikari.app.ui.ProviderFlags
@@ -2469,6 +2470,7 @@ internal fun ProviderPickerSheet(
                             // language-named pack detail only as fallback.
                             flag = member.config.lang?.let { ProviderFlags.flagFor(it) }
                                 ?: ProviderFlags.flagFor(pack.memberLabel(i)),
+                            langCode = SourceLangs.codeOf(member),
                             icon = {
                                 TvProviderIcon(
                                     iconUrl = member.config.iconUrl,
@@ -2558,6 +2560,7 @@ internal fun ProviderPickerSheet(
                         selected = if (multi) ticked else selection.contains(key),
                         flag = pack.primary.config.lang?.let { ProviderFlags.flagFor(it) }
                             ?: ProviderFlags.flagForPack(pack),
+                        langCode = SourceLangs.codeOf(pack.primary),
                         icon = {
                             TvProviderIcon(
                                 iconUrl = pack.primary.config.iconUrl,
