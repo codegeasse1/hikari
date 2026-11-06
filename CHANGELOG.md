@@ -1,3 +1,10 @@
+## 0.12.54 (continuous build only)
+
+- AI dub stays in sync: stale queued lines drop when behind, faster 1.25x speech, shorter merge window
+- AI dub male/female voices: character genders from AniList + TMDB (cached a month), per-line speaker detection, System voice pick + pitch and Piper pitch shift
+- HubCloud family back: HubCloud/HubDrive/hblinks + pixel/gpdl unwrap (.mkv.zip to video), higher probe priority, archive rewrite at play time — HubCloud-FSL style servers list and play
+- Provider language chips in Home + Search pickers: short code (EN/HI/CN/Multi) with flag on every row, same as Manga extensions
+
 ## 0.12.53 (continuous build only)
 
 - Player stuck-start watchdog: a server with no first frame past its budget is skipped automatically (covers every provider, not just HubCloud)
