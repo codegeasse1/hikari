@@ -10666,28 +10666,57 @@ class PlayerActivity : ComponentActivity() {
                         // Remember WHAT was picked (language/label), not the
                         // TrackGroup object — the group dies with the next
                         // re-prepare, the language does not.
-                        pickText = TrackPick(C.TRACK_TYPE_TEXT, format.language, format.label, ti)
-                        // Fresh player, not the dialog-time snapshot (see the
-                        // audio sheet): a re-resolve between open and tap swaps
-                        // the instance, and the confirm loop converges the pick
-                        // onto the live track list.
-                        (player ?: return@addOptionRow).let { live ->
+                        val pick = TrackPick(C.TRACK_TYPE_TEXT, format.language, format.label, ti)
+                        pickText = pick
+                        // Resolve against the LIVE track list, not the
+                        // dialog-time group: a re-prepare between open and tap
+                        // (provider subtitles attaching) kills the dialog's
+                        // group object, and an override keyed on a dead group
+                        // silently does nothing — the toast then claims a
+                        // language the player never took ("says Portuguese,
+                        // shows English"). Fresh player AND fresh groups (the
+                        // audio sheet already does the instance half of this).
+                        val live = player ?: return@addOptionRow
+                        val liveGroups = live.currentTracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }
+                        var targetGroup: Tracks.Group? = null
+                        var targetIndex = -1
+                        outer@ for (loose in listOf(false, true)) {
+                            for (g in liveGroups) {
+                                val mg = g.mediaTrackGroup
+                                for (i in 0 until mg.length) {
+                                    if (!pick.matches(mg.getFormat(i), i, loose)) continue
+                                    targetGroup = g
+                                    targetIndex = i
+                                    break@outer
+                                }
+                            }
+                        }
+                        val tg = targetGroup
+                        val applied = if (tg != null) {
                             live.trackSelectionParameters = live.trackSelectionParameters.buildUpon()
                                 .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
                                 .clearOverridesOfType(C.TRACK_TYPE_TEXT)
                                 .setOverrideForType(
-                                    TrackSelectionOverride(group.mediaTrackGroup, ImmutableList.of(ti))
+                                    TrackSelectionOverride(tg.mediaTrackGroup, ImmutableList.of(targetIndex))
                                 )
                                 .build()
-                        }
-                        // Say what was chosen and re-assert it on the next loop
-                        // pass: "I tapped the subtitle and nothing appeared" is
-                        // the other half of the same report, and a silent pick
-                        // on a stream that then re-prepares looks exactly like a
-                        // tap that did nothing.
+                            // The override must name a group the live player
+                            // actually holds — otherwise it is a dead key and
+                            // the toast below would be a lie.
+                            live.currentTracks.groups.any { it.mediaTrackGroup === tg.mediaTrackGroup } &&
+                                overrideSelects(live, tg, targetIndex)
+                        } else false
+                        // Say what was chosen ONLY when it took effect, and
+                        // re-assert it on the next loop pass: a silent pick on
+                        // a stream that then re-prepares looks exactly like a
+                        // tap that did nothing. When the track is not in the
+                        // live list yet (manifest still parsing) the pick
+                        // stays armed — onTracksChanged + the confirm loop
+                        // converge it when the tracks arrive.
                         Toast.makeText(
                             this,
-                            I18n.t("Subtitle: %s").replace("%s", option.label),
+                            if (applied) I18n.t("Subtitle: %s").replace("%s", option.label)
+                            else I18n.t("Subtitle will apply when tracks load"),
                             Toast.LENGTH_SHORT,
                         ).show()
                         // Re-asserted until it reads back as active (see
@@ -17723,6 +17752,11 @@ class PlayerActivity : ComponentActivity() {
             } ?: 0
             player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
                 .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                // Clear first: a stale override on another text group would
+                // otherwise survive next to this one and the renderer could
+                // keep showing the old language (the Auto default is
+                // English on most streams).
+                .clearOverridesOfType(C.TRACK_TYPE_TEXT)
                 .setOverrideForType(
                     TrackSelectionOverride(mediaGroup, ImmutableList.of(best))
                 )
@@ -17742,7 +17776,7 @@ class PlayerActivity : ComponentActivity() {
      * after a few seconds when the track is genuinely gone (the default
      * rightly stands then), and never touches a destroyed activity.
      */
-    private fun confirmTrackPick(type: Int, attempts: Int = 10) {
+    private fun confirmTrackPick(type: Int, attempts: Int = 16) {
         val handler = android.os.Handler(android.os.Looper.getMainLooper())
         var left = attempts
         fun tick() {
