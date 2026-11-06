@@ -1,3 +1,7 @@
+## 0.12.57 (continuous build only)
+
+- Server show/play logic reverted to 0.12.0: archive links skip instead of unwrap, no 15s stuck verdict (20s re-poll), no same-server re-resolve, no disk-bridge (direct play), no R2 octet-stream verify, no hub scoring, CS3 early-handover + per-batch mapping back. Playback logging kept. UI untouched.
+
 ## 0.12.56 (continuous build only)
 
 - Pixeldrain/R2 direct play: verified video, real media files and big CDNs (pixeldrain, R2, googleusercontent, hub family) play direct instead of the localhost download-to-disk bridge — the bridge added the 20s stall the other app never had; it stays only for unknown hosts
