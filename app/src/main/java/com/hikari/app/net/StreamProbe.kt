@@ -202,6 +202,9 @@ object StreamProbe {
     suspend fun resolve(url: String, headers: Map<String, String>): Resolved? =
         withContext(Dispatchers.IO) {
             if (url.isBlank()) return@withContext null
+            val t0 = System.currentTimeMillis()
+            val host = runCatching { java.net.URI(url).host ?: "-" }.getOrDefault("-")
+            com.hikari.app.data.Logs.log("Probe", "resolve start host=$host urlLen=${url.length}")
             // A "needs a browser check" record is deliberately NOT used to
             // refuse a probe any more. It is a guess made from an earlier
             // response, and refusing on it meant a server that had already
@@ -227,6 +230,11 @@ object StreamProbe {
                     persist()
                 }
                 runCatching { mine.complete(resolved) }
+                com.hikari.app.data.Logs.log(
+                    "Probe",
+                    "resolve end host=$host in ${System.currentTimeMillis() - t0}ms " +
+                        "hit=${resolved != null} mime=${resolved?.mime ?: "-"}",
+                )
                 resolved
             } finally {
                 inflight.remove(url, mine)
@@ -362,6 +370,7 @@ object StreamProbe {
         val response = get(url, headers) ?: return null
         response.use { r ->
             if (!r.isSuccessful) {
+                com.hikari.app.data.Logs.log("Probe", "hop ${r.code} host=${runCatching { java.net.URI(url).host ?: "-" }.getOrDefault("-")}")
                 // A Cloudflare answer (403/503 from CF, or a block page) is not
                 // a dead URL — it needs the user's own verification. Record the
                 // host so every later attempt on it (probe, WebView resolver,
@@ -416,7 +425,14 @@ object StreamProbe {
                 return Resolved(url, null)
             }
             val candidates = candidates(head, url)
-            if (candidates.isEmpty()) return null
+            if (candidates.isEmpty()) {
+                com.hikari.app.data.Logs.log(
+                    "Probe",
+                    "dead-end host=${runCatching { java.net.URI(url).host ?: "-" }.getOrDefault("-")} " +
+                        "ct=${r.headers["Content-Type"] ?: "-"}",
+                )
+                return null
+            }
             if (depth == 0 && candidates.size > 1) {
                 val pool = Executors.newFixedThreadPool(minOf(candidates.size, 4)) { runnable ->
                     Thread(runnable, "hikari-probe").apply { isDaemon = true }
