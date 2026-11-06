@@ -1221,23 +1221,25 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                     val movieblastDone = movieblastJob.isCompleted
                     // Wait out the plugin's own declared budget (bounded by
                     // the deadline) so the FULL server list lands like in
-                    // CloudStream: the merge loop already publishes every
-                    // extractor callback the moment it lands (see
-                    // partialServers above), so playback and the server
-                    // sheet paint the first servers in seconds while this
-                    // loop keeps collecting the slow mirrors behind them.
-                    // Cutting off at first sight is what kept a meta
-                    // provider's later mirrors (StreamPlay: 130+ servers
-                    // over ~50s) from ever landing — 42 on the first open,
-                    // 82 on the second, never the full list. When the
-                    // plugin finished empty, the safety nets get their full
-                    // budget instead before declaring none. One stuck
-                    // extractor cannot stall the others: each callback is
-                    // merged independently as it lands, the per-link mapping
-                    // below never throws a whole batch away, and the
-                    // pass-level stall watchdog bounds the whole wait.
+                    // CloudStream — cutting off at first sight is what kept
+                    // dropping the plugin's later mirrors. When the plugin
+                    // finished empty, the safety nets get their full budget
+                    // instead before declaring none.
                     if (pluginDone && (sawPluginSource || (fallbackDone && movieblastDone))) break
                     val now = System.currentTimeMillis()
+                    // Universal fast-first: a meta provider (CineStream class) fans out
+                    // internally for ~50s while the reference app shows the first mirrors
+                    // in seconds (it renders each callback as it lands; we used to wait
+                    // for the whole fan-out). Once the first plugin server is in hand
+                    // and 3s have passed, hand it over now; the background sweep keeps
+                    // filling the rest.
+                    if (sawPluginSource && merged.isNotEmpty() && now - started >= 3_000) {
+                        com.hikari.app.data.Logs.log(
+                            "Provider",
+                            a.name + ": early handover with " + merged.size + " server(s) after " + ((now - started) / 1000) + "s (rest fill in background)",
+                        )
+                        break
+                    }
                     if (now > deadline) break
                     kotlinx.coroutines.delay(80)
                 }
@@ -1462,14 +1464,7 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                 it.url.isNotBlank() && it.url != a?.mainUrl && it.type.name != "ERROR" &&
                     !isGarbageUrl(it.url) && isStreamableScheme(it.url)
             }
-            .mapNotNull { l ->
-                // One poison link (a header value OkHttp rejects, a DRM
-                // reflection miss, a bad quality int) used to throw the
-                // WHOLE batch away — every server resolved in that 80ms
-                // poll vanished and the count on screen jumped backwards.
-                // Each link maps alone now; a bad one degrades to one
-                // skipped row while the rest keep painting.
-                runCatching {
+            .map { l ->
                 // Cache the provider's video interceptor (if any) for playback:
                 // the CloudStream player honors MainAPI.getVideoInterceptor and
                 // Hikari's player looks it up per URL (see videoInterceptorFor).
@@ -1540,7 +1535,6 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                     // black screen while the timeline still runs.
                     drm = drmSpecOf(l),
                 )
-                }.getOrNull()
             }
             .distinctBy { it.url }
     }
