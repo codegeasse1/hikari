@@ -554,6 +554,7 @@ object AniyomiExtensionManager {
                     // The user's own on/off choice survives a reinstall: the row
                     // is the same row (same id), it just got a fresh name.
                     enabled = prevById[id]?.enabled ?: true,
+                    lang = runCatching { ext.sources[index].lang }.getOrNull()?.trim()?.takeIf { it.isNotBlank() } ?: prevById[id]?.lang,
                     extra = sourceUrl ?: pkgName,
                 )
             }

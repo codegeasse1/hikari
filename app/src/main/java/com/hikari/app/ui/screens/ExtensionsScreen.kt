@@ -6769,12 +6769,21 @@ private fun SourceLangSourceRow(
         }
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
-            Text(
-                p.config.name,
-                style = MaterialTheme.typography.bodyMedium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+            androidx.compose.foundation.layout.Row(
+                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+            ) {
+                Text(
+                    p.config.name,
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+                com.hikari.app.ui.components.LangTag(
+                    com.hikari.app.ui.SourceLangs.codeOf(p),
+                    modifier = Modifier.padding(start = 6.dp)
+                )
+            }
             Text(
                 p.config.type.groupLabel,
                 style = MaterialTheme.typography.labelSmall,
@@ -7982,12 +7991,21 @@ private fun ProviderCard(
             }
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
-                Text(
-                    labelOverride ?: p.config.name,
-                    style = MaterialTheme.typography.titleSmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                androidx.compose.foundation.layout.Row(
+                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                ) {
+                    Text(
+                        labelOverride ?: p.config.name,
+                        style = MaterialTheme.typography.titleSmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    com.hikari.app.ui.components.LangTag(
+                        com.hikari.app.ui.SourceLangs.codeOf(p),
+                        modifier = Modifier.padding(start = 6.dp)
+                    )
+                }
                 // Engine, plus the repository it was installed from when that is
                 // known ("Cs3 · CNC Verse"). Four "AniKoto" entries from four
                 // different repos used to read as four identical "AniKoto / Cs3"

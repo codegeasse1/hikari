@@ -1261,6 +1261,16 @@ class PlayerActivity : ComponentActivity() {
     /** True once the current source has drawn its first video frame. */
     private var renderedFirstFrame = false
 
+    /** When the current server attempt started (elapsedRealtime): a server that
+     *  never produces a first frame past its budget is skipped instead of
+     *  sitting on "Starting..." (see the stuck-start check in [playDirectInner]). */
+    private var serverStartAtMs = 0L
+
+    /** A mid-stream link death (expired signed URL) re-resolves the SAME server
+     *  once before the failover walks on: the link died, not the server. Reset
+     *  on every server change (see [playSource]). */
+    private var sameServerRefreshTried = false
+
     /** True once the current source has been restarted by the first-frame
      *  watchdog (guards against an infinite restart loop). */
     private var firstFrameRetried = false
@@ -12043,8 +12053,18 @@ class PlayerActivity : ComponentActivity() {
     /** Applies the saved vertical position to the player's subtitle view:
      *  [fraction] of the player height is kept clear below the captions, so a
      *  larger value lifts the subtitles further up off the bottom edge. */
-    private fun applySubtitlePosition(fraction: Float) {
-        runCatching { playerView?.getSubtitleView()?.setBottomPaddingFraction(fraction) }
+    private fun applySubtitlePosition(fraction: Float, attempt: Int = 0) {
+        runCatching {
+            val v = playerView?.getSubtitleView()
+            if (v == null) {
+                // The subtitle view is (re)created around prepare/track changes:
+                // a position applied in that window used to vanish. Retry a few
+                // times instead of dropping it.
+                if (attempt < 4) playerView?.postDelayed({ applySubtitlePosition(fraction, attempt + 1) }, 400L)
+                return
+            }
+            v.setBottomPaddingFraction(fraction)
+        }
     }
 
     /**
@@ -12067,6 +12087,7 @@ class PlayerActivity : ComponentActivity() {
             view.setApplyEmbeddedStyles(!subtitleStyle.enabled)
             view.setApplyEmbeddedFontSizes(!subtitleStyle.enabled)
             applySubtitleSize(subtitleScale)
+            applySubtitlePosition(subtitlePosition)
         }
     }
 
@@ -12910,7 +12931,9 @@ class PlayerActivity : ComponentActivity() {
             // (see [firstFrameRetried]) resets with it. Staying on the same
             // server (a retry after an error, a restart) keeps the flag.
             firstFrameRetried = false
+            sameServerRefreshTried = false
         }
+        serverStartAtMs = android.os.SystemClock.elapsedRealtime()
         autoRotated = false
         userRotated = false
         userPickedSubs = false
@@ -14036,6 +14059,18 @@ class PlayerActivity : ComponentActivity() {
                 firstFrameTask = null
                 val p = player ?: return
                 if (renderedFirstFrame || currentIndex != index) return
+                // Stuck-start verdict: preparing/buffering with no frame past
+                // the budget (15s files, 30s live) is a dead server, not a slow
+                // one — route it through the slow-server path instead of sitting
+                // on "Starting..." while the search has long finished.
+                val stuckBudget = if (isLiveSource(sources.getOrNull(index))) liveStartBudgetMs else 15_000L
+                if (serverStartAtMs > 0L &&
+                    android.os.SystemClock.elapsedRealtime() - serverStartAtMs > stuckBudget
+                ) {
+                    val waited = ((android.os.SystemClock.elapsedRealtime() - serverStartAtMs) / 1000L).coerceAtLeast(15L)
+                    promptSlowServer(sources.getOrNull(index)?.isTorrent == true, waited)
+                    return
+                }
                 val state = p.playbackState
                 if (state != Player.STATE_READY) {
                     if (state == Player.STATE_ENDED) return
@@ -15997,6 +16032,7 @@ class PlayerActivity : ComponentActivity() {
             // idempotent — the stage itself survives in the sink).
             applyVolumeBoost()
             applyStickyPicks(C.TRACK_TYPE_AUDIO)
+            applySubtitlePosition(subtitlePosition)
             if (noSubsRetry) return
             val textApplied = applyStickyPicks(C.TRACK_TYPE_TEXT)
             selectFirstTextTrack(player ?: return, tracks, textApplied)
@@ -16004,6 +16040,7 @@ class PlayerActivity : ComponentActivity() {
 
         override fun onRenderedFirstFrame() {
             renderedFirstFrame = true
+            applySubtitlePosition(subtitlePosition)
             // A frame rendered: any software-prefer escalation armed for
             // this URL is spent and must not leak onto the next server.
             swPreferDecode = false
@@ -16510,6 +16547,19 @@ class PlayerActivity : ComponentActivity() {
         // different link there hides a whole-server-list problem, so the user
         // gets the choice (try the next one now, pick another from the list so
         // far, or stop asking). See [promptServerFailed].
+        // A link that died MID-STREAM (position well past the start) with an
+        // IO-class error is usually an expired signed URL, not a dead server:
+        // re-resolve the SAME server once and resume before walking on. The
+        // refresh prefers the same server name, so this is a fresh link from
+        // the same mirror, and playback resumes where it stopped.
+        val posMs = runCatching { player?.currentPosition ?: 0L }.getOrDefault(0L)
+        if (posMs > 5_000L && !sameServerRefreshTried && liveSessionId != null &&
+            isIoFailure(code, headerIssue)
+        ) {
+            sameServerRefreshTried = true
+            Toast.makeText(this, I18n.t("Link expired — getting a fresh one…"), Toast.LENGTH_SHORT).show()
+            if (refreshSources(currentIndex, details)) return
+        }
         val nextIndex = nextUntriedIndex()
         if (nextIndex >= 0) {
             if (pickedByUser) {

@@ -22,12 +22,10 @@ import java.io.File
  * A Sora repo is either ONE module manifest (a `{sourceName, scriptUrl, …}`
  * JSON file like `streamex.json`), an INDEX (`modules.json`) pointing at
  * many manifests (see [repoPlugins]), or a `github.com/owner/repo` page,
- * which is resolved to its manifests through the GitHub API (see
- * [loadRepoPlugins]) — some repos publish no index at all. Only video
- * modules install: manga/novel modules are listed so the repo reads complete,
- * but installing one fails with the reason — there is no novel reader yet,
- * and manga modules speak a different call shape the manga engine does not
- * run.
+ * resolved to its manifests through the GitHub API (see [loadRepoPlugins])
+ * — some repos publish no index at all. Video modules install as video
+ * providers; manga/novel modules install as manga-tab providers behind
+ * [SoraMangaProvider] (kanzen mangas/novels call shape).
  *
  * Like every other engine, nothing is pre-installed for the user: the repos
  * are seeded so the Extensions screen's Sora folders are never empty, and
@@ -48,7 +46,7 @@ object SoraPluginManager {
         File(moduleDir(context, safeId), "manifest.json")
 
     fun dirOf(config: ProviderConfig): File =
-        moduleDir(HikariApp.instance, config.id.removePrefix("sora|"))
+        moduleDir(HikariApp.instance, config.id.substringAfter("|"))
 
     private fun safe(name: String): String =
         name.replace(Regex("[^A-Za-z0-9_.-]"), "_").ifBlank { "module" }.take(80)
@@ -60,7 +58,7 @@ object SoraPluginManager {
         Triple(
             "https://raw.githubusercontent.com/xdfkenny/Sora-Modules/main/modules.json",
             "Sora Modules",
-            "Community Sora modules (anime, films & series)",
+            "Community Sora modules (anime, films, series, manga & novels)",
         ),
         Triple(
             "https://raw.githubusercontent.com/justbbcr/streamex/main/streamex.json",
@@ -134,6 +132,7 @@ object SoraPluginManager {
             name = name,
             description = desc,
             url = manifestUrl,
+            pluginLang = manifest.optString("language").trim().ifBlank { null },
             iconUrl = manifest.optString("iconUrl").ifBlank { null },
             version = manifest.optString("version").substringBefore('.').toIntOrNull() ?: 1,
             nsfw = com.hikari.app.data.ExtensionNsfw.repoEntryNsfw(manifest),
@@ -144,8 +143,21 @@ object SoraPluginManager {
     fun manifestType(manifestText: String): String =
         runCatching { JSONObject(manifestText).optString("type").trim() }.getOrDefault("")
 
+    enum class ModuleKind { VIDEO, MANGA, NOVEL, UNKNOWN }
+
     private val videoHints = listOf("anime", "movie", "show", "film", "serie", "drama", "tv", "video", "cartoon")
     private val textHints = listOf("manga", "manhwa", "manhua", "novel", "comic", "book")
+
+    /** Video, manga, novel, or unknown — from the manifest `type`. */
+    fun moduleKind(type: String): ModuleKind {
+        val t = type.lowercase()
+        if (t.isBlank()) return ModuleKind.UNKNOWN
+        if (textHints.any { t.contains(it) }) {
+            if (t.contains("novel")) return ModuleKind.NOVEL
+            return ModuleKind.MANGA
+        }
+        return if (videoHints.any { t.contains(it) }) ModuleKind.VIDEO else ModuleKind.UNKNOWN
+    }
 
     fun isVideoType(type: String): Boolean {
         val t = type.lowercase()
@@ -301,9 +313,9 @@ object SoraPluginManager {
     }
 
     /**
-     * Downloads a module manifest + script and registers it as a SORA
-     * provider. Only video modules install — manga/novel modules fail with
-     * the reason instead of a broken provider row.
+     * Downloads a module manifest + script and registers it: video modules
+     * as SORA providers, manga/novel modules as manga-tab providers (see
+     * [SoraMangaProvider]) — like Aniyomi/LnReader engines.
      */
     suspend fun install(context: Context, plugin: Cs3RepoPlugin): Result<Int> =
         withContext(Dispatchers.IO) {
@@ -345,10 +357,20 @@ object SoraPluginManager {
                 return@withContext Result.failure(Exception("Not a valid Sora module: $detail"))
             }
             val name = manifest.optString("sourceName").trim().ifBlank { plugin.name }
-            val id = "sora|" + safe(
+            val base = safe(
                 name.ifBlank { scriptUrl.substringAfterLast('/').substringBeforeLast('.') }
             )
-            val dir = moduleDir(context, id.removePrefix("sora|"))
+            val id = when (kind) {
+                ModuleKind.MANGA -> SoraMangaProvider.MANGA_PREFIX + base
+                ModuleKind.NOVEL -> SoraMangaProvider.NOVEL_PREFIX + base
+                else -> "sora|" + base
+            }
+            val pType = if (kind == ModuleKind.VIDEO) ProviderType.SORA else ProviderType.MANGA
+            val lang = manifest.optString("language").trim()
+                .ifBlank { manifest.optString("lang").trim() }
+                .ifBlank { plugin.pluginLang?.trim().orEmpty() }
+                .ifBlank { null }
+            val dir = moduleDir(context, id.substringAfter("|"))
             runCatching { dir.mkdirs() }
             val wrote = runCatching {
                 File(dir, "module.js").writeText(source)
@@ -362,10 +384,11 @@ object SoraPluginManager {
                 ProviderConfig(
                     id = id,
                     name = name,
-                    type = ProviderType.SORA,
+                    type = pType,
                     url = File(dir, "module.js").absolutePath,
                     iconUrl = manifest.optString("iconUrl").ifBlank { plugin.iconUrl },
                     extra = plugin.url,
+                    lang = lang,
                 )
             )
             HikariApp.instance.providers.refresh()
@@ -375,19 +398,19 @@ object SoraPluginManager {
         }
 
     /**
-     * Removes every SORA provider installed from [pluginUrl] (and its files).
-     * Returns how many were removed.
+     * Removes every provider installed from [pluginUrl] — video and
+     * manga-tab rows alike (and their files). Returns how many were removed.
      */
     suspend fun uninstall(context: Context, pluginUrl: String): Int {
         val store = HikariApp.instance.store
-        val mine = store.providers().filter { it.type == ProviderType.SORA && it.extra == pluginUrl }
+        val mine = store.providers().filter { (it.type == ProviderType.SORA || (it.type == ProviderType.MANGA && SoraMangaProvider.isSoraMangaProviderId(it.id))) && it.extra == pluginUrl }
         if (mine.isEmpty()) return 0
         store.updateProviders { list ->
-            list.filterNot { it.type == ProviderType.SORA && it.extra == pluginUrl }
+            list.filterNot { (it.type == ProviderType.SORA || (it.type == ProviderType.MANGA && SoraMangaProvider.isSoraMangaProviderId(it.id))) && it.extra == pluginUrl }
         }
         HikariApp.instance.providers.refresh()
         withContext(Dispatchers.IO) {
-            val keep = store.providers().filter { it.type == ProviderType.SORA }.map { it.url }.toSet()
+            val keep = store.providers().filter { it.type == ProviderType.SORA || (it.type == ProviderType.MANGA && SoraMangaProvider.isSoraMangaProviderId(it.id)) }.map { it.url }.toSet()
             mine.map { it.url }.distinct().forEach { path ->
                 if (path !in keep) {
                     runCatching { File(path).delete() }

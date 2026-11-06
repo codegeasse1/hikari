@@ -608,6 +608,7 @@ object MangaExtensionManager {
                     url = target.absolutePath,
                     iconUrl = icon ?: prevById[id]?.iconUrl,
                     enabled = prevById[id]?.enabled ?: true,
+                    lang = runCatching { ext.sources[index].lang }.getOrNull()?.trim()?.takeIf { it.isNotBlank() } ?: prevById[id]?.lang,
                     // The repo URL (when it came from a repo) is what uninstall
                     // matches on; a file install falls back to the package name.
                     extra = sourceUrl ?: pkgName,
@@ -626,6 +627,7 @@ object MangaExtensionManager {
                     url = target.absolutePath,
                     iconUrl = icon ?: prevById[id]?.iconUrl,
                     enabled = prevById[id]?.enabled ?: true,
+                    lang = runCatching { ext.novels[index].lang }.getOrNull()?.trim()?.takeIf { it.isNotBlank() } ?: prevById[id]?.lang,
                     extra = sourceUrl ?: pkgName,
                 )
             }
@@ -657,6 +659,44 @@ object MangaExtensionManager {
      * missing", and no uninstall matches them once their source is forgotten.
      * Runs once per launch (see HikariApp); returns how many rows went.
      */
+
+    /**
+     * One-time language backfill for manga/novel rows installed before the
+     * language was stored (Source language "Other" 410/633): rows whose
+     * [ProviderConfig.lang] is blank get it from the loaded extension's own
+     * per-source language. Only blank rows are touched, files are loaded
+     * once per package, and a file that fails to load is skipped.
+     */
+    suspend fun backfillLangs(context: Context, store: com.hikari.app.data.AppStore): Boolean {
+        val rows = store.providers().filter {
+            it.type == com.hikari.app.data.ProviderType.MANGA && it.lang.isNullOrBlank() && isMangaProviderId(it.id)
+        }
+        if (rows.isEmpty()) return false
+        var changed = false
+        val byFile = LinkedHashMap<String, MutableList<com.hikari.app.data.ProviderConfig>>()
+        for (r in rows) {
+            val f = java.io.File(r.url)
+            if (!f.isFile) continue
+            byFile.getOrPut(f.absolutePath) { ArrayList() } += r
+        }
+        val fresh = LinkedHashMap<String, com.hikari.app.data.ProviderConfig>()
+        for ((path, configs) in byFile) {
+            val ext = runCatching { extensionOf(context, java.io.File(path)) }.getOrNull() ?: continue
+            for (c in configs) {
+                val lang = if (isNovelId(c.id)) {
+                    runCatching { ext.novels.getOrNull(novelIndexOf(c))?.lang }.getOrNull()
+                } else {
+                    runCatching { ext.sources.getOrNull(indexOf(c))?.lang }.getOrNull()
+                }?.trim()?.takeIf { it.isNotBlank() } ?: continue
+                fresh[c.id] = c.copy(lang = lang)
+                changed = true
+            }
+        }
+        if (!changed) return false
+        store.updateProviders { all -> all.map { fresh[it.id] ?: it } }
+        return true
+    }
+
     suspend fun pruneDeadFiles(app: HikariApp): Int {
         val root = app.filesDir.absolutePath
         val store = app.store
@@ -674,10 +714,10 @@ object MangaExtensionManager {
     /** Removes every MANGA provider that came from [sourceUrl] plus its file. */
     suspend fun uninstall(context: Context, sourceUrl: String): Int {
         val store = HikariApp.instance.store
-        val mine = store.providers().filter { it.type == ProviderType.MANGA && it.extra == sourceUrl }
+        val mine = store.providers().filter { it.type == ProviderType.MANGA && !com.hikari.app.sora.SoraMangaProvider.isSoraMangaProviderId(it.id) && it.extra == sourceUrl }
         if (mine.isEmpty()) return 0
         store.updateProviders { list ->
-            list.filterNot { it.type == ProviderType.MANGA && it.extra == sourceUrl }
+            list.filterNot { it.type == ProviderType.MANGA && !com.hikari.app.sora.SoraMangaProvider.isSoraMangaProviderId(it.id) && it.extra == sourceUrl }
         }
         HikariApp.instance.providers.refresh()
         withContext(Dispatchers.IO) {

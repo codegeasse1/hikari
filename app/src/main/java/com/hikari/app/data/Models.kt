@@ -185,6 +185,13 @@ data class Cs3RepoPlugin(
      */
     val contentKind: String = "",
     /**
+     * The source's own declared language ("en", "English", "zh", ...) as its
+     * repo listing or manifest states it, or null when the listing says
+     * nothing. Copied onto the installed [ProviderConfig.lang] at install
+     * time so [com.hikari.app.ui.SourceLangs] groups the row correctly.
+     */
+    val pluginLang: String? = null,
+    /**
      * The extension's own PACKAGE NAME, when the listing declares one
      * (`packageName`, or the legacy `pkg`).
      *

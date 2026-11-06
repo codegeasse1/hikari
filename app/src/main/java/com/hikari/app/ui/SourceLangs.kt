@@ -42,7 +42,8 @@ object SourceLangs {
         Lang("mr", "मराठी", "🇮🇳", setOf("mr", "mar", "marathi")),
         Lang("kn", "ಕನ್ನಡ", "🇮🇳", setOf("kn", "kan", "kannada")),
         Lang("gu", "ગુજરાતી", "🇮🇳", setOf("gu", "guj", "gujarati")),
-        Lang("pa", "ਪੰਜਾਬੀ", "🇮🇳", setOf("pa", "pan", "punjabi")),
+        Lang("pa", "ਪੰਜਾਬੀ", "🇮🇳", setOf("pa", "pan", "punjabi")),,
+        Lang("or", "\u0B13\u0B21\u0BC0\u0B06", "\uD83C\uDDEE\uD83C\uDDF3", setOf("or", "ori", "odia", "oriya"))
         Lang("ur", "اردو", "🇵🇰", setOf("ur", "urd", "urdu")),
         Lang("ne", "नेपाली", "🇳🇵", setOf("ne", "nep", "nepali")),
         Lang("si", "සිංහල", "🇱🇰", setOf("si", "sin", "sinhala", "sinhalese")),
@@ -54,9 +55,9 @@ object SourceLangs {
         Lang("it", "Italiano", "🇮🇹", setOf("it", "ita", "italian", "italiano")),
         Lang("ru", "Русский", "🇷🇺", setOf("ru", "rus", "russian")),
         Lang("uk", "Українська", "🇺🇦", setOf("uk", "ukr", "ukrainian")),
-        Lang("zh", "中文", "🇨🇳", setOf("zh", "zho", "chi", "chinese", "mandarin", "cantonese")),
+        Lang("zh", "中文", "🇨🇳", setOf("zh", "zho", "chi", "cn", "chinese", "mandarin", "cantonese")),
         Lang("ja", "日本語", "🇯🇵", setOf("ja", "jpn", "japanese")),
-        Lang("ko", "한국어", "🇰🇷", setOf("ko", "kor", "korean")),
+        Lang("ko", "한국어", "🇰🇷", setOf("ko", "kor", "kr", "korean")),
         Lang("tr", "Türkçe", "🇹🇷", setOf("tr", "tur", "turkish", "turkce", "türkçe")),
         Lang("id", "Indonesia", "🇮🇩", setOf("id", "ind", "indonesian", "indonesia")),
         Lang("ms", "Melayu", "🇲🇾", setOf("ms", "may", "msa", "malay", "melayu")),
@@ -107,6 +108,27 @@ object SourceLangs {
     private fun byAliasExact(token: String): Lang? =
         langs.firstOrNull { token in it.aliases }
 
+
+    private fun hasHangul(s: String): Boolean = s.any { it in '\uAC00'..'\uD7A3' || it in '\u1100'..'\u11FF' }
+    private fun hasKana(s: String): Boolean = s.any { it in '\u3040'..'\u309F' || it in '\u30A0'..'\u30FF' }
+    private fun hasCjk(s: String): Boolean = s.any { it in '\u4E00'..'\u9FFF' || it in '\u3400'..'\u4DBF' }
+    private fun hasDevanagari(s: String): Boolean = s.any { it in '\u0900'..'\u097F' }
+    private fun hasBengali(s: String): Boolean = s.any { it in '\u0980'..'\u09FF' }
+    private fun hasTamil(s: String): Boolean = s.any { it in '\u0B80'..'\u0BFF' }
+    private fun hasTelugu(s: String): Boolean = s.any { it in '\u0C00'..'\u0C7F' }
+    private fun hasMalayalam(s: String): Boolean = s.any { it in '\u0D00'..'\u0D7F' }
+    private fun hasGujarati(s: String): Boolean = s.any { it in '\u0A80'..'\u0AFF' }
+    private fun hasGurmukhi(s: String): Boolean = s.any { it in '\u0A00'..'\u0A7F' }
+    private fun hasKannada(s: String): Boolean = s.any { it in '\u0C80'..'\u0CFF' }
+    private fun hasOriya(s: String): Boolean = s.any { it in '\u0B00'..'\u0B7F' }
+    private fun hasSinhala(s: String): Boolean = s.any { it in '\u0D80'..'\u0DFF' }
+    private fun hasMyanmar(s: String): Boolean = s.any { it in '\u1000'..'\u109F' }
+    private fun hasKhmer(s: String): Boolean = s.any { it in '\u1780'..'\u17FF' }
+    private fun hasLao(s: String): Boolean = s.any { it in '\u0E80'..'\u0EFF' }
+    private fun hasThai(s: String): Boolean = s.any { it in '\u0E00'..'\u0E7F' }
+    private fun hasArabic(s: String): Boolean = s.any { it in '\u0600'..'\u06FF' }
+    private fun hasHebrew(s: String): Boolean = s.any { it in '\u0590'..'\u05FF' }
+
     /** Explicit 2-letter tag (`[HI]`, `(EN)`, `· FR ·`) — the only place a bare
      *  2-letter code is trusted inside a longer text. */
     private val bracketCode = Regex("""[\[\(（]\s*([A-Za-z]{2})\s*[\]\)）]""")
@@ -145,6 +167,30 @@ object SourceLangs {
         bracketCode.findAll(hay).forEach { m ->
             byAliasExact(m.groupValues[1].lowercase())?.let { return it.code }
         }
+        // Script detection: the name/URL itself is written in the language
+        // (360\u8d44\u6e90, \u4f11\u307f\u306a\u3057, \ub204\uc758 \uce5c\uad6c...).
+        // Hangul and kana name their language exactly; CJK ideographs alone
+        // read as Chinese (Japanese without a single kana is rare, and the
+        // declared language still wins whenever the plugin states one).
+        if (hasHangul(hay)) return "ko"
+        if (hasKana(hay)) return "ja"
+        if (hasThai(hay)) return "th"
+        if (hasLao(hay)) return "lo"
+        if (hasKhmer(hay)) return "km"
+        if (hasMyanmar(hay)) return "my"
+        if (hasSinhala(hay)) return "si"
+        if (hasDevanagari(hay)) return "hi"
+        if (hasBengali(hay)) return "bn"
+        if (hasTamil(hay)) return "ta"
+        if (hasTelugu(hay)) return "te"
+        if (hasMalayalam(hay)) return "ml"
+        if (hasGujarati(hay)) return "gu"
+        if (hasGurmukhi(hay)) return "pa"
+        if (hasKannada(hay)) return "kn"
+        if (hasOriya(hay)) return "or"
+        if (hasArabic(hay)) return "ar"
+        if (hasHebrew(hay)) return "he"
+        if (hasCjk(hay)) return "zh"
         // Language names / 3-letter codes as whole words, earliest wins.
         var best: Lang? = null
         var bestAt = Int.MAX_VALUE

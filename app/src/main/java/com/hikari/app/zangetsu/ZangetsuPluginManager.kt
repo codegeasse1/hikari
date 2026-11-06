@@ -107,6 +107,7 @@ object ZangetsuPluginManager {
                 name = name,
                 description = desc,
                 url = file,
+                pluginLang = lang.ifBlank { null },
                 iconUrl = resolveUrl(manifestUrl, o.optString("logo")).ifBlank { null },
                 version = version.takeWhile { it.isDigit() }.toIntOrNull() ?: 1,
                 tvTypes = emptyList(),
@@ -184,6 +185,7 @@ object ZangetsuPluginManager {
                 url = dir.absolutePath,
                 iconUrl = plugin.iconUrl,
                 extra = fileUrl,
+                lang = plugin.pluginLang?.trim()?.takeIf { it.isNotBlank() },
             )
         )
         HikariApp.instance.providers.refresh()

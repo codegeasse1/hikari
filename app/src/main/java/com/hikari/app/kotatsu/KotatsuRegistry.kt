@@ -160,6 +160,7 @@ object KotatsuRegistry {
                 iconUrl = null,
                 version = 1,
                 contentKind = "manga",
+                pluginLang = src.locale.trim().ifBlank { null },
                 pkg = "kotatsu." + src.name.lowercase(),
                 nsfw = src.contentType == ContentType.HENTAI,
             )

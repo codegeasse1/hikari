@@ -59,7 +59,8 @@ object AniyomiProviderSync {
                 val id = "aniyomi|${ext.pkgName}|$i"
                 val name = ext.labels.getOrNull(i) ?: ext.name
                 val prev = previousById[id]
-                val next = prev?.copy(name = name) ?: ProviderConfig(
+                val freshLang = runCatching { ext.sources[i].lang }.getOrNull()?.trim()?.takeIf { it.isNotBlank() }
+                val next = prev?.copy(name = name, lang = prev.lang?.takeIf { it.isNotBlank() } ?: freshLang) ?: ProviderConfig(
                     id = id,
                     name = name,
                     type = ProviderType.ANIYOMI,

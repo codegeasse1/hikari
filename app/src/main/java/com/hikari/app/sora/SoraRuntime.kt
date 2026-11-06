@@ -395,6 +395,36 @@ object SoraRuntime {
         }
     }
 
+    /** First fn that answers OK wins (manga + novel modules rename entry
+     *  points across builds). */
+    private suspend fun runFirstOk(
+        moduleFile: File,
+        providerId: String,
+        names: List<String>,
+        arg: String,
+        budgetMs: Long,
+    ): String {
+        var last = ""
+        for (n in names) {
+            val payload = run(moduleFile, providerId, n, "[" + quote(arg) + "]", budgetMs)
+            if (runCatching { org.json.JSONObject(payload) }.getOrNull()?.optBoolean("ok", false) == true) return payload
+            last = payload
+        }
+        return last.ifBlank { "{\"ok\":false,\"error\":\"no entry point\"}" }
+    }
+
+    /** Manga chapters: kanzen {en: [[num, [{id, title, chapter}]]]}. */
+    suspend fun mangaChapters(moduleFile: File, providerId: String, url: String): String =
+        runFirstOk(moduleFile, providerId, listOf("extractChapters", "getChapters"), url, CATALOG_TIMEOUT_MS)
+
+    /** Manga pages: raw [imageUrl, ...]. */
+    suspend fun mangaImages(moduleFile: File, providerId: String, chapterUrl: String): String =
+        runFirstOk(moduleFile, providerId, listOf("extractImages", "getChapterImages"), chapterUrl, CATALOG_TIMEOUT_MS)
+
+    /** Novel chapter HTML. */
+    suspend fun novelText(moduleFile: File, providerId: String, url: String): String =
+        run(moduleFile, providerId, "extractText", "[" + quote(url) + "]", CATALOG_TIMEOUT_MS)
+
     suspend fun validate(context: Context, source: String): String =
         withContext(Dispatchers.Default) {
             var qjs: QuickJs? = null
@@ -406,7 +436,12 @@ object SoraRuntime {
                 val verdict = qjs.evaluate<Any?>(
                     "(function () {" +
                         " var f = ['searchResults','extractDetails','extractEpisodes','extractStreamUrl'];" +
-                        " for (var i = 0; i < f.length; i++) {" +
+" var mg = ['searchResults','extractDetails','extractChapters','extractImages'];" +
+" var nv = ['searchResults','extractDetails','extractChapters','extractText'];" +
+" function hasAll(a) { for (var j = 0; j < a.length; j++) {" +
+"  if (typeof globalThis[a[j]] !== 'function') return false; } return true; }" +
+                        " if (hasAll(f) || hasAll(mg) || hasAll(nv)) return 'OK';" +
+                        "  for (var i = 0; i < f.length; i++) {" +
                         "  if (typeof globalThis[f[i]] !== 'function') return 'NO'; }" +
                         " return 'OK'; })();",
                     "sora-validate.js",

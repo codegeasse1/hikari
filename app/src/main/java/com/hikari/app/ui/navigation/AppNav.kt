@@ -299,6 +299,7 @@ object Routes {
         posterUrl: String? = null,
     ): String {
         val novel = com.hikari.app.manga.MangaExtensionManager.isNovelId(providerId) ||
+            com.hikari.app.sora.SoraMangaProvider.isSoraNovelId(providerId) ||
             com.hikari.app.lnreader.LnReaderProvider.isLnReaderId(providerId) ||
             com.hikari.app.kotatsu.fork.ForkRegistry.isForkNovelId(providerId)
         return if (novel) novelReader(providerId, url, chapterUrl, title, posterUrl)

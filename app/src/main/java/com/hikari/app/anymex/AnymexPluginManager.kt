@@ -299,6 +299,7 @@ object AnymexPluginManager {
                     url = File(dir, "module.js").absolutePath,
                     iconUrl = plugin.iconUrl,
                     extra = plugin.url,
+                    lang = entryLang.ifBlank { "en" },
                 ),
             )
             HikariApp.instance.providers.refresh()

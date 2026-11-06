@@ -921,6 +921,15 @@ class HikariApp : Application() {
                     providers.refresh()
                 }
             }
+            // Language backfill for manga/novel rows installed before the
+            // language was stored (Source language "Other"): one pass, only
+            // blank rows, then refresh if anything moved.
+            runCatching {
+                if (com.hikari.app.manga.MangaExtensionManager.backfillLangs(this@HikariApp, store)) {
+                    Logs.log("Providers", "Manga language backfill filled blank rows — refreshing")
+                    providers.refresh()
+                }
+            }
             // Dead manga/anime rows (extension file gone, nothing to play):
             // without this they pile up as "Extension file missing" rows no
             // uninstall can remove — the "100 copies" class. Once per launch.

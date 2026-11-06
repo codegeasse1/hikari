@@ -1,3 +1,14 @@
+## 0.12.53 (continuous build only)
+
+- Player stuck-start watchdog: a server with no first frame past its budget is skipped automatically (covers every provider, not just HubCloud)
+- Expired-link recovery: a link that dies mid-play re-resolves the SAME server for a fresh URL and resumes before walking on
+- Subtitle position re-applies after every prepare, track change and server switch, with retries while the subtitle view is recreated
+- AI dub queueing: rapid subtitle lines queue and merge instead of each one cutting the previous speech off; flushes on seek/pause
+- Source language grouping: per-source language saved for Aniyomi, manga, Zangetsu, AnymeX, Kotatsu and Sora installs, script detection (Chinese/Japanese/Korean/Thai/Arabic/Indic scripts) plus one-time backfill — far fewer rows in Other
+- Short language chip (EN · HI · BN · CN · JA · KO …) on provider rows, the Select Language dialog and Manga/Novel engine cards
+- Sora manga and novel modules now install and read in the Manga tab (AllManga, MangaDex, LnCrawler, …) with headers the image CDNs require
+- Manga tab split into Manga / Novel pills: separate engines, search, Browse and Continue reading per side
+
 ## 0.12.52 (continuous build only)
 
 - AI Dub in the player Audio menu: speaks subtitles in Hindi, English, Spanish, French, Urdu, Arabic, Bengali, German, Russian, Portuguese, Turkish, Indonesian, Italian, Japanese, Korean and Chinese

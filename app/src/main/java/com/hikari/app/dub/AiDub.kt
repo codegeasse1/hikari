@@ -2,7 +2,7 @@ package com.hikari.app.dub
 
 import android.content.Context
 import android.content.SharedPreferences
-import android.media.AudioAttributes
+im}port android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
@@ -109,6 +109,16 @@ class AiDubManager(private val appCtx: Context) {
 
     private var lastInput = ""
 
+    /** Queued dub lines (translated text + language): rapid-fire subtitle
+     *  cues merge here instead of each one flushing the previous speech
+     *  mid-sentence. Flushed only on seek / pause / disable. */
+    private val dubQueue = ArrayDeque<Pair<String, AiDubLang>>()
+    private var dubDraining = false
+    private var lastEnqueueAt = 0L
+
+    /** Queued Piper PCM blocks, played back-to-back for the same reason. */
+    private val piperQueue = ArrayDeque<Pair<FloatArray, Int>>()
+
     init {
         load()
     }
@@ -183,8 +193,55 @@ class AiDubManager(private val appCtx: Context) {
             val out = translateForDub(norm, L) ?: return@launch
             withContext(Dispatchers.Main) {
                 if (!enabled) return@withContext
-                speak(out, L)
+                enqueue(out, L)
             }
+        }
+    }
+
+    /** Queue a translated line: merges with the tail when cues arrive
+     *  within ~1.2s of each other, so one sentence split across cues is
+     *  spoken whole instead of chopped per cue. */
+    private fun enqueue(text: String, L: AiDubLang) {
+        val clean = text.trim()
+        if (!enabled || clean.isEmpty()) return
+        if (engine == ENGINE_PIPER && piperOk) {
+            enqueuePiper(clean, L)
+            return
+        }
+        synchronized(dubQueue) {
+            val tail = dubQueue.peekLast()
+            val now = System.currentTimeMillis()
+            if (tail != null && tail.second.code == L.code &&
+                now - lastEnqueueAt < 1200 && tail.first.length + clean.length < 500
+            ) {
+                dubQueue.removeLast()
+                dubQueue.addLast((tail.first + " " + clean) to L)
+            } else {
+                dubQueue.addLast(clean to L)
+            }
+            lastEnqueueAt = now
+        }
+        drainSystemQueue()
+    }
+
+    private fun drainSystemQueue() {
+        if (dubDraining) return
+        val head = synchronized(dubQueue) { dubQueue.peekFirst() } ?: return
+        dubDraining = true
+        speakSystemQueued(head.first, head.second)
+    }
+
+    private fun speakNextInQueue() {
+        synchronized(dubQueue) { if (dubQueue.isNotEmpty()) dubQueue.removeFirst() }
+        dubDraining = false
+        if (dubQueue.isNotEmpty() && enabled) drainSystemQueue()
+        else onSpeakingChanged?.invoke(false)
+    }
+
+    private fun enqueuePiper(text: String, L: AiDubLang) {
+        scope.launch(Dispatchers.IO) {
+            val out = text
+            withContext(Dispatchers.Main) { speakPiperQueued(out, L) }
         }
     }
 
@@ -192,17 +249,30 @@ class AiDubManager(private val appCtx: Context) {
     fun speakDirect(translated: String, L: AiDubLang) {
         val text = translated.trim()
         if (!enabled || text.isEmpty()) return
-        scope.launch(Dispatchers.Main) { speak(text, L) }
+        scope.launch(Dispatchers.Main) { enqueue(text, L) }
     }
 
     private fun speak(text: String, L: AiDubLang) {
         if (text.length > 600) return
-        if (engine == ENGINE_PIPER && piperOk) speakPiper(text, L)
-        else speakSystem(text, L)
+        enqueue(text, L)
+    }
+
+    private fun speakPiperQueued(text: String, L: AiDubLang) {
+        if (text.length > 600) return
+        if (!PiperVoice.isReady(appCtx, L)) {
+            enqueue(text, L)
+            return
+        }
+        // Piper path synthesizes below; completion chains through the
+        // PCM queue so lines never talk over each other.
+        synthesizePiper(text, L)
     }
 
     fun stopSpeech(clearInput: Boolean = true) {
         if (clearInput) lastInput = ""
+        synchronized(dubQueue) { dubQueue.clear() }
+        synchronized(piperQueue) { piperQueue.clear() }
+        dubDraining = false
         try {
             tts?.stop()
         } catch (e: Exception) {
@@ -252,13 +322,21 @@ class AiDubManager(private val appCtx: Context) {
                         tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                             override fun onStart(utteranceId: String) = Unit
                             override fun onDone(utteranceId: String) {
-                                onSpeakingChanged?.invoke(false)
+                                if (utteranceId.startsWith("aidub-q")) runCatching { scope.launch(Dispatchers.Main) { speakNextInQueue() } }
+                                else onSpeakingChanged?.invoke(false)
                             }
                             override fun onError(utteranceId: String) {
-                                onSpeakingChanged?.invoke(false)
+                                if (utteranceId.startsWith("aidub-q")) runCatching { scope.launch(Dispatchers.Main) { speakNextInQueue() } }
+                                else onSpeakingChanged?.invoke(false)
                             }
                             override fun onStop(utteranceId: String, interrupted: Boolean) {
-                                onSpeakingChanged?.invoke(false)
+                                runCatching { scope.launch(Dispatchers.Main) {
+                                    dubDraining = false
+                                    if (!interrupted && utteranceId.startsWith("aidub-q") &&
+                                        dubQueue.isNotEmpty() && enabled
+                                    ) drainSystemQueue()
+                                    else onSpeakingChanged?.invoke(false)
+                                }
                             }
                         })
                     } catch (e: Exception) {
@@ -290,8 +368,16 @@ class AiDubManager(private val appCtx: Context) {
     }
 
     private fun speakSystem(text: String, L: AiDubLang) {
+        // Legacy direct path: kept for the missing-voice toast, then queued.
+        enqueue(text, L)
+    }
+
+    private fun speakSystemQueued(text: String, L: AiDubLang) {
         ensureTts { ok ->
-            if (!ok) return@ensureTts
+            if (!ok) {
+                scope.launch(Dispatchers.Main) { speakNextInQueue() }
+                return@ensureTts
+            }
             val t = tts ?: return@ensureTts
             val res = try {
                 t.setLanguage(L.locale)
@@ -312,9 +398,10 @@ class AiDubManager(private val appCtx: Context) {
             }
             onSpeakingChanged?.invoke(true)
             try {
-                t.speak(text, TextToSpeech.QUEUE_FLUSH, null, "aidub-" + System.nanoTime())
+                val r = t.speak(text, TextToSpeech.QUEUE_ADD, null, "aidub-q-" + System.nanoTime())
+                if (r != TextToSpeech.SUCCESS) scope.launch(Dispatchers.Main) { speakNextInQueue() }
             } catch (e: Exception) {
-                onSpeakingChanged?.invoke(false)
+                scope.launch(Dispatchers.Main) { speakNextInQueue() }
             }
         }
     }
@@ -376,6 +463,10 @@ class AiDubManager(private val appCtx: Context) {
     }
 
     private fun speakPiper(text: String, L: AiDubLang) {
+        synthesizePiper(text, L)
+    }
+
+    private fun synthesizePiper(text: String, L: AiDubLang) {
         if (L.piperTarball == null || !PiperVoice.isReady(appCtx, L)) {
             speakSystem(text, L)
             return
@@ -384,7 +475,7 @@ class AiDubManager(private val appCtx: Context) {
             try {
                 val found = PiperVoice.locate(appCtx, L)
                     ?: run {
-                        withContext(Dispatchers.Main) { speakSystem(text, L) }
+                        withContext(Dispatchers.Main) { synchronized(dubQueue) { dubQueue.addLast(text to L) }; drainSystemQueue() }
                         return@launch
                     }
                 if (piperId != found.id) {
@@ -417,20 +508,23 @@ class AiDubManager(private val appCtx: Context) {
                 }
                 val engine = piper
                     ?: run {
-                        withContext(Dispatchers.Main) { speakSystem(text, L) }
+                        withContext(Dispatchers.Main) { synchronized(dubQueue) { dubQueue.addLast(text to L) }; drainSystemQueue() }
                         return@launch
                     }
                 val audio = try {
                     engine.generate(text, 0, 1.0f)
                 } catch (e: Exception) {
-                    withContext(Dispatchers.Main) { speakSystem(text, L) }
+                    withContext(Dispatchers.Main) { synchronized(dubQueue) { dubQueue.addLast(text to L) }; drainSystemQueue() }
                     return@launch
                 }
                 if (audio.samples.isEmpty()) {
-                    withContext(Dispatchers.Main) { speakSystem(text, L) }
+                    withContext(Dispatchers.Main) { synchronized(dubQueue) { dubQueue.addLast(text to L) }; drainSystemQueue() }
                     return@launch
                 }
-                withContext(Dispatchers.Main) { playPcm(audio.samples, engine.sampleRate()) }
+                withContext(Dispatchers.Main) {
+                    synchronized(piperQueue) { piperQueue.addLast(audio.samples to engine.sampleRate()) }
+                    playNextPiperBlock()
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: UnsatisfiedLinkError) {
@@ -439,11 +533,17 @@ class AiDubManager(private val appCtx: Context) {
                     speakSystem(text, L)
                 }
             } catch (e: Exception) {
-                withContext(Dispatchers.Main) { speakSystem(text, L) }
+                withContext(Dispatchers.Main) { synchronized(dubQueue) { dubQueue.addLast(text to L) }; drainSystemQueue() }
             }
         }
     }
 
+
+    private fun playNextPiperBlock() {
+        if (pipeTrack != null || pipeStop) return
+        val head = synchronized(piperQueue) { piperQueue.peekFirst() } ?: return
+        playPcm(head.first, head.second)
+    }
 
     private fun playPcm(samples: FloatArray, sampleRate: Int) {
         stopPipeTrack()
@@ -490,6 +590,7 @@ class AiDubManager(private val appCtx: Context) {
                     pipeTrack = null
                     onSpeakingChanged?.invoke(false)
                 }
+                synchronized(piperQueue) { if (piperQueue.isNotEmpty()) piperQueue.removeFirst() }
                 try {
                     track.stop()
                 } catch (e: Exception) {
@@ -498,6 +599,9 @@ class AiDubManager(private val appCtx: Context) {
                     track.release()
                 } catch (e: Exception) {
                 }
+                // Chain the next queued line instead of going silent.
+                if (enabled && !pipeStop) playNextPiperBlock()
+                else if (synchronized(piperQueue) { piperQueue.isEmpty() }) onSpeakingChanged?.invoke(false)
             }
         }
     }

@@ -142,20 +142,33 @@ fun MangaScreen(nav: NavHostController, initialQuery: String = "", initialGenre:
     // One provider per SOURCE the engine publishes (an extension usually has
     // one), which is exactly the granularity a reader wants: each is one site.
     // Anymex manga (Mangayomi JS) is also a manga engine — same Browse / search.
-    val engines = remember(all) {
+    // Manga / Novel pills (like My Stuff's History / Library): the tab only
+    // ever shows one kind — manga engines under Manga, novel engines under
+    // Novel — with its own search scope, Browse and Continue reading.
+    var mangaTab by rememberSaveable { mutableStateOf("manga") }
+    val wantNovel = mangaTab == "novel"
+    fun isNovelEngineId(id: String): Boolean =
+        com.hikari.app.manga.MangaExtensionManager.isNovelId(id) ||
+            com.hikari.app.lnreader.LnReaderProvider.isLnReaderId(id) ||
+            com.hikari.app.kotatsu.fork.ForkRegistry.isForkNovelId(id) ||
+            com.hikari.app.sora.SoraMangaProvider.isSoraNovelId(id)
+    val engines = remember(all, wantNovel) {
         all.filter { p ->
-            p is MangaProvider ||
+            val base = p is MangaProvider ||
                 p is com.hikari.app.lnreader.LnReaderProvider ||
                 p.config.type == com.hikari.app.data.ProviderType.ANYMEX_MANGA ||
                 (p.config.type == com.hikari.app.data.ProviderType.UNIVERSAL &&
                     com.hikari.app.providers.UniversalScraper.isImageMode(p.config))
+            base && isNovelEngineId(p.config.id) == wantNovel
         }
     }
     val engineKey = remember(engines) { engines.joinToString(",") { it.config.id } }
 
     val rev = rememberMangaRevision()
     val library = remember(rev) { MangaStore.library() }
-    val progress = remember(rev) { MangaStore.progress() }
+    val progress = remember(rev, wantNovel) {
+        MangaStore.progress().filter { isNovelEngineId(it.providerId) == wantNovel }
+    }
     // The engines the reader pinned to the top of Browse, and which row's pin
     // control is currently showing (see the long-press in [EngineRow]).
     val pinnedFlow = remember { app.store.pinnedMangaEnginesFlow() }
@@ -177,6 +190,11 @@ fun MangaScreen(nav: NavHostController, initialQuery: String = "", initialGenre:
     // Which engine's own lists to browse / search: "" means every installed one.
     // A chip's Search entry pre-picks the title's own engine here.
     var enginePick by rememberSaveable(initialEngine) { mutableStateOf(initialEngine) }
+    LaunchedEffect(initialEngine) {
+        if (initialEngine.isNotBlank()) {
+            mangaTab = if (isNovelEngineId(initialEngine)) "novel" else "manga"
+        }
+    }
     LaunchedEffect(initialEngine) {
         if (initialEngine.isNotBlank() && initialEngine != enginePick) enginePick = initialEngine
     }
@@ -477,7 +495,7 @@ fun MangaScreen(nav: NavHostController, initialQuery: String = "", initialGenre:
         item(key = "manga-header", span = { GridItemSpan(maxLineSpan) }) {
             Column {
                 Text(
-                    tr("Manga"),
+                    if (wantNovel) tr("Novel") else tr("Manga"),
                     style = MaterialTheme.typography.headlineMedium,
                     fontWeight = FontWeight.Bold,
                 )
@@ -490,11 +508,22 @@ fun MangaScreen(nav: NavHostController, initialQuery: String = "", initialGenre:
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 2.dp),
                 )
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    EngineChip(
+                        (if (wantNovel) tr("Novel") else tr("Manga")) + " (" + engines.size + ")",
+                        true
+                    ) { }
+                    EngineChip(
+                        if (wantNovel) tr("Manga") else tr("Novel"),
+                        false
+                    ) { mangaTab = if (wantNovel) "manga" else "novel" }
+                }
                 Spacer(Modifier.height(12.dp))
                 GlassSearchField(
                     value = query,
                     onValueChange = { query = it },
-                    placeholder = tr("Search every manga engine"),
+                    placeholder = if (wantNovel) tr("Search every novel engine") else tr("Search every manga engine"),
                     trailing = {
                         // A walled engine answers searches with nothing — the
                         // same Cloudflare check the catalog header's globe
@@ -869,7 +898,7 @@ fun MangaScreen(nav: NavHostController, initialQuery: String = "", initialGenre:
             confirmButton = {
                 TextButton(onClick = {
                     confirmClearReading = false
-                    MangaStore.clearAllProgress()
+                    progress.forEach { MangaStore.clearProgress(it.mangaKey) }
                 }) { Text(tr("Clear"), color = MaterialTheme.colorScheme.error) }
             },
             dismissButton = {
@@ -967,13 +996,20 @@ private fun EngineRow(
             MangaIcon(engine.config, size = 44.dp)
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
-                Text(
-                    name,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        name,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    com.hikari.app.ui.components.LangTag(
+                        com.hikari.app.ui.SourceLangs.codeOf(engine),
+                        modifier = Modifier.padding(start = 6.dp)
+                    )
+                }
                 Row(
                     Modifier.padding(top = 6.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1564,7 +1600,9 @@ internal fun rememberMangaRevision(): Int {
 @Composable
 fun MangaContinueShelf(nav: NavHostController) {
     val rev = rememberMangaRevision()
-    val progress = remember(rev) { MangaStore.progress() }
+    val progress = remember(rev, wantNovel) {
+        MangaStore.progress().filter { isNovelEngineId(it.providerId) == wantNovel }
+    }
     if (progress.isEmpty()) return
     var confirmingClear by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxWidth().padding(top = 4.dp)) {
