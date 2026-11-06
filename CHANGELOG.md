@@ -1,3 +1,9 @@
+## 0.12.56 (continuous build only)
+
+- Pixeldrain/R2 direct play: verified video, real media files and big CDNs (pixeldrain, R2, googleusercontent, hub family) play direct instead of the localhost download-to-disk bridge — the bridge added the 20s stall the other app never had; it stays only for unknown hosts
+- R2 probe fix: MKV/MP4 served as application/octet-stream now verifies as playable instead of dead-end, so R2 servers get the fast path
+- Bridge wait 10s to 1.5s; double slow-path log removed
+
 ## 0.12.55 (continuous build only)
 
 - Full playback logging: every tap, probe, play start, stuck verdict, skip and error now records server, host, timing and reason — no more missing-log dead ends
