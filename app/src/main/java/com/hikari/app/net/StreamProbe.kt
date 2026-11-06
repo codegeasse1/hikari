@@ -424,6 +424,12 @@ object StreamProbe {
             ) {
                 return Resolved(url, null)
             }
+            if (ct.startsWith("application/octet-stream")) {
+                val t = trimmed.take(200).lowercase()
+                val looksText = trimmed.startsWith("<") || trimmed.startsWith("{") ||
+                    trimmed.startsWith("[") || t.contains("<html") || t.contains("<!doctype")
+                if (!looksText) return Resolved(url, null)
+            }
             val candidates = candidates(head, url)
             if (candidates.isEmpty()) {
                 com.hikari.app.data.Logs.log(
