@@ -292,25 +292,6 @@ object StreamProbe {
         return ARCHIVE_EXTENSIONS.any { path.endsWith(it) }
     }
 
-    /** HubCloud's `.mkv.zip` wrapper stripped to the playable video underneath
-     *  (`file.mkv.zip?token=..` -> `file.mkv?token=..`), or null when this is a
-     *  real archive with no video inside. HubCloud/HubDrive/hblinks + pixel/gpdl
-     *  hosts hand these out in quality mode; the other app unwraps them, we
-     *  used to skip them as archives. */
-    fun unwrapArchive(url: String): String? {
-        if (!isArchive(url)) return null
-        val q = url.indexOf('?').let { if (it < 0) "" else url.substring(it) }
-        val h = url.indexOf('#').let { if (it < 0) "" else url.substring(it) }
-        val base = url.substringBefore('?').substringBefore('#')
-        if (!base.lowercase().endsWith(".zip")) return null
-        val stripped = base.dropLast(4)
-        val low = stripped.lowercase()
-        val video = low.endsWith(".mkv") || low.endsWith(".mp4") || low.endsWith(".webm") ||
-            low.endsWith(".m4v") || low.endsWith(".mov") || low.contains(".mkv.") || low.contains(".mp4.")
-        if (!video) return null
-        return stripped + q + h
-    }
-
     private fun hasMediaExtension(url: String): Boolean {
         val clean = url.substringBefore('?').substringBefore('#')
         return MEDIA_EXTENSIONS.any { clean.endsWith(it, ignoreCase = true) }
@@ -424,12 +405,6 @@ object StreamProbe {
             ) {
                 return Resolved(url, null)
             }
-            if (ct.startsWith("application/octet-stream")) {
-                val t = trimmed.take(200).lowercase()
-                val looksText = trimmed.startsWith("<") || trimmed.startsWith("{") ||
-                    trimmed.startsWith("[") || t.contains("<html") || t.contains("<!doctype")
-                if (!looksText) return Resolved(url, null)
-            }
             val candidates = candidates(head, url)
             if (candidates.isEmpty()) {
                 com.hikari.app.data.Logs.log(
@@ -485,24 +460,15 @@ object StreamProbe {
     private fun candidates(head: String, pageUrl: String): List<String> {
         val scored = LinkedHashMap<String, Int>()
         for (m in tokenRe.findAll(head)) {
-            val raw = m.value.trimEnd(')', ']', '}', ',', ';', '.', '"', '\'')
-            if (!raw.startsWith("http")) continue
-            if (raw == pageUrl) continue
-            // HubCloud quality mode hands out `.mkv.zip` wrappers — the playable
-            // video is the same URL without the trailing `.zip`. Follow the
-            // stripped form so these servers resolve instead of dying as archives.
-            val u = unwrapArchive(raw) ?: raw
+            val u = m.value.trimEnd(')', ']', '}', ',', ';', '.', '"', '\'')
+            if (!u.startsWith("http")) continue
             if (u == pageUrl) continue
             val lower = u.lowercase()
-            val hub = lower.contains("hubcloud") || lower.contains("hubdrive") || lower.contains("hblinks") ||
-                lower.contains("pixel.") || lower.contains("gpdl.") || lower.contains("hubcloud.")
             val score = when {
                 "m3u8" in lower -> 100
                 "mpd" in lower || "manifest" in lower -> 90
                 lower.contains(".mp4") || lower.contains(".webm") || lower.contains(".mkv") ||
                     lower.contains(".m4s") -> 80
-                hub && ("/download" in lower || "/dl" in lower || "/file" in lower || "/d/" in lower || "10gbps" in lower || "server" in lower) -> 75
-                hub -> 70
                 "/get" in lower || "/stream" in lower || "/play" in lower || "/hls" in lower ||
                     "master" in lower || "/video" in lower -> 60
                 "video" in lower || "media" in lower || "/embed" in lower -> 40
