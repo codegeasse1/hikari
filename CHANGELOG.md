@@ -1,3 +1,7 @@
+## 0.12.55 (continuous build only)
+
+- Full playback logging: every tap, probe, play start, stuck verdict, skip and error now records server, host, timing and reason — no more missing-log dead ends
+
 ## 0.12.54 (continuous build only)
 
 - AI dub stays in sync: stale queued lines drop when behind, faster 1.25x speech, shorter merge window
