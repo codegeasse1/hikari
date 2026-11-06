@@ -2022,6 +2022,7 @@ class PlayerActivity : ComponentActivity() {
                     runCatching { if (p != null) p.volume = aiDubSavedVolume }
                 }
             }
+            runCatching { m.setTitle(playingTitle, null) }
         }
         // The progress bar is a real focus target on TV. Once it owns focus,
         // Left/Right scrubs the video instead of jumping between the buttons.
@@ -13421,7 +13422,7 @@ class PlayerActivity : ComponentActivity() {
      *  that leaves a frozen black screen. */
     private fun playDirect(index: Int) {
         try {
-            val src = sources[index]
+            var src = sources[index]
             // A downloaded copy lives on local storage — nothing to probe, no
             // headers to negotiate, no CDN to fail over from. Straight to
             // ExoPlayer.
@@ -13429,23 +13430,27 @@ class PlayerActivity : ComponentActivity() {
                 playDirectInner(index)
                 return
             }
-            // Archive links (.mkv.zip / .rar etc.) are not videos at all —
-            // providers occasionally leak them through (4KHDHub's isDirectVideo
-            // filters on hostname only, so its hubcloud ".mkv.zip" links pass).
-            // Trying one costs a full prepare+error cycle before the failover,
-            // so skip to a real server instead.
+            // HubCloud quality mode hands out `.mkv.zip` wrappers — unwrap to the
+            // video underneath and play that (the other app's HubCloud-FSL fix).
+            // Only a wrapper with no video inside still skips to the next server.
             if (!src.torrentStream && !src.isM3u8 && !src.isMpd &&
                 StreamProbe.isArchive(src.url)
             ) {
-                triedUrls.add(src.url)
-                if (index + 1 < sources.size) {
-                    Toast.makeText(this, I18n.t("Archive link (not a video) — trying next server"), Toast.LENGTH_SHORT).show()
-                    noSubsRetry = false
-                    playSource(index + 1)
-                } else if (!refreshSources(index)) {
-                    showError(I18n.t("Only archive links (.zip) were found for this title — no playable video."), false)
+                val unwrapped = StreamProbe.unwrapArchive(src.url)
+                if (unwrapped != null) {
+                    src = src.copy(url = unwrapped)
+                    sources = sources.toMutableList().also { it[index] = src }
+                } else {
+                    triedUrls.add(src.url)
+                    if (index + 1 < sources.size) {
+                        Toast.makeText(this, I18n.t("Archive link (not a video) — trying next server"), Toast.LENGTH_SHORT).show()
+                        noSubsRetry = false
+                        playSource(index + 1)
+                    } else if (!refreshSources(index)) {
+                        showError(I18n.t("Only archive links (.zip) were found for this title — no playable video."), false)
+                    }
+                    return
                 }
-                return
             }
             // Extension-less / container-unknown URLs — HLS & DASH manifests
             // served at API paths, and JSON/HTML wrapper pages — get probed
