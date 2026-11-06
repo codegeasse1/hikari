@@ -201,7 +201,7 @@ object SeekBridge {
                 return
             }
             var waited = 0
-            while (s.length < 0 && !s.done && !s.failed && waited < 10_000) {
+            while (s.length < 0 && !s.done && !s.failed && waited < 1_500) {
                 Thread.sleep(100)
                 waited += 100
             }
