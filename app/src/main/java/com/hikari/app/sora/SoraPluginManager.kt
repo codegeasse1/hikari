@@ -328,11 +328,12 @@ object SoraPluginManager {
                 return@withContext Result.failure(Exception("Module manifest is not JSON"))
             }
             val type = manifest.optString("type").trim()
-            if (!isVideoType(type)) {
+            val kind = moduleKind(type)
+            if (kind == ModuleKind.UNKNOWN) {
                 return@withContext Result.failure(
                     Exception(
                         if (type.isBlank()) "Not a Sora module manifest"
-                        else "Only video (anime, movies, shows) modules install — “${plugin.name}” is “$type”"
+                        else "\u201c" + plugin.name + "\u201d is not a Sora module (type \u201c" + type + "\u201d)"
                     )
                 )
             }

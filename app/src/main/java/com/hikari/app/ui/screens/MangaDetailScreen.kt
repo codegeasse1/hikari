@@ -337,6 +337,7 @@ fun MangaDetailScreen(
             val outcome = MangaProvider.lastOutcome[providerId]
                 ?: com.hikari.app.anymex.AnymexMangaProvider.lastOutcome[providerId]
                 ?: com.hikari.app.lnreader.LnReaderProvider.lastOutcome[providerId]
+                ?: com.hikari.app.sora.SoraMangaProvider.lastOutcome[providerId]
             error = if (outcome != null && outcome.contains("chapter", ignoreCase = true)) outcome
             else I18n.t("This engine returned no chapters. Pull refresh to try again.")
         }

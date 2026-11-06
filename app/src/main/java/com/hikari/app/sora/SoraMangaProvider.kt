@@ -6,13 +6,15 @@ import com.hikari.app.data.MediaItem
 import com.hikari.app.data.MediaType
 import com.hikari.app.data.ProviderConfig
 import com.hikari.app.data.StreamSource
-import com.hikari.app.manga.MangaProvider
 import com.hikari.app.net.Http
+import com.hikari.app.manga.MangaProvider
+import com.hikari.app.providers.ContentProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * A Sora manga/novel module behind the manga tab's engine contract.
@@ -35,7 +37,7 @@ import java.io.File
  * shape [MangaProvider] serves novel rows: blank url + text), so the novel
  * reader opens them without knowing the engine.
  */
-class SoraMangaProvider(override val config: ProviderConfig) : MangaProvider(config) {
+class SoraMangaProvider(override val config: ProviderConfig) : ContentProvider {
 
     companion object {
         const val MANGA_PREFIX = "sora-manga|"
@@ -44,6 +46,9 @@ class SoraMangaProvider(override val config: ProviderConfig) : MangaProvider(con
         fun isSoraMangaId(id: String): Boolean = id.startsWith(MANGA_PREFIX)
         fun isSoraNovelId(id: String): Boolean = id.startsWith(NOVEL_PREFIX)
         fun isSoraMangaProviderId(id: String): Boolean = isSoraMangaId(id) || isSoraNovelId(id)
+
+        /** Last chapter/page outcome per provider, read by the detail screen. */
+        val lastOutcome = ConcurrentHashMap<String, String>()
     }
 
     val isSoraNovel: Boolean get() = config.id.startsWith(NOVEL_PREFIX)
@@ -132,8 +137,8 @@ class SoraMangaProvider(override val config: ProviderConfig) : MangaProvider(con
     override suspend fun catalogs(): List<CatalogRef> {
         if (isSoraNovel) return emptyList()
         return listOf(
-            CatalogRef(config.id, MediaType.SERIES, CATALOG_POPULAR, "Popular", "manga"),
-            CatalogRef(config.id, MediaType.SERIES, CATALOG_LATEST, "Latest", "manga"),
+            CatalogRef(config.id, MediaType.SERIES, MangaProvider.CATALOG_POPULAR, "Popular", "manga"),
+            CatalogRef(config.id, MediaType.SERIES, MangaProvider.CATALOG_LATEST, "Latest", "manga"),
         )
     }
 
@@ -148,6 +153,7 @@ class SoraMangaProvider(override val config: ProviderConfig) : MangaProvider(con
             val seen = LinkedHashSet<String>()
             val out = ArrayList<MediaItem>()
             for (i in (listOf(idx) + ((idx + 1) until seeds.size) + ((idx - 1) downTo 0)).distinct()) {
+                lastOutcome.remove(config.id)
                 val payload = SoraRuntime.search(moduleFile, config.id, seeds[i])
                 for (item in toMangaItems(dataOf(payload))) {
                     if (item.id in seen) continue

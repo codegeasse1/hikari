@@ -42,8 +42,8 @@ object SourceLangs {
         Lang("mr", "मराठी", "🇮🇳", setOf("mr", "mar", "marathi")),
         Lang("kn", "ಕನ್ನಡ", "🇮🇳", setOf("kn", "kan", "kannada")),
         Lang("gu", "ગુજરાતી", "🇮🇳", setOf("gu", "guj", "gujarati")),
-        Lang("pa", "ਪੰਜਾਬੀ", "🇮🇳", setOf("pa", "pan", "punjabi")),,
-        Lang("or", "\u0B13\u0B21\u0BC0\u0B06", "\uD83C\uDDEE\uD83C\uDDF3", setOf("or", "ori", "odia", "oriya"))
+        Lang("pa", "ਪੰਜਾਬੀ", "🇮🇳", setOf("pa", "pan", "punjabi")),
+        Lang("or", "\u0B13\u0B21\u0BC0\u0B06", "\uD83C\uDDEE\uD83C\uDDF3", setOf("or", "ori", "odia", "oriya")),
         Lang("ur", "اردو", "🇵🇰", setOf("ur", "urd", "urdu")),
         Lang("ne", "नेपाली", "🇳🇵", setOf("ne", "nep", "nepali")),
         Lang("si", "සිංහල", "🇱🇰", setOf("si", "sin", "sinhala", "sinhalese")),
