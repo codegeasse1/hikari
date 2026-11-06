@@ -9196,6 +9196,10 @@ class PlayerActivity : ComponentActivity() {
                                 showDownloadDialog()
                             } else if (i != currentIndex || !playbackCommitted) {
                                 noSubsRetry = false
+                                com.hikari.app.data.Logs.log(
+                                    "Player",
+                                    "chooser tap server ${i + 1}/${sources.size} \"${sources.getOrNull(i)?.name ?: "?"}\"",
+                                )
                                 playSource(i)
                                 pickedByUser = true
                             }
@@ -12950,6 +12954,13 @@ class PlayerActivity : ComponentActivity() {
         // From here on the chooser may show this row as the current one.
         playbackCommitted = true
         val src = sources[index]
+        com.hikari.app.data.Logs.log(
+            "Player",
+            "play tap server ${index + 1}/${sources.size} \"${src.name}\" prov=${src.providerId} " +
+                "m3u8=${src.isM3u8} mpd=${src.isMpd} torrent=${src.isTorrent} local=${src.local} " +
+                "host=${runCatching { java.net.URI(src.url).host ?: "-" }.getOrDefault("-")} " +
+                "urlLen=${src.url.length} pickedByUser=$pickedByUser hdrVar=$headerVariant uaVar=$uaVariant",
+        )
         // Persisting here would remember a source that has NOT proven itself —
         // a signed link that turns out to be expired, or a URL/host whose right
         // header set we haven't found yet, would then be "the last working
@@ -13423,6 +13434,14 @@ class PlayerActivity : ComponentActivity() {
     private fun playDirect(index: Int) {
         try {
             var src = sources[index]
+            com.hikari.app.data.Logs.log(
+                "Player",
+                "playDirect server ${index + 1}/${sources.size} \"${src.name}\" " +
+                    "host=${runCatching { java.net.URI(src.url).host ?: "-" }.getOrDefault("-")} " +
+                    "archive=${com.hikari.app.net.StreamProbe.isArchive(src.url)} " +
+                    "knownBad=${com.hikari.app.net.StreamProbe.knownBad(src.url)} " +
+                    "needProbe=${com.hikari.app.net.StreamProbe.needsResolve(src.url, src.isTorrent, src.isM3u8, src.isMpd)}",
+            )
             // A downloaded copy lives on local storage — nothing to probe, no
             // headers to negotiate, no CDN to fail over from. Straight to
             // ExoPlayer.
@@ -13437,6 +13456,10 @@ class PlayerActivity : ComponentActivity() {
                 StreamProbe.isArchive(src.url)
             ) {
                 val unwrapped = StreamProbe.unwrapArchive(src.url)
+                com.hikari.app.data.Logs.log(
+                    "Player",
+                    "archive check \"${src.name}\" urlLen=${src.url.length} unwrapped=${unwrapped != null}",
+                )
                 if (unwrapped != null) {
                     src = src.copy(url = unwrapped)
                     sources = sources.toMutableList().also { it[index] = src }
@@ -13557,6 +13580,11 @@ class PlayerActivity : ComponentActivity() {
         }
         val src = sources[index]
         val cached = StreamProbe.cached(src.url)
+        com.hikari.app.data.Logs.log(
+            "Player",
+            "probe start \"${src.name}\" cached=${cached != null} " +
+                "host=${runCatching { java.net.URI(src.url).host ?: "-" }.getOrDefault("-")}",
+        )
         if (cached != null) {
             applyProbe(index, src, cached)
             playDirectInner(index)
@@ -13606,7 +13634,15 @@ class PlayerActivity : ComponentActivity() {
             // below works), and the walk's own answer is used when it lands:
             // see the re-resolve after [playDirectInner].
             val probing = async { StreamProbe.resolve(src.url, headers + mapOf("User-Agent" to ua)) }
+            val probeT0 = android.os.SystemClock.elapsedRealtime()
             val resolved = withTimeoutOrNull(firstProbeWaitMs) { probing.await() }
+            com.hikari.app.data.Logs.log(
+                "Player",
+                "probe end \"${src.name}\" in ${android.os.SystemClock.elapsedRealtime() - probeT0}ms " +
+                    "resolved=${resolved != null} mime=${resolved?.mime ?: "-"} " +
+                    (if (resolved != null) "host=${runCatching { java.net.URI(resolved.url).host ?: "-" }.getOrDefault("-")} " else "") +
+                    "knownBad=${StreamProbe.knownBad(src.url)}",
+            )
             probeDialog?.let { runCatching { it.dismiss() } }
             probeDialog = null
             if (currentIndex != index) return@launch
@@ -13643,6 +13679,10 @@ class PlayerActivity : ComponentActivity() {
             // drawn yet, re-hand ExoPlayer the resolved URL instead of leaving
             // it crawling the wrapper page.
             val late = runCatching { probing.await() }.getOrNull() ?: return@launch
+            com.hikari.app.data.Logs.log(
+                "Player",
+                "probe late \"${src.name}\" resolved=true mime=${late.mime ?: "-"}",
+            )
             if (currentIndex != index || renderedFirstFrame) return@launch
             applyProbe(index, sources.getOrNull(index) ?: return@launch, late)
             playDirectInner(index)
@@ -13664,6 +13704,13 @@ class PlayerActivity : ComponentActivity() {
         dismissSlowDialog()
         currentIndex = index
         val src = sources[index]
+        com.hikari.app.data.Logs.log(
+            "Player",
+            "play start server ${index + 1}/${sources.size} \"${src.name}\" " +
+                "host=${runCatching { java.net.URI(src.url).host ?: "-" }.getOrDefault("-")} " +
+                "m3u8=${src.isM3u8} mpd=${src.isMpd} cs3=${src.providerId.startsWith("cs3|")} " +
+                "hdrVar=$headerVariant uaVar=$uaVariant mime=${mainMimeOf(src) ?: "-"}",
+        )
         // A new URL re-arms the live alternative-feed hunt; re-opens of the
         // same URL keep its spent mark (see liveFailoverSpentUrl).
         if (src.url != lastPlayedUrl) liveFailoverSpentUrl = ""
@@ -14073,6 +14120,11 @@ class PlayerActivity : ComponentActivity() {
                     android.os.SystemClock.elapsedRealtime() - serverStartAtMs > stuckBudget
                 ) {
                     val waited = ((android.os.SystemClock.elapsedRealtime() - serverStartAtMs) / 1000L).coerceAtLeast(15L)
+                    com.hikari.app.data.Logs.log(
+                        "Player",
+                        "stuck verdict \"${sources.getOrNull(index)?.name ?: "?"}\" " +
+                            "waited=${waited}s state=${p.playbackState} rendered=$renderedFirstFrame",
+                    )
                     promptSlowServer(sources.getOrNull(index)?.isTorrent == true, waited)
                     return
                 }
@@ -15025,6 +15077,12 @@ class PlayerActivity : ComponentActivity() {
      *  3-second countdown after which it switches automatically if the user
      *  doesn't answer. Switching instantly moves to the next source. */
     private fun promptSlowServer(torrent: Boolean, waitedSeconds: Long = 20L) {
+        com.hikari.app.data.Logs.log(
+            "Player",
+            "slow path \"${sources.getOrNull(currentIndex)?.name ?: "?"}\" " +
+                "waited=${waitedSeconds}s rendered=$renderedFirstFrame " +
+                "silentSkips=$silentSkips liveDone=$liveSearchDone servers=${sources.size}",
+        )
         // Defensive: both watchdogs now route a live stream to [retryLiveStart]
         // before reaching here. If one ever gets through anyway, a live channel
         // must still not be blacklisted or walked past — it is one link with
@@ -15087,6 +15145,11 @@ class PlayerActivity : ComponentActivity() {
                 silentSkips++
                 noSubsRetry = false
                 Toast.makeText(this, I18n.t("Video stuck — trying next server"), Toast.LENGTH_SHORT).show()
+                com.hikari.app.data.Logs.log(
+                    "Player",
+                    "silent skip \"${sources.getOrNull(currentIndex)?.name ?: "?"}\" -> " +
+                        "\"${sources.getOrNull(next)?.name ?: "?"}\" (skip $silentSkips/$maxSilentSkips)",
+                )
                 playSource(next)
                 return
             }
@@ -16079,7 +16142,9 @@ class PlayerActivity : ComponentActivity() {
             com.hikari.app.data.Logs.log(
                 "Player",
                 "playing ${sources.getOrNull(currentIndex)?.name ?: "?"} " +
-                    "(server ${currentIndex + 1}/${sources.size})",
+                    "(server ${currentIndex + 1}/${sources.size}) " +
+                    "in ${(android.os.SystemClock.elapsedRealtime() - serverStartAtMs) / 1000L}s " +
+                    "decoder=${videoDecoderName ?: "-"}",
             )
             maybeOfferResume()
         }
@@ -16190,7 +16255,8 @@ class PlayerActivity : ComponentActivity() {
                 "Player",
                 "playback error on ${sources.getOrNull(currentIndex)?.name ?: "?"} " +
                     "(server ${currentIndex + 1}/${sources.size}): " +
-                    details.replace("\n", " | ").take(600),
+                    details.replace("\n", " | ").take(600) +
+                    " hdrVar=$headerVariant uaVar=$uaVariant tried=${triedUrls.size}",
             )
             // A malformed manifest off an extension's own local server gets a
             // bounded diagnostic refetch: "not #EXTM3U" cannot tell a dead
