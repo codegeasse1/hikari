@@ -1,3 +1,8 @@
+## 0.12.58 (continuous build only)
+
+- Manga translation auto-fit: long translations (Hindi runs long) shrink down to a 6px floor to stay inside the bubble instead of spilling out and running down the page, and the words draw clipped to the bubble cover as a final guarantee
+- Subtitle pick honesty: tapping a subtitle resolves it against the live track list (not the sheet-time snapshot a re-prepare kills), the toast claims the language only when it actually took effect, the auto default clears stale overrides first, and the re-assert window covers slow manifests
+
 ## 0.12.57 (continuous build only)
 
 - Server show/play logic reverted to 0.12.0: archive links skip instead of unwrap, no 15s stuck verdict (20s re-poll), no same-server re-resolve, no disk-bridge (direct play), no R2 octet-stream verify, no hub scoring, CS3 early-handover + per-batch mapping back. Playback logging kept. UI untouched.
