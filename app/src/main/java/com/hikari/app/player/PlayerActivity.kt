@@ -113,7 +113,6 @@ import com.hikari.app.data.ServerMeta
 import com.hikari.app.data.WatchProgress
 import com.hikari.app.data.WatchStats
 import com.hikari.app.download.DownloadEngine
-import com.hikari.app.player.SeekBridge
 import com.hikari.app.download.DownloadKind
 import com.hikari.app.download.DownloadStatus
 import com.hikari.app.download.DownloadTask
@@ -1261,15 +1260,9 @@ class PlayerActivity : ComponentActivity() {
     /** True once the current source has drawn its first video frame. */
     private var renderedFirstFrame = false
 
-    /** When the current server attempt started (elapsedRealtime): a server that
-     *  never produces a first frame past its budget is skipped instead of
-     *  sitting on "Starting..." (see the stuck-start check in [playDirectInner]). */
+    /** When the current server attempt started (elapsedRealtime), for the
+     *  play-start log line and the cover's elapsed counter. */
     private var serverStartAtMs = 0L
-
-    /** A mid-stream link death (expired signed URL) re-resolves the SAME server
-     *  once before the failover walks on: the link died, not the server. Reset
-     *  on every server change (see [playSource]). */
-    private var sameServerRefreshTried = false
 
     /** True once the current source has been restarted by the first-frame
      *  watchdog (guards against an infinite restart loop). */
@@ -12936,7 +12929,6 @@ class PlayerActivity : ComponentActivity() {
             // (see [firstFrameRetried]) resets with it. Staying on the same
             // server (a retry after an error, a restart) keeps the flag.
             firstFrameRetried = false
-            sameServerRefreshTried = false
         }
         serverStartAtMs = android.os.SystemClock.elapsedRealtime()
         autoRotated = false
@@ -13433,7 +13425,7 @@ class PlayerActivity : ComponentActivity() {
      *  that leaves a frozen black screen. */
     private fun playDirect(index: Int) {
         try {
-            var src = sources[index]
+            val src = sources[index]
             com.hikari.app.data.Logs.log(
                 "Player",
                 "playDirect server ${index + 1}/${sources.size} \"${src.name}\" " +
@@ -13449,31 +13441,23 @@ class PlayerActivity : ComponentActivity() {
                 playDirectInner(index)
                 return
             }
-            // HubCloud quality mode hands out `.mkv.zip` wrappers — unwrap to the
-            // video underneath and play that (the other app's HubCloud-FSL fix).
-            // Only a wrapper with no video inside still skips to the next server.
+            // Archive links (.mkv.zip / .rar etc.) are not videos at all —
+            // providers occasionally leak them through (4KHDHub's isDirectVideo
+            // filters on hostname only, so its hubcloud ".mkv.zip" links pass).
+            // Trying one costs a full prepare+error cycle before the failover,
+            // so skip to a real server instead.
             if (!src.torrentStream && !src.isM3u8 && !src.isMpd &&
                 StreamProbe.isArchive(src.url)
             ) {
-                val unwrapped = StreamProbe.unwrapArchive(src.url)
-                com.hikari.app.data.Logs.log(
-                    "Player",
-                    "archive check \"${src.name}\" urlLen=${src.url.length} unwrapped=${unwrapped != null}",
-                )
-                if (unwrapped != null) {
-                    src = src.copy(url = unwrapped)
-                    sources = sources.toMutableList().also { it[index] = src }
-                } else {
-                    triedUrls.add(src.url)
-                    if (index + 1 < sources.size) {
-                        Toast.makeText(this, I18n.t("Archive link (not a video) — trying next server"), Toast.LENGTH_SHORT).show()
-                        noSubsRetry = false
-                        playSource(index + 1)
-                    } else if (!refreshSources(index)) {
-                        showError(I18n.t("Only archive links (.zip) were found for this title — no playable video."), false)
-                    }
-                    return
+                triedUrls.add(src.url)
+                if (index + 1 < sources.size) {
+                    Toast.makeText(this, I18n.t("Archive link (not a video) — trying next server"), Toast.LENGTH_SHORT).show()
+                    noSubsRetry = false
+                    playSource(index + 1)
+                } else if (!refreshSources(index)) {
+                    showError(I18n.t("Only archive links (.zip) were found for this title — no playable video."), false)
                 }
+                return
             }
             // Extension-less / container-unknown URLs — HLS & DASH manifests
             // served at API paths, and JSON/HTML wrapper pages — get probed
@@ -14037,7 +14021,7 @@ class PlayerActivity : ComponentActivity() {
         // error). Subtitles are fetched and validated in the background and
         // only added if their content is actually a subtitle.
         val mime = mainMimeOf(src)
-        val itemBuilder = MediaItem.Builder().setUri(bridgedPlayUri(src, sourceHeaders, ua, playbackClient))
+        val itemBuilder = MediaItem.Builder().setUri(src.url)
         if (mime != null) itemBuilder.setMimeType(mime)
         // A subtitle the user added themselves is attached EAGERLY, unlike the
         // provider's (which are deferred and validated in the background because
@@ -14111,23 +14095,6 @@ class PlayerActivity : ComponentActivity() {
                 firstFrameTask = null
                 val p = player ?: return
                 if (renderedFirstFrame || currentIndex != index) return
-                // Stuck-start verdict: preparing/buffering with no frame past
-                // the budget (15s files, 30s live) is a dead server, not a slow
-                // one — route it through the slow-server path instead of sitting
-                // on "Starting..." while the search has long finished.
-                val stuckBudget = if (isLiveSource(sources.getOrNull(index))) liveStartBudgetMs else 15_000L
-                if (serverStartAtMs > 0L &&
-                    android.os.SystemClock.elapsedRealtime() - serverStartAtMs > stuckBudget
-                ) {
-                    val waited = ((android.os.SystemClock.elapsedRealtime() - serverStartAtMs) / 1000L).coerceAtLeast(15L)
-                    com.hikari.app.data.Logs.log(
-                        "Player",
-                        "stuck verdict \"${sources.getOrNull(index)?.name ?: "?"}\" " +
-                            "waited=${waited}s state=${p.playbackState} rendered=$renderedFirstFrame",
-                    )
-                    promptSlowServer(sources.getOrNull(index)?.isTorrent == true, waited)
-                    return
-                }
                 val state = p.playbackState
                 if (state != Player.STATE_READY) {
                     if (state == Player.STATE_ENDED) return
@@ -15077,9 +15044,6 @@ class PlayerActivity : ComponentActivity() {
      *  3-second countdown after which it switches automatically if the user
      *  doesn't answer. Switching instantly moves to the next source. */
     private fun promptSlowServer(torrent: Boolean, waitedSeconds: Long = 20L) {
-        // Two watchdogs can race here 60ms apart — the second must be a silent
-        // no-op, including in the log.
-        if (slowDialog != null) return
         com.hikari.app.data.Logs.log(
             "Player",
             "slow path \"${sources.getOrNull(currentIndex)?.name ?: "?"}\" " +
@@ -15844,53 +15808,6 @@ class PlayerActivity : ComponentActivity() {
         }
     }
 
-    /**
-     * HTTP(S) progressive file behind a host that ignores Range (the "skip
-     * restarts from 00:00" servers): ExoPlayer asks for bytes N- and the host
-     * answers from byte 0, so every seek replays from the start. Route those
-     * through the localhost range bridge, which downloads once into a temp
-     * file (deleted when the player closes, so app size never grows) and
-     * answers ExoPlayer's ranges from it — skip/scrub then behave normally.
-     * HLS/DASH, torrents, Telegram files, DRM and loopback URLs are untouched.
-     */
-    private fun bridgedPlayUri(
-        src: PlayerSource,
-        headers: Map<String, String>,
-        ua: String,
-        client: OkHttpClient,
-    ): String {
-        if (src.drm != null || src.isTorrent) return src.url
-        if (src.isM3u8 || src.isMpd) return src.url
-        val u = src.url
-        if (!u.startsWith("http")) return u
-        if (isLoopbackHost(u) || u.startsWith("hikari-td:")) return u
-        val low = u.lowercase()
-        if (low.contains(".m3u8") || low.contains(".mpd") || low.contains("master.txt")) return u
-        // Verified video plays DIRECT — the bridge downloads the whole file to
-        // disk first, which is what stalled Pixeldrain 20s while the other app
-        // played the same link in seconds. Same for real media files and the
-        // big CDNs (pixeldrain/R2/googleusercontent): they all support Range,
-        // so the bridge's re-download buys nothing and only adds latency +
-        // gigabytes of temp files. The bridge stays for genuinely unknown
-        // extension-less hosts that ignore Range (the "seek restarts" class).
-        if (StreamProbe.cached(u) != null) return u
-        val host = runCatching { java.net.URI(u).host?.lowercase() }.getOrNull().orEmpty()
-        if (host == "pixeldrain.dev" || host.endsWith(".pixeldrain.dev") ||
-            host.endsWith(".r2.cloudflarestorage.com") ||
-            host.endsWith(".googleusercontent.com") ||
-            host.contains("hubcloud") || host.contains("hubdrive") || host.contains("hblinks") ||
-            host.contains("pixel.") || host.contains("gpdl.")
-        ) return u
-        val path = u.substringBefore('?').substringBefore('#').lowercase()
-        if (path.endsWith(".mp4") || path.endsWith(".mkv") || path.endsWith(".webm") ||
-            path.endsWith(".mov") || path.endsWith(".m4v") || path.endsWith(".avi") ||
-            path.endsWith(".flv") || path.endsWith(".ts") || path.endsWith(".m4s") ||
-            path.endsWith(".mp3") || path.endsWith(".m4a") || path.endsWith(".aac") ||
-            path.endsWith(".ogg") || path.endsWith(".ogv") || path.endsWith(".wav")
-        ) return u
-        return SeekBridge.open(u, headers, ua, cacheDir, client) ?: u
-    }
-
     /** The main-media mime for [src] (HLS/DASH), or null to let media3 sniff the
      *  container itself. */
     private fun mainMimeOf(src: PlayerSource): String? = when {
@@ -15909,7 +15826,7 @@ class PlayerActivity : ComponentActivity() {
         configs: List<MediaItem.SubtitleConfiguration>,
     ): MediaItem {
         val all = if (userSubs.isEmpty()) configs else configs + userSubConfigs()
-        val item = MediaItem.Builder().setUri(SeekBridge.current(src.url) ?: src.url).setSubtitleConfigurations(all)
+        val item = MediaItem.Builder().setUri(src.url).setSubtitleConfigurations(all)
         mainMimeOf(src)?.let { item.setMimeType(it) }
         return item.build()
     }
@@ -16643,19 +16560,6 @@ class PlayerActivity : ComponentActivity() {
         // different link there hides a whole-server-list problem, so the user
         // gets the choice (try the next one now, pick another from the list so
         // far, or stop asking). See [promptServerFailed].
-        // A link that died MID-STREAM (position well past the start) with an
-        // IO-class error is usually an expired signed URL, not a dead server:
-        // re-resolve the SAME server once and resume before walking on. The
-        // refresh prefers the same server name, so this is a fresh link from
-        // the same mirror, and playback resumes where it stopped.
-        val posMs = runCatching { player?.currentPosition ?: 0L }.getOrDefault(0L)
-        if (posMs > 5_000L && !sameServerRefreshTried && liveSessionId != null &&
-            isIoFailure(code, headerIssue)
-        ) {
-            sameServerRefreshTried = true
-            Toast.makeText(this, I18n.t("Link expired — getting a fresh one…"), Toast.LENGTH_SHORT).show()
-            if (refreshSources(currentIndex, details)) return
-        }
         val nextIndex = nextUntriedIndex()
         if (nextIndex >= 0) {
             if (pickedByUser) {
@@ -18253,7 +18157,6 @@ class PlayerActivity : ComponentActivity() {
             p.release()
         }
         player = null
-        SeekBridge.stop()
         // Last Telegram file's local bytes go with the session (see [Td.forgetPlayedFile]).
         if (lastPlayedUrl.isNotBlank()) {
             releaseTelegramFile(lastPlayedUrl)
