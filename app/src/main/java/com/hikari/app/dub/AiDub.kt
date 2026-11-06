@@ -108,10 +108,12 @@ class AiDubManager(private val appCtx: Context) {
     private var pipeTrack: AudioTrack? = null
 
     private var lastInput = ""
-    private val dubQueue = ArrayDeque<Pair<String, AiDubLang>>()
+    private val dubQueue = ArrayDeque<Triple<String, AiDubLang, Gender>>()
     private var dubDraining = false
     private var lastEnqueueAt = 0L
     private val piperQueue = ArrayDeque<Pair<FloatArray, Int>>()
+    private var castMap: Map<String, Gender> = emptyMap()
+    private var castKey: String = ""
 
     init {
         load()
@@ -137,11 +139,23 @@ class AiDubManager(private val appCtx: Context) {
 
     // ---- subtitle entry points (called from the player's listener) ----
 
+    fun setTitle(title: String, year: Int? = null) {
+        val key = title.trim().lowercase() + "|" + (year ?: 0)
+        if (key == castKey) return
+        castKey = key
+        if (title.isBlank()) { castMap = emptyMap(); return }
+        scope.launch(Dispatchers.IO) {
+            val m = runCatching { CastGenders.load(title, year) }.getOrDefault(emptyMap())
+            withContext(Dispatchers.Main) { if (key == castKey) castMap = m }
+        }
+    }
+
     fun onProviderCues(line: String) {
         val clean = line.trim()
         if (!enabled || clean.isEmpty()) return
         providerCueAt = System.currentTimeMillis()
-        speakTranslated(clean)
+        val g = CastGenders.genderForLine(clean, castMap)
+        speakTranslated(clean, g)
     }
 
     fun onPlayingChanged(playing: Boolean) {
@@ -178,7 +192,7 @@ class AiDubManager(private val appCtx: Context) {
         return null
     }
 
-    private fun speakTranslated(raw: String) {
+    private fun speakTranslated(raw: String, gender: Gender = Gender.UNKNOWN) {
         val norm = raw.trim().replace(Regex("\\s+"), " ")
         if (!enabled || norm.isEmpty() || norm == lastInput) return
         lastInput = norm
@@ -187,25 +201,26 @@ class AiDubManager(private val appCtx: Context) {
             val out = translateForDub(norm, L) ?: return@launch
             withContext(Dispatchers.Main) {
                 if (!enabled) return@withContext
-                enqueue(out, L)
+                enqueue(out, L, gender)
             }
         }
     }
 
-    private fun enqueue(text: String, L: AiDubLang) {
+    private fun enqueue(text: String, L: AiDubLang, gender: Gender = Gender.UNKNOWN) {
         val clean = text.trim()
         if (!enabled || clean.isEmpty()) return
-        if (engine == ENGINE_PIPER && piperOk) { enqueuePiper(clean, L); return }
+        if (engine == ENGINE_PIPER && piperOk) { enqueuePiper(clean, L, gender); return }
         synchronized(dubQueue) {
+            while (dubQueue.size >= 3) dubQueue.removeFirst()
             val tail = dubQueue.lastOrNull()
             val now = System.currentTimeMillis()
             if (tail != null && tail.second.code == L.code &&
-                now - lastEnqueueAt < 1200 && tail.first.length + clean.length < 500
+                now - lastEnqueueAt < 800 && tail.first.length + clean.length < 350
             ) {
                 dubQueue.removeLast()
-                dubQueue.addLast(Pair(tail.first + " " + clean, L))
+                dubQueue.addLast(Triple(tail.first + " " + clean, L, gender))
             } else {
-                dubQueue.addLast(Pair(clean, L))
+                dubQueue.addLast(Triple(clean, L, gender))
             }
             lastEnqueueAt = now
         }
@@ -216,7 +231,7 @@ class AiDubManager(private val appCtx: Context) {
         if (dubDraining) return
         val head = synchronized(dubQueue) { dubQueue.firstOrNull() } ?: return
         dubDraining = true
-        speakSystemQueued(head.first, head.second)
+        speakSystemQueued(head.first, head.second, head.third)
     }
 
     private fun speakNextInQueue() {
@@ -226,28 +241,28 @@ class AiDubManager(private val appCtx: Context) {
         else onSpeakingChanged?.invoke(false)
     }
 
-    private fun enqueuePiper(text: String, L: AiDubLang) {
+    private fun enqueuePiper(text: String, L: AiDubLang, gender: Gender = Gender.UNKNOWN) {
         scope.launch(Dispatchers.IO) {
-            withContext(Dispatchers.Main) { speakPiperQueued(text, L) }
+            withContext(Dispatchers.Main) { speakPiperQueued(text, L, gender) }
         }
     }
 
     /** Speak text that is already translated (hardsub path). */
-    fun speakDirect(translated: String, L: AiDubLang) {
+    fun speakDirect(translated: String, L: AiDubLang, gender: Gender = Gender.UNKNOWN) {
         val text = translated.trim()
         if (!enabled || text.isEmpty()) return
-        scope.launch(Dispatchers.Main) { enqueue(text, L) }
+        scope.launch(Dispatchers.Main) { enqueue(text, L, gender) }
     }
 
-    private fun speak(text: String, L: AiDubLang) {
+    private fun speak(text: String, L: AiDubLang, gender: Gender = Gender.UNKNOWN) {
         if (text.length > 600) return
-        enqueue(text, L)
+        enqueue(text, L, gender)
     }
 
-    private fun speakPiperQueued(text: String, L: AiDubLang) {
+    private fun speakPiperQueued(text: String, L: AiDubLang, gender: Gender = Gender.UNKNOWN) {
         if (text.length > 600) return
-        if (!PiperVoice.isReady(appCtx, L)) { synchronized(dubQueue) { dubQueue.addLast(Pair(text, L)) }; drainSystemQueue(); return }
-        synthesizePiper(text, L)
+        if (!PiperVoice.isReady(appCtx, L)) { synchronized(dubQueue) { while (dubQueue.size >= 3) dubQueue.removeFirst(); dubQueue.addLast(Triple(text, L, gender)) }; drainSystemQueue(); return }
+        synthesizePiper(text, L, gender)
     }
 
     fun stopSpeech(clearInput: Boolean = true) {
@@ -349,11 +364,26 @@ class AiDubManager(private val appCtx: Context) {
         return if (ttsReady) "Device voices" else "Device voices (loading…)"
     }
 
-    private fun speakSystem(text: String, L: AiDubLang) {
-        enqueue(text, L)
+    private fun speakSystem(text: String, L: AiDubLang, gender: Gender = Gender.UNKNOWN) {
+        enqueue(text, L, gender)
     }
 
-    private fun speakSystemQueued(text: String, L: AiDubLang) {
+    private fun pickVoiceForGender(t: TextToSpeech, L: AiDubLang, gender: Gender): android.speech.tts.Voice? {
+        return try {
+            val cands = t.voices?.filter { it.locale.language == L.locale.language } ?: return null
+            if (cands.isEmpty()) return null
+            if (gender == Gender.UNKNOWN) return cands.firstOrNull()
+            val femaleKeys = listOf("female", "woman", "girl", "feminine", "zira", "samantha", "veena", "heera")
+            val maleKeys = listOf("male", "man", "boy", "masculine", "david", "mark", "alex", "daniel")
+            val want = if (gender == Gender.FEMALE) femaleKeys else maleKeys
+            val avoid = if (gender == Gender.FEMALE) maleKeys else femaleKeys
+            cands.firstOrNull { v -> want.any { v.name.lowercase().contains(it) } }
+                ?: cands.firstOrNull { v -> avoid.none { v.name.lowercase().contains(it) } }
+                ?: cands.firstOrNull()
+        } catch (e: Exception) { null }
+    }
+
+    private fun speakSystemQueued(text: String, L: AiDubLang, gender: Gender = Gender.UNKNOWN) {
         ensureTts { ok ->
             if (!ok) { runCatching { scope.launch(Dispatchers.Main) { speakNextInQueue() } }; return@ensureTts }
             val t = tts ?: return@ensureTts
@@ -371,7 +401,9 @@ class AiDubManager(private val appCtx: Context) {
                 return@ensureTts
             }
             try {
-                t.voices?.firstOrNull { it.locale.language == L.locale.language }?.let { t.voice = it }
+                pickVoiceForGender(t, L, gender)?.let { t.voice = it }
+                t.setPitch(when (gender) { Gender.FEMALE -> 1.25f; Gender.MALE -> 0.85f; else -> 1.0f })
+                t.setSpeechRate(1.25f)
             } catch (e: Exception) {
             }
             onSpeakingChanged?.invoke(true)
@@ -440,20 +472,35 @@ class AiDubManager(private val appCtx: Context) {
         }
     }
 
-    private fun speakPiper(text: String, L: AiDubLang) {
-        synthesizePiper(text, L)
+    private fun speakPiper(text: String, L: AiDubLang, gender: Gender = Gender.UNKNOWN) {
+        synthesizePiper(text, L, gender)
     }
 
-    private fun synthesizePiper(text: String, L: AiDubLang) {
+    private fun resampleForGender(samples: FloatArray, gender: Gender): FloatArray {
+        val factor = when (gender) { Gender.FEMALE -> 1.12f; Gender.MALE -> 0.9f; else -> 1.0f }
+        if (factor == 1.0f || samples.size < 8) return samples
+        val outSize = (samples.size / factor).toInt().coerceAtLeast(1)
+        val out = FloatArray(outSize)
+        for (i in out.indices) {
+            val pos = i * factor
+            val i0 = pos.toInt().coerceIn(0, samples.size - 1)
+            val i1 = (i0 + 1).coerceIn(0, samples.size - 1)
+            val frac = pos - i0
+            out[i] = samples[i0] * (1 - frac) + samples[i1] * frac
+        }
+        return out
+    }
+
+    private fun synthesizePiper(text: String, L: AiDubLang, gender: Gender = Gender.UNKNOWN) {
         if (L.piperTarball == null || !PiperVoice.isReady(appCtx, L)) {
-            synchronized(dubQueue) { dubQueue.addLast(Pair(text, L)) }; drainSystemQueue()
+            synchronized(dubQueue) { while (dubQueue.size >= 3) dubQueue.removeFirst(); dubQueue.addLast(Triple(text, L, gender)) }; drainSystemQueue()
             return
         }
         scope.launch(Dispatchers.IO) {
             try {
                 val found = PiperVoice.locate(appCtx, L)
                     ?: run {
-                        withContext(Dispatchers.Main) { synchronized(dubQueue) { dubQueue.addLast(Pair(text, L)) }; drainSystemQueue() }
+                        withContext(Dispatchers.Main) { synchronized(dubQueue) { while (dubQueue.size >= 3) dubQueue.removeFirst(); dubQueue.addLast(Triple(text, L, gender)) }; drainSystemQueue() }
                         return@launch
                     }
                 if (piperId != found.id) {
@@ -486,21 +533,22 @@ class AiDubManager(private val appCtx: Context) {
                 }
                 val engine = piper
                     ?: run {
-                        withContext(Dispatchers.Main) { synchronized(dubQueue) { dubQueue.addLast(Pair(text, L)) }; drainSystemQueue() }
+                        withContext(Dispatchers.Main) { synchronized(dubQueue) { while (dubQueue.size >= 3) dubQueue.removeFirst(); dubQueue.addLast(Triple(text, L, gender)) }; drainSystemQueue() }
                         return@launch
                     }
                 val audio = try {
                     engine.generate(text, 0, 1.0f)
                 } catch (e: Exception) {
-                    withContext(Dispatchers.Main) { synchronized(dubQueue) { dubQueue.addLast(Pair(text, L)) }; drainSystemQueue() }
+                    withContext(Dispatchers.Main) { synchronized(dubQueue) { while (dubQueue.size >= 3) dubQueue.removeFirst(); dubQueue.addLast(Triple(text, L, gender)) }; drainSystemQueue() }
                     return@launch
                 }
                 if (audio.samples.isEmpty()) {
-                    withContext(Dispatchers.Main) { synchronized(dubQueue) { dubQueue.addLast(Pair(text, L)) }; drainSystemQueue() }
+                    withContext(Dispatchers.Main) { synchronized(dubQueue) { while (dubQueue.size >= 3) dubQueue.removeFirst(); dubQueue.addLast(Triple(text, L, gender)) }; drainSystemQueue() }
                     return@launch
                 }
                 withContext(Dispatchers.Main) {
-                    synchronized(piperQueue) { piperQueue.addLast(Pair(audio.samples, engine.sampleRate())) }
+                    val pitched = resampleForGender(audio.samples, gender)
+                    synchronized(piperQueue) { while (piperQueue.size >= 3) piperQueue.removeFirst(); piperQueue.addLast(Pair(pitched, engine.sampleRate())) }
                     playNextPiperBlock()
                 }
             } catch (e: CancellationException) {
@@ -508,10 +556,10 @@ class AiDubManager(private val appCtx: Context) {
             } catch (e: UnsatisfiedLinkError) {
                 withContext(Dispatchers.Main) {
                     Toast.makeText(appCtx, "Piper engine failed to load — using System TTS", Toast.LENGTH_SHORT).show()
-                    speakSystem(text, L)
+                    speakSystem(text, L, gender)
                 }
             } catch (e: Exception) {
-                withContext(Dispatchers.Main) { synchronized(dubQueue) { dubQueue.addLast(Pair(text, L)) }; drainSystemQueue() }
+                withContext(Dispatchers.Main) { synchronized(dubQueue) { while (dubQueue.size >= 3) dubQueue.removeFirst(); dubQueue.addLast(Triple(text, L, gender)) }; drainSystemQueue() }
             }
         }
     }
