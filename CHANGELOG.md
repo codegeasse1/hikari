@@ -1,3 +1,10 @@
+## 0.12.59 (continuous build only)
+
+- Poster styling honesty: portrait mode shows portrait posters (TMDB / AniList / Bangumi covers, provider art first) and cinema mode fills the 16:9 frame with a real landscape backdrop — TMDB backdrops via the images endpoint (Animation-gated so mismatches like Big Brother keep the anime art), AniList banners, universal fallback when TMDB has nothing; Bangumi-only titles stay blurred-portrait (portrait covers are all Bangumi has). Phone + TV share the same path
+- CloudStream manga extensions route to the Manga tab: a manga/manhwa/manhua/comic/webtoon/doujin module installs as a Manga provider (Browse/search/reader, chapters + hotlink-Referer pages) instead of a dead video row on Home; video modules unchanged. Nuvio/Stremio/Vega/Zangetsu/SkyStream stay video-only (no chapter interface); Aniyomi/Sora/AnymeX already routed
+- AnyMex catalogues that never listed: filter rows now answer the extension's own filter array verbatim at the original positions (AnimeWorld's Tipo/Generi/Stato/Sottotitoli/Audio/Ordine read filters[0..5], so a trimmed rebuild read the wrong answers and threw) including GroupFilter checkboxes (only the opened box checks); a bot check served as HTTP 200 is now named instead of silent empty (globe Verify offered); the globe opens the module's own declared site (its baseUrl, not the raw .js URL or raw.githubusercontent.com origin), which also feeds the dead-catalogue homepage fallback and the wall marker — 123AV's stale Popular/Latest paths (404) fall back to its front-page titles
+- Novel routing unchanged (novel modules still go to the Novel tab); TV uses the same paths, no separate TV code
+
 ## 0.12.58 (continuous build only)
 
 - Manga translation auto-fit: long translations (Hindi runs long) shrink down to a 6px floor to stay inside the bubble instead of spilling out and running down the page, and the words draw clipped to the bubble cover as a final guarantee
