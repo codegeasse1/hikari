@@ -57,31 +57,57 @@ object TmdbMeta {
      * (poster, backdrop) for [item] from TMDB, falling back to IMDb when TMDB
      * has no usable image. Either element of the pair may be null; null as a
      * whole means neither source knew this title.
+     *
+     * Portrait vs cinema contract: the portrait half is the anime cover
+     * (AniList/Bangumi via [DonghuaDetails], else the TMDB poster); the
+     * landscape half prefers the anime banner, then a TMDB backdrop. A
+     * donghua the anime index knows by cover only used to get NO backdrop at
+     * all (portrait blurred into the cinema frame) even when TMDB carried one
+     * — now the TMDB backdrop fills in, as long as TMDB's own details call
+     * the title Animation (a live-action namesake's art must never overwrite
+     * the anime, the "Big Brother" rule). When the primary `backdrop_path` is
+     * missing, the `/images` backdrops are tried before giving up, so far more
+     * cinema frames get a real 16:9 instead of a blurred portrait.
      */
     suspend fun artwork(item: MediaItem): Pair<String?, String?>? {
         if (!runCatching { HikariApp.instance.store.tmdbEnabled() }.getOrDefault(true) ||
             !runCatching { HikariApp.instance.store.tmdbModule("artwork") }.getOrDefault(true)) return null
         // An anime AniList/Bangumi knew with real data: its art wins outright,
-        // and TMDB is never consulted — TMDB's mistranslation (the Hollywood
-        // sitcom for a donghua called "Big Brother") must never overwrite the anime.
-        // A cover-only / score-zero / blank-overview hit is NOT a win (the bare case).
+        // and TMDB is never consulted for the POSTER — TMDB's mistranslation
+        // (the Hollywood sitcom for a donghua called "Big Brother") must never
+        // overwrite the anime. A cover-only / score-zero / blank-overview hit
+        // is NOT a win (the bare case).
+        var animeCover: String? = null
         when (val pick = runCatching { DonghuaDetails.pick(item) }.getOrNull()) {
             is DonghuaDetails.Pick.Anime -> {
                 val a = pick.info
-                if ((a.cover != null || a.banner != null) && DonghuaDetails.isUsable(a)) return a.cover to a.banner
+                if ((a.cover != null || a.banner != null) && DonghuaDetails.isUsable(a)) {
+                    if (a.banner != null) return a.cover to a.banner
+                    animeCover = a.cover
+                }
             }
             else -> {}
         }
         val resolved = runCatching { TmdbResolver.resolve(item) }.getOrNull()
+        var tmdbPoster: String? = null
+        var tmdbBackdrop: String? = null
         if (resolved != null) {
             val seg = segment(resolved.mediaType)
             val d = TmdbResolver.apiGet("/$seg/${resolved.tmdbId}", emptyMap())
             if (d != null) {
-                val p = d.tmdbPath("poster_path")?.let { IMG + it }
-                val b = d.tmdbPath("backdrop_path")?.let { IMG_WIDE + it }
-                if (p != null || b != null) return p to b
+                tmdbPoster = d.tmdbPath("poster_path")?.let { IMG + it }
+                // Animation-gated (see above): only an Animation-genre TMDB
+                // entry may supply the landscape for an anime-picked title.
+                val animOk = animeCover == null || isAnimationGenres(d)
+                if (animOk) {
+                    tmdbBackdrop = d.tmdbPath("backdrop_path")?.let { IMG_WIDE + it }
+                        ?: bestBackdrop(seg, resolved.tmdbId)
+                }
             }
         }
+        // Anime cover kept, landscape filled from TMDB when the banner was missing.
+        if (animeCover != null) return animeCover to tmdbBackdrop
+        if (tmdbPoster != null || tmdbBackdrop != null) return tmdbPoster to tmdbBackdrop
         // Universal fallback (TMDB -> AniList -> Bangumi): any title TMDB missed
         // gets one anime-source try, so an untagged donghua/anime still resolves.
         runCatching { DonghuaDetails.load(item) }.getOrNull()?.let { a ->
@@ -89,6 +115,48 @@ object TmdbMeta {
         }
         return imdbArtwork(item)
     }
+
+    /** True when TMDB's own details call the entry Animation (genre id 16 or
+     *  the name "Animation") — the gate that lets a TMDB backdrop stand in
+     *  for a missing anime banner (see [artwork]). */
+    private fun isAnimationGenres(details: JSONObject): Boolean {
+        val genres = details.optJSONArray("genres") ?: return false
+        return (0 until genres.length()).any { i ->
+            val g = genres.optJSONObject(i) ?: return@any false
+            g.optInt("id", 0) == 16 ||
+                g.optString("name").equals("animation", ignoreCase = true)
+        }
+    }
+
+    /** Best-voted extra backdrop from `/images` (null when there is none):
+     *  the primary `backdrop_path` is often missing while the title still has
+     *  several backdrops. Highest vote average wins, vote count breaks ties;
+     *  only sane 16:9-ish frames are considered. Never throws. */
+    private suspend fun bestBackdrop(seg: String, tmdbId: String): String? =
+        runCatching {
+            val d = TmdbResolver.apiGet(
+                "/$seg/$tmdbId/images",
+                mapOf("include_image_language" to "en,null"),
+            ) ?: return null
+            val arr = d.optJSONArray("backdrops") ?: return null
+            var best: String? = null
+            var bestScore = -1.0
+            var bestVotes = -1
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                val path = o.tmdbPath("file_path") ?: continue
+                val ar = o.optDouble("aspect_ratio", 0.0)
+                if (ar < 1.3 || ar > 2.4) continue
+                val avg = o.optDouble("vote_average", 0.0)
+                val votes = o.optInt("vote_count", 0)
+                if (avg > bestScore || (avg == bestScore && votes > bestVotes)) {
+                    bestScore = avg
+                    bestVotes = votes
+                    best = IMG_WIDE + path
+                }
+            }
+            best
+        }.getOrNull()
 
     /**
      * The title's LOGO: TMDB's own transparent wordmark for a movie or series
