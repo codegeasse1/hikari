@@ -3225,8 +3225,19 @@ internal fun webUrlChain(p: ContentProvider, vararg itemUrls: String?): String? 
     }
     runCatching { webUrlFor(p) }.getOrNull()?.takeIf { it.isNotBlank() }?.let { return it }
     webUrlRootOf(p.config.url)?.let { return it }
-    webUrlRootOf(p.config.extra)?.let { return it }
+    // The install URL of a scripted extension is the script itself (a .js file
+    // on the repo raw host) — never the site. Opening it showed the module
+    // source instead of the site ("just like that script").
+    webUrlRootOf(p.config.extra)?.takeIf { !isScriptArtifactUrl(it) }?.let { return it }
     return null
+}
+
+/** An install artifact, not a browsable site page: never a globe target. */
+private fun isScriptArtifactUrl(url: String): Boolean {
+    val lower = url.lowercase()
+    if (lower.endsWith(".js")) return true
+    if (lower.contains("/javascript/")) return true
+    return false
 }
 
 /**
