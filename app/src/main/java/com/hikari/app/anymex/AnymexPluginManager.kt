@@ -91,31 +91,50 @@ object AnymexPluginManager {
         val metaFile = File(dirOf(config), "meta.json")
         if (!metaFile.exists()) return null
         return runCatching {
-            JSONObject(metaFile.readText()).optString("baseUrl").trim()
-        }.getOrNull()?.takeIf { it.startsWith("http") }
+            val o = JSONObject(metaFile.readText())
+            o.optString("baseUrl").trim().takeIf { it.startsWith("http") }
+                ?: o.optString("apiUrl").trim().takeIf { it.startsWith("http") }?.let { api ->
+                    // Last resort inside our own metadata: the API host is the
+                    // site host for these modules, and a site host always
+                    // beats the "couldn't determine" dead end for the globe.
+                    runCatching {
+                        val u = java.net.URI(api)
+                        u.scheme + "://" + u.authority + "/"
+                    }.getOrNull()
+                }
+        }.getOrNull()
     }
 
     /**
      * The `baseUrl` the module's own sources entry declares — the same const
      * the runtime boots the script with (see
      * [AnymexRuntime.parseSourceFromModule], which only knows the standard
-     * spelling). Repos rename the const freely, so this scans the head of the
-     * file for the first declared baseUrl instead of one variable name.
+     * spelling). Repos rename the const freely, so this scans the file for
+     * the first declared baseUrl instead of one variable name. The whole
+     * module file is scanned (capped): declarations past the old 8KB head
+     * used to resolve to null and the globe showed "couldn't determine"
+     * instead of the site.
      */
     private fun moduleBaseUrl(config: ProviderConfig): String? {
         val mod = runCatching { File(config.url) }.getOrNull()
             ?.takeIf { it.isFile } ?: return null
-        val head = runCatching {
+        val text = runCatching {
             mod.inputStream().use { stream ->
-                val buf = ByteArray(8192)
-                val n = stream.read(buf)
-                if (n <= 0) "" else String(buf, 0, n, Charsets.UTF_8)
+                val cap = 262144
+                val buf = ByteArray(cap)
+                var total = 0
+                while (total < cap) {
+                    val n = stream.read(buf, total, cap - total)
+                    if (n <= 0) break
+                    total += n
+                }
+                if (total <= 0) "" else String(buf, 0, total, Charsets.UTF_8)
             }
         }.getOrNull().orEmpty()
-        if (head.isBlank()) return null
+        if (text.isBlank()) return null
         val m = Regex(
             """["']baseUrl["']\s*:\s*["'](https?://[^"']+)["']""",
-        ).find(head) ?: return null
+        ).find(text) ?: return null
         return m.groupValues[1].trim().takeIf { it.startsWith("http") }
     }
 
