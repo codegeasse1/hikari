@@ -343,8 +343,13 @@
   // nothing" (end of pages, no results) apart from "every request failed"
   // (dead site, moved paths, blocking) and say so honestly instead of the
   // generic "no titles" line. Reset at the start of every __anymexCall.
-  g.__anymexFetchStats = { ok: 0, fail: 0, lastStatus: 0, deadSite: false };
+  g.__anymexFetchStats = { ok: 0, fail: 0, lastStatus: 0, deadSite: false, wall: false };
   var DEAD_SITE_RE = /account suspended|account.*(suspended|terminated)|domain.*(parked|for sale|expired)|this site can.t be reached|404 not found/i;
+  // Bot-check interstitial served as HTTP 200: the page carries no titles, so
+  // without this flag an empty catalogue after one reads as "no titles" with
+  // nothing to say (and no Verify offered). Matched against the body while it
+  // is still here (see noteFetch); only consulted for empty catalogues.
+  var CHALLENGE_RE = /cf-chl|cf_chl|__cf_bm|cf_clearance|challenge-platform|cdn-cgi\/challenge|turnstile|cf-please-wait|just a moment|one moment, ?please|verify you are human|attention required/i;
   function noteFetch(status, bodyText) {
     try {
       if (status >= 200 && status < 300) { g.__anymexFetchStats.ok++; }
@@ -352,8 +357,14 @@
         g.__anymexFetchStats.fail++;
         if (status) g.__anymexFetchStats.lastStatus = status;
       }
-      if (bodyText && DEAD_SITE_RE.test(String(bodyText).slice(0, 4000))) {
-        g.__anymexFetchStats.deadSite = true;
+      var slice = bodyText ? String(bodyText).slice(0, 4000) : '';
+      if (slice) {
+        if (DEAD_SITE_RE.test(slice)) {
+          g.__anymexFetchStats.deadSite = true;
+        }
+        if (CHALLENGE_RE.test(slice)) {
+          g.__anymexFetchStats.wall = true;
+        }
       }
     } catch (e) {}
   }
@@ -362,7 +373,10 @@
   }
   function describeFetchFailure() {
     try {
-      var st = g.__anymexFetchStats || { ok: 0, fail: 0, lastStatus: 0, deadSite: false };
+      var st = g.__anymexFetchStats || { ok: 0, fail: 0, lastStatus: 0, deadSite: false, wall: false };
+      if (st.wall) {
+        return 'the site is showing a Cloudflare bot check — open it in the WebView globe to verify, then retry';
+      }
       if (st.ok > 0 || st.fail === 0) return null;
       if (st.deadSite) {
         return 'the site itself looks dead — its pages say the account is suspended or the domain is parked/expired';
@@ -1157,7 +1171,7 @@
   // detail answers are plain objects; both land as data either way.
   g.__anymexCall = function (fnName, argsJson) {
     try {
-      try { g.__anymexFetchStats = { ok: 0, fail: 0, lastStatus: 0, deadSite: false }; } catch (e0) {}
+      try { g.__anymexFetchStats = { ok: 0, fail: 0, lastStatus: 0, deadSite: false, wall: false }; } catch (e0) {}
       var ext = extension();
       if (!ext) { done({ ok: false, error: 'module does not define DefaultExtension' }); return; }
       var fn = ext[String(fnName)];
