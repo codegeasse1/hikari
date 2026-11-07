@@ -1089,14 +1089,15 @@ class ContentRepository(private val manager: ProviderManager) {
             val sweep = sweeps[key]
             if (sweep != null && sweep.job?.isActive == true && sweepIsFresh(sweep)) return true
             // Nothing is running for this video right now, but work for it is on
-            // the unfinished-work ledger with retries left — the search is not
-            // over, it is waiting for a free sweep slot (see [drainSweeps]). This
-            // is the same promise as above, one step earlier in time: the screen
-            // must not declare "no playable server found" over a repo that has
-            // not been asked yet.
+            // the unfinished-work ledger — the search is not over, it is waiting
+            // for a free sweep slot (see [drainSweeps]). This is the same promise
+            // as above, one step earlier in time: the screen must not declare
+            // "no playable server found" over a repo that has not been asked
+            // yet. The retry cap is gone: ledgered work is unfinished until it
+            // gets a terminal answer, not until it has been tried N times.
             val pending = pendingWork[key] ?: return false
             val waiting = pending.byTitle.isNotEmpty() || pending.direct.isNotEmpty()
-            return waiting && pending.tries < SWEEP_MAX_TRIES
+            return waiting
         }
 
         /** How long a sweep may report NOTHING before it is treated as no longer
@@ -1122,6 +1123,20 @@ class ContentRepository(private val manager: ProviderManager) {
          *  that says "done" over a list missing their servers as a broken
          *  search. Plain map read, safe from anywhere. */
         fun anySweepBusy(): Boolean = sweeps.values.any { it.job?.isActive == true && sweepIsFresh(it) }
+
+        /** Everything still without a terminal answer: the live runners of the
+         *  current tally, the repos a running sweep owns, and every provider id
+         *  still sitting on the unfinished-work ledger. The chooser's "done"
+         *  gate reads this: "done" is only true when there is NOTHING left to
+         *  ask, not merely when the tally went quiet. Counts overlap (a swept
+         *  repo can sit in two buckets at once) — it is only ever used as a
+         *  zero / non-zero gate, never as a displayed number. */
+        fun unfinishedSearchCount(): Int {
+            val t = crossTally
+            var n = t.running.size + t.primaryRunning.size + sweepOwned.size
+            pendingWork.values.forEach { n += it.byTitle.size + it.direct.size }
+            return n
+        }
 
         fun crossEmptyKey(providerId: String, query: String): String =
             providerId + "|" + query.trim().lowercase()
@@ -4519,19 +4534,16 @@ class ContentRepository(private val manager: ProviderManager) {
                         providerOutcome[id] != "no servers" &&
                         !isHung(id)
                 }
-                // A sweep is worth starting when a real tail of work is left,
-                // when the pass came back with almost nothing (a short list
-                // across 250+ repos is exactly the case the user watched go from
-                // 5 servers to 43 on the next tap), when it was cut off by the
-                // clock, or when repos answered from memory and need asking for
-                // real. A pass that found a full list with only a couple of
-                // stragglers left is NOT swept: that would keep the "still
-                // searching" line up for no gain.
-                val worthSweeping = sweepTargets.isNotEmpty() &&
-                    (tail.size >= CROSS_SWEEP_MIN_TARGETS ||
-                        reAsk.isNotEmpty() ||
-                        servable < CROSS_THIN_RESULT ||
-                        ranOutOfTime)
+                // A sweep is worth starting whenever ANY work is unfinished: a
+                // repo the pass never got to, one answered from memory, a family
+                // fallback, or a primary target that never really answered. The
+                // old minimum-tail / thin-result / ran-out-of-time gates left
+                // small tails unasked and let the line say "done" over them —
+                // the exact "3 servers, done, reopen finds 6" report. A couple
+                // of stragglers are still worth asking: their servers stream
+                // into the same list, and the line stays honest until they
+                // answer.
+                val worthSweeping = sweepTargets.isNotEmpty()
                 com.hikari.app.data.Logs.log(
                     "Search",
                     "cross \"${item.title}\" pass over: ${crossTargets.size} target(s), " +
@@ -4853,7 +4865,8 @@ class ContentRepository(private val manager: ProviderManager) {
                 )
                 return
             }
-            if (!allowExhausted && recorded.tries >= SWEEP_MAX_TRIES) return
+            // No retry cap: ledgered work is unfinished until it gets a terminal
+            // answer, so automatic retries never stop asking for it.
             // A ceiling on how many sweeps run at once — see
             // [MAX_PARALLEL_SWEEPS]. Refusing to start one is honest, and no
             // longer loses anything: the work stays on the ledger and the next
@@ -5070,14 +5083,11 @@ class ContentRepository(private val manager: ProviderManager) {
                             sweep.lastProgressAt = System.currentTimeMillis()
                         }
                         if (waited > 0) pausedMs.addAndGet(waited)
-                        // Past the ceiling: stop starting new work. Whatever is
-                        // already in flight still lands (and is published), and
-                        // the repos that lost their turn are handed to the NEXT
-                        // round (see [unasked]).
-                        if (System.currentTimeMillis() - started - pausedMs.get() >= budget) {
-                            unasked.add(unit)
-                            continue
-                        }
+                        // No ceiling on starting work: every queued repo gets its
+                        // turn in THIS round. The worker cap above is what
+                        // protects the phone, not a clock — a slow repo must not
+                        // push the repos queued behind it into another round (or
+                        // off the search entirely).
                         // Wedged recently (see [crossHung], which now EXPIRES):
                         // skip it rather than hold a worker on a call that cannot
                         // come back. Twice-silent providers sit out longer (see
@@ -5214,28 +5224,21 @@ class ContentRepository(private val manager: ProviderManager) {
             }
         }
         publish()
-        // Repos that lost their turn to the round's budget get another round —
-        // up to [SWEEP_MAX_ROUNDS] of them — so the sweep asks every installed
-        // extension instead of stopping at whichever one the clock reached.
-        // Recursion is bounded by the round counter, and a wedged repo is never
-        // carried forward (it would just block a round again). Whatever is STILL
-        // unasked when the rounds are spent is not dropped either: it stays on
-        // the unfinished-work ledger and is asked by the next sweep for this
+        // Repos that lost their turn get another round, as many rounds as it
+        // takes, so the sweep asks every installed extension instead of
+        // stopping at whichever one the clock reached. A wedged repo is never
+        // carried forward (it would just block a round again). Whatever is
+        // STILL unasked is not dropped either: it stays on the
+        // unfinished-work ledger and is asked by the next sweep for this
         // video (see [PendingWork] and the sweep's `finally`).
         val left = unasked.filterNot { isHung(it.provider.config.id) }
-        if (left.isNotEmpty() && sweep.rounds < SWEEP_MAX_ROUNDS) {
+        if (left.isNotEmpty()) {
             com.hikari.app.data.Logs.log(
                 "Search",
                 "sweep \"${item.title}\" → round ${sweep.rounds}: ${left.size} repo(s) left " +
                     "unasked — asking them now (${sweep.current.size} server(s) so far)",
             )
             runSweep(item, episode, left, sweep, sweep.current)
-        } else if (left.isNotEmpty()) {
-            com.hikari.app.data.Logs.log(
-                "Search",
-                "sweep \"${item.title}\" ended after ${sweep.rounds} rounds with " +
-                    "${left.size} repo(s) unasked — kept for the next sweep",
-            )
         }
     }
 
