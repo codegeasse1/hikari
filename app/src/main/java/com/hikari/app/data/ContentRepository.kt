@@ -5994,7 +5994,7 @@ class ContentRepository(private val manager: ProviderManager) {
         ProviderType.IPTV -> IptvProvider.iptvErrors[p.config.id]
         // LNReader novel sources share the MANGA type under an `lnreader|`
         // prefix but keep their own outcome map.
-        ProviderType.MANGA -> if (com.hikari.app.lnreader.LnReaderProvider.isLnReaderId(p.config.id)) com.hikari.app.lnreader.LnReaderProvider.lastOutcome[p.config.id] else com.hikari.app.manga.MangaProvider.lastOutcome[p.config.id]
+        ProviderType.MANGA -> if (com.hikari.app.lnreader.LnReaderProvider.isLnReaderId(p.config.id)) com.hikari.app.lnreader.LnReaderProvider.lastOutcome[p.config.id] else if (com.hikari.app.cs3.Cs3MangaProvider.isCs3MangaId(p.config.id)) com.hikari.app.cs3.Cs3MangaProvider.lastOutcome[p.config.id] else com.hikari.app.manga.MangaProvider.lastOutcome[p.config.id]
         ProviderType.FORK_VIDEO -> com.hikari.app.kotatsu.fork.ForkVideoProvider.lastOutcome[p.config.id]
     }
 
@@ -6406,7 +6406,7 @@ class ContentRepository(private val manager: ProviderManager) {
             ProviderType.SORA -> com.hikari.app.sora.SoraProvider.streamErrors
             ProviderType.ANYMEX -> com.hikari.app.anymex.AnymexProvider.streamErrors
             ProviderType.ANYMEX_MANGA -> com.hikari.app.anymex.AnymexMangaProvider.lastOutcome
-            ProviderType.MANGA -> if (com.hikari.app.lnreader.LnReaderProvider.isLnReaderId(origin.config.id)) com.hikari.app.lnreader.LnReaderProvider.lastOutcome else com.hikari.app.manga.MangaProvider.lastOutcome
+            ProviderType.MANGA -> if (com.hikari.app.lnreader.LnReaderProvider.isLnReaderId(origin.config.id)) com.hikari.app.lnreader.LnReaderProvider.lastOutcome else if (com.hikari.app.cs3.Cs3MangaProvider.isCs3MangaId(origin.config.id)) com.hikari.app.cs3.Cs3MangaProvider.lastOutcome else com.hikari.app.manga.MangaProvider.lastOutcome
             ProviderType.FORK_VIDEO -> com.hikari.app.kotatsu.fork.ForkVideoProvider.lastOutcome
             ProviderType.IPTV -> IptvProvider.iptvErrors
         }
