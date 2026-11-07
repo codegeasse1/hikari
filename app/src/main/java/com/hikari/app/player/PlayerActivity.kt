@@ -10111,7 +10111,8 @@ class PlayerActivity : ComponentActivity() {
                     // on change so the header never remeasures for nothing).
                     val n = sources.size
                     val tally = ContentRepository.crossTally
-                    val searchingNow = tally.running.size + tally.primaryRunning.size > 0
+                    val searchingNow = tally.running.size + tally.primaryRunning.size > 0 ||
+                        ContentRepository.unfinishedSearchCount() > 0
                     val foundText = if (n > 0) {
                         "Found $n source" + (if (n != 1) "s" else "") +
                             (if (searchingNow) " • Finding more…" else "")
@@ -10318,6 +10319,13 @@ class PlayerActivity : ComponentActivity() {
         // as a broken search (which is the point of this line: it is how they
         // check the app really did ask everything). The sweep's own liveness is
         // what makes the word honest.
+        // "done" additionally requires NOTHING unfinished anywhere: the live
+        // runners above, the repos a running sweep owns, and every provider id
+        // still sitting on the unfinished-work ledger (see
+        // [ContentRepository.unfinishedSearchCount]). A quiet tally with a
+        // non-empty ledger used to read "done" over missing servers — the
+        // "3 servers, done, reopen finds 6" report.
+        val unfinished = ContentRepository.unfinishedSearchCount()
         val state = when {
             // A count that has not MOVED for a minute is not a search that is
             // progressing — it is the frozen "30 still searching" the user
@@ -10326,7 +10334,7 @@ class PlayerActivity : ComponentActivity() {
             // liveness test rather than a timer on the search itself.
             running > 0 && ContentRepository.crossStatusQuietForMs() < SEARCH_QUIET_MS ->
                 "$running still searching"
-            ContentRepository.anySweepBusy() -> "pass over, still searching"
+            unfinished > 0 || ContentRepository.anySweepBusy() -> "pass over, still searching"
             else -> "done"
         }
         return "Asked ${asked.size} other repos ($byEngine) — $state$servers" +
