@@ -186,7 +186,7 @@ class ProviderManager(private val store: AppStore, private val context: Context)
         // LNReader novel sources ride the MANGA type (manga tab, novel
         // reader) under an `lnreader|` id prefix — no new ProviderType, so
         // every exhaustive type when keeps compiling untouched.
-        ProviderType.MANGA -> if (com.hikari.app.lnreader.LnReaderProvider.isLnReaderId(c.id)) com.hikari.app.lnreader.LnReaderProvider(c) else if (com.hikari.app.sora.SoraMangaProvider.isSoraMangaProviderId(c.id)) com.hikari.app.sora.SoraMangaProvider(c) else com.hikari.app.manga.MangaProvider(c)
+        ProviderType.MANGA -> if (com.hikari.app.lnreader.LnReaderProvider.isLnReaderId(c.id)) com.hikari.app.lnreader.LnReaderProvider(c) else if (com.hikari.app.cs3.Cs3MangaProvider.isCs3MangaId(c.id)) com.hikari.app.cs3.Cs3MangaProvider(c) else if (com.hikari.app.sora.SoraMangaProvider.isSoraMangaProviderId(c.id)) com.hikari.app.sora.SoraMangaProvider(c) else com.hikari.app.manga.MangaProvider(c)
         ProviderType.IPTV -> IptvProvider(c)
         ProviderType.VEGA -> com.hikari.app.providers.vega.VegaProvider(c)
         ProviderType.SORA -> com.hikari.app.sora.SoraProvider(c)
