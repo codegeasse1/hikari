@@ -5,6 +5,7 @@ import com.hikari.app.HikariApp
 import com.hikari.app.data.IptvMark
 import com.hikari.app.data.MediaItem
 import com.hikari.app.data.TmdbMeta
+import com.hikari.app.data.TmdbScreenshots
 import java.io.File
 import kotlinx.coroutines.runBlocking
 import java.util.concurrent.ConcurrentHashMap
@@ -48,13 +49,12 @@ object Artwork {
 
     private const val MISS_TTL_MS = 3L * 24L * 60L * 60L * 1000L
     private const val MAX_ENTRIES = 800
-    /** v4: v3's cache is full of poster-only answers (a title with a real
+    /** v5: v4's cache is full of poster-only answers (a title with a real
      *  poster but no backdrop cached that as its final answer), so titles
-     *  whose backdrop has since become resolvable (anime-banner fill, extra
-     *  /images backdrops) would keep the blurred portrait for days. A new
-     *  filename drops those stale answers so the cinema frames pick the
-     *  landscape up at once. */
-    private const val CACHE_FILE = "artwork-cache-v4.json"
+     *  whose backdrop is only resolvable through the detail header's plural
+     *  /images path kept the blurred portrait on rows. v5 drops those stale
+     *  answers so the unified lookup below re-resolves them at once. */
+    private const val CACHE_FILE = "artwork-cache-v5.json"
 
     private val memory = ConcurrentHashMap<String, Entry>()
     private val inFlight = ConcurrentHashMap.newKeySet<String>()
@@ -254,7 +254,25 @@ object Artwork {
                     runCatching { IptvArt.tile(item, live = item.rawType != "stream")?.let { Pair<String?, String?>(it, null) } }
                         .getOrNull()
                 } else {
-                    runCatching { runBlocking { TmdbMeta.artwork(item) } }.getOrNull()
+                    runCatching {
+                        runBlocking {
+                            val art = TmdbMeta.artwork(item)
+                            // Detail-header parity: the detail page paints the
+                            // plural TMDB/anime-banner list first
+                            // (TmdbScreenshots.backdropsFor), while rows only had
+                            // this single lookup — so rows stayed blurred
+                            // poster-only on titles whose wide art resolves
+                            // there. Union them: the anime/TMDB portrait wins
+                            // for the vertical poster, and any /images backdrop
+                            // fills the landscape the single lookup missed.
+                            val shots = TmdbScreenshots.backdropsFor(item)
+                            val poster = art?.first
+                                ?: TmdbScreenshots.firstPosterCached(item.uniqueId)
+                            val backdrop = art?.second ?: shots.firstOrNull()
+                            if (poster == null && backdrop == null) null
+                            else poster to backdrop
+                        }
+                    }.getOrNull()
                 }
                 memory[key] = Entry(res?.first, res?.second, System.currentTimeMillis())
                 saveCache()
