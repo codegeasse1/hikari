@@ -48,12 +48,13 @@ object Artwork {
 
     private const val MISS_TTL_MS = 3L * 24L * 60L * 60L * 1000L
     private const val MAX_ENTRIES = 800
-    /** v3: the v2 cache is full of MIS-misses recorded while extension numeric
-     *  ids resolved as TMDB rows (see TmdbResolver.isTmdbBacked) — a title the
-     *  matcher can now resolve kept showing provider art because a miss is
-     *  cached for [MISS_TTL_MS]. A new filename drops those stale misses so
-     *  the fix is visible immediately. */
-    private const val CACHE_FILE = "artwork-cache-v3.json"
+    /** v4: v3's cache is full of poster-only answers (a title with a real
+     *  poster but no backdrop cached that as its final answer), so titles
+     *  whose backdrop has since become resolvable (anime-banner fill, extra
+     *  /images backdrops) would keep the blurred portrait for days. A new
+     *  filename drops those stale answers so the cinema frames pick the
+     *  landscape up at once. */
+    private const val CACHE_FILE = "artwork-cache-v4.json"
 
     private val memory = ConcurrentHashMap<String, Entry>()
     private val inFlight = ConcurrentHashMap.newKeySet<String>()
