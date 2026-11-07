@@ -33,13 +33,23 @@ object Cs3ProviderSync {
      */
     suspend fun reconcile(context: Context, store: AppStore): Boolean {
         val current = store.providers()
-        val cs3 = current.filter { it.type == ProviderType.CS3 }
-        if (cs3.isEmpty()) return false
+        // Video rows AND already-routed manga rows: a plugin whose MainAPI
+        // serves chapters/pages instead of video (see Cs3MangaProvider) is
+        // registered as a MANGA row (`manga|cs3|…`), so the manga tab — not
+        // Home — lists it. Both spellings group by file below, so a plugin
+        // that changed kind (or was installed before routing existed) moves
+        // to the right tab on the next sync instead of sticking to the wrong
+        // one.
+        val relevant = current.filter {
+            it.type == ProviderType.CS3 ||
+                (it.type == ProviderType.MANGA && Cs3MangaProvider.isCs3MangaId(it.id))
+        }
+        if (relevant.isEmpty()) return false
 
         val merged = LinkedHashMap<String, ProviderConfig>()
         var changed = false
 
-        for ((path, configs) in cs3.groupBy { it.url }) {
+        for ((path, configs) in relevant.groupBy { it.url }) {
             val file = File(path)
             val apis = if (file.exists()) {
                 runCatching { Cs3PluginManager.apisFor(context, file) }.getOrDefault(emptyList())
@@ -56,7 +66,12 @@ object Cs3ProviderSync {
             val template = configs.first()
             val kept = LinkedHashMap<String, ProviderConfig>()
             apis.forEachIndexed { i, api ->
-                val id = "cs3|$hash|$i"
+                // Manga-capable MainAPI → manga tab (MANGA row), everything
+                // else stays a video row. The id carries the kind, so a kind
+                // change registers under a new id and drops the old one.
+                val manga = Cs3MangaProvider.isMangaApi(api)
+                val id = (if (manga) Cs3MangaProvider.MANGA_PREFIX else "cs3|") + hash + "|" + i
+                val otherId = (if (manga) "cs3|" else Cs3MangaProvider.MANGA_PREFIX) + hash + "|" + i
                 val name = api.name.ifBlank { file.name.removeSuffix(".cs3") }
                 // The plugin's own declared language (MainAPI.lang — "en"
                 // unless the plugin overrides it): the picker flag. Read off
@@ -64,11 +79,18 @@ object Cs3ProviderSync {
                 // keeps whatever the row already had.
                 val pluginLang = runCatching { api.lang }.getOrNull()?.trim()
                     ?.takeIf { it.isNotBlank() }
-                val prev = previousById[id]
-                val next = prev?.copy(name = name, lang = pluginLang ?: prev.lang) ?: ProviderConfig(
+                // Carry the enabled flag across a kind move: a video row the
+                // user kept enabled must not come back disabled as manga.
+                val prev = previousById[id] ?: previousById[otherId]
+                val next = prev?.copy(
                     id = id,
                     name = name,
-                    type = ProviderType.CS3,
+                    type = if (manga) ProviderType.MANGA else ProviderType.CS3,
+                    lang = pluginLang ?: prev.lang,
+                ) ?: ProviderConfig(
+                    id = id,
+                    name = name,
+                    type = if (manga) ProviderType.MANGA else ProviderType.CS3,
                     url = path,
                     iconUrl = template.iconUrl,
                     extra = template.extra,
@@ -82,13 +104,13 @@ object Cs3ProviderSync {
         }
 
         if (!changed) return false
-        val cs3Ids = cs3.map { it.id }.toSet()
+        val oldIds = relevant.map { it.id }.toSet()
         // Written as a locked read-modify-write: the list this rebuilds is the
         // one in the store RIGHT NOW, so a provider another thread added while
         // this ran (an install, another engine's reconcile) is kept instead of
         // being overwritten by this snapshot (see [AppStore.updateProviders]).
         store.updateProviders { all ->
-            all.filterNot { it.id in cs3Ids } + merged.values
+            all.filterNot { it.id in oldIds } + merged.values
         }
         return true
     }
