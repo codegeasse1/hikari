@@ -336,6 +336,7 @@ fun MangaDetailScreen(
             // chapter-shaped outcome is shown; otherwise the honest generic.
             val outcome = MangaProvider.lastOutcome[providerId]
                 ?: com.hikari.app.anymex.AnymexMangaProvider.lastOutcome[providerId]
+                ?: com.hikari.app.cs3.Cs3MangaProvider.lastOutcome[providerId]
                 ?: com.hikari.app.lnreader.LnReaderProvider.lastOutcome[providerId]
                 ?: com.hikari.app.sora.SoraMangaProvider.lastOutcome[providerId]
             error = if (outcome != null && outcome.contains("chapter", ignoreCase = true)) outcome
