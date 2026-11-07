@@ -1386,12 +1386,19 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         var added = 0
         finalApis.forEachIndexed { i, api ->
             val name = api.name.ifBlank { base }
-            val id = "cs3|" + clean.hashCode() + "|" + i
+            // A manga-capable MainAPI (chapters/pages, not video) registers
+            // as a MANGA row, so the manga tab lists it from the start — a
+            // video row here would park it on Home where it can never play
+            // (see Cs3MangaProvider; Cs3ProviderSync re-checks this on every
+            // sync, so older installs migrate too).
+            val manga = com.hikari.app.cs3.Cs3MangaProvider.isMangaApi(api)
+            val id = (if (manga) com.hikari.app.cs3.Cs3MangaProvider.MANGA_PREFIX else "cs3|") +
+                clean.hashCode() + "|" + i
             store.addProvider(
                 ProviderConfig(
                     id = id,
                     name = name,
-                    type = ProviderType.CS3,
+                    type = if (manga) ProviderType.MANGA else ProviderType.CS3,
                     url = file.absolutePath,
                     iconUrl = iconUrl,
                     extra = sourceUrl ?: clean,
@@ -1413,13 +1420,21 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         // references it.
         if (!sourceUrl.isNullOrBlank()) {
             val stale = store.providers().filter {
-                it.type == ProviderType.CS3 && it.url != file.absolutePath &&
+                (it.type == ProviderType.CS3 ||
+                    (it.type == ProviderType.MANGA &&
+                        com.hikari.app.cs3.Cs3MangaProvider.isCs3MangaId(it.id))) &&
+                    it.url != file.absolutePath &&
                     sourceKeyMatches(it.extra, sourceUrl)
             }
             if (stale.isNotEmpty()) {
                 val stalePaths = stale.map { it.url }.toSet()
                 store.updateProviders { list ->
-                    list.filterNot { it.type == ProviderType.CS3 && it.url in stalePaths }
+                    list.filterNot {
+                        (it.type == ProviderType.CS3 ||
+                            (it.type == ProviderType.MANGA &&
+                                com.hikari.app.cs3.Cs3MangaProvider.isCs3MangaId(it.id))) &&
+                            it.url in stalePaths
+                    }
                 }
                 withContext(Dispatchers.IO) {
                     val keep = store.providers().map { it.url }.toSet()
@@ -3672,7 +3687,10 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
 
     suspend fun uninstallCs3Plugin(pluginUrl: String): Int {
         val targets = uninstallTargets(store.providers(), pluginUrl) { p, s ->
-            p.type == ProviderType.CS3 && sourceMatches(p, s)
+            (p.type == ProviderType.CS3 ||
+                (p.type == ProviderType.MANGA &&
+                    com.hikari.app.cs3.Cs3MangaProvider.isCs3MangaId(p.id))) &&
+                sourceMatches(p, s)
         }
         if (targets.isEmpty()) return 0
         val ids = targets.map { it.id }.toSet()
