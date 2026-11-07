@@ -32,14 +32,26 @@ class AnymexProvider(override val config: ProviderConfig) : ContentProvider {
         private const val MAX_STREAMS = 60
         private const val MAX_EPISODES = 2000
         private const val FILTER_TTL_MS = 10 * 60 * 1000L
-        private val filterLists = ConcurrentHashMap<String, Pair<Long, List<AnymexFilter>>>()
+        private val filterLists = ConcurrentHashMap<String, Pair<Long, FilterSet>>()
         private val catalogLists = ConcurrentHashMap<String, Pair<Long, List<CatalogRef>>>()
     }
 
     /** One answered entry of an extension's `getFilterList` (its Categories /
      *  Sorts) — the browsable slices a video site exposes. */
     private data class AnymexFilterValue(val name: String, val value: String)
-    private data class AnymexFilter(val type: String, val name: String, val values: List<AnymexFilterValue>)
+    private data class AnymexFilter(
+        val type: String,
+        val name: String,
+        val values: List<AnymexFilterValue>,
+        /** Position in the extension's ORIGINAL getFilterList array — the
+         *  script indexes its own array by position, so an answer must
+         *  round-trip through this, not the parsed-list position. */
+        val origIndex: Int,
+        /** True when the row answers a GroupFilter-style `state` array
+         *  (AnimeWorld's Tipo/Generi/Stato/…) instead of a SelectFilter-style
+         *  `values` array with a `state` index. */
+        val group: Boolean = false,
+    )
 
     suspend fun preferenceDefs(): String {
         val m = module() ?: return "[]"
@@ -67,7 +79,7 @@ class AnymexProvider(override val config: ProviderConfig) : ContentProvider {
         // its Recent Update / Most viewed today / … sorts): one catalogue
         // each, so opening one lists that whole slice. The filter list is
         // fetched once here and cached — opening a category never refetches it.
-        val flt = runCatching { filters() }.getOrDefault(emptyList())
+        val flt = runCatching { filterSet().parsed }.getOrDefault(emptyList())
         for ((fi, f) in flt.withIndex()) {
             for ((vi, v) in f.values.withIndex()) {
                 out += CatalogRef(config.id, MediaType.SERIES, "flt:$fi:$vi", v.name)
@@ -87,7 +99,7 @@ class AnymexProvider(override val config: ProviderConfig) : ContentProvider {
     override suspend fun homeCatalogs(): List<CatalogRef> = withContext(Dispatchers.IO) {
         val all = runCatching { catalogs() }.getOrDefault(emptyList())
         if (all.size <= 2) return@withContext all
-        val flt = runCatching { filters() }.getOrDefault(emptyList())
+        val flt = runCatching { filterSet().parsed }.getOrDefault(emptyList())
         val ordered = flt.sortedBy {
             if (it.type.contains("sort", true) || it.name.contains("sort", true)) 0 else 1
         }
@@ -106,66 +118,117 @@ class AnymexProvider(override val config: ProviderConfig) : ContentProvider {
         wanted.mapNotNull { byId[it] }
     }
 
-    private suspend fun filters(): List<AnymexFilter> {
+    private data class FilterSet(val raw: JSONArray, val parsed: List<AnymexFilter>)
+
+    private suspend fun filterSet(): FilterSet {
         val now = System.currentTimeMillis()
-        filterLists[config.id]?.let { (at, list) ->
-            if (now - at < FILTER_TTL_MS) return list
+        filterLists[config.id]?.let { (at, set) ->
+            if (now - at < FILTER_TTL_MS) return set
         }
-        val mod = module() ?: return emptyList()
-        val list = parseFilters(AnymexRuntime.filterList(mod, config.id))
-        if (list.isNotEmpty()) filterLists[config.id] = now to list
-        return list
+        val mod = module()
+        val set = if (mod == null) FilterSet(JSONArray(), emptyList())
+        else parseFilters(AnymexRuntime.filterList(mod, config.id))
+        if (set.parsed.isNotEmpty()) filterLists[config.id] = now to set
+        return set
     }
 
-    private fun parseFilters(raw: String?): List<AnymexFilter> {
-        if (raw.isNullOrBlank()) return emptyList()
-        val arr = listArray(raw) ?: return emptyList()
+    private fun parseFilters(raw: String?): FilterSet {
+        val empty = FilterSet(JSONArray(), emptyList())
+        if (raw.isNullOrBlank()) return empty
+        val arr = listArray(raw) ?: return empty
         val out = ArrayList<AnymexFilter>()
         for (i in 0 until arr.length()) {
             val o = arr.optJSONObject(i) ?: continue
-            val values = o.optJSONArray("values") ?: continue
-            val vals = ArrayList<AnymexFilterValue>()
-            for (j in 0 until values.length()) {
-                val v = values.optJSONObject(j) ?: continue
-                val name = v.optString("name").trim()
-                val value = v.optString("value").trim()
-                if (name.isBlank() || value.isBlank()) continue
-                vals += AnymexFilterValue(name, value)
-            }
-            if (vals.size < 2) continue
             val type = o.optString("type").trim().ifBlank { o.optString("type_name").trim() }
             val name = o.optString("name").trim().ifBlank { type }
-            out += AnymexFilter(
-                type = type.ifBlank { "filter$i" },
-                name = name.ifBlank { "Category" },
-                values = vals,
-            )
+            val vals = valuesOf(o.optJSONArray("values"))
+            if (vals.size >= 2) {
+                out += AnymexFilter(
+                    type = type.ifBlank { "filter$i" },
+                    name = name.ifBlank { "Category" },
+                    values = vals,
+                    origIndex = i,
+                )
+                continue
+            }
+            // GroupFilter style (AnimeWorld's Tipo/Generi/Stato/…): the
+            // options live in a `state` array, not `values`. Each option gets
+            // its own catalogue row; opening it checks exactly that box (see
+            // filterStateJsonRaw). Entries with neither shape stay out — the
+            // script indexes its own array by position, so every row must
+            // round-trip through the ORIGINAL indices below.
+            val opts = valuesOf(o.optJSONArray("state"))
+            if (opts.isNotEmpty()) {
+                out += AnymexFilter(
+                    type = type.ifBlank { "filter$i" },
+                    name = name.ifBlank { "Category" },
+                    values = opts,
+                    origIndex = i,
+                    group = true,
+                )
+            }
         }
-        return out
+        return FilterSet(arr, out)
+    }
+
+    private fun valuesOf(arr: JSONArray?): List<AnymexFilterValue> {
+        if (arr == null) return emptyList()
+        val vals = ArrayList<AnymexFilterValue>()
+        for (j in 0 until arr.length()) {
+            when (val v = arr.opt(j)) {
+                is JSONObject -> {
+                    val name = v.optString("name").trim()
+                    val value = v.optString("value").trim()
+                    if (name.isBlank() || value.isBlank()) continue
+                    vals += AnymexFilterValue(name, value)
+                }
+                is JSONArray -> {
+                    val name = v.optString(0).trim()
+                    val value = v.optString(1).trim()
+                    if (name.isBlank() || value.isBlank()) continue
+                    vals += AnymexFilterValue(name, value)
+                }
+                else -> {}
+            }
+        }
+        return vals
     }
 
     /**
-     * Builds the Mangayomi filter argument for one answered category: the
-     * FULL answered list with the wanted entry selected (`state` is the
-     * selected index — the shape `search(query, page, filters)` reads) and
-     * every other select answered at its default. Filters that are not
-     * plain name/value selects are left out entirely rather than guessed.
+     * The Mangayomi filter argument for one answered row: the extension's
+     * ORIGINAL getFilterList array verbatim, with the wanted entry answered
+     * in its own shape — a `state` index for SelectFilter-style entries (the
+     * `{type, state, values}` shape `search(query, page, filters)` reads), a
+     * checked box for GroupFilter-style ones (AnimeWorld reads
+     * `filters[i].state[j].state`). Rebuilding a trimmed array instead (only
+     * the parsed entries) shifted every position, so a script indexing its
+     * own array (`filters[5]`) read another filter's answer and threw — every
+     * filter catalogue of such an extension failed.
      */
-    private fun filterStateJson(all: List<AnymexFilter>, fi: Int, vi: Int): String {
-        val arr = JSONArray()
-        for ((index, f) in all.withIndex()) {
-            val o = JSONObject()
-            o.put("type", f.type)
-            o.put("name", f.name)
-            o.put("state", if (index == fi) vi else 0)
-            val vals = JSONArray()
-            for (v in f.values) {
-                vals.put(JSONObject().put("name", v.name).put("value", v.value))
+    private fun filterStateJsonRaw(raw: JSONArray, fi: Int, vi: Int): String {
+        val out = JSONArray()
+        for (i in 0 until raw.length()) {
+            val o = runCatching { JSONObject(raw.optJSONObject(i)?.toString() ?: "{}") }
+                .getOrDefault(JSONObject())
+            if (i == fi) {
+                if (o.optJSONArray("values") != null) {
+                    o.put("state", vi)
+                } else {
+                    val st = o.optJSONArray("state")
+                    if (st != null) {
+                        for (j in 0 until st.length()) {
+                            st.optJSONObject(j)?.put("state", j == vi)
+                        }
+                    }
+                }
+            } else if (o.optJSONArray("values") != null) {
+                // Unanswered SelectFilters default to their first option —
+                // the state-0 every previous build sent.
+                o.put("state", 0)
             }
-            o.put("values", vals)
-            arr.put(o)
+            out.put(o)
         }
-        return arr.toString()
+        return out.toString()
     }
 
     private suspend fun filterCatalog(refId: String, page: Int): List<MediaItem> {
@@ -174,10 +237,10 @@ class AnymexProvider(override val config: ProviderConfig) : ContentProvider {
         val fi = parts[1].toIntOrNull() ?: return emptyList()
         val vi = parts[2].toIntOrNull() ?: return emptyList()
         val mod = module() ?: return emptyList()
-        val all = filters()
-        val f = all.getOrNull(fi) ?: return emptyList()
+        val set = filterSet()
+        val f = set.parsed.getOrNull(fi) ?: return emptyList()
         if (vi !in f.values.indices) return emptyList()
-        val raw = AnymexRuntime.searchFiltered(mod, config.id, filterStateJson(all, fi, vi), page)
+        val raw = AnymexRuntime.searchFiltered(mod, config.id, filterStateJsonRaw(set.raw, f.origIndex, vi), page)
         markWall(raw)
         return mapItems(raw)
     }
