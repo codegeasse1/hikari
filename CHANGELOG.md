@@ -1,3 +1,9 @@
+## 0.12.60 (continuous build only)
+
+- Server search honesty: "done" is only said when nothing is unfinished anywhere — live runners, sweep-owned repos and the unfinished-work ledger — instead of when the tally merely went quiet, so a first open can no longer say "3 servers, done" and find 6 on reopen; every unfinished tail is swept (no more minimum-tail/thin-result/time gates dropping stragglers), background sweeps run every queued repo with no round or retry caps, and the header keeps reading "Finding more" until the list is truly complete
+- Extension globe always opens the site: the module's own baseUrl is scanned through the whole script file (not just the first 8KB), with the install metadata's baseUrl and apiUrl host as fallbacks, so the WebView opens the extension's site instead of "Couldn't determine this extension's site"
+- Row/detail artwork parity: rows resolve through the same wide-art truth as the detail header (anime banner, then TMDB /images backdrops, TMDB posters for the vertical card), and the artwork cache v4 to v5 step drops stale poster-only answers so titles like Seven Knights show the real 16:9 frame on rows too
+
 ## 0.12.59 (continuous build only)
 
 - Poster styling honesty: portrait mode shows portrait posters (TMDB / AniList / Bangumi covers, provider art first) and cinema mode fills the 16:9 frame with a real landscape backdrop — TMDB backdrops via the images endpoint (Animation-gated so mismatches like Big Brother keep the anime art), AniList banners, universal fallback when TMDB has nothing; Bangumi-only titles stay blurred-portrait (portrait covers are all Bangumi has). Phone + TV share the same path
