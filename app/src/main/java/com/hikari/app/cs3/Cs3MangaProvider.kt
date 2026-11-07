@@ -12,6 +12,7 @@ import com.hikari.app.net.Http
 import com.hikari.app.providers.ContentProvider
 import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.MainPageRequest
+import com.lagradost.cloudstream3.fixUrl
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CancellationException
