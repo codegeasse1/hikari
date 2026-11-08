@@ -12,8 +12,8 @@ push to it, and three of its publishing steps are branch-gated:
 | Step | Condition | What it produces |
 | --- | --- | --- |
 | Upload APKs (artifact) | always | `hikari-apk` CI artifact — **only downloadable by someone logged into GitHub, as a zip** |
-| Publish test APK to `build` branch | `refs/heads/main` | `hikari.apk` on the `build` branch (skipped when the APK is ≥100 MB — it currently is) |
-| Publish test APK to `continuous` release | `refs/heads/main` | `continuous/hikari-signed.apk`, which is **what `Updater.UPDATE_URL` downloads** |
+| Publish test APKs to `build` branch | `refs/heads/main` | `hikari-arm64-v8a.apk` and `hikari-armeabi-v7a.apk` on the `build` branch (any APK ≥95 MB, i.e. the universal one, is left off — GitHub's git limit is 100 MB per file) |
+| Publish test APKs to `continuous` release | `refs/heads/main` | `continuous/hikari-signed.apk` (universal, **what `Updater.UPDATE_URL` downloads**) plus `hikari-arm64-v8a.apk` and `hikari-armeabi-v7a.apk`. The step fails (red) unless GitHub confirms all three are on the release at the right size |
 | Publish main release | `workflow_dispatch` + `release=true` **+ `confirm_release=CONFIRM-RELEASE`** | `v<version>/hikari.apk`, with the release body taken from that version's `CHANGELOG.md` section |
 
 So a push to `main` already refreshes the `continuous` test channel, but a push
@@ -66,9 +66,10 @@ intended to be the live one.
 - Docs-only pushes (`.md`) do not start CI (`paths-ignore: '**.md'`), so editing
   the changelog costs no CI minutes and republishes nothing.
 - Release assets are capped at 2 GB; the release APK is ~145 MB.
-- The `build` branch holds a stale `hikari.apk` and cannot be refreshed while the
-  APK is over GitHub's 100 MB per-file limit, so `continuous` is the live test
-  channel and the `build` branch is only a historical download link.
+- The `build` branch is rebuilt from scratch (one commit, force-pushed) on every
+  push and holds only the per-processor APKs, because the universal APK is over
+  GitHub's 100 MB per-file limit. `continuous` carries all three and is the live
+  test channel.
 - A changelog section is written for **users**, not for us: what was added and
   what was fixed, in plain words. No bug-report quotes, no "test build" framing,
   no chat references — the release page is the public face of the app.
