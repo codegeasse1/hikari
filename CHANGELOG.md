@@ -1,3 +1,8 @@
+## 0.12.65 (continuous build only)
+
+- Multi/MultiMovies servers play again: extractor URLs are HTML-entity decoded (signed bridge links arrived as ...m3u8&amp;Policy=...&amp;Signature=... and the bridge 502'd the mangled signature while CloudStream played) — URLs, referers, headers and subtitle links are decoded in one place before playback
+- Prmovies rows stop sticking on empty: plugin web responses are no longer HTTP-cached (a cached block/empty page kept "No items in Zee5" while CloudStream showed content), and an empty catalog page gets one fresh retry plus a Cs3Catalog diagnostic log line before reporting empty
+
 ## 0.12.64 (continuous build only)
 
 - Instant posters both ways: cinema and vertical rows warm their first 12 cards on appear (TMDB /images + anime banner + TVDB), stale misses retry in background, artwork cache v6 drops old poster-only misses — 16:9 paints sharp immediately, no blurred-portrait wait, no detail-open needed

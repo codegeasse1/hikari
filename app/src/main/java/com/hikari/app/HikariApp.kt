@@ -35,7 +35,6 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.protobuf.ProtoBuf
-import okhttp3.Cache
 import okhttp3.ConnectionPool
 import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
@@ -1660,7 +1659,9 @@ class HikariApp : Application() {
                 .connectTimeout(20, TimeUnit.SECONDS)
                 .readTimeout(30, TimeUnit.SECONDS)
                 .apply { if (ignoreSSL) ignoreAllSSLErrors() }
-                .cache(Cache(File(context.cacheDir, "http_cache"), 50L * 1024 * 1024))
+                // No HTTP response cache on the plugin client: plugin HTML/API responses are
+            // dynamic, and a cached block/empty page poisoned catalog rows (persistent
+            // "No items" while CloudStream, which sets no cache, shows content).
                 .addInterceptor { chain -> com.hikari.app.net.CloudflareVerifier.intercept(chain) }
                 .build()
 

@@ -715,11 +715,30 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                 catalogErrors[config.id] = "getMainPage returned null for ${ref.id}"
                 return@withContext emptyList()
             }
-            val items = resp.items.orEmpty().flatMap { row ->
+            var items = resp.items.orEmpty().flatMap { row ->
                 row.list.orEmpty().mapNotNull { it.toMediaItem() }
             }
             if (items.isEmpty()) {
+                // Transient block/rate-limit pages parse as empty while the same
+                // extension shows content in CloudStream (its single request got
+                // the real page). One fresh attempt before reporting empty.
+                runCatching {
+                    a.getMainPage(page, MainPageRequest(ref.name, ref.id, false))
+                }.getOrNull()?.let { retry ->
+                    val retryItems = retry.items.orEmpty().flatMap { row ->
+                        row.list.orEmpty().mapNotNull { it.toMediaItem() }
+                    }
+                    if (retryItems.isNotEmpty()) items = retryItems
+                }
+            }
+            if (items.isEmpty()) {
                 catalogErrors[config.id] = "Page fetched but no items parsed from ${ref.id}"
+                runCatching {
+                    com.hikari.app.data.Logs.log(
+                        "Cs3Catalog",
+                        "empty catalog provider=" + config.id + " ref=" + ref.name + " id=" + ref.id.take(120),
+                    )
+                }
             } else {
                 catalogErrors.remove(config.id)
             }
@@ -1410,6 +1429,54 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
     }
 
 
+    /**
+     * Site scrapers regex raw HTML, where query separators arrive HTML-escaped
+     * (`...m3u8&amp;Policy=...&amp;Signature=...`). CloudStream tolerates it;
+     * the bridge answers 502 on the mangled signature, which reads as "server
+     * failed" in Hikari while CloudStream plays the same link. Decode entities
+     * (repeatedly, for double encoding); a clean URL is returned untouched.
+     * Never throws.
+     */
+    private fun decodeHtmlEntities(s: String): String {
+        if (!s.contains('&')) return s
+        var out = s
+        repeat(3) {
+            var next = out
+                .replace("&amp;", "&")
+                .replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace("&quot;", "\"")
+                .replace("&#39;", "'")
+                .replace("&#x27;", "'")
+                .replace("&#x2F;", "/")
+            next = runCatching {
+                val sb = StringBuilder()
+                var i = 0
+                while (i < next.length) {
+                    if (next[i] == '&' && i + 1 < next.length && next[i + 1] == '#') {
+                        val semi = next.indexOf(';', i + 2)
+                        if (semi in (i + 3)..(i + 8)) {
+                            val body = next.substring(i + 2, semi)
+                            val code = if (body.startsWith("x", true)) body.drop(1).toIntOrNull(16) else body.toIntOrNull()
+                            if (code != null && code > 0 && code < 0x110000) {
+                                sb.append(Character.toChars(code))
+                                i = semi + 1
+                                continue
+                            }
+                        }
+                    }
+                    sb.append(next[i])
+                    i++
+                }
+                sb.toString()
+            }.getOrDefault(next)
+            if (next == out) return out
+            out = next
+            if (!out.contains('&')) return out
+        }
+        return out
+    }
+
     private fun isLikelyHls(url: String): Boolean {
         val u = url.substringBefore('?').lowercase()
         return u.endsWith(".m3u8") || u.contains(".m3u8/")
@@ -1448,7 +1515,7 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
         // hand these out, and without this they arrived as dead video urls
         // that buffered until the watchdog declared them unresponsive.
         val now = System.currentTimeMillis()
-        for (u in rawLinks.map { it.url }
+        for (u in rawLinks.map { decodeHtmlEntities(it.url) }
             .filter { com.hikari.app.data.NetworkStream.isTorrentFile(it) }.distinct()) {
             val cached = torFileCache[u]
             if (cached == null || (cached.second == null && now - cached.first > 60_000)) {
@@ -1461,15 +1528,19 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
         }
         return rawLinks
             .filter {
-                it.url.isNotBlank() && it.url != a?.mainUrl && it.type.name != "ERROR" &&
-                    !isGarbageUrl(it.url) && isStreamableScheme(it.url)
+                val u = decodeHtmlEntities(it.url)
+                u.isNotBlank() && u != a?.mainUrl && it.type.name != "ERROR" &&
+                    !isGarbageUrl(u) && isStreamableScheme(u)
             }
             .map { l ->
+                // Decoded once (see above): every stored/transmitted use below
+                // must see the real URL, never the HTML-escaped form.
+                val streamUrl = decodeHtmlEntities(l.url)
                 // Cache the provider's video interceptor (if any) for playback:
                 // the CloudStream player honors MainAPI.getVideoInterceptor and
                 // Hikari's player looks it up per URL (see videoInterceptorFor).
                 if (a != null) {
-                    runCatching { a.getVideoInterceptor(l) }.getOrNull()?.let { videoInterceptors[l.url] = it }
+                    runCatching { a.getVideoInterceptor(l) }.getOrNull()?.let { videoInterceptors[streamUrl] = it }
                 }
                 // CloudStream keeps the Referer OUT of ExtractorLink.headers —
                 // without it most anime CDNs answer with an anti-hotlink HTML
@@ -1482,25 +1553,25 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                 // ALSO sanitizes as a second line of defense).
                 val headers = LinkedHashMap<String, String>()
                 l.headers?.forEach { (k, v) ->
-                    val c = v.filter { it.code < 128 }
+                    val c = decodeHtmlEntities(v).filter { it.code < 128 }
                     if (c.isNotBlank()) headers[k] = c
                 }
-                val ref = l.referer
-                if (!ref.isNullOrBlank()) {
+                val ref = decodeHtmlEntities(l.referer.orEmpty())
+                if (ref.isNotBlank()) {
                     val c = ref.filter { it.code < 128 }
                     if (c.isNotBlank()) headers.putIfAbsent("Referer", c)
                 }
                 // Hotlink CDNs: CS3 player sends Referer only (not Origin).
-                enrichHotlinkHeaders(l.url, headers)
-                val subSources = rawSubs.map { SubtitleSource(it.lang.ifBlank { "Sub" }, it.url) }
+                enrichHotlinkHeaders(streamUrl, headers)
+                val subSources = rawSubs.map { SubtitleSource(it.lang.ifBlank { "Sub" }, decodeHtmlEntities(it.url)) }
                 // Magnet / .torrent links go through the same TorrServer
                 // engine as Stremio infoHash streams.
                 // Magnet / torrent links go through the same TorrServer engine
                 // as Stremio infoHash streams — including torrent FILE links
                 // (.tor / .torrent), whose info hash was parsed above.
-                val torFile = torFileCache[l.url]?.second
+                val torFile = torFileCache[streamUrl]?.second
                 val isTorrent = l.type.name == "MAGNET" || l.type.name == "TORRENT" ||
-                    l.url.startsWith("magnet:", true) || l.url.startsWith("torrent:", true) ||
+                    streamUrl.startsWith("magnet:", true) || streamUrl.startsWith("torrent:", true) ||
                     torFile != null
                 val qualityLabel = com.lagradost.cloudstream3.utils.Qualities.getStringByInt(l.quality)
                 val baseName = l.name.ifBlank { "Stream" }
@@ -1514,7 +1585,7 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                     // virus-scan page, not video bytes — normalize them to
                     // the direct drive.usercontent download form so the
                     // player gets raw HLS/MP4 (MoviesMod & friends).
-                    url = if (isTorrent) l.url else Http.normalizeDriveUrl(l.url),
+                    url = if (isTorrent) streamUrl else Http.normalizeDriveUrl(streamUrl),
                     headers = headers,
                     subtitles = subSources,
                     // Some CloudStream extensions (including web
@@ -1522,12 +1593,12 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                     // though the emitted URL is an HLS/DASH manifest. Infer it
                     // from the final URL as a compatibility fallback so Media3
                     // does not try to parse a manifest as a progressive file.
-                    isM3u8 = l.isM3u8 || isLikelyHls(l.url),
-                    isMpd = l.isDash || isLikelyDash(l.url),
+                    isM3u8 = l.isM3u8 || isLikelyHls(streamUrl),
+                    isMpd = l.isDash || isLikelyDash(streamUrl),
                     isTorrent = isTorrent,
-                    infoHash = if (isTorrent) infoHashOf(l.url) ?: torFile?.infoHash else null,
-                    fileIdx = magnetIndex(l.url),
-                    trackers = (magnetTrackers(l.url) + torFile?.trackers.orEmpty()).distinct(),
+                    infoHash = if (isTorrent) infoHashOf(streamUrl) ?: torFile?.infoHash else null,
+                    fileIdx = magnetIndex(streamUrl),
+                    trackers = (magnetTrackers(streamUrl) + torFile?.trackers.orEmpty()).distinct(),
                     // DRM-protected links (only ever produced by a plugin's
                     // `newDrmExtractorLink`) must carry their ClearKey/Widevine
                     // info to the player, otherwise ExoPlayer opens the
