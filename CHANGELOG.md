@@ -1,3 +1,7 @@
+## 0.12.62 (continuous build only)
+
+- Cinema 16:9 sticks on phone Home shelves: switching the poster shape now rebuilds every row instead of reusing the old subtree, so billboard rows redraw as landscape cards on the next frame and no portrait row can survive the switch (or the way back)
+
 ## 0.12.61 (continuous build only)
 
 - TV UI refresh: Home, detail and settings screens are tidier on TV, with cleaner spacing and sizing that fit a big screen better
