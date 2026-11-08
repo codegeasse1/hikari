@@ -139,7 +139,7 @@ fun MediaRow(
         } else if (style.isCinema(false)) {
             com.hikari.app.tv.TvCinemaRow(title = title, providerName = providerName, items = items, onOpen = onClick, onShowAll = if (showViewAll) onShowAll else null, keeperKey = keeperKey)
         } else {
-            MediaRowVertical(title, providerName, items, style, onClick, showViewAll, onQuickPlay, keeperKey)
+            MediaRowVertical(title, providerName, items, style, onClick, showViewAll, onShowAll, onQuickPlay, keeperKey)
         }
     }
 }
@@ -158,6 +158,7 @@ private fun MediaRowVertical(
     style: PosterStyle,
     onClick: (MediaItem) -> Unit,
     showViewAll: Boolean,
+    onShowAll: (() -> Unit)?,
     onQuickPlay: ((MediaItem) -> Unit)?,
     keeperKey: String,
 ) {
