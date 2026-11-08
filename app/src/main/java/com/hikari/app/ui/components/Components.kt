@@ -137,7 +137,7 @@ fun MediaRow(
         if (TvMode.current()) {
             com.hikari.app.tv.TvCinemaRow(title = title, providerName = providerName, items = items, onOpen = onClick, onShowAll = if (showViewAll) onShowAll else null, vertical = !style.isCinema(true), keeperKey = keeperKey, onItemFocus = onItemFocus)
         } else if (style.isCinema(false)) {
-            com.hikari.app.tv.TvCinemaRow(title = title, providerName = providerName, items = items, onOpen = onClick, onShowAll = if (showViewAll) onShowAll else null, keeperKey = keeperKey)
+            MediaRowCinema(title, providerName, items, onClick, showViewAll, onShowAll, keeperKey)
         } else {
             MediaRowVertical(title, providerName, items, style, onClick, showViewAll, onShowAll, onQuickPlay, keeperKey)
         }
@@ -234,6 +234,73 @@ private fun MediaRowVertical(
         ) {
             items(uniqueItems, key = { it.uniqueId }) { item ->
                 PosterCard(item, style, onClick = { onClick(item) }, onQuickPlay = onQuickPlay)
+            }
+        }
+    }
+}
+
+/**
+ * The cinema shelf of a [MediaRow]: title, provider, and a horizontal strip
+ * of 16:9 landscape cards (see [TvCinemaCard]) — what a phone draws when the
+ * poster shape is Cinema 16:9. Phone-only: the TV shelves keep their own
+ * focus-expanding row (see TvCinemaRow), which needs a remote, not a finger —
+ * an expand-on-focus card can never go wide on touch, so it must not back
+ * this branch.
+ */
+@Composable
+private fun MediaRowCinema(
+    title: String,
+    providerName: String,
+    items: List<MediaItem>,
+    onClick: (MediaItem) -> Unit,
+    showViewAll: Boolean,
+    onShowAll: (() -> Unit)?,
+    keeperKey: String,
+) {
+    val uniqueItems = rememberVisibleItems(items)
+    val rowKeys = remember(uniqueItems) { uniqueItems.map { it.uniqueId } }
+    Column(Modifier.padding(top = 20.dp)) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    tr(title),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (providerName.isNotBlank()) {
+                    Text(
+                        providerName.uppercase(),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+            if (onShowAll != null && showViewAll) {
+                TextButton(onClick = onShowAll) {
+                    Text(tr("Show All"), fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
+        LazyRow(
+            state = if (keeperKey.isBlank()) androidx.compose.foundation.lazy.rememberLazyListState()
+            else keptListState(keeperKey, itemKeys = rowKeys),
+            contentPadding = PaddingValues(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            items(uniqueItems, key = { it.uniqueId }) { item ->
+                com.hikari.app.tv.TvCinemaCard(
+                    item = item,
+                    onClick = { onClick(item) },
+                    titleColor = MaterialTheme.colorScheme.onSurface,
+                    subColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }
