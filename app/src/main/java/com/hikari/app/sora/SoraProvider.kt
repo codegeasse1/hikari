@@ -16,23 +16,6 @@ import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
-/**
- * Adapts a Sora module (one self-contained script under
- * `filesDir/sora/modules/<id>/module.js`) to Hikari's ContentProvider
- * contract:
- *
- *   search()        <- searchResults(keyword)
- *   getMeta()       <- extractDetails(url)      -> [{description, aliases, airdate}]
- *   getEpisodes()   <- extractEpisodes(url)     -> [{href, number}]
- *   getStreams()    <- extractStreamUrl(url)    -> {streams: [{title, streamUrl, headers?}], subtitles?}
- *
- * Sora modules have no native catalogue endpoint, so Browse is built by
- * calling searchResults with an empty keyword (and a few letter seeds).
- * A title with no episodes resolves as a movie and plays through the
- * detail URL itself.
- *
- * The item's `id` is the module's own href, carried through verbatim.
- */
 class SoraProvider(override val config: ProviderConfig) : ContentProvider {
 
     companion object {
@@ -55,18 +38,10 @@ class SoraProvider(override val config: ProviderConfig) : ContentProvider {
     }
     private val moduleFile: File get() = File(config.url)
 
-    // Sora modules only export searchResults — no dedicated home endpoint.
-    // We still expose a Browse catalogue that calls search with an empty
-    // keyword (and a couple of letter seeds if empty returns nothing), so
-    // the Home screen is not stuck on "No catalog from …" the way a pure
-    // searchOnly source is. Playback is unchanged.
     override val searchOnly = false
 
     private val episodeCache = ConcurrentHashMap<String, List<Episode>>()
 
-    // Multiple home rows — Sora has no native catalogue, so each row is a
-    // different search seed. Show All pages through further seeds so a row is
-    // not stuck at the first 10–20 hits.
     private val catalogSeeds: List<Pair<String, List<String>>> = listOf(
         "browse" to listOf("", "a", "the", "1", "2024", "2025"),
         "popular" to listOf("popular", "top", "trending", "best"),
@@ -156,10 +131,6 @@ class SoraProvider(override val config: ProviderConfig) : ContentProvider {
             val title = decodeHtmlEntities(o.optString("title").trim())
                 .ifBlank { decodeHtmlEntities(o.optString("name").trim()) }
             if (link.isBlank() || title.isBlank()) continue
-            // UNKNOWN until the episode list is known (see AniyomiProvider):
-            // the module gives no movie/series signal at catalog time. (The
-            // old comment's short-circuit is long gone — UNKNOWN gets the
-            // full lookup in ContentRepository.episodesForInner.)
             out += MediaItem(
                 providerId = config.id,
                 id = link,

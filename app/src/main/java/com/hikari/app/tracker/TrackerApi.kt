@@ -19,32 +19,8 @@ import java.security.MessageDigest
 import java.security.SecureRandom
 import android.util.Base64
 
-/**
- * Every tracker's HTTP surface, in one place (Settings → Trackers).
- *
- * Six services with six different sign-in mechanisms, six search shapes and six
- * ways of writing progress — and one thing they have in common, which is what
- * this file is built around: **they all answer with a status code and a body,
- * and the user has to be told what it said.** Every call here returns a
- * `Result`, and the failure carries a sentence ("AniList: the sign-in was
- * refused (HTTP 401) — sign out and sign in again"), because a tracker that
- * silently does nothing is indistinguishable from a tracker that works until
- * the user checks their list a week later and finds it empty.
- *
- * The client credentials are the user's own ([TrackerClient]): each service
- * needs an app registered with it before anyone may log in, and Hikari does not
- * ship somebody else's registration (see [TrackerKind]).
- */
 object TrackerApi {
 
-    /**
-     * The redirect URI every app registration must be given, verbatim.
-     *
-     * The sign-in happens in an in-app WebView that watches for exactly this
-     * URL (see [com.hikari.app.ui.components.TrackerLoginDialog]): nothing is
-     * listening for the scheme outside the app, so the hand-off is intercepted
-     * before Android ever sees it — no manifest entry, no second app.
-     */
     const val REDIRECT_URI = "hikari://oauth"
 
     /** A sign-in the user confirms elsewhere: a code to show, and a page. */
@@ -80,18 +56,6 @@ object TrackerApi {
         Reply(it.code, runCatching { it.body?.string() ?: "" }.getOrDefault(""))
     }
 
-    /**
-     * The dispatcher every request in this file runs on.
-     *
-     * The trackers are driven from Compose — `rememberCoroutineScope()` and
-     * `LaunchedEffect` both run on the MAIN thread — and a socket touched on the
-     * main thread throws `NetworkOnMainThreadException`, an exception with a
-     * null message. That is exactly what every sign-in used to report:
-     * `Reply(-1, "network error")`, printed as "no connection", on a device that
-     * was online the whole time. The hop lives HERE, in the one place every
-     * request goes through, rather than at each call site, so no caller has to
-     * remember which thread it is on.
-     */
     private suspend fun <T> off(block: () -> T): T = withContext(Dispatchers.IO) { block() }
 
     private suspend fun get(url: String, headers: Map<String, String> = emptyMap()): Reply =
@@ -141,12 +105,6 @@ object TrackerApi {
         s
     }
 
-    /**
-     * [PATCH], then [PUT] if the service says the method is not allowed — MAL
-     * accepts both spellings of the same call depending on when the app was
-     * registered against it, and a 405 is not a real failure, just the other
-     * spelling of the same request.
-     */
     private suspend fun sendAny(
         methods: List<String>,
         url: String,
@@ -190,19 +148,7 @@ object TrackerApi {
 
     // -------------------------------------------------------------- sign-in: url
 
-    /**
-     * The page the login WebView opens, or "" when this service has no browser
-     * step (Kitsu's password grant) — see [loginPassword].
-     *
-     * [clientId] is the app the user registered, [state] is echoed back so the
-     * redirect we intercept is provably ours.
-     */
     fun authorizeUrl(kind: TrackerKind, clientId: String, state: String): String = when (kind) {
-        // AniList's authorization-code grant: a code comes back in the
-        // redirect and is exchanged for a token (see [exchangeCode]). The
-        // old implicit grant (`response_type=token`) is dead — AniList's
-        // server answers it with `unsupported_grant_type`, which is the JSON
-        // the user sees instead of a login page.
         TrackerKind.ANILIST ->
             "https://anilist.co/api/v2/oauth/authorize?client_id=" + enc(clientId) + "&response_type=code" + "&redirect_uri=" + enc(REDIRECT_URI) + "&state=" + enc(state)
 
@@ -228,9 +174,6 @@ object TrackerApi {
 
     /** The `state` we sent, so the redirect can be checked against it. */
     fun newState(): String =
-        // Two UUIDs' worth of hex: MAL wants a PKCE code_verifier of 43–128
-        // characters and the state IS the verifier (the `plain` method), so a
-        // short one would make its token endpoint refuse the exchange.
         (java.util.UUID.randomUUID().toString() + java.util.UUID.randomUUID().toString())
             .replace("-", "")
 
@@ -248,11 +191,6 @@ object TrackerApi {
         return e?.takeIf { it.isNotBlank() }
     }
 
-    /**
-     * A parameter out of a redirect URL — from the query OR the fragment,
-     * because AniList's implicit grant puts the token in the fragment and every
-     * other service puts the code in the query.
-     */
     private fun paramOf(url: String, name: String): String? {
         val hash = url.substringAfter('#', "")
         val query = url.substringAfter('?', "").substringBefore('#')
@@ -277,19 +215,6 @@ object TrackerApi {
 
     // ---------------------------------------------------- sign-in: preflight
 
-    /**
-     * A sign-in that has been STARTED and is waiting for its redirect.
-     *
-     * The `state` a service echoes back is the only proof a redirect is ours,
-     * and for MyAnimeList it is ALSO the PKCE `code_verifier` the token exchange
-     * needs — a value that used to exist only while the dialog that generated it
-     * was alive. A browser sign-in routinely outlives the dialog (the user
-     * leaves the app, Android reclaims the process, the link comes back later),
-     * and a code that arrived then could not be exchanged by anybody, which is
-     * the whole of the reported "I sign in in the browser and the app still does
-     * not connect". Persisting this one small record is what lets
-     * [com.hikari.app.MainActivity] finish that link anyway.
-     */
     data class Pending(
         val kind: TrackerKind,
         val clientId: String,
@@ -319,26 +244,6 @@ object TrackerApi {
         }
     }
 
-    /**
-     * Asks the service whether it will show its login page AT ALL for these app
-     * credentials, before the user is sent to it.
-     *
-     * This exists because of what a refused app id looks like in a browser. Open
-     * `myanimelist.net/v1/oauth2/authorize?…&client_id=<unknown>` and MAL answers
-     * `401` with the OAuth error body *and* an `HTTP Basic realm="OAuth"`
-     * challenge — so Chrome (and a WebView) do not render an error message at
-     * all: they render the device's native "Sign in" username/password box,
-     * captioned "The site says: OAuth". That is the reported "a cheap login page
-     * which does not even feel like the real one" — it is not MAL's login page,
-     * it is a credential prompt for a rejected API request, and nothing the user
-     * types there can work.
-     *
-     * The same request, made here as a plain HTTP GET, comes back as a status
-     * code and a readable body, so the dialog can say exactly what the service
-     * refused (and which value on its developer page is the one to paste)
-     * instead of opening a page that cannot succeed. A service that is happy
-     * answers with its login page (HTTP 200 HTML) and this passes silently.
-     */
     suspend fun checkAuthorize(
         kind: TrackerKind,
         clientId: String,
@@ -400,11 +305,6 @@ object TrackerApi {
 
     // --------------------------------------------------------- sign-in: token in
 
-    /**
-     * Who an AniList token belongs to — the "who am I" half of both AniList
-     * sign-ins (the legacy implicit token and the code exchange below share
-     * it, because a token is a token however it arrived).
-     */
     private fun anilistIdentity(reply: Reply): Pair<String, String>? {
         val viewer = reply.json()?.optJSONObject("data")?.optJSONObject("Viewer")
         val name = viewer?.optString("name").orEmpty()
@@ -415,13 +315,6 @@ object TrackerApi {
     private suspend fun anilistMe(token: String): Pair<String, String>? =
         anilistIdentity(graphql(token, "{ Viewer { id name } }"))
 
-    /**
-     * Confirms a token and asks the service who the user is.
-     *
-     * Legacy path: AniList tokens issued before the implicit grant died are
-     * still valid sessions, so a link or paste carrying one still finishes.
-     * Nothing STARTS this flow any more — AniList is a code flow now.
-     */
     suspend fun signInWithToken(client: TrackerClient, token: String): Result<TrackerAccount> = when (client.kind) {
         TrackerKind.ANILIST -> {
             val reply = graphql(token, "{ Viewer { id name } }")
@@ -452,10 +345,6 @@ object TrackerApi {
         redirect: String = REDIRECT_URI,
     ): Result<TrackerAccount> = when (client.kind) {
         TrackerKind.ANILIST -> {
-            // The authorization-code grant: unlike MyAnimeList's public-client
-            // PKCE, AniList's token endpoint wants the app's client secret, so
-            // the shipped app id alone is not enough — the secret for it must
-            // be stored too (see TrackerBuiltIn), or the user pastes both.
             val body = form(
                 "grant_type" to "authorization_code",
                 "client_id" to client.id,
@@ -472,9 +361,6 @@ object TrackerApi {
         }
 
         TrackerKind.MAL -> {
-            // PKCE with `plain`: the verifier IS the state we sent, so the
-            // exchange needs nothing but the code — which is what makes a
-            // public client (no secret) work at all.
             val body = form(
                 "grant_type" to "authorization_code",
                 "client_id" to client.id,
@@ -562,9 +448,6 @@ object TrackerApi {
             refresh = o?.optString("refresh_token").orEmpty(),
             expiresAt = if (expiresIn > 0) System.currentTimeMillis() + expiresIn * 1000L else 0L,
         )
-        // The token is valid even when the "who am I" call failed (a hiccup on
-        // the profile endpoint is not a reason to throw the sign-in away), but
-        // the card then says "signed in" with no name — which is honest.
         return Result.success(account)
     }
 
@@ -573,11 +456,6 @@ object TrackerApi {
     /** Starts a PIN/device-code sign-in (Simkl + Trakt). */
     suspend fun startDevice(client: TrackerClient): Result<DeviceLogin> = when (client.kind) {
         TrackerKind.SIMKL -> {
-            // Current Simkl developer apps are OAuth 2.0 clients. The legacy
-            // /oauth/pin endpoint only accepts the old PIN app type and returns
-            // HTTP 400 for the current client type — exactly the error shown in
-            // the supplied screenshot. Use Simkl's OAuth2 device endpoint and
-            // PKCE S256 instead.
             val verifierBytes = ByteArray(32).also { SecureRandom().nextBytes(it) }
             val verifier = Base64.encodeToString(
                 verifierBytes,
@@ -645,11 +523,6 @@ object TrackerApi {
         else -> Result.failure(Exception("${client.kind.label} has no code sign-in."))
     }
 
-    /**
-     * Polls a code sign-in. Success with a null account means "the user has not
-     * confirmed it yet" — the caller keeps waiting (and stops at
-     * [DeviceLogin.expiresInSec]).
-     */
     suspend fun pollDevice(client: TrackerClient, login: DeviceLogin): Result<TrackerAccount?> =
         when (client.kind) {
             TrackerKind.SIMKL -> {
@@ -718,9 +591,6 @@ object TrackerApi {
                             )
                         )
                     }
-                    // Trakt answers 400 while the user has not confirmed yet,
-                    // 409 when the code was already used, 410/418 when it is
-                    // over — and the caller must be able to tell those apart.
                     reply.code == 400 -> Result.success(null)
                     reply.code == 409 -> Result.failure(Exception("Trakt: this code was already used — start again."))
                     reply.code == 410 -> Result.failure(Exception("Trakt: the code expired — start again."))
@@ -809,13 +679,6 @@ object TrackerApi {
 
     // ------------------------------------------------------------------- search
 
-    /**
-     * The service's candidates for [media]'s title, best first.
-     *
-     * For a service that only keeps anime, the search IS the filter: a
-     * live-action title simply finds nothing above the match threshold, which is
-     * why nothing here has to know whether the title is an anime.
-     */
     suspend fun search(
         client: TrackerClient,
         token: String,
@@ -858,12 +721,6 @@ object TrackerApi {
     private fun TrackerMatch.describe(): String =
         "id=$id score=${"%.3f".format(score)} cat=$category year=$year total=$total title=\"$title\""
 
-    /**
-     * Full-detail search report, written for every backend on every title: the
-     * exact queries sent, the per-query HTTP status + new candidates, and the
-     * top candidates with scores. [perQuery] is filled by the backend's loop;
-     * pass the sorted output through here instead of returning it directly.
-     */
     private suspend fun logSearch(
         label: String,
         media: TrackerMedia,
@@ -895,12 +752,6 @@ object TrackerApi {
 
     // --------------------------------------------------------------------- push
 
-    /**
-     * Writes [media]'s progress onto the service, as "watched up to episode N".
-     *
-     * Returns a sentence for the user ("AniList: Naruto — episode 12 of 220"),
-     * because this is the only feedback they ever get about it.
-     */
     suspend fun push(
         client: TrackerClient,
         account: TrackerAccount,
@@ -936,14 +787,6 @@ object TrackerApi {
 
     // -------------------------------------------------------------------- AniList
 
-    /**
-     * What the services are actually asked for: the title as-is, plus the
-     * sequel tail taken off ("Jade Dynasty Season 4" → "Jade Dynasty").
-     * Tracker search boxes match synonyms server-side, but a season/movie
-     * suffix still narrows some of them to nothing — and the alias forms
-     * ([titleVariants]) are scored, not searched, since each service already
-     * answers a base title with all of its spellings.
-     */
     private suspend fun searchQueries(title: String): List<String> {
         val t = title.trim()
         if (t.isEmpty()) return emptyList()
@@ -957,19 +800,10 @@ object TrackerApi {
         val out = ArrayList<String>()
         out.add(t)
         if (stripped.isNotBlank() && !stripped.equals(t, true)) out.add(stripped)
-        // The tracker's spelling is rarely the extension's (pinyin vs
-        // English: "Zhu Xian" vs "Jade Dynasty"). The alias forms are scored
-        // already, but some services never return the entry for the base
-        // title — so its other spellings are searched too.
         for (v in com.hikari.app.data.titleVariants(t)) {
             if (out.none { it.equals(v, true) }) out.add(v)
             if (out.size >= 5) break
         }
-        // And the spellings AniList ITSELF knows (romaji/English/native +
-        // synonyms): a title whose English form searches zero rows is often
-        // listed under pinyin it never mentions ("Bringing the Nation's
-        // Husband Home" → "Guomin Laogong Dai Huijia", probed 2026-10-17).
-        // Bounded: the service loops stay small.
         if (out.size < 7) {
             for (a in runCatching { com.hikari.app.data.AnimeMetadataRepository.aliasesFor(t) }.getOrDefault(emptySet())) {
                 val form = a.trim()
@@ -1038,10 +872,6 @@ object TrackerApi {
                     titles?.optString("native"),
                 ).filter { it.isNotBlank() } + (0 until (m.optJSONArray("synonyms")?.length() ?: 0))
                     .mapNotNull { m.optJSONArray("synonyms")?.optString(it)?.takeIf { s -> s.isNotBlank() } }
-                // seasonYear is null for whole catalogue stretches (every
-                // Chinese ONA probed 2026-10-17 carries null) while startDate
-                // still has the year — without it every tie-break that needs
-                // years ties, and season picks fall back to id order.
                 val seasonYear = m.optInt("seasonYear", 0).takeIf { it > 0 }
                     ?: m.optJSONObject("startDate")?.optInt("year", 0) ?: 0
                 val best = names.map { it to matchScoreAny(title, it, media.year, seasonYear) }
@@ -1065,18 +895,6 @@ object TrackerApi {
         return logSearch("AniList", media, title, perQuery, out)
     }
 
-    /**
-     * The tracker's own sequel order for [ids]: PREQUEL/SEQUEL edges only, so
-     * side stories linked as SIDE_STORY never enter the line. Probed
-     * 2026-10-17: "Dou Po Cangqiong: Nian Fan" carries PREQUEL=137729 and
-     * SEQUEL=168163 — the graph is complete for franchise ordering.
-     *
-     * One round trip for the whole tied pool, walked locally from the unique
-     * root (the entry with no in-set prequel). Empty when the graph is
-     * disconnected or ambiguous — the caller falls back to year order, then
-     * to an honest no-match. Never throws: a failed lookup must not fail
-     * the sync.
-     */
     suspend fun anilistSequelChain(ids: List<Int>): List<Int> {
         val want = ids.distinct().take(50)
         if (want.size < 2) return emptyList()
@@ -1169,9 +987,6 @@ object TrackerApi {
     }
 
     private suspend fun malSearch(token: String, title: String, media: TrackerMedia): List<TrackerMatch> {
-        // `nsfw=true` so a title the user is watching is not invisible in the
-        // search: the adult-content switch already governs what Hikari shows,
-        // and this call is about the title they are watching right now.
         val out = ArrayList<TrackerMatch>()
         val seen = HashSet<Int>()
         val perQuery = ArrayList<String>()
@@ -1506,9 +1321,6 @@ object TrackerApi {
     }
 
     private suspend fun simklSearch(clientId: String, title: String, media: TrackerMedia): List<TrackerMatch> {
-        // Simkl splits its catalogue by kind, so the search path is the filter:
-        // anime first (what most Hikari extensions carry), then the kind the
-        // player's own type suggests.
         val paths = buildList {
             add("anime")
             if (media.movie) add("movie") else add("tv")
@@ -1535,10 +1347,6 @@ object TrackerApi {
                     if (id <= 0 || !seen.add(id.toString())) continue
                     val name = o.optString("title")
                     val year = o.optInt("year", 0)
-                    // The searched spelling is rarely the catalogue's (a Spanish
-                    // title against the English entry, pinyin against the
-                    // translation): score every spelling the record carries,
-                    // not just its display title.
                     val altNames = buildList {
                         o.optString("original_title").takeIf { it.isNotBlank() }?.let { add(it) }
                         o.optJSONArray("aliases")?.let { arr ->
@@ -1628,10 +1436,6 @@ object TrackerApi {
             }
         }
         var reply = post("https://api.simkl.com/sync/history", payload.toString(), headers)
-        // Simkl accepts the "anime" form for most titles and the "shows" form for
-        // the rest (their catalogue is not consistent about it), so a refusal of
-        // one is retried as the other rather than reported as a failure the user
-        // cannot act on.
         if (!reply.ok && match.category == "anime" && media.episode > 0) {
             val alternate = JSONObject().apply {
                 put(

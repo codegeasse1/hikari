@@ -6,24 +6,6 @@ import com.lagradost.cloudstream3.app
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 
-/**
- * Direct extraction for MovieLinkBD watch pages (movielinkbd.li).
- *
- * The site rebuilt its watch pages around an inline player
- * (`#mlbdInlinePlayerData`): the file list — MLBD CDN urls per quality, with
- * audio/type/file names — is embedded as an XOR-encrypted base64 JSON blob,
- * and playback appends a short-lived `mg` token fetched from the file host's
- * `/g` endpoint. A plugin version from before that rebuild parses the page
- * fine but finds no player embeds, which is exactly the recorded
- * "page parsed OK, but produced no stream links" — while the same title plays
- * wherever the new layout is understood.
- *
- * This replicates the page's own player bootstrap without any JS: read the
- * blob, decode it (the same LCG stream the page's script uses), pick the
- * episode's sources, fetch the `mg` token, and hand the file urls over as
- * servers. Only ever called for movielinkbd.li pages (see [matches]), and
- * fully bounded — a layout change back is just an empty list, never a hang.
- */
 object MlbdResolver {
 
     fun matches(pageUrl: String): Boolean {
@@ -123,18 +105,6 @@ object MlbdResolver {
         }.getOrNull()
     }
 
-    /**
-     * The page's encrypted player blob: `<script id="mlbdInlinePlayerData"
-     * type="application/json" data-s="<hex>" data-r="<rounds>"><base64></script>`,
-     * decoded with the same LCG the page's own script runs (see the site's
-     * mlbd-details-player.js: `r = imul(r, 1103515245) + 12345`, per byte
-     * `charCode ^ (r >>> 16 & 255)`).
-     *
-     * The params are read off the matched script TAG itself, in ANY attribute
-     * order — the site serves `data-s`/`data-r` after the id, and a
-     * behind-the-tag search for them silently yields nothing (which is exactly
-     * how a page full of streams reported "produced no stream links").
-     */
     private fun extractBlob(html: String): String? {
         val tag = Regex(
             """<script[^>]*id=["']mlbdInlinePlayerData["'][^>]*>""",

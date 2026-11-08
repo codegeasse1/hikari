@@ -9,32 +9,6 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 
-/**
- * A browsable TMDB catalog for the extensions that have none of their own.
- *
- * A Stremio STREAM addon (HdHub, Torrentio, Comet…) is a manifest that answers
- * /stream and nothing else: it has no catalog, so Home had nothing to show for
- * one, it was hidden from the provider picker, and it could not be found by a
- * name search — all of which the user reads as "the addon isn't working". The
- * real Stremio client solves that by installing a META addon next to it
- * (Cinemeta, Streaming Catalogs) and browsing that addon's catalog.
- *
- * Hikari already browses TMDB on behalf of every Nuvio provider (their scrapers
- * resolve from a TMDB id and export no catalog either), so an addon with no
- * catalog gets the same treatment here: its Home rows and its search come from
- * TMDB, its ids resolve to an IMDb id for the addon's own /stream call, and no
- * extra "catalog addon" has to be installed to browse.
- *
- * Rows are chosen from a niche inferred from the extension's NAME (an addon
- * called "HdHub" shows Hindi rows, an anime addon shows anime) and picked
- * deterministically from a circular window offset by [offsetSeed], so two such
- * extensions never present identical Home screens.
- *
- * NuvioScraper keeps its own copy of the niche/rows logic on purpose: it is the
- * catalogue for a different engine's provider contract and worked out
- * separately, and this object exists to be shared by the engines that would
- * otherwise have NO catalogue at all (see StremioAddon).
- */
 object TmdbBrowse {
 
     /** Every catalog id this object produces starts with this, so a caller can
@@ -150,11 +124,6 @@ object TmdbBrowse {
             params["page"] = page.coerceAtLeast(1).toString()
             val data = TmdbResolver.apiGet(row.path, params) ?: return@withContext emptyList()
             val results = data.optJSONArray("results") ?: return@withContext emptyList()
-            // A mixed row (`/trending/all/*`) is answered by discover while the
-            // adult-content switch is off (see [NsfwGate.restrictRequest]), and a
-            // discover item carries no `media_type` of its own — so the row's own
-            // "whatever is in there" type has to come out as the movie the answer
-            // actually is, or every item is dropped and Trending comes back empty.
             val fallback = if (NsfwGate.rewritesToMovies(row.path)) MediaType.MOVIE else row.type
             val out = ArrayList<MediaItem>()
             for (i in 0 until results.length()) {
@@ -245,17 +214,8 @@ object TmdbBrowse {
         )
     }
 
-    /**
-     * The episode list of a series from TMDB. Episodes that have not aired yet
-     * are left out (TMDB lists a show's whole planned run), which is what the
-     * Nuvio path does and what keeps a "next season" from appearing as rows the
-     * user cannot play.
-     */
     suspend fun episodes(item: MediaItem): List<Episode>? = withContext(Dispatchers.IO) {
         if (item.type != MediaType.SERIES) return@withContext null
-        // A whole-show lookup costs one request per season, so it is capped as a
-        // whole (the detail screen has its own budget for this and falls back to
-        // another extension's episode list when nothing arrives in time).
         withTimeoutOrNull(25_000) {
             val show = TmdbResolver.apiGet("/tv/${item.id}", emptyMap()) ?: return@withTimeoutOrNull null
             val seasons = show.optJSONArray("seasons") ?: return@withTimeoutOrNull null
@@ -263,9 +223,6 @@ object TmdbBrowse {
             for (i in 0 until seasons.length()) {
                 val s = seasons.optJSONObject(i) ?: continue
                 val n = s.optInt("season_number", -1)
-                // Season 0 is TMDB's "Specials" — kept, since some shows put
-                // their only real content there, but a season with no episodes
-                // at all is skipped.
                 if (n < 0 || s.optInt("episode_count", 0) <= 0) continue
                 numbers += n
                 if (numbers.size >= MAX_SEASONS) break
@@ -310,11 +267,6 @@ object TmdbBrowse {
         }
     }
 
-    /**
-     * The IMDb id behind a TMDB id — what a Stremio addon's /stream call needs
-     * (addons declare `idPrefixes: ["tt"]`, and the real client only asks them
-     * about `tt…` ids). Null when TMDB does not know one.
-     */
     suspend fun imdbId(tmdbId: String, kind: String): String? = withContext(Dispatchers.IO) {
         val d = TmdbResolver.apiGet("/$kind/$tmdbId/external_ids", emptyMap()) ?: return@withContext null
         d.optString("imdb_id").takeIf { it.startsWith("tt") && it.length > 3 }

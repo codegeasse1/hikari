@@ -31,103 +31,20 @@ import java.util.concurrent.ConcurrentLinkedDeque
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 
-/**
- * Runs NuvioMobile-style JS providers inside a fresh embedded QuickJS engine
- * per call — exactly how the real NuvioMobile app runs plugins (com.nuvio.app
- * PluginRuntime: one `QuickJs.create` per provider call, plain HTTP through a
- * synchronous fetch bridge, no WebView, no Cloudflare verification).
- *
- * Each provider is a plain CommonJS module exporting
- * `getStreams(tmdbId, mediaType, season, episode)` (plus an optional
- * `onSettings()`), following the official NuvioMobile plugin conventions. The
- * engine only ever executes the provider code — every network request goes
- * through the ASYNCHRONOUS `__hikariFetch` bridge (OkHttp, see
- * [bridgeFetchAsync]), so the JS runtime needs no WebView and no network
- * capability of its own, and a provider whose own code fires several requests
- * at once (which is how the big all-in-one providers are fast at all) gets
- * them all in flight together instead of one after another. The shared runtime
- * (assets/nuvio/boot.js polyfills + assets/nuvio/cheerio.js + assets/nuvio/
- * harness.js) is evaluated into the engine before each provider runs, so no
- * state ever leaks between providers and a hung/crashing provider can only
- * kill its own fresh engine.
- *
- * Compared with the previous WebView pool this removes:
- *   - the WebView pool (PooledWebView/Waiter/acquire/release/recycle) — the
- *     whole engine is torn down per call, so no shared state can wedge,
- *   - CloudflareVerifier interception — nuvio itself does no CF solving, it
- *     just hands the provider whatever HTTP returns, so neither do we,
- *   - the main-thread hop — everything runs on Dispatchers.Default.
- */
 object NuvioRuntime {
 
-    // Cap on concurrently-running engines. Each engine is a native QuickJS VM
-    // plus its own JS context, so the count is bounded and the extra providers
-    // queue on the semaphore instead of spawning 20+ VMs at once.
-    //
-    // nuvio's own limit is 10 (PluginRuntime.MAX_CONCURRENT_PLUGINS), and it
-    // used to be 6 here — which, with a 20+ provider install, meant the tail of
-    // the queue never got an engine before the search budget ran out, so only
-    // the first few providers' servers ever reached the player (the reported
-    // "in nuvio all the plugins show servers, in hikari only 2-3").
-    //
-    // 12 rather than nuvio's 10, because a typical curated install is a dozen
-    // engines (the sources sheet reports it as "Nuvio 12"): with 10 slots the
-    // last two QUEUE for a slot instead of running, and on a phone that is
-    // already running the 400-repo cross-extension sweep their whole budget can
-    // be spent waiting — nuvio, which runs nothing but the engines, never has
-    // this problem. Two extra native VMs is a rounding error next to the
-    // engines that then answer in the same window.
     private const val MAX_CONCURRENT = 12
     /** [MAX_CONCURRENT] with the performance booster on (Settings →
      *  Performance): half as many engines at once, for a device that cannot
      *  afford twelve QuickJS VMs while it also draws the UI. */
     private const val PERF_CONCURRENT = 5
-    /**
-     * [MAX_CONCURRENT] on a TELEVISION (see
-     * [com.hikari.app.data.PerfMode.tvDevice]): four engines at once.
-     *
-     * Twelve native VMs is right on a phone, which the app expects to be waiting
-     * on a search pass, and wrong on the 1-1.5GB boxes this is for: a detail page
-     * asks every matched extension for its meta and its episode list at once, so
-     * the engines arrive in a burst exactly while the page is also decoding its
-     * hero image. Four still means four providers answered in parallel, and the
-     * rest queue on the same 60s budget they always had — and unlike the booster
-     * below, this cannot be switched off, because it is the hardware talking.
-     */
     private const val TV_CONCURRENT = 4
     private const val FETCH_TIMEOUT_MS = 60_000L
-    // CALL_TIMEOUT_MS bounds a provider's whole JS execution. It is nuvio's own
-    // per-plugin ceiling (PluginRuntime.PLUGIN_TIMEOUT_MS = 60s): a provider
-    // that needs its cold boot plus a slow site fetch plus extraction is
-    // normal, and 45s cut off providers that nuvio happily finishes. The same
-    // value is set as QuickJS's evaluationTimeoutMillis, so even a provider
-    // stuck in busy JS (infinite loop) is cut off natively instead of hanging
-    // the engine forever.
     private const val CALL_TIMEOUT_MS = 60_000L
     private const val VALIDATE_TIMEOUT_MS = 20_000L
 
-    /**
-     * Ceiling on the JavaScript heap ONE engine may allocate.
-     *
-     * Every fresh engine is a native QuickJS VM, and nothing bounded it before:
-     * a provider that loops building strings, or cheerio parsing a giant page,
-     * could allocate until the OS low-memory killer took the whole app — which
-     * is the "it almost crashes while the sources load" half of the report.
-     * 256MB is far above any provider that works today (a cheerio tree over a
-     * few MB of HTML is tens of MB) and far below what would endanger the
-     * process; a provider that really needs more is broken anyway, and it now
-     * fails as its own "provider failed" instead of taking the app with it.
-     */
     private const val ENGINE_MEMORY_LIMIT = 256L * 1024 * 1024
 
-    /**
-     * [ENGINE_MEMORY_LIMIT] as it applies on THIS device: the television value
-     * from [com.hikari.app.data.PerfMode.tvEngineMemoryLimit] when there is one
-     * — a 1-1.5GB box, where opening a detail page boots several engines at once
-     * and native QuickJS memory is what the low-memory killer acts on, so the app
-     * is killed mid-load — otherwise the flat ceiling above. Read once per engine
-     * creation, so it is a field read and a comparison per call.
-     */
     private val engineMemoryLimit: Long
         get() = com.hikari.app.data.PerfMode.tvEngineMemoryLimit ?: ENGINE_MEMORY_LIMIT
 
@@ -145,15 +62,6 @@ object NuvioRuntime {
     /** Bounds how many providers run their JS engines at once (see above). */
     private val concurrency = Semaphore(MAX_CONCURRENT)
 
-    /**
-     * The same gate at half width for the PERFORMANCE BOOSTER (Settings →
-     * Performance). A nuvio provider is the heaviest thing Hikari runs in-process
-     * — a QuickJS engine, its 440KB cheerio bundle when the provider needs it,
-     * and a memory cap — so on a device that is already struggling, twelve of
-     * them at once (see [MAX_CONCURRENT]) is the difference between a search that
-     * finishes and one that swaps. Chosen at ACQUIRE time, so flipping the
-     * booster applies to the very next lookup instead of the next launch.
-     */
     private val perfConcurrency = Semaphore(PERF_CONCURRENT)
 
     /** [TV_CONCURRENT]'s pool — see the note on the constant, and on [gate]. */
@@ -168,39 +76,12 @@ object NuvioRuntime {
             else -> concurrency
         }
 
-    // A second, much smaller pool of slots for the engines a BACKGROUND sweep
-    // asks (see [withBackgroundSlot]).
-    //
-    // A sweep re-asks the providers a pass never got an answer from while the
-    // video plays — including the nuvio engines, which each boot a native VM.
-    // Those calls used to compete for the same 12 slots as the pass's own, so
-    // with three searches running at once (a pass plus the sweeps of two other
-    // titles, which the user's own log shows) the engine the user was actually
-    // waiting for spent its whole budget QUEUED behind background work. A nuvio
-    // search that shows its servers in seconds in the reference client was
-    // reported as "no answer in 92s" here for exactly that reason.
-    //
-    // So background calls are capped at their own handful of slots: they still
-    // run (nothing is ever dropped), they just can never starve a pass — or a
-    // sweep's own foreground-ish direct asks — of the engines.
     private const val BACKGROUND_CONCURRENT = 3
     private val backgroundConcurrency = Semaphore(BACKGROUND_CONCURRENT)
 
-    /**
-     * Runs [block] holding one of the background engine slots — for calls made
-     * by a background sweep rather than by a search the user is waiting on (see
-     * [BACKGROUND_CONCURRENT]). Never deadlocks: a background call takes a
-     * background slot and then a normal engine slot, and a foreground call only
-     * ever takes the normal one.
-     */
     suspend fun <T> withBackgroundSlot(block: suspend () -> T): T =
         backgroundConcurrency.withPermit { block() }
 
-    /** Diagnostic ring buffer of every bridgeFetch outcome (host, status,
-     *  size, latency). Shown on the Detail screen when no sources are found so
-     *  a failing provider reports exactly what HTTP really returned — a 403
-     *  Cloudflare challenge (site blocked the device IP), a network error, or
-     *  just slow. Cleared at the start of each sources search. */
     private val fetchLogEntries = ConcurrentLinkedDeque<Pair<Int, String>>()
 
     /** Monotonic sequence behind [fetchLogEntries] — every entry carries its own
@@ -219,15 +100,6 @@ object NuvioRuntime {
     private val cheerioJs: String by lazy { readAsset("nuvio/cheerio.js") }
     private val harnessJs: String by lazy { readAsset("nuvio/harness.js") }
 
-    /** The glue that ties the harness to the native bridges (module registry,
-     *  fetch implementation, the bridge stub the harness calls back into).
-     *
-     *  `__nuvioFetchImpl` hands back whatever `__hikariFetch` returns, and that
-     *  is now a PROMISE (the native function is registered through
-     *  [asyncFunction], exactly like the reference client's `__native_fetch`) —
-     *  the harness awaits it (see `__nuvioFetch` in assets/nuvio/harness.js), so
-     *  a provider's `await fetch(...)` really suspends instead of blocking the
-     *  engine's thread until the response is back. */
     private val REGISTER_GLUE: String =
         "globalThis.__nuvioRegisterModule('cheerio', globalThis.__nuvioCheerio);" +
             "if (typeof globalThis.CryptoJS !== 'undefined') globalThis.__nuvioRegisterModule('crypto-js', globalThis.CryptoJS);" +
@@ -251,19 +123,6 @@ object NuvioRuntime {
             "};" +
             "globalThis.__nuvioBridgeStub = { onGetStreamsDone: function () {}, onSettingsDone: function () {}, fetch: null, log: function () {} };"
 
-    /** Compiled QuickJS bytecode for the scripts above, keyed by script name.
-     *
-     *  Every provider call boots a FRESH engine, and the runtime scripts are
-     *  ~550KB of JS (cheerio alone is 450KB) — so compiling them from source in
-     *  every engine meant every provider call paid the full parse again, and a
-     *  20-provider search spent most of its budget parsing the same bundle 20
-     *  times. nuvio does exactly this caching (JsRuntime's cached
-     *  polyfill/call bytecode) and it is why its search returns far more
-     *  servers in the same wall-clock time.
-     *
-     *  QuickJS compiles to bytecode that any engine of the same build can run,
-     *  so one compile serves every later VM. The cache lives for the process
-     *  (the scripts are immutable assets). */
     private val bytecodeCache = ConcurrentHashMap<String, ByteArray>()
 
     /** Evaluates [source] in this engine through the bytecode cache: compile
@@ -284,30 +143,9 @@ object NuvioRuntime {
     private fun readAsset(path: String): String =
         com.hikari.app.HikariApp.instance.assets.open(path).bufferedReader().readText()
 
-    /**
-     * Whether a provider's source wants the cheerio bundle.
-     *
-     * A cheap look at the TEXT, and deliberately permissive: any mention of
-     * cheerio (the module is imported under three names — see the harness's
-     * alias table) or of a `$(` selector keeps the bundle. Everything else skips
-     * ~440KB of JavaScript that this engine would otherwise have to execute
-     * before the provider ran a single line — and the skip is not a gamble: a
-     * provider that turns out to need it FAILS, and [getStreams] retries it once
-     * WITH the bundle (see there).
-     */
     private fun needsCheerio(source: String): Boolean =
         source.contains("cheerio", ignoreCase = true) || source.contains("$(")
 
-    /**
-     * Whether a failed payload is worth the [needsCheerio] retry.
-     *
-     * True for the failures cheerio could explain: a module-load error, a
-     * `cheerio.load is not a function`. Deliberately FALSE for a timeout — that
-     * call burned its whole 60s budget, and booting a second engine to repeat it
-     * would burn another one while the pass's own ceiling is what ends it (see
-     * `ContentRepository.NUVIO_TAIL_MS`); a slow site is not a missing bundle.
-     * An empty `data` array is an ANSWER, never a failure (see [NuvioScraper]).
-     */
     private fun cheerioRetryWorthwhile(payload: String): Boolean {
         if (payload.contains("timed out")) return false
         return runCatching { org.json.JSONObject(payload).optBoolean("ok", false) }
@@ -326,13 +164,6 @@ object NuvioRuntime {
 
     fun fetchLogSnapshot(): List<String> = fetchLogEntries.map { it.second }
 
-    /**
-     * A mark to take BEFORE asking a provider, so [fetchLogSince] can hand back
-     * exactly the HTTP trail that provider's own call produced — which is what
-     * makes "this engine found nothing" diagnosable from a log file instead of
-     * only from the sources sheet. See the per-provider line in
-     * [com.hikari.app.nuvio.NuvioScraper].
-     */
     fun fetchLogMark(): Int = fetchLogCount.get()
 
     fun fetchLogSince(mark: Int, limit: Int = 8): List<String> =
@@ -411,11 +242,6 @@ object NuvioRuntime {
             .build()
     }
 
-    /** The client a bridge fetch uses. Two of them, because "do not follow
-     *  redirects" is a per-CALL choice in nuvio's bridge — a provider asks with
-     *  `redirect: 'manual'` when it wants to read the 3xx itself — and OkHttp
-     *  only takes that flag per client. They share the dispatcher, the
-     *  connection pool and the DNS, so the only difference is the flag. */
     private val noRedirectClient by lazy {
         client.newBuilder()
             .followRedirects(false)
@@ -431,26 +257,12 @@ object NuvioRuntime {
      *  close() it in a finally. */
     private suspend fun createEngine(
         deferred: CompletableDeferred<String>,
-        /**
-         * Whether the cheerio bundle is evaluated into this engine. False for a
-         * provider whose own source never mentions it (see [needsCheerio]):
-         * cheerio is ~440KB of JavaScript that every fresh engine otherwise has
-         * to EXECUTE before the provider even starts, and most providers are
-         * fetch + JSON + a deobfuscation step. The registry still gets an empty
-         * module, so a require that slips through fails loudly (and gets one
-         * retry with the bundle — see [getStreams]).
-         */
         withCheerio: Boolean = true,
     ): QuickJs {
         val qjs = QuickJs.create(jobDispatcher = Dispatchers.Default)
         qjs.evaluationTimeoutMillis = CALL_TIMEOUT_MS
         qjs.memoryLimit = engineMemoryLimit
 
-        // Native bridges. The FETCH one is asynchronous — registered through
-        // [asyncFunction], so JS gets a real promise and the provider's
-        // `await fetch(...)` yields the engine instead of blocking its thread
-        // for the whole round trip (see [bridgeFetchAsync]). The rest are
-        // synchronous: they answer immediately and never touch the network.
         qjs.asyncFunction("__hikariFetch") { args ->
             val url = args.getOrNull(0)?.toString() ?: ""
             val method = args.getOrNull(1)?.toString() ?: "GET"
@@ -474,23 +286,11 @@ object NuvioRuntime {
         // 1. Polyfills (console, TextEncoder/Decoder, Blob, URL, AbortController,
         //    crypto/CryptoJS backed by NuvioCryptoBridge, array/object/string).
         qjs.evaluateCached("boot.js", bootJs)
-        // 2. The real cheerio bundle, captured as a plain module like nuvio's
-        //    runtime.html did (evaluateJavascript's size ceiling is a non-issue
-        //    here, but booting it as a script keeps the exact same path).
         qjs.evaluateCached("cheerio-head.js", "var __nuvioModule = { exports: {} }; var module = __nuvioModule; var exports = module.exports;")
-        //    ...executed only for a provider that says it wants cheerio — this
-        //    one line is the whole boot cost of the engines that do not (see
-        //    [withCheerio]).
         if (withCheerio) qjs.evaluateCached("cheerio.js", cheerioJs)
         qjs.evaluateCached("cheerio-tail.js", "globalThis.__nuvioCheerio = module.exports;")
         // 3. Provider harness (CommonJS require, fetch, provider loader, shims).
         qjs.evaluateCached("harness.js", harnessJs)
-        // 4. Glue: register cheerio/crypto-js modules (harness aliases
-        //    cheerio-without-node-native + react-native-cheerio), point the
-        //    harness's fetch at the native bridge, and give __bridge() a stub
-        //    whose onGetStreamsDone/onSettingsDone flow back to the native
-        //    completion. This mirrors exactly what the WebView's
-        //    addJavascriptInterface + runtime.html provided.
         qjs.evaluateCached("register.js", REGISTER_GLUE)
         return qjs
     }
@@ -534,11 +334,6 @@ object NuvioRuntime {
             },
         )
         if (wantsCheerio || !cheerioRetryWorthwhile(first)) return first
-        // The source never names cheerio, but the run FAILED — a helper it
-        // requires could still be reaching for it (a bundled/obfuscated module
-        // the text does not spell out). One retry with the bundle on board is
-        // cheap next to a provider that silently stops working, and it can only
-        // ever happen for a call that was going to report an error anyway.
         com.hikari.app.data.Logs.log(
             "Nuvio",
             "$providerId: failed without cheerio — retrying with it",
@@ -614,14 +409,8 @@ object NuvioRuntime {
                     providerRunStart[providerId] = System.currentTimeMillis()
                     try {
                         qjs.evaluate<Any?>(buildCall(cid), "call.js", false)
-                        // evaluate() returns once the async IIFE settles, which
-                        // happens when onGetStreamsDone/onSettingsDone completed
-                        // the deferred above — so await() returns immediately.
                         deferred.await()
                     } catch (e: Throwable) {
-                        // Engine-level failure (boot error, native interrupt after
-                        // evaluationTimeoutMillis, coroutine cancellation). The
-                        // provider's own errors already flow through the bridge.
                         if (deferred.isCompleted) deferred.await()
                         else "{\"ok\":false,\"error\":${quote(e.message ?: e.javaClass.simpleName)}}"
                     } finally {
@@ -685,28 +474,6 @@ object NuvioRuntime {
         class Failure(val reason: String) : Fetched()
     }
 
-    /**
-     * One fetch for a provider, AWAITED rather than blocked.
-     *
-     * This is the reason a nuvio search can be quick here at all. The bridge
-     * used to be a synchronous native call: JS only got its answer once the
-     * request was over, so a provider's `Promise.all([fetch(a), fetch(b)])` ran
-     * its requests one after another, and every request in the app went through
-     * a four-thread pool — so at most four could be in flight whatever else was
-     * happening. The reference client's bridge is asynchronous (its QuickJS
-     * binding is an `asyncFunction` over its own HTTP client), which is why the
-     * SAME providers answer there in a couple of seconds and took tens of
-     * seconds here: a provider that fires ten requests at once gets all ten in
-     * flight, and the phone stops being the bottleneck.
-     *
-     * Being a real suspension point also makes this CANCELLABLE, which the
-     * blocking version could never be: when the pass's clock runs out, when the
-     * user leaves the player (see [ContentRepository.pauseSweepFor]) or when the
-     * engine is closed, the cancellation reaches `call.cancel()` and the socket
-     * really goes away — instead of a 90-second hung request holding a thread, a
-     * VM slot and a share of the network, which is what the reported "it stays
-     * laggy for a few seconds after I come back from the player" was made of.
-     */
     suspend fun bridgeFetchAsync(
         url: String,
         method: String,
@@ -742,12 +509,6 @@ object NuvioRuntime {
         }
     }
 
-    /**
-     * Performs [request] without occupying a thread while it is in flight: the
-     * call is enqueued on OkHttp's own dispatcher and this coroutine suspends
-     * until the response headers (and body) are there. Cancellation cancels the
-     * call, so an abandoned engine cannot keep a request alive.
-     */
     private suspend fun executeFetch(request: Request, followRedirects: Boolean): Fetched =
         suspendCancellableCoroutine { cont ->
             val call = clientFor(followRedirects).newCall(request)
@@ -809,16 +570,6 @@ object NuvioRuntime {
         val h = runCatching { JSONObject(headersJson) }.getOrNull()
         if (h != null) {
             h.keys().forEach { k ->
-                // Strip the provider's explicit Accept-Encoding (nuvio does
-                // the same: FetchBridge's withoutAcceptEncoding()). OkHttp only
-                // transparently decompresses gzip/br when the REQUEST doesn't
-                // carry its own Accept-Encoding — passing "gzip, deflate, br"
-                // through made Hikari hand the JS raw compressed bytes decoded
-                // as UTF-8, i.e. garbage, so every provider that sets it
-                // (vidlink, dvdplay, vidnest, vidrock, vixsrc, mallumv, castle,
-                // xprime, ...) came back "no sources" here but fine in nuvio.
-                // "identity" would be harmless, but drop it too for exact
-                // parity.
                 if (k.equals("Accept-Encoding", ignoreCase = true)) return@forEach
                 runCatching { builder.header(k, h.getString(k)) }
             }
@@ -862,9 +613,6 @@ object NuvioRuntime {
         }
         val ce = ok.headers["content-encoding"]
         if (ce != null && ce.isNotBlank()) extra.append(" CE=").append(ce)
-        // For failures or big bodies, log what the bytes actually look like —
-        // tells us if a 200 is a JSON API hit, an HTML challenge page, or
-        // compressed garbage the provider can't parse.
         if (ok.status != 200 || ok.bytes.size > 100_000) {
             val ct = (ok.headers["content-type"] ?: "?").substringBefore(";")
             extra.append(" CT=").append(ct)

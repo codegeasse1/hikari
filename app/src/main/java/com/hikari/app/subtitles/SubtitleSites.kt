@@ -11,57 +11,10 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 
-/**
- * The subtitle SITES Hikari can search on its own — no addon, no account, no
- * API key.
- *
- * The player's "Load from internet" panel used to be able to ask only the
- * Stremio-style subtitle addons the user had installed, so a user with none
- * (the common case: an install of CloudStream-style extensions and nothing
- * else) got "No subtitle addon is installed" — and a user WITH one got
- * "No subtitles found for X" for most titles, because those addons answer only
- * for ids they recognise (`opensubtitles-v3` wants a `tt…` id and answers an
- * empty list with HTTP 200 to anything else).
- *
- * So this is a small set of DIRECT connections to the sites people actually
- * download subtitles from, each one a plain HTTP request to a public,
- * key-less endpoint that was verified alive from a real device profile:
- *
- *  - [OpenSubtitlesSite] — the OpenSubtitles catalogue behind its public mirror
- *    (the service `opensubtitles-v3.strem.io` itself is a client of). Tracks
- *    come back with their own download URLs: one request, no second hop.
- *  - [OpenSubtitlesOrgSite] — opensubtitles.org's own search API, which is the
- *    one that answers by NAME (`query-moana`) as well as by id, and carries the
- *    download count and rating of every track. Its file URLs are served through
- *    the same public mirror, keyed by the file id it returns.
- *  - [SubdlSite] — SubDL, 35 languages, every release as a .zip.
- *  - [SubtitleCatSite] — SubtitleCat, which re-serves what OpenSubtitles,
- *    Addic7ed and friends have, as a plain .srt per language.
- *  - [SubsceneSite] — Subscene, the community library, as a .zip per subtitle.
- * Two rules every site here follows:
- *
- *  1. A site that fails, times out or is blocked contributes NOTHING and never
- *     stops the others — the caller runs them concurrently and shows whatever
- *     answers (see the player's dialog). A site going down must not be able to
- *     break subtitle search.
- *  2. Nothing here is allowed to raise the app's "Cloudflare verification
- *     needed" banner for the user's own extensions, so every request goes
- *     through [Http.getStringQuiet] (the client WITHOUT the Cloudflare
- *     interceptor) — the same rule the ratings lookups follow.
- */
 
 /** A language, as a site printed it. */
 data class SubLang(val code: String, val label: String)
 
-/**
- * Site language codes → one shape.
- *
- * Every site spells languages differently — OpenSubtitles answers `eng` and
- * `ISO639: en`, SubDL answers `brazilian-portuguese` and `big5code`, Subscene
- * answers `Arabic`, SubtitleCat answers `pt-BR` — and the list has to be
- * sortable (the app's own language first, then English) and printable. One
- * table, one answer.
- */
 object SubtitleLang {
 
     private val ROWS: List<Triple<String, List<String>, String>> = listOf(
@@ -229,11 +182,6 @@ object SubtitleLang {
         else -> base
     }
 
-    /**
-     * How far down the list a track in this language belongs for a user whose
-     * own language is [wanted]: their language, then English, then everything
-     * else, then a track whose language the site never said.
-     */
     fun rank(lang: String, wanted: String): Int {
         val c = lang.lowercase()
         return when {
@@ -262,14 +210,6 @@ data class SubtitleQuery(
     val locale: String = "",
 )
 
-/**
- * One subtitle a site offered, BEFORE it is downloaded.
- *
- * [url] is a direct file URL in every case (that is what the sites were picked
- * for): the player hands it to the same downloader, decoder and cue-check a
- * hand-picked file gets, so a site that answers with a landing page, a dead
- * link or a cue-less stub is rejected there instead of becoming a phantom row.
- */
 data class SiteTrack(
     val siteId: String,
     val siteName: String,
@@ -327,17 +267,6 @@ object SubtitleSites {
     )
 }
 
-/**
- * The one thing OpenSubtitles and Subscene need and a site-scraper item does not
- * carry: an `tt…` id (OpenSubtitles answers nothing else) and a year to match a
- * search result against.
- *
- * Resolution runs in the order that costs least AND is least likely to be
- * wrong: an id the item already carries, then a TMDB id for an item that really
- * came from TMDB, then IMDb's own suggestion endpoint — which needs no key and
- * matches on the NAME (plus the year and whether it is a series), so it also
- * places a title scraped from a site, which no database has an id for.
- */
 object SubtitleIds {
 
     suspend fun imdb(item: MediaItem?, title: String, year: Int?, isSeries: Boolean): String =
@@ -345,12 +274,6 @@ object SubtitleIds {
             val kind = if (isSeries) "tv" else "movie"
             val known = item?.id.orEmpty().trim()
             if (known.startsWith("tt")) return@withContext known
-            // A TMDB id — but only from an item that CAME from TMDB, which
-            // [MediaItem.rating] is the tell for: our TMDB browse fills it, and
-            // an extension's own catalog items never carry one (see its doc).
-            // A purely numeric id from a scraper is the SITE's id, and asking
-            // TMDB for it resolves a DIFFERENT film — whose subtitles would
-            // then be offered under this title's name.
             val digits = known.takeWhile { it.isDigit() }
             if (digits.isNotEmpty() && item?.rating != null) {
                 runCatching { com.hikari.app.data.TmdbBrowse.imdbId(digits, kind) }
@@ -395,9 +318,6 @@ object SubtitleIds {
     }
 }
 
-// ---------------------------------------------------------------------------
-//  Shared parsing
-// ---------------------------------------------------------------------------
 
 /** The little bit of HTML handling every scraper here needs. */
 private object H {
@@ -446,9 +366,6 @@ private object H {
     }
 }
 
-// ---------------------------------------------------------------------------
-//  1. OpenSubtitles
-// ---------------------------------------------------------------------------
 
 /** OpenSubtitles' own catalogue, through the public mirror the Stremio
  *  subtitle addon uses. It answers only for a `tt…` id, and it hands back a
@@ -520,9 +437,6 @@ private object OpenSubtitlesOrgSite : SubtitleSite {
             if (name.length < 2) return@withContext emptyList()
             criteria += "query-" + H.encPath(name)
         }
-        // No language segment: the API's `sublanguageid-all` is refused (HTTP
-        // 403 from its WAF) while the criteria-only form returns every
-        // language, which is what the list wants to show anyway.
         val body = Http.getStringQuiet(
             "$BASE/search/" + criteria.joinToString("/"),
             mapOf("Accept" to "application/json"),
@@ -556,9 +470,6 @@ private object OpenSubtitlesOrgSite : SubtitleSite {
     }
 }
 
-// ---------------------------------------------------------------------------
-//  3. SubDL
-// ---------------------------------------------------------------------------
 
 /** SubDL. `/search/<title>` finds the title page, and the title page lists
  *  every language as its own block with a direct `.zip` per release — so two
@@ -628,17 +539,7 @@ private object SubdlSite : SubtitleSite {
     }
 }
 
-// ---------------------------------------------------------------------------
-//  4. SubtitleCat
-// ---------------------------------------------------------------------------
 
-/** SubtitleCat re-serves what OpenSubtitles/Addic7ed and friends hold, as a
- *  plain `.srt` per language.
- *
- *  Its search lists RELEASES, and a release's languages live on its own page, so
- *  the three most-downloaded releases are opened and expanded — that is what
- *  makes a row say "Arabic" instead of "Moana.2016.1080p.WEB-DL…" and leaves the
- *  user picking a language rather than guessing at a rip name. */
 private object SubtitleCatSite : SubtitleSite {
     override val id = "subtitlecat"
     override val name = "SubtitleCat"
@@ -699,16 +600,7 @@ private object SubtitleCatSite : SubtitleSite {
         }
 }
 
-// ---------------------------------------------------------------------------
-//  5. Subscene
-// ---------------------------------------------------------------------------
 
-/** Subscene: `/search?query=<title>` finds the title (with its year), and the
- *  title page lists every subtitle it holds — language, release, hearing-
- *  impaired flag — each downloadable through `/download/<subtitleId>`, which
- *  is the site's own download route (the `res.subscene.best/file/…` URL the
- *  whole path is derived from needs a release-name slug, not just the id, and
- *  a hand-built one answers HTTP 404). */
 private object SubsceneSite : SubtitleSite {
     override val id = "subscene"
     override val name = "Subscene"
@@ -766,40 +658,3 @@ private object SubsceneSite : SubtitleSite {
     }
 }
 
-// ---------------------------------------------------------------------------
-//  Not included: YIFYSubtitles
-// ---------------------------------------------------------------------------
-
-/**
- * The YIFY mirror (`yifysubtitles.ch`) was wired in here and then removed again
- * after a live check of its own download route: `/subtitle/<slug>.zip` answers
- * HTTP 403 with Cloudflare's "Just a moment…" challenge while the title page
- * that links it answers HTTP 200 — so its rows listed fine and then failed on
- * every tap ("That subtitle couldn't be downloaded"), which is worse than not
- * listing them at all.
- *
- * That check is what every site in [SubtitleSites.ALL] has passed: BOTH its
- * search response AND a real download of the file URL one of its rows carries.
- * A site whose search works but whose files are walled belongs in this comment,
- * not in the list.
- */
-
-// ---------------------------------------------------------------------------
-//  Not included: SubtitleNexus
-// ---------------------------------------------------------------------------
-
-/**
- * `subtitlenexus.com` was checked live as a candidate source and does not
- * qualify — it is an AI subtitle GENERATION service (create subtitles with
- * named models, buy tokens, premium plans, sign-in), not a subtitle library:
- *
- *  * its search (`/products/search/?search=<title>`) answers "No subtitles
- *    found" for mainstream titles (verified with "moana");
- *  * its "All Subtitles" shelf is per-request AI generations
- *    (`/ai/subtitle-request/<code>/<uuid>/`), and those detail pages carry NO
- *    direct file URL at all — only pricing, token and sign-up links — so there
- *    is nothing a row could download without a paid account.
- *
- * Wiring it would only add empty searches. If it ever serves key-less direct
- * `.srt` downloads, it can join the list above like any other site.
- */

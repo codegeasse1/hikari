@@ -17,50 +17,6 @@ import org.json.JSONObject
 import java.io.File
 import java.util.UUID
 
-/**
- * Profiles: more than one Hikari on one phone, each as if it were the only one.
- *
- * WHAT A PROFILE IS. A profile is a SNAPSHOT of the whole preferences store —
- * everything the user built: the installed extensions and their configs, the
- * library and its categories, watch history, favourites, collections, repos,
- * signed-in accounts, and every setting — kept in its own file under
- * `filesDir/profiles/`. Switching profiles saves the store into the profile
- * being left and applies the one being entered (see
- * [AppStore.replacePreferences]), so a profile that has never been used is an
- * EMPTY store: a phone that looks like Hikari the day it was installed — no
- * extensions installed, an empty Library, an empty history, default settings.
- * Switch back and everything from that profile is exactly where it was.
- *
- * WHY A SNAPSHOT RATHER THAN A COLUMN ON EVERY SETTING. The whole setup is
- * already one DataStore dump — this is the same payload the backup file carries
- * (see [BackupManager]), which is what makes "carry your setup to another
- * device" work. Scoping each of the ~145 keys individually would mean touching
- * every reader in the app and getting one of them wrong silently; swapping the
- * store is one write and cannot half-apply (DataStore makes the edit atomic).
- *
- * WHAT IS SHARED ON PURPOSE.
- *  * **The extension FILES on disk.** `.cs3`, `.hiki`, Nuvio scrapers, IPTV
- *    playlists and Aniyomi extensions live in `filesDir/...` and are not
- *    duplicated per profile: a profile is a *view* of the setup, and a fresh
- *    profile therefore shows every extension as not installed while the bytes
- *    are still there. Installing it there re-uses/re-downloads the same file,
- *    and — important — removing an extension in one profile does NOT delete a
- *    file another profile still lists (see [otherProfilesReference], which every
- *    uninstall checks first).
- *  * **Downloaded videos.** Same reason: the files are the user's, and a
- *    profile only carries the queue (see [DownloadStore.raw]).
- *  * **The device-local settings** — the app lock, the phone/television layout,
- *    interface scale, this device's performance/first-run flags and the launcher
- *    icon. These describe the MACHINE, not the setup (see [AppStore.DeviceLocal]),
- *    so every profile inherits them: a second profile cannot lock or unlock the
- *    phone, and it cannot change the shape of the screen the other profile is
- *    drawn on.
- *
- * WHAT IS NOT ISOLATED (documented rather than pretended): per-extension plugin
- * data that an extension keeps outside the store (a `.cs3` plugin's own files in
- * `filesDir`, an Aniyomi extension's preferences) is shared, because it belongs
- * to the extension's install rather than to a Hikari profile.
- */
 object Profiles {
 
     /** One profile as the picker prints it. */
@@ -68,21 +24,7 @@ object Profiles {
         val id: String,
         val name: String,
         val createdAt: Long,
-        /**
-         * Whether opening this profile asks for the profile's OWN password.
-         * Separate from the app lock by design: the `locked` flag travels in
-         * the registry, while the secret itself is device-local (see
-         * [AppStore.DeviceLocal]) and never enters a backup or pairing
-         * payload — so a restored profile whose secret did not travel opens
-         * rather than locking its new owner out (see [unlock]).
-         */
         val locked: Boolean = false,
-        /**
-         * The picker's picture: "" (the initial tile), "grad:N" (one of the
-         * built-in gradient tiles), or "file:<name>" (a picture the user
-         * picked from storage, kept under `filesDir/profiles/avatars/`).
-         * Registry-only, like the name — never inside a snapshot.
-         */
         val avatar: String = "",
     )
 
@@ -123,11 +65,6 @@ object Profiles {
 
     // ------------------------------------------------------ profile locks --
 
-    /**
-     * Profiles unlocked in THIS process. Killing the app re-locks every
-     * profile — the same promise an app lock makes — and [lockAll] clears it
-     * whenever the app lock itself locks.
-     */
     private val unlockedIds = java.util.Collections.synchronizedSet(HashSet<String>())
 
     /** True when [id] currently opens without a password. */
@@ -142,12 +79,6 @@ object Profiles {
         unlockedIds.clear()
     }
 
-    /**
-     * Re-lock one profile at once: the next tap on it asks for its password
-     * again. Used for one-off gates (rename/delete/re-lock sheets) so a
-     * password typed there never leaves the profile open — and by
-     * [switchLocked], which keeps only the entered profile open.
-     */
     fun reLock(id: String) {
         unlockedIds.remove(id)
     }
@@ -155,13 +86,6 @@ object Profiles {
     /** The outcome of a password attempt (see [unlock]). */
     enum class UnlockResult { OK, WRONG, NO_SECRET }
 
-    /**
-     * Try [password] against profile [id]'s secret. OK records the unlock for
-     * this process. NO_SECRET means the flag says locked but no secret is on
-     * this device (a restore onto a new machine, or cleared app data): the
-     * flag is cleared and the profile opens, because a password nobody can
-     * type is a lockout, not a lock.
-     */
     suspend fun unlock(app: HikariApp, id: String, password: String): UnlockResult {
         val secret = runCatching { app.store.profileLockSecret(id) }.getOrNull().orEmpty()
         if (secret.isBlank()) {
@@ -219,11 +143,6 @@ object Profiles {
 
     // ------------------------------------------------------------ avatars --
 
-    /**
-     * Pictures picked from storage, one file per profile. The registry holds
-     * only the marker (`file:<name>`); the bytes live here, outside snapshots
-     * and backups — a picture is device-local, like the lock secret.
-     */
     private fun avatarsDir(ctx: Context): File = File(dir(ctx), "avatars").apply { mkdirs() }
 
     /** The stored picture for [avatar] ("file:<name>"), or null. */
@@ -235,13 +154,6 @@ object Profiles {
         return File(avatarsDir(ctx), name).takeIf { it.isFile }
     }
 
-    /**
-     * Stores a storage-picked picture for [id]: the content URI is copied into
-     * the avatars dir (down to a 512px bound so a camera photo cannot bloat
-     * the files dir) and the registry marker updated. Returns the marker, or
-     * "" when the picture could not be read. No permission needed: the system
-     * picker grants the read.
-     */
     suspend fun setAvatar(app: HikariApp, id: String, uri: android.net.Uri): String =
         withContext(Dispatchers.IO) {
             val ctx = app
@@ -277,11 +189,6 @@ object Profiles {
             marker
         }
 
-    /**
-     * Stores an already-cropped square [bmp] for [id] (the profile-picture
-     * crop sheet's output): same 512px JPEG device-local file as [setAvatar],
-     * same marker shape. Bitmap is not recycled here; the caller owns it.
-     */
     suspend fun saveAvatarBitmap(app: HikariApp, id: String, bmp: android.graphics.Bitmap): String =
         withContext(Dispatchers.IO) {
             val ctx = app
@@ -373,14 +280,6 @@ object Profiles {
         else -> value
     }
 
-    /**
-     * The value as the app's own types again. A set comes back as a [JSONArray]
-     * (org.json has no other way to carry a list), and it is turned back into a
-     * `List<String>` HERE so [AppStore.applyRecord]'s "ss" branch — the one that
-     * writes a `stringSetPreferencesKey` — gets the type it tests for. Reading it
-     * straight into a PrefRecord is how a restored string set used to be dropped
-     * silently (the tabs the user hid, the extensions they switched off).
-     */
     private fun valueFromJson(raw: Any?): Any? = when (raw) {
         null, JSONObject.NULL -> null
         is JSONArray -> (0 until raw.length()).map { raw.optString(it) }
@@ -437,15 +336,6 @@ object Profiles {
 
     // ------------------------------------------------------------- public --
 
-    /**
-     * Re-saves the ACTIVE profile's snapshot from the current setup. Called
-     * (debounced) whenever the installed-provider list changes, so a snapshot
-     * never predates an install: without this, a profile saved long ago and
-     * re-applied later — a switch-away, "Clear all data", a backup restore —
-     * silently dropped every extension installed since, which reads exactly
-     * like "my extensions uninstalled themselves". No-op when profiles have
-     * never been used.
-     */
     suspend fun saveActive(app: HikariApp) = lock.withLock {
         val ctx = app
         val reg = readRegistry(ctx)
@@ -454,21 +344,6 @@ object Profiles {
         saveSnapshot(ctx, app, id)
     }
 
-    /**
-     * Reads the registry, and makes the store agree with it.
-     *
-     * The agreement check is the point: the registry lives in the app's files
-     * directory and the settings live in the preferences file (see
-     * [AppStore.K.PROFILE_TAG]), and the two can be separated by something that
-     * only clears one of them — "Clear all data" in Settings wipes the store and
-     * leaves the profiles, and a backup restore replaces the store wholesale. In
-     * both cases the app would otherwise come up with the wrong (or an empty)
-     * setup under a profile whose name says otherwise, so a mismatch re-applies
-     * the active profile's snapshot.
-     *
-     * Safe and cheap when profiles have never been used: no registry, no
-     * mismatch, nothing happens.
-     */
     suspend fun load(app: HikariApp) = lock.withLock {
         val ctx = app
         val reg = readRegistry(ctx)
@@ -480,11 +355,6 @@ object Profiles {
         applySnapshot(app, active)
     }
 
-    /**
-     * Makes the CURRENT setup a profile (the first time the picker is opened, so
-     * the user's existing Hikari is the one they can always come back to) and
-     * marks it active without touching the store.
-     */
     suspend fun adopt(app: HikariApp, name: String, avatar: String = ""): Profile = lock.withLock {
         val ctx = app
         val reg = readRegistry(ctx)
@@ -498,21 +368,12 @@ object Profiles {
         profile
     }
 
-    /**
-     * Adds an empty profile AND switches into it: "create" means "start a new
-     * one now", and the caller is a user who has just tapped New profile. The
-     * profile being left is saved on the way out, so nothing is lost.
-     */
     suspend fun createEmpty(app: HikariApp, name: String, avatar: String = ""): Profile {
         val profile = lock.withLock {
             val ctx = app
             val reg = readRegistry(ctx)
             val list = profilesOf(reg)
             val created = Profile(newId(), name.trim().ifBlank { "New profile" }, System.currentTimeMillis(), avatar = avatar.trim())
-            // The registry keeps the OLD active id here on purpose: the switch
-            // below is what saves the profile being left (see [switchLocked]).
-            // Marking the new profile active first would make that save a no-op
-            // and lose the setup the user was just using.
             writeRegistry(ctx, list + created, _activeId.value)
             publish(ctx, readRegistry(ctx))
             created
@@ -530,18 +391,6 @@ object Profiles {
         publish(ctx, readRegistry(ctx))
     }
 
-    /**
-     * Switches to [id]: the profile being left is saved (its whole setup) and the
-     * one being entered is applied. Everything already on disk — the extension
-     * files, the downloads, this device's layout and lock — stays where it is.
-     */
-    /**
-     * Move into profile [id]. Returns false — and changes NOTHING — when the
-     * target demands its password and this process has not unlocked it: every
-     * entry path (the Profiles screen, the launch gate's switcher, anything
-     * else) must ask first (see [needsPassword] and [unlock]). A password
-     * asked at select time is the lock; a switch that skips it is the hole.
-     */
     suspend fun switchTo(app: HikariApp, id: String): Boolean {
         return lock.withLock { switchLocked(app, id) }
     }
@@ -553,16 +402,10 @@ object Profiles {
         val target = list.firstOrNull { it.id == id } ?: return false
         if (needsPassword(target)) return false
         val current = reg.optString("active").trim().takeIf { it.isNotBlank() }?.takeIf { it != id }
-        // The setup being left is saved BEFORE anything is applied. Order matters:
-        // reading it after the store had been replaced would save the new
-        // profile's settings under the old profile's name.
         if (current != null) saveSnapshot(ctx, app, current)
         applySnapshot(app, id)
         writeRegistry(ctx, list, id)
         publish(ctx, readRegistry(ctx))
-        // Every selection asks again: staying unlocked is only for the profile
-        // in use. Anything unlocked for a one-off gate (rename/delete) or left
-        // behind by this switch is re-locked here, so the next tap on it asks.
         synchronized(unlockedIds) { unlockedIds.retainAll(setOf(id)) }
         if (current != null) {
             Logs.log(
@@ -587,18 +430,10 @@ object Profiles {
                 if (applied == 0) DownloadStore.writeRaw(ctx, "") else DownloadStore.writeRaw(ctx, downloads)
             }
         }
-        // Everything read once at startup rather than per use (the language, the
-        // ad-block selectors, the WebView UA, the DNS mode, the extension
-        // instances) has to be re-read, exactly as after a backup restore.
         runCatching { BackupManager.refreshLiveState(app) }
         Logs.log("Profiles", "applied ${records.size} setting(s) from profile $id")
     }
 
-    /**
-     * Removes a profile: its file and its registry entry. If it is the active
-     * one, the app moves to another (or, when it was the last, back to a single
-     * implicit setup, leaving the store as it is).
-     */
     suspend fun delete(app: HikariApp, id: String) = lock.withLock {
         val ctx = app
         val reg = readRegistry(ctx)
@@ -617,15 +452,6 @@ object Profiles {
         Logs.log("Profiles", "deleted profile \"${list.firstOrNull { it.id == id }?.name ?: id}\"")
     }
 
-    /**
-     * What one profile holds, read from its own snapshot — the very settings
-     * switching to it would bring back, so the picker can say "12 extensions,
-     * 34 saved, 120 watched" instead of showing two names and a guess.
-     *
-     * Counted by parsing just the three lists that are stored as JSON strings
-     * (the installed providers, the favourites, the history); everything else in
-     * the snapshot is ignored, so this reads one file and allocates nothing big.
-     */
     suspend fun summaryOf(ctx: Context, id: String): Summary = withContext(Dispatchers.IO) {
         val text = runCatching { snapshotFile(ctx, id).readText() }.getOrNull()
             ?: return@withContext Summary(0, 0, 0)
@@ -635,9 +461,6 @@ object Profiles {
             for (i in 0 until arr.length()) {
                 val o = arr.optJSONObject(i) ?: continue
                 if (o.optString("key") != key) continue
-                // A list is a JSON STRING in the store (the providers/favourites/
-                // history keys hold encoded arrays), but a snapshot written by a
-                // hand-edited file could carry a real array — accept both.
                 val json = when (val v = o.opt("value")) {
                     is String -> v
                     is JSONArray -> v.toString()
@@ -660,19 +483,6 @@ object Profiles {
         )
     }.getOrDefault(Summary(0, 0, 0))
 
-    /**
-     * True when a profile OTHER than the active one still lists a local file
-     * path — an installed extension's own file.
-     *
-     * Uninstalling is destructive for the shared files (see
-     * `ExtensionsScreen.remove`): it deletes the `.cs3`/`.hiki`/scraper file once
-     * no provider references it. With profiles, "no provider references it" has
-     * to mean NO PROFILE does — otherwise uninstalling an extension in one
-     * profile would silently break it in another. The snapshots are plain JSON
-     * (the path is a value in the providers list), so the check is a substring
-     * test over the other profiles' files: no parsing, and only the profiles'
-     * own size to read.
-     */
     fun otherProfilesReference(ctx: Context, path: String): Boolean {
         if (path.isBlank()) return false
         val active = _activeId.value

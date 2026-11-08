@@ -3,62 +3,10 @@ package com.hikari.app.data
 import org.json.JSONArray
 import org.json.JSONObject
 
-/**
- * Imports a list of titles that the user brings with them — a Nuvio export, a
- * Stremio addon's catalog response, or any JSON array of titles — into a
- * collection folder as a [CatalogSourceKind.ITEMS] source.
- *
- * WHY THIS EXISTS. Hikari can already read every catalog an installed extension
- * exposes, but a list of titles that lives OUTSIDE an extension (a Nuvio
- * "collections" export, a JSON file someone shared, the `/catalog/...` response
- * of an addon pasted from a browser) had no way in at all. This turns any of
- * those into a normal Home shelf: same tiles, same detail page, same sources,
- * same everything — because the imported titles are stored as ordinary
- * [MediaItem]s that resolve through TMDB like any other Hikari title does.
- *
- * TOLERANT BY DESIGN. There is no single "Nuvio JSON" — Nuvio, Stremio and the
- * various exporter scripts each wrap the same per-title object differently. The
- * parser therefore accepts every sensible shape and every common spelling of
- * each field, so a file that "looks right" imports without the user having to
- * reshape it first:
- *
- *  - a bare array of titles:                       `[ {name, poster}, ... ]`
- *  - an object with the titles under a list key:    `{items|metas|titles:[...]}`
- *  - a Stremio addon catalog response:              `{metas:[...]}`
- *  - a Nuvio/Stremio manifest or export with named catalogs:
- *                                                   `{catalogs:[{name, items:[...]}]}`
- *  - a whole Hikari-style export:                   `{collections:[{name, items:[...]}]}`
- *  - a single title object on its own:              `{name:"...", poster:"..."}`
- *
- * Field spellings handled per title: id (`id`, `imdb_id`, `tmdb_id`, `slug`,
- * `_id`), title (`name`, `title`, `original_name`, `original_title`), type
- * (`type`, `media_type`, `kind`), poster (`poster`, `image`, `cover`,
- * `thumbnail`, `poster_path`), backdrop (`background`, `backdrop`, `banner`,
- * `backdrop_path`), year (`year`, `release_year`, `releaseInfo`,
- * `first_air_date`, `release_date`), overview (`description`, `overview`,
- * `plot`, `synopsis`), genres (`genres`, `genre`, as an array or a string),
- * rating (`imdbRating`, `rating`, `vote_average`).
- *
- * TMDB-resolvability is the goal: wherever a TMDB id is present it is used
- * verbatim, an `tt…` IMDb id is kept (TMDB's /find resolves it), and otherwise
- * the title + year are kept and TMDB's search resolves it on open. A bare
- * `/poster.jpg` path is expanded against TMDB's image host, because that is what
- * a Nuvio/Stremio export usually carries.
- */
 object NuvioCatalogImport {
 
-    /**
-     * One named list found in the pasted JSON. [items] may legitimately be empty
-     * (a catalog that only describes itself, e.g. a manifest's `catalogs` list);
-     * the caller decides what to do with an empty list.
-     */
     class ImportedList(val name: String, val items: List<MediaItem>)
 
-    /**
-     * Parses [text], returning every list of titles it could find. Never throws:
-     * malformed JSON yields an empty result, and a title object missing both an
-     * id and a title is skipped (it could never be opened).
-     */
     fun parse(text: String): List<ImportedList> {
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return emptyList()
@@ -95,9 +43,6 @@ object NuvioCatalogImport {
             if (items.isNotEmpty()) return listOf(ImportedList(name, items))
         }
 
-        // A group with a name but no titles is still useful when it is the only
-        // thing in the file (the user sees what the file offered instead of an
-        // unexplained "nothing to import").
         if (emptyGroups.isNotEmpty()) return emptyGroups.distinctBy { it.name }
 
         // A lone title object.
@@ -128,9 +73,6 @@ object NuvioCatalogImport {
             if (items.isNotEmpty()) {
                 out += ImportedList(name, items)
             } else if (groupKey == "catalogs") {
-                // A manifest catalog: keep the NAME (the user sees what the file
-                // offered) with no titles, so the import sheet can say so rather
-                // than silently dropping it.
                 out += ImportedList(name, emptyList())
             }
         }
@@ -169,17 +111,11 @@ object NuvioCatalogImport {
         val poster = imageUrl(o, 500, "poster", "image", "cover", "thumbnail", "poster_path", "posterPath", "img")
         val backdrop = imageUrl(o, 780, "background", "backdrop", "backdrop_path", "backdropPath", "banner", "fanart")
 
-        // The id handed to TMDB: the numeric TMDB id when we have one, else the
-        // id the file used (an `tt…` id resolves through TMDB's /find), else a
-        // stable slug so the item's uniqueId never collides with another title.
         val id = tmdbId
             ?: rawId.takeIf { looksResolvable(it) }
             ?: ("nu-" + slug(title) + if (year != null) "-$year" else "")
 
         return MediaItem(
-            // Always a TMDB item: that is the one pseudo-provider every title
-            // Hikari shows can be opened and played from, whether or not any
-            // extension knows about it.
             providerId = "tmdb",
             id = id,
             title = title.ifBlank { "Untitled" },
@@ -301,13 +237,6 @@ object NuvioCatalogImport {
         return out.toString().trim('-').take(48).ifBlank { "title" }
     }
 
-    // ---- Storage ------------------------------------------------------------
-    //
-    // An imported list is stored INSIDE the collection it was added to (there is
-    // no server side to a list that came from a file), as a compact JSON array
-    // on the source itself. The decoder below has to stay readable by every
-    // future version, so it is deliberately field-by-field and never trusts a
-    // value to be present.
 
     fun encode(items: List<MediaItem>): String {
         val arr = JSONArray()

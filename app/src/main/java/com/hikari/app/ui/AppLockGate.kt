@@ -70,96 +70,25 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/**
- * The in-app lock (Settings → Privacy & Browsing → App lock).
- *
- * Wraps the whole app: while the lock is on and this session has not been
- * unlocked, nothing else is drawn — no screen and no dialog — and the unlock
- * card is all there is.
- *
- * When it locks again: the moment the APP leaves the foreground, which is
- * [ProcessLifecycleOwner]. Locking on the *activity* stopping would re-lock
- * every time the player opens, because the player is its own activity and this
- * one stops behind it — the user would come back from a film to a PIN prompt,
- * which is not what an app lock is for.
- *
- * Two rules refine "the app left the foreground":
- *
- *  * **A screen-off is its own trigger** (`appLockScreenOffFlow`, on by
- *    default). Turning the screen off stops the activity exactly like switching
- *    apps does, so the lock could never tell them apart — with the switch OFF,
- *    only actually leaving the app locks it, and putting the phone down and
- *    picking it up again does not ask for the password.
- *  * **Leaving the app is its own trigger too** (`appLockLeaveFlow`, on by
- *    default). The twin of the switch above: OFF, switching to another app —
- *    or dismissing Hikari from the recents list, which kills its process —
- *    never draws the unlock card, so the lock answers only to a screen-off (if
- *    that is on). Both switches OFF is a lock that only asks once per unlock.
- *  * **A grace period** (`appLockDelayFlow`, Instant by default). Past zero
- *    minutes the app stays unlocked for that long after it is left, so a glance
- *    at a notification does not cost a PIN. The deadline is a wall-clock
- *    timestamp compared when the app comes back, NOT a running timer — and it
- *    is compared against the STORED unlock ([com.hikari.app.data.AppStore.appLockSession]),
- *    so it survives the device sleeping and the process being killed, which a
- *    coroutine timer or an in-memory flag would not. It applies to whichever
- *    triggers are on.
- *
- * Which launches are locked is decided ONCE, on the first frame, from the
- * stored unlock plus the triggers above (see [AppLockGate]'s session read).
- * That is what makes "Lock when I leave the app" mean what it says: an app
- * dismissed from recents and reopened comes back as it was left, because
- * nothing about that sequence is a trigger the user switched on.
- *
- * The password is the required half: the fingerprint/face is only ever an
- * additional way in (see [AppLock]), so a device with no enrolled biometric
- * still opens with the password, and there is no recovery for a forgotten one —
- * the settings card says so before it is set.
- */
 @Composable
 fun AppLockGate(activity: android.app.Activity, content: @Composable () -> Unit) {
     val app = LocalContext.current.applicationContext as HikariApp
     val context = LocalContext.current
     val enabledFlow = remember { app.store.appLockFlow() }
-    // `null` until the store has answered, and the gate draws NOTHING for that
-    // instant (see below). It used to start at `false`, which means "the lock is
-    // off" — so on every cold start the app's own content was composed and shown
-    // for a frame or two before the stored value arrived and the lock card
-    // replaced it. A lock whose whole purpose is "nobody reads my screen" cannot
-    // flash the screen it is protecting.
     val enabledState by enabledFlow.collectAsState(initial = null)
     val bioFlow = remember { app.store.appLockBioFlow() }
     val bioOn by bioFlow.collectAsState(initial = true)
-    // The rules beyond "the lock is on" — see the doc comment. All are read
-    // live by the lifecycle observer below (they are State-backed, so the
-    // observer always compares against the current settings).
     val screenOffFlow = remember { app.store.appLockScreenOffFlow() }
     val screenOffLocks by screenOffFlow.collectAsState(initial = true)
     val leaveFlow = remember { app.store.appLockLeaveFlow() }
     val leaveLocks by leaveFlow.collectAsState(initial = true)
     val delayFlow = remember { app.store.appLockDelayFlow() }
     val delayMin by delayFlow.collectAsState(initial = 0)
-    // The unlocked flag lives in the composition — but it is SEEDED from the
-    // stored session below, because a fresh process is not automatically a
-    // locked one any more: "Lock when I leave the app" off has to mean that
-    // removing Hikari from the background and opening it again does not ask
-    // for the password, and every launcher kills the process when an app is
-    // dismissed from recents. `sessionRead` is false until that decision has
-    // been made, so nothing is drawn (not even the app) before it exists.
     var unlocked by remember { mutableStateOf(false) }
     var sessionRead by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
-    // ---- The active profile's own password ----
-    // Separate from the app lock above: a profile's password opens only that
-    // profile, and the app lock's password opens none of them. The registry is
-    // published into these flows by Profiles.load (the Profiles screen calls
-    // it too — the mutex serializes the two), and `profileTick` re-reads the
-    // gate after an unlock or a switch happens elsewhere.
     var profileTick by remember { mutableStateOf(0) }
-    // False until the registry has been read once: without it a cold start
-    // into a locked active profile would compose that profile's content for
-    // a frame before the lock is known (the same flash the app-lock gate
-    // above closes with `sessionRead`).
     var profilesRead by remember { mutableStateOf(false) }
     val profilesAll by com.hikari.app.data.Profiles.all.collectAsState()
     val profilesActiveId by com.hikari.app.data.Profiles.activeId.collectAsState()
@@ -183,10 +112,6 @@ fun AppLockGate(activity: android.app.Activity, content: @Composable () -> Unit)
         scope.launch { runCatching { app.store.setAppLockSessionClosed() } }
     }
 
-    // The decision this launch starts with. It is deliberately read from the
-    // STORE rather than from the collected settings state: this runs once, on
-    // the first frame, where a `collectAsState(initial = …)` may still be
-    // showing its initial value rather than the stored one.
     LaunchedEffect(Unit) {
         val (open, at) = runCatching { app.store.appLockSession() }
             .getOrDefault(false to 0L)
@@ -194,47 +119,15 @@ fun AppLockGate(activity: android.app.Activity, content: @Composable () -> Unit)
         val screenOff = runCatching { app.store.appLockScreenOff() }.getOrDefault(true)
         val delay = runCatching { app.store.appLockDelay() }.getOrDefault(0)
         unlocked = open && when {
-            // NEITHER trigger is on: an unlock stays an unlock until the user
-            // turns the lock off. This is exactly the case that used to
-            // re-lock on every recents-dismiss — removing Hikari from the
-            // background kills its process on nearly every launcher, so a
-            // fresh process must not be read as "the app was left".
             !leave && !screenOff -> true
-            // A trigger is on, with a grace period: inside it the app comes
-            // back unlocked, past it the unlock card is drawn. The timestamp
-            // is the moment of the LAST unlock-or-leave (see the ON_STOP
-            // branch below), so it means the same thing here as `leftAt`
-            // means inside a live process.
             delay > 0 -> at > 0L &&
                 System.currentTimeMillis() - at < delay * 60_000L
-            // Leaving IS a trigger and locks instantly: whatever the stored
-            // session says, a fresh process is a session the user has not
-            // opened — and this is the default shape of the lock, where the
-            // safe reading is the locked one.
             leave -> false
-            // Only the SCREEN-OFF trigger is on, so the stored session is the
-            // whole answer: it is cleared the moment the screen goes off
-            // (see the broadcast below) and never by leaving the app, which
-            // is what makes "leave off" mean what it says even when the
-            // process is killed in the background.
             else -> true
         }
         sessionRead = true
     }
-    // When the app was last left, for the grace period. A one-element array
-    // because the lifecycle observer both writes and reads it and nothing draws
-    // it: it is a timestamp, not UI state.
     val leftAt = remember { longArrayOf(0L) }
-    // Was the SCREEN off the last time the app went away? Written by the
-    // screen-off broadcast below and cleared when the screen comes back. The
-    // reason it exists at all: `PowerManager.isInteractive` is the honest answer
-    // to "did the screen go off or did the user leave?", but it is read from a
-    // lifecycle callback that the platform can dispatch either side of the
-    // display state actually settling — so on some devices the check read
-    // `true` for a screen-off, the "Lock when the screen turns off" switch was
-    // never consulted, and the app came back UNLOCKED (the reported "lock when
-    // screen off is not working"). The broadcast is the event itself, so it is
-    // the one that cannot be raced.
     val screenWasOff = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
 
     DisposableEffect(Unit) {
@@ -245,26 +138,12 @@ fun AppLockGate(activity: android.app.Activity, content: @Composable () -> Unit)
                 when (intent?.action) {
                     android.content.Intent.ACTION_SCREEN_OFF -> {
                         screenWasOff.set(true)
-                        // A screen-off is its own trigger, and it locks HERE
-                        // rather than only at the next ON_STOP. The ON_STOP
-                        // path only fires when the app was in the FOREGROUND
-                        // when the screen went off: an app already in the
-                        // background — the ordinary "I left the app, then put
-                        // the phone down" order — never gets another ON_STOP,
-                        // and its ON_START (the screen turning back on with the
-                        // app in front) resets the flag, so the screen-off was
-                        // silently ignored. Locking on the event itself cannot
-                        // be raced or missed.
                         if (screenOffLocks) lockNow()
                     }
                     android.content.Intent.ACTION_SCREEN_ON -> screenWasOff.set(false)
                 }
             }
         }
-        // Only the two screen actions, and NOT exported: the app is not
-        // registering for anything else and nothing outside can reach it. The
-        // ContextCompat form is used because targetSdk 34 wants an explicit
-        // export flag on a runtime-registered receiver.
         val filter = android.content.IntentFilter().apply {
             addAction(android.content.Intent.ACTION_SCREEN_OFF)
             addAction(android.content.Intent.ACTION_SCREEN_ON)
@@ -279,35 +158,12 @@ fun AppLockGate(activity: android.app.Activity, content: @Composable () -> Unit)
         }
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_STOP) {
-                // Was this the screen going off, or the user actually leaving?
-                // Either signal is enough: the broadcast says the display went
-                // off, and the power state catches the case where the broadcast
-                // has not been delivered yet. Reading both makes the answer
-                // independent of which one arrives first.
                 val screenOff = screenWasOff.get() || power?.isInteractive == false
-                // Each trigger has its own switch: a screen-off honours
-                // "Lock when the screen turns off", anything else honours
-                // "Lock when I leave the app".
                 val locks = if (screenOff) screenOffLocks else leaveLocks
                 if (!locks) {
-                    // The user asked for this trigger not to lock: nothing to do
-                    // at all, not even a grace period. The other trigger (and a
-                    // fresh process start) still locks. The stored session is
-                    // left OPEN on purpose: that is what carries this decision
-                    // across a process death, which is how an app dismissed from
-                    // recents comes back without asking for the password when
-                    // leaving is not a trigger.
                 } else if (delayMin <= 0) {
                     lockNow()
                 } else if (unlocked) {
-                    // Left with a grace period: the session stays OPEN, and
-                    // its timestamp becomes the moment of leaving, because
-                    // the grace is "how long after LEAVING may the app still
-                    // be opened". Persisting it is what makes the very same
-                    // rule apply when the process is killed while the app is
-                    // in the background — the normal case on a recents-
-                    // dismiss, where there is no live `leftAt` to compare to
-                    // (see the session read above).
                     val now = System.currentTimeMillis()
                     leftAt[0] = now
                     scope.launch {
@@ -335,17 +191,10 @@ fun AppLockGate(activity: android.app.Activity, content: @Composable () -> Unit)
     }
 
     if (enabledState == null || !sessionRead || !profilesRead) {
-        // The stored state (or the stored unlock) has not arrived yet: draw a
-        // blank card rather than the app. One frame, and the app's content is
-        // never composed with the lock possibly on (see the note on
-        // [enabledState]).
         Box(Modifier.fillMaxSize().background(pageBackground()))
         return
     }
     if (enabledState != true || unlocked) {
-        // App lock passed (or off) — the active profile may still carry its
-        // OWN password, which is a different lock with a different secret
-        // (see Profiles). It is asked here, before any content is drawn.
         if (lockedProfile != null) {
             ProfileGateCard(
                 profile = lockedProfile,
@@ -363,43 +212,11 @@ fun AppLockGate(activity: android.app.Activity, content: @Composable () -> Unit)
         bioOn = bioOn,
         onUnlocked = {
             unlocked = true
-            // Carried across a process restart: with "Lock when I leave the
-            // app" off, this unlock IS the answer to the next launch, however
-            // the process ended.
             scope.launch { runCatching { app.store.setAppLockSessionOpen() } }
         },
     )
 }
 
-/**
- * The unlock screen: the padlock, the dots, and a numeric keypad with the
- * fingerprint on its bottom-right — the shape every messenger's app lock has,
- * and the one the user asked for by sending a screenshot of it.
- *
- * The keypad is the front door, but it is not the only one: whatever was set as
- * the password may be a word rather than a PIN (the setting's own field is a
- * free text field), so "Enter password instead" swaps the keypad for a real
- * password field. Without it, an alphanumeric password would be unenterable.
- *
- * FOUR THINGS THIS SCREEN HAS TO GET RIGHT, and all four were reported as bugs:
- *
- *  1. **As many dots as the password has.** The length is recorded when the
- *     password is set ([com.hikari.app.data.AppStore.appLockLenFlow]), so a
- *     4-digit PIN draws four dots and is submitted on the fourth digit. Showing
- *     a fixed six made a 4-digit PIN look like the app wanted six.
- *  2. **Never silent.** Verifying is deliberately expensive (120k PBKDF2
- *     rounds), so the check shows a spinner and the input is frozen while it
- *     runs. A screen that accepted a tap and did nothing for a second — and
- *     then, on failure, said nothing at all in text mode — is exactly the
- *     "clicking Unlock does nothing" report.
- *  3. **A wrong answer says so, in both modes**, shows the error on the field as
- *     well, and clears what was typed so the next attempt starts clean.
- *  4. **A way out.** A password that will not verify (a blob from an older build
- *     of this same app, a forgotten PIN) would otherwise leave the owner locked
- *     out of their own app forever. After a failed attempt the screen offers to
- *     turn the lock off, behind a confirmation that says plainly what that
- *     means: anyone holding the phone can then open Hikari.
- */
 @Composable
 private fun AppLockScreen(
     activity: android.app.Activity,
@@ -421,12 +238,6 @@ private fun AppLockScreen(
     var resetAsk by remember { mutableStateOf(false) }
     val biometrics = remember(context) { Biometrics.available(context) }
 
-    // Can the stored secret be verified AT ALL? A lock whose blob was written by
-    // a build with the old `[B@…` encoding bug (see [AppLock.encode]) can never
-    // accept any password, no matter what the user types. Checking here is what
-    // turns "wrong password, forever" into a screen that says what is wrong and
-    // offers the one honest way out. Null until the store answers, so the normal
-    // keypad is what is drawn first (no flash of a scary card).
     var secretOk by remember { mutableStateOf<Boolean?>(null) }
     LaunchedEffect(Unit) {
         val stored = runCatching { app.store.appLockSecret() }.getOrDefault("")
@@ -438,9 +249,6 @@ private fun AppLockScreen(
     val lenFlow = remember { app.store.appLockLenFlow() }
     val secretLen by lenFlow.collectAsState(initial = 0)
 
-    // The strings the fingerprint prompt is built from are read HERE, in the
-    // composable body: `tr` is itself composable and cannot be called from the
-    // plain functions below.
     val bioTitle = tr("Unlock Hikari")
     val bioSubtitle = tr("Use your fingerprint to open the app")
     val bioNegative = tr("Use password")
@@ -451,11 +259,6 @@ private fun AppLockScreen(
 
     fun check(value: String) {
         if (value.isBlank()) return
-        // A check that is already running does not DROP the newer value: while a
-        // short prefix is being verified the user may have kept typing (the
-        // unknown-length case), and that longer entry is the one that deserves
-        // the next check. Dropping it is how a six-digit PIN typed over a
-        // four-digit prefix could go unverified forever.
         if (checking) {
             queued = value
             return
@@ -464,9 +267,6 @@ private fun AppLockScreen(
         val attempt = value
         scope.launch {
             val stored = runCatching { app.store.appLockSecret() }.getOrDefault("")
-            // The derivation is deliberately expensive (120k PBKDF2 rounds), so
-            // it runs OFF the main thread: on the main thread it would be a
-            // visible stall on every digit, and on a slow phone a possible ANR.
             val ok = withContext(Dispatchers.Default) { AppLock.verify(attempt, stored) }
             if (ok) {
                 checking = false
@@ -481,11 +281,6 @@ private fun AppLockScreen(
             }
             wrong = true
             buzz()
-            // A wrong complete PIN is cleared once the red has been seen — the
-            // next attempt starts clean. When the length is NOT known (an older
-            // lock) the digits are deliberately LEFT in place: what was just
-            // rejected is only a prefix, and the user may be halfway through a
-            // longer PIN, which the next digit will check again.
             if (secretLen > 0) {
                 delay(600)
                 // Only when nothing was typed in the meantime: clearing a value
@@ -537,24 +332,14 @@ private fun AppLockScreen(
         return
     }
 
-    // A typed PIN submits itself as soon as it is complete — or, when the length
-    // was never recorded, at every prefix of four or more digits, so a longer
-    // PIN still gets its chance as it is typed. A wrong answer clears the entry,
-    // which is what re-arms this effect for the next attempt.
     LaunchedEffect(entered, secretLen) {
         val complete = if (secretLen > 0) entered.length == secretLen else entered.length >= 4
         if (complete) {
-            // A known length is checked the moment it is reached. An unknown one
-            // waits a little longer, so a user typing a six-digit PIN is not
-            // interrupted by a check of its four-digit prefix mid-word.
             delay(if (secretLen > 0) 140 else 500)
             check(entered)
         }
     }
 
-    // The lock screen has to hide the app, and the Dark Glass theme's
-    // `background` is TRANSPARENT (see [pageBackground]) — so this painted
-    // nothing there and the locked content stayed readable behind it.
     Surface(Modifier.fillMaxSize(), color = pageBackground()) {
         Column(
             Modifier
@@ -576,10 +361,6 @@ private fun AppLockScreen(
                 fontWeight = FontWeight.SemiBold,
             )
             Spacer(Modifier.height(4.dp))
-            // The dots below say how many characters the password has, because
-            // the length is recorded with it — that is the answer to "how many
-            // does it want?". The sentence itself stays one whole literal so it
-            // translates as a sentence.
             Text(
                 if (textMode) tr("Enter your password")
                 else tr("Enter your PIN or use a fingerprint"),
@@ -600,11 +381,6 @@ private fun AppLockScreen(
                     enabled = !checking,
                     isError = wrong,
                     visualTransformation = PasswordVisualTransformation(),
-                    // A PASSWORD keyboard, explicitly: with the plain text
-                    // keyboard the IME capitalises the first letter and offers
-                    // autocorrect, so a right password could be sent wrong —
-                    // which is exactly the "it says wrong even when I type it
-                    // right" report this screen exists to fix.
                     keyboardOptions = KeyboardOptions(
                         keyboardType = KeyboardType.Password,
                         imeAction = ImeAction.Done,
@@ -614,9 +390,6 @@ private fun AppLockScreen(
                 )
                 if (wrong) {
                     Spacer(Modifier.height(6.dp))
-                    // The error is shown in BOTH modes: with only a red outline
-                    // (the field's isError) a failed attempt in text mode looked
-                    // like the Unlock button had done nothing at all.
                     Text(
                         tr("Wrong PIN or password"),
                         style = MaterialTheme.typography.bodySmall,
@@ -660,10 +433,6 @@ private fun AppLockScreen(
                     onDigit = { d ->
                         if (!checking) {
                             wrong = false
-                            // With the length known there is nothing to gain from
-                            // an extra digit: the answer is already being checked.
-                            // Without it, digits may accumulate (a longer PIN is
-                            // being typed) up to a sane ceiling.
                             if (entered.length < MAX_PIN &&
                                 (secretLen == 0 || entered.length < secretLen)
                             ) {
@@ -755,20 +524,6 @@ private fun AppLockScreen(
 /** The most digits a keypad entry may reach before it is stopped. */
 private const val MAX_PIN = 16
 
-/**
- * What is drawn when the stored lock cannot be verified by any password at all.
- *
- * This is the state every install that set its password before the encoding fix
- * is in: the blob on disk is not a derivation of anything (see
- * [AppLock.encode]), so no amount of correct typing can open the app. The
- * alternative to this screen is an unlock screen that says "wrong password" to
- * the right one forever, which is the report this exists to answer.
- *
- * There is exactly one honest way forward, and it is the same one the unlock
- * screen offers for a forgotten password: turn the lock off (with the
- * confirmation saying what that means), after which the app opens and a new
- * password can be set in Settings → Privacy & Browsing → App lock.
- */
 @Composable
 private fun BrokenLockScreen(onTurnOff: () -> Unit) {
     var ask by remember { mutableStateOf(false) }
@@ -866,11 +621,6 @@ private fun PinDots(typed: Int, wrong: Boolean, shown: Int) {
     }
 }
 
-/**
- * The keypad itself: 1–9 with their letters, then backspace / 0 / fingerprint —
- * Telegram's own layout, including the fingerprint in the corner rather than a
- * button of its own.
- */
 @Composable
 private fun Keypad(
     onDigit: (Char) -> Unit,
@@ -991,14 +741,6 @@ private fun KeypadKey(
     }
 }
 
-/**
- * Fingerprint/face unlock, through androidx.biometric.
- *
- * Nothing here is fatal when it is unavailable: [available] answers false on a
- * device with no sensor, no enrolled fingerprint, or a biometric stack that
- * refuses to answer — the password field is then the only way in, which is the
- * required half of the lock anyway (see [AppLock]).
- */
 object Biometrics {
 
     fun available(context: Context): Boolean = runCatching {
@@ -1049,13 +791,6 @@ object Biometrics {
     }
 }
 
-/**
- * The active profile's own password card (see
- * [com.hikari.app.data.Profiles]): drawn by [AppLockGate] after the app lock
- * passes, instead of the app's content, while the profile in use demands its
- * password. Leaving for a different profile is always allowed — only ENTERING
- * a locked one asks.
- */
 @Composable
 private fun ProfileGateCard(
     profile: com.hikari.app.data.Profiles.Profile,
@@ -1069,16 +804,8 @@ private fun ProfileGateCard(
     var pw by remember(profile.id) { mutableStateOf("") }
     var wrong by remember(profile.id) { mutableStateOf(false) }
     var checking by remember(profile.id) { mutableStateOf(false) }
-    // Launching the app is CHOOSING, never a bare password demand: with other
-    // profiles around, the picker is what opens first, and the password is
-    // asked when a locked profile is selected or opened — never just for
-    // opening the app. A single locked profile still asks directly (there is
-    // nothing else to pick).
     var pickOther by remember { mutableStateOf(others.isNotEmpty()) }
     var switchingTo by remember { mutableStateOf<String?>(null) }
-    // The profile the password field below is for: null means the active
-    // profile this card guards, otherwise a locked profile picked from the
-    // switcher whose password is asked inline before entering it.
     var pwTarget by remember(profile.id) {
         mutableStateOf<com.hikari.app.data.Profiles.Profile?>(null)
     }
@@ -1099,9 +826,6 @@ private fun ProfileGateCard(
                 if (target.id == profile.id) {
                     onUnlocked()
                 } else {
-                    // Enter it. switchTo still refuses a target it does not
-                    // know as unlocked, so a stale tap can never slip through
-                    // here either (see Profiles.switchTo).
                     runCatching { com.hikari.app.data.Profiles.switchTo(app, target.id) }
                     pwTarget = null
                     onSwitched()
@@ -1191,10 +915,6 @@ private fun ProfileGateCard(
             title = { Text(tr("Switch profile")) },
             text = {
                 Column {
-                    // The locked profile this card guards, first: tapping it
-                    // asks its password in the field below, so opening the app
-                    // is choosing which profile to open — the password is
-                    // asked for the one that is picked, not for launching.
                     TextButton(
                         enabled = switchingTo == null,
                         onClick = {
@@ -1218,9 +938,6 @@ private fun ProfileGateCard(
                             enabled = switchingTo == null,
                             onClick = {
                                 if (com.hikari.app.data.Profiles.needsPassword(p)) {
-                                    // A locked profile is never entered
-                                    // directly from here: its password is
-                                    // asked inline first (see check()).
                                     pwTarget = p
                                     pw = ""
                                     wrong = false

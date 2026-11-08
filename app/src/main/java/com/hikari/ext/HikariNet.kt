@@ -31,12 +31,6 @@ data class HikariResponse(
     val body: String? = null,
 )
 
-/**
- * The helper library Hikari extensions are written against. All helpers are
- * plain functions over the app's hardened networking stack (redirects,
- * generous timeouts, browser User-Agent, CloudStream's Conscrypt TLS setup),
- * so extensions never have to fight CDNs by themselves.
- */
 object HikariNet {
 
     /** Browser-like headers for scraping (desktop Chrome fingerprint). */
@@ -83,17 +77,6 @@ object HikariNet {
     fun base64Encode(bytes: ByteArray): String =
         android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
 
-    /**
-     * GET like [getString], but when the plain HTTP client gets blocked (a
-     * Cloudflare/DataDome challenge page or a hard failure — the common way
-     * hanime1.me, hanime.tv, hstream.moe and friends refuse okhttp while
-     * serving real browsers) it re-fetches the page inside a REAL WebView and
-     * returns the rendered HTML. The WebView advertises the stock Android
-     * WebView UA, which is the fingerprint Cloudflare's JS challenge actually
-     * passes, so catalog/search/video pages that okhttp can never read become
-     * fetchable. Results are intentionally NOT cached here — callers that want
-     * a 10-minute cache (getCached) do their own.
-     */
     suspend fun getStringSmart(url: String, headers: Map<String, String> = emptyMap()): String? {
         val plain = getString(url, headers)
         if (plain != null && !looksLikeChallengePage(plain)) return plain
@@ -115,10 +98,6 @@ object HikariNet {
                     wv.settings.domStorageEnabled = true
                     wv.settings.userAgentString = app.effectiveWebViewUa()
                     wv.webChromeClient = WebChromeClient()
-                    // Cloudflare JS challenges complete ASYNC and then reload
-                    // the page — the first onPageFinished may be the challenge
-                    // page itself, so poll the DOM until it looks like real
-                    // content (or the safety timeout below fires).
                     fun pollDom(view: WebView?, attempt: Int) {
                         if (view == null) {
                             latch.countDown()
@@ -241,14 +220,6 @@ object HikariNet {
             }
         }
 
-    /**
-     * Runs [url] in a real Android WebView (on the main thread, exactly like
-     * the CloudStream runtime does) and returns every request the page fired
-     * whose URL matches [capture] (or [additional]). This is the helper that
-     * makes StreamHG/hgcloud-style embeds work: the player page's own JS runs
-     * in a browser, and the m3u8 (or master.txt) it requests comes back as a
-     * [HikariWebViewResult] (URL + headers), ready to hand to the player.
-     */
     suspend fun resolveWithWebView(
         url: String,
         capture: Regex,
@@ -273,11 +244,6 @@ object HikariNet {
 
     private fun Request.toResult(): HikariWebViewResult {
         val headers = headers.toMap().toMutableMap().filterValues { it.isNotBlank() }.toMutableMap()
-        // The WebView does not expose Cookie in WebResourceRequest headers, but
-        // the player NEEDS it: hgcloud/StreamHG, hanime1's player and hstream's
-        // DASH all serve the manifest/video only to the session that visited
-        // the watch page (cf_clearance, session tokens). Attach the WebView's
-        // cookies for this URL so playback actually starts instead of 403ing.
         if (!headers.containsKey("Cookie")) {
             val cookie = runCatching { CookieManager.getInstance().getCookie(url.toString()) }.getOrNull()
             if (!cookie.isNullOrBlank()) headers["Cookie"] = cookie

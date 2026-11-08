@@ -1,12 +1,5 @@
 package com.hikari.app.data
 
-/**
- * One channel of an M3U/M3U8 playlist.
- *
- * [group] is the playlist's own `group-title` (the sections an IPTV app shows:
- * "Sports", "Movies", "News"…), and [url] is the stream the channel plays —
- * a direct HLS link, an MPEG-TS link, or whatever the provider serves.
- */
 data class IptvChannel(
     val name: String,
     val url: String,
@@ -87,18 +80,6 @@ object IptvPlaylist {
         val country: String,
     )
 
-    /**
-     * Parses [text] into channels, in playlist order. Duplicate stream URLs are
-     * dropped (mirrors of the same channel are common), keeping the first name
-     * seen for a URL.
-     *
-     * [base] is where the playlist itself was read from (its URL, or the local
-     * file path). A playlist's `tvg-logo` is not always absolute — plenty of
-     * panels write `//cdn.example.com/x.png`, `/logos/x.png`, or a bare relative
-     * path — and every one of those was DISCARDED (the old rule was "must start
-     * with http"), which left those channels on the placeholder icon forever.
-     * With the playlist's own address to resolve against they all load.
-     */
     fun parse(text: String, max: Int = 20_000, base: String = ""): List<IptvChannel> {
         val out = ArrayList<IptvChannel>()
         val seen = HashSet<String>()
@@ -117,10 +98,6 @@ object IptvPlaylist {
                 val upper = line.uppercase()
                 when {
                     upper.startsWith("#EXTVLCOPT") -> {
-                        // `#EXTVLCOPT:http-referrer=…` / `http-user-agent=…` /
-                        // `http-cookie=…` / `http-header=Key: value` — the ONLY
-                        // reason some m3u8 channels play in VLC/TiviMate but
-                        // 403'd here (headers were dropped as "not channels").
                         parseVlcOpt(line)?.let { (k, v) ->
                             if (pendingHeaders == null) pendingHeaders = LinkedHashMap()
                             // Later lines win; keep first-seen key casing.
@@ -155,10 +132,6 @@ object IptvPlaylist {
                             attrs[key] = m.groupValues[2].trim()
                             lastAttrName = m.groupValues[2].trim().ifBlank { null }
                         }
-                        // Some playlists use `tvg-name` as the ONLY name and
-                        // leave the comma-tag empty, and some put the name
-                        // before the attributes — the comma-tag wins when it has
-                        // anything in it.
                         val name = tail.ifBlank { attrs["tvg-name"].orEmpty() }
                             .ifBlank { lastAttrName.orEmpty() }
                             .takeIf { it.isNotBlank() }
@@ -468,12 +441,6 @@ object IptvPlaylist {
         return b.substring(0, i + 3) + host
     }
 
-    /**
-     * ISO country code for a group/country name ("India" → "in", "USA" → "us",
-     * "UK" → "gb") — what a group tile wears instead of a generated initials
-     * tile. Null when the name is no known country: the tile falls back to a
-     * channel logo from inside the group (see the IPTV tab's group grid).
-     */
     fun countryCodeOf(name: String): String? {
         val v = name.trim()
         if (v.isEmpty()) return null

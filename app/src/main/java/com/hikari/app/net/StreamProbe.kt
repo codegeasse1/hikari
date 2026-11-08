@@ -25,46 +25,12 @@ import java.util.concurrent.ExecutorCompletionService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
-/**
- * Resolves container-unknown stream URLs (4KHDHub's HubCloud wrapper pages,
- * JSON APIs, HTML players — anything without a real media extension) into the
- * actual playable URL + container type, ONCE, and remembers the answer.
- *
- * Why this lives here and not in the player: the player used to do the whole
- * probe inline on every play, behind a blocking "Preparing stream…" dialog, so
- * every replay of a 4KHDHub title paid the same network round-trip again. This
- * object keeps a process-wide + on-disk cache (so a replayed server starts
- * instantly), shares ONE connection-pooled OkHttp client across every probe
- * (no per-Activity cold TLS handshake), and lets the source search warm the
- * cache in the background while the user is still picking a server.
- *
- * Deliberately plain OkHttp: no Cloudflare verify-WebView interceptor. A probe
- * that needed a WAF clearance could never be reused by ExoPlayer's own
- * OkHttpDataSource anyway, so waiting on it would only add latency (and the
- * "Preparing stream…" stall on servers like 4KHDHub is not a Cloudflare issue).
- * What it DOES do is cloudflare-AWARE skipping: a host already recorded by
- * [CloudflareVerifier] as needing the user's own verification is never probed
- * or warmed, and a challenge the probe meets itself is recorded there (instead
- * of being cached as a dead URL) so the whole app stops waiting on that host —
- * see [resolve], [warm] and [follow].
- */
 object StreamProbe {
 
     /** The resolved form of a stream URL: what to actually play, and the mime
      *  to force (HLS/DASH) or null to let ExoPlayer sniff a normal container. */
     data class Resolved(val url: String, val mime: String?)
 
-    /**
-     * URLs a probe reached and that answered a TERMINAL failure (an HTTP 5xx, a
-     * 404/410). The player consults this before handing a URL to ExoPlayer: a
-     * server the probe already proved dead would only cost a full prepare +
-     * error timeout again — which is exactly what made a playlist of dead
-     * MovieBlast rows crawl instead of failing over (see PlayerActivity's
-     * [deadHosts]).
-     *
-     * A 401/403 is deliberately NOT remembered: those are usually the header
-     * set, not the host, and the player walks it down to fix them.
-     */
     private val badUrls = ConcurrentHashMap.newKeySet<String>()
 
     /** True when a probe has already reached [url] and been told it is dead. */
@@ -79,11 +45,6 @@ object StreamProbe {
     private val SHARED_WAIT_MS get() = NetTuning.timeout(14_000L)
     private const val CACHE_FILE = "stream_probe_cache.json"
     private const val CACHE_MAX = 400
-    // Resolved wrapper links are often signed/short-lived (HubCloud/OxxFile and
-    // similar hosts). Keeping them forever makes the SAME server alternate
-    // between "starts instantly" and "server not responding" depending on whether
-    // the cached signed URL is still alive. Keep the wrapper-resolution cache
-    // warm, but never trust it beyond this window.
     private const val CACHE_TTL_MS = 5 * 60 * 1000L
 
     /** Detached scope for [warmAsync] so a caller never waits on warming. */
@@ -93,12 +54,6 @@ object StreamProbe {
      *  probe for the same URL share a single network walk instead of racing. */
     private val inflight = ConcurrentHashMap<String, CompletableDeferred<Resolved?>>()
 
-    /** Process-wide ceiling on concurrent probe walks: distinct URLs do not
-     *  share a walk, so a ~500-target widened pass used to fire hundreds of
-     *  simultaneous resolves — socket/thread churn that filled the heap and
-     *  kept the phone laggy long after playback started (see the Resident
-     *  Evil log: 298 starts, 100 finishes). Ten at a time still warms the
-     *  cache in seconds; the rest queue here instead of on the radio. */
     private val resolveGate = Semaphore(10)
 
     /** url -> resolved form. Shared across the whole app (and read first by the
@@ -107,20 +62,6 @@ object StreamProbe {
     private val cache = ConcurrentHashMap<String, Resolved>()
     private val cacheAt = ConcurrentHashMap<String, Long>()
 
-    /** Derived from the process-wide playback client ([PlayerHttp]) so probes
-     *  and playback SHARE one connection pool: the connection this probe opened
-     *  to the CDN can still be warm when ExoPlayer asks for the first segment of
-     *  the stream the probe just resolved (no second DNS + TLS handshake), and
-     *  the pool/TLS sessions stay warm across sources, activities and calls,
-     *  which is what makes the second and later probes noticeably faster than a
-     *  per-Activity client could be.
-     *
-     *  Timeouts are overridden to be much shorter than playback's: a probe is a
-     *  quick classification and a dead wrapper page must never hold up a source
-     *  search. NO callTimeout: a slow-but-working wrapper hop must be allowed to
-     *  finish (the walk self-limits via a clock deadline instead), and a
-     *  total-call cap here was cutting off resolvable 4KHDHub/HubCloud chains
-     *  mid-walk. */
     /** OkHttp timeouts are fixed when the client is built, so the client is
      *  rebuilt (from the shared playback pool) whenever the slow-connection
      *  toggle flips — otherwise a client cached for a fast connection would

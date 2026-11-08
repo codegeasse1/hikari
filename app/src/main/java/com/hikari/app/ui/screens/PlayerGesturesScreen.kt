@@ -32,14 +32,6 @@ import com.hikari.app.ui.navigation.LocalTaskbarInset
 import com.hikari.app.tv.tvToggle
 import kotlinx.coroutines.launch
 
-/**
- * Settings → Customize → Player gestures & decoder.
- *
- * The player behaviours that are not buttons: the surface gestures
- * (brightness/volume swipes, slide-to-seek, pinch-to-zoom) and the video
- * decoder choice. Moved here so Settings → Player holds only playback cards
- * and Customize holds everything about the player experience.
- */
 @Composable
 fun PlayerGesturesPage(app: HikariApp, onBack: () -> Unit) {
     val scope = rememberCoroutineScope()

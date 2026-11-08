@@ -16,23 +16,6 @@ import java.io.ByteArrayInputStream
 import java.io.File
 import java.util.zip.ZipInputStream
 
-/**
- * Install/uninstall of SkyStream extensions (`.sky` files), plus first-run
- * seeding of the community SkyStream repositories.
- *
- * A `.sky` is a plain zip containing at least `plugin.js` (the ES module the
- * engine runs) and `plugin.json` (packageName/name/version/baseUrl — assigned
- * to `globalThis.manifest` before the source runs, which some plugins need).
- * Both parts are extracted into one directory per plugin so the runtime can
- * read them straight off disk:
- *
- *   filesDir/skystream/plugins/<packageName>/plugin.js
- *   filesDir/skystream/plugins/<packageName>/plugin.json
- *
- * The extracted `plugin.js` path is stored in the provider's `url` (exactly how
- * NUVIO providers work), and the repo/`plugins` entry it came from goes to
- * `extra` so uninstall can remove every plugin of that source.
- */
 object SkyStreamPluginManager {
 
     const val MAX_BYTES = 5 * 1024 * 1024
@@ -49,13 +32,6 @@ object SkyStreamPluginManager {
     private fun safe(name: String): String =
         name.replace(Regex("[^A-Za-z0-9_.-]"), "_").ifBlank { "plugin" }
 
-    /**
-     * The plugin's package from an installed row id. A bundle (one JS, many
-     * feeds — see the reference DEVELOPER.md "Declaring Sub-Providers")
-     * installs one row per feed as `sky|<package>|<feedId>`, while a plain
-     * plugin is `sky|<package>`; package names can never contain `|`, so the
-     * split is unambiguous either way.
-     */
     fun packageOf(configId: String): String =
         configId.removePrefix("sky|").substringBefore("|")
 
@@ -141,24 +117,12 @@ object SkyStreamPluginManager {
         ),
     )
 
-    /**
-     * Adds the default SkyStream repos once. No plugins are pre-installed —
-     * the official set is ~36 extensions and the user picks what they want
-     * (unlike nuvio, a single SkyStream plugin is a whole site, so a silent
-     * bulk install would be hostile). Non-fatal on any failure.
-     */
     suspend fun seedDefaults(context: Context, store: AppStore) {
         for ((url, name, desc) in DEFAULT_REPOS) {
             runCatching { store.seedCs3Repo(Cs3Repo(url, name, desc, RepoKind.SKYSTREAM)) }
         }
     }
 
-    /**
-     * Unpacks a `.sky` zip, validates the plugin inside a fresh engine, and
-     * registers it as a SKYSTREAM provider. Returns failure (with a reason the
-     * UI can show) when the bytes aren't a SkyStream plugin or the plugin
-     * doesn't export the four callbacks.
-     */
     suspend fun install(
         context: Context,
         bytes: ByteArray,
@@ -209,10 +173,6 @@ object SkyStreamPluginManager {
                     .ifBlank { manifest.optString("logo") }
                     .ifBlank { manifest.optString("icon") }
                     .ifBlank { null }
-                // The .sky format declares no icon at all, so the real logo
-                // lives in the extension's first addon manifest. Resolving it
-                // HERE means the installed row keeps its real icon forever
-                // instead of falling back to the site favicon on every launch.
                 ?: addonIcon(manifest)
             HikariApp.instance.store.addProvider(
                 ProviderConfig(
@@ -224,12 +184,6 @@ object SkyStreamPluginManager {
                     extra = sourceUrl ?: packageName,
                 )
             )
-            // A bundle (one JS, many feeds) registers one row per feed — the
-            // reference app creates one provider instance per `providers[]`
-            // entry and injects its id as `manifest.providerId`. A single row
-            // for the whole bundle leaves every feed answering NOT_FOUND, so
-            // the bundle plays nowhere even though it plays in the reference
-            // app. Plain plugins keep their single row, untouched.
             val feeds = subFeedsOf(manifest)
             var rows = 1
             if (feeds.isNotEmpty()) {
@@ -290,13 +244,6 @@ object SkyStreamPluginManager {
         return mine.size
     }
 
-    /**
-     * Expands bundles that were installed before sub-feed rows existed: a
-     * single `sky|<package>` row whose manifest now declares `providers[]`
-     * becomes one row per feed (see install()), keeping the row's enabled
-     * state; orphan feed rows whose feed left the manifest collapse back.
-     * Runs headless at startup (see HikariApp) — true when anything moved.
-     */
     suspend fun reconcileBundles(context: Context, store: AppStore): Boolean =
         withContext(Dispatchers.IO) {
             var changed = false
@@ -359,14 +306,6 @@ object SkyStreamPluginManager {
         config.type == ProviderType.SKYSTREAM &&
             (config.url.isBlank() || !File(config.url).exists())
 
-    /**
-     * The site a SkyStream extension actually reads: the first real entry in its
-     * plugin.json `domains`, else its `baseUrl`. These extensions have no URL
-     * field of their own (a provider's `url` holds the local plugin.js path), so
-     * this is the only way the Home screen's WebView button can be pointed at
-     * the right place. Null when the manifest declares nothing usable.
-     * BLOCKING (reads plugin.json off disk).
-     */
     fun siteUrlOf(config: ProviderConfig): String? =
         siteUrlOf(scriptFile(HikariApp.instance, packageOf(config.id)))
 
@@ -420,14 +359,6 @@ object SkyStreamPluginManager {
 
     private val iconCache = java.util.concurrent.ConcurrentHashMap<String, String>()
 
-    /**
-     * A SkyStream extension whose repo entry carried no icon: the logo its
-     * first addon manifest declares (the `.sky` format has no icon field of its
-     * own — the Stremio manifest is the only place a real logo exists), else a
-     * declared `iconUrl`/`logo`/`icon`, else the site's favicon (the same
-     * Google favicon service the CloudStream plugins use). Never throws —
-     * BLOCKING on the addon-manifest lookup, so call it off the main thread.
-     */
     fun iconFallback(config: ProviderConfig): String? {
         iconCache[config.id]?.let { return it }
         val result = runCatching {
@@ -481,12 +412,6 @@ object SkyStreamPluginManager {
         return null
     }
 
-    /**
-     * A `.sky` entry from a repo listing (`plugins` array, a `pluginLists`
-     * file, or a nested `repos` file). `url` is the absolute .sky download;
-     * some repos instead give only a `baseUrl`, in which case the caller's
-     * base is joined with a `<packageName>.sky` filename.
-     */
     fun repoPlugin(o: JSONObject, baseUrl: String = ""): Cs3RepoPlugin? {
         val packageName = o.optString("packageName").ifBlank { o.optString("id") }
         val name = o.optString("name").ifBlank { packageName }
@@ -541,12 +466,6 @@ object SkyStreamPluginManager {
         ".local", ".invalid", ".test", ".example", "localhost", "stremio-hub",
     )
 
-    /**
-     * The extension's own site host, used as the LAST-resort icon source: the
-     * first real entry in `domains`, else the `baseUrl`/`url` host, with
-     * placeholder hosts (see [PLACEHOLDER_HOSTS]) skipped. Null when the
-     * listing names only a placeholder — better no icon than a guaranteed 404.
-     */
     private fun iconHostOf(o: JSONObject): String? {
         val candidates = mutableListOf<String>()
         runCatching { o.getJSONArray("domains") }.getOrNull()?.let { a ->

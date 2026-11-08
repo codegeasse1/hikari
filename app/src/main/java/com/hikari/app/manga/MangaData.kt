@@ -6,12 +6,6 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 
-/**
- * A manga, as this app holds it. The manga engines hand back an `SManga` per
- * item, but a manga has to survive being written into a route, saved in the
- * reading library and shown on three screens, so it is converted once — here —
- * and every screen works from this.
- */
 data class MangaRecord(
     val providerId: String,
     val providerName: String,
@@ -41,11 +35,6 @@ data class MangaChapter(
     val label: String get() = name.ifBlank { if (number >= 0f) "Chapter $number" else "Chapter" }
 }
 
-/** One highlighted range in the novel reader (see [MangaStore.highlightsFor]).
- *  A word, a line or a whole paragraph: [start] is the char offset in the
- *  paragraph and [end] the exclusive end offset — a whole paragraph is
- *  start=0, end=-1 (older paragraph-only entries carry no start/end keys and
- *  read back with these same defaults, so they keep working). */
 data class NovelHighlight(
     val mangaKey: String,
     val chapterUrl: String,
@@ -102,15 +91,6 @@ data class MangaProgress(
     val pageLabel: String get() = if (pages > 0) "${page + 1} / $pages" else ""
 }
 
-/**
- * Manga library + reading progress + the chapter list of every title opened.
- *
- * Deliberately NOT the video store: a manga is followed ("in my library"),
- * read chapter by chapter, and its chapter list must not be re-fetched from a
- * site every time the reader opens — none of which has a video equivalent. Three
- * small JSON files in `filesDir/manga/` keep it out of the DataStore preference
- * blob (which is read on every launch) and make it durable without a migration.
- */
 object MangaStore {
 
     /** The followed titles, newest first. */
@@ -206,16 +186,6 @@ object MangaStore {
         ping()
     }
 
-    /**
-     * Forgets where the reader was in EVERY title — the "Clear all" action on
-     * the reading history.
-     *
-     * Only the reading POSITIONS go: the library (what is followed) and the
-     * chapter lists stay exactly as they are, because "clear my reading history"
-     * means the history, not the collection. The in-memory cache is emptied in
-     * the same breath as the file so a screen reading the store right after this
-     * call cannot resurrect a row the user just deleted.
-     */
     fun clearAllProgress() {
         progressCache = HashMap()
         runCatching { progressFile(ctx()).writeText("[]") }
@@ -224,12 +194,6 @@ object MangaStore {
 
     // ---- Chapter read marks (Reading / Completed) ----
 
-    /**
-     * One chapter's read mark: opened-but-unfinished vs read to the last
-     * page. Written by the reader (see MangaReaderScreen.saveProgress), read
-     * by the detail page's chapter rows and manga-level badge. A finished
-     * chapter is never downgraded back to started by a re-open.
-     */
     @Volatile
     private var chapterReadCache: MutableMap<String, MutableMap<String, MangaChapterRead>>? = null
 
@@ -259,12 +223,6 @@ object MangaStore {
         ping()
     }
 
-    /** Catalog-level mark without a chapter list (catalog tiles never load
-     *  chapters): NONE when nothing was ever opened, READING when any tracked
-     *  chapter is unfinished, COMPLETED when every tracked chapter finished.
-     *  Best-effort — a title with newer untracked chapters still reads as
-     *  completed — but it answers "which one is reading and completed" from
-     *  outside, on the catalog tile itself. */
     fun catalogReadState(mangaKey: String): MangaReadState {
         if (mangaKey.isBlank()) return MangaReadState.NONE
         val per = chapterReadMap()[mangaKey] ?: return MangaReadState.NONE
@@ -365,10 +323,6 @@ object MangaStore {
     }
 
     fun putChapters(mangaKey: String, list: List<MangaChapter>) {
-        // Engines sometimes return the same chapter twice (scanlator copies /
-        // paged-list overlaps — e.g. manhuatop chapter-48 "?style=list" twice).
-        // A duplicated URL crashes every Lazy list keyed by URL, so collapse
-        // here: every screen reads this same cached list.
         val clean = list.distinctBy { it.url }
         chapters[mangaKey] = clean
         runCatching {
@@ -401,9 +355,6 @@ object MangaStore {
     fun setHighlight(mangaKey: String, h: NovelHighlight) {
         val map = highlightsMap()
         val list = map.getOrPut(mangaKey) { mutableListOf() }
-        // Ranges are independent: setting one replaces only its exact range
-        // (same chapter + paragraph + start + end), never the paragraph's
-        // other ranges.
         list.removeAll {
             it.chapterUrl == h.chapterUrl && it.paraIndex == h.paraIndex &&
                 it.start == h.start && it.end == h.end
@@ -456,9 +407,6 @@ object MangaStore {
                                 chapterUrl = o.optString("chapterUrl"),
                                 paraIndex = o.optInt("paraIndex", -1),
                                 color = o.optInt("color", 0xFFFFFF00.toInt()),
-                                // Additive: entries written before ranges
-                                // existed carry no keys and read back as whole
-                                // paragraphs (start=0, end=-1).
                                 start = o.optInt("start", 0),
                                 end = o.optInt("end", -1),
                             )
@@ -566,11 +514,6 @@ object MangaStore {
     )
 }
 
-/**
- * The `SManga.status` integer as a word. The numbering is the extension API's
- * own (0 unknown, 1 ongoing, 2 completed, 3 licensed, 4 publishing finished,
- * 5 cancelled, 6 on hiatus) and it is what every manga site's status maps to.
- */
 fun mangaStatusLabel(status: Int): String? = when (status) {
     1 -> "Ongoing"
     2 -> "Completed"
@@ -581,26 +524,6 @@ fun mangaStatusLabel(status: Int): String? = when (status) {
     else -> null
 }
 
-/**
- * How the reader advances through a chapter.
- *
- *  * [PAGED_LTR] — one page per screen, swiped/arrowed left to right. What a
- *    western comic and a translated manhwa want.
- *  * [PAGED_RTL] — the same, mirrored: swiping right shows the NEXT page, and
- *    the page slider still reads left-to-right. What Japanese manga wants, and
- *    the only one of the three that looks wrong when it is not offered.
- *  * [WEBTOON] — one continuous vertical strip, which is how Korean webtoons and
- *    a lot of long-strip releases are drawn (separate page images that are only
- *    correct when butted together with no gap and no page break).
- *
- * [WEBTOON] is the DEFAULT — the user's own request ("make webtoon mode as
- * default reader mode"). Manhwa and webtoon releases are what almost every
- * installed manga extension carries, and a released chapter of one is a single
- * vertical strip: opening it one page at a time shows a tall page cut at the
- * knee and makes the reader swipe four times per panel. The two paged modes are
- * still one tap away in the reader's settings (and stick once chosen — see
- * [com.hikari.app.data.AppStore.mangaReadModeFlow]).
- */
 object MangaReadMode {
     const val PAGED_LTR = "ltr"
     const val PAGED_RTL = "rtl"
@@ -612,16 +535,6 @@ object MangaReadMode {
         ALL.firstOrNull { it.equals(raw, ignoreCase = true) } ?: WEBTOON
 }
 
-/**
- * How a page is fitted to the screen in paged modes.
- *
- *  * [WIDTH] — fill the width, scroll/pan vertically for the rest: the default,
- *    and what a tall page wants on a phone.
- *  * [HEIGHT] — the whole page visible, letterboxed: what a double-page spread
- *    wants, and the only mode that needs no scrolling at all.
- *  * [WHOLE] — fit whichever axis is tighter so nothing is ever off-screen (what
- *    a television uses).
- */
 object MangaFit {
     const val WIDTH = "width"
     const val HEIGHT = "height"

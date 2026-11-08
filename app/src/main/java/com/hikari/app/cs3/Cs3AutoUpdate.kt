@@ -19,31 +19,6 @@ import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
-/**
- * Silent background updater for installed CloudStream (.cs3) plugins — the
- * second half of "plays like the CloudStream app".
- *
- * The CloudStream app refreshes its extensions from the plugin repos on its
- * own, so a site rebuild (MovieLinkBD, Pelispedia, …) becomes a fixed plugin
- * within days there, while Hikari's installed copy stayed stale until the
- * user opened Extensions and tapped Update — every site change arrived as a
- * separate "not playing in Hikari" report. This pass runs the same
- * manifest-hash comparison the Update buttons use (repo.json + pluginLists,
- * sha256 of the served file), headless, at most once a day, and replaces at
- * most a bounded number of plugin files per run. CS3-only: no other engine's
- * files are ever touched.
- *
- * Safety, mirroring the manual install path:
- * - a file is replaced only when the repo manifest pins a DIFFERENT sha256
- *   for its exact source URL (URL spellings matched loosely, like the manual
- *   check) and the downloaded bytes hash to exactly that value;
- * - the previous file is kept as a backup until the reloaded plugin registers
- *   at least one provider — an update that loads nothing restores the backup,
- *   so a bad publish can never delete a working extension;
- * - provider configs are keyed by file name, which never changes here, so ids
- *   (and through them the Library/history) survive the swap; the caller
- *   re-runs [Cs3ProviderSync.reconcile] afterwards for renames.
- */
 object Cs3AutoUpdate {
 
     private const val TAG = "Cs3AutoUpdate"
@@ -63,11 +38,6 @@ object Cs3AutoUpdate {
 
     private const val REPO_TIMEOUT_SEC = 30L
 
-    /**
-     * Runs one silent pass when due. Returns how many plugin files were
-     * replaced (0 = nothing to do / not due / failed quietly). Never throws,
-     * never touches the UI.
-     */
     suspend fun runIfDue(app: HikariApp, store: AppStore): Int = withContext(Dispatchers.IO) {
         val now = System.currentTimeMillis()
         val last = runCatching { store.cs3AutoUpdateAt() }.getOrDefault(0L)
@@ -99,10 +69,6 @@ object Cs3AutoUpdate {
         // Extensions screen's own check).
         val servedHashes = ConcurrentHashMap<String, String>()
         val servedUrlFor = ConcurrentHashMap<String, String>()
-        // A loose identity (the branch-blind file key) can name TWO different
-        // files in one repo. First-wins would then pin the wrong hash/URL and
-        // either churn or swap in the wrong file — so a key claimed by more
-        // than one URL is ambiguous and never used for a silent swap.
         val ambiguousKeys = ConcurrentHashMap.newKeySet<String>()
         coroutineScope {
             val gate = Semaphore(4)

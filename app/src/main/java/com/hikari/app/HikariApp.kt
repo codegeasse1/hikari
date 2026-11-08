@@ -52,18 +52,6 @@ class HikariApp : Application() {
         lateinit var instance: HikariApp
             private set
 
-        /**
-         * How long the one blocking settings read at startup may take before the
-         * app gives up on it and comes up with defaults (see onCreate).
-         *
-         * Deliberately short. Every other store read in the app is asynchronous
-         * and cancellable; this single one has to be synchronous — the app
-         * language must be applied before the first Activity exists, or the UI
-         * flashes English and rebuilds. The price of that is that a wedged store
-         * could hold the whole launch here, which is not a trade worth making:
-         * three seconds is more than a cold read of the preferences file ever
-         * takes, and past it the honest thing is to start and log why.
-         */
         private const val STARTUP_STORE_READ_MS = 3_000L
 
         /** Stack trace of the last uncaught crash (shown as a one-shot Home
@@ -72,12 +60,6 @@ class HikariApp : Application() {
         var lastCrash: String? = null
             private set
 
-        /**
-         * True when this exact crash has already been announced to the user
-         * before, so the warning is shown ONCE per crash instead of on every
-         * launch (the log file itself is kept for Settings → Logs, which is why
-         * the warning can't simply call [clearCrash]).
-         */
         @Volatile
         var crashNoticeShown: Boolean = false
             private set
@@ -86,23 +68,9 @@ class HikariApp : Application() {
         @Volatile
         private var crashFp: Int = 0
 
-        /**
-         * The current MainActivity, set on create and cleared on destroy. The
-         * real CloudStream host passes its AppCompatActivity to plugin load()
-         * (some plugins cast it — e.g. SKTech's `as AppCompatActivity`), so a
-         * bare Application context makes those plugins throw
-         * ClassCastException. Kept set while the app is merely backgrounded so a
-         * plugin load from a background coroutine still gets an Activity.
-         */
         @Volatile
         var mainActivity: MainActivity? = null
 
-        /**
-         * Extension repositories added on the very first run, so a fresh install
-         * can install extensions without pasting a URL: the Hikari (.hiki) repo
-         * and the CloudStream repo. Seeded once — see [AppStore.seededRepos] —
-         * so removing one afterwards sticks.
-         */
         private val DEFAULT_EXTENSION_REPOS = listOf(
             Cs3Repo(
                 url = "https://raw.githubusercontent.com/codegeasse1/hikari-extensions/builds/repo.json",
@@ -124,23 +92,8 @@ class HikariApp : Application() {
     lateinit var providers: ProviderManager
         private set
 
-    /**
-     * Process-wide IO scope for work that must OUTLIVE an Activity. The player
-     * records resume position / last-used server on its way out (onStop,
-     * onDestroy) — an Activity-scoped `lifecycleScope` job is cancelled at
-     * DESTROYED before it can commit, which is exactly how watch progress used
-     * to vanish and why Continue Watching stayed empty.
-     */
     val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    /**
-     * Live copy of the persisted element-block selectors (WebView element
-     * blocker). Loaded at startup and kept in sync by every block/undo/clear,
-     * so a freshly opened WebView can apply them synchronously BEFORE its
-     * first page finishes loading — reading the store itself is async and was
-     * racing the first page load, which made blocks look \"reset\" after
-     * closing and reopening the WebView.
-     */
     @Volatile
     var elementBlocks: List<String> = emptyList()
 
@@ -167,11 +120,6 @@ class HikariApp : Application() {
     @Volatile
     private var appliedContentLanguage: String? = null
 
-    /**
-     * Point TMDB at [tag] and, when that is a CHANGE from the language already in
-     * use, drop the localized content that was fetched under the old one. Called
-     * from the main screen whenever the setting (or the app language it follows)
-     * moves — see [onContentLanguageChanged]. */
     fun applyContentLanguage(tag: String) {
         val previous = appliedContentLanguage
         appliedContentLanguage = tag
@@ -179,63 +127,12 @@ class HikariApp : Application() {
         if (previous != null && previous != tag) onContentLanguageChanged()
     }
 
-    /**
-     * The user just changed the language TMDB metadata is fetched in
-     * (Settings → Appearance & Theme → Title language (TMDB)).
-     *
-     * `TmdbResolver.contentLanguage` is already switched by then (see
-     * [applyContentLanguage]) — this is about the results that were fetched under
-     * the OLD language and are still held in memory: the built Home feed, a saved
-     * TMDB source's row title, the search grid. Nothing that made those requests
-     * can know the language moved, so they are dropped here, and the screens
-     * watching [contentLanguageRevision] fetch again. That is what makes the
-     * setting take effect the moment it is picked instead of only after the app
-     * is restarted.
-     */
     fun onContentLanguageChanged() {
         runCatching { com.hikari.app.data.TmdbSources.clearLocalizedNames() }
         runCatching { com.hikari.app.data.SearchResultsCache.clear() }
         contentLanguageRevision.value = contentLanguageRevision.value + 1L
     }
 
-    /**
-     * Keeps the TELEVISION PERFORMANCE MODE in step with the layout, for as long
-     * as the user has not made that choice themselves.
-     *
-     * The layout is decided by the device (or by the user's override in
-     * Settings → TV & Remote, which is the same flag), and the lighter visuals
-     * belong with it: on a box the poster treatments and their blur are drawn
-     * per card, per frame, on top of decoding 1080p, and a TV viewer would never
-     * find that switch in a settings folder. So the TV layout switches it ON by
-     * itself, and the phone layout switches it back off — both at launch and the
-     * moment the layout changes.
-     *
-     * The first-run seeding in [onCreate] already does this for a television on a
-     * fresh install; this is the part that keeps being true afterwards (a phone
-     * whose user turns the TV layout on to look at it, or a box that only settles
-     * its UI mode once an activity exists, which is why [com.hikari.app.tv.TvMode.detect]
-     * runs again in MainActivity).
-     *
-     * Once the user works the switch in Settings themselves,
-     * [com.hikari.app.data.AppStore.tvPerfChosen] is set and this never touches
-     * the setting again — an explicit answer always beats an automatic one.
-     */
-    /**
-     * Mirrors the DEVICE's television answer into
-     * [com.hikari.app.data.PerfMode] (`tvDevice`), which is what the engine
-     * budgets, the search fan-out and the poster cache size read — all of them
-     * synchronously, on hot paths that cannot await a flow.
-     *
-     * Called from `onCreate` and again from
-     * [com.hikari.app.MainActivity] next to every
-     * [com.hikari.app.tv.TvMode.detect], because a few boxes only settle their UI
-     * mode once an Activity exists — and the budgets are chosen the first time a
-     * screen asks for content, which is after that. [com.hikari.app.tv.TvMode.deviceIsTelevision]
-     * (the HARDWARE's answer) rather than `isTv`, deliberately: a phone whose user
-     * turns the television LAYOUT on to look at it must not be handed a
-     * low-memory device's search width or engine ceiling. See
-     * [com.hikari.app.data.PerfMode.tvDevice].
-     */
     fun syncTvDeviceFlag() {
         com.hikari.app.data.PerfMode.setTvDevice(com.hikari.app.tv.TvMode.deviceIsTelevision)
     }
@@ -254,25 +151,6 @@ class HikariApp : Application() {
         }
     }
 
-    /**
-     * Keeps the VIDEO ENHANCE preset off on a television that has not chosen one
-     * for itself.
-     *
-     * This is the one thing the app adds to the PICTURE during playback:
-     * [com.hikari.app.player.EnhancePreset] hands media3 a list of GPU colour
-     * grades, and a non-empty list costs a GL pass on every decoded frame — the
-     * player's own comment says so ("Natural is the default and applies NOTHING
-     * … so it stays off until the user asks for it"). On a TV stick, which is
-     * busy enough with the decoder, that per-frame pass is what a viewer sees as
-     * a video that stutters. A fresh install is already Natural, so this only
-     * matters when a preset arrived from somewhere else: from a paired phone (the
-     * reason `playerEnhance` is now in [com.hikari.app.data.DeviceLocal.KEYS]) or
-     * from a build that pre-dated that rule.
-     *
-     * The same rule as [syncTvPerformance]: the layout only sets a default, and
-     * the moment the user picks a preset themselves ([AppStore.enhanceChosen])
-     * it never touches the setting again.
-     */
     private suspend fun syncTvEnhance(store: com.hikari.app.data.AppStore) {
         if (!com.hikari.app.tv.TvMode.isTv) return
         // Unreadable flag reads as "the user chose": never override a choice we
@@ -290,21 +168,6 @@ class HikariApp : Application() {
         }
     }
 
-    /**
-     * Extension auto-open guard (see [com.hikari.app.net.ExtensionUiGuard]):
-     * external intents from extension code pass only on a user gesture (or
-     * inside the allow-window). Our own calls always pass. Application
-     * context covers the plugins that build UI on it instead of on an
-     * activity.
-     *
-     * Deliberately NO getSystemService/WindowManager interception here:
-     * Android's Dialog construction casts the context's WindowManager back
-     * to the framework implementation, so a proxy crashes EVERY dialog in
-     * the app (ClassCastException: $Proxy cannot be cast to
-     * WindowManagerImpl). Floating-window popups stay covered by the
-     * DialogFragment dismissal plus the preference forcing in
-     * [ExtensionVerifyGuard].
-     */
     override fun startActivity(intent: android.content.Intent) {
         if (com.hikari.app.net.ExtensionUiGuardMixins.startAllowed(intent)) super.startActivity(intent)
     }
@@ -320,14 +183,6 @@ class HikariApp : Application() {
         // The offline-voice helper process (NeuralTtsService, Dub audio) needs none of the app start-up.
         if (runCatching { java.io.File("/proc/self/cmdline").readText().trim('\u0000').endsWith(":neuraltts") }.getOrDefault(false)) return
         instance = this
-        // OkHttp 5's PublicSuffixDatabase reads through the application
-        // context, and ours is never set: androidx-startup (which normally
-        // calls OkHttp.initialize) is stripped/disabled in this build, so
-        // EVERY request that touches cookies throws IllegalStateException on
-        // the OkHttp dispatcher thread and the app dies right after launch
-        // (the "Unable to load PublicSuffixDatabase.list resource" crash —
-        // Caused by "Platform applicationContext not initialized"). Do it
-        // explicitly here, first, before any thread can make a request.
         runCatching { okhttp3.OkHttp.initialize(this) }
         // Diagnostics first: everything after this point is logged, and the
         // crash handler below needs the log directory to already exist.
@@ -342,22 +197,8 @@ class HikariApp : Application() {
         // after the application object exists.
         runCatching { com.hikari.app.tv.TvMode.detect(this) }
         syncTvDeviceFlag()
-        // Aniyomi extensions are Mihon/Aniyomi extension APKs: the extension
-        // loader builds a class loader over the .ext and instantiates a source,
-        // and the source immediately resolves its own dependencies out of
-        // Mihon's global `Injekt` container (`Injekt.get<Application>()` for its
-        // preferences, `Json`, `NetworkHelper`, `JavaScriptEngine`, …). Hikari
-        // has no DI container, so the patched Injekt singleton is installed and
-        // primed here — before anything can possibly load an extension.
         runCatching { dev.mihon.injekt.patchInjekt() }
             .onFailure {
-                // Swallowing this was a silent trap. `patchInjekt()` REPLACES
-                // the global Injekt scope with the registrar that has the
-                // singleton-caching fix, so a failure here leaves every
-                // extension load on a container nothing primed — and the only
-                // symptom is a `java.lang.reflect.InvocationTargetException:
-                // null` from whichever source touched `Injekt.get<Application>()`
-                // in its constructor. Now it is a line in Settings → Logs.
                 Logs.logError(
                     "Injekt",
                     "patchInjekt() failed — extensions will use Injekt's own registrar",
@@ -368,18 +209,6 @@ class HikariApp : Application() {
         initCloudStream(this)
         store = AppStore(this)
         val startupAt = System.currentTimeMillis()
-        // Restore the saved app language BEFORE any Activity is created, so the
-        // whole UI (player overlay labels, content descriptions, settings)
-        // comes up in the chosen language instead of flashing English first.
-        //
-        // The read is BOUNDED. It is a blocking DataStore read on the main
-        // thread — the one place in the app that is — and if the store is ever
-        // wedged (a write that never completed, a file system that stopped
-        // answering) an unbounded read here means the app never opens at all:
-        // the launch screen sits there until the OS kills it, which is exactly
-        // the reported "opening took much longer than it should". With a timeout
-        // the worst case is one setting applied a moment late, and the log says
-        // so.
         runCatching {
             val tag = kotlinx.coroutines.runBlocking {
                 kotlinx.coroutines.withTimeoutOrNull(STARTUP_STORE_READ_MS) { store.language() }
@@ -391,19 +220,9 @@ class HikariApp : Application() {
                         "starting with the default language (see Store lines above for why)",
                 )
             } else {
-                // Only push a language Hikari itself was given: a blank setting
-                // means "System default", and applying that would CLEAR a
-                // per-app locale the user chose for Hikari in Android's own
-                // app-language screen (setApplicationLocales with an empty list
-                // is "follow the device", not "leave it alone").
                 if (tag.isNotBlank()) {
                     com.hikari.app.ui.LanguageManager.apply(tag)
                 }
-                // Hand the View-based screens (the player, its dialogs, the
-                // WebView) their language map before anything can draw: Compose
-                // gets it from I18n.LocalMap in MainActivity, but I18n.t() reads
-                // the map pushed here, and a player opened without the main
-                // screen having drawn yet would otherwise be English.
                 val effective = com.hikari.app.ui.LanguageManager.effectiveTag(tag)
                 com.hikari.app.i18n.I18n.setCurrent(
                     com.hikari.app.i18n.I18n.mapFor(this@HikariApp, effective),
@@ -412,52 +231,22 @@ class HikariApp : Application() {
             }
         }
         Logs.log("App", "store restored in ${System.currentTimeMillis() - startupAt}ms")
-        // The device's memory budget, once per launch. "It gets laggy and almost
-        // crashes while servers load" is a memory question, and without this line
-        // the log could never answer which heap ran out (see [MemoryReport]).
         Logs.log("Memory", com.hikari.app.data.MemoryReport.device(this))
         providers = ProviderManager(store, this)
-        // Profiles (Settings → Profiles): read the registry, and make the store
-        // agree with the active profile. Normally that is a no-op — the store IS
-        // the active profile's contents — but if the two were separated (the
-        // app's data was cleared while the registry survived, or a backup
-        // replaced the store), the profile's snapshot is re-applied instead of
-        // the app coming up empty under a profile that says otherwise. See
-        // [com.hikari.app.data.Profiles.load], which is also what publishes the
-        // profile list every screen reads.
         appScope.launch {
             runCatching { com.hikari.app.data.Profiles.load(this@HikariApp) }
                 .onFailure { Logs.log("Profiles", "could not read the profile registry: ${it.message}") }
         }
-        // Nothing in Hikari ever loads a Cloudflare challenge on its own: a
-        // verification page opens only when the user taps the WebView (globe)
-        // button themselves (see CloudflareVerifier).
-        //
-        // Extensions don't have to play by that rule — Cinemacity opens its own
-        // Cloudflare WebView in the middle of loading sources — so the switches
-        // that gate those pages are forced off here (and again whenever a
-        // plugin's settings sheet closes). Settings → Privacy & Browsing can
-        // let them back through.
         appScope.launch {
             runCatching {
                 ExtensionVerifyGuard.apply(this@HikariApp, store.extensionVerifyWebview())
             }
         }
-        // Television: the user's layout choice, and the first-run television
-        // defaults. Both are reads/writes of the settings store, so they cannot
-        // happen on this thread — MainActivity reads the same preference
-        // synchronously before its first frame, and this keeps it current from
-        // then on.
         appScope.launch {
             runCatching {
                 val mode = store.tvMode()
                 com.hikari.app.tv.TvMode.setOverride(mode)
                 if (!store.tvSeeded()) {
-                    // Applied exactly once per install. A television gets the
-                    // quiet defaults: a TV stick is decoding 1080p with a chip a
-                    // phone would have called slow, so the first thing it shows
-                    // should not be a dozen animated posters. A phone's first run
-                    // changes nothing.
                     if (com.hikari.app.tv.TvMode.isTv) {
                         store.setPosterEffects(emptySet())
                         store.setPosterBlur(0)
@@ -508,17 +297,6 @@ class HikariApp : Application() {
                 }
                 syncTvPerformance(store)
                 syncTvEnhance(store)
-                // Keep the PERFORMANCE MODE in step with the layout from here
-                // on: switching "Layout" in Settings → TV & Remote to the TV
-                // layout turns the lighter visuals on by itself, and switching
-                // back to the phone layout turns them off. This is the wanted
-                // behaviour ("when the app detects the TV layout it should turn
-                // performance mode on automatically") and it is also the case
-                // the first-run seeding above cannot cover: a phone whose user
-                // switches the TV layout on, or a box whose UI mode only settles
-                // after the first launch. The moment the user works the switch
-                // themselves the choice is theirs and this stops touching it
-                // (see [AppStore.tvPerfChosen]).
                 store.tvModeFlow().distinctUntilChanged().collect { current ->
                     com.hikari.app.tv.TvMode.setOverride(current)
                     syncTvPerformance(store)
@@ -542,12 +320,6 @@ class HikariApp : Application() {
         appScope.launch {
             store.customDnsFlow().collect { NetTuning.setCustomDns(it) }
         }
-        // The PERFORMANCE BOOSTER (Settings → Performance) and the television's
-        // own performance mode (Settings → TV & Remote): both are read
-        // SYNCHRONOUSLY on hot paths — the search fan-out sizes itself from this,
-        // and the Nuvio runtime gates its engine concurrency with it — so each is
-        // mirrored into a plain flag here, exactly like the slow-connection and
-        // DNS settings above (see [com.hikari.app.data.PerfMode]).
         appScope.launch {
             store.perfModeFlow().collect { mode ->
                 com.hikari.app.data.PerfMode.set(mode, com.hikari.app.data.PerfMode.tvOn)
@@ -558,26 +330,12 @@ class HikariApp : Application() {
                 com.hikari.app.data.PerfMode.set(com.hikari.app.data.PerfMode.on, on)
             }
         }
-        // How wide a lookup may search (Settings → Playback → Server search).
-        // Read synchronously mid-pass by the target builder, the sweeps and the
-        // episode fallback, so it lives in a plain flag (see [SearchScope])
-        // mirrored here — a search must never have to await DataStore.
-        //
-        // Two settings become the one flag the pass reads: the "search all
-        // installed extensions" switch, and the exception extensions the user
-        // marked (which the pass honours even with that switch off).
         appScope.launch {
             com.hikari.app.data.SearchScope.allExtensions = store.searchAllExtensions()
             store.searchAllExtensionsFlow().collect {
                 com.hikari.app.data.SearchScope.allExtensions = it
             }
         }
-        // The per-engine families (Settings → Playback → Server search → the
-        // Server search card): which engines' WHOLE installed family is asked
-        // for a title opened from one of their repos. One mirrored value ("the
-        // set of engine names that are on") because the pass reads it as one
-        // decision — Nuvio and Stremio on by default, everything else off. See
-        // [SearchScope.engineFamilies].
         appScope.launch {
             runCatching { com.hikari.app.data.SearchScope.engineFamilies = store.engineFamilies() }
             store.engineFamiliesFlow().collect {
@@ -585,19 +343,12 @@ class HikariApp : Application() {
             }
         }
         appScope.launch {
-            // Seeded through a first read of the EFFECTIVE flow (rather than the
-            // raw id flow) so a search started before the first emission already
-            // sees the right set — engine exceptions included, exactly like the
-            // flag above.
             com.hikari.app.data.SearchScope.exceptions =
                 runCatching { store.activeSearchExceptionsFlow().first() }.getOrDefault(emptySet())
             store.activeSearchExceptionsFlow().collect {
                 com.hikari.app.data.SearchScope.exceptions = it
             }
         }
-        // Tracker rows (Settings → Trackers): the same mirrors for the scope
-        // filter — a tracker title opened from the library must never have to
-        // await DataStore to know which engines it may ask.
         appScope.launch {
             runCatching { com.hikari.app.data.SearchScope.searchNuvioIds = store.searchNuvioIds() }
             store.searchNuvioIdsFlow().collect {
@@ -634,29 +385,12 @@ class HikariApp : Application() {
                 com.hikari.app.data.SearchScope.trackerProviders = it
             }
         }
-        // Player UI skin (Settings → Player → Player UI): mirrored into
-        // PlayerSkins because PlayerActivity is a View-based screen that has to
-        // know the value synchronously while its controller is being inflated.
         appScope.launch {
             store.playerSkinFlow().collect { com.hikari.app.player.PlayerSkins.setCurrent(it) }
         }
-        // Sources sheet page layout (Settings → Playback & Servers → Server
-        // page layout): mirrored into ServerLayouts for the same reason —
-        // PlayerActivity builds its sheet synchronously.
         appScope.launch {
             store.serverLayoutFlow().collect { com.hikari.app.player.ServerLayouts.setCurrent(it) }
         }
-        // Adult content (Settings → Content → NSFW): mirrored into [NsfwGate]
-        // because the gate is read on the DRAW path — a list being composed cannot
-        // await DataStore. Seeded with a first read of the flow so a screen that
-        // opens before the first emission already sees the stored value, not the
-        // default.
-        //
-        // A change also rebuilds the provider list: an 18+ extension is kept out
-        // of it while the switch is off (see
-        // [com.hikari.app.providers.ProviderManager.refresh]), so the switch has
-        // to be what puts it back or takes it away — the stored configs are never
-        // rewritten, which is what makes the change instant and reversible.
         appScope.launch {
             runCatching { com.hikari.app.data.NsfwGate.setEnabled(store.nsfwEnabled()) }
             store.nsfwEnabledFlow().collect { on ->
@@ -664,22 +398,11 @@ class HikariApp : Application() {
                 com.hikari.app.data.NsfwGate.setEnabled(on)
                 if (changed) runCatching { providers.refresh() }
                 if (!on) {
-                    // An 18+ extension whose stored row carries no flag — installed
-                    // by an older build, before the repo listing was recorded — can
-                    // only be identified by the extension itself (see
-                    // [ProviderManager.learnAdultFlags]). Each one is asked once
-                    // ever: the answer is written onto its row. If that turned up
-                    // an adult extension, the list is rebuilt so it actually
-                    // disappears from the provider list.
                     val learned = runCatching { providers.learnAdultFlags() }.getOrDefault(false)
                     if (learned) runCatching { providers.refresh() }
                 }
             }
         }
-        // "Allowed redirect links" (Settings → Privacy & Browsing → WebView
-        // safety): mirrored in memory so a WebView being redirected right now —
-        // and the Cloudflare-verification view in particular — can honour a link
-        // the user added without waiting for DataStore (see RedirectAllow).
         appScope.launch {
             runCatching { store.webviewRedirectAllow() }
             store.webviewRedirectAllowFlow().collect { RedirectAllow.set(it) }
@@ -687,13 +410,7 @@ class HikariApp : Application() {
         Http.init()
         setupImageLoader()
         CoroutineScope(Dispatchers.IO).launch {
-            // Load the persisted WebView element blocks into the app cache FIRST
-            // (fast DataStore read) so a WebView opened right after launch can
-            // apply them on its first page instead of showing them after a race.
             runCatching { elementBlocks = store.elementBlocks() }
-            // Player UI skin: seed the synchronous mirror as well as collecting
-            // the flow, so a player opened immediately after launch (before the
-            // flow's first emission) still gets the right skin.
             runCatching { com.hikari.app.player.PlayerSkins.setCurrent(store.playerSkin()) }
             // Sources sheet layout: seed the synchronous mirror too, so a
             // sheet opened immediately after launch gets the stored layout.
@@ -722,26 +439,13 @@ class HikariApp : Application() {
                     store.markYtsCleaned()
                 }
             }
-            // First run: seed the Nuvio provider repos (manifest.json) so nuvio
-            // sources have somewhere to come from. No provider is installed for
-            // the user any more, and the ones earlier builds put there are taken
-            // back right after (see removeFormerlySeededProviders).
             runCatching {
                 com.hikari.app.nuvio.NuvioPluginManager.seedDefaults(this@HikariApp, store)
                 com.hikari.app.nuvio.NuvioPluginManager.removeFormerlySeededProviders(this@HikariApp)
             }
-            // First run: seed the community SkyStream extension repos too, so
-            // SkyStream extensions are installable from the Extensions screen
-            // without hunting for a repo URL.
             runCatching {
                 com.hikari.app.skystream.SkyStreamPluginManager.seedDefaults(this@HikariApp, store)
             }
-            // First run: seed the official Vega provider repo (Zenda-Cross's
-            // vega-providers, a bare-array manifest.json). Vega providers are
-            // scrapers published as CommonJS modules — see
-            // com.hikari.app.providers.vega.VegaRuntime — and no provider is
-            // installed for the user: the repo is only registered so the Vega
-            // folder in Extensions is never empty.
             runCatching {
                 com.hikari.app.providers.vega.VegaPluginManager.seedDefaults(this@HikariApp, store)
                 com.hikari.app.zangetsu.ZangetsuPluginManager.seedDefaults(this@HikariApp, store)
@@ -749,32 +453,17 @@ class HikariApp : Application() {
                 com.hikari.app.anymex.AnymexPluginManager.seedDefaults(this@HikariApp, store)
                 com.hikari.app.lnreader.LnReaderPluginManager.seedDefaults(this@HikariApp, store)
             }
-            // First run: seed the Aniyomi extension repo (Aniyomi's official
-            // index.min.json) so Aniyomi-extensions are installable from the
-            // Extensions screen without hunting for a repo URL.
             runCatching {
                 com.hikari.app.aniyomi.AniyomiExtensionManager.seedDefaults(this@HikariApp, store)
             }
-            // First run: seed the manga extension repo (keiyoushi's index) so
-            // manga extensions are installable without hunting for a repo URL.
-            // It is the same bare-array index format the Aniyomi repo uses,
-            // which is why it can be added through the same add-repo flow.
             runCatching {
                 com.hikari.app.manga.MangaExtensionManager.seedDefaults(this@HikariApp, store)
                 // 0.11.69 auto-seeded 1200+ Kotatsu rows and lagged the manga
                 // tab into crashes — pruned once here; sources now install
                 // one-by-one from Extensions → Kotatsu repos.
                 com.hikari.app.kotatsu.KotatsuRegistry.pruneSeeded(store)
-                // The Kotatsu folder reads like every other engine's: a repo
-                // card whose entries install one-by-one (seed path — a user
-                // who deletes it keeps it deleted).
                 com.hikari.app.kotatsu.KotatsuRegistry.seedDefaults(store)
             }
-            // First run only: add the bundled Hikari (.hiki) and CloudStream
-            // extension repos, so the Extensions screen ("Sources, repos &
-            // providers") is never empty on a fresh install and the built-in
-            // extensions are installable immediately. Guarded by a one-time flag
-            // so a user who removes one doesn't get it re-added every launch.
             runCatching {
                 if (!store.seededRepos()) {
                     for (r in DEFAULT_EXTENSION_REPOS) store.addCs3Repo(r)
@@ -811,29 +500,12 @@ class HikariApp : Application() {
                     store.markStremioAddonSeeded()
                 }
             }
-            // Collapse any duplicate repo entries an older build stored (the same
-            // repository added twice — two branches or two URL spellings), so the
-            // repo list shows one folder per repo from the first launch after the
-            // update.
             runCatching { store.dedupeStoredRepos() }
-            // Apply vendored nuvio provider patches (see NuvioPluginManager's
-            // PROVIDER_PATCHES) so already-installed broken providers get the
-            // fixed JS in place without a manual reinstall.
             runCatching {
                 com.hikari.app.nuvio.NuvioPluginManager.applyPatchesToInstalled(this@HikariApp)
             }
             providers.refresh()
             Logs.log("Providers", "refreshed: ${providers.providers.value.size} installed")
-            // Watch the provider list itself, for the whole session.
-            //
-            // A lookup asks the providers that were installed when it started, so
-            // the one thing that must never happen is for the list to change
-            // under it — and when it did, the log was silent about it: a pass
-            // would report "Hikari 77 of 181" one minute and "176 of 181" the
-            // next, with the repos that went missing named nowhere. This line
-            // makes every change to the list, its size, its enabled count and its
-            // per-engine split visible in any log the user shares (see also the
-            // "start …" line each pass writes, which prints its own snapshot).
             appScope.launch {
                 providers.providers.collect { list ->
                     val enabled = list.count { it.config.enabled }
@@ -872,10 +544,6 @@ class HikariApp : Application() {
             providers.providers.value
                 .filterIsInstance<com.hikari.app.cs3.Cs3MainApiProvider>()
                 .forEach { it.warm() }
-            // A plugin settings change (e.g. SKTech's sub-provider picker) can
-            // alter which providers a plugin registers. Warm first so the
-            // plugin instances are cached (reconcile then hits the cache), then
-            // rebuild the stored configs to match and refresh if anything moved.
             runCatching {
                 if (com.hikari.app.cs3.Cs3ProviderSync.reconcile(this@HikariApp, store)) {
                     Logs.log("Providers", "CS3 sync changed the provider list — refreshing")
@@ -912,28 +580,18 @@ class HikariApp : Application() {
                     providers.refresh()
                 }
             }
-            // Aniyomi extensions are the same story: one installed .ext can
-            // register several sources, and the set can move when the extension
-            // is updated, so rebuild the stored configs from the loaded
-            // extension and refresh if anything moved.
             runCatching {
                 if (com.hikari.app.aniyomi.AniyomiProviderSync.reconcile(this@HikariApp, store)) {
                     Logs.log("Providers", "Aniyomi sync changed the provider list — refreshing")
                     providers.refresh()
                 }
             }
-            // Language backfill for manga/novel rows installed before the
-            // language was stored (Source language "Other"): one pass, only
-            // blank rows, then refresh if anything moved.
             runCatching {
                 if (com.hikari.app.manga.MangaExtensionManager.backfillLangs(this@HikariApp, store)) {
                     Logs.log("Providers", "Manga language backfill filled blank rows — refreshing")
                     providers.refresh()
                 }
             }
-            // Dead manga/anime rows (extension file gone, nothing to play):
-            // without this they pile up as "Extension file missing" rows no
-            // uninstall can remove — the "100 copies" class. Once per launch.
             runCatching {
                 val pruned = com.hikari.app.manga.MangaExtensionManager.pruneDeadFiles(this@HikariApp)
                 if (pruned > 0) {
@@ -958,10 +616,6 @@ class HikariApp : Application() {
             }
             // Per-extension auto-translate config + persisted translation cache.
             runCatching { com.hikari.app.data.Translator.init(store) }
-            // Re-assert the chosen launcher icon. The enabled `activity-alias` is
-            // part of the installed app, not of the restored preferences, so a
-            // backup restore / device copy would otherwise leave the user with
-            // the default icon while Settings still shows their pick.
             runCatching {
                 com.hikari.app.ui.AppIconManager.ensureApplied(this@HikariApp, store.appIcon())
             }
@@ -970,11 +624,6 @@ class HikariApp : Application() {
                 "blur support: " + if (android.os.Build.VERSION.SDK_INT >= 31) {
                     "yes (API ${android.os.Build.VERSION.SDK_INT})"
                 } else {
-                    // Modifier.blur is a no-op below API 31, which is why a user
-                    // on Android 11 or older reported "the blur works for you but
-                    // not for me" with identical settings. The halo is now drawn
-                    // from the artwork itself on every version (see PosterArt), so
-                    // this line is for diagnosis, not for behaviour.
                     "no (API ${android.os.Build.VERSION.SDK_INT} — the poster halo is drawn " +
                         "from the artwork pixels instead of Modifier.blur)"
                 },
@@ -987,52 +636,6 @@ class HikariApp : Application() {
         }
     }
 
-    /**
-     * "The user CLOSED the app" — the one moment background work must let go.
-     *
-     * [com.hikari.app.work.BackgroundWork] exists so a long catalog load, search
-     * or source scan survives the user stepping into another app (Android freezes
-     * a backgrounded process, which used to stop them dead). That must NOT extend
-     * to the app being closed: a search left holding a foreground service after
-     * the user is done kept a permanent "Hikari keeps running while you use other
-     * apps" notification on screen, kept hundreds of requests alive for minutes,
-     * and left the next launch fighting that work for the CPU — reported as "it
-     * is still running in the background after I close it, and then it just stays
-     * stuck on the Hikari logo".
-     *
-     * Android has no "the user closed it" callback, so it is inferred, and only
-     * from signals that really mean it:
-     *
-     *  - the last Activity being DESTROYED because it is FINISHING (Back out of
-     *    the app, or the launcher's task removal) — here;
-     *  - the task being swiped off the recents list — WorkService.onTaskRemoved.
-     *
-     * Deliberately NOT from onStop: pressing Home, locking the screen or opening
-     * another app stops the Activities too, and continuing to work through that
-     * is the entire point of the service.
-     */
-    /**
-     * Android's "your process is using more than the device can spare" callback
-     * — the level it chose goes in the log, with what the process held at that
-     * moment (see [com.hikari.app.data.MemoryReport]).
-     *
-     * Off a television there is deliberately no cache to drop here: the poster
-     * cache is already bounded (see the Coil memory cache in onCreate), the
-     * QuickJS engines are per-call and closed in a `finally`, and a search pass
-     * holds nothing but the server list — so the useful thing this callback can
-     * do is produce the evidence for "it nearly crashed while the servers
-     * loaded". On a TELEVISION that changes (see the body): the poster cache is
-     * the one large, re-creatable thing the app holds, and a box asking a
-     * foreground app for memory back is a box about to kill it.
-     */
-    /**
-     * True when the APP's own heap is nearly full, regardless of what the
-     * device reports. Device trims only fire when the DEVICE is tight — but
-     * this process dies at its own 256–512 MB cap while the device still
-     * shows gigabytes free (the reported OOM: java 475/512 MB with 2.3 GB
-     * free). Poll the heap directly instead of waiting for a trim that
-     * never comes.
-     */
     private fun heapPressure(): Boolean {
         val rt = Runtime.getRuntime()
         return rt.totalMemory() - rt.freeMemory() > rt.maxMemory() * 4 / 5
@@ -1041,7 +644,7 @@ class HikariApp : Application() {
     /** Drop the re-fetchable image caches when the heap is nearly full (see
      *  [heapPressure]). Posters and stills decode again on scroll; a dead
      *  process loses the page. No-op without pressure. */
-    private fun relieveHeapPressure(caller: String) {
+    fun relieveHeapPressure(caller: String) {
         if (!heapPressure()) return
         val before = runCatching { com.hikari.app.data.MemoryReport.short() }.getOrNull().orEmpty()
         runCatching { coil.Coil.imageLoader(this).memoryCache?.clear() }
@@ -1055,14 +658,6 @@ class HikariApp : Application() {
 
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
-        // RUNNING_* is the device asking a FOREGROUND app to give memory back.
-        // Everything below the first of them is the routine background trim
-        // (UI_HIDDEN and friends), which every app gets and which says nothing
-        // about the user's problem.
-        //
-        // The heap itself can be full while the device is not (see
-        // [heapPressure]), so pressure is checked on EVERY trim: a pressured
-        // phone drops caches here exactly like a tight television does.
         val pressured = heapPressure()
         if (level < android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW && !pressured) return
         // Read BEFORE anything is dropped: the number that matters is what the
@@ -1135,9 +730,6 @@ class HikariApp : Application() {
 
             override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {}
             override fun onActivityResumed(activity: Activity) {
-                // Foreground again with a nearly-full heap (long reader
-                // session, thousand-cover scroll): drop caches before the
-                // next burst, not after the process dies.
                 relieveHeapPressure("resume")
             }
             override fun onActivityPaused(activity: Activity) {}
@@ -1145,37 +737,8 @@ class HikariApp : Application() {
         })
     }
 
-    /**
-     * Prime Mihon's Injekt container with the singletons an Aniyomi extension
-     * can ask for. `Application` is the one that matters most — every
-     * `ConfigurableAnimeSource` / `AnimeHttpSource` preferences accessor is
-     * `Injekt.get<Application>().getSharedPreferences(...)`, and a source that
-     * can't get its preferences throws before it can list anything. `Json`,
-     * `NetworkHelper` and `JavaScriptEngine` are what `JsonExtensions.defaultJson`,
-     * `AnimeHttpSource.network` and the JS-driven sources inject. `ProtoBuf` is
-     * the odd one out: nothing in Hikari or in the extensions-lib API uses it,
-     * but `keiyoushi.utils.ProtobufKt` — a helper library the yuzono/anime-repo
-     * extensions bundle — reads it in a top-level property initialiser
-     * (`val protoInstance: ProtoBuf = Injekt.get()`), so an extension linking
-     * that library throws the moment anything touches the file.
-     *
-     * All of them are singletons so every installed extension shares Hikari's
-     * one OkHttp stack (cookies + 5 MiB cache) instead of building its own.
-     * Failures are logged by [ensureAniyomiInjekt]; an extension asking for
-     * something still unregistered gets an `InjektionException` at its own call
-     * site, which the provider turns into a per-source error message rather
-     * than a crash.
-     */
     @OptIn(ExperimentalSerializationApi::class)
     private fun registerAniyomiSingletons() {
-        // Every line registers ONE type, and each one is allowed to fail on its
-        // own. The whole block used to sit inside a single `runCatching`, and
-        // the FIRST failure therefore left the container completely empty —
-        // every extension then answered "No registered instance or factory for
-        // type class android.app.Application", which is the reported "Anichi:
-        // none of its sources could be loaded" for every Aniyomi extension the
-        // user installed. Registering one at a time means one bad type costs
-        // that type, not the container.
         registerAniyomiSingleton("Application") { Injekt.addSingleton(Ref(Application::class.java), this) }
         registerAniyomiSingleton("Context") { Injekt.addSingleton(Ref(Context::class.java), this) }
         registerAniyomiSingleton("Json") {
@@ -1201,23 +764,6 @@ class HikariApp : Application() {
         }
     }
 
-    /**
-     * A [TypeReference] that simply STATES its type.
-     *
-     * This is the difference between Injekt working in a release build and not
-     * working at all. The library's own helpers are
-     * `inline fun <reified T> fullType() = object : FullTypeReference<T>(){}`,
-     * and `FullTypeReference` reads `javaClass.genericSuperclass`, throwing
-     * `IllegalArgumentException: Internal error: TypeReference constructed
-     * without actual type information` whenever that is not a parameterized
-     * type. Those anonymous objects exist only to carry an erased type
-     * argument, R8 rewrites them away in the release build, and the throw took
-     * the whole registration down with it — which is why EVERY Aniyomi
-     * extension failed to instantiate (the user's own log line:
-     * `at uy.kohesive.injekt.api.FullTypeReference.<init>` /
-     * `at com.hikari.app.HikariApp.registerAniyomiSingletons`). A reference
-     * that answers from a `Class` constant cannot be broken by any optimizer.
-     */
     private class Ref<T : Any>(private val cls: Class<T>) : TypeReference<T> {
         override val type: java.lang.reflect.Type get() = cls
     }
@@ -1239,24 +785,6 @@ class HikariApp : Application() {
     @Volatile
     private var primedInjektScope: Any? = null
 
-    /**
-     * Make sure the CURRENT Injekt scope carries the singletons an extension
-     * needs, and remember WHICH scope was primed.
-     *
-     * Called from [onCreate] (before anything can load an extension) and again
-     * from every extension load (see
-     * [com.hikari.app.aniyomi.AniyomiExtensionManager]). Registering the same
-     * singletons twice is a no-op as far as instances go — the registrar keys
-     * its cache by type, so the already-built `NetworkHelper`/`Json` are handed
-     * back — but it is NOT a no-op if something re-ran `patchInjekt()` or
-     * installed a different registrar in the meantime, which is exactly the
-     * case that turns into "every extension failed to instantiate with
-     * InvocationTargetException: null" out of nowhere. Comparing scope identity
-     * makes the check free in the normal path (an identity compare per load).
-     *
-     * A failure is logged rather than swallowed: this is the difference between
-     * "the container was never primed" being a mystery and being a log line.
-     */
     fun ensureAniyomiInjekt() {
         val current: Any? = Injekt
         if (current === primedInjektScope) return
@@ -1273,11 +801,6 @@ class HikariApp : Application() {
             }
     }
 
-    /**
-     * Never let an uncaught exception (main or background thread) die silently:
-     * write the stack to a file, and surface it on the next launch as a banner
-     * (see HomeScreen) so crashes get reported instead of guessed at.
-     */
     private fun installCrashHandler() {
         runCatching {
             val text = Logs.crashText(this)
@@ -1302,21 +825,6 @@ class HikariApp : Application() {
             lastCrash = trace.take(1600)
             runCatching { File(cacheDir, "crash.log").writeText(trace) }
             android.util.Log.e("HikariCrash", "Uncaught on ${thread.name}", t)
-            // NEVER leave a dead main thread running: that is what turns the
-            // screen into a frozen black UI (no back button, nothing responds,
-            // the only escape is force-stopping the app). After recording the
-            // trace, terminate the process like the platform default would, so
-            // Android shows the crash dialog and relaunches cleanly — the Home
-            // banner still reports the cause next launch.
-            //
-            // A BACKGROUND thread is a different story. A dead helper thread
-            // hurts nobody, and the exception that most often lands here is a
-            // WebView one (Chromium rethrows an escaping @JavascriptInterface
-            // call as JniAndroid$UncaughtException, and a crashed renderer used
-            // to surface here too) — killing the whole app for that turned an
-            // ordinary page glitch into a full crash. Record it so the Home
-            // banner still explains what happened, then let the app keep
-            // running.
             val onMain = thread === android.os.Looper.getMainLooper().thread
             if (onMain) {
                 runCatching { android.os.Process.killProcess(android.os.Process.myPid()) }
@@ -1324,14 +832,6 @@ class HikariApp : Application() {
         }
     }
 
-    /**
-     * Some CDNs refuse image requests that carry a Referer at all (even a
-     * same-host one) while serving the identical URL fine to a bare request —
-     * fourhoi.com/surrit.com (MissAV's image+stream CDN) is verified
-     * no-referer-only: browsers and plain clients get the JPEG, a same-origin
-     * Referer gets 403. These hosts get no Referer header from the image
-     * loader; UA stays browser-like for everyone.
-     */
     private val NO_REFERER_HOSTS = setOf("fourhoi.com", "surrit.com")
 
     /** Clear the persisted crash banner after the user dismisses it. */
@@ -1344,12 +844,6 @@ class HikariApp : Application() {
     /** Where the fingerprint of the already-announced crash is kept. */
     private fun crashNoticeFpFile() = File(filesDir, "logs/crash.notified")
 
-    /**
-     * The user has seen the crash warning. Unlike [clearCrash] this KEEPS the
-     * crash log (Settings → Logs still has it to share with the developer) and
-     * only remembers that this crash was already announced, so the warning never
-     * reappears for it.
-     */
     fun markCrashNoticeShown() {
         lastCrash = null
         crashNoticeShown = true
@@ -1359,51 +853,12 @@ class HikariApp : Application() {
         }
     }
 
-    /**
-     * WebView user-agent override (Settings → Privacy & Browsing → WebView user agent). Default ON:
-     * the WebView advertises the device's Android WebView UA with its two
-     * WebView-only tokens REMOVED (`; wv` and `Version/4.0`) — see
-     * [withoutWebViewMarkers], which is the whole reason this is not simply
-     * `WebSettings.getDefaultUserAgent`. Off + custom UA lets users force a
-     * desktop/mobile UA for sites that need one. Loaded from prefs at startup;
-     * updated live by the settings card.
-     */
     @Volatile
     var webViewUseDefaultUa = true
 
     @Volatile
     var webViewCustomUa: String? = null
 
-    /**
-     * UA string the WebViews should advertise. [pluginUa] is the UA a
-     * CloudStream-style plugin explicitly requested (used only when the user
-     * has turned the override off and typed nothing).
-     *
-     * This is the STOCK WebView UA minus its WebView-only tokens, and that
-     * subtraction is the point. `; wv` is Android WebView's own marker, and a
-     * site that refuses to be read inside another app answers ANY request
-     * carrying it with HTTP 403 — theblank.net is one, and its block page says
-     * so in as many words ("You are reading from inside another app. Our reader
-     * needs a real browser to display pages"), which is what the user saw when
-     * they opened it in the verification view. Verified against the live site:
-     * the stock WebView UA is served that 403 page, and the same string with
-     * `; wv` / `Version/4.0` removed is served the real page (HTTP 200).
-     *
-     * This value is also the default User-Agent for EVERY Aniyomi/Mihon
-     * extension request ([eu.kanade.tachiyomi.network.NetworkHelper]), so the
-     * marked string made those extensions fail on exactly those sites while the
-     * same extension worked in Nekoread/Mihon, whose readers install a plain
-     * browser UA into their WebViews. The manga report — "THE BLANK loads in
-     * Nekoread and shows HTTP Error 403 here" — was that: the extension's own
-     * first request threw `HTTP Error 403` because our client presented a
-     * WebView.
-     *
-     * It stays CONSISTENT: this one value is what the extension client sends,
-     * what the verify WebView advertises and what the offscreen solver
-     * advertises, so a `cf_clearance` is still minted for the exact UA the
-     * requests then present. A clearance earned before this change was minted
-     * for the old, marked string and is simply earned again once.
-     */
     fun effectiveWebViewUa(pluginUa: String? = null): String {
         val custom = webViewCustomUa?.trim()
         if (!webViewUseDefaultUa) {
@@ -1415,13 +870,6 @@ class HikariApp : Application() {
         return withoutWebViewMarkers(stock)
     }
 
-    /**
-     * [ua] with the Android-WebView-only tokens removed — see
-     * [effectiveWebViewUa]. Takes the marker wherever it sits (`; wv)` in the
-     * modern reduced UA, `; wv;` in some legacy strings) plus `Version/4.0`, the
-     * other token a WebView adds, and tidies the double space the removal can
-     * leave behind. Anything else is the device's own UA, untouched.
-     */
     private fun withoutWebViewMarkers(ua: String): String {
         if (!ua.contains("; wv") && !ua.contains("Version/4.0")) return ua
         return ua
@@ -1431,26 +879,8 @@ class HikariApp : Application() {
             .trim()
     }
 
-    /**
-     * Most provider CDNs refuse to serve posters to a bare okhttp client: they
-     * require a browser User-Agent and a same-site Referer (hotlink protection).
-     * Coil's default loader sends neither, so every poster 403s into a blank
-     * placeholder. Wire a global loader that sends a browser UA plus a Referer
-     * derived from the image's own origin.
-     */
     private fun setupImageLoader() {
         runCatching {
-            // A home feed renders a hundred-plus posters from ONE host at once.
-            // OkHttp's default dispatcher allows only 5 concurrent requests per
-            // host, so every row after the first queued behind it and looked
-            // like it never loaded ("first some images load and then scrolling
-            // horizontal not loading"). Coil gets its own dispatcher with a much
-            // higher per-host ceiling so a whole row loads in parallel, plus a
-            // bigger connection pool so those parallel requests actually reuse
-            // sockets instead of serialising on TCP/TLS handshakes. Bounded
-            // below the old 128/32: every in-flight decode holds a full bitmap,
-            // and a fast scroll over a thousand covers with no bound is what
-            // fills a 512 MB heap with transient decodes alone.
             val dispatcher = Dispatcher().apply {
                 maxRequests = 96
                 maxRequestsPerHost = 24
@@ -1465,15 +895,6 @@ class HikariApp : Application() {
                     val req = chain.request()
                     val host = req.url.host?.lowercase() ?: ""
                     val cs3 = com.hikari.app.cs3.Cs3MainApiProvider
-                    // Header sets to try, best guess first: the exact headers a
-                    // provider declared for this poster URL, then the Referer it
-                    // declared for this image host, then a same-origin Referer
-                    // (hotlink protection), then a completely bare request.
-                    // Hosts that refuse ANY Referer (see NO_REFERER_HOSTS) start
-                    // bare. The old code only ever tried two of these and only
-                    // when the first answer was a 401/403 — a CDN that answers
-                    // a hotlink rejection with a 200 HTML page slipped through
-                    // and Coil then failed to decode it into a blank cell.
                     val variants = ArrayList<Map<String, String>>(4)
                     if (host !in NO_REFERER_HOSTS) {
                         cs3.imageHeaders[req.url.toString()]?.let { variants.add(it) }
@@ -1487,13 +908,6 @@ class HikariApp : Application() {
 
                     var last: Response? = null
                     for (headers in variants) {
-                        // OkHttp refuses a second proceed() on a call whose
-                        // previous response body is still open ("cannot make a
-                        // new request because the previous response is still
-                        // open"), and it throws that from a dispatcher thread,
-                        // which takes the whole process down. Close the attempt
-                        // we are about to replace BEFORE asking for the next
-                        // one — closing it after the proceed was the crash.
                         last?.close()
                         last = null
                         val builder = req.newBuilder().header("User-Agent", Http.UA)
@@ -1514,23 +928,8 @@ class HikariApp : Application() {
             val loader = ImageLoader.Builder(this)
                 .okHttpClient(client)
                 .crossfade(true)
-                // Extension logos and addon icons are frequently `.svg`
-                // (SkyStream addon manifests point at e.g.
-                // dramayo.stream/static/dramayo.svg, several CS3 repos ship
-                // vector icons), and Coil 2 has no SVG support at all — every
-                // one of those decodes to a failure, which is why such rows
-                // showed the monochrome puzzle-piece glyph. The decoder is
-                // registered here (once, for the whole app) so repository
-                // listings, installed-extension rows and Stremio addon icons
-                // all render their real logo.
                 .components {
                     add(coil.decode.SvgDecoder.Factory())
-                    // PAGE IMAGES, when the manga reader asked for its borders to be
-                    // cropped: Nekoread's own Coil decoder (ported with the reader)
-                    // decodes the page, measures the blank margins and cuts them, and
-                    // it is registered for the whole app because the reader's photo
-                    // pages go through this same loader. Opt-in per request (see
-                    // `cropBorders` on the builder), so nothing else is affected.
                     add(com.hikari.app.reader.coil.TachiyomiReaderDecoder.Factory())
                     // IMAGES LOADED THROUGH AN EXTENSION'S OWN CLIENT — the fetcher
                     // layer Nekoread registers into its image loader, ported whole
@@ -1563,27 +962,13 @@ class HikariApp : Application() {
                 // aggregator hosts) should still land in Coil's disk cache.
                 .respectCacheHeaders(false)
                 .memoryCache {
-                    // Decoded bitmaps live in RAM. Coil's default is 25% of the
-                    // app heap, which on a poster grid (a few hundred covers,
-                    // several full-size) can fill the heap on its own and OOM the
-                    // process. Scale to the actual heap instead: 1/8 of it,
-                    // floored at 24 MB (a screenful or two of thumbnails) and
-                    // capped at 96 MB so a huge-heap device doesn't hoard memory
-                    // it doesn't need.
-                    //
-                    // A TELEVISION gets less of the same heap — see the note on
-                    // [com.hikari.app.data.PerfMode.tvDevice]. Between this
-                    // cache, the native QuickJS engines and the decoder buffers,
-                    // a 1-1.5GB box has to leave room for the engines: they are
-                    // the work that cannot be redone cheaply, while a poster that
-                    // has to be decoded again is a frame of a scroll. The floor is
-                    // lower too (16MB), because on a box this small a 24MB floor
-                    // is a fifth of what the process was given.
                     val heap = Runtime.getRuntime().maxMemory()
                     val cap = if (com.hikari.app.data.PerfMode.tvDevice) {
                         (heap / 12).coerceIn(16L * 1024 * 1024, 64L * 1024 * 1024)
+                    } else if (heap <= 384L * 1024 * 1024) {
+                        32L * 1024 * 1024
                     } else {
-                        (heap / 8).coerceIn(24L * 1024 * 1024, 96L * 1024 * 1024)
+                        (heap / 8).coerceIn(24L * 1024 * 1024, 64L * 1024 * 1024)
                     }
                     coil.memory.MemoryCache.Builder(this@HikariApp)
                         .maxSizeBytes(cap.toInt())
@@ -1600,13 +985,6 @@ class HikariApp : Application() {
         }
     }
 
-    /**
-     * True when [response] actually carries an image: a 2xx whose body is
-     * declared as an image type. A missing Content-Type is accepted (Coil sniffs
-     * the bytes), but a text/html body is rejected — several CDNs answer a
-     * hotlink rejection with a soft 200 HTML page, which Coil would otherwise
-     * try to decode into a blank cell.
-     */
     private fun isUsableImage(response: Response): Boolean {
         if (!response.isSuccessful) return false
         val type = response.body?.contentType()?.type?.lowercase() ?: return true
@@ -1615,41 +993,22 @@ class HikariApp : Application() {
 
     private fun initCloudStream(context: Context) {
         try {
-            // Mirrors the reference host (CloudStreamApp.onCreate). The jar
-            // currently ships the JVM stub of com.lagradost.api.ContextHelper
-            // (getContext() always null), so this is a no-op today — but if the
-            // jar is ever swapped for the Android artifact, the WebViewResolver
-            // shadow in com/lagradost/cloudstream3/network needs the host
-            // context wired exactly this way.
             try {
                 setContext(context)
             } catch (t: Throwable) {
                 android.util.Log.e("HikariApp", "setContext failed", t)
             }
-            // Plugins read CloudStreamApp.context for their Cloudflare bypass,
-            // preference keys and WebView cookies — the jar's CloudStreamApp is
-            // shadowed (it compiled against Coil 3 and failed to resolve), so
-            // wire the shadow's context to the real app context here.
             try {
                 com.lagradost.cloudstream3.CloudStreamApp.setContext(context)
             } catch (t: Throwable) {
                 android.util.Log.e("HikariApp", "CloudStreamApp.setContext failed", t)
             }
 
-            // CloudStream's buildDefaultClient inserts Conscrypt as the JSSE
-            // provider before building okhttp — mirror it so TLS handshakes to
-            // the streaming CDNs behave identically.
             try {
                 Security.insertProviderAt(Conscrypt.newProvider(), 1)
             } catch (_: Throwable) {
             }
 
-            // Accessing the jar's MainActivityKt initializes its own default
-            // nicehttp Requests (jackson responseParser + CloudStream user-agent).
-            // Wire up the real okhttp client (redirects, generous timeouts +
-            // connection retry exactly like CloudStream's buildDefaultClient,
-            // 50MiB cache, optional SSL-ignore) so slow anime sites don't throw
-            // on the 10s okhttp defaults.
             fun build(ignoreSSL: Boolean) = OkHttpClient.Builder()
                 .dns(DohDns)
                 // Same jar as PlayerHttp so Fastream cookies from embed extract
@@ -1661,15 +1020,6 @@ class HikariApp : Application() {
                 .connectTimeout(20, TimeUnit.SECONDS)
                 .readTimeout(30, TimeUnit.SECONDS)
                 .apply { if (ignoreSSL) ignoreAllSSLErrors() }
-                // No HTTP response cache on the plugin client: plugin HTML/API responses are
-            // dynamic, and a cached block/empty page poisoned catalog rows (persistent
-            // "No items" while CloudStream, which sets no cache, shows content).
-                // CloudStream parity on bot walls: the solving interceptor earns
-                // the clearance in a hidden WebView and retries with it — the
-                // same solve CloudStream's own killer runs — instead of only
-                // replaying a clearance the user earned by hand (all the
-                // reuse-only verifier did, which left every challenged
-                // catalogue row empty until a manual globe verify).
                 .addInterceptor(com.hikari.app.net.ExtensionCloudflareInterceptor { com.hikari.app.net.Http.UA })
                 .build()
 
@@ -1682,11 +1032,6 @@ class HikariApp : Application() {
             wire("getInsecureApp", ignoreSSL = true)
             MainAPI.settingsForProvider = SettingsJson()
 
-            // Warm the 810-extractor registry (constructs every built-in
-            // extractor, loading newpipe/cryptography/ksoup classes) on a
-            // background thread so the first "load sources" click is instant
-            // and any initialization failure surfaces as a caught error
-            // instead of a silent hang on first play.
             CoroutineScope(Dispatchers.IO).launch {
                 try {
                     Class.forName("com.lagradost.cloudstream3.utils.ExtractorApiKt")
@@ -1695,12 +1040,6 @@ class HikariApp : Application() {
                 }
             }
 
-            // Pre-warm the classes the plugin path is known to touch, so a
-            // missing/broken one shows up as a clear, logged cause chain at
-            // startup instead of a bare NoClassDefFoundError thrown from deep
-            // inside a plugin (or — worse — a plugin settings dialog, which is
-            // where CloudStream's own CommonActivity.showToast died on
-            // `databinding/ToastBinding` and took the app down with it).
             CoroutineScope(Dispatchers.IO).launch {
                 val probes = listOf(
                     "com.lagradost.cloudstream3.syncproviders.AccountManager",

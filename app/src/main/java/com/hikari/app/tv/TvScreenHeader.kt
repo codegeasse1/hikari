@@ -15,13 +15,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
-/**
- * The television page header every tab screen opens with: a large title with
- * an optional count line under it, and room for actions on the right — the
- * same shape on Extensions, Catalog, Library, Search and Stats, so the tabs
- * read as one interface instead of five phone pages that happen to share a
- * rail.
- */
 @Composable
 fun TvScreenHeader(
     title: String,

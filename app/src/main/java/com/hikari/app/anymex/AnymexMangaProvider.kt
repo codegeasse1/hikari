@@ -25,27 +25,13 @@ class AnymexMangaProvider(override val config: ProviderConfig) : ContentProvider
         const val CATALOG_POPULAR = "popular"
         const val CATALOG_LATEST = "latest"
         private const val MAX_CHAPTERS = 2000
-        // Same preview set served for different chapters = not pages (the
-        // Ex-Love / My-Meddler class: the same 2 previews in every chapter of
-        // every manga). Real pages differ per chapter, so a set repeating
-        // verbatim for another chapter is previews/covers — honest empty.
         private val previewSets = ConcurrentHashMap<String, String>()
         fun isPreviewUrl(u: String): Boolean {
             val low = u.lowercase()
             return "thumb" in low || "preview" in low || "?type=" in low || "thumbnail" in low
         }
         fun normImg(u: String): String = u.substringBefore("?").substringBefore("#").trim().lowercase()
-        // A header/divider image served inside EVERY chapter (the "Episode 4"
-        // bar class): identical page SETS never repeat so isPreviewSet cannot
-        // see it — one chrome image hiding inside otherwise-different pages.
-        // Tracked per normalized URL across chapters: a URL seen in 3+
-        // different chapters of one provider is site chrome, dropped going
-        // forward. Sets (not counts) so reopening one chapter never trips it.
         private val chromeChapters = ConcurrentHashMap<String, MutableSet<String>>()
-        // Headers open the chapter (page 1): the same exact image leading 2+
-        // chapters is a title card, even before the 3-chapter general rule
-        // trips. Position-gated (first page only) so shared covers mid-chapter
-        // are never caught by it.
         private val chromeFirsts = ConcurrentHashMap<String, MutableSet<String>>()
         fun isChromeFirst(providerId: String, normUrl: String, chapterUrl: String): Boolean {
             if (normUrl.isBlank() || chapterUrl.isBlank()) return false
@@ -131,10 +117,6 @@ class AnymexMangaProvider(override val config: ProviderConfig) : ContentProvider
                 lastOutcome[config.id] = "✓ ${native.size} titles (native)"
                 return@withContext native
             }
-            // The module answered empty with no challenge to recognise (an
-            // empty 200, a site that wants a browser session first): be the
-            // browser once, offscreen, then ask the module again before the
-            // homepage fallback reports. Spaced per host inside the solver.
             if (warmSite()) {
                 val retryRaw = when (ref.id) {
                     CATALOG_LATEST -> AnymexRuntime.latest(mod, config.id, p)
@@ -146,11 +128,6 @@ class AnymexMangaProvider(override val config: ProviderConfig) : ContentProvider
                     return@withContext retry
                 }
             }
-            // Same stale-paths fallback as the video engine (see
-            // AnymexHomepage) — but never for the known sites, whose native
-            // API paths answer for them and whose homepage cards the native
-            // detail calls could not open. Only on a recorded failure, and
-            // only on page 1, which is the only page a front page has.
             if (p == 1 && !isMangaDex() && !isWebtoons() && !isComick() &&
                 lastOutcome[config.id]?.startsWith("✗") == true
             ) {
@@ -309,15 +286,6 @@ class AnymexMangaProvider(override val config: ProviderConfig) : ContentProvider
             ),
         ).getOrNull().orEmpty()
 
-    /**
-     * The viewer HTML for a title. A viewer page carries the whole episode
-     * sequence list server-rendered (the list page's own `<ul>` is filled
-     * client-side, so the list URL alone can never yield chapters), and the
-     * strip images of its own episode inline. Accepts a viewer URL (used
-     * directly) or a list URL (bootstrapped through the first episode's
-     * viewer link embedded in the list page's dto JSON). Blank when neither
-     * shape is usable — the caller falls through to the JS module path.
-     */
     private fun webtoonsViewerHtml(idOrUrl: String): String {
         val u = webtoonsNormalize(idOrUrl)
         if (u.isBlank()) return ""
@@ -332,13 +300,6 @@ class AnymexMangaProvider(override val config: ProviderConfig) : ContentProvider
         return webtoonsFetch(first)
     }
 
-    /**
-     * Native Webtoons chapters (verified against the live site 2026-10-12):
-     * one viewer fetch yields every episode — `<a .../viewer?title_no=N
-     * &episode_no=M><img ... alt="Ep. M - Title">` in the toolbar sequence
-     * list. The JS module path stays as the fallback (Canvas/Discover titles
-     * the regexes below do not cover keep working exactly as before).
-     */
     private fun nativeWebtoonsChapters(item: MediaItem): List<Episode> {
         val html = webtoonsViewerHtml(item.id)
         if (html.isBlank()) return emptyList()
@@ -360,17 +321,6 @@ class AnymexMangaProvider(override val config: ProviderConfig) : ContentProvider
         return byNo.values.sortedBy { it.number }
     }
 
-    /**
-     * Native Webtoons pages (verified against the live site 2026-10-12): the
-     * episode's own viewer HTML carries every full-size strip in its
-     * `var imageList = [{url, sortOrder, ...}]` block — one list per episode,
-     * which is the ONLY per-episode page source on the page. A page-wide
-     * `webtoon-phinf` scan is kept strictly as a fallback (older markup):
-     * without it every episode of a preview-walled title returned the same
-     * series-level covers, i.e. identical "pages" in every chapter of every
-     * manga. An imageList block that is present but empty means the episode
-     * is locked — honest empty, never fallback covers.
-     */
     private fun nativeWebtoonsPages(chapterUrl: String): List<StreamSource> {
         val u = webtoonsNormalize(chapterUrl)
         if (u.isBlank() || !u.startsWith("http") || "viewer" !in u) return emptyList()
@@ -513,9 +463,6 @@ class AnymexMangaProvider(override val config: ProviderConfig) : ContentProvider
             val mod = module() ?: return@withContext null
             var raw = AnymexRuntime.detail(mod, config.id, item.id)
             var d = raw?.let { digDetail(it) }
-            // A module behind a bot wall answers empty/throws on the first
-            // call (the 0-chapters report over a site that lists fine in a
-            // browser): be the browser once, then ask again before reporting.
             if (d == null && warmSite()) {
                 raw = AnymexRuntime.detail(mod, config.id, item.id)
                 d = raw?.let { digDetail(it) }
@@ -525,23 +472,11 @@ class AnymexMangaProvider(override val config: ProviderConfig) : ContentProvider
                 lastOutcome[config.id] = "✗ " + detailError(raw).take(160)
                 return@withContext null
             }
-            // Modules disagree on where the chapters live: most answer a
-            // top-level "chapters"/"episodes" array, but some nest it (per
-            // volume, under "list"/"data", or beside a "titles" array that
-            // only names the volumes). The recursive scan takes the first
-            // non-empty array whose items look like chapters (objects with a
-            // link) instead of reporting "no chapters" over an answer that
-            // has them. Bounded (depth + node cap) so a huge detail blob
-            // cannot hang the chapter load.
             var arr = dd.optJSONArray("chapters") ?: dd.optJSONArray("episodes")
                 ?: dd.optJSONObject("data")?.optJSONArray("chapters")
                 ?: dd.optJSONObject("data")?.optJSONArray("episodes")
                 ?: dd.optJSONArray("list") ?: dd.optJSONArray("data")
                 ?: findChapterArray(dd)
-            // A module answering the chapter list bare (a top-level array of
-            // chapter links, no detail object around it): digDetail kept the
-            // first entry as the "detail", so no chapters were found above —
-            // read the raw answer itself before reporting none.
             if (arr == null) {
                 arr = runCatching { JSONArray(raw?.trim().orEmpty()) }.getOrNull()
                     ?.takeIf { it.length() > 0 && isChapterArray(it) }
@@ -588,12 +523,6 @@ class AnymexMangaProvider(override val config: ProviderConfig) : ContentProvider
         episodes
     }
 
-    /**
-     * First non-empty array in [root] whose items look like chapters
-     * (objects carrying a url/link), at any nesting depth. Breadth-first so
-     * the shallowest candidate wins; bounded so a pathological blob cannot
-     * hang the load. Null when nothing chapter-shaped exists.
-     */
     private fun findChapterArray(root: JSONObject): JSONArray? {
         val queue = ArrayDeque<Pair<Any, Int>>()
         queue += root to 0
@@ -636,11 +565,6 @@ class AnymexMangaProvider(override val config: ProviderConfig) : ContentProvider
     override suspend fun getStreams(item: MediaItem, episode: Episode?): List<StreamSource> =
         withContext(Dispatchers.IO) {
             val chUrl = episode?.id?.takeIf { it.isNotBlank() } ?: return@withContext emptyList()
-            // A covers-only module answers the series art for every chapter —
-            // the per-page identity of a covers answer. Any page equal to the
-            // detail poster is dropped at every branch below (not only when
-            // ALL pages match it), so such a module reports honest empty
-            // instead of painting the same image in every chapter.
             val chPoster = item.posterUrl?.trim().orEmpty()
             // Native MangaDex at-home server (no JS module required)
             if (isMangaDex()) {
@@ -650,12 +574,6 @@ class AnymexMangaProvider(override val config: ProviderConfig) : ContentProvider
                     return@withContext pages
                 }
             }
-            // Native Webtoons strips (no JS module required): the viewer HTML
-            // carries every full-size strip inline — see nativeWebtoonsPages.
-            // Universal: ANY module can hand back a webtoons.com viewer URL
-            // while its own pages() serves the same 2 previews for every
-            // chapter, so prefer the episode's own imageList whenever the
-            // chapter itself is a Webtoons viewer link, regardless of owner.
             if (isWebtoons() || ("webtoons.com" in chUrl.lowercase() && "viewer" in chUrl.lowercase())) {
                 val pages = nativeWebtoonsPages(chUrl)
                 if (pages.isNotEmpty()) {
@@ -695,9 +613,6 @@ class AnymexMangaProvider(override val config: ProviderConfig) : ContentProvider
                         // dividers) goes too — see isChromeImage.
                         val nu = normImg(u)
                         if (isPreviewUrl(u) || (chPoster.isNotBlank() && (u == chPoster || nu == normImg(chPoster))) || !seenAnymex.add(u) || !seenAnymexNorm.add(nu) || isChromeImage(config.id, nu, chUrl) || (out.isEmpty() && isChromeFirst(config.id, nu, chUrl))) continue
-                        // Hotlink-guarded CDNs refuse a page with no Referer even
-                        // when no Cloudflare wall exists — the module often names
-                        // none, so the chapter itself stands in (plus Origin/UA).
                         val h = mapHeaders(e.optJSONObject("headers")).toMutableMap()
                         if (h.keys.none { it.equals("Referer", ignoreCase = true) }) {
                             h["Referer"] = chUrl
@@ -737,17 +652,10 @@ class AnymexMangaProvider(override val config: ProviderConfig) : ContentProvider
                     else -> {}
                 }
             }
-            // Same 2 previews for every chapter of every manga (the Ex-Love /
-            // My-Meddler class): real pages differ per chapter, so a set that
-            // repeats verbatim for a different chapter is previews, not pages.
             if (out.isNotEmpty() && isPreviewSet(config.id, chUrl, out.map { it.url })) {
                 lastOutcome[config.id] = "✗ chapter locked or pages-walled"
                 return@withContext emptyList()
             }
-            // A module answering the series covers for every chapter (the same
-            // small set, matching the detail poster) is a walls/covers answer,
-            // not pages — serving it paints identical "pages" in every chapter.
-            // Report it honestly instead, like a locked Webtoons episode.
             if (out.size >= 2 && out.map { normImg(it.url) }.toSet().size == 1) {
                 lastOutcome[config.id] = "chapter locked or pages-walled"
                 return@withContext emptyList()
@@ -817,12 +725,6 @@ class AnymexMangaProvider(override val config: ProviderConfig) : ContentProvider
         return parseComickList(comickFetch(path))
     }
 
-    /**
-     * Comick's API host has moved before (api.comick.fun answered, then empty):
-     * try the known hosts in order with the same path and take the first that
-     * answers JSON. One host's outage then reads as a slower catalog, never as
-     * a permanently empty one.
-     */
     private fun comickFetch(path: String): String {
         val headers = mapOf(
             "User-Agent" to "Tachiyomi Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:110.0) Gecko/20100101 Firefox/110.0",
@@ -949,12 +851,6 @@ class AnymexMangaProvider(override val config: ProviderConfig) : ContentProvider
         runCatching { AnymexPluginManager.siteUrlOf(config) }.getOrNull()
             ?.trim()?.trimEnd('/')?.ifBlank { null }.orEmpty()
 
-    /**
-     * Unwraps the runtime {ok,data} envelope of a getDetail answer: the
-     * detail object itself, whether it rides top-level, under "data", or as
-     * the first item of a "data" array. Null on {ok:false} or unparseable —
-     * the caller reports the envelope's own error instead of guessing.
-     */
     private fun digDetail(raw: String?): JSONObject? {
         if (raw.isNullOrBlank()) return null
         val txt = raw.trim()
@@ -989,23 +885,9 @@ class AnymexMangaProvider(override val config: ProviderConfig) : ContentProvider
         return "no chapters in detail answer"
     }
 
-    /**
-     * Normalizes one page URL to an absolute http(s) image link, or null
-     * when it is not a page at all: split-fragment junk from string-split
-     * parsers ("https:" stubs), document links (.html/.php), inline
-     * data:/javascript:/blob: URIs, and the chapter URL itself. Mangayomi
-     * modules serve scheme-relative (//host/…) and site-relative (/path)
-     * art; both are resolved against the module's own site, the way the
-     * Mangayomi app resolves them.
-     */
     private fun normPageUrl(raw: String, base: String, chUrl: String): String? {
         var u = raw.trim()
         if (u.isBlank() || u.contains(" ") || u.contains("{") || u.contains("}")) return null
-        // The module's own site is the authority for site-relative art, but
-        // old installs may carry no base (no meta.json baseUrl, no source
-        // URL): the chapter itself was fetched from that same site, so its
-        // origin stands in — otherwise every relative page drops and only
-        // absolute header images survive (the same-header-everywhere report).
         var b = base.trim().trimEnd('/')
         val absCh = when {
             chUrl.startsWith("http", ignoreCase = true) -> chUrl
@@ -1076,14 +958,6 @@ class AnymexMangaProvider(override val config: ProviderConfig) : ContentProvider
         if (!site.isNullOrBlank()) CloudflareVerifier.markBlocked(site)
     }
 
-    /**
-     * Be the browser once for a module that answered empty — the Anymex half
-     * of MangaProvider.warmSite. A module that builds its own client (or a
-     * site that answers the XHR with an empty 200) leaves no challenge to
-     * recognise, so the catalog stayed blank with no Verify offered. Loads
-     * the module's own site offscreen; spaced per host inside the solver.
-     * BLOCKING — every caller is already on IO.
-     */
     private fun warmSite(): Boolean {
         val site = runCatching { AnymexPluginManager.siteUrlOf(config) }.getOrNull()
             ?.takeIf { it.isNotBlank() } ?: return false

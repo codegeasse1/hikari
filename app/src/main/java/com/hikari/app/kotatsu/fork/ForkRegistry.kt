@@ -5,20 +5,6 @@ import com.hikari.app.data.ProviderConfig
 import com.hikari.app.data.ProviderType
 import org.hany18h.parsers.model.MangaParserSource as Hany18hSource
 
-/**
- * Fork parser rows — third-party Kotatsu-fork sources whose extraction code was
- * not in the app until batch 105 (skepsun/kototoro-parsers via JitPack,
- * hany18h/kotatsu-parsers vendored under `org.hany18h.parsers`).
- *
- * Row shapes (all installable, all runnable — no honest-refusal tier remains):
- *  * `manga|forksk|<ENUM>` (type MANGA, url `kotatsu://forksk/<ENUM>`) — skepsun
- *    manga/novel/image-set sources, driven by [SkepsunBridge].
- *  * `manga|forkhany|<ENUM>` (type MANGA, url `kotatsu://forkhany/<ENUM>`) —
- *    hany18h manga/novel sources, driven by [Hany18hBridge].
- *  * `forkvideo|<owner>|<ENUM>` (type FORK_VIDEO, url `forkvideo://<owner>/<ENUM>`)
- *    — skepsun VIDEO/HENTAI_VIDEO and hany18h ANIME sources, driven by
- *    [ForkVideoProvider] (chapters = episodes, pages/AnimeStreams = servers).
- */
 object ForkRegistry {
 
 	const val PREFIX_SK = "manga|forksk|"
@@ -52,11 +38,6 @@ object ForkRegistry {
 
 	private fun norm(s: String): String = s.lowercase().filter { it.isLetterOrDigit() }
 
-	/**
-	 * The skepsun source behind a repo entry title, or null. Exact enum-name
-	 * first, then punctuation-blind title with language preference — same rule
-	 * as the official matcher.
-	 */
 	fun matchSkepsun(name: String, lang: String): org.skepsun.kototoro.parsers.model.ContentParserSource? {
 		val all = runCatching {
 			org.skepsun.kototoro.parsers.model.ContentParserSource.entries.toList()

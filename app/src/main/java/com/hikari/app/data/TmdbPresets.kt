@@ -3,18 +3,6 @@ package com.hikari.app.data
 import com.hikari.app.nuvio.TmdbResolver
 import org.json.JSONObject
 
-/**
- * A ready-made TMDB catalog: one production company's films, or one network's
- * series, sorted by popularity.
- *
- * These are the "Pick a ready-made source" presets in the reference client's
- * TMDB Sources screen, and they're why a collection works with NO extensions
- * installed: TMDB's discovery endpoint can answer "popular Marvel Studios
- * films" or "popular HBO series" directly. Every id below was verified against
- * the live API (a company id and a network id are different namespaces —
- * company 174 is Warner Bros. Pictures, network 174 is AMC — which is exactly
- * why [companyId] and [networkId] are separate fields instead of one).
- */
 data class TmdbPreset(
     val key: String,
     val name: String,
@@ -31,16 +19,6 @@ data class TmdbPreset(
     val isMovie: Boolean get() = kind == MediaType.MOVIE
 }
 
-/**
- * TMDB's preset catalogs — the source kind a collection folder can hold without
- * needing any extension.
- *
- * [page] is the only thing that talks to the network. Items are built exactly
- * like [TmdbMeta]'s shelves (`providerId = "tmdb"`, `rawType = "tmdb"`, a
- * numeric TMDB id) so the detail screen resolves them — and remaps them onto an
- * installed extension by title — through the same path a TMDB "Similar" row
- * already uses, which is what makes a preset item playable like any other.
- */
 object TmdbPresets {
 
     private const val IMG = "https://image.tmdb.org/t/p/w500"
@@ -76,11 +54,6 @@ object TmdbPresets {
      *  (a collection saved by a newer build, or an edited data file). */
     fun nameOf(key: String): String = byKey(key)?.name ?: key
 
-    /**
-     * One page (TMDB pages are 20 items) of a preset catalog. Empty list on any
-     * failure — a preset that can't load must simply leave its row/geout out,
-     * never block the folder it sits in.
-     */
     suspend fun page(preset: TmdbPreset, page: Int = 1): List<MediaItem> {
         val seg = if (preset.isMovie) "movie" else "tv"
         val query = LinkedHashMap<String, String>()
@@ -124,9 +97,6 @@ object TmdbPresets {
             backdropUrl = backdrop,
             rawType = "tmdb",
             rating = o.optDouble("vote_average", 0.0).takeIf { it > 0.0 },
-            // The original (untranslated) name, so a preset row renamed by the
-            // app's TMDB language is still searched for in the extensions under
-            // the name their sites use (see MediaItem.originalTitle).
             originalTitle = originalOf(o),
             // TMDB's own adult marker (see MediaItem.nsfw).
             nsfw = o.optBoolean("adult", false),

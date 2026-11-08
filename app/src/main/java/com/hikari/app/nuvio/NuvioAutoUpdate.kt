@@ -18,35 +18,6 @@ import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
-/**
- * Silent background updater for installed Nuvio JS scrapers — the Nuvio half
- * of "plays like the reference app".
- *
- * NuvioMobile refreshes its providers from the plugin repos on its own, so a
- * site rebuild becomes a fixed provider within days there, while Hikari's
- * installed copy stayed frozen at install time — every site change arrived as
- * another "server failed / no playable links in Hikari" report (MovieBlast,
- * 4KHDHub, …). This pass runs the same manifest comparison the Extensions
- * screen's Update buttons use, headless, at most once a day, and replaces at
- * most a bounded number of scraper files per run. NUVIO-only: no other
- * engine's files are ever touched.
- *
- * Nuvio manifests carry no sha256 (only a `version` int per scraper, and the
- * installed row stores no version), so the signal is a content-hash diff: the
- * served bytes are downloaded and compared against the installed file. The
- * vendored [NuvioPluginManager] patches are applied to the served bytes BEFORE
- * comparing (content-gated, exactly like the install path), so a provider the
- * app patched on purpose is not "updated" every day back and forth.
- *
- * Safety, mirroring the manual install path:
- * - a file is replaced only when the served bytes differ from the installed
- *   ones AND validate as a nuvio provider (a `getStreams` export);
- * - the previous file is kept as a backup until the new bytes validate — an
- *   update that loads nothing restores the backup, so a bad publish can never
- *   delete a working extension;
- * - the file name never changes, so provider ids (and through them the
- *   Library/history) survive the swap.
- */
 object NuvioAutoUpdate {
 
     private const val TAG = "NuvioAutoUpdate"
@@ -66,11 +37,6 @@ object NuvioAutoUpdate {
 
     private const val REPO_TIMEOUT_SEC = 30L
 
-    /**
-     * Runs one silent pass when due. Returns how many scraper files were
-     * replaced (0 = nothing to do / not due / failed quietly). Never throws,
-     * never touches the UI.
-     */
     suspend fun runIfDue(app: HikariApp, store: AppStore): Int = withContext(Dispatchers.IO) {
         val now = System.currentTimeMillis()
         val last = runCatching { store.nuvioAutoUpdateAt() }.getOrDefault(0L)
@@ -96,14 +62,7 @@ object NuvioAutoUpdate {
             .filter { it.kind == RepoKind.NUVIO && it.url.startsWith("http") }
         if (repos.isEmpty()) return 0
 
-        // Served scraper URLs: every spelling of a manifest entry's file URL,
-        // mapped to the exact bytes URL (manifest `scrapers`, like the
-        // Extensions screen's own listing).
         val servedUrlFor = ConcurrentHashMap<String, String>()
-        // A loose identity (the branch-blind file key) can name TWO different
-        // files in one repo. This updater has no hash gate — a wrong download
-        // that still validates would SILENTLY REPLACE the provider — so a key
-        // claimed by more than one URL is ambiguous and never used for a swap.
         val ambiguousKeys = ConcurrentHashMap.newKeySet<String>()
         coroutineScope {
             val gate = Semaphore(4)
@@ -151,10 +110,6 @@ object NuvioAutoUpdate {
         }
         val file = File(path)
         val current = runCatching { file.readBytes() }.getOrNull() ?: return false
-        // The vendored patches are part of the installed file by design: apply
-        // the same content-gated patch to the served bytes first, so an
-        // unchanged upstream compares EQUAL and a changed one is judged (and
-        // validated) as the bytes that would actually be installed.
         val effective = runCatching {
             NuvioPluginManager.patchedBytes(source, served) ?: served
         }.getOrNull() ?: served

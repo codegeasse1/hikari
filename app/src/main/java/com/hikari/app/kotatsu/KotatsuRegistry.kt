@@ -12,20 +12,6 @@ import org.koitharu.kotatsu.parsers.model.ContentType
 import org.koitharu.kotatsu.parsers.model.MangaParserSource
 import java.util.concurrent.ConcurrentHashMap
 
-/**
- * Registry of the bundled Kotatsu parsers (the official `kotatsu-parsers`
- * library — the exact extraction code the Kotatsu app runs, 1200+ manga /
- * manhwa / manhua / comics / novel sources).
- *
- * Each parser becomes one `manga|kotatsu|<NAME>` provider row, so the whole
- * existing manga pipeline (Extensions toggles, manga-tab catalogues, search,
- * detail, chapters, reader) works on them unchanged — the bridge to the
- * Tachiyomi source API is [KotatsuBridge], served through [MangaProvider].
- *
- * Kotatsu parsers are manga-family only (there are no anime or movie parsers
- * in that ecosystem): anime and movies keep riding the anime/video engines
- * (Aniyomi, CloudStream, Zangetsu, …), which already cover them.
- */
 object KotatsuRegistry {
 
     const val PREFIX = "manga|kotatsu|"
@@ -72,16 +58,6 @@ object KotatsuRegistry {
         val isBroken: Boolean = false,
     )
 
-    /**
-     * The site entries of [text] when it is a Kotatsu parser list — a
-     * `{"sites": [...]}` object, or a bare array of the same entry shape —
-     * else null (a Mihon/Aniyomi index, a repo.json, …).
-     *
-     * A bare array is only claimed when it is Kotatsu-shaped (an entry with a
-     * `contentType`, or an `icon` with no `apk`/`packageName`): an Aniyomi
-     * index must keep falling through to its own "add it as an Aniyomi repo"
-     * redirect instead of being misread here.
-     */
     fun parseSiteIndex(text: String): List<KotatsuSiteEntry>? {
         val t = text.trim()
         if (t.isEmpty()) return null
@@ -144,12 +120,6 @@ object KotatsuRegistry {
         )
     }
 
-    /**
-     * The repo listing: every usable bundled parser as one installable entry,
-     * so a Kotatsu repo opens exactly like an LNReader one — a card per
-     * source with Install/Uninstall. `contentKind = "manga"` keeps the whole
-     * list under the one heading instead of "Extensions".
-     */
     fun repoPlugins(): List<Cs3RepoPlugin> =
         allSources().filter { !it.isBroken }.map { src ->
             Cs3RepoPlugin(
@@ -166,17 +136,6 @@ object KotatsuRegistry {
             )
         }.sortedBy { it.name.lowercase() }
 
-    /**
-     * The bundled parser behind a third-party repo entry, or null when no
-     * bundled parser is that source.
-     *
-     * The entry carries no code — only the fork's site descriptor — so this
-     * is a title match against the parsers shipped in the app (an exact
-     * enum-name match first, then a punctuation-blind title match, preferring
-     * the entry's language). A miss is honest, not fatal: the entry is still
-     * listed (see [pluginsForRepo]) so the repo reads as its own list, and
-     * only its Install refuses, naming the reason.
-     */
     fun matchBundled(name: String, lang: String): MangaParserSource? {
         val all = allSources()
         if (name.isNotBlank()) {
@@ -201,16 +160,6 @@ object KotatsuRegistry {
         (normSiteName(e.name).ifBlank { "source" } + "-" +
             e.lang.trim().lowercase().ifBlank { "all" }).take(80)
 
-    /**
-     * A third-party repo's own listing: one entry per site IT publishes, in
-     * its order — never the bundled index. Entries matching a bundled parser
-     * install exactly like official ones (`kotatsu://…`, same row, same
-     * installed state); entries matching a fork parser (skepsun/kototoro or
-     * vendored hany18h) install as runnable fork rows (manga/novel under
-     * `manga|fork…|`, video/anime as fork-video rows); only sources no
-     * parser in the app can run list under [UNBUNDLED_PREFIX] with an honest
-     * refusal on Install.
-     */
     fun pluginsForRepo(indexText: String): List<Cs3RepoPlugin> {
         val sites = parseSiteIndex(indexText) ?: return emptyList()
         return sites.filter { !it.isBroken && it.name.isNotBlank() }.map { e ->
@@ -288,15 +237,6 @@ object KotatsuRegistry {
         }
     }
 
-    /**
-     * The auto-seed from 0.11.69 installed 1200+ provider rows at once, which
-     * lagged the manga tab into crashes (log-proven: 1502 installed providers,
-     * megabyte scroll keys). It is gone: Kotatsu sources are now installed
-     * one-by-one from the Extensions → Kotatsu repos folder, like every other
-     * engine. This one-time sweep removes the seeded rows; sources the user
-     * installed themselves from the folder afterwards are untouched (marked by
-     * [AppStore.kotatsuPruned]).
-     */
     suspend fun pruneSeeded(store: AppStore) {
         if (runCatching { store.kotatsuPruned() }.getOrDefault(false)) return
         val have = runCatching { store.providers() }.getOrDefault(emptyList())

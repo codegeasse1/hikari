@@ -4,27 +4,6 @@ import org.json.JSONObject
 import java.util.Calendar
 import java.util.Locale
 
-/**
- * What the Stats page is made of: one bucket per calendar day (time spent, videos
- * started, chapters read) plus a running total per title, so the page can print
- * "12m / 1 item / 1 day active", a rank, a favourite title and a heatmap without
- * touching the watch history itself.
- *
- * Why a store of its own rather than arithmetic over [HistoryEntry]:
- *  - history holds ONE row per video (a re-watch overwrites the position), so
- *    "time spent" cannot be recovered from it at all;
- *  - history is the "continue watching" list, and it is cleared/filtered by the
- *    user for reasons that have nothing to do with what they watched;
- *  - a chapter of a manga is not in the video history at all.
- *
- * The whole thing is one small JSON string under a single preference key (see
- * [AppStore.watchStatsFlow]), written through the store's atomic `edit`, so the
- * player, the reader and the Stats page can all touch it concurrently without
- * losing a write.
- *
- * Time is bucketed by the DEVICE's local day ([dayKey]): "days active" and the
- * heatmap are about the user's evenings, not about UTC midnight.
- */
 object WatchStats {
 
     /** The kind of thing a title total belongs to — the favourite-title card's
@@ -38,13 +17,6 @@ object WatchStats {
         val seconds: Long = 0L,
         val videos: Int = 0,
         val chapters: Int = 0,
-        /**
-         * What made up that day, per title — so tapping a square on the heatmap
-         * can say WHAT was watched and for how long, not just "2m watched".
-         * Keyed like [Snapshot.titles] ([titleKey]). Empty for a day that a
-         * build predating this field logged, which reads as a plain time with no
-         * breakdown rather than as wrong numbers.
-         */
         val titles: Map<String, TitleTotal> = emptyMap(),
     ) {
         val isEmpty: Boolean get() = seconds <= 0L && videos == 0 && chapters == 0
@@ -61,19 +33,6 @@ object WatchStats {
         val videos: Int = 0,
         /** Chapters read on it. */
         val chapters: Int = 0,
-        /**
-         * The key this row is filed under — the string the writer used to
-         * identify the title ([titleKey]): the player's watch-history key
-         * (`"<providerId>|<MOVIE|SERIES>|<mediaId>|<episodeId>"`), or
-         * `"manga:<providerId>|<url>"` for a chapter, or `"title:<name>"`.
-         *
-         * It is what turns a Stats row back into a route to the title itself
-         * (see [com.hikari.app.ui.navigation.Routes.fromStatsKey]), so it is
-         * carried on the row rather than looked up again at draw time. Not a
-         * stored field: the document's maps are already keyed by it, so it is
-         * filled in at DECODE time — which also means rows an older build wrote
-         * get theirs for free.
-         */
         val key: String = "",
     )
 
@@ -124,12 +83,6 @@ object WatchStats {
                 .sortedByDescending { it.key }
                 .map { it.key to it.value }
 
-        /**
-         * Consecutive active days ending today. A day with nothing logged YET
-         * does not break the streak (at 09:00 the user has not watched anything
-         * today, and "0 day streak" for a run that is still alive is simply
-         * wrong), so the count starts at yesterday in that case.
-         */
         fun currentStreak(today: String = dayKey()): Int {
             val cursor = parseDay(today) ?: return 0
             if (days[dayKeyOf(cursor)]?.isEmpty != false) cursor.add(Calendar.DAY_OF_MONTH, -1)
@@ -159,12 +112,6 @@ object WatchStats {
             return best
         }
 
-        /**
-         * [weeks] columns of seven days, oldest column first, each row a weekday
-         * starting at Sunday (the "S M T W T F S" the heatmap is labelled with).
-         * A cell is null for a day that has not happened yet, so the current
-         * week's tail stays blank instead of reading as "no activity".
-         */
         fun heatmap(weeks: Int = 12, today: String = dayKey()): List<List<HeatCell?>> {
             val todayCal = parseDay(today) ?: return emptyList()
             val sunday = (todayCal.clone() as Calendar).apply {
@@ -191,12 +138,6 @@ object WatchStats {
         }
     }
 
-    // ---- The rank ladder -------------------------------------------------
-    //
-    // Ten hours of watching is the first rung, and the ladder is deliberately
-    // long-tailed: the names stop being flattering somewhere around "Sleepless
-    // Archon", which is the point. [Rank.xp] counts 1 per six minutes, so the
-    // reference app's "12m · 2 XP" comes out exactly (see [rankFor]).
 
     private val TIERS: List<Pair<String, Float>> = listOf(
         "Filthy Casual" to 1f,
@@ -423,13 +364,6 @@ object WatchStats {
         val dayKey = dayKey(at)
         val day = days[dayKey] ?: Day()
         val tk = titleKey(key, title)
-        // The row this event belongs to, merged over whatever that day/whole-log
-        // total already held. Also used for the ONE-TIME events (`addVideo`,
-        // `addChapter`, which carry no seconds of their own): a title row is
-        // recorded for every event, not only for the ones with time on them —
-        // opening a chapter and closing it again is an item consumed, and it used
-        // to leave no row at all, so "Items consumed: 9" sat next to a title list
-        // that could account for none of them.
         fun bump(prev: TitleTotal?): TitleTotal = TitleTotal(
             title = title?.takeIf { it.isNotBlank() } ?: prev?.title.orEmpty(),
             posterUrl = posterUrl?.takeIf { it.isNotBlank() } ?: prev?.posterUrl,
@@ -437,9 +371,6 @@ object WatchStats {
             kind = kind?.takeIf { it.isNotBlank() } ?: prev?.kind.orEmpty(),
             videos = (prev?.videos ?: 0) + videos,
             chapters = (prev?.chapters ?: 0) + chapters,
-            // The row's own key, so the Stats page can reopen the title (see
-            // TitleTotal.key). `tk` is fixed for this entry, so it never has to
-            // come from `prev`.
             key = tk.orEmpty(),
         )
         val dayTitles = if (tk == null) {

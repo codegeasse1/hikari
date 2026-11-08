@@ -63,29 +63,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import com.hikari.app.tv.tvTextFieldKeys
 
-/**
- * Signing in to a tracker (Settings → Trackers).
- *
- * When the app ships its own registration for the service (see
- * [com.hikari.app.data.TrackerBuiltIn] — Kitsu needs none at all), there is
- * no first step: the sign-in opens straight away and the flow is tap → Sign
- * in → the service's own login page in the user's browser → approve → back
- * in the app, which names the account it signed in as. Only when nothing is
- * shipped does the dialog ask for an app of the user's own (the exact page
- * to create it and the exact redirect URI to paste into it), because a
- * client id belongs to whoever registered it. After that the sign-in is
- * whatever that service uses: the service's own login page in the dialog's
- * own in-app view ([TrackerFlow.CODE]/[TrackerFlow.TOKEN]), the account's own
- * credentials ([TrackerFlow.PASSWORD]), or a short code the user confirms on the
- * service's own site ([TrackerFlow.PIN]/[TrackerFlow.DEVICE]). In-app first is
- * deliberate: it appears on every device, guaranteed, while an
- * outside-browser tap can silently go nowhere — the real browser stays one
- * tap away under the view for the bot checks a WebView cannot pass.
- *
- * Every path ends in a sentence — the sign-in either works and names the account
- * it signed in as, or it says what the service refused. There is no state where
- * this dialog quietly does nothing.
- */
 @Composable
 fun TrackerLoginDialog(
     app: HikariApp,
@@ -127,9 +104,6 @@ fun TrackerLoginDialog(
         com.hikari.app.data.TrackerBuiltIn.clientFor(kind) != null
     }
 
-    // Strings used from NON-composable places (callbacks, coroutines): `tr` is
-    // itself composable and cannot be called from there, so those go through
-    // I18n.t — the same rule the rest of the app follows.
     val copiedMsg = I18n.t("Copied")
     val missingId = I18n.t("Paste the app id you created — it is the value labelled \"Client ID\".")
     val missingSecret = I18n.t("This service also shows a client secret — both values are needed.")
@@ -145,10 +119,6 @@ fun TrackerLoginDialog(
     fun finish(account: TrackerAccount) {
         scope.launch {
             runCatching { app.store.setTrackerAccount(account) }
-            // The client that signed this in goes to the store too: the sync
-            // layer reads the STORE (never this dialog), so a sign-in through
-            // the shipped registration would otherwise leave it with no app
-            // id after a restart — signed in, but nothing syncing.
             runCatching { app.store.setTrackerClient(client) }
             // The sign-in is over, so nothing is waiting for a redirect any
             // more (see TrackerApi.Pending).
@@ -208,34 +178,17 @@ fun TrackerLoginDialog(
                 val url = TrackerApi.authorizeUrl(kind, client.id, loginState)
                 busy = true
                 scope.launch {
-                    // Ask the service FIRST whether it will show a login page for
-                    // this app id, instead of sending the user to whatever it
-                    // answers with (see TrackerApi.checkAuthorize — an unknown id
-                    // comes back as a `401` with a Basic-auth challenge, which a
-                    // browser draws as a username/password box captioned "OAuth",
-                    // not as an error the user could act on).
                     val check = TrackerApi.checkAuthorize(kind, client.id, loginState)
                     busy = false
                     if (check.isFailure) {
                         error = check.exceptionOrNull()?.message
                         return@launch
                     }
-                    // Persisted BEFORE the page opens: a redirect that arrives
-                    // after this dialog is gone still carries a code state that
-                    // only this record knows (see TrackerApi.Pending).
                     runCatching {
                         app.store.setTrackerPending(
                             TrackerApi.Pending(kind, client.id, loginState)
                         )
                     }
-                    // The login page opens HERE first, in the dialog's
-                    // own in-app view (below): it appears on every device,
-                    // guaranteed — an outside-browser tap that silently goes
-                    // nowhere used to leave the user staring at "the page is
-                    // open in your browser" with no page anywhere and no
-                    // address to recover it with. The real browser stays one
-                    // tap away under the view, for the bot checks a WebView
-                    // cannot pass.
                     lastAuthUrl = url
                     webUrl = url
                     browserOpened = false
@@ -260,15 +213,6 @@ fun TrackerLoginDialog(
         }
         when (kind.flow) {
             TrackerFlow.TOKEN -> {
-                // The mistake this flow invites, named out loud. AniList's
-                // developer page renders the app's CLIENT SECRET directly above
-                // the client id, and it is 32 characters of exactly the alphabet
-                // a token uses — so it passes the "looks like a token" check
-                // below, goes to the API, and comes back as a flat "Invalid
-                // token" that explains nothing (the user's own screenshot: the
-                // secret pasted into the token field, red "AniList: Invalid
-                // token" under it). If what was pasted IS the stored secret or
-                // the stored id, say exactly that instead.
                 if (fromPaste && (text == client.secret || text == client.id)) {
                     handled = true
                     error = I18n.t(
@@ -306,12 +250,6 @@ fun TrackerLoginDialog(
         }
     }
 
-    // The dialog is the one component that can finish a browser sign-in (see
-    // TrackerRedirect): the `state` the service will check is generated HERE —
-    // and for MyAnimeList it is the PKCE `code_verifier` — so a `hikari://oauth`
-    // link that arrives from the device's browser while this dialog is open is
-    // handed straight into the paste path below, which already knows how to read
-    // a token or a code out of a whole URL.
     DisposableEffect(Unit) {
         TrackerRedirect.dialogOpen = true
         onDispose {
@@ -328,14 +266,6 @@ fun TrackerLoginDialog(
         handleRedirect(url, fromPaste = true)
     }
 
-    // The app credentials the user pasted last time decide which step opens:
-    // the credential fields, or the sign-in itself. The app's OWN
-    // registration ([TrackerBuiltIn]) wins over anything typed in the past —
-    // a stale id from before the app shipped its own must never shadow it —
-    // and the sign-in step opens straight away, so the flow is tap → Sign in
-    // → browser login page → approve → back in the app, with no developer
-    // pages and no paste. "Use a different app id" below still reaches the
-    // manual fields, and Continue there sticks per device until reset.
     LaunchedEffect(kind) {
         val stored = runCatching { app.store.trackerClient(kind) }.getOrDefault(TrackerClient(kind))
         val builtIn = com.hikari.app.data.TrackerBuiltIn.clientFor(kind)
@@ -345,17 +275,10 @@ fun TrackerLoginDialog(
         client = effective
         idField = effective.id
         secretField = effective.secret
-        // Kitsu takes the account itself (password grant): there is no app
-        // registration for it at all, so the credential fields must never
-        // show — the sign-in step (e-mail + password) opens straight away.
         credentialsDone = effective.ready || kind.flow == TrackerFlow.PASSWORD
         loading = false
     }
 
-    // The login page's WebView is destroyed as soon as it leaves the screen: a
-    // WebView left alive keeps a cookie jar, a session and tens of megabytes with
-    // it, and the next sign-in (a different account) would silently reuse the
-    // first one's session.
     DisposableEffect(webUrl) {
         onDispose {
             runCatching {
@@ -369,10 +292,6 @@ fun TrackerLoginDialog(
         }
     }
 
-    // A code sign-in is a loop: ask the service until the user confirms the code,
-    // it expires, or the dialog goes away. Deliberately slow (the service's own
-    // interval) — polling faster is how an app gets rate-limited out of its own
-    // sign-in.
     LaunchedEffect(device) {
         val login = device ?: return@LaunchedEffect
         val deadline = System.currentTimeMillis() + login.expiresInSec * 1000L
@@ -608,9 +527,6 @@ fun TrackerLoginDialog(
                             TextButton(onClick = {
                                 Logs.log("Trackers", "${kind.label} confirm tap url=" + login.verifyUrl.take(160))
                                 if (!openUrl(context, login.verifyUrl)) {
-                                    // No browser to open: the same page in our
-                                    // own web view, so the tap still lands
-                                    // somewhere instead of dying silently.
                                     val inApp = runCatching {
                                         context.startActivity(
                                             Intent(context, WebViewActivity::class.java).apply {
@@ -620,10 +536,6 @@ fun TrackerLoginDialog(
                                         )
                                     }.isSuccess
                                     if (!inApp) {
-                                        // The tap must never die silently: the
-                                        // address is copied so the sign-in can be
-                                        // finished by hand in any browser, and the
-                                        // failure is logged + said out loud.
                                         Logs.log("Trackers", "${kind.label} confirm open failed everywhere — address copied instead")
                                         copy(login.verifyUrl)
                                         error = I18n.t(
@@ -658,13 +570,6 @@ fun TrackerLoginDialog(
                         Spacer(Modifier.height(8.dp))
                         if (url == null) {
                             if (browserOpened && lastAuthUrl != null) {
-                                // The normal case now: the service's login page
-                                // is open in the user's browser. Approve the
-                                // app there, then paste the code/token back
-                                // here (or copy the redirect link whole — the
-                                // paste path reads a token or a code out of
-                                // it). The in-app page is one tap away for a
-                                // device whose browser cannot finish the flow.
                                 Text(
                                     tr(
                                         "The login page is open in your browser — approve the app " +
@@ -676,11 +581,6 @@ fun TrackerLoginDialog(
                                 )
                                 Spacer(Modifier.height(6.dp))
                                 val auth = lastAuthUrl.orEmpty()
-                                // The address itself, always: when the browser
-                                // tap goes nowhere the user still sees WHERE
-                                // the page lives and can copy it by hand —
-                                // "no URL, nowhere to get the token" was the
-                                // whole of that report.
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Text(
                                         auth,
@@ -741,12 +641,6 @@ fun TrackerLoginDialog(
                             AndroidView(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    // Taller than it was (360dp): AniList's
-                                    // login page is a form plus a Cloudflare
-                                    // Turnstile widget, and at 360dp the
-                                    // widget's "Verify you are human" box and
-                                    // the login button both fell below the
-                                    // fold of the box itself.
                                     .height(430.dp),
                                 factory = { ctx ->
                                     WebView(ctx).apply {
@@ -784,9 +678,6 @@ fun TrackerLoginDialog(
                                         settings.setSupportZoom(true)
                                         settings.builtInZoomControls = true
                                         settings.displayZoomControls = false
-                                        // Nothing here needs the file system or
-                                        // a popup window, and both have been a
-                                        // source of WebView escapes in the past.
                                         settings.allowFileAccess = false
                                         settings.allowContentAccess = false
                                         settings.setSupportMultipleWindows(false)
@@ -806,16 +697,6 @@ fun TrackerLoginDialog(
                                                 return false
                                             }
 
-                                            // The pre-API-24 overload, and it is
-                                            // NOT dead code: a `hikari://` redirect
-                                            // that arrives from a plain 30x
-                                            // (Shikimori's, MAL's) dispatches
-                                            // through THIS one on some WebView
-                                            // builds, and the app then saw
-                                            // "ERR_UNKNOWN_URL_SCHEME" in the box
-                                            // instead of a sign-in. Both are
-                                            // handled so the flow does not depend
-                                            // on which overload the engine picked.
                                             @Suppress("DEPRECATION")
                                             override fun shouldOverrideUrlLoading(
                                                 view: WebView,
@@ -833,11 +714,6 @@ fun TrackerLoginDialog(
                                                 url: String?,
                                                 favicon: android.graphics.Bitmap?,
                                             ) {
-                                                // A custom scheme the WebView cannot load
-                                                // is where the flow ENDS, and on some
-                                                // builds the hand-off never reaches
-                                                // shouldOverrideUrlLoading — so it is
-                                                // caught here as well.
                                                 val target = url.orEmpty()
                                                 if (target.startsWith("hikari://")) {
                                                     handleRedirect(target)
@@ -845,21 +721,6 @@ fun TrackerLoginDialog(
                                                 }
                                             }
 
-                                            /**
-                                             * A `401` carrying `WWW-Authenticate: Basic`
-                                             * is how MyAnimeList refuses an authorize
-                                             * request whose client id it does not know
-                                             * (realm "OAuth"), and the default handling
-                                             * is the DEVICE's own username/password
-                                             * dialog — a box that belongs to no service,
-                                             * cannot succeed, and is the "cheap login
-                                             * page" that does not look like the real
-                                             * one. Cancel it and say what happened
-                                             * instead; [start] preflights the same thing
-                                             * (see TrackerApi.checkAuthorize), so this
-                                             * is the backstop for an id that was valid
-                                             * when the page opened and is not any more.
-                                             */
                                             override fun onReceivedHttpAuthRequest(
                                                 view: WebView?,
                                                 handler: android.webkit.HttpAuthHandler?,
@@ -921,21 +782,6 @@ fun TrackerLoginDialog(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                             }
-                            // Some services (AniList is the reliable one) put a
-                            // Cloudflare "verify you are human" step in front of
-                            // their login page, and a WebView is exactly what
-                            // that check is suspicious of — it can sit there
-                            // failing its own verification forever. A real
-                            // browser passes it, and the redirect it ends on is
-                            // then in the address bar to copy into the field
-                            // below, which is what the line above tells the user
-                            // to do.
-                            // The address itself, always — exactly like the
-                            // device flow's confirmation row: when the
-                            // browser tap goes nowhere the user still sees
-                            // WHERE the page lives and can copy it by hand.
-                            // "Simkl shows a link I can copy, AniList shows
-                            // nothing" was the whole of that report.
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(
                                     url,

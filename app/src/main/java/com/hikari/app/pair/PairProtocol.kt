@@ -7,46 +7,12 @@ import java.net.NetworkInterface
 import java.security.SecureRandom
 import java.util.Locale
 
-/**
- * The wire format of Hikari's device pairing, in ONE place.
- *
- * The whole feature is deliberately tiny and deliberately ours: two Hikari
- * installs on the same Wi-Fi find each other with a six-character code, and the
- * device that was set up first sends the other one its complete setup (settings,
- * installed extensions, repos, history — everything `BackupManager` puts in a
- * backup file). There is no account, no server, no cloud and no upload: the
- * bytes go straight from one phone to the other over the local network, which is
- * why the user is asked to be on the same Wi-Fi and why nothing here needs a
- * privacy note.
- *
- * What a "code" is:
- *
- *  * six characters from an alphabet with no `0`/`O` and no `1`/`I`/`L`, so it
- *    can be read off a television screen and typed on a phone without a mistake
- *    (the two devices are rarely both phones — one is usually a TV, and a TV has
- *    no camera, so the typed code is the path that has to be pleasant);
- *  * generated with [SecureRandom], and it is the ONLY thing standing between a
- *    neighbour's phone and the user's whole setup: the HTTP server that carries
- *    the data refuses every request whose token is not this code, and the UDP
- *    beacon answers only a probe that already carries it. A 6-character code
- *    from a 32-letter alphabet is 2^30 combinations, the pairing window is
- *    minutes long and one guess costs a round trip, so the code is the
- *    authentication — obfuscating it in the QR would add nothing;
- *  * valid only while the pairing screen is open. Nothing is listening on the
- *    LAN after that (see [PairHost.stop]).
- */
 object PairProtocol {
 
     /** Protocol marker in a QR payload: `hikari://pair?...`. */
     const val URI_SCHEME = "hikari"
     const val URI_HOST = "pair"
 
-    /**
-     * The UDP port the beacon listens on, fixed so a guest can find a host
-     * WITHOUT knowing its address (which is the point: the guest may be a TV with
-     * no keyboard, and its user certainly does not want to read an IP off one
-     * screen and type it on another).
-     */
     const val UDP_PORT = 47821
 
     /** Probe/reply markers. The probe carries the code, so only the device that
@@ -74,28 +40,12 @@ object PairProtocol {
         return sb.toString()
     }
 
-    /**
-     * What the user typed, as the code it must have meant: upper case, letters
-     * and digits only, and folded to the alphabet's own conventions (`O`/`0`
-     * become nothing — they are not in the alphabet, so a code containing one was
-     * never ours — while the letters that ARE in it are kept as typed).
-     */
     fun normalizeCode(raw: String): String =
         raw.uppercase(Locale.US).filter { ALPHABET.indexOf(it) >= 0 }.take(CODE_LENGTH)
 
     /** True when [code] is a complete, plausible code (see [CODE_LENGTH]). */
     fun looksComplete(code: String): Boolean = code.length == CODE_LENGTH
 
-    /**
-     * The QR payload. It carries the host's address AND its port so a scan needs
-     * no discovery at all, plus the device name and the host's app version so the
-     * guest can say WHAT it found before it touches anything ("Pixel 7 · Hikari
-     * 0.10.20" rather than "192.168.1.5"), and the code itself.
-     *
-     * Short keys on purpose: a QR this small scans from further away and in worse
-     * light, and every character in it is one more module on a screen the other
-     * device has to photograph.
-     */
     fun uri(host: String, port: Int, code: String, deviceName: String, version: String): String {
         val params = StringBuilder()
         params.append("h=").append(host)
@@ -175,15 +125,6 @@ object PairProtocol {
         return null
     }
 
-    /**
-     * This device's own IPv4 address on the local network, which is what the QR
-     * carries and what the guest dials.
-     *
-     * Wi-Fi and Ethernet first, then anything else that is up and not a tunnel:
-     * a phone usually also has a cellular and a VPN interface, and handing out
-     * `10.8.0.2` (a VPN) or a carrier address as "the address to type" is the
-     * kind of help that costs an hour.
-     */
     fun localIpv4(): String? {
         val candidates = ArrayList<Pair<String, String>>()
         runCatching {
@@ -246,14 +187,6 @@ object PairProtocol {
     }.getOrNull()
 }
 
-/**
- * Where a pairing is aimed: the address to dial, the port, and the code that is
- * both the name of the session and the only thing that authorises it.
- *
- * [host] may be BLANK, which is not an error — it means "this code came from a
- * typed code, find the device yourself" (see [PairClient.discover]). [deviceName]
- * is whatever the QR carried and is used to say what was found.
- */
 data class PairTarget(
     val host: String,
     val port: Int,

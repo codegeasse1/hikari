@@ -129,10 +129,6 @@ fun HistoryScreen(nav: NavHostController, embedded: Boolean = false) {
             Spacer(Modifier.height(8.dp))
         }
         if (hasMangaProgress) {
-            // What you were READING is history in the same sense as what you
-            // were watching, so it sits at the top of this list (see
-            // MangaContinueShelf). The shelf draws nothing when empty, and the
-            // item is only added when it will draw something.
             item(key = "history-manga") {
                 MangaContinueShelf(nav)
                 Spacer(Modifier.height(12.dp))

@@ -95,30 +95,6 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import com.hikari.app.tv.tvTextFieldKeys
 
-/**
- * Settings → Backup & Restore → Pair & sync: moving a Hikari setup from one
- * device to another over the Wi-Fi, with no file, no account and no cable.
- *
- * Why it exists: the backup file works, but getting it from the phone that is
- * set up to a brand-new television is a chain of chores — back up, find the file,
- * move it to a USB stick or a chat, get it onto the TV, find it in a picker.
- * Two devices on the same Wi-Fi can do it directly: this screen is the sending
- * end (show a QR code and a six-character code) and the receiving end (scan the
- * QR, or type the code), and the payload is the exact same backup
- * [BackupManager] writes to a file — so the transfer needs no format of its own
- * and cannot get half of a restore right that the file path gets wrong.
- *
- * The screen is BOTH ends on purpose. A user setting up a new device opens this
- * screen on both of them, and which card they use is decided by which device
- * they are holding — the alternative (a "send" screen and a "receive" screen,
- * chosen from a menu) means guessing a direction before the app has said what
- * either end does.
- *
- * One caution the UI states plainly: a receive REPLACES this device's setup with
- * the other device's. That is the point of it, and it is also the only way to
- * lose data here, which is why it is confirmed in a dialog before anything is
- * fetched.
- */
 @Composable
 fun PairScreen(app: HikariApp, onBack: () -> Unit) {
     val context = LocalContext.current
@@ -132,17 +108,9 @@ fun PairScreen(app: HikariApp, onBack: () -> Unit) {
     var hostError by remember { mutableStateOf("") }
     var servedCount by remember { mutableStateOf(0) }
     var lastGuest by remember { mutableStateOf("") }
-    // Leaving the screen stops the server. This is the whole security story of
-    // the feature: there is nothing listening on the LAN once the user walks
-    // away from this page, so a code that was photographed over a shoulder is
-    // worthless a minute later.
     DisposableEffect(Unit) {
         onDispose { host.stop() }
     }
-    // The one thing a sender can be told: that the other device really connected.
-    // A watchdog rather than a callback, because the fetch happens on the
-    // NanoHTTPD worker thread and a screen that never learns about it is a screen
-    // that says "waiting…" forever.
     LaunchedEffect(hosting) {
         while (hosting) {
             servedCount = host.served
@@ -150,9 +118,6 @@ fun PairScreen(app: HikariApp, onBack: () -> Unit) {
             delay(600)
         }
     }
-    // The QR encodes the address it was built with, so it is rebuilt when (and
-    // only when) a session exists. Cheap enough to do inline: one bitmap per
-    // session, not per frame.
     val payload = session?.takeIf { it.reachable }?.let { s ->
         remember(s) {
             PairProtocol.uri(s.host, s.port, s.code, host.deviceName(), host.appVersion())
@@ -180,14 +145,6 @@ fun PairScreen(app: HikariApp, onBack: () -> Unit) {
         report = null
     }
 
-    /** The whole receiving flow, in one place: address (given or discovered),
-     *  fetch, restore. Every step says so in [guestStatus] — a pairing that sits
-     *  on one word for ten seconds is indistinguishable from one that hung.
-     *
-     * Every sentence here goes through [I18n.t] rather than `tr`: this runs
-     * inside a coroutine, and `tr` is a composable (it re-renders when a
-     * translation lands), so it cannot be called from one.
-     */
     fun receive(target: PairTarget) {
         busy = true
         report = null
@@ -382,9 +339,6 @@ fun PairScreen(app: HikariApp, onBack: () -> Unit) {
                             }
                         }
                         Spacer(Modifier.height(12.dp))
-                        // The code, big enough to read off a television screen
-                        // and type on a phone across the room. This is the path
-                        // that has to work: a TV has no camera to scan with.
                         Text(
                             s.code.chunked(3).joinToString(" "),
                             style = MaterialTheme.typography.headlineMedium,
@@ -638,31 +592,9 @@ fun PairScreen(app: HikariApp, onBack: () -> Unit) {
     }
 }
 
-/**
- * The camera sheet that reads a pairing QR.
- *
- * A full-screen page rather than a box in the settings list, because finding a
- * QR code with a camera is a pointing task: it wants the whole screen, a bright
- * viewfinder and no scrollable content under the thumb that is holding the
- * device. Decoding runs on its own worker thread (the analyzer's executor), so
- * a frame that takes a moment to read cannot stutter the preview — and the
- * moment one decodes, [onScanned] fires once and the page closes itself.
- *
- * No camera is not a dead end: this page is only reachable when the device HAS
- * one (see `hasCamera` at the call site), the permission ask is handled here,
- * and a refusal leaves the user with the message that says to use the code —
- * which is the path every television takes anyway.
- */
 @Composable
 private fun QrScannerPage(onScanned: (String) -> Unit, onClose: () -> Unit) {
     val context = LocalContext.current
-    // The Activity behind this page IS a LifecycleOwner (MainActivity is a
-    // ComponentActivity), and CameraX needs one to tie the camera session to.
-    // Reached by walking the context wrappers rather than through Compose's
-    // `LocalLifecycleOwner`: that composition local moved out of compose-ui in
-    // 1.7 and its old form is a deprecated alias, and a camera that only works
-    // while a deprecation level happens to be WARNING is not worth the coin
-    // flip.
     val lifecycleOwner = remember(context) { context.findLifecycleOwner() }
     var granted by remember {
         mutableStateOf(
@@ -755,9 +687,6 @@ private fun QrScannerPage(onScanned: (String) -> Unit, onClose: () -> Unit) {
                                     analysis,
                                 )
                             }.onFailure { e ->
-                                // Not a composable position (this runs from the
-                                // camera provider's listener), so this one goes
-                                // through I18n.t rather than `tr`.
                                 failed = I18n.t("Couldn't open the camera")
                                 Logs.logError("Pair", "camera bind failed", e)
                             }
@@ -814,16 +743,6 @@ private fun QrScannerPage(onScanned: (String) -> Unit, onClose: () -> Unit) {
     }
 }
 
-/**
- * The [LifecycleOwner] behind a context — the Activity, found by unwrapping.
- *
- * CameraX wants one so it can stop the camera when the screen goes to the
- * background; `LocalLifecycleOwner` would give the same object, but that
- * composition local moved packages in Compose 1.7 and its compose-ui form is a
- * deprecated alias (and a deprecated alias can be an ERROR when the deprecation
- * level says so). Walking the wrappers costs three lines and cannot be
- * deprecated out from under the camera.
- */
 private tailrec fun Context.findLifecycleOwner(): LifecycleOwner? = when (this) {
     is LifecycleOwner -> this
     is android.content.ContextWrapper -> baseContext.findLifecycleOwner()

@@ -12,17 +12,6 @@ import javax.crypto.spec.SecretKeySpec
 import org.json.JSONArray
 import org.json.JSONObject
 
-/**
- * Direct MovieBlast fallback for MOVIE playback.
- *
- * The MovieBlast .cs3 plugin's movie path resolves links through an encrypted
- * loader that hands Hikari an empty-but-"completed" result, so every MovieBlast
- * movie reported "No playable sources" (its series path works fine — episodes
- * play). This resolves movies straight from the MovieBlast API the same way the
- * app's own scraper does: search the title, fetch the media detail, then build
- * time-signed CDN URLs. Runs as a parallel job in getStreams and its sources
- * are merged with the plugin's, deduped by URL.
- */
 object MovieBlastResolver {
 
     private const val BASE = "https://app.cloud-mb.xyz"

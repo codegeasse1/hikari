@@ -77,14 +77,6 @@ import com.hikari.app.ui.Artwork
 import com.hikari.app.ui.ExtensionIcons
 import com.hikari.app.ui.components.PosterImage
 
-/**
- * The CloudStream desktop client's visual language, rebuilt for the
- * television layout. Every value mirrors that client's exact tokens: the
- * Navy default theme (background 0x0C0C16, card 0x161624, elevated 0x20202E,
- * divider 0x2A2A38), white primary text, hairline edges, and the reference's
- * own purple accent (0xFF6C5CE7) — hardcoded, so the TV matches the
- * reference one-to-one instead of following the phone's accent setting.
- */
 object Cs3 {
 
     /** Page background: the reference default Navy. */
@@ -123,11 +115,6 @@ object Cs3 {
         @Composable get() = Purple
 }
 
-/**
- * Focus treatment for CS3 cards: a gentle scale plus an accent ring, the
- * remote's version of the desktop client's hover glow. The ring is composited
- * by alpha so an unfocused card costs nothing extra to draw.
- */
 @Composable
 fun Modifier.cs3Focus(corner: androidx.compose.ui.unit.Dp = Cs3.CornerCard): Modifier {
     var focused by remember { mutableStateOf(false) }
@@ -141,19 +128,6 @@ fun Modifier.cs3Focus(corner: androidx.compose.ui.unit.Dp = Cs3.CornerCard): Mod
         )
 }
 
-/**
- * Aspect-safe backdrop art, the reference DetailsBackdrop contract:
- *
- * - Genuinely wide art (a TMDB 16:9 backdrop) paints SHARP, top-anchored, with
- *   the reference's triple gradient (bottom scrim into the page, left
- *   vignette, vertical melt).
- * - Anything else (a portrait poster, a thumb) NEVER sharp-crops: it fills
- *   blurred behind the same gradients, exactly like the reference's
- *   blurred-fallback path.
- *
- * This is what ends the stretched-poster backdrops: a poster-only title gets
- * atmosphere, never a beheaded face.
- */
 @Composable
 fun Cs3BackdropArt(
     model: Any?,
@@ -241,12 +215,6 @@ private fun ratingSiteLabel(source: RatingSource): String = when (source) {
     RatingSource.LETTERBOXD -> "LB"
 }
 
-/**
- * The reference's ratings row: small dark pills, site name in the site
- * colour, value in white — IMDb 7.4, TMDB 7.2, MAL 74% — followed by the
- * content-rating chip. Tapping a badge opens the same source dialog as the
- * phone badges.
- */
 @Composable
 fun Cs3RatingBadges(
     ratings: List<TitleRating>,
@@ -255,9 +223,6 @@ fun Cs3RatingBadges(
     modifier: Modifier = Modifier,
 ) {
     if (ratings.isEmpty() && cert.isNullOrBlank()) return
-    // The user's text-size choice rides along (see TvUi.textScale): 1.0
-    // until they move the slider, so the row never changes for anyone who
-    // does not touch the setting.
     val ts = TvUi.scale() * TvUi.textScale()
     Row(
         modifier = modifier,
@@ -370,11 +335,6 @@ fun Cs3SquareButton(
     }
 }
 
-/**
- * A section header in the reference language: bold white title on the left
- * ("Season 2 • 3 Episodes", "Cast & Crew", "Screenshots", "Show Details"),
- * actions pinned right.
- */
 @Composable
 fun Cs3SectionHeader(
     title: String,
@@ -452,23 +412,6 @@ fun Cs3HeroDots(
     }
 }
 
-/**
- * The reference's episode card: a 16:9 still with the rating badge top-left
- * and the watched check top-right, then the episode code ("S2 • EPISODE 1"),
- * the bold title, a two-line synopsis and duration — over a dark card with a
- * hairline edge. Anti-spoiler blurs the still and masks the text.
- *
- * [art] is the episode's TMDB still first, then its own thumbnail (provider),
- * both landscape; [fallbackBlur] is the show art that fills sharp when there
- * is no still at all (desktop parity) — a card never wears a blank box.
- */
-/**
- * The reference's episode card, one-to-one: a single 16:9 art box with
- * 16dp corners and a hairline edge, art full-bleed, the site rating badge
- * top-start, the watched check top-end, and the code / title / two-line
- * synopsis / duration-plus-date block overlaid on the art's bottom safe
- * zone, with the continue progress floating above the bottom edge.
- */
 @Composable
 fun Cs3EpisodeCard(
     art: Any?,
@@ -491,11 +434,6 @@ fun Cs3EpisodeCard(
     textScale: Float = 1f,
 ) {
     val accent = Cs3.accent
-    // Adaptive TV type: the card's text rides the viewport scale (see
-    // TvUi.scale) so a dense stick screen doesn't set 19sp titles into a
-    // card half the height, and a 4K panel doesn't whisper — and the user's
-    // text-size choice rides along too (see TvUi.textScale, 1.0 until they
-    // move the slider).
     val ts = TvUi.scale() * textScale.coerceIn(0.5f, 1.5f) * TvUi.textScale()
     Box(
         modifier = modifier
@@ -522,9 +460,6 @@ fun Cs3EpisodeCard(
                     .then(if (hideSpoilers) Modifier.blur(14.dp) else Modifier),
             )
         } else if (fallbackBlur != null) {
-            // The show's own art as a last resort, painted SHARP like the
-            // desktop client — a blurred copy of the detail banner behind
-            // every card is what read as the same image repeating itself.
             PosterImage(
                 model = fallbackBlur,
                 contentDescription = null,
@@ -609,9 +544,6 @@ fun Cs3EpisodeCard(
                 )
             }
         }
-        // Bottom scrim: text sits directly on full-bleed art, and on a
-        // bright still the synopsis vanished. A bottom-up gradient keeps
-        // every line readable.
         Box(
             modifier = Modifier
                 .align(Alignment.BottomStart)
@@ -727,11 +659,6 @@ fun Cs3EpisodeCard(
     }
 }
 
-/**
- * The reference's poster card: a 2:3 poster with 8dp corners, the rating
- * badge top-left, the title below in white. Posters stay posters — never
- * stretched into landscape frames.
- */
 @Composable
 fun Cs3PosterCard(
     model: Any?,
@@ -860,11 +787,6 @@ fun Cs3PersonCard(
     }
 }
 
-/**
- * The reference's dialog panel: an elevated dark box with 20dp corners and a
- * hairline edge — Select Provider, Manage Feed, confirmations. Content goes
- * inside; the panel only owns the container.
- */
 @Composable
 fun Cs3DialogPanel(
     modifier: Modifier = Modifier,
@@ -881,12 +803,6 @@ fun Cs3DialogPanel(
     }
 }
 
-/**
- * The reference's shelf header, one-to-one: bold title, the "View All" pill
- * in the reference purple, and the two scroll chevrons. [scroll] drives the
- * chevrons (4 items per tap); [leadingExtra] slots content like
- * "Clear History" before the pill.
- */
 @Composable
 fun Cs3ShelfHeader(
     title: String,
@@ -993,11 +909,6 @@ private fun Cs3Chevron(
     }
 }
 
-/**
- * The reference's plugin/extension box, one-to-one: 46dp icon, name + flag,
- * version • size • repo line, two-line description, up to 3 type chips, and
- * the Install / Installed / Uninstall action. Built for the 2-per-row grid.
- */
 @Composable
 fun Cs3PluginCard(
     name: String,
@@ -1018,9 +929,6 @@ fun Cs3PluginCard(
     onSettingsClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    // Explicit TV focus chain: the card hands Down to its first action, the
-    // gear and the action chain Left/Right, and both hand Up back to the
-    // card — the D-pad can reach everything on the 2-per-row grid.
     val cardFocus = remember { FocusRequester() }
     val settingsFocus = remember { FocusRequester() }
     val actionFocus = remember { FocusRequester() }
@@ -1242,13 +1150,6 @@ fun Cs3PluginCard(
 
 @Composable
 private fun Cs3PluginIcon(iconUrl: String?, name: String) {
-    // A repo plugin whose icon URL is missing OR dead (hotlink-guarded CDN,
-    // expired file) used to paint a blank dark square. The letter fallback
-    // now covers both: blank shows it at once, dead swaps to it when the
-    // retries give up (see PosterImage.onFinalError).
-    // Repo listings template their icons and the phone row substitutes
-    // the size before display: without the same step here every templated
-    // URL fails to load and the card falls to the letter glyph.
     val safeIcon = iconUrl
         ?.replace("%exact_size%", "64")
         ?.replace("%size%", "64")
@@ -1370,11 +1271,6 @@ fun Cs3CountHeader(
     }
 }
 
-/**
- * The reference's 16:9 screenshots mosaic, one-to-one: the featured shot at
- * half width, the 2x2 grid beside it, and the dark "+N more" cell when shots
- * remain. 6dp gaps, 14dp corners.
- */
 @Composable
 fun Cs3ScreenshotsMosaic(
     screenshots: List<String>,
@@ -1640,11 +1536,6 @@ fun Cs3CastHeader(
     }
 }
 
-/**
- * The reference's actor card: 2:3 art with 14dp corners, the voice-actor
- * mini avatar bottom-end, name + "🎙 Voice:" line below, and the "View All
- * Cast & Crew" tile that closes the row.
- */
 @Composable
 fun Cs3ActorCard(
     imageUrl: String?,
@@ -1779,11 +1670,6 @@ fun Cs3ViewAllCastCard(
     }
 }
 
-/**
- * The reference's Show Details block: two columns of label/value rows with
- * hairline dividers, then the studio and network logo rows (white logo
- * chips, like the reference).
- */
 @Composable
 fun Cs3ShowDetails(
     rows: List<Pair<String, String>>,

@@ -12,20 +12,6 @@ import com.google.zxing.common.HybridBinarizer
 import com.google.zxing.qrcode.QRCodeWriter
 import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
 
-/**
- * QR codes, both directions, with zxing-core (a small pure-Java library and the
- * only new dependency pairing needs — see the note in app/build.gradle.kts).
- *
- * Encoding a pairing payload and decoding ONE camera frame are both here, and
- * nothing else: there is no still-image path (a screenshot of the code would
- * need a picker and a full-size bitmap decode) because the typed code is the
- * fallback every device already has.
- *
- * The code is written DARK-ON-LIGHT and rendered with a white margin, always,
- * whatever the app's theme is: a QR is read by a camera that knows nothing about
- * dark mode, and an inverted or dark-on-dark code simply does not scan. The
- * screen that shows one puts it on a white card for the same reason.
- */
 object QrCode {
 
     /** Pixels per side of the bitmap [encode] returns. A pairing payload is ~90
@@ -33,11 +19,6 @@ object QrCode {
      *  per module at this size, i.e. a code that scans from a metre away. */
     const val SIZE_PX = 512
 
-    /**
-     * Encodes [text] as a QR bitmap. `MARGIN 1` (the quiet zone in modules) plus
-     * the white card the caller draws around it is what makes the code findable;
-     * a QR rendered edge-to-edge on a dark panel reads as a texture, not a code.
-     */
     fun encode(text: String, sizePx: Int = SIZE_PX): Bitmap? = runCatching {
         val hints = HashMap<EncodeHintType, Any>().apply {
             put(EncodeHintType.MARGIN, 1)
@@ -57,19 +38,6 @@ object QrCode {
         Bitmap.createBitmap(pixels, sizePx, sizePx, Bitmap.Config.ARGB_8888)
     }.getOrNull()
 
-    /**
-     * Reads a QR out of one camera frame's luminance plane.
-     *
-     * The Y plane of a YUV_420_888 frame is already a greyscale image, which is
-     * exactly what zxing wants — decoding it directly is the difference between
-     * a scanner that keeps up with the preview and one that stutters, because
-     * converting the frame to RGB first would be a full-frame colour pass per
-     * frame for information the reader throws away.
-     *
-     * [rowStride] is the plane's own row length, which on most devices is WIDER
-     * than [width] (the hardware pads each row for alignment) — passing the
-     * visible width there shears the image and nothing ever decodes.
-     */
     fun decodePlanes(data: ByteArray, width: Int, height: Int, rowStride: Int): String? {
         if (width <= 0 || height <= 0 || rowStride < width) return null
         return runCatching {

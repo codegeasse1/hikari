@@ -35,9 +35,6 @@ object TrackerLibraryRepository {
         r.onFailure { errors["tracker:$key"] = it.message ?: "couldn't load" }
             .onSuccess { shelves ->
                 if (shelves.isEmpty()) {
-                    // Connected but nothing to show — the blank catalogue the
-                    // user reported. A note (not silence) so Home's empty
-                    // state and the next log both say it.
                     errors["tracker:$key"] =
                         "Connected, but its watchlist, history, collection and lists are all empty — add something on that service first."
                 } else {
@@ -65,9 +62,6 @@ object TrackerLibraryRepository {
                 }
             }.getOrDefault("")
         }
-        // "me" is Trakt's own alias for the token owner — when the stored
-        // username is stale (rename) or missing, the endpoints below still
-        // answer under "me" instead of failing the whole catalogue.
         val who = listOf(user.takeIf { it.isNotBlank() }.orEmpty(), "me").distinct().filter { it.isNotBlank() }
         if (who.isEmpty()) return Result.failure(IllegalStateException("Trakt username is unavailable; reconnect Trakt."))
         val out = ArrayList<Shelf>()
@@ -116,9 +110,6 @@ object TrackerLibraryRepository {
             return emptyList()
         }
 
-        // Ten endpoints, one wave: the old code walked them one after
-        // another on a single worker (~6s in the log before the first shelf
-        // could draw). Same requests, same parsing — just concurrently.
         val movies: List<MediaItem>
         val shows: List<MediaItem>
         val watchedMovies: List<MediaItem>
@@ -153,9 +144,6 @@ object TrackerLibraryRepository {
         }
         if (movies.isNotEmpty()) out += Shelf("trakt.watchlist.movies", "Trakt Watchlist · Movies", movies)
         if (shows.isNotEmpty()) out += Shelf("trakt.watchlist.shows", "Trakt Watchlist · Shows", shows)
-        // Watched (all-time) AND history (recent plays): sync pushes to
-        // history, so an account whose history lives there must show it even
-        // when the watched roll-up is empty.
         val hm = (watchedMovies + historyMovies).distinctBy { it.uniqueId }
         if (hm.isNotEmpty()) out += Shelf("trakt.history.movies", "Trakt History · Movies", hm)
         val hs = (watchedShows + historyShows).distinctBy { it.uniqueId }
@@ -255,9 +243,6 @@ object TrackerLibraryRepository {
         val account=app.store.trackers().firstOrNull{it.kind==TrackerKind.ANILIST}
             ?: return Result.failure(IllegalStateException("Connect AniList in Settings \u2192 Trackers first."))
         val out=ArrayList<Shelf>()
-        // Anime lists, then manga lists: a tracker that also holds manga shows
-        // both — manga rows carry rawType "manga", which is what sends their
-        // tap to the manga engines instead of the video detail page.
         aniListAuthFailed = false
         val animeLists=aniListCollection(app, account, "ANIME")
             ?: return Result.failure(IllegalStateException(
@@ -295,11 +280,6 @@ object TrackerLibraryRepository {
             "Accept" to "application/json",
             "Content-Type" to "application/json",
         )
-        // 429/5xx + network blips retry with backoff (AniList rate-limits
-        // bursts — the searches tripping 429 in the same minute prove the
-        // window was hot, and that is exactly the transient "did not return
-        // a library" a reopen fixed). 401/other 4xx never retry: the login
-        // itself is dead.
         val waits = longArrayOf(0, 2_000, 6_000, 15_000)
         for (attempt in waits.indices) {
             if (attempt > 0) delay(waits[attempt])
@@ -519,12 +499,6 @@ object TrackerLibraryRepository {
         val imdb = ids?.optString("imdb")?.takeIf { it.startsWith("tt") }
         val traktId = ids?.optInt("trakt", 0) ?: 0
         val slug = ids?.optString("slug").orEmpty()
-        // Anime/donghua on Trakt frequently carry neither a TMDB nor an IMDb
-        // id — dropping those rows emptied whole libraries even though the
-        // sync history proves the account holds them. Keep them as virtual
-        // tracker rows (resolved by title at open, like every other tracker
-        // row) instead of deleting them from the shelf — even when Trakt
-        // sent no ids object at all.
         if (tmdb <= 0 && imdb == null && traktId <= 0) {
             val key = slug.ifBlank { title.lowercase().replace(Regex("[^a-z0-9]+"), "-").trim('-') + (year?.let { "-$it" } ?: "") }
             if (key.isBlank()) return null
@@ -543,12 +517,6 @@ object TrackerLibraryRepository {
         val ids = o.optJSONObject("ids") ?: return null
         val tmdb = ids.optInt("tmdb", 0)
         val imdb = ids.optString("imdb").takeIf { it.startsWith("tt") }
-        // Anime Simkl has not mapped yet carries neither id: keep it as a
-        // tracker row (playable by title search) instead of dropping it from
-        // the shelf entirely. Only anime gets this fallback — anything else
-        // would misread a live-action row as anime downstream.
-        // Manga rows get the same treatment (a Simkl manga id instead): a
-        // manga entry must never fall through to the anime path.
         val simklId = ids.optInt("simkl", 0)
         var id: String? = if (tmdb > 0) tmdb.toString() else imdb
         if (id == null && (anime || manga)) id = simklId.takeIf { it > 0 }?.toString()
@@ -579,12 +547,6 @@ object TrackerLibraryRepository {
         java.util.concurrent.ConcurrentHashMap<Int, Boolean>()
     )
 
-    /**
-     * Fills the posters Trakt itself did not send. Only rows WITH a TMDB id
-     * qualify — an exact id lookup, never a title search, so a wrong show's
-     * artwork can never land on a row. Bounded (80 lookups per load, all at
-     * once) and best-effort: a slow TMDB delays shelves, never fails them.
-     */
     private suspend fun enrichTraktPosters(shelves: MutableList<Shelf>) {
         val missing = shelves.flatMap { it.items }
             .filter { it.posterUrl.isNullOrBlank() && it.providerId == "tmdb" }

@@ -96,28 +96,6 @@ import java.util.Date
 import java.util.Locale
 import com.hikari.app.tv.tvTextFieldKeys
 
-/**
- * The Telegram tab.
- *
- * Two halves, and they answer different questions:
- *
- *  * **Your Telegram** — a real client, on TDLib, signed in to the user's own
- *    account (see `com.hikari.app.telegram.Td`). This is what reads Saved
- *    Messages, private channels and groups, chats with people, and any channel
- *    the account is in, public or not. Videos play straight out of TDLib, over
- *    the same player everything else uses.
- *  * **Public channels** — the no-account half ([TelegramWeb]): a channel's
- *    `t.me/s/<name>` preview carries its video files' own CDN URLs, so a public
- *    channel can be watched without signing in to anything at all.
- *  * **Video links** — single posts added by hand (`t.me/<channel>/<id>`, see
- *    [TelegramLinks]). One video each rather than a feed, resolved at play time
- *    with the account when there is one and from the post's own public page
- *    otherwise, so a saved link outlives the short-lived file reference
- *    Telegram handed back when it was added.
- *
- * The tab is OFF until it is switched on (Settings → Taskbar buttons):
- * an install that never opens Telegram should not carry a ninth button.
- */
 @Composable
 fun TelegramScreen(nav: NavHostController) {
     val context = LocalContext.current
@@ -148,19 +126,11 @@ fun TelegramScreen(nav: NavHostController) {
     var typed by remember { mutableStateOf("") }
     var addError by remember { mutableStateOf("") }
     var adding by remember { mutableStateOf(false) }
-    // The + button asks which kind of thing is being added before it asks for
-    // the thing itself: a channel (a feed to browse) and a video link (ONE post
-    // to play) are not interchangeable, and a field that silently accepts both
-    // and guesses is how "I pasted a video link and it added a whole channel".
     var addPicker by remember { mutableStateOf(false) }
     var linkOpen by remember { mutableStateOf(false) }
     var linkTyped by remember { mutableStateOf("") }
     var linkError by remember { mutableStateOf("") }
     var linking by remember { mutableStateOf(false) }
-    // Which section the list is showing. Held HERE rather than inside
-    // [TelegramHome] because adding a channel or a video link has to land the
-    // user on the section they just added to (see [addChannel]/[addLink]), and
-    // back has to step out of a section before it leaves the tab.
     var section by rememberSaveable { mutableStateOf(TgSection.CHATS) }
 
     // Hoisted: `tr` is composable and these are read inside plain functions.
@@ -187,10 +157,6 @@ fun TelegramScreen(nav: NavHostController) {
         }
         adding = true
         scope.launch {
-            // Ask Telegram for the channel's own title while we are at it, so a
-            // row reads "Netflix" and not "@netflix", and a name Telegram does
-            // not know is refused here rather than stored as a row that can
-            // never load.
             val info = withContext(Dispatchers.IO) { TelegramWeb.load(handle) }
             adding = false
             if (info == null) {
@@ -219,10 +185,6 @@ fun TelegramScreen(nav: NavHostController) {
         }
         linking = true
         scope.launch {
-            // Read Telegram's own title (and its still, when the post's public
-            // page carries one) for the row. The link is stored even when
-            // nothing answers: Telegram withholds some files from browsers, and
-            // the row's Play button resolves the link again with the account.
             val described = withContext(Dispatchers.IO) {
                 runCatching { TelegramLinks.describe(parsed) }.getOrDefault(parsed)
             }
@@ -236,11 +198,6 @@ fun TelegramScreen(nav: NavHostController) {
         }
     }
 
-    // Back steps OUT of what is open instead of leaving the tab: an open chat or
-    // channel first, then a section other than the first one. Without this the
-    // press fell through to the navigation host, so backing out of a chat landed
-    // on the app's Home tab — the report — and a section was a place the user
-    // could only leave with the tab's own controls.
     BackHandler(enabled = openChat != 0L || openName != null || section != TgSection.CHATS) {
         when {
             openChat != 0L -> openChat = 0L
@@ -251,12 +208,6 @@ fun TelegramScreen(nav: NavHostController) {
 
     val openChannel = channels.firstOrNull { it.first == openName }
 
-    // One saved-state slot per Telegram PAGE — the home lists, the open chat, the
-    // open channel — so coming back from a chat or a channel lands on the list
-    // exactly where it was left rather than at its top (the same rule as
-    // ExtensionsScreen: a page's own remembered state is disposed the moment
-    // another page replaces it, so the state has to live above the swap). The
-    // home key carries the section, so each section remembers its own position.
     val pageStates = rememberSaveableStateHolder()
     val pageKey = when {
         openChat != 0L -> "chat|" + openChat
@@ -311,9 +262,6 @@ fun TelegramScreen(nav: NavHostController) {
     }
     }
 
-    // The + button's chooser: what is being added, before the field that takes
-    // it. A channel and a video link lead to two different readers, so asking is
-    // clearer than guessing from what was pasted.
     if (addPicker) {
         AlertDialog(
             onDismissRequest = { addPicker = false },
@@ -398,10 +346,6 @@ fun TelegramScreen(nav: NavHostController) {
         )
     }
 
-    // Adding ONE video post: Telegram's own "Copy link" target. The link is
-    // stored whether or not its file can be read right now — the account may not
-    // be signed in yet, and a Telegram file reference would have expired anyway,
-    // so the row re-resolves the link every time it is played.
     if (linkOpen) {
         AlertDialog(
             onDismissRequest = { if (!linking) linkOpen = false },
@@ -488,12 +432,6 @@ private fun AddOptionRow(
     }
 }
 
-/**
- * The tab's landing page: three sections behind a pill strip — the chats of your
- * Telegram account, the public channels you added by hand, and the individual
- * video links you added — with the header (and the + that adds either) fixed
- * above them, so it stays reachable while the list is scrolled.
- */
 @Composable
 private fun TelegramHome(
     channels: List<Pair<String, String>>,
@@ -516,9 +454,6 @@ private fun TelegramHome(
     val chatList by Td.chats.collectAsState()
     var query by rememberSaveable { mutableStateOf("") }
 
-    // The account's chats, filtered by what the user typed. Saved Messages is
-    // always in the list (it is a chat like any other, it just has no one on
-    // the other end).
     val visibleChats = remember(chatList, query) {
         if (query.isBlank()) chatList
         else chatList.filter {
@@ -526,22 +461,7 @@ private fun TelegramHome(
         }
     }
 
-    // One strip and a header that does NOT scroll. With a couple of hundred
-    // joined chats (the report) the added channels sat at the bottom of a scroll
-    // nobody reaches, and the + that adds one scrolled away with the list, so
-    // adding a second channel meant going back to the top first. The section
-    // itself lives in the caller — see the parameter above.
 
-    // ---- Swipe between the sections, not just tap the pill ----
-    //
-    // The three are PAGES of one screen, so the gesture that reaches the next
-    // one is the gesture every other page of this app answers: a swipe (the My
-    // Stuff tab's strip works exactly like this). The pill the user taps and the
-    // page a swipe lands on are the SAME state, kept in step in both directions:
-    // tapping a pill animates the pager over, so the move reads as a page
-    // turning rather than a jump, and a swipe that settles on a page selects that
-    // section, which is what redraws the pill. Each effect checks before it
-    // writes, so neither can spin the other.
     val pages = listOf(TgSection.CHATS, TgSection.ADDED, TgSection.LINKS)
     val pager = androidx.compose.foundation.pager.rememberPagerState(
         initialPage = pages.indexOf(section).coerceAtLeast(0),
@@ -550,11 +470,6 @@ private fun TelegramHome(
     val scope = rememberCoroutineScope()
     LaunchedEffect(section) {
         val target = pages.indexOf(section)
-        // An instant jump, not an animation: this effect answers a state sync
-        // (an add landing on its section, back stepping out), and animating
-        // here fought the tab-enter transition — pages sliding against each
-        // other on open, which read as flicker. User taps still animate (see
-        // the strip handler below).
         if (target >= 0 && target != pager.currentPage) pager.scrollToPage(target)
     }
     LaunchedEffect(pager.currentPage) {
@@ -582,9 +497,6 @@ private fun TelegramHome(
                     modifier = Modifier.padding(top = 2.dp),
                 )
             }
-            // Above the list rather than inside it: the button that adds a
-            // channel or a video link has to be reachable while the list is
-            // scrolled.
             IconButton(onClick = onAddChannel) {
                 Icon(Icons.Filled.Add, contentDescription = tr("Add to Telegram"))
             }
@@ -603,9 +515,6 @@ private fun TelegramHome(
             }
         }
 
-        // The pages themselves — see the pager above. `weight(1f)`, not
-        // `fillMaxSize()`: the header and the strip above it are not part of any
-        // page, so the pager takes the room that is left.
         androidx.compose.foundation.pager.HorizontalPager(
             state = pager,
             modifier = Modifier
@@ -649,11 +558,6 @@ private object TgSection {
     const val LINKS = "links"
 }
 
-/**
- * The three halves as the My Stuff tab's pill strip: a horizontally scrollable
- * row of sections, so reaching "Added channels" or "Video links" is one tap
- * instead of a scroll past every chat the account belongs to.
- */
 @Composable
 private fun TelegramSectionStrip(
     current: String,
@@ -662,13 +566,6 @@ private fun TelegramSectionStrip(
     links: Int,
     onPick: (String) -> Unit,
 ) {
-    // The row spans the FULL width, with the 16dp edge inset as CONTENT padding
-    // rather than layout padding. That is what makes the next pill run under the
-    // screen edge and stay genuinely visible at rest: a peeking pill is the only
-    // thing that says "there are more sections this way" on a row with no
-    // scrollbar, and with layout padding the strip was 32dp narrower and the
-    // third pill ("Video links") sat entirely off-screen — which is how a whole
-    // section went unnoticed.
     LazyRow(
         Modifier
             .fillMaxWidth()
@@ -721,9 +618,6 @@ private fun TgSectionPill(
         else MaterialTheme.colorScheme.surfaceVariant,
     ) {
         Row(
-            // Compact on purpose: the pills have to leave room for the NEXT one
-            // to peek at the right edge (see TelegramSectionStrip), so every dp
-            // of padding and a step down in the type scale is what buys that.
             Modifier.padding(horizontal = 11.dp, vertical = 7.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -751,15 +645,6 @@ private fun TelegramMyChats(
     onQuery: (String) -> Unit,
     onOpenChat: (Long, String) -> Unit,
 ) {
-    // ---- main vs archived ------------------------------------------------
-    //
-    // Telegram keeps two lists and the archive is a real one: a chat the user
-    // filed away, or one Telegram archived for them when they muted it, lives
-    // there and its videos are just as playable. Only chats with a MAIN-list
-    // position used to survive the filter (see Td.publishChats), which is what
-    // made archived channels vanish. The scope pill is how they are reached,
-    // and it carries the count so the user can see there is something in the
-    // archive before tapping it.
     var archivedScope by rememberSaveable { mutableStateOf(false) }
     val archivedCount = remember(chatList) { chatList.count { it.archived } }
     val scopedChats = remember(visibleChats, archivedScope) {
@@ -791,10 +676,6 @@ private fun TelegramMyChats(
                             modifier = Modifier.fillMaxWidth().tvTextFieldKeys(query),
                         )
                     }
-                    // The two scopes, as pills — the same control the video
-                    // pages use. The archive pill only appears when there is
-                    // something in the archive, so a user with nothing archived
-                    // sees exactly the list they saw before.
                     if (archivedCount > 0) {
                         item(key = "telegram-chats-scope") {
                             Row(
@@ -907,15 +788,6 @@ private fun TelegramAddedChannels(
     }
 }
 
-/**
- * The video-links half: individual `t.me/<channel>/<id>` posts the user added.
- *
- * A channel row opens a feed; a link row plays ONE video. The link is resolved
- * the moment it is tapped (the account first, the post's own embed page second)
- * and nothing is resolved while the list is merely on screen — a link keeps
- * working months later because the STORED thing is the link, not the file
- * reference Telegram gave us when it was added.
- */
 @Composable
 private fun TelegramLinksSection(
     links: List<TelegramLinks.Link>,
@@ -937,9 +809,6 @@ private fun TelegramLinksSection(
         if (busyUrl != null) return
         busyUrl = link.url
         scope.launch {
-            // The account is asked first: it is the only reader that sees a post
-            // whose file Telegram withholds from anonymous visitors, and the
-            // only one that can read a private channel's `c/…` link at all.
             val tdVideo = if (Td.isSignedIn()) {
                 withContext(Dispatchers.IO) {
                     runCatching { Td.linkVideo(link.url) }.getOrNull()
@@ -1030,10 +899,6 @@ private fun TelegramLinkRow(
                 .background(MaterialTheme.colorScheme.surface),
             contentAlignment = Alignment.Center,
         ) {
-            // Drawn under the still on purpose: Telegram's thumbnails carry a
-            // short-lived token, so a stored one eventually fails to load — and
-            // when it does the row falls back to the play icon instead of an
-            // empty box.
             Icon(
                 Icons.Filled.PlayArrow,
                 contentDescription = null,
@@ -1076,16 +941,6 @@ private fun TelegramLinkRow(
     }
 }
 
-/**
- * The TDLib half's front door: whatever the account state is right now, this
- * card is the one place the user acts on it — set up the API credentials, type
- * the phone number, the code, the password, or read who they are signed in as.
- *
- * The credentials are asked for rather than bundled: an api_id/api_hash belongs
- * to the application that registered it (my.telegram.org → API development
- * tools), and shipping someone else's is both against Telegram's terms and
- * something Telegram revokes.
- */
 @Composable
 private fun TelegramAccountCard(app: HikariApp) {
     val context = LocalContext.current
@@ -1109,9 +964,6 @@ private fun TelegramAccountCard(app: HikariApp) {
     var password by rememberSaveable { mutableStateOf("") }
     var first by rememberSaveable { mutableStateOf("") }
     var last by rememberSaveable { mutableStateOf("") }
-    // What is wrong with the pair as typed, checked before anything is stored or
-    // sent (see [Td.keyProblem]) — so "not a valid pair" is answered at the
-    // field the user got wrong, not a round trip later.
     var keyMsg by remember { mutableStateOf<String?>(null) }
 
     // Hoisted strings (tr is composable; the click lambdas are not).
@@ -1125,10 +977,6 @@ private fun TelegramAccountCard(app: HikariApp) {
     val signIn = tr("Sign in")
     val signOutLabel = tr("Sign out")
 
-    // A pair that is ALREADY stored is shown back in the fields, so a user whose
-    // keys were rejected can see what the app is actually using and correct it
-    // in place — an empty field over a saved pair is what made "Start over" look
-    // like it did nothing.
     LaunchedEffect(auth, storedId, storedHash) {
         if (auth is Td.Auth.Idle || auth is Td.Auth.Closed) {
             if (apiId.isBlank() && storedId > 0) apiId = storedId.toString()
@@ -1188,10 +1036,6 @@ private fun TelegramAccountCard(app: HikariApp) {
             }
         }
 
-        // Whatever Telegram refused, in a sentence, right where the user is
-        // looking. Every send in the login flow reports its own result now, so
-        // this line is the difference between "it does nothing" and "that code
-        // is not right".
         problem?.let { message ->
             Spacer(Modifier.height(8.dp))
             Text(
@@ -1269,9 +1113,6 @@ private fun TelegramAccountCard(app: HikariApp) {
                                 return@TextButton
                             }
                             val id = Td.apiIdOf(apiId) ?: return@TextButton
-                            // The SANITISED pair is what is stored and sent: the
-                            // hash lowercased to its 32 hex characters is what
-                            // Telegram expects (see [Td.apiHashChars]).
                             val hash = Td.apiHashOf(apiHash) ?: return@TextButton
                             apiId = id.toString()
                             apiHash = hash
@@ -1287,9 +1128,6 @@ private fun TelegramAccountCard(app: HikariApp) {
                     ) { Text(saveKey) }
                     if (storedId > 0 && storedHash.isNotBlank()) {
                         Spacer(Modifier.width(8.dp))
-                        // Both values are shown back (the hash shortened), so it
-                        // can be compared with the page they came from without
-                        // printing a secret in full.
                         Text(
                             tr("Saved: api_id ") + storedId + " · " + storedHash.take(6) + "…" +
                                 storedHash.takeLast(4),
@@ -1329,10 +1167,6 @@ private fun TelegramAccountCard(app: HikariApp) {
                         }
                     }
                     Spacer(Modifier.width(8.dp))
-                    // A login that went nowhere (a wrong phone number, a flood
-                    // wait) is restarted from here — and a pair of keys that
-                    // Telegram refused goes back to the FIELDS, which is what
-                    // this button exists for (see [changeKeys]).
                     TextButton(
                         enabled = !busy,
                         onClick = { changeKeys() },
@@ -1472,9 +1306,6 @@ private fun TelegramAccountCard(app: HikariApp) {
             }
 
             is Td.Auth.WaitOtherDevice -> {
-                // The QR flow this build does not offer: Telegram is waiting for
-                // a confirmation on another signed-in device, and there is
-                // nothing to type here. Saying so beats an empty card.
                 Spacer(Modifier.height(8.dp))
                 Text(
                     tr(
@@ -1556,13 +1387,6 @@ private fun TelegramChatRow(
     }
 }
 
-/**
- * One chat's videos, newest first, with the older ones behind one button.
- *
- * Paging is TDLib's own (`getChatHistory` walks backwards from a message id), so
- * a channel with ten thousand posts costs one page at a time and nothing is
- * fetched twice.
- */
 @Composable
 private fun TelegramChatVideos(
     chatId: Long,
@@ -1575,9 +1399,6 @@ private fun TelegramChatVideos(
     var note by remember(chatId) { mutableStateOf<String?>(null) }
     var loadingMore by remember(chatId) { mutableStateOf(false) }
     var reachedEnd by remember(chatId) { mutableStateOf(false) }
-    // Where the next "older" page starts. 0 means there is nothing more to ask
-    // for, which is what disables the button — this is the cursor TDLib's own
-    // answer handed back, not a guess at the last row on screen.
     var cursor by remember(chatId) { mutableStateOf(0L) }
     // The channel totals ("216 photos · 3783 videos"), read once beside the
     // first page — two limit-1 index reads, no messages fetched.
@@ -1593,15 +1414,6 @@ private fun TelegramChatVideos(
         counts = withContext(Dispatchers.IO) { runCatching { Td.chatMediaCounts(chatId) }.getOrNull() }
     }
 
-    /**
-     * Walks this chat's videos one page further back.
-     *
-     * A page can legitimately hold nothing NEW (the two readers that make up a
-     * page — Telegram's video index and the raw history walk — overlap, and the
-     * index skips the text a history page is mostly made of), so this keeps
-     * asking while the cursor keeps moving back instead of giving up on the
-     * first empty diff and claiming the chat has no more videos.
-     */
     fun loadOlder() {
         if (loadingMore || cursor == 0L || videos == null) return
         loadingMore = true
@@ -1635,11 +1447,6 @@ private fun TelegramChatVideos(
         }
     }
 
-    // ---- search inside this chat (see the search button below) -------------
-    // A search that lives HERE, in the chat, and does not hand the user over to
-    // the app's Search tab: that tab searches every engine for a title, while
-    // the question here is "where in this chat is the video I posted under the
-    // tag abc". Different question, different page.
     var searchOpen by rememberSaveable(chatId) { mutableStateOf(false) }
     var typed by rememberSaveable(chatId) { mutableStateOf("") }
     var query by rememberSaveable(chatId) { mutableStateOf("") }
@@ -1676,9 +1483,6 @@ private fun TelegramChatVideos(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    // The official clients print the channel totals over the
-                    // media ("216 photos · 3783 videos") — these are the same
-                    // server-side totals, not the size of the loaded page.
                     counts?.let { (photos, vide) ->
                         listOfNotNull(
                             photos?.let { "$it " + tr("photos") },
@@ -1767,11 +1571,6 @@ private fun TelegramChatVideos(
 
         val loaded = videos
 
-        // A search with something to look for takes the page over. Its results
-        // are NOT a filter over what is loaded — a chat's videos may be 400
-        // posts deep and the tag being looked for near the bottom — so they come
-        // from the chat's own history (see Td.searchChatVideos). It stays on
-        // this page: nothing navigates to the app's Search tab.
         if (searchOpen && query.isNotBlank()) {
             ChatVideoSearchResults(
                 chatId = chatId,
@@ -1797,18 +1596,9 @@ private fun TelegramChatVideos(
             ) {
                 EmptyState(
                     title = tr("No videos in this chat"),
-                    // When Telegram REFUSED the read (or the media index could
-                    // not be asked) the reason is printed as it came back: an
-                    // empty list is not the same answer as a refusal, and only
-                    // one of them means "this chat has no videos".
                     subtitle = note
                         ?: tr("Posts here carry no video file Telegram can hand to the player."),
                 )
-                // Always offered, even on an empty page: a channel that mostly
-                // posts links reaches its first video a few pages back, and this
-                // button is the only way to walk there. It used to be drawn only
-                // once a video had already been found, which is what made those
-                // channels look like they had no videos at all.
                 if (loadingMore) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
@@ -1846,9 +1636,6 @@ private fun TelegramChatVideos(
                 } else {
                     TextButton(
                         enabled = !loadingMore,
-                        // The same walk as the empty-page button above: keep
-                        // asking while the cursor moves back, so a page that
-                        // happens to hold only text does not end the list.
                         onClick = { loadOlder() },
                     ) {
                         Text(if (loadingMore) tr("Loading…") else tr("Load older"))
@@ -1859,22 +1646,6 @@ private fun TelegramChatVideos(
     }
 }
 
-/**
- * How the videos of a chat are laid out. Three answers, because a channel with
- * 400 clips and a chat with three are not the same page:
- *
- *  * [LIST] — one row per video, thumbnail beside the title. Best when the
- *    titles are what the user is reading.
- *  * [TILE] — a grid of wide cards, thumbnail on top. Best when the thumbnails
- *    are what they are scanning.
- *  * [POSTER] — a grid of tall, poster-shaped cards. The shape a viewer is used
- *    to from every streaming app's "all episodes" wall, and the fastest to scan
- *    by sight.
- *
- * The choice is stored (Settings-free, per install — see AppStore.telegramView)
- * because it is a preference about how the user reads a chat, not a per-chat
- * setting.
- */
 private enum class TgView(val key: String, val label: String) {
     LIST("list", "List"),
     TILE("tile", "Tiles"),
@@ -1894,17 +1665,6 @@ private fun searchInLabel(m: Td.SearchIn): String = when (m) {
     Td.SearchIn.BOTH -> "Both"
 }
 
-/**
- * The videos of one chat, in whichever of the three shapes is selected, with an
- * optional trailing block (the "load older" paging line, or a search's own
- * footer).
- *
- * ONE lazy container rather than three: [LazyVerticalGrid] with a single fixed
- * column IS the list view, so all three shapes share the same paging, the same
- * keys and the same footer, and only the cell changes. (A [LazyColumn] plus two
- * grids would have meant three copies of the footer and three ways for them to
- * drift apart.)
- */
 @Composable
 private fun ChatVideoCollection(
     videos: List<Td.ChatVideo>,
@@ -1943,20 +1703,6 @@ private fun ChatVideoCollection(
     }
 }
 
-/**
- * A video's picture: the real thumbnail TDLib keeps for it, falling back to the
- * post's tiny inline minithumbnail, and then to a play glyph.
- *
- * This is the difference between a usable list and a wall of black rectangles.
- * The list used to draw only the inline *minithumbnail* — a 20-pixel preimage
- * that plenty of posts simply do not carry (and which the app's poster loader
- * would not have known how to turn into an image even when they did, because a
- * `data:` URI never went through [PosterLoader.model]) — so most rows showed the
- * glyph on a dark box. TDLib's own thumbnail (`Video.thumbnail.file`) is a real
- * JPEG it can fetch in a moment, and [Td.thumbPath] asks for it and hands back
- * its path for Coil to draw. The minithumbnail is still the instant placeholder,
- * so a row is never empty while the real one arrives.
- */
 @Composable
 private fun TdVideoThumb(
     video: Td.ChatVideo,
@@ -2167,22 +1913,6 @@ private fun TgPill(label: String, selected: Boolean, onClick: () -> Unit) {
     }
 }
 
-/**
- * The results of a search inside one chat (see the search button in
- * [TelegramChatVideos]).
- *
- * They come from the chat's own history, not from the loaded list. A chat-text
- * search is answered by Telegram's own index (each hit resolved to the videos
- * that belong to that post — see [Td.videosOfPost]), and a file-name search
- * cannot be indexed at all, so the history is walked a page at a time.
- *
- * Either way the whole chat is walked HERE, without the user having to ask: the
- * search used to stop after one page and hide the rest behind a "Search further
- * back" button, which is the reported "my tag has 200+ videos and it only shows
- * some — in Telegram I see them all". The footer still says honestly how far it
- * got and how many videos it found, and the button is kept only for the case
- * where the walk hit its page ceiling.
- */
 @Composable
 private fun ChatVideoSearchResults(
     chatId: Long,
@@ -2245,9 +1975,6 @@ private fun ChatVideoSearchResults(
     }
 
     val found = results
-    // Still loading the first page, or paging a chat that has not produced a
-    // first video yet: showing "Nothing found" over a search that is still
-    // walking is the same lie the footer used to tell.
     if (found == null || (found.isEmpty() && !done)) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -2407,27 +2134,6 @@ private fun TelegramChannelRow(
     }
 }
 
-/**
- * One public channel's — or group's — videos, newest first, with the older pages
- * behind one button.
- *
- * There are two readers, and which one is used is the whole fix for "it has
- * videos but Hikari shows none":
- *
- *  - The user's own Telegram ACCOUNT, whenever there is one. It is the only
- *    reader that sees every video post (Telegram withholds the file from a
- *    browser for a large upload, and for a channel whose owner restricted
- *    saving) and the only reader that works at all for a public GROUP — Telegram
- *    publishes a web preview for channels and for nothing else, so a group's
- *    page carries no posts at all ([TelegramPage.posts] is 0) and the old code
- *    called that "this channel has no videos", for a group the user was looking
- *    at a video in. It is a paged WALK rather than one page too, because a page
- *    of messages is mostly text: a quiet group's only videos can be a few
- *    hundred messages back, and a single-page read reported an empty chat.
- *  - The anonymous web preview, when there is no account or the account cannot
- *    read the chat. Its own paging (`?before=<message id>`) is unchanged, so
- *    nothing is crawled up front either way.
- */
 @Composable
 private fun TelegramChannelVideos(
     channel: String,
@@ -2441,13 +2147,7 @@ private fun TelegramChannelVideos(
     var failed by remember(channel) { mutableStateOf(false) }
     var loadingMore by remember(channel) { mutableStateOf(false) }
     var reachedEnd by remember(channel) { mutableStateOf(false) }
-    // How many of the chat's posts carry a video Telegram does NOT publish to a
-    // browser (see TelegramPage.unpublished) — the difference between "no videos
-    // here" and "these videos are not available anonymously".
     var unpublished by remember(channel) { mutableStateOf(0) }
-    // How many posts the public page carried at all. 0 means Telegram publishes
-    // no preview of this chat (a public group), which is NOT the same thing as a
-    // chat with no videos in it.
     var posts by remember(channel) { mutableStateOf(0) }
     var pageTitle by remember(channel) { mutableStateOf<String?>(null) }
     // The account path, when there is one.
@@ -2458,9 +2158,6 @@ private fun TelegramChannelVideos(
     var tdMore by remember(channel) { mutableStateOf(false) }
     var tdCursor by remember(channel) { mutableStateOf(0L) }
     val scope = rememberCoroutineScope()
-    // How the videos are drawn — the same stored preference the account's own
-    // chat pages use (see TgView), so both readers look like every other list of
-    // Telegram videos in the app.
     var viewKey by rememberSaveable { mutableStateOf(TgView.LIST.key) }
     val view = TgView.fromKey(viewKey)
     LaunchedEffect(Unit) { viewKey = TgView.fromKey(app.store.telegramView()).key }
@@ -2506,11 +2203,6 @@ private fun TelegramChannelVideos(
         }
     }
 
-    /**
-     * One look at the chat: the account first (when signed in), the public page
-     * after it, and the account's answer kept when neither has a video in its
-     * newest pages.
-     */
     suspend fun loadFirstPage() {
         val ctx = context.applicationContext
         runCatching { Td.init(ctx) }
@@ -2533,9 +2225,6 @@ private fun TelegramChannelVideos(
                 tdMore = walk.more
                 if (walk.videos.isNotEmpty()) {
                     tdVideos = walk.videos
-                    // Telegram's own name for the chat: a group has nothing but
-                    // its @handle to be stored under, because its web page has no
-                    // channel header (see TelegramPage.posts).
                     chat.second.takeIf { it.isNotBlank() && it != channel }?.let(onTitle)
                     return
                 }
@@ -2555,10 +2244,6 @@ private fun TelegramChannelVideos(
         videos = page.videos
         unpublished = page.unpublished
         posts = page.posts
-        // Both asked, neither has a video in its newest pages: the account's
-        // answer is the one that can be walked further, and the only one a group
-        // has at all. A public page that DOES have videos wins, because that is
-        // the case where the account may read the chat but not all of it.
         if (account != null && page.videos.isEmpty()) tdVideos = emptyList()
     }
 
@@ -2663,9 +2348,6 @@ private fun TelegramChannelVideos(
 
             videos.orEmpty().isEmpty() -> EmptyState(
                 title = tr("No videos here"),
-                // Three different empty chats, and saying the wrong one is how
-                // this was reported: a group Telegram publishes no preview of, a
-                // channel whose files are withheld, and a chat with no videos.
                 subtitle = when {
                     posts == 0 -> noPreviewText
                     unpublished > 0 -> withheldText
@@ -2676,9 +2358,6 @@ private fun TelegramChannelVideos(
             else -> {
                 val list = videos.orEmpty()
                 LazyColumn(
-                    // Channel videos position held per channel (see
-                    // ScrollKeeper): Back from a video lands where the list
-                    // was.
                     state = com.hikari.app.ui.components.keptListState("tgChannel:$channel"),
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(
@@ -2738,27 +2417,11 @@ private const val TD_PAGE = 60
 /** Pages walked before the first screen is drawn (4 × 60 = 240 messages). */
 private const val TD_FIRST_WALK = 4
 
-/**
- * Pages one tap of "Load older" / "Look further back" walks. More than one,
- * because a page can easily hold no video at all and a button that visibly does
- * nothing is worse than a slightly longer wait.
- */
 private const val TD_MORE_WALK = 2
 
 /** What one walk of a chat's history found (see [walkChatVideos]). */
 private data class TgWalk(val videos: List<Td.ChatVideo>, val more: Boolean, val cursor: Long)
 
-/**
- * Walk a chat's history until a video turns up, or until [pages] pages came back
- * without one.
- *
- * This is what "even if a single video is in that channel it shows up" needs: a
- * page of history is 60 MESSAGES, and in a chat that talks a lot those 60 can
- * hold no video at all — which is how a chat full of films read as empty. The
- * cursor returned is the oldest message id examined, which is where the next
- * walk continues from; nothing can be skipped by it, because everything older
- * than the cursor is unexamined.
- */
 private suspend fun walkChatVideos(
     chatId: Long,
     from: Long,
@@ -2852,36 +2515,14 @@ private fun TelegramVideoRow(video: TelegramVideo, onPlay: () -> Unit) {
     }
 }
 
-/**
- * Play a video that lives in the user's Telegram account.
- *
- * The URL is Hikari's own `hikari-td://` scheme, which the player's data-source
- * chain answers with [TdFileDataSource]: TDLib is asked for the bytes at the
- * offset ExoPlayer wants, and the file TDLib writes is what gets read. Nothing
- * is downloaded up front — seeking into the middle of a film starts downloading
- * at the middle — and the player's own UI (quality, subtitles, speed, audio
- * tracks) is untouched.
- */
 private fun playTdVideo(context: android.content.Context, video: Td.ChatVideo) {
     // Tap tracer: if the player never opens, this line says whether the tap
     // even arrived (compare with the "player would not open" line below).
     Logs.log("Telegram", "play tap fileId=" + video.fileId + " chat=" + video.chatId + " msg=" + video.messageId)
-    // Start pulling the video NOW, before the player activity exists: resolving
-    // the file reference and fetching the first part out of Telegram is the whole
-    // cold-start cost of a Telegram video, so getting it going while the player
-    // is still being built is what makes playback start on the first frame
-    // instead of on the first download.
-    // Warmup must never break playback: a prewarm throw used to sit OUTSIDE
-    // the guard below and crashed the app on tap instead of playing.
     runCatching { Td.prewarm(video.fileId) }
     val sources = JSONArray().put(
         JSONObject()
             .put("name", "Telegram")
-            // The post it came from rides along so the data source can refresh an
-            // expired file reference — TDLib takes the fresh one out of the
-            // message it is handed (see TdFileDataSource.repair). Telegram's
-            // references are short-lived, and this list can be minutes or days
-            // old, which is exactly when a download would silently never start.
             .put("url", TdFileDataSource.uriFor(video.fileId, video.chatId, video.messageId))
             // Marks the source as "already local" so the player goes straight to
             // ExoPlayer: there is no URL to probe and no CDN to fail over from.
@@ -2890,10 +2531,6 @@ private fun playTdVideo(context: android.content.Context, video: Td.ChatVideo) {
             .put("isMpd", false)
             .put("subtitles", JSONArray())
     )
-    // This launch must never fail silently: it used to be a bare runCatching
-    // with no fallback, so a tap that could not open the player did NOTHING —
-    // the exact "telegram video unclickable" report, with no log line to
-    // answer it.
     val opened = runCatching {
         context.startActivity(
             Intent(context, com.hikari.app.player.PlayerActivity::class.java).apply {

@@ -29,48 +29,6 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-/**
- * One file that carries a Hikari install: the preferences store plus the
- * extension/scraper files on disk — i.e. everything the user actually built up
- * over time (installed sources, repos, per-provider settings, history,
- * favourites, appearance, playback preferences).
- *
- * Why a generic dump of the whole preferences store instead of a curated list:
- * the setup lives in ONE DataStore (`hikari` — see AppStore), and a curated list
- * silently drops every key added after the list was written. See
- * [AppStore.snapshotPreferences].
- *
- * What is deliberately NOT in a backup:
- *  * offline copies and exported videos — those are gigabytes, they are visible
- *    in Downloads/Playback and re-downloadable, and a restored queue pointing at
- *    files this device does not have would be worse than no queue at all;
- *  * the poster/artwork/adblock caches — pure caches, re-fetched on demand;
- *  * the download queue store (`hikari_downloads`) — for the first reason;
- *  * **the device-local settings** — the app lock, the phone/television layout
- *    (interface scale, overscan, full-screen mode), this device's performance
- *    and first-run state, and the launcher-icon alias. See
- *    [AppStore.DeviceLocal] for the list and the rule behind it. A pairing
- *    carries this same payload over Wi-Fi (see [com.hikari.app.pair.PairHost]),
- *    so excluding them here is what stops a television from being handed a
- *    phone's PIN lock and a phone's screen shape — the two things a transfer
- *    must never decide for the device receiving it.
- *
- * Extension code travels as *references* (`{path, url}`), not bytes: every
- * repo-installed single-file extension can be fetched again from the source
- * URL its provider row already remembers, so embedding all of them made
- * backups hundreds of megabytes for no reason (a few hundred extensions
- * reached ~235 MB of base64). Files with no direct source (sideloaded files,
- * provider directories, installers whose source is an archive/manifest and
- * Nuvio per-provider settings) still carry bytes — settings are user data,
- * not re-downloadable code. The restore writes the embedded files and
- * re-downloads the references in the background after reporting success; old
- * backups that still embed every file restore exactly as before, and an older
- * Hikari reading a new file simply restores the settings plus the sideloaded
- * files (it skips the section it does not know).
- *
- * The format is a plain JSON object so a support chat can be told "open it in a
- * text editor" and the user can see it contains no video and no app lock.
- */
 object BackupManager {
 
     /** Marks a file as ours — a restore refuses anything without this. */
@@ -81,19 +39,6 @@ object BackupManager {
      *  it. */
     private const val FORMAT_VERSION = 1
 
-    /**
-     * The only directories a restore may write into, relative to `filesDir`:
-     * every installed-extension family lives under one of these roots
-     * (CS3/Hiki bundles, Nuvio scrapers/settings, manga/anime extension
-     * copies, and the JS/provider module families).
-     *
-     * This is the security boundary of the whole feature: a backup file is
-     * something the user picked from anywhere (a download, a chat attachment),
-     * so a restored path is never trusted — it must land under one of these
-     * roots, and every segment is checked for traversal below. A backup can
-     * therefore only ever replace extensions and their settings, never write an
-     * arbitrary file into the app's storage.
-     */
     private val FILE_ROOTS = listOf(
         "cs3", "hiki",
         "nuvio/scrapers", "nuvio/settings",
@@ -138,17 +83,6 @@ object BackupManager {
         }
     }
 
-    /**
-     * Writes the backup straight to [dest] as it is built, instead of
-     * assembling the whole file in memory first. The old [export] built one
-     * giant string for the entire backup — with a large extension set that
-     * single allocation reached ~300 MB and the backup died with
-     * \"Failed to allocate … byte allocation … until OOM\". Here the JSON
-     * streams out through [JsonWriter] and no allocation is ever bigger than
-     * one extension file (capped by [MAX_FILE_BYTES]), so a backup of any
-     * real size completes. The format on disk is byte-for-byte what [export]
-     * used to produce, so old and new files restore through the same code.
-     */
     suspend fun exportToFile(app: HikariApp, dest: File): Long = withContext(Dispatchers.IO) {
         dest.parentFile?.mkdirs()
         val tmp = File(dest.parentFile, dest.name + ".part")
@@ -165,14 +99,6 @@ object BackupManager {
         dest.length()
     }
 
-    /**
-     * Streams the backup straight into [dest] as it is built and returns the
-     * bytes written — the fast path for saving to Downloads (see
-     * [DownloadsSaver.openDownloadStream]): the old route wrote the whole file
-     * to cache, read it back, and copied it into MediaStore (every byte touched
-     * three times). The caller owns [dest]: it is closed here, and a throw
-     * means nothing complete was written.
-     */
     suspend fun exportToStream(
         app: HikariApp,
         dest: OutputStream,
@@ -199,14 +125,6 @@ object BackupManager {
         override fun close() = out.close()
     }
 
-    /**
-     * The backup document, written as it is built. The JSON streams out
-     * through [JsonWriter] and no allocation is ever bigger than a few
-     * extension files (each capped by [MAX_FILE_BYTES]), so a backup of any
-     * real size completes. The format on disk is byte-for-byte what the old
-     * in-memory [export] used to produce, so old and new files restore
-     * through the same code.
-     */
     private suspend fun writeBackupJson(
         app: HikariApp,
         raw: OutputStream,
@@ -230,9 +148,6 @@ object BackupManager {
                     "s" -> if (r.value == null) w.nullValue() else w.value(r.value as String)
                     "b" -> if (r.value == null) w.nullValue() else w.value((r.value as Boolean))
                     "i", "l" -> if (r.value == null) w.nullValue() else w.value((r.value as Number).toLong())
-                    // JsonWriter rejects non-finite doubles outright
-                    // (IllegalArgumentException) — a single NaN anywhere
-                    // in the store used to fail the whole backup.
                     "f", "d" -> if (r.value == null) w.nullValue() else {
                         val d = (r.value as Number).toDouble()
                         if (d.isFinite()) w.value(d) else w.nullValue()
@@ -278,12 +193,6 @@ object BackupManager {
             }
             w.endArray()
             w.name("files").beginArray()
-            // Encoded off the writer thread in small parallel batches (see
-            // [writeBackupFiles]): a large extension set used to back up at
-            // single-core speed here — the "backup takes a minute" report.
-            // Only files without a re-downloadable reference reach this —
-            // sideloaded files plus provider-directory members and installers
-            // whose source is an archive/manifest — see above.
             writeBackupFiles(app, w, onProgress, embedRels)
             w.endArray()
             w.name("profiles").beginObject()
@@ -295,9 +204,6 @@ object BackupManager {
                 list
             }.getOrDefault(emptyList())
             for (name in profileNames) {
-                // Profiles are small snapshots: parse and re-emit through
-                // the writer (JsonWriter has no raw-value call on this
-                // compile SDK), which keeps the stored content verbatim.
                 val obj = runCatching { JSONObject(profiles.optString(name)) }.getOrNull()
                 if (obj == null) continue
                 w.name(name)
@@ -308,22 +214,8 @@ object BackupManager {
         }
     }
 
-    /** How many extension files are read + base64-encoded at once (see
-     *  [writeBackupFiles]): a 1300-file set (596 extensions × module +
-     *  meta + prefs) backed up at 4-wide took minutes of "Backing up…
-     *  112/1303". 16-wide keeps every core busy while the peak stays at a
-     *  few files even at the [MAX_FILE_BYTES] cap. */
     private const val BACKUP_ENCODE_PARALLEL = 16
 
-    /**
-     * The `files` array of the backup: one object per embedded extension
-     * file, emitted in walk order. Small batches encode concurrently while
-     * the writer itself stays strictly sequential (JsonWriter is not
-     * thread-safe — only this coroutine touches it).
-     *
-     * [rels] arrives pre-partitioned (see the `refs` section above):
-     * repo-installed files travel as references and never reach this.
-     */
     private suspend fun writeBackupFiles(
         app: HikariApp,
         w: JsonWriter,
@@ -361,12 +253,6 @@ object BackupManager {
         return Base64.encodeToString(bytes, Base64.NO_WRAP)
     }
 
-    /**
-     * Writes an org.json value through [JsonWriter] (which has no raw-value
-     * call on this compile SDK): objects, arrays, strings, numbers, booleans
-     * and nulls, recursively. Only used for the small profile snapshots in
-     * [exportToFile] — never for extension files, which stream as base64.
-     */
     private fun writeJsonValue(w: JsonWriter, v: Any?) {
         when (v) {
             null, JSONObject.NULL -> w.nullValue()
@@ -393,12 +279,6 @@ object BackupManager {
         w.endObject()
     }
 
-    /**
-     * Reads [input] with a cap, for files that must be small (a CloudStream
-     * backup is a settings dump, never media). Null when the stream is empty
-     * or runs past [maxBytes] — the caller reports that instead of letting an
-     * arbitrary picked file grow without limit.
-     */
     fun readCapped(input: InputStream, maxBytes: Long): ByteArray? {
         val out = ByteArrayOutputStream()
         val buf = ByteArray(32 * 1024)
@@ -414,14 +294,6 @@ object BackupManager {
         return bytes.takeIf { it.isNotEmpty() }
     }
 
-    /**
-     * Every extension/scraper file, as `(relative path, bytes)`.
-     *
-     * Walks every extension family in [FILE_ROOTS] rather than listing known extensions so a
-     * plugin family added later is carried automatically; a file that cannot be
-     * read is skipped rather than failing the whole backup (a locked or
-     * half-written file must not cost the user their settings).
-     */
     /** Extension-file paths (relative) for the backup walk — names only, so the
      *  writer can stream one file at a time (see [exportToFile]). */
     /** File names that are never user data: partial writes, logs and hidden
@@ -461,18 +333,6 @@ object BackupManager {
         return out
     }
 
-    /**
-     * Installed extension file (relative path) -> the URL it can be fetched
-     * from again. Provider rows remember both halves: `url` is the local file
-     * and `extra` is the direct downloadable artifact it was installed from
-     * ([AppStore.sourceUrlOf] strips the Hiki `|index` suffix). Only
-     * single-file artifacts with a direct source URL qualify (repo APKs and
-     * scripts such as CS3/Hiki/Nuvio/Manga/Aniyomi/Anymex/LNReader);
-     * provider directories, and installers whose source is an archive or a
-     * manifest that only points at the real script, stay embedded instead.
-     * Nuvio *settings* never do — they are user data, not re-downloadable
-     * code, so they stay embedded.
-     */
     private suspend fun collectExtensionRefs(app: HikariApp): Map<String, String> {
         val out = LinkedHashMap<String, String>()
         val providers = runCatching { app.store.providers() }.getOrDefault(emptyList())
@@ -485,9 +345,6 @@ object BackupManager {
             val url = runCatching { app.store.sourceUrlOf(p) }.getOrDefault("")
             if (!url.startsWith("http://") && !url.startsWith("https://")) continue
             if (p.url.isBlank()) continue
-            // References are only for single files whose source URL is the
-            // file itself. Provider directories (and installers whose source
-            // is an archive/manifest) stay embedded via [collectFileRels].
             if (!File(p.url).isFile) continue
             val rel = runCatching {
                 File(p.url).relativeTo(app.filesDir).invariantSeparatorsPath
@@ -501,12 +358,6 @@ object BackupManager {
         return out
     }
 
-    /**
-     * Every profile snapshot plus the registry, as raw JSON text keyed by file
-     * name. The live store export above is only ever the ACTIVE profile's
-     * setup, so without this a backup carried one profile and restoring it
-     * orphaned (or lost) all the others.
-     */
     private fun exportProfiles(filesDir: File): JSONObject {
         val out = JSONObject()
         val dir = File(filesDir, "profiles")
@@ -526,11 +377,6 @@ object BackupManager {
 
     private val PROF_SNAP_RE = Regex("^[A-Za-z0-9_-]{1,64}\\.json$")
 
-    /**
-     * Writes the backed-up profiles back, returning "N profile(s)". Runs after
-     * the live preferences so [Profiles.load] — which reconciles the registry
-     * with the store on the next start — finds both halves agreeing.
-     */
     private fun restoreProfiles(filesDir: File, obj: JSONObject?): String {
         if (obj == null) return ""
         val dir = File(filesDir, "profiles").apply { mkdirs() }
@@ -555,16 +401,6 @@ object BackupManager {
     suspend fun restore(app: HikariApp, bytes: ByteArray): Report =
         restoreStream(app, ByteArrayInputStream(bytes))
 
-    /**
-     * Applies a backup file read as a stream — the restore half of the OOM
-     * fix (see [exportToFile]): the old code parsed the entire file into one
-     * JSONObject, which needed the whole ~300 MB in memory twice over and
-     * failed the same way the backup did. Here prefs and profiles (small)
-     * collect in memory while each extension file streams straight to a
-     * temp file beside its target; nothing is committed until the whole
-     * stream has parsed and the format version has checked out, so a
-     * corrupt/truncated file can never leave half-written extensions behind.
-     */
     suspend fun restoreStream(app: HikariApp, input: InputStream): Report = withContext(Dispatchers.IO) {
         val records = ArrayList<PrefRecord>()
         var deviceLocal = 0
@@ -686,11 +522,6 @@ object BackupManager {
                                         continue
                                     }
                                     val target = File(app.filesDir, rel)
-                                    // The common case (re-restore, same versions)
-                                    // is byte-identical bytes already on disk: skip
-                                    // the write AND the reload below, instead of
-                                    // rewriting every extension and cold-loading
-                                    // all runtimes for nothing.
                                     if (target.isFile && target.length() == bytes.size.toLong() &&
                                         runCatching { target.readBytes().contentEquals(bytes) }.getOrDefault(false)
                                     ) {
@@ -803,9 +634,6 @@ object BackupManager {
             }
         }
         if (written > 0 || refTotal > 0) {
-            // New bytes are on disk: the light settings apply now and the
-            // extension reload happens in the background, so the success
-            // shows instantly instead of after every runtime cold-loads.
             refreshLiveState(app, deferProviders = true)
         } else {
             refreshLiveState(app)
@@ -830,12 +658,6 @@ object BackupManager {
         )
     }
 
-    /**
-     * One referenced extension file, fetched back after a restore.
-     * Best-effort by design: the backup already restored without it, so a
-     * dead host just logs. Temp + rename so a half-download never replaces a
-     * working file (same rule as the embedded path above).
-     */
     private suspend fun downloadRefFile(app: HikariApp, rel: String, url: String): Boolean {
         val fetched: ByteArray? = runCatching { Http.fetchBytesCancellable(url) }.getOrNull()
         if (fetched == null || fetched.isEmpty() || fetched.size.toLong() > MAX_FILE_BYTES) {
@@ -949,26 +771,6 @@ object BackupManager {
      *  into thousands of DataStore writes. */
     private const val CS_MAX_REPOS = 500
 
-    /**
-     * Imports the repositories out of a **CloudStream** backup so a user
-     * migrating from CloudStream does not have to re-type every repo URL.
-     *
-     * What CloudStream's backup file actually contains (checked against real
-     * files): a dump of its DataStore with two typed maps per preference bucket
-     * (`_String`, `_Int`, `_Bool`, …), where `datastore._String
-     * .REPOSITORIES_KEY` holds a JSON string — an array of
-     * `{iconUrl, name, url}`. The *installed* extensions are NOT in it: they
-     * live in CloudStream's own database, so no backup file can carry them.
-     * This therefore restores the repo list only, and the user then opens
-     * Sources & Extensions, where each imported repo lists its extensions
-     * (with the per-repo "Install all" button) ready to install.
-     *
-     * The layout is not a documented API, so the search is layered rather than
-     * positional: the known key, then any repos-looking preference, then any
-     * array anywhere in the file whose entries carry an `http` url. A file that
-     * resembles a CloudStream backup but carries no repos is reported as such
-     * instead of being silently accepted. Like [restore] it never throws.
-     */
     suspend fun restoreCloudStream(app: HikariApp, bytes: ByteArray): Report =
         withContext(Dispatchers.IO) {
             val text = runCatching { String(bytes, Charsets.UTF_8) }.getOrNull()
@@ -1033,15 +835,6 @@ object BackupManager {
         return root.optJSONArray("repositories") != null || root.optJSONArray("repos") != null
     }
 
-    /**
-     * Every repo in a CloudStream backup, in file order, deduplicated by URL.
-     *
-     * Layered deliberately: the known `REPOSITORIES_KEY` is tried first, then
-     * every preference whose *name* mentions repositories (CloudStream has
-     * renamed keys between forks), then a bounded scan of every string in the
-     * file for the largest array of objects carrying a url — which is what saves
-     * this when a fork stores its repo list under a name we have never seen.
-     */
     private fun cloudStreamRepos(root: JSONObject): List<Cs3Repo> {
         val found = LinkedHashMap<String, Cs3Repo>()
         var usedFallback = false
@@ -1073,9 +866,6 @@ object BackupManager {
         offer(root.opt("repositories"))
         offer(root.opt("repos"))
 
-        // 3. Last resort: the biggest repo-shaped JSON array anywhere in the
-        //    file. Marked, because it is a guess, and only used when the
-        //    targeted lookups came up empty.
         if (found.isEmpty()) {
             largestRepoArray(root)?.let { scanned ->
                 offer(scanned)
@@ -1102,9 +892,6 @@ object BackupManager {
             val name = listOf("name", "displayName", "title")
                 .firstNotNullOfOrNull { o.optString(it).trim().takeIf { v -> v.isNotBlank() } }
                 .orEmpty()
-            // The repo file itself is what Hikari fetches, so the URL is kept
-            // exactly as CloudStream had it (a fork's URL may not end in
-            // `repo.json` and rewriting it would break it).
             out.add(Cs3Repo(url = url, name = name.ifBlank { url }, kind = RepoKind.CS3))
         }
         return out
@@ -1140,11 +927,6 @@ object BackupManager {
         return hits > 0 && hits * 2 >= arr.length()
     }
 
-    /**
-     * The repo array with the most entries, found by walking the file's strings
-     * (the walk is depth- and count-bounded — a backup is ~10 KB but a hand-made
-     * file could be huge). Used only as a last resort; see [cloudStreamRepos].
-     */
     private fun largestRepoArray(root: JSONObject): JSONArray? {
         var best: JSONArray? = null
         var visited = 0
@@ -1178,17 +960,6 @@ object BackupManager {
     private fun normRepoUrl(url: String): String =
         url.trim().trimEnd('/').lowercase(Locale.US)
 
-    /**
-     * A restore happens under a running app, and several settings are copied
-     * into plain fields/globals once at startup rather than read per use (the
-     * element blocker's selectors, the WebView UA, slow-connection timeouts, the
-     * UI language, the extension-verification guard). Without this the restored
-     * values would look like they "did not take" until the next launch.
-     *
-     * Public because a PROFILE switch is the same kind of event — see
-     * [com.hikari.app.data.Profiles.switchTo], which re-uses this rather than
-     * keeping a second list of "the settings that are read once at startup".
-     */
     /** Background scope for deferred post-restore work: the app object has
      *  no lifecycle scope of its own. */
     private val refreshScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -1208,10 +979,6 @@ object BackupManager {
         // The restored pref may be the permissive one; re-assert it against the
         // extensions' own switches (see ExtensionVerifyGuard).
         runCatching { ExtensionVerifyGuard.apply(app, app.store.extensionVerifyWebview()) }
-        // Re-read the source list and load the restored plugin files. The
-        // in-memory plugin cache is keyed by file path, so a restored file that
-        // replaces a DIFFERENT version of the same extension keeps the cached
-        // instance for this session — the next launch picks up the new bytes.
         if (deferProviders) {
             refreshScope.launch { runCatching { app.providers.refresh() } }
         } else {
@@ -1219,11 +986,6 @@ object BackupManager {
         }
     }
 
-    /**
-     * True when [rel] is a safe path under one of [FILE_ROOTS]: relative, no
-     * `..`, no absolute/`~` prefix, no drive or scheme separator — i.e. it can
-     * only ever resolve to a file inside the app's own extension directories.
-     */
     private fun allowedPath(rel: String): Boolean {
         if (rel.isBlank() || rel.length > 200) return false
         if (rel.startsWith("/") || rel.startsWith("~") || rel.contains('\\') || rel.contains(':')) return false
@@ -1236,16 +998,6 @@ object BackupManager {
 
     // ------------------------------------------------------- saving to disk --
 
-    /**
-     * Copies [bytes] into the phone's public Downloads folder (a MediaStore
-     * entry on Q+, a plain file before that) and returns the file name, or null
-     * when the write failed.
-     *
-     * The write itself lives in [DownloadsSaver] — one implementation for every
-     * "save this file for the user" in the app, and the one that actually works
-     * (see its header: an insert without `RELATIVE_PATH` is refused on Android
-     * 11+, which is why this export could never save either).
-     */
     fun saveToDownloads(context: Context, file: File, name: String): String? =
         DownloadsSaver.save(context, file, name, "application/json")
             .getOrNull()

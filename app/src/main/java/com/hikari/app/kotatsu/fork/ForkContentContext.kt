@@ -25,16 +25,6 @@ import java.io.ByteArrayOutputStream
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
-/**
- * The [ContentLoaderContext] the skepsun (kototoro) parsers run on — same role
- * [com.hikari.app.kotatsu.KotatsuContext] plays for the official parsers.
- *
- * The skepsun fork is an independent library (`org.skepsun.kototoro.parsers`,
- * no shared classes with the official one) shipping manga/manhwa/novel plus
- * video sources (anime clips, hentai video) whose playback the parsers expose
- * as pages. Network rides the hardened stack, JS runs through Rhino and image
- * descrambling uses real Android bitmaps.
- */
 object ForkContentContext : ContentLoaderContext() {
 
 	override val httpClient: OkHttpClient by lazy {
@@ -65,12 +55,6 @@ object ForkContentContext : ContentLoaderContext() {
 		}
 	}
 
-	/**
-	 * Instantiates the parser for [source]. The fork's KSP factory
-	 * (`ContentParserFactoryKt.newParser`, internal) is reached reflectively so
-	 * this survives its visibility; a direct `source.newParser` is tried first
-	 * in case the published artifact exposes it.
-	 */
 	override fun newParserInstance(source: ContentSource): ContentParser {
 		(source as? ContentParserSource)?.let { enumSrc ->
 			runCatching {

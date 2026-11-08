@@ -11,34 +11,6 @@ import java.io.File
 import java.io.IOException
 import java.io.OutputStream
 
-/**
- * Saving a file into the phone's public Downloads folder — ONE implementation,
- * shared by Settings → Logs & diagnostics, the backup export, and anything else
- * that hands the user a file.
- *
- * There is one because the three copies this replaces all inserted into
- * `MediaStore.Downloads` with a display name and a MIME type and NOTHING ELSE,
- * and that insert is refused on Android 11 and later: without a `RELATIVE_PATH`
- * the row resolves to the ROOT of shared storage, which is not a directory an
- * app is allowed to write to, so `MediaProvider` rejects it
- * (`IllegalArgumentException: Primary directory null not allowed for
- * content://media/external/downloads`). The insert threw, `runCatching`
- * swallowed the reason, and Settings → Logs answered "Could not save the file"
- * for every log, at every size, on every tap — the reported bug. On Android 10
- * the same code worked, because the Downloads collection used to default its
- * relative path to `Download/`; that default is what Android 11 removed.
- *
- * The shape that works is the one this app's own download exporter already used
- * (see `download/DownloadEngine.writeToDownloads`): display name + MIME +
- * `RELATIVE_PATH = Download/Hikari` + `IS_PENDING`, write, then un-pend. The
- * legacy public directory is still tried for API < 29 (where
- * WRITE_EXTERNAL_STORAGE, capped at that level in the manifest, permits it) and
- * as a fallback above it, so an OEM whose MediaStore refuses for its own reasons
- * still gets its file.
- *
- * Failures carry the REASON, not just "could not save": a save that fails with
- * no explanation is what made this bug so hard to pin down.
- */
 object DownloadsSaver {
 
     /** The folder saved files land in, under the public Downloads folder. */
@@ -150,13 +122,6 @@ object DownloadsSaver {
         return dest.name
     }
 
-    /**
-     * Opens a Downloads entry for STREAMING writes: returns the row plus an
-     * open stream to it. The caller writes, closes the stream, then calls
-     * [finishDownload] — or [abortDownload] on failure, so no pending ghost
-     * stays in Downloads. Fails on API < 29 (no pending-row support there);
-     * callers fall back to [save] then.
-     */
     fun openDownloadStream(
         context: Context,
         displayName: String,

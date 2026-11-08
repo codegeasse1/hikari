@@ -24,14 +24,6 @@ import eu.kanade.tachiyomi.ui.reader.viewer.pager.R2LPagerViewer
 import eu.kanade.tachiyomi.ui.reader.viewer.pager.VerticalPagerViewer
 import java.io.File
 
-/**
- * Hosts the chimahon pager viewer (a DirectionalViewPager-based reader) inside Compose for the
- * paged reading modes (left-to-right, right-to-left, vertical). Pages are downloaded once to the
- * on-device cache and region-decoded from disk by the page holder, exactly like the webtoon
- * reader. All paging/zoom/tap behavior is handled by the native viewer. The settings ([config])
- * are a snapshot rebuilt by the caller whenever any of the underlying preferences change;
- * assigning it to the viewer re-applies tap zones, zoom and scale behavior live.
- */
 @Composable
 fun ChimahonPagerReader(
     source: MangaSource?,
@@ -65,9 +57,6 @@ fun ChimahonPagerReader(
     var lastItems by remember { mutableStateOf<List<PagerPage>?>(null) }
     var lastInitial by remember { mutableStateOf(-1) }
 
-    // Keying on the direction forces a fresh viewer when the user switches between left-to-right,
-    // right-to-left and vertical inside a chapter (the AndroidView factory only runs once per
-    // composition otherwise, so the pager direction is fixed at creation).
     key(vertical, reversed) {
         AndroidView(
             modifier = modifier,

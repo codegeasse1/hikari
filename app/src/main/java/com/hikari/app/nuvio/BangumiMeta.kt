@@ -8,28 +8,6 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
 
-/**
- * Bangumi (bgm.tv) — the Chinese animation database — used as a SECOND episode
- * source beside TMDB.
- *
- * TMDB is Hikari's metadata backbone (ids, artwork, air dates), but its
- * coverage of long-running Chinese donghua stalls on some titles: 斗破苍穹
- * (Battle Through the Heavens) is still frozen at its 2018 first season (45
- * episodes) on TMDB while the show is well past 150. Bangumi tracks those week
- * by week with the real episode titles, and — crucially — its per-season
- * `sort` numbers concatenate to the SAME absolute numbering the providers
- * expect, so Bangumi episodes merge into a TMDB list by number alone:
- *
- *   仙逆        sort  1..24    (= TMDB episodes   1..24)
- *   仙逆 年番   sort 25..76    (= TMDB episodes  25..76)
- *   仙逆 年番2  sort 77..128
- *   仙逆 年番3  sort 129..180
- *
- * Seasons whose numbering restarts at 1 (斗破苍穹 第二季 …) are re-based onto the
- * running total, and movies/specials are skipped so they can never shift the
- * real episode numbering. No API key is needed; Bangumi only asks for a
- * User-Agent that identifies the caller.
- */
 object BangumiMeta {
 
     /** One episode on Bangumi's absolute numbering. */
@@ -59,19 +37,6 @@ object BangumiMeta {
         return n.isEmpty() || GENERIC.matches(n)
     }
 
-    /**
-     * Every episode Bangumi knows for [title], on absolute numbering, or null
-     * when Bangumi has no usable match. [originalTitle] (TMDB's `original_name`)
-     * is searched first when it is Chinese/Japanese — Bangumi's English-title
-     * index is loose, while the native title is exact.
-     *
-     * [seasonHint] handles a site item that IS one season of a franchise
-     * ("Sword of Coming Season 2"): Bangumi keeps numbering a franchise's
-     * seasons continuously (its 第二季 subject starts at sort 27), while the
-     * site lists that season from 1, so subjects are re-based to a season-local
-     * 1..n and only the ones whose name carries that season's marker are used.
-     * Without a hint the historical absolute concatenation is kept.
-     */
     suspend fun episodes(
         title: String,
         originalTitle: String?,
@@ -115,10 +80,6 @@ object BangumiMeta {
                     markers.none { name.contains(it, true) || nameCn.contains(it, true) }
                 ) continue
                 if (asciiSearch) {
-                    // Bangumi indexes English titles loosely (a search for
-                    // "Battle Through the Heavens" also returns "Battle for
-                    // Terra"), so the name cannot be trusted here — use the
-                    // first-air year and a sane episode count instead.
                     if (eps < 4) continue
                     val y = o.optString("date").take(4).toIntOrNull()
                     if (year != null && y != null && Math.abs(y - year) > 1) continue

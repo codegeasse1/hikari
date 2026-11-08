@@ -5,25 +5,6 @@ import com.hikari.app.data.MediaType
 import com.hikari.app.data.ProviderConfig
 import com.hikari.app.net.Http
 
-/**
- * The last resort for an Anymex catalogue that the extension's own calls
- * cannot list: the site's own front page, scraped for title cards.
- *
- * WHEN this runs. Only when the extension's popular AND latest calls have
- * already failed AND recorded why (see [AnymexProvider.catalogErrors]) — a
- * catalogue that is merely empty (a search-only source, the end of the
- * pages) is a legitimate answer and is left alone. The classic case is a
- * script whose catalogue paths went stale (HTTP 404 on every request) while
- * the site itself is alive — the globe button loads it fine, because that
- * opens the front page this scrapes.
- *
- * WHAT it returns. The front page's linked cards (anchor + image + title),
- * same-host links only, capped — real titles the rows can show instead of
- * the "its pages may have moved" error. Detail/episode/stream calls still go
- * through the extension, so a card whose page the script cannot parse simply
- * reports that when opened; a homepage that cannot be fetched (or has no
- * cards) returns empty and the recorded error stands.
- */
 object AnymexHomepage {
 
     private const val MAX_ITEMS = 60
@@ -38,9 +19,6 @@ object AnymexHomepage {
     fun titles(config: ProviderConfig): List<MediaItem> {
         val base = AnymexPluginManager.siteUrlOf(config)?.trim()?.trimEnd('/')
             ?.takeIf { it.startsWith("http") } ?: return emptyList()
-        // The shared client (not the quiet one): it carries the Cloudflare
-        // clearance the globe view earned, so a site the user verified in the
-        // WebView answers here too.
         val html = runCatching {
             Http.getStringStrict(base + "/", mapOf("Referer" to base + "/")).getOrNull()
                 ?: Http.getStringStrict(base, emptyMap()).getOrNull()
@@ -69,11 +47,6 @@ object AnymexHomepage {
             val title = titleOf(a, img)
                 .replace(Regex("\\s+"), " ")
             if (title.length < 2) continue
-            // Cards without any image are the site's own navigation
-            // ("Today", "Genres", "DMCA"…) — not titles. Letting one through
-            // used to open a section page as if it were a video, whose
-            // detail then resolved to whatever TMDB guessed from the bare
-            // word ("Today" → the NBC morning show).
             if (poster == null) continue
             seen += href
             // UNKNOWN until the episode list is known (see AniyomiProvider):
@@ -89,12 +62,6 @@ object AnymexHomepage {
         return out
     }
 
-    /**
-     * The card image, first lazy-src spellings first. Plain calls on a
-     * non-null element, the way the other scrapers read attributes — no
-     * nullable chains, whose inferred types the compiler cannot resolve
-     * against this jsoup build.
-     */
     private fun posterOf(img: org.jsoup.nodes.Element): String? {
         val src = img.attr("abs:data-lazy-src").ifBlank { img.attr("abs:data-src") }
             .ifBlank { img.attr("abs:data-original") }

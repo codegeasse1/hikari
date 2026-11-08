@@ -24,17 +24,6 @@ import java.io.ByteArrayOutputStream
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
-/**
- * The [MangaLoaderContext] the bundled Kotatsu parsers run on — the same role
- * Kotatsu's own app plays for them, so the parsers' full extraction logic
- * (listing, search, details, chapters, pages, image descrambling, mirrors,
- * Cloudflare clearance) behaves exactly as it does there.
- *
- * Network rides the app's own hardened stack (Cloudflare solver + DoH, same as
- * the Zangetsu runtime); cookies live in a small in-memory jar per host;
- * `evaluateJs` runs through Rhino (already a dependency); image descrambling
- * uses real Android bitmaps.
- */
 object KotatsuContext : MangaLoaderContext() {
 
     override val httpClient: OkHttpClient by lazy {

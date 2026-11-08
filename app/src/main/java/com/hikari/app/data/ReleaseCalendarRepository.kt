@@ -70,11 +70,6 @@ object ReleaseCalendarRepository {
 
     private suspend fun loadMovies(region: String): List<DayGroup> {
         val out = ArrayList<Entry>()
-        // While the adult-content switch is off /movie/upcoming is re-asked as
-        // a dateless discover query (see NsfwGate), which answers with every
-        // film ever made — the 1959/1971 rows in the report. Pin that query to
-        // the upcoming window, and never trust a movie older than yesterday no
-        // matter which endpoint answered.
         val query = LinkedHashMap<String, String>()
         query["region"] = region.uppercase()
         if (NsfwGate.rewritesToMovies("/movie/upcoming")) {
@@ -110,10 +105,6 @@ object ReleaseCalendarRepository {
             }
             if (page >= data.optInt("total_pages", 1)) break
         }
-        // These lists carry no episode date — on_the_air answers with shows
-        // airing now, airing_today with shows airing today — so grouping them
-        // by first_air_date (a 2011/2019 year clamped to this week) is what
-        // filed old shows under "Fri, Sep 04, 2026". One honest bucket each.
         val label = if (kind == Kind.EPISODE) "Airing today" else "On the air now"
         return group(out.distinctBy { it.tmdbId }.take(90), singleLabel = label)
     }
@@ -141,9 +132,6 @@ object ReleaseCalendarRepository {
         val id = o.optInt("id", 0)
         if (id <= 0) return null
         val title = o.optString("name").trim().ifBlank { return null }
-        // Airing lists carry no episode date at all (first_air_date is when
-        // the SHOW started, not when an episode airs), so the entry lives in
-        // the list's own bucket (see loadTv) instead of a fabricated day.
         val millis = startOfToday()
         val genres = o.optJSONArray("genre_ids")?.let { arr ->
             List(arr.length()) { TmdbGenres.nameOf("tv", arr.optInt(it)) }.filterNotNull().take(3)

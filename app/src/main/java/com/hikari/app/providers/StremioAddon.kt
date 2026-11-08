@@ -46,12 +46,6 @@ import java.util.concurrent.ConcurrentHashMap
  * only normalize to MediaType for the UI, treating anything unknown as SERIES
  * so catalogs are never dropped as "no usable catalogs".
  */
-/**
- * One subtitle lookup's outcome: the tracks, the ids the addon was asked with,
- * and — when it answered nothing at all — why. See
- * [StremioAddon.subtitlesForDetailed]; the ids are what the player's "no
- * subtitles found" line reports so the failure is diagnosable from the device.
- */
 data class SubtitleLookup(
     val tracks: List<SubtitleSource> = emptyList(),
     val idsTried: List<String> = emptyList(),
@@ -78,14 +72,6 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
          *  the playback sheet so "no playable sources found" is explainable. */
         val streamErrors = ConcurrentHashMap<String, String>()
 
-        /**
-         * Servers resolved SO FAR by each addon's running stream walk (see
-         * [ContentProvider.partialStreams]): each spelling's rows join the
-         * running union the moment that spelling answers, so the search
-         * paints them while slower spellings are still in flight instead of
-         * holding everything until the whole walk finishes. Cleared when the
-         * walk ends, so a stale list can never leak into the next title.
-         */
         private val partialServers = ConcurrentHashMap<String, List<StreamSource>>()
 
         fun partialFor(providerId: String): List<StreamSource> =
@@ -94,18 +80,6 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
         /** One spelling's JSON, with its own short budget (see [getStreamJson]). */
         private const val STREAM_JSON_TIMEOUT_MS = 10_000L
 
-        /**
-         * The addon's own configuration page, once its manifest has been read —
-         * `behaviorHints.configurationURL` (or `<base>/configure` for a manifest
-         * that says `configurable: true` without naming one).
-         *
-         * This is the page the Stremio app itself opens from an addon's gear
-         * (OpenSubtitles v3 asks which languages you want, AIOMetadata asks for
-         * TMDB/RPDB keys and which catalogs to publish). Hikari used to answer
-         * "addons have no settings of their own" over exactly those addons,
-         * which is not true of them: an addon that ships a config page has the
-         * real settings, and the manifest is where it says so.
-         */
         val configPages = ConcurrentHashMap<String, String>()
 
         /** Addons whose manifest declares NO config page — remembered so the
@@ -113,16 +87,6 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
          *  for an addon that really has nothing to configure). */
         val noConfigPage = ConcurrentHashMap<String, Boolean>()
 
-        /**
-         * Records what a manifest says about its OWN configuration page.
-         *
-         * Called wherever a manifest is read — the install path has one in hand
-         * before the addon is even stored, and [StremioAddon.loadManifest] reads
-         * one per session — so the gear can answer from the cache instead of
-         * fetching. [baseUrl] is the addon's base (the manifest URL without
-         * `/manifest.json`), which is what a relative `configurationURL` has to
-         * be resolved against.
-         */
         fun noteConfiguration(providerId: String, manifest: JSONObject, baseUrl: String) {
             val hints = manifest.optJSONObject("behaviorHints")
             val declared = hints?.optString("configurationURL").orEmpty().trim()
@@ -142,17 +106,6 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
             }
         }
 
-        /**
-         * The one Stremio addon Hikari installs for the user on a fresh install:
-         * SubDL's subtitle addon.
-         *
-         * It is the addon that needs nothing configured — no key, no account, no
-         * debrid — and it is the one the player's "Load from internet" can use
-         * immediately, so subtitles are reachable in a language the stream does
-         * not carry on an install the user has not set anything up on yet. It is
-         * installed once and never re-added (see [com.hikari.app.HikariApp]),
-         * so removing it is permanent.
-         */
         const val DEFAULT_ADDON_URL = "https://api3.subdl.com/manifest.json"
 
         /**
@@ -178,12 +131,6 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
             return "stremio|" + (if (n < 0) -n else n)
         }
 
-        /**
-         * The words a `streams[]` row uses when it is a message rather than a
-         * video — see [isPlaceholderRow]. Deliberately about *refusals* ("you
-         * must sign in", "subscription required", "no sources") and not about
-         * quality words, which real rows are full of.
-         */
         private val PLACEHOLDER_WORDS = listOf(
             "must sign", "sign in", "sign-in", "signin", "sign up", "signup",
             "log in", "login", "logged out",
@@ -203,18 +150,6 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
          *  fetch itself keeps running and still fills the cache if it lands). */
         private const val MANIFEST_TIMEOUT_MS = 15_000L
 
-        /** How long a subtitle lookup may spend resolving a title to an
-         *  IMDb/TMDB id before it gives up on that id route (the direct ids are
-         *  tried first and usually answer).
-         *
-         *  Raised from 8s: resolution by NAME walks several stripped variants of
-         *  the title across TMDB's movie and tv namespaces and then IMDb's
-         *  suggestion endpoint, and on a slow connection 8s ran out mid-walk —
-         *  which left ONLY a `tmdb:` id in hand, and OpenSubtitles v3 answers
-         *  that with an empty list. The result was "no subtitles found" for
-         *  every title on that connection. The caller's own budget is longer
-         *  than this (see PlayerActivity's ADDON_SUBTITLE_MS) so the walk is
-         *  always allowed to finish. */
         private const val RESOLVE_TIMEOUT_MS = 20_000L
 
         /** How long a FAILED manifest fetch is remembered, so a dead host is not
@@ -256,10 +191,6 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
         }
     }
 
-    // ------------------------------------------------------------------
-    //  URL handling — tolerate /manifest.json suffix and keep query params
-    //  (some addons bake config like `?apiKey=...` into their install URL).
-    // ------------------------------------------------------------------
     private val baseAndQuery: Pair<String, String> by lazy {
         val u = config.url.trim().trimEnd('/')
         val qi = u.indexOf('?')
@@ -328,14 +259,6 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
         return null
     }
 
-    /**
-     * Stream-walk fetch: the same document as [getJson], but one spelling gets
-     * at most [STREAM_JSON_TIMEOUT_MS] instead of the shared client's 20s
-     * connect / 30s read timeouts, a single attempt per spelling (no wake-up
-     * nap), and it never throws. A slow spelling must not hold the servers
-     * behind it: the walk merges every spelling the moment it answers, so one
-     * hanging URL costs at most this budget while the rest paint immediately.
-     */
     private suspend fun getStreamJson(url: String): JSONObject? {
         val headers = mapOf("Accept" to "application/json, text/plain, */*")
         for (u in listOf(url, url.replaceFirst("https://", "http://")).distinct()) {
@@ -349,27 +272,9 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
     override fun partialStreams(): List<StreamSource> =
         partialFor(config.id)
 
-    /**
-     * The manifest, fetched at most once per addon (and never re-fetched while
-     * one fetch is already in flight or has just failed).
-     *
-     * A fetch here can cost a long time: the shared client connects with a 20s
-     * timeout and reads with a 30s one, and [getJson] tries two URL spellings
-     * twice each — so a dead or blocking host is up to two minutes per attempt,
-     * and this call sits on the path of EVERY search, meta, episode and stream
-     * lookup (`usesTmdbBrowse`). Re-fetching a manifest that already failed is
-     * what made a dead addon read as a search that never finishes; the failure
-     * is remembered for [MANIFEST_RETRY_MS] instead. The fetch itself is moved
-     * off the caller's thread and only WAITED on for [MANIFEST_TIMEOUT_MS], so
-     * one slow host costs a pass at most that — a late answer still lands in
-     * [manifest] for every later call.
-     */
     private suspend fun loadManifest(): JSONObject? {
         manifest?.let { return it }
         if (System.currentTimeMillis() - manifestFailedAt < MANIFEST_RETRY_MS) return null
-        // One fetch in flight at a time: a search pass fans out over several
-        // addons and can ask this addon for meta, episodes and streams at the
-        // same moment.
         val flight = manifestFetch?.takeIf { it.isActive } ?: CoroutineScope(SupervisorJob() + Dispatchers.IO)
             .async {
                 runCatching { getJson("$base/manifest.json") }.getOrNull().also {
@@ -387,22 +292,6 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
         return m
     }
 
-    /**
-     * The addon's own configuration page, if its manifest declares one.
-     *
-     * This is the page the Stremio app itself opens from an addon's gear: some
-     * addons NEED configuring before they work at all (OpenSubtitles v3 asks
-     * which languages to fetch, AIOMetadata asks for a TMDB/RPDB key and which
-     * catalogs to publish, a debrid addon asks for its API key), and the addon
-     * says where that page lives in its manifest — `behaviorHints.
-     * configurationURL`, or `<base>/configure` when it only sets the
-     * `configurable` flag. Answers null for an addon that declares neither (a
-     * plain stream addon such as Torrentio), and for one whose manifest cannot
-     * be read — the caller then shows what the addon IS instead.
-     *
-     * Cached per provider once known (see [configPages]/[noConfigPage]), so a
-     * second tap on the gear costs nothing.
-     */
     suspend fun configurationPage(): String? {
         configPages[config.id]?.let { return it }
         if (noConfigPage[config.id] == true) return null
@@ -491,14 +380,6 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
                 streamOnlyAddons.remove(config.id)
                 return emptyList()
             }
-            // Zero catalogs is NOT an error — stream-only addons (Torrentio,
-            // Comet, Novastream, HdHub…) are valid and common. Instead of
-            // leaving Home empty for one (and hiding it from the picker), it
-            // browses TMDB the same way a Nuvio provider does: the rows below
-            // are real, and the addon's own /stream answers for every title
-            // opened from them. That is what lets a user with ONLY stream
-            // addons browse and play without also installing a catalog addon
-            // (Cinemeta-style) just to have something to look at.
             catalogErrors.remove(config.id)
             streamOnlyAddons[config.id] = true
             return tmdbRefs().ifEmpty {
@@ -514,11 +395,6 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
         return out.values.toList()
     }
 
-    /**
-     * Which slice of the TMDB row pool this addon shows. The addon's ordinal
-     * among the installed Stremio addons, so two stream-only addons never present
-     * the same Home screen (the same rule NuvioScraper uses per niche).
-     */
     private suspend fun tmdbOffset(): Int {
         val here = runCatching {
             com.hikari.app.HikariApp.instance.store.providers()
@@ -582,18 +458,6 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
     private fun String.brief(): String =
         if (length <= 150) this else take(90) + "…" + takeLast(50)
 
-    /**
-     * The catalogues to draw as Home rows: the manifest's own list, MINUS the
-     * ones that can only be answered with a query.
-     *
-     * The protocol lets a catalogue require an extra (StremioLabAR ships
-     * `{"id":"stremiolabar-search","extra":[{"name":"search","isRequired":true}]}`),
-     * and such a catalogue answers an empty list to a plain page request — so
-     * showing it as a Home row produced a row that was empty by construction, and
-     * tapping "Show all" on it opened a page that could only ever say "Nothing
-     * here right now". They stay in [catalogs] (the global search asks them WITH
-     * the query they need — see [search]) and are only held back from the feed.
-     */
     override suspend fun homeCatalogs(): List<CatalogRef> {
         val all = catalogs()
         val m = manifest ?: return all
@@ -609,20 +473,10 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
     }
 
     override suspend fun search(query: String, page: Int): List<MediaItem> {
-        // A subtitles-only addon (OpenSubtitles v3, SubDL) has no titles to
-        // offer — its catalogues are already empty (see [catalogs]), but its
-        // search path still answered, so its name kept appearing beside real
-        // results it can never play. It answers inside the player instead.
         if (runCatching { isSubtitleOnly() }.getOrDefault(false)) return emptyList()
         val out = mutableListOf<MediaItem>()
         for (c in catalogs().distinctBy { it.id }) {
             if (TmdbBrowse.isOurCatalog(c.id)) continue
-            // A catalogue that declares its extras and does NOT declare `search`
-            // is not searchable — the protocol says so, and the real client does
-            // not send it a query. Asking anyway returned the catalogue's whole
-            // unfiltered list as if it were search results (or an empty list),
-            // which is worse than not asking. A catalogue that declares NO extras
-            // at all keeps the old assumption that it can search.
             if (!supportsSearch(c.id)) continue
             val extra = "search=${encode(query)}" + if (page > 1) "&skip=${(page - 1) * 100}" else ""
             out += parseMetas(
@@ -630,9 +484,6 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
                 c.rawType,
             )
         }
-        // An addon with no catalog of its own is searched through TMDB, so
-        // "find this title in my Stremio addon" works from the global search and
-        // from the cross-extension pass (the addon then supplies the streams).
         if (usesTmdbBrowse()) out += TmdbBrowse.search(config.id, query, page)
         return out.distinctBy { it.uniqueId }
     }
@@ -696,10 +547,6 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
         } ?: emptyList()
 
     override suspend fun getMeta(item: MediaItem): MediaItem {
-        // Tracker anime rows carry the tracker's numeric id, which no addon
-        // can answer — and the TMDB fallback below would read those digits as
-        // a TMDB id and return an unrelated show. Tracker details come from
-        // AniList/Simkl instead (see TrackerAnimeResolver).
         if (com.hikari.app.data.TrackerAnimeResolver.isTrackerAnime(item)) return item
         // An item from our own TMDB rows/searches: its id is a TMDB id, so the
         // addon's /meta would answer nothing. TMDB is asked instead.
@@ -745,17 +592,6 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
         )
     }
 
-    /**
-     * TMDB's own metadata for an addon-catalogue item whose id is a `tmdb:…`
-     * id, with the item's OWN id kept — that id is what the addon's stream
-     * lookup, the history entry and every later call are keyed on.
-     *
-     * An addon's own catalogue rows often carry a `tmdb:` id (StremioLabAR's
-     * metas are `tmdb:1137844`) and the same manifest frequently declares no
-     * `/meta` for that namespace, so the detail page was left with only what the
-     * catalogue row itself said. Ids that are not TMDB's (a `tt…`, a slug) come
-     * back unchanged, and any failure is silent.
-     */
     private suspend fun tmdbFallbackMeta(item: MediaItem): MediaItem {
         if (com.hikari.app.data.TrackerAnimeResolver.isTrackerAnime(item)) return item
         val tmdb = tmdbIdOf(item.id) ?: return item
@@ -765,20 +601,10 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
     }
 
     override suspend fun getEpisodes(item: MediaItem): List<Episode>? {
-        // Tracker anime rows carry the tracker's numeric id: no addon meta
-        // document exists for it, and the TMDB fallback below would list
-        // another show's episodes under this title. Tracker episodes come
-        // from the tracker count / borrowed site lists instead.
         if (com.hikari.app.data.TrackerAnimeResolver.isTrackerAnime(item)) return null
         // A TMDB item's episode list comes from TMDB (the addon has no catalog
         // and would answer nothing for a TMDB id).
         if (usesTmdbBrowse() && isTmdbId(item.id)) return TmdbBrowse.episodes(item)
-        // No hard type gate: a series is often served from a catalog the addon
-        // typed as "movie" (or an unknown custom type), and the meta document
-        // is the ground truth. getMetaJson shares the cache with getMeta, so
-        // for a genuine movie this costs no extra request and simply finds no
-        // videos array. A non-empty result also lets the UI reclassify the item
-        // as a series.
         val candidates = buildList {
             add(typeSegment(item.rawType, item.type))
             // If the addon mislabelled the row, the videos usually live under
@@ -814,14 +640,6 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
             }
             if (out.isNotEmpty()) return out.sortedWith(compareBy({ it.season }, { it.number }))
         }
-        // An addon's OWN catalogue row can carry a `tmdb:` id (StremioLabAR's
-        // metas are `tmdb:1137844`) and the addon may declare no /meta for that
-        // namespace at all. The number inside the id IS a TMDB id, and TMDB is the
-        // one source that can always list a series' episodes — so it is asked for
-        // the same item under the bare numeric id. Without this a series opened
-        // from such a catalogue had NO episode list: every Play searched for
-        // season 1 episode 1 whatever the user tapped, and the addon was asked
-        // for `tmdb:<id>:1:1`.
         tmdbIdOf(item.id)?.let { tmdb ->
             if (tmdb != item.id) return TmdbBrowse.episodes(item.copy(id = tmdb))
         }
@@ -843,15 +661,6 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
         return false
     }
 
-    /**
-     * Whether this addon declares it answers ids in [prefix]'s namespace.
-     *
-     * The protocol lets a manifest name the namespaces it knows twice over — at
-     * the top level (`idPrefixes`) and per resource (`resources[].idPrefixes`) —
-     * and both are checked. PenguPlay, for instance, declares `tt` AND `tmdb:`,
-     * which is what lets an id the app already holds be handed straight over
-     * instead of being resolved to an IMDb id that may not exist.
-     */
     private fun acceptsPrefix(prefix: String): Boolean {
         val m = manifest ?: return false
         m.optJSONArray("idPrefixes")?.let { arr ->
@@ -871,27 +680,6 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
         return false
     }
 
-    /** The `type` strings this manifest answers a STREAM call for [id] with,
-     *  lower-cased. Empty when the manifest declares none that apply.
-     *
-     *  The protocol names a stream resource's id namespaces TWICE — at the top
-     *  level (`idPrefixes`) and per resource (`resources[].idPrefixes`) — and the
-     *  two belong together. PenguPlay declares both of these:
-     *
-     *      {"name":"stream","types":["movie","series"],
-     *       "idPrefixes":["tt","tmdb:","tvdb:",…]}
-     *      {"name":"stream","types":["tv"],"idPrefixes":["pp-live:"]}
-     *
-     *  i.e. its `tv` segment is for LIVE CHANNELS only. Flattening the resource
-     *  list into one set of types (what this used to do) therefore invented `tv`
-     *  as a valid segment for a `tmdb:`/`tt` VIDEO id — a request the addon can
-     *  only answer with its live/catch-all handler — and, because the item's own
-     *  `rawType` was TMDB's `tv`, that invented segment was tried FIRST. A
-     *  series' whole fan-out could then be spent on requests the addon does not
-     *  serve videos from. Movies hid it (their spelling carries no episode
-     *  suffix and the walk still reached a working segment), series reported
-     *  "Found 1 link … none could be turned into a video".
-     */
     private fun declaredStreamTypes(m: JSONObject?, id: String): Set<String> {
         val resources = m?.optJSONArray("resources") ?: return emptySet()
         val out = LinkedHashSet<String>()
@@ -920,15 +708,6 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
         return out
     }
 
-    /**
-     * The `/stream/{type}/` segments to try, best first — for the id in hand.
-     *
-     * The types the manifest declares FOR THIS ID come first, ordered by the
-     * item's kind, so a series asks `series` before `movie` and vice versa. The
-     * protocol's canonical spellings follow as a fallback, so an addon whose
-     * manifest we could not read (or that declares nothing that matches this id)
-     * keeps the old behaviour of trying everything.
-     */
     private fun streamTypeOrder(
         m: JSONObject?,
         rawType: String,
@@ -982,9 +761,6 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
             noEpisode -> ":1:1"
             else -> ""
         }
-        // Tracker fallback episodes carry synthetic "<trackerId>#e<N>" ids: handing
-        // one to an addon would ask about a namespace it never heard of, so the
-        // item id plus the real season/episode suffix is sent instead.
         val rawEpId = episode?.id
         val idPart = if (episode != null && rawEpId != null && "#e" in rawEpId) item.id + epSuffix
         else rawEpId ?: (item.id + epSuffix)
@@ -1037,9 +813,6 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
             if (digits.isNotEmpty() && acceptsPrefix("tmdb:")) {
                 videoIds += "tmdb:$digits" + epSuffix
             }
-            // Kitsu ids are a native Stremio namespace: anime addons answer
-            // `kitsu:<id>:season:episode` directly, while the bare digits the
-            // tracker row carries match nothing they declare.
             if (com.hikari.app.data.TrackerAnimeResolver.isTrackerAnime(item) &&
                 item.providerId.equals("kitsu", ignoreCase = true) &&
                 (acceptsPrefix("kitsu:") || acceptsId(idPart))
@@ -1056,9 +829,6 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
                     (com.hikari.app.data.TrackerAnimeResolver.isTrackerAnime(item) || !acceptsId(idPart)) &&
                     com.hikari.app.nuvio.TmdbResolver.isLikelyResolvable(item) ->
                     com.hikari.app.nuvio.TmdbResolver.resolve(item)?.let { resolved ->
-                        // The resolved TMDB id is offered in the addon's own
-                        // `tmdb:` namespace too, so a title that came from a site
-                        // scraper gets the same two routes a TMDB item does.
                         if (acceptsPrefix("tmdb:")) videoIds += "tmdb:${resolved.tmdbId}" + epSuffix
                         TmdbBrowse.imdbId(resolved.tmdbId, resolved.mediaType)
                     }
@@ -1070,11 +840,6 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
             if (videoIds.isEmpty()) videoIds += idPart
         }
 
-        // Metadata-only addons (Cinemeta/Streaming-Catalogs style: catalogs +
-        // meta but no stream resource) never answer /stream — exactly like the
-        // real Stremio client, which only asks addons that declare the stream
-        // resource. Sources for these titles come from the other installed
-        // playback addons (Torrentio, Comet, Novastream…).
         if (m != null && !hasResource(m, "stream")) {
             streamErrors[config.id] =
                 "This addon provides no streams (catalog/metadata only) — " +
@@ -1082,27 +847,7 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
             return emptyList()
         }
 
-        // Try the exact URL first, then progressively looser variants so addons
-        // with stricter matching still resolve: the same id under every type
-        // segment the addon might answer for (its own declared ones first), and
-        // each id again without the :season:episode suffix. Every spelling is
-        // cheap — an addon that does not recognise one answers an empty stream
-        // list in one round trip.
-        //
-        // The walk is ROUND-ROBIN across the id spellings, not per-spelling: a
-        // series usually has two (`tmdb:…:s:e` and `tt…:s:e`) and the app cannot
-        // know which one an addon can resolve, so each spelling gets its most
-        // likely type segment before any spelling gets its second one. Walking
-        // one spelling to exhaustion first is how a series that the addon could
-        // only answer in its `tt` namespace never had that spelling tried at all
-        // — the whole fan-out was spent on `tmdb:`, and the addon answered
-        // nothing for every one of them. (Movies hid this, because a movie has no
-        // episode suffix and its `tmdb:` spelling usually IS the one that works.)
         val types = streamTypeOrder(m, typeRaw, item.type, videoIds.first())
-        // The spellings an addon DECLARED come first: a request in an id
-        // namespace it never hears about is a wasted round trip at the FRONT of
-        // the walk, and on a series (two spellings × one episode suffix) the walk
-        // only has a handful of slots before the attempt cap.
         val spellings = videoIds.sortedByDescending { acceptsId(it) }
             .map { id -> id to stripVideoSuffix(id) }
         val allAttempts = linkedSetOf<String>()
@@ -1112,22 +857,10 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
                 if (baseId != id) allAttempts += resUrl("stream", t, baseId)
             }
         }
-        // A hard bound on that fan-out: the first requests are the ones that
-        // matter, and a host that answers nothing must not be probed twenty times
-        // over on every pass.
         val attempts = allAttempts.take(16)
 
         val reasons = mutableListOf<String>()
         var placeholder: String? = null
-        // The addon's FULL answer for this title is the union over every id
-        // spelling tried below — never just the first spelling that answered.
-        // Spellings are different routes to the same video, and the addon may
-        // serve a different subset on each (debrid-gated rows appear on one
-        // and not another): stopping at the first answer is a lottery where
-        // the same lookup returns 14 servers once and 34 the next, with rows
-        // like VidLink present in one and missing in the other. Every
-        // spelling is a cheap same-host GET, so all of them are asked and
-        // merged (deduped by identity) before anything is returned.
         val union = LinkedHashMap<String, StreamSource>()
         var anyPlayable = false
         // The best LINK-ONLY answer seen on the way: rows that are a page ("watch
@@ -1139,22 +872,10 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
         // be turned into a video" over a title Stremio plays dozens of
         // servers for was).
         var linkOnly: List<StreamSource>? = null
-        // The walk runs as ONE concurrent wave — never batched, never
-        // sequential: every spelling is asked at once with its own short
-        // budget ([getStreamJson]), and each answer merges into the union the
-        // moment it lands ([select] below). A spelling that hangs costs at
-        // most 10s while the servers behind it paint immediately — no single
-        // URL can hold the list hostage, which is what made the origin addon
-        // answer in 37s on a first lookup. The running union is published as
-        // it grows ([partialServers]), so the search pass paints server 2 the
-        // second it resolves.
         partialServers[config.id] = emptyList()
         fun publishPartial() {
             partialServers[config.id] = union.values.toList()
         }
-        // One spelling's answer merged into the union. A row that CAN be
-        // played ends nothing — the union stays complete whatever order the
-        // spellings answer in.
         fun mergeOne(u: String, json: JSONObject?) {
             if (json == null) {
                 reasons += "no response from ${u.take(120)}"
@@ -1206,22 +927,12 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
             }
         }
 
-        // The union is the answer whenever ANY spelling produced a playable
-        // row: the complete set no matter which spelling answered first or
-        // which subset each one served. Link rows merged in along the way ride
-        // along exactly as before (the sheet labels them, the player skips
-        // them for playback).
         if (anyPlayable && union.isNotEmpty()) {
             streamErrors.remove(config.id)
             partialServers.remove(config.id)
             return union.values.toList()
         }
 
-        // Nothing produced a video, but something DID answer with link rows: that
-        // is still the addon's answer for this title, and it must reach the list
-        // (the detail screen's note says exactly what those rows are — see
-        // DetailScreen's linksOnly wording). The ids and segments that were tried
-        // are named so a report from a device says what the addon was asked.
         linkOnly?.let { rows ->
             streamErrors[config.id] =
                 "This addon has only link row(s) for this video, not a file — tried " +
@@ -1250,11 +961,6 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
      *  Stremio id is normally `tt…`, `kitsu:…`, a slug, …). */
     private fun isTmdbId(id: String): Boolean = id.isNotBlank() && id.all { it.isDigit() }
 
-    /** True when a row is a LINK rather than a video: something the player has to
-     *  resolve (a YouTube id) or hand to a browser (an addon's `externalUrl`).
-     *  Such a row is a legitimate protocol answer — and it is NOT a reason to stop
-     *  walking the addon's other id spellings, because those are where its real
-     *  servers are (see [getStreams]). */
     private fun isLinkRow(s: StreamSource): Boolean = s.ytId != null || s.externalUrl
 
     /** Strips a trailing season:episode (or season-episode) suffix from a video
@@ -1275,11 +981,6 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
             }
             val infoHash = st.optString("infoHash").ifBlank { null }
             val streamUrl = st.optString("url").ifBlank { null }
-            // Stremio's protocol names a torrent EITHER by `infoHash` or by a
-            // `magnet:` (or `torrent:`) URL in `url`, and addons use both. The
-            // magnet form read as a plain direct link, so ExoPlayer was handed
-            // "magnet:…" and every row of such an addon failed — a whole
-            // addon's worth of servers that play in Stremio and not here.
             val magnet = streamUrl?.takeIf {
                 it.startsWith("magnet:", ignoreCase = true) ||
                     it.startsWith("torrent:", ignoreCase = true)
@@ -1303,12 +1004,6 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
                     }
                     map
                 } ?: emptyMap()
-            // Which FILE of a torrent pack this row is, when the addon names
-            // it without a numeric fileIdx: behaviorHints.filename (else the
-            // row name, which for these addons IS the release filename) plus
-            // the declared byte size. Without either, two files of one pack
-            // share an identity and collapse to one row that plays file 0 —
-            // usually a .nfo — instead of two rows playing their own files.
             val addonFileName = hints?.optString("filename")?.ifBlank { null }
                 ?: st.optString("filename").ifBlank { null }
             val addonVideoSize = (hints?.optLong("videoSize", -1L) ?: -1L).takeIf { it > 0 }
@@ -1409,19 +1104,6 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
         return d.take(400)
     }
 
-    /**
-     * True when a `streams[]` row is a MESSAGE rather than a video.
-     *
-     * Stremio's protocol has no way to say "I will not serve this": an addon
-     * answers with a row, and a gated addon answers with a row that describes the
-     * problem — `{"name":"PenguPlay","title":"You must sign in","url":"…/signin.mp4"}`.
-     * That row parses as a perfectly ordinary direct stream, so it reached the
-     * server list as if it were one (and, worse, ended the search: see
-     * [getStreams]). Nothing here is guesswork about a specific addon — the test
-     * is the row's own words and the URL it points at, and it is narrow on
-     * purpose: a row with an `infoHash` or a `ytId` is always a real stream, and a
-     * row with no URL and no hash is already unusable.
-     */
     private fun isPlaceholderRow(st: JSONObject): Boolean {
         if (st.optString("infoHash").isNotBlank() || st.optString("ytId").isNotBlank()) return false
         val url = st.optString("url")
@@ -1462,19 +1144,6 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
 
     // ---- Subtitle-only addons ------------------------------------------------
 
-    /**
-     * True when this addon exists to supply SUBTITLES and nothing else — a
-     * manifest whose `resources` list is `["subtitles"]` and which declares no
-     * catalogs. OpenSubtitles v3 (`opensubtitles-v3.strem.io`) and the official
-     * SubDL addon (`api3.subdl.com`) are the two everyone meets: both answer
-     * `/subtitles/{type}/{id}.json` and neither has a catalog or a stream.
-     *
-     * They are not content providers, and treating them as one is why adding
-     * them looked broken: with no catalogs the addon was given TMDB's rows to
-     * browse (the stream-only fallback) and then produced no servers for
-     * anything, so it read as "this repo is useless". Hikari now recognises
-     * them for what they are (see [subtitlesFor]) and asks them for subtitles.
-     */
     suspend fun isSubtitleOnly(): Boolean {
         val m = loadManifest() ?: return false
         if (catalogsOf(m).isNotEmpty()) return false
@@ -1482,35 +1151,9 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
         return hasResource(m, "subtitles")
     }
 
-    /**
-     * The subtitle tracks this addon has for [item] (and [episode], for a
-     * series), in the order the addon returned them.
-     *
-     * A subtitle addon is asked with an id it recognises, and the two protocol
-     * families differ: OpenSubtitles v3 declares `idPrefixes: ["tt"]` and only
-     * answers IMDb ids, while SubDL declares `tt`, `tmdb:`, `kitsu:`, `mal:`,
-     * `anilist:` and `anidb:` and is happiest with `tmdb:`. So this tries, in
-     * order: the id the item already carries (an addon-sourced item may already
-     * be `tt…`), then the IMDb id TMDB knows behind a TMDB id, then the bare
-     * `tmdb:<id>` form. The first URL that returns a non-empty `subtitles`
-     * array wins, and an episode id gets the protocol's `:season:episode`
-     * suffix.
-     */
     suspend fun subtitlesFor(item: MediaItem, episode: Episode?): List<SubtitleSource> =
         subtitlesForDetailed(item, episode).tracks
 
-    /**
-     * [subtitlesFor], plus WHY it came back empty.
-     *
-     * The ids the addon was actually asked with are returned alongside the
-     * tracks ([SubtitleLookup.idsTried]) so the player's "no subtitles found"
-     * line can say what was tried instead of leaving the user (and whoever they
-     * report it to) guessing. The protocol is unforgiving about this:
-     * OpenSubtitles v3 declares `idPrefixes: ["tt"]` and answers an empty
-     * `subtitles` array — with HTTP 200 — to a `tmdb:550` id or to a bare name,
-     * so "nothing found" is what EVERY title looks like when the `tt` id could
-     * not be resolved ("in all movie it saying same not found").
-     */
     suspend fun subtitlesForDetailed(item: MediaItem, episode: Episode?): SubtitleLookup {
         val m = loadManifest() ?: return SubtitleLookup(
             emptyList(), emptyList(), "manifest could not be read",
@@ -1518,9 +1161,6 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
         if (!hasResource(m, "subtitles")) return SubtitleLookup(
             emptyList(), emptyList(), "no subtitle resource",
         )
-        // What this track should be CALLED in the player's subtitle list: with
-        // several subtitle addons installed (OpenSubtitles v3 AND SubDL, say)
-        // two "English" rows are indistinguishable without it.
         val addonName = m.optString("name").trim().ifBlank { config.name }
         val epSuffix = if (episode != null) ":${episode.season}:${episode.number}" else ""
         val kind = if (item.type == MediaType.SERIES) "tv" else "movie"
@@ -1531,21 +1171,7 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
             TmdbBrowse.imdbId(digits, kind)?.let { candidates += it + epSuffix }
             candidates += "tmdb:$digits"
         }
-        // …and the ids the TITLE resolves to, which is the case that matters for
-        // an item that came from a SITE SCRAPER: a CloudStream item's id is a URL
-        // path on the site, an Aniyomi item's is a slug, and neither is anything a
-        // subtitle addon can answer for. The old code tried those ids (plus the
-        // digits of a TMDB id, which such an item does not have) and gave up, so
-        // an installed subtitle addon returned nothing at all — reported as "i
-        // added opensub but in player the subtitle from the added subtitle
-        // extension not showing in player".
         resolvedCandidates(item, episode, kind).forEach { candidates += it }
-        // Nothing has produced a `tt` id yet — and a `tt` id is the ONLY thing
-        // OpenSubtitles v3 answers. IMDb's own suggestion endpoint needs no key
-        // and returns the tt-id for a name TMDB could not place (or could not be
-        // reached about in time), so ask it before giving up: this is the route
-        // that turns the blanket "no subtitles found for any movie" into a real
-        // track list.
         if (candidates.none { it.startsWith("tt") }) {
             imdbSuggestedId(item)?.let { candidates += it + epSuffix }
         }
@@ -1568,18 +1194,6 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
         return SubtitleLookup(emptyList(), tried, "")
     }
 
-    /**
-     * An IMDb id for [item] straight from IMDb's suggestion endpoint, which
-     * needs no API key: `/suggestion/h/<query>.json` answers
-     * `d:[{ l: title, y: year, q: "feature"|"TV series", id: "tt…" }]`.
-     *
-     * This is the subtitle path's last resort for an id and the first one that
-     * always works without a database round-trip: the addon that matters most
-     * here (OpenSubtitles v3) answers ONLY `tt…` ids — a `tmdb:` id and a bare
-     * title both come back as an empty list with HTTP 200 (verified against the
-     * live service) — so a title TMDB could not resolve used to look like "this
-     * addon has no subtitles for anything".
-     */
     private suspend fun imdbSuggestedId(item: MediaItem): String? {
         val title = item.searchTitle.trim()
         if (title.isBlank()) return null
@@ -1616,17 +1230,6 @@ class StremioAddon(override val config: ProviderConfig) : ContentProvider {
         return best
     }
 
-    /**
-     * The IMDb/TMDB ids for [item] resolved from its NAME, as
-     * `/subtitles/{type}/{id}` ids (episode suffix included for a series).
-     *
-     * A site-scraper item has no id any addon recognises — its id belongs to the
-     * site it came from, not to a database — so the title is resolved through
-     * TMDB ([com.hikari.app.nuvio.TmdbResolver], the same resolver the rest of
-     * the app uses, cached and single-flight): the IMDb id first, because
-     * OpenSubtitles v3 declares `idPrefixes: ["tt"]` and answers nothing else,
-     * then the `tmdb:<id>` form SubDL is happiest with.
-     */
     private suspend fun resolvedCandidates(
         item: MediaItem,
         episode: Episode?,

@@ -10,38 +10,11 @@ import android.widget.TextView
 import androidx.compose.ui.text.font.FontFamily
 import java.io.File
 
-/**
- * The app-wide font (Settings → Appearance & Theme → App font).
- *
- * Two halves, because Hikari is two apps in one:
- *
- *  * the Compose half takes the chosen [FontFamily] through the theme's
- *    typography — see [com.hikari.app.ui.theme.typographyWith] — and that
- *    repaints every screen at once;
- *  * the View-based half (the player, its dialogs, the WebView) is outside
- *    that tree, so it is repainted by [applyToViewTree], which walks the
- *    inflated hierarchy and re-types every TextView.
- *
- * The choice is mirrored into plain SharedPreferences for the same reason
- * [UiScale] and [AccentStore] are: the player must be able to read it
- * SYNCHRONOUSLY while its Activity is being created, before DataStore has
- * emitted anything.
- *
- * Besides the platform's own families the user can import a font file off the
- * device — it is copied into `filesDir/fonts` so the choice survives the
- * document-picker permission going away, and so the player can read it too.
- */
 object AppFonts {
 
     const val DEFAULT = "system"
     const val IMPORTED = "imported"
 
-    /**
-     * One pickable font. [family] is the platform family name handed to
-     * `Typeface.create` — the built-in Android families (which are Noto on most
-     * devices and Roboto on some, hence the shared label), plus the classic
-     * serif/monospace/casual/cursive faces.
-     */
     data class Choice(val key: String, val label: String, val family: String)
 
     val CHOICES: List<Choice> = listOf(
@@ -128,12 +101,6 @@ object AppFonts {
         return if (f.isFile) f else null
     }
 
-    /**
-     * The [Typeface] for a saved choice, or null when the app should keep the
-     * platform's own. Never throws: a family the device does not ship falls back
-     * to the platform default, and a broken imported file is ignored rather than
-     * crashing a screen.
-     */
     fun typeface(context: Context, key: String, importedName: String = ""): Typeface? {
         if (key == IMPORTED) {
             val f = importedFile(context, importedName) ?: return null

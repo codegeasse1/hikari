@@ -15,35 +15,6 @@ import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
 
-/**
- * "Your connection looks slow" suggestion — the app's answer to "this video
- * never starts and I don't know that Slow connection mode exists".
- *
- * The whole point is that it costs the user NOTHING and is never a guess:
- *
- *  - It arms the moment a play starts (the player opens instantly, before any
- *    server is found), then measures in the BACKGROUND, in parallel with the
- *    source search that is going to happen anyway — so no tap is ever delayed.
- *  - Two independent sources of evidence, and at least one of them has to be
- *    real before the dialog is allowed to appear:
- *      1. a tiny throughput probe (~128 KiB, 3s cap) against two different
- *         hosts, taking the BEST of them so one slow/blocked host can't fake a
- *         slow connection — skipped entirely when Android's own downstream
- *         bandwidth estimate already says the link is fast;
- *      2. playback that is visibly struggling on evidence the app already has:
- *         no first video frame 12s after the tap, or two servers failing in a
- *         row.
- *  - It gives up on itself the moment real video appears ([onFirstFrame]) — so
- *    a wrong "slow" verdict is retracted instead of sitting on the screen.
- *  - And it is quiet by default: nothing at all while Slow connection mode is
- *    already on, once per app session, nothing for [COOLDOWN_MS] after "Not
- *    now", never again after "Don't ask again", and the whole thing can be
- *    switched off in Settings (see AppStore.slowTipEnabled).
- *
- * The player collects [suggestion] and shows/dismisses its dialog, so all the
- * UI stays in one place; this object only decides WHETHER there is something
- * worth saying.
- */
 object SlowNetTip {
 
     /** Below this measured speed the connection genuinely looks slow. */
@@ -114,18 +85,12 @@ object SlowNetTip {
         //    it costs nothing for users who have it off / have it on already.
         probeJob = scope.launch {
             if (!eligible(a)) return@launch
-            // A link Android already reports as fast never gets probed (and
-            // never produces a slow reading) — the struggle path below still
-            // catches a link that lies about itself.
             if (linkKbps(a) >= HEALTHY_KBPS) return@launch
             val kbps = measureBest() ?: return@launch
             if (kbps >= SLOW_KBPS) return@launch
             suggest("probe $kbps kbps")
         }
 
-        // 2. Proven by the playback struggling, using signals the app already
-        //    has — this is what catches an inconclusive probe (e.g. both probe
-        //    hosts unreachable) on a genuinely dead connection.
         struggleJob = scope.launch {
             delay(STRUGGLE_MS)
             if (sawFrame) return@launch

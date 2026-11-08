@@ -47,23 +47,6 @@ import com.hikari.app.i18n.tr
 import com.hikari.app.ui.theme.rememberGlassTokens
 import kotlinx.coroutines.withTimeoutOrNull
 
-/**
- * Press-and-hold quick menu for poster cards.
- *
- * Hold a poster for 1 second and a glass stadium ring with three actions
- * fans out over it — info (opens the detail page), play (starts playback)
- * and add-to-library — and sliding left/right WITHOUT lifting the finger
- * moves the selection; the highlighted action fires on release.
- *
- * Why custom instead of `combinedClickable`: the platform long-press fires at
- * ~500ms (too eager for a grid that also scrolls) and offers no drag-to-pick.
- * The gesture here consumes NOTHING until the menu is actually up, so taps
- * (the card's own `clickable`) and scrolls (the row) behave exactly as before:
- * only the moves after the 1-second hold are consumed, which is also what
- * stops the card's own tap from firing after a menu pick.
- *
- * Slots, left to right: 0 = info, 1 = play, 2 = library, 3 = close (dismisses
- * the menu with no action, so an opened menu never forces a pick). */
 const val QUICK_MENU_HOLD_MS = 1000L
 
 class QuickMenuState {
@@ -74,11 +57,6 @@ class QuickMenuState {
 @Composable
 fun rememberQuickMenuState(): QuickMenuState = remember { QuickMenuState() }
 
-/**
- * Hold-to-menu gesture for a poster. [onPick] fires once, on release, with the
- * chosen slot (0 info / 1 play / 2 library / 3 close). Taps and scrolls pass through
- * untouched — see the note above.
- */
 fun Modifier.quickMenuGesture(
     state: QuickMenuState,
     onPick: (Int) -> Unit,
@@ -87,9 +65,6 @@ fun Modifier.quickMenuGesture(
         val down = awaitFirstDown()
         val start = down.position
         val slop = viewConfiguration.touchSlop
-        // Race the hold against release (tap) and drag (scroll). Nothing is
-        // consumed here, so whatever wins behaves exactly as if this modifier
-        // were not present.
         var outcome: String? = null
         withTimeoutOrNull(QUICK_MENU_HOLD_MS) {
             var ev = awaitPointerEvent()
@@ -115,10 +90,6 @@ fun Modifier.quickMenuGesture(
                 val x = ev.changes.firstOrNull()?.position?.x
                 val w = size.width.toFloat()
                 if (x != null && w > 0f) {
-                    // Horizontal slide picks the slot — info, play, library,
-                    // then close — so the thumb never has to aim at a small
-                    // icon, just lean left or right. The last band dismisses
-                    // with no action.
                     sel = ((x / w) * 4).toInt().coerceIn(0, 3)
                     state.selected = sel
                 }
@@ -132,16 +103,6 @@ fun Modifier.quickMenuGesture(
     }
 }
 
-/** The fan overlay: a glass stadium ring enclosing the hint and the four
- *  labelled round actions — Details, Play, Library, Close. The ring is a stadium
- *  (upper semicircle + lower semicircle) painted from the taskbar floating-bar
- *  recipe ([rememberGlassTokens]): theme surface at near-full strength with
- *  the top-light falloff and the 1px hairline, so menu and taskbar read as one
- *  material over any poster art.
- *  Every disc is sized from the poster's own width so all four always fit,
- *  even on narrow shelf posters. Sliding across without lifting picks a
- *  slot; Play starts playback directly, Details opens the page, Close
- *  dismisses with no action. */
 @Composable
 fun BoxScope.QuickMenuOverlay(selected: Int) {
     val scheme = MaterialTheme.colorScheme
@@ -152,10 +113,6 @@ fun BoxScope.QuickMenuOverlay(selected: Int) {
     val closeLabel = tr("Close")
     val hint = tr("Slide to explore")
     BoxWithConstraints(Modifier.matchParentSize()) {
-        // Equal discs, sized to fit four across with room to spare — the
-        // selection reads through colour + ring, never through a bigger disc
-        // that would push its neighbours off a narrow card. Slide-to-pick
-        // needs no aiming, so the discs can run smaller than tap targets.
         val spacing = (maxWidth * 0.04f).coerceAtMost(10.dp)
         val disc = ((maxWidth - spacing * 3 - 16.dp) / 4).coerceIn(20.dp, 40.dp)
         Canvas(Modifier.matchParentSize()) {
@@ -163,9 +120,6 @@ fun BoxScope.QuickMenuOverlay(selected: Int) {
             val h = size.height
             // Dim the art so the icons read on any poster.
             drawRect(Color.Black.copy(alpha = 0.30f))
-            // The ring: a stadium around hint + discs, measured from the same
-            // disc/spacing/bottom-pad the Column below lays out with, so the
-            // glass always encloses the buttons on every poster width.
             val discPx = disc.toPx()
             val spacingPx = spacing.toPx()
             val rowW = discPx * 4f + spacingPx * 3f
@@ -188,9 +142,6 @@ fun BoxScope.QuickMenuOverlay(selected: Int) {
             val corner = CornerRadius(stadiumH / 2f, stadiumH / 2f)
             val topLeft = Offset(left, top)
             val stadiumSize = Size(stadiumW, stadiumH)
-            // Taskbar floating-bar fill: theme surface at near-full strength
-            // (a whisper would drown on a bright poster), then the glass
-            // top-light falloff, then the 1px hairline.
             drawRoundRect(
                 color = scheme.surface.copy(alpha = if (glass.dark) 0.92f else 0.95f),
                 topLeft = topLeft,

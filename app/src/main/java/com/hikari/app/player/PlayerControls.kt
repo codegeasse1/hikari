@@ -2,16 +2,6 @@ package com.hikari.app.player
 
 import org.json.JSONObject
 
-/**
- * Where a player control button lives on screen (Settings → Player → Player
- * controls). The player's overlay has three places that can hold buttons — the
- * top bar next to the title, and the left/right ends of the bottom row — plus
- * "hidden" for buttons the user never wants to see.
- *
- * The back button, the centre play/pause cluster and the title/badges are NOT
- * configurable: without them there is no way to leave, pause or identify what
- * is playing.
- */
 enum class PlayerControlSlot(val key: String, val label: String, val blurb: String) {
     TOP_BAR("top", "Top bar", "Up with the title and the back button"),
     BOTTOM_LEFT("left", "Bottom left", "Left end of the controls row"),
@@ -24,11 +14,6 @@ enum class PlayerControlSlot(val key: String, val label: String, val blurb: Stri
     }
 }
 
-/**
- * Every movable player button. [defaultSlot] reproduces the layout the player
- * shipped with, so an install that never opens this screen looks exactly as it
- * always did.
- */
 enum class PlayerControl(
     val key: String,
     val label: String,
@@ -57,12 +42,6 @@ enum class PlayerControl(
     }
 }
 
-/**
- * Reads/writes the "player controls" preference: one JSON object mapping each
- * control's key to a slot key. Anything missing falls back to the control's
- * [PlayerControl.defaultSlot], so the format stays compatible when new buttons
- * are added in later versions (and a corrupt value simply means "default").
- */
 object PlayerControlsConfig {
 
     fun defaults(): Map<PlayerControl, PlayerControlSlot> =

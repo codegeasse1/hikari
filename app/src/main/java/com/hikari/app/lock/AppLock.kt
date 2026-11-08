@@ -5,34 +5,6 @@ import java.security.SecureRandom
 import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.PBEKeySpec
 
-/**
- * The app lock's password storage (Settings → Privacy & Browsing → App lock).
- *
- * The password is never written anywhere: what is stored is a PBKDF2
- * derivation of it plus a random 16-byte salt, as `algo:salt:hash`, all hex.
- *
- *  * `algo` is recorded so an install that was locked on an older phone still
- *    verifies after the derivation changes: `sha256` is used where the platform
- *    has it (API 26+, i.e. everything current) and `sha1` where it does not —
- *    Android only added PBKDF2WithHmacSHA256 in API 26, and this app runs on
- *    API 24. A lock that silently stops accepting the right password on an old
- *    device would be worse than one built on the older primitive.
- *  * A blob with NO algorithm — `salt:hash`, the shape written before the
- *    algorithm was recorded — is still accepted ([parse] takes both), and with
- *    no algorithm recorded BOTH primitives are tried. That is a lock that was
- *    set by an older build: refusing it would lock the user out of their own
- *    app for a reason no one could see.
- *  * The password is tried trimmed and exactly as typed, for the same reason: a
- *    build that did not trim (or a keyboard that appended a space) would
- *    otherwise produce a blob that no trimmed attempt can ever match.
- *  * The comparison is constant-time ([MessageDigest.isEqual]), so a wrong
- *    password cannot be narrowed down by how long the check took.
- *
- * There is deliberately NO recovery: nothing in the app can read the password
- * back, which is the whole point of storing only a derivation. The settings
- * card says so before the password is set, and the unlock screen offers the one
- * honest way out — turning the lock off (see [com.hikari.app.ui.AppLockScreen]).
- */
 object AppLock {
 
     private const val ITERATIONS = 120_000
@@ -60,26 +32,9 @@ object AppLock {
     /** `algo:salt:hash` for [password] — what the store keeps. */
     fun encode(password: String, salt: String = newSalt()): String {
         val algo = algorithm()
-        // Trimmed on BOTH sides of the trip: a keyboard's autocorrect can leave
-        // a trailing space in a text field that a password field would never
-        // produce, and a correct password that fails because of an invisible
-        // character is the "it says wrong even when I type it right" report.
-        //
-        // `hex(...)` is not decoration: a bare ByteArray interpolates as
-        // `[B@1f2e3d` — the array's IDENTITY, which is a different string on
-        // every call and contains no hex at all. That single missing call is why
-        // every password ever set by an earlier build reported "wrong password":
-        // the stored blob could never be reproduced, and [verify] could not even
-        // parse it. [isSet] now rejects a blob that is not `algo:salt:hex`, so
-        // such a lock is recognised as broken instead of silently unusable.
         return "$algo:$salt:${hex(derive(password.trim(), salt, algo))}"
     }
 
-    /**
-     * A stored blob, whichever shape it is: `algo:salt:hash` (what this build
-     * writes) or `salt:hash` (what it wrote before the algorithm was recorded).
-     * [algo] is null when the blob does not name one.
-     */
     private class Parts(val algo: String?, val salt: String, val hash: String)
 
     private fun parse(stored: String): Parts? {
@@ -105,9 +60,6 @@ object AppLock {
         // so the ordinary wrong-PIN path still costs exactly ONE derivation and
         // reports as fast as it always did.
         val algos = if (parts.algo in ALGOS) listOf(parts.algo!!) else ALGOS
-        // Exactly as typed first — that is what a password field hands over —
-        // and the trimmed form only when it differs, again to keep the common
-        // path to a single derivation.
         val variants =
             if (password == password.trim()) listOf(password)
             else listOf(password, password.trim())

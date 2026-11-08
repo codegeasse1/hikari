@@ -27,14 +27,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import java.io.File
 
-/**
- * Hosts the yomi webtoon viewer (a RecyclerView-based reader) inside Compose. Pages are streamed
- * chapter-by-chapter: each streamed segment after the first is preceded by a chapter divider, and
- * a trailing item shows the next-chapter loading/error/end state. All scroll/zoom/tap behavior is
- * handled by the native viewer, exactly as it is in yomi. The webtoon settings ([config]) are a
- * snapshot built by the caller whenever any of the underlying preferences change; assigning it to
- * the viewer re-applies crop, tap zones, zoom and scale behavior live.
- */
 @Composable
 fun YomiWebtoonReader(
     source: MangaSource?,
@@ -97,10 +89,6 @@ fun YomiWebtoonReader(
         streamQueue.joinToString("|") { it.id } + "::" + streamSegments.joinToString("|") { it.size.toString() }
     }
     var lastSignature by remember { mutableStateOf("") }
-    // The chapter ids and page counts the viewer is currently showing. They are
-    // what tells a PREPEND (a chapter streamed in above the reader) from an
-    // append, so the viewer can hold the reader's place while the strip grows
-    // upwards — see WebtoonViewer.setItems.
     var lastIds by remember { mutableStateOf<List<String>>(emptyList()) }
 
     AndroidView(
@@ -145,13 +133,6 @@ fun YomiWebtoonReader(
                 lastSignature = itemsSignature
                 val ids = streamQueue.map { it.id }
                 val oldIds = lastIds
-                // A PREPEND is the one list change that shifts the adapter
-                // positions of everything on screen: it is the case where the new
-                // chapter list ENDS with the old one. An append (the ordinary
-                // auto-continue) starts with it and needs no scroll fix-up at all.
-                // The items added at the head are the new segments' pages plus one
-                // divider for each — every segment but the first is preceded by
-                // one, and the segment that used to be first now gets its own.
                 val prependedSegments = when {
                     oldIds.isEmpty() -> 0
                     ids.take(oldIds.size) == oldIds -> 0

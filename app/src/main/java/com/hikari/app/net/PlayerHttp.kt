@@ -11,40 +11,8 @@ import java.util.concurrent.TimeUnit
 import okio.buffer
 import okio.source
 
-/**
- * The one OkHttp client every video byte flows through.
- *
- * The player used to build a throwaway client per [com.hikari.app.player.PlayerActivity]
- * (and [StreamProbe] a separate one), so every playback session started with a
- * cold DNS cache, a cold TLS session and an empty connection pool — the first
- * segment of every stream paid a full handshake before a single byte moved,
- * which is exactly the kind of startup stall that reads as "buffering".
- *
- * One shared, playback-tuned client instead:
- *  - [StreamProbe] derives its own client from this one via `newBuilder()`,
- *    which shares this connection pool + dispatcher, so the CDN connection the
- *    probe just opened (while it classified the stream) is still warm and is
- *    REUSED by media3's OkHttpDataSource for the first media request — no
- *    second handshake, no repeat DNS;
- *  - a bigger pool + per-host request budget lets HLS/DASH pull
- *    audio/video/subtitle segments (and seek prefetch) in parallel instead of
- *    the dispatcher queueing them behind each other;
- *  - a 20 s read timeout (down from 30 s) bounds how long a single hung CDN
- *    socket can stall the stream before the load-error policy opens a fresh
- *    connection and resumes at the current position via a Range request.
- *
- * The timeouts here are the *playback* timeouts. The probe deliberately
- * overrides them with much shorter ones so a dead wrapper page can never hold
- * up a source search.
- */
 object PlayerHttp {
 
-    /**
-     * Shared cookie jar for CS3 extraction and playback. CloudStream's extractor may
-     * establish a session cookie before returning a signed media URL (Fastream is a
-     * common example). Keeping the jar shared is safe; the player itself otherwise
-     * remains the stable 0.10.66 networking path.
-     */
     val cookieJar: CookieJar = object : CookieJar {
         private val store = ConcurrentHashMap<String, List<Cookie>>()
 
@@ -76,9 +44,6 @@ object PlayerHttp {
             // Give up on a dead host quickly: failover to the next server must
             // not be gated on a long TCP timeout.
             .connectTimeout(15, TimeUnit.SECONDS)
-            // Per-socket-read cap. A CDN that stops delivering bytes is
-            // retried on a fresh connection (resuming via a Range request)
-            // rather than left "buffering" indefinitely.
             .readTimeout(20, TimeUnit.SECONDS)
             .writeTimeout(15, TimeUnit.SECONDS)
             .retryOnConnectionFailure(true)
@@ -95,39 +60,10 @@ object PlayerHttp {
             .build()
     }
 
-    /**
-     * CloudStream-parity playback client, used ONLY for CloudStream sources
-     * (see PlayerActivity): the pool, dispatcher, timeouts, DNS and the shared
-     * extraction/playback cookie jar of [client], but WITHOUT the
-     * Cloudflare-verifier interceptor — the CloudStream app plays video bytes
-     * through its plain baseClient, and a clearance-cookie mutation on a
-     * signed CDN URL is a 403-vs-play difference no header tweak can fix.
-     * Every other engine keeps playing through [client], untouched.
-     */
     val plainClient: OkHttpClient by lazy {
         client.newBuilder().apply { interceptors().clear() }.build()
     }
 
-    /**
-     * Loopback-only playback client: [plainClient] plus a gunzip-magic pass.
-     * An extension's own local proxy answers HTTP 200 labelled `mpegurl`
-     * while the body is GZIP bytes (proven by the `loopback diag` line: first
-     * bytes 1F 8B, never #EXTM3U) — ExoPlayer compares the first bytes and
-     * dies malformed. The pass peeks the first two bytes of every response
-     * and, ONLY on gzip magic, swaps the body for a streaming gunzip of it
-     * (length unknown from there, encoding header dropped). Plain responses
-     * pass through untouched — the peek buffers, it never consumes — so this
-     * cannot break a healthy proxy. Playlist AND segments flow through the
-     * same OkHttpDataSource factory, so one pass covers both.
-     */
-    /** Upstream headers a loopback proxy declared in its /m3u8 URL
-     *  (referer/useragent query params), remembered per loopback authority so
-     *  the SAME headers ride on that proxy's /segment fetches too: segment
-     *  URLs carry no query params of their own, and the proxy forwards
-     *  whatever the player sent upstream — without them its upstream fetch
-     *  dies and the manifest it hands back is a single fallback URL line
-     *  instead of #EXTM3U (the MissAV "plays in the reference apps,
-     *  malformed here" class). */
     private val loopbackHeadersByAuthority = ConcurrentHashMap<String, Map<String, String>>()
 
     private fun rememberLoopbackHeaders(url: HttpUrl) {

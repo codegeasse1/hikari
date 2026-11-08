@@ -18,28 +18,6 @@ const val REDDIT_COMMUNITY_URL = "https://www.reddit.com/r/HikariApp"
 /** Hikari's Discord server — help, discussion and release news. */
 const val DISCORD_INVITE_URL = "https://discord.gg/hdwB78Ahq"
 
-/**
- * Opens a YouTube video in the YouTube app rather than Hikari's own WebView.
- *
- * The in-app WebView is the right place for extension/watch pages, but it is
- * the wrong place for YouTube: the site redirects `www.youtube.com` to
- * `m.youtube.com`, and the WebView's redirect protection (Settings → WebView
- * safety) blocks that hop, so the trailer page just sits on a black screen.
- * Handing the id to the YouTube app avoids the redirect entirely.
- *
- * Tried in order, first one that starts wins:
- *  1. the explicit `vnd.youtube:<id>` scheme — the reliable way to force the
- *     YouTube app, and to offer the system chooser when another handler
- *     (ReVanced, NewPipe...) is installed;
- *  2. the plain https watch link — the YouTube app again when its App Links
- *     are verified, else a browser;
- *  3. [WebViewActivity] as a last resort so the tap is never a no-op.
- *
- * Never uses [android.content.pm.PackageManager.resolveActivity] to probe:
- * on API 30+ package visibility would report "not installed" for the YouTube
- * app unless it is declared in `<queries>`, while starting the implicit
- * intent works regardless.
- */
 fun openYouTubeVideo(context: Context, videoId: String, title: String? = null): Boolean {
     val id = videoId.trim()
     if (id.isEmpty()) return false
@@ -96,33 +74,8 @@ private fun telegramHandle(url: String): String? {
     return handle.trim().ifBlank { null }
 }
 
-/**
- * Opens a community link (Reddit, Discord, …) in the matching app when it is
- * installed, else in the user's own browser — deliberately NEVER Hikari's own
- * WebView, which has no logins and mangles app hand-offs (see [openTelegram]).
- */
 fun openCommunity(context: Context, url: String): Boolean = openUrl(context, url)
 
-/**
- * Opens an ordinary https page in the user's own browser.
- *
- * Used for the pages the user has to visit OUTSIDE Hikari — registering a
- * tracker app (Settings → Trackers) and the like: those are account pages with
- * logins and passwords, they are built for a real browser, and doing them in
- * Hikari's WebView would also mean the app's own redirect/cookie rules applying
- * to somebody else's sign-in flow.
- *
- * Never silent: false means "nothing was opened" (the launch threw) and every
- * caller must fall back or say so — a tap that dies inside here is the whole
- * class of "dead link" reports.
- *
- * Deliberately NO resolveActivity probe before firing: on API 30+ package
- * visibility reports "not installed" for a perfectly good browser unless it
- * is declared in `<queries>` (see openYouTubeVideo's note), while starting
- * the intent works regardless. A probe here turned every browser tap into a
- * false "Couldn't open the link" — exactly the regression it claimed to
- * prevent. The runCatching around the real launch is the only honest test.
- */
 fun openUrl(context: Context, url: String): Boolean {
     if (url.isBlank()) return false
     if (launch(context, Intent(Intent.ACTION_VIEW, Uri.parse(url)))) return true
@@ -130,15 +83,6 @@ fun openUrl(context: Context, url: String): Boolean {
     return false
 }
 
-/** Starts [intent], tagging it with NEW_TASK when [context] is not an Activity
- *  (e.g. an application context) so Android doesn't reject the launch. Returns
- *  false when nothing can handle it — the caller falls through to the next
- *  option.
- *
- *  Stamped via [com.hikari.app.net.ExtensionUiGuard.runTrusted]: this is our
- *  own UI opening a browser/app the user asked for, so the extension
- *  auto-open guard lets it through without stack inference (which convicted
- *  a library frame and silently killed tracker login taps). */
 private fun launch(context: Context, intent: Intent): Boolean {
     if (context !is Activity) intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     return runCatching {

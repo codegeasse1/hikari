@@ -17,17 +17,6 @@ import org.koitharu.kotatsu.parsers.model.MangaTag
 import org.koitharu.kotatsu.parsers.model.RATING_UNKNOWN
 import org.koitharu.kotatsu.parsers.model.SortOrder
 
-/**
- * A Kotatsu [MangaParser] speaking the Tachiyomi [CatalogueSource] API, so
- * [com.hikari.app.manga.MangaProvider] drives it like any manga extension:
- * Popular / Latest catalogues, search, details, chapters and pages.
- *
- * Id mapping: Kotatsu ids are per-site Longs that collide across sites, so the
- * Tachiyomi-facing ids are stable hashes of the site-relative urls instead —
- * every round trip (`MediaItem.id` ⇄ `SManga.url` ⇄ Kotatsu `url`) carries the
- * url itself, and synthetic numeric ids are derived from it wherever the
- * Kotatsu models demand one.
- */
 class KotatsuBridge(
     private val parser: MangaParser,
 ) : CatalogueSource {

@@ -195,9 +195,6 @@ class UniversalScraper(override val config: ProviderConfig) : ContentProvider {
         return out
     }
 
-    // ---------------------------------------------------------------
-    // JSON-API mode helpers
-    // ---------------------------------------------------------------
 
     private fun apiHeaders(): Map<String, String> {
         val h = api?.optJSONObject("headers") ?: return emptyMap()
@@ -220,11 +217,6 @@ class UniversalScraper(override val config: ProviderConfig) : ContentProvider {
         if (j.has("error")) null else j
     }.getOrNull()
 
-    /**
-     * Fetches an API endpoint. Tries the API base directly first (it works
-     * when the API accepts our headers), then falls back to the site's own
-     * proxy (some CDNs only accept the site's Origin) twice.
-     */
     private suspend fun apiGet(path: String, params: Map<String, String> = emptyMap()): JSONObject? {
         val apiBase = api?.optString("base")?.takeIf { it.isNotBlank() } ?: return null
         val q = if (params.isEmpty()) "" else "?" + params.entries.joinToString("&") { (k, v) ->
@@ -338,9 +330,6 @@ class UniversalScraper(override val config: ProviderConfig) : ContentProvider {
         val maxPages = api?.optInt("episodesMaxPages", 30) ?: 30
         val numField = api?.optString("episodeNumber")?.ifBlank { "number" } ?: "number"
         val nameField = api?.optString("episodeName")?.ifBlank { "title" } ?: "title"
-        // Optional: some API scrapers expose the season per episode. When the
-        // config doesn't name a field, every episode is season 1 (the detail
-        // screen then shows a single flat list, as before).
         val seasonField = api?.optString("episodeSeason")?.ifBlank { null }
         val fixedSeason = api?.optInt("season", 0) ?: 0
         val out = mutableListOf<Episode>()
@@ -433,9 +422,6 @@ class UniversalScraper(override val config: ProviderConfig) : ContentProvider {
         return out.distinctBy { it.url + "|" + it.name }
     }
 
-    // ---------------------------------------------------------------
-    // Interface
-    // ---------------------------------------------------------------
 
     override suspend fun catalogs(): List<CatalogRef> {
         if (api != null) {
@@ -557,9 +543,6 @@ class UniversalScraper(override val config: ProviderConfig) : ContentProvider {
         if (css.isBlank()) return emptyList()
         val out = ArrayList<StreamSource>()
         for (img in doc.select(css)) {
-            // Lazy-load aware, data-first: a `src` that holds a blank SVG
-            // data: placeholder (animeonline.ninja and kin) must never win
-            // over the real URL in data-src — see imgAttr above.
             var u = img.attr("abs:data-src").ifBlank { img.attr("abs:data-lazy-src") }
                 .ifBlank { img.attr("abs:data-original") }.ifBlank { null }
             if (u.isNullOrBlank() || u.startsWith("data:")) {

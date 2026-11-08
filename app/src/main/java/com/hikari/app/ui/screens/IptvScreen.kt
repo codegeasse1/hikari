@@ -97,32 +97,6 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import com.hikari.app.tv.tvTextFieldKeys
 
-/**
- * The IPTV tab: the user's playlists as tiles, and the channels inside them.
- *
- * The app already plays IPTV — a playlist is a provider, so its channels appear
- * in Home's source picker, in the global search and in the player's server list.
- * What it had no home for was *browsing* a playlist: the only place a playlist
- * was listed at all was a row in Extensions, and its groups were buried in
- * Home's catalog picker. This is the IPTV-shaped surface the user asked for
- * ("add in taskbar IPTV button … all added iptv link it shows here as Poster box
- * like in personal catalog creator, and clicking it open that iptv link
- * catalog").
- *
- * The hierarchy is the playlist's own:
- *   IPTV tab → one tile per playlist → one tile per group ("Sports", "India",
- *   "Movies 24/7") → the group's channels, as a paged poster grid
- *   ([CatalogScreen], which every IPTV group already answers through the
- *   provider contract).
- *
- * Nothing here reaches TMDB: a live channel has no entry there, and the artwork
- * lookup knows it (see [com.hikari.app.data.IptvMark]). A playlist's tile wears
- * the first real channel logo it has, and every channel without a logo gets a
- * tile drawn from its own name ([IptvArt]).
- *
- * The tab's button is OFF by default — see Settings → Taskbar buttons, where it
- * can be switched on like any other tab (see [com.hikari.app.data.AppStore.iptvTabFlow]).
- */
 @Composable
 fun IptvScreen(nav: NavHostController) {
     val app = LocalContext.current.applicationContext as HikariApp
@@ -139,10 +113,6 @@ fun IptvScreen(nav: NavHostController) {
     val scope = rememberCoroutineScope()
     val uiContext = LocalContext.current
 
-    // "+" opens the add-playlist dialog right here, with the link field already
-    // in front of the user — the tab used to bounce to Extensions and leave them
-    // to find "Add IPTV playlist" themselves ("make clicking it directly open
-    // m3u8 entering link so user can add directly from there too").
     var showAdd by remember { mutableStateOf(false) }
     var addLink by remember { mutableStateOf("") }
     var addName by remember { mutableStateOf("") }
@@ -248,22 +218,11 @@ fun IptvScreen(nav: NavHostController) {
         }
     }
 
-    // Removes one playlist from the tab. The provider is dropped first, so the
-    // tile goes away immediately (the grid is keyed on the provider list), and
-    // then the app's own copy of the file is deleted — but only when it really
-    // is the app's copy (a playlist picked from storage, under filesDir/iptv/)
-    // and nothing else still lists it: a linked playlist has nothing local, and
-    // a file another profile (or another provider) still uses must stay (the
-    // same rule the Extensions screen's remove follows).
     fun removePlaylist(card: IptvCard) {
         scope.launch {
             val target = app.store.providers().firstOrNull { it.id == card.id }
             app.store.removeProvider(card.id)
             app.providers.refresh()
-            // Forget the cached read: this playlist's channel count and any
-            // error belong to a row that no longer exists. Adding the same link
-            // again reuses its id (see addIptvPlaylist), and must not inherit a
-            // stale count or a stale "didn't load" badge.
             IptvProvider.forget(card.id)
             val path = target?.url.orEmpty()
             val base = app.filesDir.absolutePath + "/iptv/"
@@ -278,10 +237,6 @@ fun IptvScreen(nav: NavHostController) {
 
     var cards by remember { mutableStateOf<List<IptvCard>>(emptyList()) }
     var reading by remember { mutableStateOf(false) }
-    // The playlist whose tile was tapped on its trash button. Removal is
-    // confirmed in a dialog first: it takes the playlist's channels out of
-    // Home, search and the player's server list, and deletes the app's own
-    // copy when the playlist was imported from storage.
     var removeTarget by remember { mutableStateOf<IptvCard?>(null) }
     // One re-read of every playlist, keyed on which playlists exist: adding or
     // removing one is what has to re-run this, not a recomposition.
@@ -347,9 +302,6 @@ fun IptvScreen(nav: NavHostController) {
     val torCards = remember(cards) { cards.filter { it.torrent } }
     val streamCards = remember(cards) { cards.filter { it.stream && !it.torrent } }
 
-    // Opens the add dialog preset to one section's kind: Tor takes a magnet /
-    // .torrent URL / info hash, Network stream a direct link, IPTV a playlist
-    // link or file. The dialog's own pills can still switch after.
     fun presetAdd(kind: String) {
         when (kind) {
             IptvSection.TORRENT -> {
@@ -417,10 +369,6 @@ fun IptvScreen(nav: NavHostController) {
             title = { Text(if (addTorrent) tr("Add torrent") else if (addStream) tr("Add network stream") else tr("Add IPTV playlist")) },
             text = {
                 Column(Modifier.verticalScroll(rememberScrollState())) {
-                    // Playlist or single link. Kept in front of the fields
-                    // because it changes what they mean: a playlist link is
-                    // read and its channels listed, a stream link is kept as it
-                    // is and worked out when it is played.
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         AddModePill(
                             label = tr("Playlist"),
@@ -563,9 +511,6 @@ fun IptvScreen(nav: NavHostController) {
         )
     }
 
-    // Removing a playlist is destructive in two ways (its channels leave Home
-    // and search, and a stored copy is deleted), so it is confirmed here rather
-    // than done on the tap.
     removeTarget?.let { target ->
         AlertDialog(
             onDismissRequest = { removeTarget = null },
@@ -604,13 +549,6 @@ fun IptvScreen(nav: NavHostController) {
     }
 }
 
-/**
- * Copies a picked playlist file into the app's own storage, because a SAF Uri
- * is not readable after a restart and a playlist the user chose should keep
- * working. Returns (display name, stored path), or null when the file could not
- * be read — the same rule the Extensions screen's picker follows, kept here so
- * the IPTV tab can add a playlist without leaving the tab.
- */
 private suspend fun copyPlaylistInto(
     context: android.content.Context,
     uri: Uri,
@@ -633,14 +571,6 @@ private suspend fun copyPlaylistInto(
     }.getOrNull()
 }
 
-/**
- * Adds (or updates) an IPTV playlist from the tab's own + button. [link] is the
- * pasted M3U/M3U8/Xtream URL and [localPath] the stored copy of a picked file —
- * one of the two. The playlist is READ before it is saved, so a dead link or a
- * file with no channels is reported instead of becoming an empty tile, and the
- * id is derived from the source so adding the same link twice updates the one
- * entry (exactly what the Extensions screen does, see its addIptvPlaylist).
- */
 private suspend fun addIptvPlaylist(
     app: HikariApp,
     link: String,
@@ -669,10 +599,6 @@ private suspend fun addIptvPlaylist(
             Exception(I18n.t("That looks like a torrent, not a playlist — add it with Tor instead")),
         )
     }
-    // A single video/stream address is not a playlist: downloading it here would fetch
-    // video bytes as playlist text, and saving it would list it as a one-channel
-    // IPTV folder (All channels into Ungrouped) that plays as live TV. Network stream
-    // mode is the path that resolves such a link at play time and plays it as a file.
     if (localPath.isNullOrBlank() && NetworkStream.isDirectMediaLink(url)) {
         return@withContext Result.failure(
             Exception(I18n.t("That looks like a single video link, not a playlist — add it with Network stream instead")),
@@ -716,18 +642,6 @@ private suspend fun addIptvPlaylist(
     Result.success(count)
 }
 
-/**
- * Adds a NETWORK STREAM: one pasted link, kept exactly as the user wrote it and
- * resolved when it is played (see [NetworkStream]).
- *
- * Deliberately NOT read before it is saved, unlike [addIptvPlaylist]. There is
- * nothing to count — a Terabox share or an m3u8 is not a channel list — and
- * fetching it here would both make adding slow and fail honest links that the
- * app can only work out at play time (the host needs the player's own headers,
- * or asks for a session the resolver sets up then). The entry is saved with
- * [NetworkStream.MARKER] on its config, which is what makes the tab, the tile
- * and the play path treat it as a stream rather than a one-channel playlist.
- */
 private suspend fun addNetworkStream(
     app: HikariApp,
     link: String,
@@ -829,11 +743,6 @@ private fun AddModePill(label: String, selected: Boolean, onClick: () -> Unit) {
     }
 }
 
-/**
- * One playlist's own page: its groups as tiles, exactly the way a personal
- * catalog shows its folders. A tap opens that group's channels in the paged
- * catalog grid (which is how every other catalog in the app is browsed).
- */
 @Composable
 fun IptvPlaylistScreen(nav: NavHostController, providerId: String) {
     val app = LocalContext.current.applicationContext as HikariApp
@@ -857,13 +766,6 @@ fun IptvPlaylistScreen(nav: NavHostController, providerId: String) {
     }
     val isTorrent = playlist != null && NetworkStream.isTorrentLink(playlist.config.url)
 
-    // ---- In-folder search -------------------------------------------------
-    //
-    // The header's search icon used to jump to the global Search tab scoped to
-    // this playlist — leaving the folder to search it. It now searches right
-    // here: the field filters this playlist's channels in place (same backend
-    // as the scoped search, `IptvProvider.search`), and a tap plays from the
-    // results without ever leaving the folder.
     var folderSearchOpen by remember(providerId) { mutableStateOf(false) }
     var folderQuery by remember(providerId) { mutableStateOf("") }
     var folderResults by remember(providerId) { mutableStateOf<List<MediaItem>?>(null) }
@@ -1223,9 +1125,6 @@ private suspend fun readCard(p: IptvProvider): IptvCard {
         url = p.config.url,
         channels = list.size,
         groups = list.map { IptvPlaylist.groupOf(it) }.distinct().size,
-        // The first channel that really has a logo: a playlist tile wearing one
-        // of its own channel logos reads as "this is what is inside" far better
-        // than a generic glyph.
         cover = list.firstOrNull { !it.logo.isNullOrBlank() }?.logo,
         error = IptvProvider.iptvErrors[p.config.id],
         stream = NetworkStream.isStream(p.config),
@@ -1234,13 +1133,6 @@ private suspend fun readCard(p: IptvProvider): IptvCard {
     )
 }
 
-/**
- * A playlist's groups, biggest first, with "All channels" as the first tile.
- *
- * The ids are the provider's own catalog ids ([IptvProvider.CATALOG_ALL] and
- * [IptvProvider.catalogIdForGroup]), so a tile links straight to the same paged
- * catalog the provider would hand Home — no second code path to keep in step.
- */
 private suspend fun readGroups(p: IptvProvider, mode: String): List<IptvGroupTile> {
     val list = runCatching {
         withTimeoutOrNull(60_000L) { p.channels() }
@@ -1272,10 +1164,6 @@ private suspend fun readGroups(p: IptvProvider, mode: String): List<IptvGroupTil
                     else -> IptvProvider.catalogIdForGroup(group)
                 },
                 count = channels.size,
-                // The first channel that really has a logo: a group tile
-                // wearing one of its own channel logos reads as "this is
-                // what is inside" far better than initials. A known country
-                // wears its flag instead (see the grid below).
                 cover = channels.firstOrNull { !it.logo.isNullOrBlank() }?.logo,
             )
         }
@@ -1373,11 +1261,6 @@ private fun IptvSectionPill(
     }
 }
 
-/**
- * One IPTV section page: its own header (own title/counts, own tile-shape
- * button, own + button opening the add dialog preset to this kind) above its
- * own grid. Each page keeps its own shape and its own scroll position.
- */
 @Composable
 private fun IptvSectionPage(
     kind: String,
@@ -1466,11 +1349,6 @@ private fun IptvSectionPage(
     }
 }
 
-/**
- * The body under one section's header: the onboarding card (playlist page with
- * nothing added yet), a spinner while the first read lands, an empty card, or
- * the tile grid. Tile taps route by kind exactly like the old single list.
- */
 @Composable
 private fun IptvKindGrid(
     kind: String,
@@ -1577,9 +1455,6 @@ private fun IptvKindGrid(
                             ),
                         )
                     } else if (card.stream && !card.torrent) {
-                        // A network stream is one file, not a channel list: it opens
-                        // straight on its detail page (Play), with no All-channels /
-                        // Ungrouped folders in between — and plays as VOD, not live.
                         Routes.safeNavigate(
                             nav,
                             Routes.detail(

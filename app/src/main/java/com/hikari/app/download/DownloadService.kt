@@ -24,13 +24,6 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/**
- * Keeps the download queue running while the user is elsewhere (or the screen is
- * off) — a foreground `dataSync` service, so Android won't freeze the process
- * mid-file. The service pumps [DownloadsRepository] until nothing is QUEUED,
- * shows progress in a quiet notification, then stops itself. A task paused or
- * interrupted by a process death is picked up again on the next resume.
- */
 class DownloadService : Service() {
 
     private val supervisor = SupervisorJob()

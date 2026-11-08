@@ -4,22 +4,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import com.hikari.app.ui.theme.HikariAccent
 
-/**
- * The colour an "Aura ring" is drawn in — Settings → App Layout → Poster
- * styling / Loading screen → Aura ring colour.
- *
- * The ring used to be whatever the app accent happened to be, which meant a
- * user who wanted the ring to be red had to repaint the whole app. The two are
- * separate choices now: the ring gets its own colour, chosen from the same
- * palette the accent uses ([HikariAccent]) plus [THEME] — "follow the accent",
- * which is what every ring drew before and stays the default, so nobody's
- * existing look changes on update.
- *
- * Shared by BOTH screens the aura ring appears on (a poster card and the
- * loading card) and by both toolkits the app is built from: the Compose artwork
- * resolves it through [color], the View-based player through [argb]. One
- * preference, drawn in one colour everywhere.
- */
 object AuraColors {
 
     /** Follow the app accent (the default). */

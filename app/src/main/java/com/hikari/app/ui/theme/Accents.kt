@@ -4,22 +4,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
 
-/**
- * The app's accent colours (Settings → Appearance & Theme → Accent colour).
- *
- * The app was built around a single amber/gold accent ([AMBER], the default)
- * and the player around the cyan→violet glow ([VIOLET], the default). Making
- * the accent a value that flows through the theme means one palette drives the
- * whole UI: every screen already paints itself from
- * `MaterialTheme.colorScheme.primary`, so only the scheme has to change.
- *
- * [start]/[end] are the two ends of the accent gradient, and they are the raw
- * source of truth: [mid] (the solid accent), [soft] (a darker shade for pressed
- * surfaces) and [ripple] are derived from them, and the native player draws its
- * pills/badges/time-bar from the same numbers (see PlayerActivity's
- * applyAccentPalette), so a colour picked here looks identical in both the
- * Compose UI and the View-based player.
- */
 enum class HikariAccent(
     val key: String,
     val label: String,

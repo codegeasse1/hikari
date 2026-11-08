@@ -12,20 +12,6 @@ import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 
-/**
- * Translates the app's own content (media titles, descriptions, episode names)
- * into English for the extensions the user enabled "always translate" on.
- *
- * - Everything goes through Google's free gtx endpoint (no API key, no CORS
- *   since the app does the request itself).
- * - Text that is already English is recognized by its stopwords and skipped
- *   without a request; anything else is auto-detected and translated.
- * - Results are cached in memory (with a persisted copy in the store) so
- *   re-loading a catalog doesn't re-translate everything.
- *
- * Only the [enabledIds] set of provider ids is ever translated, so extensions
- * the user didn't enable stay untouched.
- */
 object Translator {
 
     private val lock = Any()
@@ -39,20 +25,6 @@ object Translator {
     @Volatile
     private var storeRef: AppStore? = null
 
-    /**
-     * "This string has readable letters in it" — the gate that decides whether a
-     * string is worth sending to the translator at all.
-     *
-     * It has to recognise EVERY script a title can arrive in, because a miss is
-     * not "we skip a translation", it is "the app silently keeps a name no
-     * provider indexes". The list used to be Latin + Greek + Cyrillic + CJK,
-     * which meant an ARABIC title ("فلم موانا") was judged letterless and passed
-     * through untouched — and that is exactly the name the source search then
-     * handed to every installed extension, none of which has it. Arabic, Hebrew,
-     * Persian, Hindi, Thai, Vietnamese-with-diacritics and the rest are all
-     * covered now, including the Arabic presentation forms a rendered string can
-     * carry.
-     */
     private val LETTERS = Regex(
         "[" +
             "A-Za-z" +

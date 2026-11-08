@@ -21,31 +21,6 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resume
 
-/**
- * A real Telegram client, on TDLib — the library every official third-party
- * Telegram client is built on.
- *
- * This is what [TelegramWeb] cannot be: `t.me/s/<channel>` only ever shows what
- * an anonymous visitor sees, i.e. PUBLIC channels. Everything else — Saved
- * Messages, private channels and groups, chats with people, reading a chat's
- * history all the way back — needs an authorized MTProto session, and TDLib is
- * what speaks it (the API, MTProto, the crypto, the local database, the media
- * cache). The native library and the Java bindings it registers itself with
- * ship in `app/src/main/jniLibs` (libtdjni.so, one per processor) and
- * `org.drinkless.tdlib` — see the README.
- *
- * Signing in is the user's OWN Telegram account with the user's OWN api_id and
- * api_hash (my.telegram.org → API development tools). There is deliberately no
- * bundled pair: an api_id/api_hash belongs to the application that registered
- * it, and shipping someone else's — or one lifted out of another app's APK — is
- * both against Telegram's terms and something Telegram revokes. The tab asks
- * once and keeps them; after that the session lives in TDLib's own database and
- * survives restarts exactly like the real app's.
- *
- * Everything here FAILS SOFT: if the native library cannot load (an ABI we do
- * not ship, an install that stripped it), [available] stays false and the tab
- * says so — the public-channel browsing that needs no account keeps working.
- */
 object Td {
 
     /** The states the tab renders. */
@@ -73,15 +48,6 @@ object Td {
         val kind: Kind,
         val order: Long,
         val unread: Int,
-        /**
-         * True when this chat sits in the account's ARCHIVE list rather than the
-         * main one. Archived chats are still the user's chats — a channel added
-         * long ago ends up here on its own (Telegram archives a channel whose
-         * notifications the user muted, and every chat the user archived by
-         * hand), and TDLib keeps them in `ChatListArchive`, which is why
-         * `LoadChats(ChatListMain())` alone never mentions them and the list
-         * ended up missing chats the user is plainly a member of.
-         */
         val archived: Boolean = false,
     ) {
         enum class Kind { SAVED, PRIVATE, GROUP, CHANNEL, SECRET }
@@ -98,23 +64,9 @@ object Td {
         val size: Long,
         /** `data:` URL of the post's inline minithumbnail, when it has one. */
         val thumb: String?,
-        /**
-         * The post's own TEXT — the caption the user typed under the video.
-         *
-         * This is what makes a caption work as a tag: people post a batch of
-         * videos captioned "abc", then search `abc` to get the batch back. It is
-         * kept separate from [fileName] because the two are searched differently
-         * (Telegram can search its own message text across the whole chat; it
-         * cannot search a file name) — see [SearchIn].
-         */
         val caption: String = "",
         /** The video's original file name, as the sender wrote it. */
         val fileName: String = "",
-        /**
-         * TDLib file id of the video's real THUMBNAIL (`Video.thumbnail.file`),
-         * or 0 when the post has none. Fetched on demand so a list of videos
-         * shows pictures instead of black rectangles — see [thumbPath].
-         */
         val thumbFileId: Int = 0,
     )
 
@@ -152,36 +104,9 @@ object Td {
         /** Whether the page carried any messages at all: false is history's end
          *  (an exhausted walk is answered with an empty batch). */
         val more: Boolean,
-        /**
-         * Why the page came back with nothing, when TDLib said something useful
-         * — an error string, or the note that the media index is unavailable.
-         *
-         * An empty video list used to be printed as "No videos in this chat"
-         * however it came about, so a refusal from Telegram (a channel whose
-         * messages TDLib could not read, a rate limit) looked exactly like a
-         * chat that genuinely has no video. The UI now shows this instead.
-         */
         val note: String? = null,
     )
 
-    /**
-     * What a file's download looks like right now, straight out of TDLib.
-     *
-     * [readyFromOffset] is [TdApi.LocalFile.downloadedPrefixSize] and is measured
-     * from [downloadOffset] — TDLib documents it as "if isDownloadingCompleted is
-     * false, then only some prefix of the file starting from downloadOffset is
-     * ready to be read", and that is exactly how the calculator inside TDLib
-     * works (`FileNode::local_prefix_size` recomputes the run from the downloaded
-     * parts bitmask whenever the offset changes). So the pair is a real "these
-     * bytes are on disk" statement, and it is the pair the data source uses.
-     *
-     * [TdApi.LocalFile.downloadedSize] is deliberately NOT part of this: TDLib's
-     * own documentation says it "can be used only for calculating download
-     * progress — the actual file size may be bigger, and some parts of it may
-     * contain garbage". Treating it as readiness (which this app used to do, via
-     * `maxOf(prefix, total)`) hands the player an offset whose bytes are not
-     * there and makes the read return nothing — a permanent "buffering".
-     */
     data class FileState(
         val path: String,
         val size: Long,
@@ -245,13 +170,6 @@ object Td {
     private val _revision = MutableStateFlow(0)
     val revision: StateFlow<Int> = _revision.asStateFlow()
 
-    /**
-     * The last thing that went wrong, in the user's own words ([TelegramError]
-     * turns TDLib's `PHONE_NUMBER_INVALID` into a sentence). TDLib reports every
-     * refusal as a RESULT, not as an update, so a send whose result is ignored
-     * is a button that does nothing at all — which is what "Send code does
-     * nothing" was.
-     */
     private val _problem = MutableStateFlow<String?>(null)
     val problem: StateFlow<String?> = _problem.asStateFlow()
 
@@ -266,28 +184,10 @@ object Td {
     private val chatValues = ConcurrentHashMap<Long, TdApi.Chat>()
     /** Position order in the MAIN chat list; 0/absent means "not in it". */
     private val mainOrder = ConcurrentHashMap<Long, Long>()
-    /**
-     * Position order in the ARCHIVE list. Kept apart from [mainOrder] because
-     * the two are different lists with different orders, and because absence
-     * from the main list is exactly what an archived chat looks like — the list
-     * used to be filtered on `mainOrder != 0`, which is why archived chats (and
-     * every channel the user is in that Telegram archived) never appeared.
-     */
     private val archiveOrder = ConcurrentHashMap<Long, Long>()
-    /**
-     * Chats TDLib has explicitly removed from a list (left a group, archived a
-     * chat away and then removed it, joined-and-left). Membership is only used
-     * as a fallback for a chat we have no position for, so this is what keeps a
-     * chat the user has actually left from reappearing through that fallback.
-     */
     private val leftBehind = java.util.Collections.newSetFromMap(ConcurrentHashMap<Long, Boolean>())
     private val fileValues = ConcurrentHashMap<Int, TdApi.File>()
 
-    /**
-     * Files fetched on demand with [loadFile], for the ones TDLib has not sent
-     * an `UpdateFile` about yet. Kept separate from [fileValues] so a live
-     * update always outranks a snapshot, and cleared whenever [fileValues] is.
-     */
     private val fetchedFiles = ConcurrentHashMap<Int, TdApi.File>()
 
     // ---- lifecycle -------------------------------------------------------
@@ -328,20 +228,9 @@ object Td {
             start(apiId, apiHash)
             return
         }
-        // Credentials that CHANGE have to actually reach TDLib, and they are
-        // handed over exactly once, in setTdlibParameters, at the start of a
-        // session. A client already running on a pair that does not work keeps
-        // failing with it forever — which is the other half of "it never gets
-        // past Send code": correcting the api_id/api_hash in the card has to
-        // rebuild the client on the new pair, not just remember it.
         if (changed && live != wanted) restart()
     }
 
-    /**
-     * Start over with the stored credentials: close the client and build a fresh
-     * one. Used by the tab's "Start over" button (a wrong phone number, a stuck
-     * login variant) and by [setCredentials] when the pair changes.
-     */
     fun restart() {
         _problem.value = null
         _busy.value = false
@@ -362,18 +251,6 @@ object Td {
         _problem.value = null
     }
 
-    /**
-     * Throw the session away and show the credentials page again.
-     *
-     * This is the "I typed the wrong api_id/api_hash" path: [restart] rebuilds the
-     * client on the SAME pair (which is what a wrong phone number or a stuck login
-     * variant needs), while this one drops the pair entirely so the card asks for
-     * it again. Without it a user who noticed a typo in the keys had no way back
-     * to the fields — the tab kept them in whatever state the bad pair produced.
-     *
-     * The stored pair is cleared by the caller (see the Telegram tab), so a later
-     * [init] cannot quietly restart on the keys the user is trying to replace.
-     */
     fun signInAgain() {
         _problem.value = null
         _busy.value = false
@@ -396,29 +273,12 @@ object Td {
     /** The api_id as it should be SENT: the digits my.telegram.org shows. */
     fun apiIdOf(raw: String): Int? = raw.trim().filter { it in '0'..'9' }.toIntOrNull()?.takeIf { it > 0 }
 
-    /**
-     * The hex characters of an api_hash, lowercased.
-     *
-     * Telegram compares the api_hash as a STRING in its handshake, so a hash
-     * pasted in UPPERCASE — or one that picked up a space, a dash or a newline
-     * from the page it was copied off — is refused as "that api_id and api_hash
-     * are not a valid pair", which reads as "your credentials are wrong" and
-     * sent one user hunting for a new pair that was never the problem. Keeping
-     * only the hex and lowercasing it is what makes the pair the user actually
-     * has work.
-     */
     fun apiHashChars(raw: String): String =
         raw.trim().filter { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }.lowercase()
 
     /** The api_hash as it should be sent, or null when it is not 32 hex chars. */
     fun apiHashOf(raw: String): String? = apiHashChars(raw).takeIf { it.length == 32 }
 
-    /**
-     * What is wrong with the pair as typed, or null when both look usable.
-     *
-     * Said BEFORE anything is stored or sent, so the answer arrives while the
-     * user is looking at the field they got wrong.
-     */
     fun keyProblem(idText: String, hashText: String): String? {
         if (apiIdOf(idText) == null) {
             return "The api_id is the NUMBER shown on my.telegram.org (digits only)."
@@ -436,25 +296,11 @@ object Td {
         _problem.value = TelegramError.explain(error.message)
     }
 
-    /**
-     * An exception TDLib itself threw at us (the update/query handlers and the
-     * default handler). Kept as a visible message rather than a silent swallow:
-     * a client that is quietly throwing answers every request with nothing.
-     */
     private fun note(t: Throwable) {
         _busy.value = false
         _problem.value = "Telegram library error: " + (t.message ?: t.javaClass.simpleName)
     }
 
-    /**
-     * Releases the "a step is in flight" flag after half a minute.
-     *
-     * TDLib answers every request, so this should never fire — but if one is
-     * ever lost (a client torn down mid-request, a native call that does not
-     * come back), the alternative is buttons that stay greyed out permanently
-     * and a screen that looks frozen. The timeout is what guarantees the tab
-     * always becomes usable again.
-     */
     private fun armBusyTimeout() {
         scope.launch {
             delay(30_000)
@@ -516,16 +362,6 @@ object Td {
         savedChatId = 0
     }
 
-    /**
-     * The phone number as TDLib wants it: international format, with the `+`.
-     *
-     * TDLib answers `PHONE_NUMBER_INVALID` for a number typed without it — which
-     * is exactly what a phone field whose keyboard lacks a `+` produces, and
-     * what "Send code does nothing" was: the refusal came back as a result
-     * nobody was reading. Spaces, dashes and brackets are the way people write
-     * numbers down, so they are stripped rather than refused, and a leading `00`
-     * (the other way to write a country code) becomes the `+` it means.
-     */
     fun normalizePhone(phone: String): String {
         val keep = phone.filter { it.isDigit() || it == '+' }
         val digits = keep.filter { it.isDigit() }
@@ -558,9 +394,6 @@ object Td {
             /* firebaseAuthenticationSettings = */ null,
             /* authenticationTokens = */ emptyArray<String>(),
         )
-        // The result handler is not decoration: TDLib reports a refusal
-        // ("PHONE_NUMBER_INVALID", "PHONE_NUMBER_FLOOD", …) as the RESULT of
-        // this call, and with the result ignored the button simply did nothing.
         runCatching {
             c.send(
                 TdApi.SetAuthenticationPhoneNumber(number, settings),
@@ -641,33 +474,12 @@ object Td {
     /** How many chats are brought in per [TdApi.LoadChats] call. */
     private const val CHAT_LOAD_PAGE = 100
 
-    /**
-     * The ceiling on how many chats the tab will pull in. High enough that
-     * "every channel I have joined" really is every one of them (the report that
-     * started this was an account with 200), low enough that an account with
-     * thousands cannot hold the tab on a spinner.
-     */
     private const val CHAT_LOAD_MAX = 2_000
 
-    /**
-     * Ask TDLib for the main chat list (again). Safe to repeat.
-     *
-     * `LoadChats` is a PAGED call, and "there is nothing left" is answered with
-     * error 404 — not by an empty batch. The single
-     * `LoadChats(ChatListMain(), 100)` this replaces therefore left every account
-     * with more than 100 chats showing 100 of them and the rest missing from the
-     * list entirely ("i have joined in 200 channels" — half of their channels,
-     * groups and contacts simply were not there, with no way to reach them).
-     */
     fun loadChats() {
         val c = client ?: return
         scope.launch { refreshMe() }
         loadChatPage(c, TdApi.ChatListMain(), 0)
-        // The archive is a SECOND list, and `LoadChats(ChatListMain())` never
-        // mentions it: an archived chat has no main-list position, so the tab
-        // only ever showed the chats that were not archived. Every archived chat
-        // — including a channel Telegram archived for the user when they muted it
-        // — was absent from the list with no way to reach it.
         loadChatPage(c, TdApi.ChatListArchive(), 0)
     }
 
@@ -696,19 +508,6 @@ object Td {
         publishChats()
     }
 
-    /**
-     * Makes sure the chat with ourselves — Saved Messages — exists as a chat
-     * object, and remembers its id.
-     *
-     * TDLib only puts Saved Messages in the account's chat list once the account
-     * has actually saved something, so a user who opens Hikari before ever
-     * forwarding a message to themselves had no Saved Messages row at all: not
-     * in the list, and therefore not findable by the search above it either
-     * ("No chat matches that name" for the one chat everybody has). TDLib's own
-     * documentation for a saved-messages link says exactly what this does —
-     * `createPrivateChat` with your own user id. Our own user is always in the
-     * local cache, so the call comes back without waiting on Telegram.
-     */
     private suspend fun ensureSavedChat() {
         val me = myId
         if (me == 0L) return
@@ -732,14 +531,6 @@ object Td {
                 publishChats()
             }
             is TdApi.UpdateChatLastMessage -> {
-                // TDLib hands the chat's CURRENT positions over with this update,
-                // and its own documentation says it "might be sent INSTEAD of the
-                // updateChatPosition" update. Only the standalone position update
-                // used to be read, so when a chat's position arrived this way it
-                // was never recorded as being in a list and was dropped from the
-                // list entirely — the reported "some channel which I am joined is
-                // not even showing in Hikari" (it is also what kept chats TDLib
-                // had not yet positioned at all from ever appearing).
                 absorbPositions(update.chatId, update.positions)
                 publishChats()
             }
@@ -774,9 +565,6 @@ object Td {
                 if (position.order == 0L) mainOrder.remove(chatId) else mainOrder[chatId] = position.order
             is TdApi.ChatListArchive ->
                 if (position.order == 0L) archiveOrder.remove(chatId) else archiveOrder[chatId] = position.order
-            // Folder lists are views over the two above: a chat in a folder is
-            // in the main list (or in the archive) as well, so there is nothing
-            // extra to record.
             else -> Unit
         }
         if (position.order != 0L) leftBehind.remove(chatId)
@@ -844,12 +632,6 @@ object Td {
                 _me.value = ""
                 _busy.value = false
                 _auth.value = Auth.Closed
-                // A close the APP asked for (a corrected api_id/api_hash, or
-                // "Start over") is immediately followed by a fresh client,
-                // because the user is standing there waiting for it. A close
-                // TDLib decided on its own — an authorization variant this
-                // build does not implement, say — is left alone: rebuilding on
-                // every one of those would spin forever.
                 if (restartWanted.getAndSet(false)) {
                     pending?.let { (id, hash) -> start(id, hash) }
                 }
@@ -865,16 +647,6 @@ object Td {
         }
     }
 
-    /**
-     * The parameters every client sends first.
-     *
-     * The database is TDLib's own directory under the app's FILES dir, not its
-     * cache: the OS deletes a cache whenever storage runs low, and a lost TDLib
-     * database is a lost session — the user would be asked for the code again.
-     * The database encryption key is deliberately empty (no encryption): the
-     * lock this app has is the app lock in Settings, and a key we generated
-     * would have to be stored somewhere anyway.
-     */
     private fun sendParameters() {
         val creds = pending ?: return
         val root = File(HikariApp.instance.filesDir, "tdlib")
@@ -897,10 +669,6 @@ object Td {
                 /* systemVersion = */ "Android " + Build.VERSION.RELEASE,
                 /* applicationVersion = */ "Hikari " + BuildConfig.VERSION_NAME,
             ),
-            // A wrong api_id/api_hash is answered HERE, as the result of this
-            // call — and a client that is never told keeps asking TDLib for
-            // parameters, so the tab sat on "Starting Telegram…" forever with no
-            // reason given. The message is now shown in the card.
             Client.ResultHandler { result ->
                 if (result is TdApi.Error) fail(result)
             },
@@ -918,12 +686,6 @@ object Td {
             runCatching {
                 c.send(function) { result ->
                     if (result is TdApi.Error) {
-                        // A refusal used to be indistinguishable from an empty
-                        // answer — every caller turned null into "there is
-                        // nothing here", so a channel Telegram refused to read
-                        // looked exactly like a chat with no videos. Callers
-                        // that can say something useful about the refusal now
-                        // get the error itself.
                         onError?.invoke(result)
                         cont.resume(null)
                     } else {
@@ -993,21 +755,11 @@ object Td {
                 archived = order == 0L && archive != 0L,
             )
         }.sortedWith(
-            // Saved Messages is not "ordered by activity" like a chat is: it is
-            // the user's own corner, so it sits at the top of the list. Archived
-            // chats follow the main list, and are sorted by their own list's
-            // order (the two lists' order scales are not comparable).
             compareBy(
                 { if (it.kind == Chat.Kind.SAVED) 0 else if (it.archived) 2 else 1 },
                 { -it.order },
             )
         )
-        // TDLib chatters constantly — every read receipt, every position nudge
-        // from any chat, every last-message notice rebuilds this list, and each
-        // assignment used to recompose the whole Telegram tab even when nothing
-        // the user can see changed (Chat is a data class, so equality is by
-        // content). Skipping the identical publish kills that steady
-        // recomposition churn, which is what read as flicker on slow phones.
         if (list != _chats.value) _chats.value = list
     }
 
@@ -1015,32 +767,8 @@ object Td {
      *  and the client is running. */
     fun isSignedIn(): Boolean = _auth.value is Auth.Ready
 
-    /**
-     * The chat id of a PUBLIC channel (or group) by its name, resolved WITHOUT
-     * joining it: `SearchPublicChat` is Telegram's own "look this up" call, and
-     * reading the history of a public channel this way is how a client shows a
-     * channel it has not joined.
-     *
-     * This is what makes a channel playable when the anonymous web preview
-     * cannot publish its videos (see
-     * [com.hikari.app.telegram.TelegramPage.unpublished]) — the file is
-     * the same one the user's own Telegram client plays.
-     *
-     * Returns null when there is no client, the name is unknown, or Telegram
-     * refuses; the caller then reports what the public page could not show.
-     */
     suspend fun publicChatId(username: String): Long? = publicChat(username)?.first
 
-    /**
-     * A channel the account is IN, by its @handle — including PRIVATE ones.
-     * [publicChat] only ever answers for public channels (it is Telegram's
-     * anonymous "look this up"), so a private channel the user joined
-     * resolved to nothing and its videos never listed. This asks TDLib's own
-     * joined-chat index instead ([TdApi.SearchChats] searches the title AND
-     * username of chats the account knows) and keeps the hit whose active
-     * username is the handle — a title match alone is not enough, since
-     * several chats can share a name.
-     */
     suspend fun joinedChat(username: String): Pair<Long, String>? {
         val name = handleOf(username) ?: return null
         val found = query(TdApi.SearchChats(name, null, 20)) as? TdApi.Chats ?: return null
@@ -1049,9 +777,6 @@ object Td {
         var titleHit: Pair<Long, String>? = null
         for (id in ids) {
             val chat = query(TdApi.GetChat(id)) as? TdApi.Chat ?: continue
-            // Usernames live on the supergroup in this TDLib, not on the chat
-            // (channels are supergroups) — a private channel the user joined
-            // still carries its handle there when it has one.
             val sgId = (chat.type as? TdApi.ChatTypeSupergroup)?.supergroupId ?: 0L
             val handles = if (sgId != 0L) {
                 val sg = query(TdApi.GetSupergroup(sgId)) as? TdApi.Supergroup
@@ -1066,15 +791,6 @@ object Td {
         return titleHit
     }
 
-    /**
-     * The id AND the title of a public channel or group by its name, resolved
-     * without joining it ([publicChatId] plus the name Telegram knows it by).
-     *
-     * The title matters for a row that was added before it could be read: a
-     * public GROUP has no channel header on its web page, so it was stored as
-     * its @handle and printed that way, while the account call answers with the
-     * group's real name.
-     */
     suspend fun publicChat(username: String): Pair<Long, String>? {
         val name = handleOf(username) ?: return null
         val chat = query(TdApi.SearchPublicChat(name)) as? TdApi.Chat ?: return null
@@ -1092,32 +808,6 @@ object Td {
         return name.takeIf { it.isNotBlank() }
     }
 
-    /**
-     * One page of a chat's videos — the list the Telegram tab opens on.
-     *
-     * TWO readers, because either one alone is wrong for the chats people
-     * actually have:
-     *
-     *  * **Telegram's own media index** — `SearchChatMessages` with a video
-     *    filter and an EMPTY query, which TDLib documents as "may be empty to
-     *    search for sender or filter only", and which is the server-side
-     *    "shared media → videos" list the official clients show. One page of it
-     *    is the newest N videos in the chat, whatever else the chat has been
-     *    posting. Without it the list was built from raw history pages, so a
-     *    channel that mostly posts links and text (i.e. every big channel) had
-     *    all 60 newest messages free of a single video: the page came back with
-     *    nothing, the tab said "No videos in this chat", and because "Load
-     *    older" only drew once a video had been found there was no way to walk
-     *    deeper and reach the videos that were plainly there.
-     *  * **History**, which is the only reader that sees a video posted as a
-     *    FILE (`MessageDocument` with a video mime type, which the media index
-     *    does not cover) or as an animation, and the one that still works when
-     *    the index refuses.
-     *
-     * The two are merged (deduped by message id), and the page's cursor is the
-     * OLDEST message either of them saw, so "Load older" walks both readers back
-     * together and cannot loop.
-     */
     suspend fun chatVideosPage(chatId: Long, before: Long = 0, limit: Int = 60): ChatHistoryVideos {
         val videos = LinkedHashMap<Long, ChatVideo>()
         var cursor = Long.MAX_VALUE
@@ -1175,12 +865,6 @@ object Td {
     suspend fun chatVideos(chatId: Long, before: Long = 0, limit: Int = 60): List<ChatVideo> =
         chatVideosPage(chatId, before, limit).videos
 
-    /**
-     * Total photos + videos in a chat — the "216 photos · 3783 videos" line
-     * the official clients print over a channel's media. Two limit-1 index
-     * reads (the server answers the total without sending messages), so this
-     * costs nothing beside the calls themselves. Nulls when TDLib refuses.
-     */
     suspend fun chatMediaCounts(chatId: Long): Pair<Int?, Int?> {
         suspend fun total(filter: TdApi.SearchMessagesFilter): Int? {
             val found = query(
@@ -1200,22 +884,6 @@ object Td {
         return total(TdApi.SearchMessagesFilterPhoto()) to total(TdApi.SearchMessagesFilterVideo())
     }
 
-    /**
-     * The video a Telegram message LINK points at, resolved through the
-     * signed-in account.
-     *
-     * This is what makes a single pasted `t.me/<channel>/<id>` playable: the same
-     * `getMessageLinkInfo` call the official clients make for a link, and the
-     * only reader that works for a post whose file Telegram does not publish to a
-     * browser — a private channel's post, a group's post, a large upload. The
-     * FILE REFERENCE is deliberately not returned for storage: TDLib's references
-     * expire within days, so the caller keeps the LINK and resolves it again at
-     * play time, which is why this takes a URL rather than a chat id.
-     *
-     * A link can point at the caption or the text a video was posted under (an
-     * album's first message), so when the linked message itself is not a video
-     * the few messages after it are checked too.
-     */
     suspend fun linkVideo(url: String): ChatVideo? {
         val info = query(TdApi.GetMessageLinkInfo(url)) as? TdApi.MessageLinkInfo ?: return null
         val message = info.message ?: return null
@@ -1317,13 +985,6 @@ object Td {
      *  take two round trips for no reason. */
     private const val SEARCH_HITS_PER_CALL = 100
 
-    /** The ceiling on one tag post's video tail.
-     *
-     *  A tag post is followed by its own uploads — the report that produced this
-     *  walk is a single word written once and then 200+ videos posted under it,
-     *  which is exactly how people tag in Saved Messages — so the ceiling is
-     *  sized for a whole batch, not for the old 40. [TAIL_MAX_PAGES] is what
-     *  really bounds the walk. */
     private const val POST_VIDEOS_MAX = 2_000
 
     /** How many messages one tail page asks for. TDLib requires the limit to be
@@ -1346,45 +1007,11 @@ object Td {
         else -> ""
     }
 
-    /**
-     * The videos that belong to ONE search hit.
-     *
-     * A tag in a chat is usually NOT the video itself: the user types "abc",
-     * sends it, and then posts the videos under it (or attaches them as an album
-     * whose first message carries the text). Telegram's own search therefore
-     * finds the TEXT post, while a video-filtered search finds nothing — the
-     * videos have no caption to match. That is the reported "in Telegram I
-     * search the tag and land on the video, in Hikari the same search finds
-     * nothing".
-     *
-     * So a hit is read as the POST: the message itself when it is a video, plus
-     * the videos that follow it, stopping at the next post — the first message
-     * that is not a video and carries words of its own, or a video whose own
-     * caption is different text (that is a new post, and its videos belong to
-     * it, findable by its own tag). [TdApi.GetChatHistory] with a negative
-     * offset is what asks for NEWER messages; the window is filtered by id so
-     * the result does not depend on how TDLib places the offset.
-     *
-     * Every video resolved this way is given the hit's text as its [ChatVideo.caption],
-     * so a batch that was found by its tag still says so in the list.
-     */
     private suspend fun videosOfPost(chatId: Long, anchor: TdApi.Message, q: String): List<ChatVideo> {
         val out = mutableListOf<ChatVideo>()
         val seen = HashSet<Long>()
         val anchorText = textOf(anchor)
         videoOf(chatId, anchor)?.let { if (seen.add(it.messageId)) out += it }
-        // Walk FORWARD from the hit, paging, until the post's own tail ends.
-        //
-        // THIS is what the old twenty-message window got wrong. A tag in Saved
-        // Messages is a word written once, followed by the whole batch of
-        // uploads under it — the report that produced this walk is exactly that,
-        // 200+ videos under one word — so a window of 20 newer messages (and the
-        // 40-video cap under it) listed a fifth of the batch and then said there
-        // was nothing more. [TdApi.GetChatHistory] asks for the newer messages
-        // with a NEGATIVE offset ("a negative number from -99 to -1 to get
-        // additionally -offset newer messages"), and the limit must be at least
-        // as large as -offset, so each page is [TAIL_PAGE] - 1 newer messages
-        // plus the message it started from.
         var from = anchor.id
         var pages = 0
         var done = false
@@ -1405,17 +1032,10 @@ object Td {
                 val m = messages[i]
                 i--
                 if (m.id > newest) newest = m.id
-                // The message a page started from comes back with the newer ones
-                // (TDLib includes `fromMessageId` itself), and a page's newest
-                // message is the next page's start — so one message overlaps by
-                // design. Deduped rather than trusted.
                 if (m.id <= anchor.id || !seen.add(m.id)) continue
                 val video = videoOf(chatId, m)
                 if (video != null) {
                     val own = video.caption
-                    // A video carrying its OWN caption, which is not this tag, is
-                    // a new post: its videos belong to it and are found by its own
-                    // tag, so this tail ends here.
                     if (own.isNotBlank() && !own.contains(q, ignoreCase = true)) {
                         done = true
                         break
@@ -1427,11 +1047,6 @@ object Td {
                     }
                     continue
                 }
-                // Not a video, and it carries its OWN text: the next post has
-                // started, so this post's tail is over. A message with no text at
-                // all — a sticker, an uncaptioned photo, a service message — is
-                // noise inside the batch, and stopping at one is how a stray
-                // sticker used to truncate a long tail.
                 if (textOf(m).isNotBlank()) {
                     done = true
                     break
@@ -1445,29 +1060,6 @@ object Td {
         return out
     }
 
-    /**
-     * Search ONE chat's videos. See [ChatVideo.caption] for why this is split.
-     *
-     * [SearchIn.CHAT] is answered by Telegram itself, but the search is for the
-     * POST, not for the video: TDLib's text index finds the message the tag was
-     * typed into — which for a batch post is the text the user sent, or the
-     * album's caption — and NOT the video messages under it, which usually carry
-     * no text at all. So the hits come back unfiltered
-     * ([TdApi.SearchMessagesFilterEmpty]) and each one is resolved to the videos
-     * that belong to it ([videosOfPost]). This is the "I wrote the tag, posted
-     * the video below it, and in Telegram I can search the tag and land on the
-     * video" case, and it is complete because Telegram searches the whole chat.
-     *
-     * [SearchIn.VIDEO] and [SearchIn.BOTH] cannot be: a file name is not message
-     * text, so there is nothing for Telegram to index and the chat's history has
-     * to be walked ([TdApi.GetChatHistory], a local database read — no network),
-     * [SCAN_MESSAGES_PER_CALL] posts at a time. The returned [ChatVideoPage]
-     * reports how far it got so the UI can say so and offer to go further,
-     * rather than pretending a partial walk was exhaustive.
-     *
-     * [SearchIn.BOTH] is the UNION of the two places: the post-text search plus
-     * the file-name walk (see the merge in the body).
-     */
     suspend fun searchChatVideos(
         chatId: Long,
         text: String,
@@ -1475,21 +1067,9 @@ object Td {
         cursor: Long = 0,
         limit: Int = 60,
     ): ChatVideoPage {
-        // NOT named `query`: this object's `query(...)` is the function that
-        // actually talks to TDLib, and a parameter of the same name would
-        // shadow it inside this body — TDLib would then be "sent" a String.
         val q = text.trim()
         if (q.isEmpty()) return ChatVideoPage(emptyList(), 0, 0, true)
 
-        // "Both" means both PLACES, and the two places are found by two
-        // completely different mechanisms: post TEXT by Telegram's own index
-        // (each hit expanded to the whole batch of videos under it — see
-        // [videosOfPost]), and FILE NAMES by walking the chat's history. Only
-        // the walk was run for it, so "Both" found LESS than "Post text" did on
-        // the reported case — a word written once with 200 videos posted under
-        // it, two of which are also named after it — where the answer the user
-        // expects is the two sets added together. A caption is post text, so the
-        // text half already covers it.
         if (inText == SearchIn.BOTH) {
             val byText = searchChatVideos(chatId, text, SearchIn.CHAT, cursor = 0L, limit = BOTH_TEXT_MAX)
             val byName = searchChatVideos(chatId, text, SearchIn.VIDEO, cursor, limit)
@@ -1505,12 +1085,6 @@ object Td {
         }
 
         if (inText == SearchIn.CHAT) {
-            // NOT filtered to videos. The hits are POSTS: Telegram's text index
-            // finds the message the tag was typed into, which for a batch post
-            // is the text (or the album's caption) and not the video messages
-            // below it — those usually carry no text at all, so a
-            // video-filtered search returns nothing for a tag that plainly
-            // works in Telegram itself. See [videosOfPost].
             val found = query(
                 TdApi.SearchChatMessages(
                     chatId,
@@ -1526,14 +1100,6 @@ object Td {
                 ?: return ChatVideoPage(emptyList(), 0, 0, true)
             val out = mutableListOf<ChatVideo>()
             val seen = HashSet<Long>()
-            // `limit` is a floor on how many HITS were consumed, NOT a cap on
-            // videos. One tag post usually carries a whole batch of videos under
-            // it, so the old `out.take(limit)` cut the batch at 60 rows and then
-            // handed back a cursor pointing at the NEXT hit — the rest of that
-            // batch was unreachable from then on, on any page. That is the
-            // reported "my tag has 200+ videos and Hikari stops at 40-50", and
-            // it is why tapping "search further back" never found them: every
-            // page re-resolved the same hit and returned the same first rows.
             for (hit in found.messages) {
                 for (v in videosOfPost(chatId, hit, q)) {
                     if (seen.add(v.messageId)) out += v
@@ -1560,29 +1126,12 @@ object Td {
             var advanced = false
             for (m in page.messages) {
                 scanned++
-                // TDLib answers `GetChatHistory` from `fromMessageId` INCLUSIVE,
-                // so the post the last page ended on arrives again — deduped here
-                // rather than by the caller.
                 if (!seen.add(m.id)) continue
                 advanced = true
                 val v = videoOf(chatId, m) ?: continue
-                // File-name only: the post-text half is Telegram's own search
-                // (see the [SearchIn.BOTH] merge above), so this walk IS the
-                // "Video names" half by definition. A caption is post text, so
-                // it belongs to that half, not to this one.
                 if (v.fileName.contains(q, ignoreCase = true)) out += v
             }
             from = page.messages.last().id
-            // A page SHORTER than asked for is NOT the end of the chat. TDLib's
-            // own documentation for `GetChatHistory` says the number of returned
-            // messages "is chosen by TDLib and can be smaller than the specified
-            // limit", and the old `size >= 100` test trusted it anyway: the
-            // walk stopped at the first short page and declared "That is the
-            // whole chat" over a chat it had barely entered — the user's 200+
-            // video chat reported as completely walked after 181 posts, with
-            // every video past that point unfindable. The walk now ends on a
-            // page with nothing new in it (or an empty one), which is what the
-            // end of a chat actually looks like.
             more = advanced
         }
         val exhausted = !more
@@ -1594,20 +1143,8 @@ object Td {
         )
     }
 
-    /**
-     * The local path of a small file — a video's thumbnail — asking TDLib to
-     * fetch it if it has not, and waiting up to [waitMs] for it.
-     *
-     * Null when there is nothing (or nothing yet): the caller falls back to the
-     * post's inline preimage and then to a placeholder. Thumbnails are a few
-     * kilobytes, so a `DownloadFile` for the whole file (limit 0) is the right
-     * ask — it arrives in well under a second on any connection.
-     */
     suspend fun thumbPath(fileId: Int, waitMs: Long = 8_000): String? {
         if (fileId == 0) return null
-        // One query to learn whether TDLib knows the file at all (it may not have
-        // sent an UpdateFile for it yet — the same gap that stopped videos
-        // playing), then only cheap map reads while polling.
         runCatching { loadFile(fileId) }
         val deadline = System.currentTimeMillis() + waitMs
         var asked = false
@@ -1624,11 +1161,6 @@ object Td {
         }
     }
 
-    /**
-     * A post's inline thumbnail as a `data:` URL the app's poster loader already
-     * understands. It is a few hundred bytes, so it costs no request and shows
-     * the moment the row is drawn — exactly what a list of videos wants.
-     */
     private fun minithumb(t: TdApi.Minithumbnail?): String? {
         val data = t?.data ?: return null
         if (data.isEmpty()) return null
@@ -1639,10 +1171,6 @@ object Td {
 
     /** Everything known about one file, read straight out of TDLib. */
     fun fileState(fileId: Int): FileState? {
-        // `fileValues` is the live update stream and always wins. `fetchedFiles`
-        // is the fallback for a file TDLib has never sent an `UpdateFile` about —
-        // and there is one of those for every video the user has not played yet,
-        // which is precisely the case that failed (see [loadFile]).
         val f = fileValues[fileId] ?: fetchedFiles[fileId] ?: return null
         val local = f.local
         return FileState(
@@ -1652,35 +1180,12 @@ object Td {
             readyFromOffset = local?.downloadedPrefixSize ?: 0L,
             complete = local?.isDownloadingCompleted == true,
             active = local?.isDownloadingActive == true,
-            // A file that TDLib is writing (or has written) obviously can be
-            // downloaded even before `canBeDownloaded` flips true, so the flags
-            // are ORed rather than trusted alone.
             canBeDownloaded = local?.canBeDownloaded == true ||
                 local?.isDownloadingActive == true ||
                 local?.isDownloadingCompleted == true,
         )
     }
 
-    /**
-     * Makes sure TDLib has been ASKED for this file, and returns it.
-     *
-     * This is the fix for "Playback failed — ExoPlaybackException
-     * [ERROR_CODE_IO_UNSPECIFIED] Telegram is not available URL:
-     * hikari-td://file?id=2033". Nothing was wrong with the id and nothing was
-     * wrong with the network: `fileState` only knew the files some
-     * `UpdateFile` had already mentioned, and TDLib only sends an update once a
-     * download exists. A video the user has never watched has never been
-     * downloaded, so TDLib had said nothing about it — and the `Client.execute
-     * (GetFile)` the old code fell back to can never answer either, because
-     * `execute` only serves a small set of queries that need no database (getFile
-     * is not one of them), so the fallback silently returned null every time.
-     * Every Telegram video therefore failed to play on the first tap.
-     *
-     * Asking properly is asynchronous — a real round trip to TDLib — so this is
-     * `suspend`, and the answer is cached in [fetchedFiles] for the many
-     * `fileState` reads that follow (the player's read loop calls it constantly,
-     * and a fresh query per call would be a round trip per 2 MiB chunk).
-     */
     suspend fun loadFile(fileId: Int): TdApi.File? {
         fileValues[fileId]?.let { return it }
         fetchedFiles[fileId]?.let { return it }
@@ -1696,17 +1201,6 @@ object Td {
         return fileState(fileId)
     }
 
-    /**
-     * TDLib's refusal to download a file, keyed by file id — see [request].
-     *
-     * A download TDLib will not do (an expired file reference is the ordinary
-     * one) is answered as the RESULT of the `downloadFile` call. With that
-     * result dropped, nothing was reported anywhere and the download simply
-     * never started: the player then buffered until its watchdog gave up and
-     * blamed the server, which is the reported "Telegram video still not
-     * playing, still buffering after 60s". Kept per file so the data source can
-     * report the real reason the moment it happens.
-     */
     private val downloadErrors = ConcurrentHashMap<Int, String>()
 
     /** Why TDLib refused to download [fileId], or null. See [request]. */
@@ -1717,16 +1211,6 @@ object Td {
         downloadErrors.remove(fileId)
     }
 
-    /**
-     * Drops a played Telegram file's local bytes from TDLib's store.
-     *
-     * Playback downloads the whole file into the app's storage, and nothing
-     * ever deleted it — every played Telegram video left gigabytes behind in
-     * the cache size. The player calls this for the previous file whenever it
-     * moves on (and for the last one when it closes), so storage stops
-     * growing with every video. Replaying re-downloads on demand; files the
-     * user explicitly saved elsewhere are separate copies and are untouched.
-     */
     fun forgetPlayedFile(fileId: Int) {
         val c = client ?: return
         fileValues.remove(fileId)
@@ -1741,19 +1225,6 @@ object Td {
         }
     }
 
-    /**
-     * Ask TDLib to fetch [fileId] starting at [offset], for at most [limit]
-     * bytes (0 = to the end of the file).
-     *
-     * Priority 32 is the highest TDLib takes, i.e. "this is what someone is
-     * watching right now".
-     *
-     * The result handler is what turns a refusal into something the app can act
-     * on: TDLib answers an unusable file with an error HERE (`Can't download or
-     * generate the file`, `Can't download file: have no valid file reference`,
-     * `File not found`), and an ignored result is indistinguishable from a
-     * download that is merely slow.
-     */
     fun request(fileId: Int, offset: Long, limit: Long) {
         val c = client ?: return
         runCatching {
@@ -1776,54 +1247,15 @@ object Td {
         }
     }
 
-    /**
-     * Start pulling [fileId] from its beginning right now.
-     *
-     * Called when the user taps a video, BEFORE the player exists: resolving the
-     * file reference and fetching the first part out of Telegram is the whole
-     * cold-start cost of a Telegram video, and doing it while the player
-     * activity is still being built means the bytes the player asks for are
-     * already on disk — playback starts on the first read instead of on the
-     * first download. Cheap and idempotent; the player's own request simply
-     * replaces this one at the same offset.
-     */
     fun prewarm(fileId: Int) {
         downloadErrors.remove(fileId)
         request(fileId, 0L, AHEAD_BYTES)
     }
 
-    /**
-     * How many contiguous bytes of [fileId] are on disk starting at [offset] —
-     * for ANY offset, which is the question a media player actually asks.
-     *
-     * This is [TdApi.GetFileDownloadedPrefixSize], i.e. `FileNode::downloaded_prefix`
-     * inside TDLib: it walks the file's downloaded-parts bitmask and returns the
-     * length of the ready run beginning exactly at [offset] (and `size - offset`
-     * for a fully downloaded file). The [FileState.local] pair cannot answer it:
-     * `downloadedPrefixSize` is measured from `downloadOffset`, so it describes
-     * only the run TDLib is downloading right now — a seek into the middle of a
-     * film is answered 0 by it however much of the file is really on disk.
-     *
-     * Returns -1 when TDLib could not be asked (no client, or the query failed);
-     * callers must read that as "unknown", never as "nothing is available".
-     */
     suspend fun availableFrom(fileId: Int, offset: Long): Long =
         (query(TdApi.GetFileDownloadedPrefixSize(fileId, offset)) as? TdApi.FileDownloadedPrefixSize)
             ?.size ?: -1L
 
-    /**
-     * Re-reads one post from TDLib, which is also what REPAIRS an expired file
-     * reference: Telegram's file references are short-lived, and TDLib refreshes
-     * the copy it holds for a file whenever it is handed a message carrying that
-     * file. A video the user opened from a list fetched a while ago (or before a
-     * restart) can therefore be holding a reference that no longer works, and
-     * `downloadFile` for it fails for good — the one failure that looks exactly
-     * like "nothing is happening".
-     *
-     * Returns the post's video/document file id (0 when the post has none, or
-     * when the lookup failed), so a caller can follow a file that came back
-     * under a different id.
-     */
     suspend fun touchMessage(chatId: Long, messageId: Long): Int {
         if (chatId == 0L || messageId == 0L) return 0
         val msg = query(TdApi.GetMessage(chatId, messageId)) as? TdApi.Message ?: return 0
@@ -1836,15 +1268,5 @@ object Td {
         }
     }
 
-    /**
-     * How far ahead of the read position a download request runs.
-     *
-     * One request covers a whole window and is left alone while the read stays
-     * inside it, because a NEW `downloadFile` with a different offset cancels the
-     * range TDLib is already fetching (`FileNode::set_download_offset` →
-     * `update_downloaded_part`). Renewing every couple of MiB therefore restarted
-     * the download just ahead of the playhead forever, which is what made the
-     * old 2 MiB window unable to run ahead. 64 MiB is the runway a high-bitrate file needs to ride out throughput dips on a fast link (a minute-plus at 1080p, tens of seconds at 4K): while the link outruns playback the player banks it, and a dip costs buffered seconds instead of a spinner. Disk, not heap, and a seek still starts at the seek.
-     */
     const val AHEAD_BYTES: Long = 64L * 1024 * 1024
 }

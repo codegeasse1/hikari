@@ -25,68 +25,15 @@ import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
-/**
- * Runs SkyStream plugins (`.sky` files: plugin.json + plugin.js) inside a fresh
- * embedded QuickJS engine per call, the same way [com.hikari.app.nuvio.NuvioRuntime]
- * runs nuvio providers — one engine, one plugin call, then the whole VM is torn
- * down so nothing can leak between plugins.
- *
- * A SkyStream plugin is a plain single-file script that publishes four
- * callbacks on `globalThis`:
- *
- *   getHome(cb)             -> cb({success, data: {"<category>": [item, …]}})
- *   search(query, cb)       -> cb({success, data: [item, …]})
- *   load(url, cb)           -> cb({success, data: item})   // + episodes[]
- *   loadStreams(url, cb)    -> cb({success, data: [stream, …]})
- *
- * …and reaches the network, HTML parsing, crypto and settings through globals
- * that SkyStream's own engine installs. This runtime recreates that surface:
- * `assets/skystream/shim.js` (loaded after nuvio's boot.js polyfills + cheerio
- * bundle, both of which Hikari already ships) defines http_get / http_post /
- * http_parallel / fetch, the DigitalOcean-style `parseHtml` DOM facade,
- * `parse_html`, `getAndUnpack`, `crypto.decryptAES`, `getPreference`,
- * `setPreference`, the MultimediaItem/Episode/StreamResult classes and the
- * timers. Everything that touches the network goes through the bridges this
- * file registers (OkHttp, on a pool — see [AsyncFetches]), so the engine needs
- * no WebView.
- *
- * Timing: the plugin's own `await`s resolve on the engine's microtask queue,
- * which QuickJS drains while `evaluate` runs. Plugins that use `setTimeout`
- * (anti-bot delays, retry backoff, `Promise.race` guards — ~26 of the 36
- * official plugins do) park a callback in the shim's timer registry instead;
- * the loop below fires those timers when they come due between `evaluate`
- * rounds — and resolves each in-flight fetch as its response lands — until the
- * plugin answers or the call budget runs out.
- */
 object SkyStreamRuntime {
 
     // Same reasoning as NuvioRuntime: each engine is a native VM plus a ~450KB
     // cheerio parse, so bound how many run at once and let the rest queue.
     private const val MAX_CONCURRENT = 6
-    /**
-     * [MAX_CONCURRENT] on a TELEVISION (see
-     * [com.hikari.app.data.PerfMode.tvDevice]): three engines at once.
-     *
-     * A SkyStream plugin boots a native VM and parses its cheerio bundle exactly
-     * like a nuvio one, so the 1-1.5GB boxes this is for cannot afford six of
-     * them arriving at once while a detail page is also loading. Three is half,
-     * and the rest queue as they always did.
-     */
     private const val TV_CONCURRENT = 3
     private const val FETCH_TIMEOUT_MS = 30_000L
-    /** One plugin call: load / loadStreams / search all wait what the
-     *  reference app waits — its invokeAsync budget is a flat 90s per call
-     *  (see JsEngineService.invokeAsync), so a slow extraction (token flow +
-     *  playlist + key over mobile data) that plays there was cut here at 45s
-     *  and read as "no playable sources". */
     private const val CALL_TIMEOUT_MS = 90_000L
     private const val VALIDATE_TIMEOUT_MS = 20_000L
-    /** Budget for `getHome`/`search`: a catalog answer needs SEVERAL pages
-     *  (the `akash` sites fetch 8 category pages, the `dev.cookie.*` family up
-     *  to 24, plus their own addon manifests), and on a slow connection those
-     *  alone can outlast [CALL_TIMEOUT_MS] — which used to report a perfectly
-     *  healthy extension as "timed out"/"no catalog". Matches the Home feed's
-     *  per-provider ceiling in [com.hikari.app.data.ContentRepository]. */
     private const val CATALOG_TIMEOUT_MS = 75_000L
     /** Room on top of a call's budget for the pump loop's own bookkeeping. */
     private const val CALL_GRACE_MS = 20_000L
@@ -94,14 +41,6 @@ object SkyStreamRuntime {
     private fun budgetFor(fnName: String): Long =
         if (fnName == "getHome" || fnName == "search") CATALOG_TIMEOUT_MS else CALL_TIMEOUT_MS
 
-    /**
-     * Threads serving the plugin fetch bridge. One engine can have a dozen-plus
-     * requests in flight at once (the `dev.cookie.*` family fires up to 24
-     * category pages from ONE `getHome`), and up to [MAX_CONCURRENT] engines run
-     * at a time, so a small pool turned "parallel" fetches back into a queue —
-     * which is exactly the latency that made catalogs time out. The threads are
-     * almost always idle (they only block on a socket), so the pool is cheap.
-     */
     private const val FETCH_THREADS = 24
     /** Budget for one legacy `loadExtractor` call (a plugin is blocked on it). */
     private const val EXTRACT_TIMEOUT_MS = 25_000L
@@ -118,12 +57,6 @@ object SkyStreamRuntime {
     /** [TV_CONCURRENT]'s pool — see the note on the constant, and on [gate]. */
     private val tvConcurrency = Semaphore(TV_CONCURRENT)
 
-    /**
-     * Which pool a plugin call draws from. A television gets its own, narrowest
-     * pool — and that answer comes before the booster's, because the booster is a
-     * switch the user can turn off and a 1GB box is not. See [TV_CONCURRENT] and
-     * [com.hikari.app.data.PerfMode.tvDevice].
-     */
     private val gate: Semaphore
         get() = if (com.hikari.app.data.PerfMode.tvDevice) tvConcurrency else concurrency
 
@@ -197,46 +130,12 @@ object SkyStreamRuntime {
 
     private fun quote(s: String): String = JSONObject.quote(s)
 
-    /**
-     * Runs a script and throws its completion value away.
-     *
-     * dokar's `evaluate<Any?>` marshals the script's *completion value* back to
-     * Kotlin by `JSON.stringify`-ing it inside the engine. Extension scripts
-     * that end in `Object.assign(globalThis, PluginModule)` — the export
-     * pattern several of the published SkyStream plugins use, e.g. the `akash`
-     * and `dev.cookie.*` repos — complete with `globalThis` itself as the value,
-     * and stringifying that throws `TypeError: circular reference`. That used to
-     * surface as *"Not a valid SkyStream extension: TypeError: circular
-     * reference"* and blocked the install of every extension from those repos
-     * (the script itself had run fine — only the value we never look at failed
-     * to convert). Nothing in this runtime wants a completion value, so every
-     * script is finished with `void 0` instead.
-     */
     private suspend fun QuickJs.evaluateVoid(js: String, name: String) {
         evaluate<Any?>("$js\n;void 0;\n", name, false)
     }
 
     private val fetchExecutor: ExecutorService = Executors.newFixedThreadPool(FETCH_THREADS)
 
-    /**
-     * Per-engine state for the ASYNCHRONOUS fetch bridge.
-     *
-     * A SkyStream plugin's `http_get` calls are *supposed* to run concurrently:
-     * nearly every published extension fetches its categories with
-     * `await Promise.all(categories.map(t => http_get(t.url)))` (8 category
-     * pages for the `akash` sites, up to 24 for the `dev.cookie.*` ones). The old
-     * bridge ([bridgeFetch] via `__hikariFetch`) is synchronous — it blocks the
-     * QuickJS thread on OkHttp — so those "parallel" fetches actually ran one
-     * after another: 8 pages at 2-5s each is 16-40s, which blew straight past
-     * the Home row timeout and made EVERY installed SkyStream extension look
-     * like it had no catalogue at all.
-     *
-     * `__hikariFetchAsync` instead hands the request to [fetchExecutor] and
-     * returns at once; the pump loop in [invoke] drains [results] and resolves
-     * the matching JS promise as each response lands, so a plugin's `Promise.all`
-     * really is parallel and a whole home page arrives in the time of its
-     * slowest request instead of the sum of all of them.
-     */
     private class AsyncFetches {
         /** `promiseId` → the JSON payload `__skyResolveFetch` hands back to JS. */
         val results = LinkedBlockingQueue<Pair<String, String>>()
@@ -251,19 +150,6 @@ object SkyStreamRuntime {
             .followSslRedirects(true)
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(60, TimeUnit.SECONDS)
-            // Cloudflare, the whole reason a seemingly installed SkyStream
-            // extension can show an empty catalog: most extension sites
-            // (4khdhub.link and friends) answer a plain HTTP client with a
-            // "Just a moment…" interstitial, the plugin parses that page as if
-            // it were the catalog and reports success with zero items — so Home
-            // said "no catalog" while the site was simply waiting for a
-            // verification. Sharing CloudflareVerifier's interceptor (already
-            // used by Http for every CloudStream/Hikari provider) makes these
-            // fetches reuse the cf_clearance cookie the verify WebView earned,
-            // retry the challenge with the WebView's own UA, and record the host
-            // so the Home screen can offer its globe button. fetchOnce still
-            // scans for a challenge body as a second net (it also flags
-            // CF-CHALLENGE-UNSOLVED in the fetch log).
             .addInterceptor { chain -> com.hikari.app.net.CloudflareVerifier.intercept(chain) }
             // Some extension-repo hosts answer only via a public resolver on
             // some devices/ISPs — fall back to DNS-over-HTTPS (see DohDns).
@@ -271,12 +157,6 @@ object SkyStreamRuntime {
             .build()
     }
 
-    /**
-     * Boots a fresh engine: native bridges, polyfills, cheerio, the SkyStream
-     * shim, then the plugin's manifest + source. The plugin functions are left
-     * callable on globalThis; the caller runs one of them. Returns the engine;
-     * the caller must close() it in a finally.
-     */
     private suspend fun createEngine(
         deferred: CompletableDeferred<String>,
         pluginId: String,
@@ -288,12 +168,6 @@ object SkyStreamRuntime {
     ): QuickJs {
         val qjs = QuickJs.create(jobDispatcher = Dispatchers.Default)
         qjs.evaluationTimeoutMillis = budgetMs
-        // Only on a television: a native engine's memory is invisible to the Java
-        // heap and is what the low-memory killer acts on, so a 1-1.5GB box needs
-        // the ceiling even when its own booster setting is off. See
-        // [com.hikari.app.data.PerfMode.tvEngineMemoryLimit]. A phone keeps the
-        // runtime's own, uncapped behaviour — this line is the whole of the
-        // difference.
         com.hikari.app.data.PerfMode.tvEngineMemoryLimit?.let { qjs.memoryLimit = it }
 
         qjs.function("__hikariFetch") { args ->
@@ -382,10 +256,6 @@ object SkyStreamRuntime {
         qjs.evaluateVoid(TIMER_JS, "skystream-timers.js")
         // 4. The SkyStream plugin surface.
         qjs.evaluateVoid(shimJs, "skystream-shim.js")
-        // 5. The plugin's own manifest (plugins read manifest.baseUrl) and its
-        //    source. Both are plain scripts assigning globals — the source in
-        //    particular usually ends in an export helper whose return value is
-        //    cyclic, which is why it goes through evaluateVoid.
         qjs.evaluateVoid("globalThis.manifest = $manifestJson;", "manifest.js")
         qjs.evaluateVoid(source, "$pluginId.js")
         return qjs
@@ -393,13 +263,6 @@ object SkyStreamRuntime {
 
     // ---- Public API ----
 
-    /**
-     * Runs one plugin function in a fresh engine and returns the normalised
-     * as `{"ok":true,"data":…}` when the plugin reported success and
-     * `{"ok":false,"error":"…"}` when it reported a failure or threw.
-     * [argsJson] is a JSON array of the call's arguments (the completion
-     * callback is appended by the wrapper).
-     */
     suspend fun invoke(
         context: Context,
         pluginId: String,
@@ -426,26 +289,12 @@ object SkyStreamRuntime {
                         qjs = createEngine(deferred, pluginId, manifestJson, source, prefs, fetches, budget)
                         qjs.evaluate<Any?>(buildCall(fnName, argsJson), "call.js", false)
                         val deadline = System.currentTimeMillis() + budget
-                        // Each round: fire one due timer, deliver every async fetch
-                        // that finished since the last round, then sleep. A plugin
-                        // waiting on `Promise.all` keeps [AsyncFetches.pending]
-                        // above zero, which is what holds the loop open while its
-                        // requests are in flight.
                         var idleRounds = 0
                         var idleBail = false
                         while (!deferred.isCompleted && System.currentTimeMillis() < deadline) {
                             val next = qjs.evaluate<Any?>("__skyFireTimer()", "timer.js", false)
                             deliverFetches(qjs, fetches)
-                            // A timer callback usually does its fetch + completes
-                            // inside this very evaluate: return the answer now
-                            // instead of sleeping out the timer's delay first
-                            // (that wait was pure latency on the player's
-                            // "instant play" path).
                             if (deferred.isCompleted) break
-                            // __skyFireTimer: -1 = no timers parked, 0 = one just
-                            // fired, >0 = ms until the next one is due. Never fires
-                            // a timer early, so a plugin's `Promise.race` guard (or
-                            // a retry backoff) can't trip while a fetch is in flight.
                             val wait = (next as? Number)?.toLong() ?: -1L
                             val busy = fetches.pending.get() > 0 || fetches.results.isNotEmpty()
                             when {
@@ -463,9 +312,6 @@ object SkyStreamRuntime {
                                     delay(1)
                                 }
                                 else -> {
-                                    // Nothing parked and nothing in flight: give
-                                    // the pool a few rounds to notice a request
-                                    // that was just submitted before ending the call.
                                     idleRounds++
                                     if (idleRounds >= 4) {
                                         idleBail = true
@@ -476,13 +322,6 @@ object SkyStreamRuntime {
                             }
                         }
                         if (deferred.isCompleted) normalise(deferred.await())
-                        // Distinguish the two endings: an extension that parked on
-                        // a promise/timer nothing will ever settle stopped on its
-                        // own (a plugin bug, or a site that answered with something
-                        // it could not parse), whereas a real budget overrun means
-                        // the site is just slow. Saying "timed out after 75s" for a
-                        // call that bailed in 4 seconds sent people chasing a
-                        // network problem that did not exist.
                         else if (idleBail) failure("the extension stopped responding before it could finish")
                         else failure("timed out after ${budget / 1000}s")
                     } catch (e: Throwable) {
@@ -513,11 +352,6 @@ object SkyStreamRuntime {
         }
     }
 
-    /**
-     * True when the plugin loads and exports all four callbacks. Starts with
-     * "OK"; "ERR:…" carries the reason; anything else means "not a SkyStream
-     * plugin".
-     */
     suspend fun validate(context: Context, pluginId: String, scriptFile: File): String {
         val source = runCatching { scriptFile.readText() }.getOrNull()
         if (source.isNullOrBlank()) return "NO"
@@ -550,13 +384,6 @@ object SkyStreamRuntime {
         }
     }
 
-    /** The plugin's plugin.json (next to its plugin.js), as a JSON object the
-     *  engine can assign to `manifest`. A stored mirror choice replaces
-     *  `baseUrl` (the reference app's domain selector — see
-     *  SkyStreamPluginManager.customBaseUrl), and [manifestExtra] keys are
-     *  merged on top (a bundle's sub-provider id — see
-     *  SkyStreamPluginManager.subIdOf). Falls back to an empty object so a
-     *  plugin that reads manifest.baseUrl fails on its own terms. */
     private fun readManifest(scriptFile: File, manifestExtra: String? = null): String {
         val dir = scriptFile.parentFile ?: return manifestExtra ?: "{}"
         val f = File(dir, "plugin.json")
@@ -576,11 +403,6 @@ object SkyStreamRuntime {
         return obj.toString()
     }
 
-    /**
-     * The call wrapper. Mirrors SkyStream's own invoke wrapper: the completion
-     * callback is handed to the plugin as its last argument *and* attached to a
-     * returned promise, and whichever fires first wins (many plugins do both).
-     */
     private fun buildCall(fnName: String, argsJson: String): String =
         "(function () {" +
             "  var finish = function (payload, err) {" +
@@ -623,11 +445,6 @@ object SkyStreamRuntime {
             "  }" +
             "})();"
 
-    /**
-     * Normalises the raw payload the plugin handed us — either SkyStream's
-     * `{success, data|errorCode+message}` envelope, or (a few community
-     * plugins) a bare array — into `{"ok":…}`.
-     */
     private fun normalise(payload: String): String {
         val text = payload.trim()
         if (text.isEmpty()) return failure("plugin returned nothing")
@@ -700,12 +517,6 @@ object SkyStreamRuntime {
         return out.toString()
     }
 
-    /**
-     * `loadExtractor(url, cb)` support: runs Hikari's own extraction stack on one
-     * embed URL and returns it as the JSON array the shim turns into
-     * StreamResults. Blocking (a QuickJS bridge cannot suspend), so it owns a
-     * pool thread and is bounded by [EXTRACT_TIMEOUT_MS].
-     */
     private fun extractOnce(url: String, referer: String?): String {
         if (!url.startsWith("http")) return "[]"
         val started = System.currentTimeMillis()
@@ -768,15 +579,6 @@ object SkyStreamRuntime {
             resp.use { r ->
                 val bytes = r.body?.bytes() ?: ByteArray(0)
                 val extra = StringBuilder()
-                // A Cloudflare challenge — the 403/503 interstitial, or a
-                // managed challenge served as an HTTP 200 HTML page — is not
-                // "this extension is broken": it needs the user's own
-                // verification. Record the host in the shared verifier so every
-                // other part of the app stops waiting on it (the source probe,
-                // the WebView resolver, later fetches all skip a host recorded
-                // here), and flag it in the fetch log the extension reads.
-                // Bounded to small bodies: a multi-MB catalog JSON is never a
-                // challenge page and must not be scanned for markers.
                 if (bytes.size <= 200_000) {
                     val ct = r.headers["Content-Type"] ?: ""
                     val cfWorthScanning =
@@ -831,22 +633,6 @@ object SkyStreamRuntime {
         }
     }
 
-    /**
-     * SkyStream's timer globals, reimplemented for QuickJS. `setTimeout` parks
-     * its callback in a registry with a due time; the host calls
-     * `__skyFireTimer` between engine rounds, which returns:
-     *
-     *   -1  nothing parked
-     *    0  a timer was due and has just been fired
-     *   >0  milliseconds until the next timer is due (never early)
-     *
-     * Returning the remaining time instead of firing whatever is at the head of
-     * the list matters: plugins use `setTimeout` for `Promise.race` timeouts and
-     * retry backoff, and the host polls this function every few milliseconds
-     * while a request is in flight — firing an early timer there would abort a
-     * perfectly healthy fetch or truncate a phase budget. `setInterval`
-     * re-arms itself.
-     */
     private val TIMER_JS = """
         if (typeof globalThis.setTimeout !== 'function') {
           globalThis.__skyTimers = {};

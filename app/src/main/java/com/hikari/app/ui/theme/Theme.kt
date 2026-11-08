@@ -22,27 +22,6 @@ enum class HikariThemeMode(val key: String, val label: String) {
     LIGHT("light", "Hikari Light");
 
     companion object {
-        /**
-         * The key of the theme a fresh install opens in: AMOLED Black, not the
-         * near-black Hikari Dark. Every device Hikari runs on is a phone, a
-         * tablet or a television, and on an OLED panel the difference between
-         * #0A0A0F and #000000 is the difference between a screen lit edge to
-         * edge and one that is off everywhere but the content. The theme paints
-         * nothing behind the UI at all (see `AppRoot`), so choosing it costs
-         * nothing and darkens everything.
-         *
-         * Written down ONCE, here: [DEFAULT] decodes it,
-         * [com.hikari.app.data.AppStore.DEFAULT_THEME] is a const alias of it,
-         * and the players' synchronous mirror
-         * ([com.hikari.app.ui.AccentStore]) reads this constant directly — so
-         * the stored value, the Compose first frame (which reads the mirror
-         * before DataStore has emitted anything) and the settings sheet cannot
-         * disagree. (The mirror reads the constant rather than the `AppStore`
-         * alias because that alias lives in `AppStore`'s PRIVATE companion.)
-         *
-         * A saved choice always wins; this is only the answer for an absent
-         * one.
-         */
         const val DEFAULT_KEY = "amoled"
 
         /** [DEFAULT_KEY] as the enum value. */
@@ -110,12 +89,6 @@ private fun glassColors(accent: HikariAccent) = darkColorScheme(
     scrim = GlassScrim,
 )
 
-/**
- * AMOLED: the dark scheme with the page and its surfaces dropped to true black,
- * so an OLED phone lights only the pixels that carry content. Everything else
- * (accent, text, muted, error) is the same as [darkColors] on purpose — the
- * "pure black" theme must not look like a different app, just a darker one.
- */
 private fun amoledColors(accent: HikariAccent) = darkColorScheme(
     primary = accent.start,
     onPrimary = inkOn(accent.start),
@@ -135,22 +108,6 @@ private fun amoledColors(accent: HikariAccent) = darkColorScheme(
     scrim = Color.Black,
 )
 
-/**
- * The colour a full-screen surface has to paint when its job is to COVER what is
- * behind it.
- *
- * [androidx.compose.material3.ColorScheme.background] is [GlassBackground] —
- * `Color.Transparent` — in the Dark Glass theme: that theme's page colour is a
- * gradient drawn behind the whole app (see `AppRoot`), so anything that paints
- * the scheme's background paints nothing at all. A full-screen overlay therefore
- * let the screen it was covering show straight through it — the Home search box
- * carried the feed's hero banner and its "View Details" pill behind it, and the
- * app-lock screen carried the app behind it (a lock screen you can read the
- * locked content through is not a lock screen). Everything that has to hide
- * what is underneath asks for this instead: the scheme's own background when it
- * has one (dark, light and AMOLED all do), and the solid page colour when it
- * does not.
- */
 @Composable
 fun pageBackground(): Color {
     val bg = MaterialTheme.colorScheme.background
@@ -173,12 +130,6 @@ fun HikariTheme(
     fontFamily: FontFamily? = null,
     content: @Composable () -> Unit,
 ) {
-    // In-app UI scale. When ON, this replaces the phone's Font size AND Display
-    // size settings with a single in-app scale: the app ignores `fontScale`
-    // (stays 1.0) and rebuilds the density from the device's STABLE physical
-    // density times the chosen scale, so every device renders the same layout
-    // regardless of accessibility size settings. OFF = inherit the system
-    // density untouched (the previous behaviour).
     val base = LocalDensity.current
     val context = LocalContext.current
     val density = remember(base, context, uiScaleEnabled, uiScale) {
@@ -213,11 +164,6 @@ fun HikariTheme(
     }
     CompositionLocalProvider(
         LocalDensity provides density,
-        // Belt-and-braces: a transparent Scaffold/Material container reports
-        // `contentColorFor(Color.Transparent) == Color.Unspecified`, which made
-        // every unstyled Text fall back to Skia's black default — invisible on
-        // the dark/glass/AMOLED themes. Seeding the local here (and on the
-        // navigation Scaffold) keeps unstyled content readable everywhere.
         LocalContentColor provides scheme.onBackground,
         com.hikari.app.ui.LocalPageScrim provides scheme.background,
     ) {

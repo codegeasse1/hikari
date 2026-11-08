@@ -6,26 +6,6 @@ import androidx.media3.effect.Contrast
 import androidx.media3.effect.HslAdjustment
 import androidx.media3.effect.RgbAdjustment
 
-/**
- * Video enhance presets (Settings → Player → Video enhance, and the Enhance
- * button in the player).
- *
- * These are REAL GPU colour grades applied to the decoded video by media3's
- * video-effects pipeline ([androidx.media3.effect]) — not a fake overlay on
- * the player UI — so they affect the picture itself and work with any server.
- *
- * Two things are deliberate here:
- *
- *  - Natural is the default and applies NOTHING visible: the armed pipeline
- *    carries a no-op so the picture stays pixel-identical, while sliders and
- *    preset picks apply live without ever re-opening the source.
- *
- *  - Colour grading is built from [HslAdjustment] wherever possible, because
- *    the matrix-based effects ([Brightness], [RgbAdjustment]) assert that the
- *    input is NOT HDR and would throw on an HDR stream. Those are only added
- *    for SDR video (see [effects]), so a 4K HDR movie can never be broken by
- *    picking a preset.
- */
 enum class EnhancePreset(
     val key: String,
     val label: String,
@@ -129,28 +109,6 @@ private fun coolTint(hdr: Boolean): List<Effect> =
 private fun brightLift(hdr: Boolean): List<Effect> =
     if (hdr) emptyList() else listOf(Brightness(0.05f))
 
-/**
- * A user-built enhance preset: the five sliders of the player's enhance
- * editor (Brightness, Saturation, Contrast, Gamma, Hue — the set screenshot
- * reports show), stored as one JSON row in [com.hikari.app.data.AppStore]
- * under `playerEnhanceCustoms` and selected with the key `custom:<id>`.
- *
- * Mapping onto media3 (see the effect sources for the exact contracts):
- *  - saturation (-100..100) and hue (-180..180) go straight into
- *    [HslAdjustment], whose ranges are exactly those intervals;
- *  - contrast (-100..100) goes into [Contrast] as value/100 ([Contrast] takes
- *    -1..1 with 0 a no-op, and — unlike the matrix effects — asserts nothing
- *    about HDR, so it stays on for HDR video too);
- *  - brightness (-100..100) lifts [HslAdjustment] lightness a little (so it
- *    still does something on HDR) plus a real [Brightness] shift on SDR
- *    ([Brightness] throws on HDR input, so it is skipped there like the
- *    built-in tints);
- *  - gamma (-100..100) has no media3 effect behind it (there is no gamma
- *    primitive in media3-effect), so it is approximated the standard cheap
- *    way — a midtone lift through [HslAdjustment] lightness. It reads like
- *    gamma on ordinary footage; it is not a true power curve, and the slider
- *    does not pretend otherwise.
- */
 data class CustomEnhancePreset(
     val id: String,
     val name: String,

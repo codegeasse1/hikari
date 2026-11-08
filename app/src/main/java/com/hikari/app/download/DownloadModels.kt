@@ -10,15 +10,6 @@ enum class DownloadKind { OFFLINE, EXPORT }
 
 enum class DownloadStatus { QUEUED, RUNNING, CONVERTING, PAUSED, DONE, FAILED }
 
-/**
- * One downloaded (or downloading) video. Persisted as JSON in its own DataStore
- * file (see [DownloadStore]), so the queue survives an app restart.
- *
- * [progress] prefers the DURATION ratio (a segment-downloaded count over the
- * playlist's total duration) because byte totals are usually unknown for HLS
- * playlists — falling back to bytes only for single-file downloads where the
- * server's Content-Length is known.
- */
 data class DownloadTask(
     val id: String,
     val title: String,
@@ -37,11 +28,6 @@ data class DownloadTask(
      *  tie-breaker for playlists that don't publish a RESOLUTION. */
     val preferredHeight: Int = 0,
     val preferredBandwidth: Long = 0L,
-    /** Preferred HLS audio rendition by NAME ("", "English", "Hindi"… — see
-     *  [DownloadEngine.hlsAudios]). "" = the playlist's own default. A name
-     *  missing from one episode's playlist falls back to that playlist's
-     *  first audio rendition, so one answer covers a whole batch even when
-     *  episodes carry different audio sets. */
     val preferredAudio: String = "",
     val kind: DownloadKind = DownloadKind.OFFLINE,
     val status: DownloadStatus = DownloadStatus.QUEUED,
@@ -91,19 +77,8 @@ data class DownloadTask(
         return sanitizeFile(stem).ifBlank { "hikari-video" }
     }
 
-    /**
-     * Folder name for this title's downloads: every episode of "Renegade
-     * Immortal" lands under a "Renegade Immortal" folder, so a later EP4
-     * joins the folder EP3 already created — in Hikari storage and in the
-     * phone's Downloads folder alike.
-     */
     fun titleFolder(): String = sanitizeFile(title).ifBlank { "hikari-video" }
 
-    /**
-     * File/dir stem for this episode under its title folder (no extension):
-     * the episode label ("E3", "S1 E4") when there is one, else the title
-     * itself (movies), so the folder holds one entry per episode.
-     */
     fun episodeStem(): String =
         sanitizeFile(episodeLabel).ifBlank { sanitizeFile(title) }
             .ifBlank { "video" }

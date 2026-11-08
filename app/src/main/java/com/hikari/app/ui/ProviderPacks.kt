@@ -4,25 +4,6 @@ import com.hikari.app.data.ProviderConfig
 import com.hikari.app.data.ProviderType
 import com.hikari.app.providers.ContentProvider
 
-/**
- * One row of a provider list.
- *
- * Usually that is one provider. An Aniyomi (or manga) EXTENSION is the
- * exception: a single `.apk` can publish a whole family of sources, and a
- * multi-audio pack publishes the *same site* once per language under one name
- * — AnimeWorld India is nine sources (a generic one plus
- * Bengali/English/Hindi/Japanese/Malayalam/Marathi/Tamil/Telugu), all called
- * "AnimeWorld India". Hikari stores one provider per source (which is what makes
- * each one searchable, pinnable and switchable), so a user who installed ONE
- * extension saw it listed nine times — the reported "I am installing one
- * animeworld and in provider it showing 8 times".
- *
- * [ProviderPacks.rows] folds every source of one extension into a single
- * [ProviderPack], so every list that draws providers shows one row per
- * extension and the sources live inside it (see the `expanded` handling in the
- * Extensions screen and Home's picker). Nothing about how providers are STORED
- * or searched changes: the rows are only how they are shown.
- */
 class ProviderPack(
     /** The sources of this extension, in the extension's own order. */
     val members: List<ContentProvider>,
@@ -63,9 +44,6 @@ class ProviderPack(
     fun memberLabel(index: Int): String {
         val d = details.getOrNull(index).orEmpty()
         if (d.isNotBlank()) return d
-        // This member IS the extension's own name (the generic, multi-audio
-        // source of a language pack) — the one row of the group with nothing to
-        // add to it.
         return com.hikari.app.i18n.I18n.t("Default")
     }
 
@@ -81,12 +59,6 @@ object ProviderPacks {
     private const val MANGA_PREFIX = "manga|"
     private const val VEGA_PREFIX = "vega|"
 
-    /**
-     * The extension a provider row was published by, or null for every engine
-     * whose providers are not one-source-of-many (`aniyomi|<pkg>|<index>` and
-     * `manga|<pkg>|<index>` are the two that are — see
-     * [com.hikari.app.aniyomi.AniyomiExtensionManager]).
-     */
     fun packKeyOf(config: ProviderConfig): String? {
         val prefix = when (config.type) {
             ProviderType.ANIYOMI -> ANIYOMI_PREFIX
@@ -103,14 +75,6 @@ object ProviderPacks {
         return config.id.dropLast(index.length + 1)
     }
 
-    /**
-     * [providers] as drawable rows, in their existing order, with each
-     * extension's sources folded into one [ProviderPack].
-     *
-     * A group whose members share no usable name (nothing in common, so there is
-     * no honest label for the row) is left as separate single rows — better the
-     * old list than a row called "…".
-     */
     fun rows(providers: List<ContentProvider>): List<ProviderPack> {
         val grouped = LinkedHashMap<String, MutableList<ContentProvider>>()
         val order = ArrayList<String>()
@@ -143,16 +107,6 @@ object ProviderPacks {
         return foldCrossEngine(out)
     }
 
-    /**
-     * The SAME extension installed from two engines ("AllAnime" on Nuvio and
-     * on Anymex, "AllMovieLand" on CloudStream and on Hikari) reads as a
-     * duplicated list. Fold same-named single rows into one cross-engine row
-     * whose members are the engines: the row is drawn once with the engines
-     * underneath ("Nuvio · Anymex"), and expanding it offers each engine's
-     * copy for picking. Matching is on the normalized name only — nothing is
-     * guessed, and anything without a twin keeps its own row exactly as
-     * before.
-     */
     private fun foldCrossEngine(packs: List<ProviderPack>): List<ProviderPack> {
         val singles = packs.filter { !it.isPack }
         if (singles.size < 2) return packs

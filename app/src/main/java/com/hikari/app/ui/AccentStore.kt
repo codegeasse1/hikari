@@ -4,21 +4,6 @@ import android.content.Context
 import com.hikari.app.ui.theme.HikariAccent
 import com.hikari.app.ui.theme.HikariThemeMode
 
-/**
- * The accent-colour preferences, mirrored into plain SharedPreferences so the
- * View-based screens (the player, mainly) can read them SYNCHRONOUSLY while an
- * Activity is being created — the same trick [UiScale] uses for the in-app UI
- * scale, and for the same reason: the player must build its pills/badges/time
- * bar with the right colours on the very first frame, not a DataStore round
- * trip later.
- *
- * The Compose side does not need this: it reads the DataStore flows, so a
- * change recolours the app instantly. MainActivity mirrors every emission here
- * (and the store setters do too, so the change is available immediately).
- *
- * [playerKey] resolves the "match app & player theme" switch: while it is ON the
- * player follows the app accent, so the two can never drift apart.
- */
 object AccentStore {
 
     private const val PREFS = "hikari_accent"
@@ -91,15 +76,6 @@ object AccentStore {
         return HikariAccent.fromKey(playerKey)
     }
 
-    /**
-     * The theme the app UI is drawn in ("dark", "glass", "amoled", "light").
-     *
-     * Mirrored for the same reason the accents are: [com.hikari.app.MainActivity]
-     * seeds its Compose state with a synchronous read, so the FIRST frame after
-     * the Activity is created is already the chosen theme. Without it every
-     * return from the player painted one frame of the stock dark theme (and the
-     * stock accent with it) before DataStore answered.
-     */
     fun theme(context: Context): String {
         ensureLoaded(context)
         return themeKey

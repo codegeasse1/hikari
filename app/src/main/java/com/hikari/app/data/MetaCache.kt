@@ -9,39 +9,6 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 
-/**
- * The on-disk cache behind "every catalogue, episode list and detail page opens
- * instantly".
- *
- * WHY this exists. Every one of those three reads goes through a PROVIDER, and a
- * provider's first answer is expensive for reasons that have nothing to do with
- * the network: an Aniyomi extension has to class-load its APK before it can make
- * a request (the [com.hikari.app.aniyomi.AniyomiExtensionManager] registers
- * singletons, then ART verifies the extension's dex), a CloudStream/.hiki plugin
- * has to spin its runtime and its site session up, and a nuvio engine boots a
- * QuickJS VM. So the second time a user opens the same catalogue, the same
- * series, or the same detail page, the answer is *known* but was being thrown
- * away at the end of the process — the reported "clicking a series in an
- * aniyomi/skystream extension takes too long to show its catalogue, and the
- * episodes take even longer".
- *
- * WHAT it is: a small JSON file per (kind, key) under `filesDir/metacache/`,
- * with the time it was written, plus an in-process map so a hit costs one map
- * lookup. It deliberately does NOT try to be a database: the values are exactly
- * the objects the repository already returns (`MediaItem`, `Episode`), and the
- * callers decide freshness — [ContentRepository] paints a catalogue page or an
- * episode list from here and then replaces it with the engine's own fresh answer
- * a moment later, which is the stale-while-revalidate shape every streaming app
- * uses.
- *
- * It is NOT the source of truth for anything the user owns: library, history,
- * progress and watch state live in their own stores. Losing this directory costs
- * a re-fetch and nothing else, which is why trimming it (see [trim]) is safe.
- *
- * Callers are on an IO thread already (every entry point runs in one), so the
- * file work here is synchronous on purpose — a suspend wrapper would only add a
- * dispatch per read.
- */
 object MetaCache {
 
     /** Catalogue page: painted for up to this long before it is re-fetched. */
@@ -55,21 +22,6 @@ object MetaCache {
      *  series can gain episodes, so this is deliberately the shortest window). */
     const val EPISODES_TTL_MS = 12 * 60 * 60 * 1000L
 
-    /**
-     * Extension-build epoch stamped into every episode-list key (see
-     * [episodesKey]). A cached episode row carries the provider's OPAQUE
-     * `data` payload (the string its own `loadLinks` re-parses), and a
-     * provider update can change that payload's shape — the reported
-     * `MissingKotlinParameterException ... tvtype ... missing (therefore
-     * NULL)` was an extension that added a required `LoadLinksData` field
-     * while Hikari kept replaying the previous build's payloads for up to
-     * [EPISODES_TTL_MS] (the silent auto-updater swaps builds overnight, so
-     * this bit every morning). Every installer and auto-updater calls
-     * [bumpEpisodesEpoch] when it commits a new extension file, which
-     * retires all cached payloads at once; the lists are re-fetched once
-     * and the cache keeps working. Losing the cache costs a re-fetch and
-     * nothing else (see the class note), so a coarse global epoch is safe.
-     */
     @Volatile
     private var episodesEpoch: Int = -1
 
@@ -84,12 +36,6 @@ object MetaCache {
         return read
     }
 
-    /**
-     * Retires every cached episode list. Called when an extension file is
-     * installed or updated — its payloads may no longer parse with the new
-     * build. In-memory entries go immediately; on-disk ones become
-     * unreachable (their keys carry the old epoch) and age out via TTL/trim.
-     */
     fun bumpEpisodesEpoch() {
         val next = episodesEpoch() + 1
         episodesEpoch = next
@@ -127,12 +73,6 @@ object MetaCache {
 
     private fun dir(): File = File(ctx().filesDir, "metacache").apply { mkdirs() }
 
-    /**
-     * One file per key. Two integer hashes rather than one so a collision needs
-     * two unrelated keys to agree twice — the same trick [MangaStore] uses for
-     * its chapter files, which is plenty for a cache whose worst case is a
-     * re-fetch.
-     */
     private fun file(key: String): File {
         val a = key.hashCode().toUInt().toString(16)
         val b = (key.hashCode() * 31 + key.length).toUInt().toString(16)
@@ -256,11 +196,6 @@ fun episodesKey(uniqueId: String): String = "eps|${episodesEpoch()}|$uniqueId"
         runCatching { _epRevision.value += 1 }
     }
 
-    /**
-     * Drops one title's cached episode list (memory + disk) so the next read
-     * re-resolves fresh — the freshness retry's eviction half. Only the
-     * current epoch's entry: older epochs are already unreachable by key.
-     */
     fun evictEpisodes(uniqueId: String) {
         val key = episodesKey(uniqueId)
         memDrop(key)

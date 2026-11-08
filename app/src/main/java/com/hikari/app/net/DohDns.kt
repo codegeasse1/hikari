@@ -12,34 +12,6 @@ import java.net.UnknownHostException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
-/**
- * OkHttp DNS resolver: the phone's resolver, a DNS-over-HTTPS fallback, and the
- * resolver the user picks in Settings → Network and Internet → DNS mode.
- *
- * Two jobs share this class because they are the same network path.
- *
- * **Fallback.** Some devices/ISPs hand out a resolver that refuses or silently
- * swallows the domains a few of the extension repos live on (the Eclipsia Nuvio
- * repo at `plugin.eclipsia.dpdns.org` is the common one — the host itself is
- * fine and answers 200 from any public resolver, but the phone's own DNS answers
- * with "No address associated with hostname"). When the platform resolver throws
- * [UnknownHostException] we re-ask over HTTPS, whose query goes to a hard-coded
- * IP literal, so it needs no working DNS of its own. That chain still runs, and
- * still ends every lookup, whatever the user picked.
- *
- * **DNS mode.** With an explicit provider chosen, that provider answers *first*
- * — that is the whole point of choosing one (AdGuard and CleanBrowsing exist to
- * withhold addresses). Because it has the final say, a refusal from it is
- * honoured rather than papered over by the fallback: an answer that carries no
- * address means the name did not resolve. It only steps aside when it could not
- * be reached at all, and then only for a minute, so a bad or offline address
- * costs one slow lookup rather than one on every request. A chosen resolver is
- * asked over DNS-over-HTTPS when it offers one, or over plain port-53 UDP when
- * it doesn't (see [DnsProviders]).
- *
- * Successes are cached (the platform already caches well, but the DoH path is a
- * full round-trip, so a short in-process cache keeps repeated loads snappy).
- */
 object DohDns : Dns {
 
     private const val TTL_MS = 5 * 60 * 1000L
@@ -208,12 +180,6 @@ object DohDns : Dns {
         else -> e.javaClass.simpleName
     }
 
-    /**
-     * The answer the chosen provider gives for [host] — its A and AAAA records
-     * merged, over whichever transport it offers. Throws when the provider could
-     * not be reached or answered with something that isn't a DNS message; an
-     * empty list means it answered and the name has no address.
-     */
     private fun providerLookup(provider: DnsProvider, host: String): List<InetAddress> =
         if (provider.url.isNotEmpty()) dohLookup(provider, host)
         else plainLookup(provider, host)
@@ -254,13 +220,6 @@ object DohDns : Dns {
         }
     }
 
-    /**
-     * The same question asked the old way: one UDP datagram to port 53. Used for
-     * the resolvers that never added an encrypted service. If a server answers
-     * with a TRUNCATED reply and nothing usable in it, that counts as a failure
-     * rather than a refusal, so the lookup falls back to the phone instead of
-     * reporting the name as dead.
-     */
     private fun plainLookup(provider: DnsProvider, host: String): List<InetAddress> {
         val found = LinkedHashMap<String, InetAddress>()
         var answered = false
@@ -321,9 +280,6 @@ object DohDns : Dns {
         val endpointHost = runCatching { provider.url.toHttpUrl().host }.getOrNull()
         val dns = object : Dns {
             override fun lookup(hostname: String): List<InetAddress> {
-                // The provider's own host, when we know its addresses: this is
-                // what makes the feature work at all on a phone whose resolver
-                // is the broken thing.
                 if (pinned.isNotEmpty() && endpointHost != null &&
                     hostname.equals(endpointHost, ignoreCase = true) && !v4.matches(hostname)
                 ) {

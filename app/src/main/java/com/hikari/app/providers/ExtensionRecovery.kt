@@ -15,33 +15,6 @@ interface StallResettable {
     fun resetForStall()
 }
 
-/**
- * Universal stall recovery: what happens when an extension stops answering.
- *
- * The shape it cures (proven by log: origin asked every pass, "0 of 1
- * answered", sweep "✗ the call never came back", restart plays instantly):
- * one call into an extension never returns — an internal deadlock, an
- * unbounded read, a wedged runtime — and every later call queues behind the
- * corpse (the [ProviderGate] lock it holds, the cached instance it owns), so
- * every tap burns its full budget and answers "No playable sources" until the
- * process dies and takes the corpse with it.
- *
- * Recovery runs per provider, engine-agnostic:
- *  1. [ProviderGate.breaker] replaces the provider's lock, so new calls stop
- *     queueing behind the stuck one (works for EVERY engine, whatever hung).
- *  2. The engine's cached extension instance is evicted, so the next call
- *     meets a freshly loaded runtime with fresh locks instead of the wedged
- *     object (HIKARI / CS3 / ANIYOMI / MANGA; stateless bridges need none).
- *  3. The provider's "stopped responding" skip is cleared, so the very next
- *     lookup asks it again instead of skipping it for two minutes.
- *
- * It fires only after CONSECUTIVE timeouts ([STALLS_TO_RECOVER]) — one slow
- * answer is just slowness — and at most once per [RECOVER_COOLDOWN_MS] per
- * provider, so a truly dead extension costs one reload per half minute, not
- * one per tap. Callers grant one fresh full-budget attempt right after it
- * (see ContentRepository.fetchStreams), which is what turns the user's
- * CURRENT tap from "No playable sources" into playback.
- */
 object ExtensionRecovery {
 
     /** Consecutive timed-out calls before a provider is declared wedged. */
@@ -75,19 +48,6 @@ object ExtensionRecovery {
 
     private val lastEmptyRecoverAt = ConcurrentHashMap<String, Long>()
 
-    /**
-     * Clean-room retry for a provider that ANSWERED with zero servers (no
-     * timeout, no exception): fresh lock, fresh extension instance,
-     * skip-list cleared — the same primitives as [recover] but without the
-     * stall gating, so a silently-failed fan-out (a meta provider whose
-     * internal sources all died on poisoned runtime state: an empty
-     * dynamic-URL table from a failed init at load, a rotated domain, a
-     * transient upstream outage on the first run) gets one retry on a
-     * runtime that just re-ran the plugin's own load(). Returns false when
-     * the per-provider cooldown says a retry ran recently — the caller then
-     * falls through to its other cures instead of reloading per tap. Never
-     * throws.
-     */
     suspend fun recoverEmpty(app: HikariApp, config: ProviderConfig): Boolean {
         val now = System.currentTimeMillis()
         if (now - (lastEmptyRecoverAt[config.id] ?: 0L) < EMPTY_RECOVER_COOLDOWN_MS) return false
@@ -166,11 +126,6 @@ object ExtensionRecovery {
         return true
     }
 
-    /**
-     * Breaks the wedge for [config]: fresh lock, fresh extension instance,
-     * skip-list cleared. Never throws — recovery failing must not fail the
-     * lookup it runs inside of.
-     */
     suspend fun recover(app: HikariApp, config: ProviderConfig) {
         lastRecoverAt[config.id] = System.currentTimeMillis()
         runCatching {

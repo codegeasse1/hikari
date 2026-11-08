@@ -32,25 +32,6 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 
-/**
- * Runs a Sora module (Sora / Luna / Anymex / Dartotsu / … — one
- * self-contained script with global `searchResults` / `extractDetails` /
- * `extractEpisodes` / `extractStreamUrl` entry points) inside a fresh
- * embedded QuickJS engine.
- *
- * The module reads the network through the spec's `fetchv2` bridge (plus a
- * best-effort `networkFetch` page capture — see assets/sora/harness.js),
- * which is served here by the same asynchronous OkHttp bridge the nuvio and
- * Vega runtimes use, so parallel requests inside one module are really
- * parallel. Loaded underneath is nuvio's harness (global `fetch`, `Buffer`)
- * because `fetchv2` is implemented on top of it.
- *
- * ONE MODULE PER CALL: the file is evaluated at top level (the spec forbids
- * IIFE wrapping, and the entry points must land in global scope), the call
- * script invokes one entry point, and the engine is closed afterwards. The
- * module source is bytecode-cached per provider+content so only the first
- * call pays the parse cost.
- */
 object SoraRuntime {
 
     private const val MAX_CONCURRENT = 8
@@ -285,11 +266,6 @@ object SoraRuntime {
     suspend fun streams(moduleFile: File, providerId: String, url: String): String =
         run(moduleFile, providerId, "extractStreamUrl", "[${quote(url)}]", STREAM_TIMEOUT_MS)
 
-    /**
-     * True when the script is a Sora video module: it exports the four anime
-     * entry points. Starts with "OK"; "NO" means "not a Sora module";
-     * "ERR:…" carries a detail message.
-     */
     suspend fun moduleSettings(moduleFile: File): String = withContext(Dispatchers.Default) {
         if (!moduleFile.exists()) return@withContext "[]"
         val source = runCatching { moduleFile.readText() }.getOrNull()

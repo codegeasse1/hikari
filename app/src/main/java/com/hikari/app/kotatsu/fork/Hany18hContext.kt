@@ -23,16 +23,6 @@ import java.io.ByteArrayOutputStream
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
-/**
- * The [MangaLoaderContext] the vendored hany18h parsers run on — same role
- * [com.hikari.app.kotatsu.KotatsuContext] plays for the official parsers.
- *
- * The hany18h fork is vendored under `org.hany18h.parsers` (same extraction code,
- * relocated package so it links beside the official library instead of colliding
- * with it), so this mirrors that context's network/JS/bitmap stack exactly:
- * hardened OkHttp (Cloudflare solver + DoH), per-host cookie jar, Rhino JS and
- * real Android bitmaps for descrambling.
- */
 object Hany18hContext : MangaLoaderContext() {
 
 	override val httpClient: OkHttpClient by lazy {

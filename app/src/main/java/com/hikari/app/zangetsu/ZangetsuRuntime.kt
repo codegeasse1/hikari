@@ -25,19 +25,6 @@ import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
-/**
- * Runs Zangetsu providers (single self-contained `.js` scrapers speaking
- * `getHome` / `popular` / `search` / `getDetail` / `getEpisodes` /
- * `getVideoSources` over an injected promise-style `fetch`) inside a fresh
- * embedded QuickJS engine per call — one engine, one call, then the VM is
- * torn down so nothing leaks between providers.
- *
- * The surface mirrors what the Zangetsu app installs: `fetch(url, {method,
- * headers, body})` resolving `{body, status, headers}`, `__SOURCE_ID`,
- * `__settings`, `console` and `setTimeout`. Fetches run on a pool and resolve
- * concurrently (providers `Promise.all` whole rows), timers are pumped
- * between evaluate rounds, and the call answers through `__zDone`.
- */
 object ZangetsuRuntime {
 
     private const val MAX_CONCURRENT = 8
@@ -57,12 +44,6 @@ object ZangetsuRuntime {
 
     private val fetchExecutor: ExecutorService = Executors.newFixedThreadPool(FETCH_THREADS)
 
-    /** In-memory cookie jar: LinkPress gates (thenaukriadda ?sid=) and the
-     *  multi-step landing forms behind them only work when the _lp_http POST
-     *  and every follow-up POST ride the same session — the same way the
-     *  Zangetsu reference app keeps cookies. Without this every POST looked
-     *  like a fresh visitor and the gate re-issued forever (log-proven: 12
-     *  harvested links re-asked packed, zero resolved). */
     private val jar: okhttp3.CookieJar = object : okhttp3.CookieJar {
         private val store = java.util.concurrent.ConcurrentHashMap<String, MutableList<okhttp3.Cookie>>()
         override fun loadForRequest(url: okhttp3.HttpUrl): List<okhttp3.Cookie> {
@@ -242,12 +223,6 @@ object ZangetsuRuntime {
         evaluate<Any?>("$js\n;void 0;\n", name, false)
     }
 
-    /** TMDB key the providers' enrichment calls ride on. The Zangetsu app
-     *  attaches its own key to every api.themoviedb.org request its scrapers
-     *  make; without the same treatment here those calls 401 (log-proven) and
-     *  every movie/series loses its episode names, stills and plot. Refreshed
-     *  on every provider call (see [run]): the user's own key when Settings
-     *  holds one, else the app's built-in rotation head. */
     @Volatile
     private var tmdbApiKey: String = ""
 

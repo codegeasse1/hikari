@@ -15,23 +15,9 @@ import java.util.concurrent.TimeUnit
 
 object Http {
 
-    /** Desktop Chrome UA, matching CloudStream's own USER_AGENT
-     *  (MainAPI.kt: Chrome/149). The WAFs that
-     *  guard the TamilBlasters/StreamHG/luluvdo family serve their player pages
-     *  and HLS CDNs to desktop browsers; a mobile "… Mobile Safari" UA stands out to those
-     *  WAFs and some answer 403 before ever checking the token. Signed CDNs
-     *  (Fastream class) also bind the signature to the UA seen at extraction
-     *  (CloudStream's 149) — playing with a different UA is a 403-vs-play
-     *  difference, so this must stay in lockstep with the jar. */
     const val UA =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
 
-    /** Honest app UA used when fetching Nuvio manifests and scraper files —
-     *  mirrors the real nuvio app's own OkHttp client. Codeberg (which hosts
-     *  the well-known nuvio repos) answers the spoofed desktop-Chrome UA with
-     *  HTTP 403 but serves this app UA fine, so the nuvio fetch paths override
-     *  the browser UA with this one (the desktop UA stays right for the
-     *  CloudStream/Stremio content sites it was chosen for). */
     const val NUVIO_UA = "NuvioTV/1.0"
 
     /** Same current-Chrome fingerprint the WebView uses so probes and the site
@@ -49,11 +35,6 @@ object Http {
             .followSslRedirects(true)
             .connectTimeout(20, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
-            // Cloudflare handling: attaches a WebView cf_clearance cookie when
-            // one is present, and marks the host as blocked when a challenge
-            // comes back — Hikari itself NEVER opens the verify WebView here.
-            // The user opens it by tapping the globe button, and the requests
-            // retry with the cookie that tap earned (see CloudflareVerifier).
             .addInterceptor { chain -> CloudflareVerifier.intercept(chain) }
             .dns(DohDns)
             .build()
@@ -66,15 +47,6 @@ object Http {
             .build()
     }
 
-    /**
-     * A request that bypasses [CloudflareVerifier] entirely. Used by the
-     * background decorating lookups ([com.hikari.app.data.Ratings]): those go to
-     * third-party review sites that put a challenge in front of a plain HTTP
-     * client, and the interceptor would record that host as "blocked" — the flag
-     * the Home screen turns into "verification needed on X". That banner is
-     * about the user's own extensions, so a review site must never be able to
-     * raise it.
-     */
     fun getQuiet(url: String, headers: Map<String, String> = emptyMap()): Response {
         val builder = Request.Builder().url(url).header("User-Agent", UA)
         headers.forEach { (k, v) -> builder.header(k, v) }
@@ -110,14 +82,6 @@ object Http {
         return client.newCall(builder.build()).execute()
     }
 
-    /**
-     * Any method, for the handful of APIs that are neither a plain GET nor a
-     * POST: the trackers (Settings → Trackers) update a list entry with PATCH
-     * or PUT, and Kitsu's JSON:API wants PATCH/POST under its own media type.
-     * [body] may be null for a method that carries none; GET/HEAD are still
-     * routed through [get] so a caller cannot accidentally send a body with
-     * them.
-     */
     fun request(
         method: String,
         url: String,
@@ -146,12 +110,6 @@ object Http {
         null
     }
 
-    /**
-     * [postString] without [CloudflareVerifier]: for the background decorating
-     * lookups (anime characters from AniList, see [com.hikari.app.data.AnimeCast])
-     * whose host must never be able to raise the Home screen's "verification
-     * needed" banner — that banner is about the user's own extensions.
-     */
     fun postStringQuiet(
         url: String,
         body: String,
@@ -235,14 +193,6 @@ object Http {
             Result.failure(e)
         }
 
-    /**
-     * The shared client with a longer per-read timeout, for the one kind of
-     * fetch that is genuinely big: a Mihon/Aniyomi repo index can be a 1.5 MB
-     * JSON file (keiyoushi's `index.json` is), and 30s per read is not always
-     * enough for that on a slow mobile connection. Built through `newBuilder()`
-     * so the connection pool, dispatcher and interceptors (Cloudflare handling,
-     * DoH) stay shared with every other request.
-     */
     private fun clientFor(readTimeoutSec: Long): OkHttpClient =
         if (readTimeoutSec <= 30) client
         else client.newBuilder().readTimeout(readTimeoutSec, TimeUnit.SECONDS).build()
@@ -302,24 +252,6 @@ object Http {
         return null
     }
 
-    /**
-     * [fetchBytesRobust] that a coroutine can actually STOP — the one every
-     * extension-install path should use.
-     *
-     * The install's own budget is 20 seconds (see ExtensionsScreen.runInstall),
-     * and the old shape was `withTimeoutOrNull(20_000) { fetchBytesRobust(…) }`:
-     * the timeout abandoned the WAIT, but the OkHttp call kept running on its IO
-     * thread to its own 30-second read timeout, for every install the user
-     * cancelled or that overran — a leaked download competing with the install
-     * that replaced it and with everything else the app was doing, which is felt
-     * as the app going heavy for a while after an install. Here the call is
-     * enqueued and cancelled when the coroutine is, so a capped install really
-     * stops its download, and the between-attempt pause is a cancellable `delay`
-     * rather than a `Thread.sleep`.
-     *
-     * Same URL variants, same retry count, same "null means it did not come back"
-     * contract as [fetchBytesRobust].
-     */
     suspend fun fetchBytesCancellable(
         url: String,
         headers: Map<String, String> = emptyMap(),
@@ -336,12 +268,6 @@ object Http {
         return null
     }
 
-    /**
-     * [downloadBytes] that a coroutine can actually STOP, with the same
-     * per-attempt failure messages (see [describeFailure]). Used by the
-     * extension-install paths so the install's own time cap aborts the download
-     * instead of leaving it running behind a cancelled wait.
-     */
     suspend fun downloadBytesCancellable(
         url: String,
         headers: Map<String, String> = emptyMap(),
@@ -382,9 +308,6 @@ object Http {
         cont.invokeOnCancellation { runCatching { call.cancel() } }
         call.enqueue(object : Callback {
             override fun onFailure(c: Call, e: IOException) {
-                // A cancelled continuation must not be resumed as if it had
-                // completed — but the callback can fire after cancellation, so
-                // the resume is guarded and never allowed to escape.
                 runCatching { cont.resumeWith(Result.failure(e)) }
             }
 
@@ -406,21 +329,6 @@ object Http {
         })
     }
 
-    /**
-     * Downloads a whole file for an EXTENSION INSTALL, streaming it into memory
-     * with a per-read timeout and an overall call timeout that are both sized
-     * for a slow phone connection, and a FAILURE MESSAGE THAT SAYS WHICH failure
-     * it was.
-     *
-     * This exists because the old path (`fetchBytesRobust`'s `body.bytes()`
-     * behind a 30s read timeout) reported every failure the same way — "Download
-     * timed out — check your connection" — including the ones that were not
-     * timeouts at all: an index whose `apk` field is a bare file name resolved
-     * against the wrong repo root answers HTTP 404 in milliseconds, and the user
-     * was told to check their (perfectly fine) connection for it. The raw-GitHub
-     * ↔ jsDelivr mirror pair is tried as well, so an ISP block on one of them
-     * still installs.
-     */
     fun downloadBytes(
         url: String,
         headers: Map<String, String> = emptyMap(),
@@ -464,13 +372,6 @@ object Http {
         else -> "the host answered HTTP $code"
     }
 
-    /**
-     * Turns Google Drive share/download URLs into the direct-download form that
-     * serves raw file bytes (no virus-scan HTML page). Handles:
-     *   drive.google.com/uc?export=download&id=X
-     *   drive.google.com/open?id=X
-     *   drive.google.com/file/d/<id>/view
-     */
     fun normalizeDriveUrl(url: String): String {
         val u = url.trim().trim('"', '\'')
         if (u.isBlank()) return u

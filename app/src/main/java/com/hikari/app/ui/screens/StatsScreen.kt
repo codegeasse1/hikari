@@ -65,26 +65,6 @@ private const val PANEL_TIME = "time"
 private const val PANEL_ITEMS = "items"
 private const val PANEL_DAYS = "days"
 
-/**
- * The Stats page: what the user watched and read, and for how long.
- *
- * It is one screen with two doors — the Stats tab (off by default, switched on
- * in Settings → Taskbar buttons) and the Stats row on the Settings index. Both
- * render this composable; [onBack] is what tells them apart, so the header is a
- * page header with a back button when Settings opened it and a plain title when
- * the tab did.
- *
- * Everything on it comes from [WatchStats], which the player and the manga
- * reader write to as they go (see AppStore.recordWatchSeconds and friends). The
- * page itself computes nothing it does not have to: the rank ladder, the
- * streaks, the daily averages and the heatmap are all derived in one pass from
- * the decoded document.
- *
- * Every title ROW (and the favourite-title card) is a door back to the title
- * itself: [onOpenTitle] gets the row and the caller turns it into a route (see
- * [com.hikari.app.ui.navigation.Routes.fromStatsKey]). Null leaves the rows as
- * plain text, which is what a host that cannot navigate passes.
- */
 @Composable
 fun StatsScreen(
     app: HikariApp,
@@ -106,14 +86,6 @@ fun StatsScreen(
     var dayChosen by remember(today) { mutableStateOf(false) }
     // Which drill-down panel is open under the headline figures (null = closed).
     var openPanel by remember { mutableStateOf<String?>(null) }
-    // The day the headline figures and their sheets drill into.
-    //
-    // Today is the DEFAULT selection, and while it is only the default, "today
-    // so far" and "all time" are the same question for a log this young — so the
-    // figures start unscoped. Once a day is picked on purpose it scopes them,
-    // today included: tapping today's square and then "Time spent" means "what
-    // did I watch today", and a list that answered with the whole log instead
-    // would be answering a question nobody asked.
     val scopeDay = if (dayChosen) pickedDay else null
     val scopeTitles = remember(snapshot, scopeDay) {
         if (scopeDay == null) snapshot.allTitles else snapshot.titlesOn(scopeDay)
@@ -176,13 +148,6 @@ fun StatsScreen(
             }
         }
 
-        // ---- The three headline figures ----
-        //
-        // Each is a DOOR: tapping one opens the list behind the number — what was
-        // watched and for how long, which items were consumed, which days were
-        // active. Whichever day the heatmap has picked scopes the first two, so
-        // "tap the 19th, then tap Time spent" answers "what did I watch on the
-        // 19th" instead of repeating the all-time figure.
         item {
             Row(
                 Modifier.fillMaxWidth(),
@@ -238,10 +203,6 @@ fun StatsScreen(
                     onPickDay = { day ->
                         pickedDay = day
                         dayChosen = true
-                        // Tapping a day in the "Days active" list asks the
-                        // question the list implies — "what was that day?" — so
-                        // the sheet turns into that day's own item list instead
-                        // of leaving the reader to find the right tile again.
                         if (open == PANEL_DAYS) openPanel = PANEL_ITEMS
                     },
                     emptyText = if (scopeDay != null) {
@@ -319,9 +280,6 @@ fun StatsScreen(
                         )
                     }
                     Spacer(Modifier.height(6.dp))
-                    // The bar is drawn rather than using LinearProgressIndicator:
-                    // a determinate Material bar animates its own track colour
-                    // and gap, and this one has to sit inside a glass card.
                     Box(
                         Modifier
                             .fillMaxWidth()
@@ -521,11 +479,6 @@ fun StatsScreen(
                         }
                     }
                     Spacer(Modifier.height(10.dp))
-                    // What the picked square actually contains: the date, the
-                    // day's own figures, and the titles that made them up. Every
-                    // day answers for itself — the whole page used to read out the
-                    // same number whichever day was tapped, because a day's
-                    // bucket held a time and nothing else.
                     val dayTitles = remember(snapshot, pickedDay) { snapshot.titlesOn(pickedDay) }
                     Text(
                         WatchStats.prettyDay(pickedDay),
@@ -687,15 +640,6 @@ private fun rowDetail(t: WatchStats.TitleTotal): String {
     return parts.joinToString(" · ")
 }
 
-/**
- * One title inside a drill-down: poster, name, what it is and what was taken
- * from it, and the time it accounts for.
- *
- * Tapping it opens that title (see [StatsScreen]'s `onOpenTitle`), which is what
- * "1m — The End of Oak Street" is really saying: the row is a record of ONE
- * title, so the row IS the way back to it. [onClick] is null when the host
- * cannot navigate, and then the row is plain text with no chevron.
- */
 @Composable
 private fun StatsTitleRow(t: WatchStats.TitleTotal, onClick: (() -> Unit)? = null) {
     Row(
@@ -755,13 +699,6 @@ private fun StatsTitleRow(t: WatchStats.TitleTotal, onClick: (() -> Unit)? = nul
     }
 }
 
-/**
- * The sheet that opens under the headline figures when one of them is tapped:
- * every title that made the figure up, or every active day, with the day the
- * heatmap has picked scoping the first two. It renders IN the page rather than
- * on a second screen, so the figure that opened it stays on screen (tapping it
- * again closes the sheet) and a day can be picked from inside it.
- */
 @Composable
 private fun PanelCard(
     title: String,

@@ -8,17 +8,6 @@ import org.json.JSONObject
 import java.net.URLEncoder
 import java.util.concurrent.ConcurrentHashMap
 
-/**
- * Manga metadata with no login: keyless AniList manga records for every
- * title, plus PornHwaDB for adult titles when the user pasted their own
- * free key (Settings → Integrations → Metadata sources).
- *
- * External metadata WINS: AniList/PornHwaDB blurbs, genres, covers and
- * scores replace the provider's own row, whose text is only the fallback
- * when neither source knows the title. A candidate that cannot score 55+
- * against the known spellings never paints the row. The key is never
- * logged, only sent to pornhwadb.com in the `X-API-Key` header.
- */
 object MangaMetadataRepository {
     /** Where the user fetches their own free key (opened from Settings). */
     const val GET_KEY_URL = "https://pornhwadb.com/profile?tab=settings&section=developer"
@@ -81,12 +70,6 @@ object MangaMetadataRepository {
         return t == "null" || t == "undefined" || t == "none"
     }
 
-    /**
-     * The external record for [fallbackTitle] (AniList, plus PornHwaDB for
-     * adult/unmatched titles when its key is set), or null when neither
-     * source knows it. Cached per title per day. Run this alongside the
-     * provider fetch (see the detail screen) so it costs no extra wait.
-     */
     suspend fun fetchExternal(app: HikariApp, fallbackTitle: String): MangaMeta? {
         val title = fallbackTitle.trim()
         if (title.isBlank()) return null
@@ -95,18 +78,11 @@ object MangaMetadataRepository {
         val wantPwdb = runCatching { store.adultManhwa() }.getOrDefault(false)
         if (!wantAnilist && !wantPwdb) return null
         val pwdbKey = if (wantPwdb) runCatching { store.pornhwaApiKey() }.getOrDefault("").trim() else ""
-        // The key state rides in the cache key: saving a key later must not
-        // serve the keyless answer (and clearing it must not serve the
-        // keyed one).
         val ck = (if (pwdbKey.isNotEmpty()) "P:" else "A:") + title.lowercase()
         cache[ck]?.let { if (System.currentTimeMillis() - it.at < TTL_MS) return it.meta }
         val anilist = if (wantAnilist) {
             runCatching { withContext(Dispatchers.IO) { fetchAnilistManga(title) } }.getOrNull()
         } else null
-        // PornHwaDB is the adult-title source: it runs when AniList calls
-        // the title adult or has no record of it at all — never for a
-        // mainstream title AniList already covers, so everyday manga cost
-        // one keyless lookup, not two.
         val pwdb = if (pwdbKey.isNotEmpty() && (anilist == null || anilist.isAdult)) {
             runCatching { withContext(Dispatchers.IO) { fetchPwdb(title, pwdbKey) } }.getOrNull()
         } else null
@@ -129,11 +105,6 @@ object MangaMetadataRepository {
         return merged
     }
 
-    /**
-     * The detail page's row: the external record wins wherever it has
-     * something, the provider's row is only the fallback per field. Null
-     * [ext] returns [base] untouched.
-     */
     fun mergeExternalFirst(base: MediaItem, ext: MangaMeta?): MediaItem {
         if (ext == null) return base
         val desc = ext.description?.takeIf { it.isNotBlank() }
@@ -225,11 +196,6 @@ object MangaMetadataRepository {
         return MangaMeta(desc, tags, cover, rating, "PornHwaDB", true, 0, bestSlug)
     }
 
-    /**
-     * The row of circular portraits under the genres: AniList characters for
-     * every resolved title, PornHwaDB characters for adult titles with a key.
-     * Empty when neither source knows the title — the section then stays hidden.
-     */
     suspend fun fetchCharacters(app: HikariApp, fallbackTitle: String): List<MangaCharacter> =
         withContext(Dispatchers.IO) {
             val key = fallbackTitle.trim().lowercase()
@@ -391,13 +357,6 @@ object MangaMetadataRepository {
         return out
     }
 
-    /**
-     * External chapter subtitles by chapter number: PornHwaDB scene
-     * descriptions keyed by their starting chapter. AniList publishes no
-     * per-chapter titles for manga, so it contributes nothing here — the
-     * extension's own rows stand wherever this map has no entry, which is
-     * why the list still paints instantly.
-     */
     suspend fun fetchChapterHints(app: HikariApp, fallbackTitle: String): Map<Int, String> =
         withContext(Dispatchers.IO) {
             val key = fallbackTitle.trim().lowercase()
@@ -428,12 +387,6 @@ object MangaMetadataRepository {
             out
         }
 
-    /**
-     * Posts a forum thread about this title to AniList — the Comments tab's
-     * "write" path. Needs the title resolved on AniList AND the user signed
-     * in to AniList (Settings → Trackers); otherwise the Result carries the
-     * sentence the dialog shows. Returns the new thread id on success.
-     */
     suspend fun postThread(
         app: HikariApp,
         fallbackTitle: String,

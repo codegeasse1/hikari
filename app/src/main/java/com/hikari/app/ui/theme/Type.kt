@@ -48,20 +48,6 @@ val Typography = Typography(    headlineLarge = TextStyle(
     ),
 )
 
-/**
- * The same type scale with every style's family swapped for [family].
- *
- * This is how the app-wide font (Settings → Appearance & Theme → App font) reaches the
- * whole Compose UI: [com.hikari.app.ui.theme.HikariTheme] hands the result to
- * `MaterialTheme`, so every `MaterialTheme.typography.*` look-up — i.e. nearly
- * every Text in the app — already carries the user's choice. A null [family]
- * returns the stock scale untouched, which is what "System default" means.
- *
- * ALL fifteen styles are rebuilt, not only the seven this file customises:
- * a partially-constructed `Typography` leaves the styles it does not mention at
- * the Material defaults, and those use the platform font — a table header or a
- * snackbar would then keep the old face while everything around it changed.
- */
 fun typographyWith(family: FontFamily?): Typography {
     if (family == null) return Typography
     return Typography(

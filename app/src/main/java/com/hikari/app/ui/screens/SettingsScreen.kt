@@ -249,19 +249,6 @@ private fun SettingsDivider() {
     )
 }
 
-/**
- * One category of settings. The Settings tab is a short INDEX of these folders
- * instead of one long scroll of every switch the app owns, so it stays readable
- * no matter how many options get added; opening a folder shows only what
- * belongs to it. A folder may itself contain folders (see [parent]) — the two
- * busiest ones do, because "Appearance & Theme" and "App Layout" had each grown into a
- * long page of unrelated switches.
- *
- * The split: Appearance & Theme is what the app *is* and *wears* — language,
- * theme, metadata language, accent colour, launcher icon, font. Everything about
- * how a page is laid out and how much room the interface takes — interface
- * scale, posters, ratings, the taskbar, full screen — lives under App Layout.
- */
 private enum class SettingsFolder(
     /** Stable id. Also what a sub-folder names as its [parent]. */
     val key: String,
@@ -288,20 +275,12 @@ private enum class SettingsFolder(
         "UI scale, posters, ratings, taskbar & full screen",
         Icons.Filled.Dashboard,
     ),
-    // The one switch to reach for when the app stutters. Its own folder rather
-    // than a corner of App Layout: the user looking for it is not browsing how
-    // the app LOOKS, they are trying to make it run — and it must be findable
-    // while the app is being annoying to use.
     PERFORMANCE(
         "performance",
         "Performance",
         "Fix lag, stutter & battery drain",
         Icons.Filled.Speed,
     ),
-    // The television half of "one APK, two layouts" (see com.hikari.app.tv.TvMode).
-    // Offered on both kinds of device on purpose: a phone user can switch the TV
-    // layout on to see it, and a television whose box reports itself as a phone
-    // can switch it on from here — which is the whole reason the folder exists.
     TV(
         "tv",
         "TV & Remote",
@@ -321,12 +300,6 @@ private enum class SettingsFolder(
         "Controls, video enhancement & loading screen",
         Icons.Filled.PlayArrow,
     ),
-    // Where a title's SERVERS come from — the other half of "playing a video",
-    // kept apart from the Player folder (which is about the controls and the
-    // look of the player itself). This is the CloudStream-shaped question: do a
-    // lookup's servers come from the extension you opened the title from, or
-    // from every extension you have installed? It also carries the playback
-    // start choice, so "what plays and when" is one folder.
     PLAYBACK_SERVERS(
         "servers",
         "Playback & Servers",
@@ -345,11 +318,6 @@ private enum class SettingsFolder(
         "Installed extensions, userscripts & verification",
         Icons.Filled.Extension,
     ),
-    // What the app is willing to SHOW, as opposed to what it can reach: the
-    // adult-content switch lives here (see NsfwGate). Its own folder rather than
-    // a corner of Sources & Extensions, because the switch hides both titles and
-    // extensions and a user looking for it thinks of it as "content", not as an
-    // extension they installed.
     CONTENT(
         "content",
         "Content & Filters",
@@ -362,10 +330,6 @@ private enum class SettingsFolder(
         "Offline copies & parallel saves",
         Icons.Filled.Download,
     ),
-    // Your watch progress on somebody else's list — AniList, MyAnimeList,
-    // Kitsu, Simkl, Shikimori, Trakt (see [TrackerKind]). Its own folder rather
-    // than a corner of Playback: the user looking for it is thinking about the
-    // account they keep elsewhere, not about this app's player.
     TRACKERS(
         "trackers",
         "Trackers",
@@ -399,9 +363,6 @@ private enum class SettingsFolder(
         Icons.Filled.AutoAwesome,
         parent = "integrations",
     ),    // The user's own catalogs (Collections) live here rather than under
-    // Appearance & Theme: they are something the user CREATES and manages — like the
-    // extensions they install — not a way the app looks, and a folder of their
-    // own is where they go looking for it.
     CATALOG(
         "catalog",
         "Personal Catalog creator",
@@ -432,11 +393,6 @@ private enum class SettingsFolder(
         "Version, links & roadmap",
         Icons.Filled.Info,
     ),
-    // The one irreversible action in Settings, in a folder of its own. It used
-    // to be a red text link at the very foot of the index — easy to hit by
-    // accident while scrolling, impossible to explain, and it acted the instant
-    // it was tapped. A folder gives it a page that says what "everything"
-    // means, and the button there asks first (see ClearDataCard).
     CLEAR_DATA(
         "clear-data",
         "Clear App data",
@@ -466,10 +422,6 @@ private enum class SettingsFolder(
         "Your home-screen icon",
         Icons.Filled.Android,
         parent = "appearance",
-        // Offered on television too: the TV launcher entry is its own
-        // always-enabled alias (com.hikari.app.tv.Launcher, with the banner)
-        // that the icon switcher never touches, so picking a phone icon can
-        // neither hide Hikari from the TV home screen nor change its banner.
     ),
     LAYOUT_POSTER(
         "layout.poster",
@@ -511,28 +463,8 @@ private fun SettingsCard(
     )
 }
 
-/**
- * Which cards are currently unfolded, keyed by the card's own id (see
- * [SettingsSection]).
- *
- * Deliberately a file-level map rather than per-card `remember`: folder pages
- * clear it on every entry and exit (see [SettingsScreen]), so a page always
- * opens folded — tap a heading to unfold it, and it is folded again the next
- * time the page is opened — while an unfolded card keeps its state while the
- * user scrolls the page it is on.
- */
 private val openSettingsSections = mutableStateMapOf<String, Boolean>()
 
-/**
- * A card that holds more than one setting.
- *
- * Folder pages used to be a wall of always-open switches. A card with two or
- * more controls now reads as a single heading — icon, name, and a one-line
- * summary of what it is set to — and unfolds in place when tapped; the summary
- * answers "what is this set to?" without opening anything. Cards with one
- * control are not sections: there is nothing to fold, so they stay plain
- * [SettingsCard]s.
- */
 @Composable
 private fun SettingsSection(
     id: String,
@@ -685,10 +617,6 @@ fun SettingsScreen(nav: NavHostController) {
     val context = LocalContext.current
     val app = context.applicationContext as HikariApp
     val scope = rememberCoroutineScope()
-    // Which layout this device is drawing (see com.hikari.app.tv.TvMode). It
-    // decides which cards are offered at all: the taskbar, the launcher icon and
-    // "full screen app mode" are phone things, and a television gets its own
-    // folder instead.
     val isTv = TvMode.current()
 
     var themeMenuOpen by remember { mutableStateOf(false) }
@@ -700,9 +628,6 @@ fun SettingsScreen(nav: NavHostController) {
     val searchHits = remember(settingsQuery) {
         if (settingsQuery.isBlank()) emptyList() else searchSettings(settingsQuery)
     }
-    // A sub-folder inside [openFolder] (Appearance & Theme → App icon, App Layout →
-    // Poster styling…). Two levels is the whole tree, so two slots is enough and
-    // back always has an obvious target.
     var openSub by remember { mutableStateOf<SettingsFolder?>(null) }
     // Settings -> Customize -> Player UI style: its own full page (a live
     // preview + one editor per button). Gestures & decoder is a full page too.
@@ -714,9 +639,6 @@ fun SettingsScreen(nav: NavHostController) {
     // Settings → Profiles: its own page, like Logs and Pair — a list that is
     // created, renamed, deleted and switched between does not fit in a card.
     var showProfiles by remember { mutableStateOf(false) }
-    // Settings → Clear App data: the confirmation in front of the app's only
-    // irreversible action (see ClearDataCard and the dialog at the end of this
-    // composable).
     var showClearDataDialog by remember { mutableStateOf(false) }
 
     // Accent colours: the app accent repaints this whole screen live; the
@@ -724,9 +646,6 @@ fun SettingsScreen(nav: NavHostController) {
     // View-based player will use.
     val appAccentFlow = remember { app.store.appAccentFlow() }
     val appAccentKey by appAccentFlow.collectAsState(initial = HikariAccent.DEFAULT_APP.key)
-    // The chosen theme is persisted, so it must be read back from the store:
-    // starting from DARK made a saved AMOLED/Dark Glass/Light show as
-    // "Hikari Dark" until the user re-picked it in the same session.
     val themeFlow = remember { app.store.themeFlow() }
     val storedThemeKey by themeFlow.collectAsState(initial = HikariThemeMode.DEFAULT.key)
     var themeKey by remember { mutableStateOf(storedThemeKey) }
@@ -768,15 +687,6 @@ fun SettingsScreen(nav: NavHostController) {
     val profileList by Profiles.all.collectAsState()
     val profileActive by Profiles.activeId.collectAsState()
 
-    // System back steps out of whatever this screen has opened ON TOP of itself
-    // — a folder, a sub-folder, or one of the full pages (Player controls, Logs,
-    // Stats, Pair & sync, Profiles) — instead of popping the whole Settings
-    // destination and landing on Home. The order below is the order those pages
-    // are drawn in, below, so back always undoes the LAST step: the reported
-    // "Settings → Stats, back, and I am on Home" was this handler covering only
-    // the folders, which left every page to fall through to the navigation
-    // stack. A page opened from here is not a tab switch, so back must not treat
-    // it as one.
     BackHandler(
         enabled = openSub != null || (openFolder != null && !isTv) || showStats || showLogs ||
             showPair || showProfiles || showPlayerStyle || showPlayerGestures,
@@ -813,9 +723,6 @@ fun SettingsScreen(nav: NavHostController) {
         return
     }
 
-    // Stats is a full page as well, and the SAME composable the off-by-default
-    // Stats tab draws (Settings → Taskbar buttons switches that button on):
-    // one screen with two doors, so the two can never drift apart.
     if (showStats) {
         StatsScreen(
             app,
@@ -875,9 +782,6 @@ fun SettingsScreen(nav: NavHostController) {
     val tvTopFolders = remember(isTv) {
         SettingsFolder.entries.filter { it.parent == null && (!isTv || !it.phoneOnly) }
     }
-    // The folder page's own body, callable from either pane: the phone draws it
-    // in its one column, the television draws it in the right pane while the
-    // left pane holds the categories.
     val settingsListBody: LazyListScope.() -> Unit = {
         val folder = openFolder ?: if (isTv) tvTopFolders.firstOrNull() else null
         val sub = openSub
@@ -886,9 +790,6 @@ fun SettingsScreen(nav: NavHostController) {
                 FolderHeader(
                     folder = sub ?: folder,
                     parentTitle = if (sub != null) folder.title else null,
-                    // Television navigates with the left pane, so the header
-                    // back steps out of a sub-folder — and out of Settings
-                    // itself at the top level, instead of doing nothing.
                     onBack = { if (sub != null) openSub = null else if (!isTv) openFolder = null else nav.popBackStack() },
                 )
             }
@@ -903,18 +804,12 @@ fun SettingsScreen(nav: NavHostController) {
                     item { SettingsCard { TvPlayerPanelsCard(app) } }
                     item { SettingsCard { VolumeBoostCard(app) } }
                     item { SettingsCard { SubtitlesDefaultCard(app) } }
-                    // "When playback starts" lives in Playback & Servers, once:
-                    // the same card in two folders only made the user wonder
-                    // which one was in charge. The player folder is the controls.
                     item { SettingsCard { LoadingBannerCard(app) } }
                 }
                 SettingsFolder.PLAYBACK_SERVERS -> {
                     item { SettingsCard(top = 2.dp) { ServerSearchCard(app) } }
                     item { SettingsCard { TrackerServerSearchCard(app) } }
                     item { SettingsCard { ServerTimeoutCard(app) } }
-                    // "When playback starts" (play the first server / wait for more)
-                    // lives here — it is a decision about SERVERS — and only here:
-                    // the same card used to show up in the Player folder too.
                     item { SettingsCard { PlaybackStartCard(app) } }
                     item { SettingsCard { ServerLayoutCard(app) } }
                 }
@@ -935,11 +830,6 @@ fun SettingsScreen(nav: NavHostController) {
                         }
                     }
                     item { SettingsCard { UserscriptsCard(app) } }
-                    // Whether EXTENSIONS may open their own Cloudflare
-                    // verification page belongs with the extensions, not with the
-                    // WebView's ad/redirect rules: it is a decision about what an
-                    // extension is allowed to do, and that is the folder a user
-                    // opens to look for it.
                     item { SettingsCard { ExtensionVerifyCard(app) } }
                 }
                 SettingsFolder.CONTENT -> {
@@ -1006,9 +896,6 @@ fun SettingsScreen(nav: NavHostController) {
                                     },
                                     modifier = Modifier.clickable { themeMenuOpen = true }
                                 )
-                                // A glass page of themes rather than a Material
-                                // dropdown, so picking one looks like picking a
-                                // language, a font or a DNS resolver.
                                 if (themeMenuOpen) {
                                     ChoiceDialog(
                                         title = tr("Theme"),
@@ -1026,14 +913,6 @@ fun SettingsScreen(nav: NavHostController) {
                             }
                         }
                     }
-                    // The things the app wears. Each is several choices wide (a
-                    // wall of accent swatches, a dozen icon aliases, a stack of
-                    // fonts), so they get their own pages instead of turning
-                    // Appearance into a long scroll past everything else.
-                    //
-                    // (The "In-app UI scale" card lives under App Layout now:
-                    // it changes how much ROOM the interface takes, which is
-                    // layout, not decoration — see SettingsFolder.APP_LAYOUT.)
                     SettingsFolder.entries
                         .filter { it.parent == SettingsFolder.APPEARANCE.key }
                         .filter { !isTv || !it.phoneOnly }
@@ -1078,17 +957,7 @@ fun SettingsScreen(nav: NavHostController) {
                     item { SettingsCard { HeroBannerCard(app) } }
                     item { SettingsCard { DetailHeaderCard(app) } }
                     item { SettingsCard { ContinueWatchingCard(app, hideContinue, scope) } }
-                    // Animated covers (a personal catalog's GIF folder tiles).
-                    // Per-device on purpose: the same imported file goes to a
-                    // phone that renders a row of GIFs happily and to a TV stick
-                    // that would rather not spend its frames on them.
                     item { SettingsCard { GifAnimCard(app) } }
-                    // The one switch that turns every explanation line in the
-                    // app off — the caption under a row, a sheet's note, a
-                    // dialog's paragraph (see LocalHideHelp). It lives here,
-                    // with the other "how the app is arranged" settings,
-                    // because that is what it changes: how much text is on a
-                    // page, not what the page does.
                     item { SettingsCard { HideHelpCard(app) } }
                     SettingsFolder.entries
                         .filter { it.parent == SettingsFolder.APP_LAYOUT.key }
@@ -1102,10 +971,6 @@ fun SettingsScreen(nav: NavHostController) {
                                 )
                             }
                         }
-                    // "Turn off full screen app mode" is a phone setting: a
-                    // television is always immersive (there is no status bar to
-                    // read and no navigation bar to reach), so the card is not
-                    // offered there — see MainActivity.applyImmersiveMode.
                     if (!isTv) {
                         item { SettingsCard { FullscreenCard(app) } }
                     }
@@ -1361,10 +1226,6 @@ fun SettingsScreen(nav: NavHostController) {
                     item { SettingsCard { RoadmapCard() } }
                     item { SettingsCard { AboutCard() } }
                 }
-                // Deleting the app's data lives here, and only here. The card
-                // spells out what goes, the note under it says it cannot be
-                // undone, and the button opens a confirmation — the tap itself
-                // deletes nothing.
                 SettingsFolder.CLEAR_DATA -> {
                     item { SettingsCard(top = 2.dp) { ClearDataCard(onClear = { showClearDataDialog = true }) } }
                 }
@@ -1397,9 +1258,6 @@ fun SettingsScreen(nav: NavHostController) {
                 }
             }
             if (settingsQuery.isBlank()) {
-            // Only the top-level folders: a sub-folder is reached from inside its
-            // parent, not from the index. On a television the phone-only ones
-            // (the taskbar, the launcher icon aliases) are left out entirely.
             SettingsFolder.entries
                 .filter { it.parent == null && (!isTv || !it.phoneOnly) }
                 .forEach { target ->
@@ -1454,10 +1312,6 @@ fun SettingsScreen(nav: NavHostController) {
                     }
                 }
             }
-            // Stats: a page rather than a folder (it is one screen, like Logs),
-            // and the same page the off-by-default Stats tab draws. It sits on
-            // the index as well as in the taskbar settings so it is reachable
-            // whether or not the user ever switches that button on.
             item {
                 SettingsCard(top = 12.dp) {
                     ListItem(
@@ -1479,10 +1333,6 @@ fun SettingsScreen(nav: NavHostController) {
                     )
                 }
             }
-            // Profiles: more than one Hikari on this device — a page of its own
-            // (see ProfilesScreen). On the index rather than inside a folder
-            // because it is about the WHOLE setup: what a profile is, is
-            // everything the other folders configure.
             item {
                 SettingsCard(top = 12.dp) {
                     ListItem(
@@ -1625,9 +1475,6 @@ fun SettingsScreen(nav: NavHostController) {
         )
     }
 
-    // The warning the folder's button opens. Nothing about clearing data is
-    // destructive until the confirm button here is tapped, so this dialog is
-    // the only place the wipe is called from.
     if (showClearDataDialog) {
         AlertDialog(
             onDismissRequest = { showClearDataDialog = false },
@@ -1658,16 +1505,6 @@ fun SettingsScreen(nav: NavHostController) {
     }
 }
 
-/**
- * The folder page's own header: the folder's badge, then its name and one-line
- * summary, on the same line as the back button — so a folder starts with the
- * same "icon, then what it is called" shape as the row that opened it.
- *
- * The layout, the one size every settings page's name is drawn at, and the
- * reason for it all live in [SettingsPageHeader]; this is only the folder-shaped
- * caller of it. [parentTitle] is set when a sub-folder is open, and is printed as
- * a breadcrumb ("Appearance ›") on the line above the badge row.
- */
 @Composable
 private fun FolderHeader(
     folder: SettingsFolder,
@@ -1785,12 +1622,6 @@ private fun TvLeftRow(icon: ImageVector, title: String, onClick: () -> Unit) {
     }
 }
 
-/**
- * The door to the Extensions tab, put in the folder where the user asks "where
- * do I add extensions?". This folder explains how sources are found; the
- * installing/browsing itself lives on the Extensions tab, so this card hands
- * the user over to it instead of describing it from a distance.
- */
 @Composable
 private fun ExtensionsShortcutCard(installed: Int, onOpen: () -> Unit) {
     GlassCard(
@@ -1880,17 +1711,6 @@ private fun ContinueWatchingCard(
     }
 }
 
-/**
- * Animated covers on tiles.
- *
- * A personal catalog's folder tile can wear a GIF (see [CoverKinds.GIF]), and
- * the reference app pairs that with two switches: the catalog's own "show GIF
- * when configured", and a per-device override. This is the device half — a
- * television stick that drops frames while a wall of GIFs animates can turn them
- * still without editing what it imported, and a folder whose own "always
- * animate" is on still animates either way (see
- * [com.hikari.app.data.AppStore.gifAnimFlow]).
- */
 @Composable
 private fun GifAnimCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
@@ -1929,18 +1749,6 @@ private fun GifAnimCard(app: HikariApp) {
     }
 }
 
-/**
- * The one switch for every EXPLANATION line in the app (Settings → App Layout).
- *
- * OFF hides them everywhere at once — the caption under a settings row, a
- * sheet's note, a dialog's paragraph, the line under a folder's name — through
- * [LocalHideHelp], which the app provides at its root and each caption reads
- * where it draws. What is left is the same pages with only the titles, the
- * controls and the values on them, which is what a user who already knows the
- * app wants: the paragraphs are what makes a settings page a long scroll.
- *
- * ON is the default and the app as it always was.
- */
 @Composable
 private fun HideHelpCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
@@ -1980,21 +1788,6 @@ private fun HideHelpCard(app: HikariApp) {
     }
 }
 
-/**
- * The adult-content switch (Settings → Content & Filters).
- *
- * ON is the default and the app as it has always been. OFF is a single rule the
- * whole app reads at draw time ([com.hikari.app.data.NsfwGate]) plus the provider
- * list ([com.hikari.app.providers.ProviderManager]): adult and
- * R-rated titles leave every catalogue, shelf, grid, search result and
- * collection, and 18+-tagged extensions stop being listed — installed ones stop
- * being used at all, and store listings stop offering them.
- *
- * The caption says what OFF does rather than what the switch is called, because
- * this is the one setting whose name ("NSFW") is understood differently by
- * different users: what matters is that nothing adult is reachable while it is
- * off, and that nothing was deleted while it was on.
- */
 @Composable
 private fun AdultContentCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
@@ -2081,16 +1874,6 @@ private fun AboutCard() {
     }
 }
 
-/**
- * Settings → Clear App data: the app's only irreversible action, on a page of
- * its own.
- *
- * It used to be a bare red text link at the foot of the settings index, which
- * gave the user no warning at all — one stray tap while scrolling and
- * everything was gone. Here the card says what "everything" means, the note
- * says it cannot be undone, and the button does not delete anything itself: it
- * asks first ([onClear] opens the confirmation dialog).
- */
 @Composable
 private fun ClearDataCard(onClear: () -> Unit) {
     Column(Modifier.padding(16.dp)) {
@@ -2197,9 +1980,6 @@ private fun DownloadSettingsCard(app: HikariApp) {
                 scope.launch {
                     app.store.setDownloadConcurrency(n)
                     DownloadsRepository.setMaxConcurrent(n)
-                    // Wake the queue so raising the limit immediately starts
-                    // the extra downloads, instead of waiting for the next
-                    // enqueue/resume to restart the service.
                     if (DownloadsRepository.snapshot().any { it.status == DownloadStatus.QUEUED }) {
                         DownloadService.start(context)
                     }
@@ -2219,9 +1999,6 @@ private fun DownloadSettingsCard(app: HikariApp) {
                 inactiveTickColor = Color.Transparent,
             ),
             modifier = Modifier.fillMaxWidth().tvAdjust { delta ->
-                // One step per press of the D-pad, run through the SAME commit
-                // the drag's release runs (see onValueChangeFinished above), so a
-                // remote really changes the setting. See [Modifier.tvAdjust].
                 value = (value.roundToInt() + delta).coerceIn(1, 10).toFloat()
                 commitConcurrency()
             }
@@ -2326,9 +2103,6 @@ private fun UiScaleCard(app: HikariApp) {
             Slider(
                 value = slider,
                 onValueChange = { v ->
-                    // 1%-steps, not 10%: the whole point of this slider is to sit
-                    // between two sizes ("…101%, 102%…"), and a 10%-step slider
-                    // could not land there at all.
                     slider = (v * 100f).roundToInt().coerceIn(70, 130) / 100f
                 },
                 onValueChangeFinished = commitScale,
@@ -2343,9 +2117,6 @@ private fun UiScaleCard(app: HikariApp) {
                     inactiveTickColor = Color.Transparent,
                 ),
                 modifier = Modifier.fillMaxWidth().tvAdjust { delta ->
-                // One step per press of the D-pad, run through the SAME commit
-                // the drag's release runs (see onValueChangeFinished above), so a
-                // remote really changes the setting. See [Modifier.tvAdjust].
                 slider = ((slider * 100f).roundToInt() + delta).coerceIn(70, 130) / 100f
                 commitScale()
             }
@@ -2374,17 +2145,6 @@ private fun UiScaleCard(app: HikariApp) {
     }
 }
 
-/**
- * The floating bottom bar, one switch per tab (the list is [BottomTabs], i.e.
- * the same list the bar itself draws).
- *
- * Hiding a tab only hides its *button* — the screen stays reachable from inside
- * the app (Home's search icon, a Continue Watching row, a download button …),
- * so nobody can lock themselves out of History or Downloads by tidying the bar.
- * The one hard rule is that the bar never becomes empty: the last visible tab
- * cannot be switched off. If that last tab is Settings, a gear appears in
- * Home's top bar so this screen stays reachable.
- */
 @Composable
 private fun TaskbarCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
@@ -2394,18 +2154,11 @@ private fun TaskbarCard(app: HikariApp) {
     // (see AppStore.iptvTabFlow) — every other tab is on unless switched off.
     val iptvFlow = remember { app.store.iptvTabFlow() }
     val iptvTab by iptvFlow.collectAsState(initial = false)
-    // Manga is the other way round: its button is ON by default (see
-    // AppStore.mangaTabFlow), so the reading half of the app is reachable
-    // without hunting through settings, and a user who does not read comics
-    // switches it off here.
     val mangaFlow = remember { app.store.mangaTabFlow() }
     val mangaTab by mangaFlow.collectAsState(initial = true)
     // Stats is the third off-by-default button (see AppStore.statsTabFlow).
     val statsFlow = remember { app.store.statsTabFlow() }
     val statsTab by statsFlow.collectAsState(initial = false)
-    // Telegram is ON by default (AppStore.telegramTabFlow), like Manga: the
-    // videos on the public Telegram channels the user added are a page of their
-    // own, one tap from a fresh install.
     val telegramFlow = remember { app.store.telegramTabFlow() }
     val telegramTab by telegramFlow.collectAsState(initial = true)
     fun shown(tab: BottomTab): Boolean = when (tab.route) {
@@ -2415,10 +2168,6 @@ private fun TaskbarCard(app: HikariApp) {
         Routes.TELEGRAM -> telegramTab
         else -> tab.route !in hidden
     }
-    // The tabs that obey "the last one cannot be switched off" rule. IPTV,
-    // Manga, Stats and Telegram are not among them: they are extra pages, so
-    // switching any of them on or off can never leave the user without a way
-    // around the app.
     val extras = setOf(Routes.IPTV, Routes.MANGA, Routes.STATS, Routes.TELEGRAM)
     val coreVisible = BottomTabs.filter { it.route !in extras && it.route !in hidden }
     val visibleCount = coreVisible.size + (if (iptvTab) 1 else 0) + (if (mangaTab) 1 else 0) +
@@ -2494,9 +2243,6 @@ private fun TaskbarCard(app: HikariApp) {
                         )
                     }
                     if (tab.route == Routes.LIBRARY) {
-                        // My Stuff is really THREE pages behind one button, so
-                        // its own sections get their own switches directly under
-                        // it — see MyStuffSections below.
                         Text(
                             tr("Its sections can be switched off individually below"),
                             style = MaterialTheme.typography.labelSmall,
@@ -2528,16 +2274,6 @@ private fun TaskbarCard(app: HikariApp) {
                     modifier = Modifier.tvToggle(isOn, tabEnabled, tabOn),
                 )
             }
-            // ---- My Stuff's own sections ----
-            //
-            // Drawn only while the My Stuff button itself is on: the switches
-            // below it configure a page the user cannot currently reach, and a
-            // row of them under a switched-off tab reads as a setting that does
-            // nothing. Every one of the three can be switched off, except the
-            // last one still on — the strip always keeps at least one pill
-            // (see MyStuffScreen, which also draws its section on screen even
-            // when it has been hidden, so a deep link can never land on a page
-            // with no way out).
             if (tab.route == Routes.LIBRARY && isOn) {
                 MyStuffSectionToggles(app)
             }
@@ -2572,11 +2308,6 @@ private fun MyStuffSectionToggles(app: HikariApp) {
             label = tr("Library"),
             supporting = tr("Titles you saved with the player's heart"),
             checked = libraryOn,
-            // A switch is only disabled while it would be the LAST one on: that
-            // is the case it must not be possible to turn off. It must NOT be
-            // disabled when it is already off — `libraryOn && onCount > 1` did
-            // exactly that, so the moment a section was switched off its switch
-            // went dead and could never be switched back on.
             enabled = !libraryOn || onCount > 1,
             onChange = { on -> scope.launch { runCatching { app.store.setMyStuffSection(com.hikari.app.data.MyStuffSection.LIBRARY, on) } } },
         )
@@ -2647,20 +2378,6 @@ private fun MyStuffSectionRow(
     }
 }
 
-/**
- * The app-wide font.
- *
- * One choice repaints every Compose screen at once (the theme's typography is
- * rebuilt around the chosen family — see [com.hikari.app.ui.theme.typographyWith])
- * and the View-based half of the app — the player, its dialogs, the built-in
- * browser — through [AppFonts.applyToViewTree], so the whole app speaks in one
- * typeface rather than just the parts written in Compose.
- *
- * The last entry is a font the user brings from their own storage. It is copied
- * into the app's private directory on import, which is why it keeps working
- * after the document picker's permission has expired — and why the player can
- * read it during its own Activity creation.
- */
 @Composable
 private fun FontCard(app: HikariApp) {
     val context = LocalContext.current
@@ -2750,14 +2467,6 @@ private fun FontCard(app: HikariApp) {
     }
 }
 
-/**
- * Poster & icon styling — the dynamic iOS-style blur that lifts a poster off
- * the page, the corner rounding, and whether the title/score are drawn at all.
- *
- * Every grid in the app renders through [com.hikari.app.ui.PosterArt] and reads
- * these values live, so what is set here is what the next frame shows — no
- * restart, and the same look on Home, Search, Library and a collection alike.
- */
 @Composable
 private fun PosterStyleCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
@@ -2779,9 +2488,6 @@ private fun PosterStyleCard(app: HikariApp) {
     val glass by glassFlow.collectAsState(initial = true)
     val effectsFlow = remember { app.store.posterEffectsFlow() }
     val effects by effectsFlow.collectAsState(initial = emptySet())
-    // The aura ring's own colour (Settings → App Layout → Poster styling →
-    // Aura ring colour): "Accent" follows the app accent, which is what the
-    // ring always drew, so an existing look is unchanged on update.
     val auraFlow = remember { app.store.posterAuraColorFlow() }
     val auraColor by auraFlow.collectAsState(initial = AuraColors.THEME)
     var effectPicker by remember { mutableStateOf(false) }
@@ -2806,11 +2512,6 @@ private fun PosterStyleCard(app: HikariApp) {
         summary = tr("Blur") + " " + (if (blur < 1) tr("off") else blur.toString()) +
             " · " + tr("Corners") + " " + corner,
     ) {
-        // The motion/decoration layer: static looks (a glow, a spotlight, a
-        // framed print, a 3D lean) and the animated ones (the light sweep, the
-        // breathing aura). Any combination of them can be on at once — several
-        // is how the reference look is actually built (a gallery frame WITH a
-        // sheen, a 3D lean WITH an aura ring).
         ChoiceRow(
             value = if (effectNames.isEmpty()) {
                 tr(PosterEffects.label(PosterEffects.NONE))
@@ -2828,20 +2529,12 @@ private fun PosterStyleCard(app: HikariApp) {
             leadingIcon = Icons.Filled.AutoAwesome,
             onClick = { effectPicker = true },
         )
-        // Which shape catalogue cards take, on this device and the other one:
-        // cinema 16:9 everywhere, vertical 2:3 everywhere, or the old split
-        // (cinema on TV, posters on phone).
         ChoiceRow(
             value = tr(PosterTypes.label(posterType)),
             supporting = tr(PosterTypes.description(posterType)),
             leadingIcon = Icons.Filled.AspectRatio,
             onClick = { typePicker = true },
         )
-        // The aura ring's own colour, offered only while that ring is on: a
-        // colour row for a ring that is not being drawn would be noise.
-        // The edge light's own controls, offered only while the light is one of
-        // the card's treatments — two sliders for a light that is not being
-        // drawn would be noise (see [PosterEffects.LIT], and [EdgeLightControls]).
         if (PosterEffects.LIT in effects) {
             val pointFlow = remember { app.store.posterGlowPointFlow() }
             val point by pointFlow.collectAsState(initial = 0.5f to 0.14f)
@@ -2912,10 +2605,6 @@ private fun PosterStyleCard(app: HikariApp) {
             checked = ratings,
             onCheckedChange = { on -> scope.launch { runCatching { app.store.setPosterShowRatings(on) } } },
         )
-        // The two tags in the poster's top-left corner. They stack downwards from
-        // that corner, so switching both on shows one above the other and
-        // switching one on shows it at the top — never "one of them down below"
-        // on some posters and at the top on others.
         SettingsToggle(
             label = tr("Movie / series tag on posters"),
             supporting = tr("A small FILM or SERIES tag in the poster's top-left corner"),
@@ -2931,9 +2620,6 @@ private fun PosterStyleCard(app: HikariApp) {
             checked = qualityBadge,
             onCheckedChange = { on -> scope.launch { runCatching { app.store.setPosterShowQuality(on) } } },
         )
-        // CloudStream-style Dub/Sub + latest-episode pills in the poster's
-        // top-center. They print only for series whose episodes the app has
-        // already seen — a title with no cached episode list shows nothing.
         SettingsToggle(
             label = tr("Dub / Sub + episode badges on posters"),
             supporting = tr("Latest dub/sub episode pills, like CloudStream"),
@@ -2984,20 +2670,6 @@ private fun PosterStyleCard(app: HikariApp) {
     }
 }
 
-/**
- * The poster edge light's two controls: a card the reader points AT to place the
- * light, and a strength slider (see [PosterEffects.LIT]).
- *
- * A card rather than a pair of X/Y sliders, because "where is the light" is one
- * question with an obvious gesture — pointing at the place — and a light placed
- * by reading two numbers is a light nobody places. The preview draws the real
- * thing: the same [com.hikari.app.ui.edgeLight] modifier every poster in the app
- * uses, over a stand-in card, so what is set here is what a grid shows.
- *
- * The point being dragged is held locally and written when the gesture ENDS. A
- * DataStore write per frame would fight the finger it is following, and the
- * preview has to move at the speed of the touch to be usable at all.
- */
 @Composable
 private fun EdgeLightControls(
     x: Float,
@@ -3012,9 +2684,6 @@ private fun EdgeLightControls(
     var pointX by remember { mutableStateOf(x) }
     var pointY by remember { mutableStateOf(y) }
     LaunchedEffect(x, y) {
-        // A write that lands while a finger is on the card is this gesture's own
-        // echo coming back, and snapping the dot to it mid-drag is the dot
-        // fighting the hand.
         if (!dragging) {
             pointX = x
             pointY = y
@@ -3026,9 +2695,6 @@ private fun EdgeLightControls(
                 .width(78.dp)
                 .aspectRatio(2f / 3f)
                 .clip(RoundedCornerShape(10.dp))
-                // A stand-in for a poster: dark, with a little vertical
-                // structure so a light placed on it is obviously reaching the
-                // top of the card or the bottom.
                 .background(
                     Brush.verticalGradient(listOf(Color(0xFF414B5E), Color(0xFF141922)))
                 )
@@ -3063,9 +2729,6 @@ private fun EdgeLightControls(
                     )
                 }
         ) {
-            // The light itself: the dot the reader drags. Offset by the same
-            // fractions the effect draws with, so the dot IS where the light is
-            // rather than near it.
             Box(
                 Modifier
                     .offset(
@@ -3108,18 +2771,6 @@ private fun EdgeLightControls(
 // the television layout can be seen (and checked) without a television, and how
 // a box that reports itself wrongly can be corrected.
 
-/**
- * Which of the two layouts this install draws.
- *
- * "Automatic" is the shipped behaviour and the right answer for almost
- * everybody: the layout is chosen from the device itself (see
- * [com.hikari.app.tv.TvMode] — the Android TV/Leanback features, a Fire TV
- * marker, or simply the absence of a touchscreen). The two explicit choices are
- * the escape hatch, and they exist because device detection is a set of
- * heuristics: an unusual Android box can report none of the television signals
- * and would then be handed a taskbar no remote can press, and a phone with a
- * desktop-mode dock could claim to be one.
- */
 @Composable
 private fun TvDeviceCard(app: HikariApp) {
     val modeFlow = remember { app.store.tvModeFlow() }
@@ -3167,13 +2818,6 @@ private fun TvDeviceCard(app: HikariApp) {
                 selectedKey = mode,
                 onPick = { pick ->
                     menuOpen = false
-                    // 135 behavior: the store is the single source of truth and
-                    // the UI follows its emission. The ONE difference from 135
-                    // is the scope: 135 wrote in the card's own scope, so
-                    // leaving this folder in the same second cancelled the
-                    // write mid-flight ("applied for now but NOT saved" on
-                    // every fast tap). The app scope outlives the screen, so
-                    // the write always lands — no toast, no revert.
                     app.appScope.launch {
                         val ok = runCatching { app.store.setTvMode(pick) }.isSuccess
                         if (!ok) {
@@ -3197,30 +2841,12 @@ private fun TvDeviceCard(app: HikariApp) {
             ),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            // This paragraph is the card's LAST child, and a [GlassCard] is
-            // clipped to its rounded shape with no padding of its own: with only
-            // a top inset the copy was drawn hard against the glass's left edge
-            // and its final line ran under the rounded bottom corner, so the
-            // explanation read as cut off ("the written explanation is not
-            // showing, it's cut off"). It gets the same 16dp the card's rows use,
-            // plus a bottom inset of its own.
             modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 14.dp),
         )
         }
     }
 }
 
-/**
- * The safe area: how far content is kept from the edge of the screen.
- *
- * Televisions have cropped a few percent off the picture since the CRT days,
- * and plenty of modern sets and HDMI switches still do. Anything drawn hard
- * against the edge is simply not there on those screens — which is how a back
- * button ends up half off the left side of a Fire TV. The default (see
- * [TvUi.DEFAULT_OVERSCAN_DP]) keeps every control well inside; the slider is
- * here because the right number belongs to the television, and a set that shows
- * the whole frame wants 0.
- */
 @Composable
 private fun TvOverscanCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
@@ -3262,15 +2888,6 @@ private fun TvOverscanCard(app: HikariApp) {
     }
 }
 
-/**
- * Poster size on a television, one percent at a time.
- *
- * The TV grid sizes its cells from the screen height, which reads small on a
- * big set across the room. This scales every TV poster 70–150% in 1-point
- * steps (101, 102… not jumps of ten) — [TvUi.posterWidth] multiplies the cell
- * by it, so rows and grids grow together. The slider itself is the same
- * D-pad-workable [SettingsSlider] the screen-edges card uses.
- */
 @Composable
 private fun TvPosterSizeCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
@@ -3299,12 +2916,6 @@ private fun TvPosterSizeCard(app: HikariApp) {
     }
 }
 
-/**
- * TV text size (Settings → TV & Remote): 50–150% of the shipped sizes, 100
- * is the shipped small/medium look. The slider is the same D-pad-workable
- * [SettingsSlider] the poster-size card uses, so the remote steps it 1% at
- * a time and every press really saves (see [Modifier.tvAdjust]).
- */
 @Composable
 private fun TvTextSizeCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
@@ -3333,13 +2944,6 @@ private fun TvTextSizeCard(app: HikariApp) {
     }
 }
 
-/**
- * The TV detail screen: full-width backdrop art, or the standard page.
- *
- * On shows the Nuvio-style detail page — the title art drawn big above the
- * buttons and rows — off keeps the page as it is now. A plain switch ([SettingsToggle])
- * like the performance card, so the remote toggles it with OK.
- */
 @Composable
 private fun TvDetailStyleCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
@@ -3378,15 +2982,6 @@ private fun TvDetailStyleCard(app: HikariApp) {
     }
 }
 
-/**
- * The television performance mode: draw the plain posters.
- *
- * A TV stick is decoding 1080p with a chip a phone would have called slow, and
- * the poster treatments (an animated frame, a sheen sweep, an aura) are drawn
- * per card, per frame, on top of that. On is the shipped default on a
- * television (see HikariApp's first-run seeding) and it also drops the blurred
- * halo behind each card; off restores whatever the poster settings say.
- */
 @Composable
 private fun TvPerformanceCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
@@ -3408,9 +3003,6 @@ private fun TvPerformanceCard(app: HikariApp) {
                 scope.launch {
                     runCatching {
                         app.store.setTvPerf(value)
-                        // The switch is the user's answer now: the app stops
-                        // following the layout and keeps whatever they chose
-                        // (see HikariApp.syncTvPerformance).
                         app.store.setTvPerfChosen(true)
                     }
                 }
@@ -3441,13 +3033,6 @@ private fun TvPerformanceCard(app: HikariApp) {
     }
 }
 
-/**
- * What the remote does, written down.
- *
- * A remote has up to a dozen buttons and no touchscreen; the player's gestures
- * (drag for brightness, double-tap to seek, hold for 2×) do not exist there, so
- * without this card the television controls are invisible knowledge.
- */
 @Composable
 private fun TvRemoteCard() {
     SettingsSection(
@@ -3529,11 +3114,6 @@ private fun SettingsSlider(
             activeTickColor = Color.Transparent,
             inactiveTickColor = Color.Transparent,
         ),
-        // A remote has no drag, so the slider takes the D-pad: left/right step
-        // it by one of its OWN steps (the same number the thumb snaps to), and
-        // the change is finished on every press so the setting is really
-        // saved rather than merely redrawn. Without this the whole row was
-        // unreachable: it is a wide pointer control, and nothing moved it.
         modifier = Modifier
             .fillMaxWidth()
             .tvAdjust { delta ->
@@ -3565,10 +3145,6 @@ private fun SettingsToggle(
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurface,
             )
-            // Only when a switch actually needs explaining: a caption under
-            // every one of them made the folder pages read like a manual. And
-            // not at all when the user has turned explanations off — see
-            // [com.hikari.app.ui.components.LocalHideHelp].
             if (supporting.isNotBlank() && helpShown()) {
                 Text(
                     supporting,
@@ -3580,10 +3156,6 @@ private fun SettingsToggle(
             }
         }
         Spacer(Modifier.width(12.dp))
-        // The switch answers the D-pad itself — see [Modifier.tvToggle]: on a
-        // television this small right-hand target is otherwise skipped over by
-        // the focus search, and a setting that cannot be turned on or off is
-        // the whole complaint about toggles and remotes.
         Switch(
             checked = checked,
             onCheckedChange = onCheckedChange,
@@ -3606,11 +3178,6 @@ private fun SettingsCardHeading(icon: ImageVector, title: String, brandKey: Stri
     }
 }
 
-/**
- * Ratings (Settings → App Layout): the IMDb / RT / Metacritic strip on a detail
- * page, and the small score badge on each poster. Off means neither is drawn and
- * no rating lookups are made. On by default.
- */
 @Composable
 private fun DetailRatingCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
@@ -3630,16 +3197,6 @@ private fun DetailRatingCard(app: HikariApp) {
     }
 }
 
-/**
- * The Featured banner on Home (Settings → App Layout): four ways to present the
- * big carousel at the top of the page, plus the toggles for what it says.
- *
- * The three toggles are separate keys rather than a fixed bundle because they
- * are genuinely independent: someone may want the plot line but not the score
- * chips, or the metadata badges with neither. Styles that have no room for a
- * piece simply ignore its toggle (Compact has no room for a plot line), which is
- * noted in each style's description.
- */
 @Composable
 private fun HeroBannerCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
@@ -3652,11 +3209,6 @@ private fun HeroBannerCard(app: HikariApp) {
     val metaFlow = remember { app.store.heroMetaFlow() }
     val meta by metaFlow.collectAsState(initial = true)
     var pickerOpen by remember { mutableStateOf(false) }
-    // The header's own size (Settings → App Layout → Featured banner): one
-    // slider for the whole banner, width and height together — smaller when it
-    // eats the page, bigger when it is the page. Held locally while the finger
-    // is on it and written when the drag ends, in SINGLE-percent steps
-    // (50%…150%), because "a bit smaller" is not a 10% jump.
     val scaleFlow = remember { app.store.heroScaleFlow() }
     val scale by scaleFlow.collectAsState(initial = 100)
     var scaleSlider by remember { mutableStateOf(scale.toFloat()) }
@@ -3676,9 +3228,6 @@ private fun HeroBannerCard(app: HikariApp) {
             value = scaleSlider,
             valueText = scaleSlider.roundToInt().toString() + "%",
             valueRange = 50f..150f,
-            // 101 single-percent positions between 50% and 150% (100 gaps): the
-            // slider moves one point at a time — 101, 102, 103 — instead of
-            // leaping in tens.
             steps = 99,
             onValueChange = { v -> scaleSlider = v.roundToInt().toFloat().coerceIn(50f, 150f) },
             onValueChangeFinished = {
@@ -3757,24 +3306,12 @@ private fun HeroBannerCard(app: HikariApp) {
     }
 }
 
-/**
- * The header of a title page (Settings → App Layout): five shapes for the
- * artwork a detail screen opens with — the wide cinematic band, a side-by-side
- * band with the poster on the left, portrait art, the poster over its own
- * backdrop, or a plain back button (for people who would rather have the
- * information than the picture).
- */
 @Composable
 private fun DetailHeaderCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
     val flow = remember { app.store.detailHeroStyleFlow() }
     val style by flow.collectAsState(initial = DetailHeroStyles.WIDE)
     var pickerOpen by remember { mutableStateOf(false) }
-    // The title logo's own size (Settings → App Layout → Details header): the
-    // wordmark art a title page draws over its header. Held locally while the
-    // finger is on it and written when the drag ends — the same pattern as the
-    // poster sliders above — but in SINGLE-percent steps (50%…160%), because
-    // "a bit bigger" is not a 10% jump.
     val logoFlow = remember { app.store.detailLogoSizeFlow() }
     val logoSize by logoFlow.collectAsState(initial = 100)
     var logoSlider by remember { mutableStateOf(logoSize.toFloat()) }
@@ -3829,15 +3366,6 @@ private fun DetailHeaderCard(app: HikariApp) {
     }
 }
 
-/**
- * The Player UI skin (Settings → Player): five looks for the playback controls, including a dedicated TV Player.
- * Default is Hikari's own curved-glass look — the one the app shipped with.
- *
- * It applies to the NEXT playback session rather than the one already running —
- * the controller is built once when the player opens, and rebuilding it
- * mid-playback would reset the position, tracks and subtitles for a cosmetic
- * change. The card says so, so the delay is expected rather than a bug.
- */
 @Composable
 private fun PlayerUiCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
@@ -4050,12 +3578,6 @@ private fun ExternalPlayerCard(app: HikariApp) {
     }
 }
 
-/**
- * Default episode layout for every title (Settings → App Layout → Episode UI).
- * Auto keeps the old behaviour (poster grid on TV, list rows on phones); the
- * three explicit choices apply to phone and TV alike. The detail page's header
- * button cycles the same three and writes back here, so the choice sticks.
- */
 @Composable
 private fun EpisodeViewModeCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
@@ -4101,9 +3623,6 @@ private fun EpisodeViewModeCard(app: HikariApp) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(4.dp))
-        // The CloudStream look for all three layouts above: list rows, the
-        // poster grid and the cinematic big cards each draw as frosted-glass
-        // cards while this is on.
         SettingsToggle(
             label = tr("Glass box episode UI"),
             supporting = tr("Frosted-glass cards for list, grid and big episodes"),
@@ -4164,11 +3683,6 @@ private fun TvEpisodeSizeCard(app: HikariApp) {
     }
 }
 
-/**
- * Episode descriptions under episode titles (Settings → App Layout → Episode UI). ON by default:
- * an episode row without its description is just a number. Off shows titles
- * only, on phone and TV alike.
- */
 @Composable
 private fun EpisodeDescriptionCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
@@ -4210,21 +3724,6 @@ private fun TvPlayerPanelsCard(app: HikariApp) {
     }
 }
 
-/**
- * The player's volume booster (Settings → Player).
- *
- * A film mixed with quiet dialogue has a ceiling the phone's volume keys cannot
- * raise: they are already at 100% and the file itself is just low. This switch
- * is the one lever left — it has the player multiply every decoded PCM sample
- * by 2× inside its own audio pipeline, which is the boost a viewer means by
- * "turn it up more than 100%". Software-side on purpose, so it is audible on
- * every device instead of depending on a platform effect some of them refuse.
- *
- * It is a switch and not a slider on purpose: gain above the file's own level
- * is a change to the sound, and a fixed, understandable step ("200%") beats a
- * number nobody can interpret. Off by default; the player reads
- * it each time it opens, so the next video obeys it.
- */
 @Composable
 private fun VolumeBoostCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
@@ -4247,16 +3746,6 @@ private fun VolumeBoostCard(app: HikariApp) {
     }
 }
 
-/**
- * Subtitles on by default (Settings → Player).
- *
- * ON is how the player has always behaved: the first (English-preferred)
- * track is shown without asking. OFF starts every video with captions hidden
- * instead — for viewers who only ever want subtitles on foreign-language
- * parts, or never at all. Anything chosen explicitly still shows (a track or
- * Auto in the player's Subtitles menu, an added file), because an explicit
- * pick outranks a default; the next video simply starts hidden again.
- */
 @Composable
 private fun SubtitlesDefaultCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
@@ -4279,12 +3768,6 @@ private fun SubtitlesDefaultCard(app: HikariApp) {
     }
 }
 
-/**
- * Full screen app mode (Settings → App Layout). Hikari normally hides the
- * phone's status bar and its three buttons so a page fills the screen; this
- * switch brings them back, everywhere (the player's own fullscreen video is
- * untouched — that is a separate, per-video choice).
- */
 @Composable
 private fun FullscreenCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
@@ -4307,16 +3790,6 @@ private fun FullscreenCard(app: HikariApp) {
     }
 }
 
-/**
- * The bottom bar's layout (Settings → App Layout → Taskbar & navigation): the
- * animated bar (the default — a full labelled bar that shrinks to a small pill
- * as you scroll back up), a fixed floating glass pill, or a seamless
- * edge-to-edge plate.
- *
- * The tabs themselves are chosen by [TaskbarCard] right above; this only
- * changes the chrome around them, and it is stored under its own key so the two
- * settings never fight.
- */
 @Composable
 private fun NavBarCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
@@ -4351,17 +3824,6 @@ private fun NavBarCard(app: HikariApp) {
     }
 }
 
-/**
- * Which language TMDB titles are fetched in.
- *
- * "Follow app language" is the default and the interesting one: change the app
- * to Spanish and every TMDB row — search results, a studio's films, the detail
- * page's similar shelf, a collection's source — comes back with Spanish titles,
- * because the chosen code rides along on every TMDB request (see
- * [com.hikari.app.nuvio.TmdbResolver.contentLanguage]). "Off" pins TMDB to its
- * own default so the titles stay as released; the explicit list is for the
- * people who want, say, Japanese titles inside an English app.
- */
 @Composable
 private fun ApiKeyEditor(
     label: String,
@@ -4695,16 +4157,6 @@ private fun TmdbLanguageCard(app: HikariApp, appLanguage: String) {
     }
 }
 
-/**
- * Rasterises a launcher icon resource into a square bitmap. Needed because
- * `painterResource` only understands vector and raster XML: the v2…v11
- * launcher icons resolve to an adaptive-icon XML inside `mipmap-anydpi-v26`,
- * which sends Compose's vector loader into an
- * IllegalArgumentException. Drawing the Drawable the way the launcher would is
- * also the more faithful preview — it covers the adaptive layer, a plain
- * vector (the pre-API-26 fallback for the official icon) and a plain bitmap
- * identically. Null on any failure, so a missing icon can never crash Settings.
- */
 private fun rasterizeIcon(context: Context, @DrawableRes resId: Int): ImageBitmap? =
     runCatching {
         val drawable = context.getDrawable(resId) ?: return@runCatching null
@@ -4718,15 +4170,6 @@ private fun rasterizeIcon(context: Context, @DrawableRes resId: Int): ImageBitma
         bitmap.asImageBitmap()
     }.getOrNull()
 
-/**
- * Launcher-icon picker. Each tile is drawn from the launcher mipmap itself,
- * masked like a home-screen icon, so what the user taps is what they get.
- *
- * Switching writes the choice to the store and then flips the enabled
- * activity-alias in [AppIconManager]; the app is not restarted, and some
- * launchers only repaint their cached icon after a moment (or a restart), which
- * the note at the bottom warns about.
- */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun AppIconCard(app: HikariApp) {
@@ -4775,14 +4218,6 @@ private fun AppIconCard(app: HikariApp) {
                                 shape = tileShape
                             )
                     ) {
-                        // The preview drawable is the composed icon square
-                        // (background + artwork with its margin), drawn 1:1 in
-                        // the box — deliberately *not* zoomed to imitate the
-                        // launcher's mask, which is what made the artwork look
-                        // chopped in an earlier build.
-                        // Rasterised by hand rather than with painterResource:
-                        // the v2…v11 mipmaps resolve to an `<adaptive-icon>` XML
-                        // on API 26+, which Compose's vector loader refuses.
                         val icon = remember(v.key) { rasterizeIcon(context, v.preview) }
                         if (icon != null) {
                             Image(
@@ -4816,22 +4251,6 @@ private fun AppIconCard(app: HikariApp) {
     }
 }
 
-/**
- * DNS mode: which resolver Hikari asks for names, for everything it does.
- *
- * Every HTTP client the app builds — source searches, extension and repo
- * downloads, stream probes, playback, the userscript runtime — resolves through
- * [DohDns], so a choice here changes the whole app's name lookups rather than
- * just some corner of it. The phone's own resolver can't be replaced by an app
- * (it belongs to the system), so the options are servers Hikari talks to itself:
- * the encrypted DNS-over-HTTPS ones, each carrying the addresses of its own
- * server so the choice still works on a device whose resolver is the thing
- * that's broken, plus the one plain port-53 server for the resolver that never
- * added an encrypted service.
- *
- * The test row exists because the alternative is finding out a typed address is
- * wrong from a failed source search later on.
- */
 @Composable
 private fun DnsModeCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
@@ -5059,9 +4478,6 @@ private fun PlaybackStartCard(app: HikariApp) {
             Modifier
                 .fillMaxWidth()
                 .clickable { persist(false) }
-                // A remote lands on the ROW — the radio button alone is a small
-                // right-hand target the focus search skips past — and its centre
-                // press picks the option. See [Modifier.tvToggle].
                 .tvToggle(!waitServers, onValueChange = { persist(false) }),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -5136,9 +4552,6 @@ private fun PlaybackStartCard(app: HikariApp) {
                     inactiveTickColor = Color.Transparent,
                 ),
                 modifier = Modifier.fillMaxWidth().tvAdjust { delta ->
-                // One step per press of the D-pad, run through the SAME commit
-                // the drag's release runs (see onValueChangeFinished above), so a
-                // remote really changes the setting. See [Modifier.tvAdjust].
                 minServers = (minServers.roundToInt() + delta).coerceIn(1, 5).toFloat()
                 commitMinServers()
             }
@@ -5247,14 +4660,6 @@ private fun PlaybackStartCard(app: HikariApp) {
     }
 }
 
-/**
- * Settings → Playback & Servers → Server page layout.
- *
- * Two looks for the player's Sources sheet: HORIZONTAL (rows floating over
- * the title's landscape backdrop art, like now) and VERTICAL (compact solid
- * cards over the title's portrait poster art). Read through the synchronous
- * ServerLayouts mirror (see HikariApp), because the sheet is View-based.
- */
 @Composable
 private fun ServerLayoutCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
@@ -5331,39 +4736,6 @@ private fun ServerLayoutCard(app: HikariApp) {
     }
 }
 
-/**
- * Settings → Playback & Servers → Server search.
- *
- * The CloudStream-shaped question: when a title is opened, whose servers may it
- * be played from? On (the default, and how Hikari has always worked) every
- * installed extension is searched and the player's "Select server" list gathers
- * what all of them found. Off, a lookup never leaves the extension the title was
- * opened from — its own repo and its own hosts, nothing else — which is what
- * CloudStream itself does, and what someone with a hundred installed extensions
- * may well prefer: a definite source, no minute-long cross-search, no servers
- * from repos they did not ask.
- *
- * "Exception extensions" sits between the two: with "search all" off, the repos
- * picked here are STILL asked for every title played anywhere else, so a couple
- * of favourite repos stay in play without turning the whole cross-search back on.
- * The one rule that goes with it — a title opened FROM an exception repo plays
- * from that repo alone — is spelled out in the two lines under the picker and
- * implemented in [com.hikari.app.data.SearchScope].
- *
- * This is not only the cross pass: the background sweep and the "borrow another
- * site's episode list" fallback are part of the same behaviour and are switched
- * off with it — except for the exception repos, which are part of both.
- */
-/**
- * Engines whose repos can be installed many times over and therefore get their
- * own "search every <engine>" row in the Server search card (see
- * [ServerSearchCard]).
- *
- * Nuvio and Stremio are excluded because they have their own switches above;
- * IPTV and Manga are excluded because "every repo of this engine" says nothing
- * useful about them — an IPTV playlist's channels are already all asked, and a
- * manga source never resolves a video (see [ContentRepository]).
- */
 private val ProviderType.isFamilyEngine: Boolean
     get() = this != ProviderType.NUVIO && this != ProviderType.STREMIO &&
         this != ProviderType.IPTV && this != ProviderType.MANGA
@@ -5502,9 +4874,6 @@ private fun ServerSearchCard(app: HikariApp) {
     val exceptionOn by exceptionOnFlow.collectAsState(initial = false)
     val exceptionIdsFlow = remember { app.store.searchExceptionIdsFlow() }
     val exceptionIds by exceptionIdsFlow.collectAsState(initial = emptySet())
-    // Whole engines marked as exceptions, and the EFFECTIVE set (the explicit
-    // picks plus every extension of a marked engine) — what the picker shows as
-    // ticked, so what is on screen is what a search will actually ask.
     val exceptionTypesFlow = remember { app.store.searchExceptionTypesFlow() }
     val exceptionTypes by exceptionTypesFlow.collectAsState(initial = emptySet())
     val exceptionExcludesFlow = remember { app.store.searchExceptionExcludesFlow() }
@@ -5516,15 +4885,9 @@ private fun ServerSearchCard(app: HikariApp) {
     // in the card so it survives closing and reopening the picker.
     var engineFilter by remember { mutableStateOf<String?>(null) }
 
-    // Every installed extension, so the picker can list them (and search them by
-    // name or engine). Read live: an install/uninstall while Settings is open is
-    // reflected without a reload.
     val installed by app.providers.providers.collectAsState()
     val installedEnabled = installed.filter { it.config.enabled }
     val chosenHere = installedEnabled.filter { it.config.id in exceptionIds }
-    // The engines that have at least one installed extension — one chip each,
-    // plus "All". Marking an engine keeps applying to whatever of that engine is
-    // installed later, and several engines can be marked at once.
     val enginesHere = remember(installedEnabled) {
         installedEnabled.map { it.config.type }.distinct().sortedBy { it.groupLabel }
     }
@@ -5567,14 +4930,6 @@ private fun ServerSearchCard(app: HikariApp) {
         Spacer(Modifier.height(14.dp))
 
         
-
-        // ---- The nuvio family ----
-        // The one widening that does not depend on the switch above: a title
-        // opened FROM a nuvio provider is also asked in every other installed
-        // nuvio provider, because they all resolve the same TMDB id and episode
-        // — one source of servers, not a cross-search of unrelated sites. See
-        // [com.hikari.app.data.SearchScope.nuvioFamily]. Off, "only this
-        // extension" means exactly that for nuvio too.
         SettingsToggle(
             label = tr("Search every Nuvio provider"),
             supporting = if (nuvioAll) {
@@ -5599,12 +4954,6 @@ private fun ServerSearchCard(app: HikariApp) {
         )
         Spacer(Modifier.height(10.dp))
 
-        // ---- The Stremio family ----
-        // The addon twin of the nuvio switch above: a title opened FROM a
-        // Stremio addon is asked in every other installed Stremio addon, because
-        // they all resolve the same imdb/tmdb id. See
-        // [com.hikari.app.data.SearchScope.stremioFamily]. Off, "only this
-        // extension" means exactly that for a Stremio origin.
         SettingsToggle(
             label = tr("Search every Stremio addon"),
             supporting = if (stremioAll) {
@@ -5670,11 +5019,6 @@ private fun ServerSearchCard(app: HikariApp) {
 
         Spacer(Modifier.height(14.dp))
 
-        // ---- Exception extensions ----
-        // The middle ground between the two models above: keep "only this
-        // extension" on almost everywhere, but name a couple of repos that are
-        // always asked. See com.hikari.app.data.SearchScope for the pass this
-        // drives.
         SettingsToggle(
             label = tr("Exception extensions"),
             supporting = tr("These repos are always searched, whichever extension you opened"),
@@ -5751,10 +5095,6 @@ private fun ServerSearchCard(app: HikariApp) {
     }
 
     if (pickerOpen) {
-        // Which engine the list is narrowed to ("All engines" = null). Tapping an
-        // engine chip both narrows the list to that engine AND marks the whole
-        // engine, so "all of CloudStream, except this one" is two taps rather
-        // than a hundred and fifty rows.
         val listed = if (engineFilter == null) installedEnabled
         else installedEnabled.filter { it.config.type.name == engineFilter }
         MultiChoiceDialog(
@@ -5818,9 +5158,6 @@ private fun ServerSearchCard(app: HikariApp) {
                 "tap whichever ones you do NOT want. They are always searched for titles you " +
                 "open elsewhere, and never searched sideways when you are inside them.",
             headerContent = {
-                // One chip per installed engine plus "All". Engines can be mixed
-                // freely, and a marked engine covers extensions installed later
-                // too — the row-by-row list alone could not express either.
                 Row(
                     Modifier
                         .fillMaxWidth()
@@ -5938,17 +5275,6 @@ private fun ServerSearchCard(app: HikariApp) {
 }
 
 /** One engine pill in the exception picker (see [ServerSearchCard]). */
-/**
- * Settings → Playback & Servers → Server search time.
- *
- * How long one extension may be searched for servers before the wait ends —
- * the budget behind "Server is not responding" and "extraction timed out".
- * The master switch sets the same time for every extension; off, each
- * extension keeps the built-in budget unless it has its own row below
- * (20–100 seconds, one-second steps). Only lengthens the WAIT: an extension
- * that fails outright still reports the moment it does (see
- * ContentRepository.streamsTimeoutFor and the CS3 merge loop).
- */
 @Composable
 private fun ServerTimeoutCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
@@ -6132,9 +5458,6 @@ private fun LoadingBannerCard(app: HikariApp) {    val scope = rememberCoroutine
     val logoSize by logoSizeFlow.collectAsState(initial = 100)
     var logoSlider by remember { mutableStateOf(logoSize.toFloat()) }
     LaunchedEffect(logoSize) { logoSlider = logoSize.toFloat() }
-    // The colour the cover's aura ring is drawn in (Settings → App Layout →
-    // Loading screen → Aura ring colour). Handed to the player as a resolved
-    // colour, so both screens showing the cover draw the same ring.
     val auraFlow = remember { app.store.loadingAuraColorFlow() }
     val auraColor by auraFlow.collectAsState(initial = AuraColors.THEME)
     var pickerOpen by remember { mutableStateOf(false) }
@@ -6163,10 +5486,6 @@ private fun LoadingBannerCard(app: HikariApp) {    val scope = rememberCoroutine
         )
         if (enabled) {
             Spacer(Modifier.height(10.dp))
-            // The look of the "finding your server" card — the page the user
-            // stares at from the tap until the first frame of video, on BOTH
-            // the detail screen and the player (one choice, two screens, so the
-            // hand-off between them never changes the design under them).
             ChoiceRow(
                 value = tr(LoadingStyles.label(style)),
                 supporting = tr(LoadingStyles.description(style)),
@@ -6174,11 +5493,6 @@ private fun LoadingBannerCard(app: HikariApp) {    val scope = rememberCoroutine
                 onClick = { pickerOpen = true },
             )
             Spacer(Modifier.height(10.dp))
-            // The signature treatments over that card: the loading screen's half
-            // of Poster styling's effects (sheen, aura ring, gallery frame,
-            // accent glow). Works with every style, so the quietest card can
-            // wear the same kind of detail a poster card does — and any
-            // combination of them can be on at once.
             ChoiceRow(
                 value = if (effectNames.isEmpty()) {
                     tr(LoadingEffects.label(LoadingEffects.NONE))
@@ -6204,12 +5518,6 @@ private fun LoadingBannerCard(app: HikariApp) {    val scope = rememberCoroutine
                 )
             }
             Spacer(Modifier.height(10.dp))
-            // The title's own WORDMARK on the cover, instead of the text title —
-            // the same art the detail page's header draws, so tapping Play never
-            // swaps the design under the user. Its size is its OWN slider: the
-            // cover is a full screen with a centred title block, while the header
-            // is a wide banner, so one number for both always looked wrong on one
-            // of them.
             SettingsToggle(
                 label = tr("Title logo"),
                 supporting = if (logoOn) {
@@ -6230,9 +5538,6 @@ private fun LoadingBannerCard(app: HikariApp) {    val scope = rememberCoroutine
                     value = logoSlider,
                     valueText = logoSlider.roundToInt().toString() + "%",
                     valueRange = 50f..160f,
-                    // 111 single-percent positions between 50% and 160%, like the
-                    // detail header's slider — and its own setting, so the two
-                    // screens are sized apart.
                     steps = 109,
                     onValueChange = { v -> logoSlider = v.roundToInt().toFloat().coerceIn(50f, 160f) },
                     onValueChangeFinished = {
@@ -6295,32 +5600,7 @@ private fun LoadingBannerCard(app: HikariApp) {    val scope = rememberCoroutine
     }
 }
 
-// (The "Universal extraction (yt-dlp)" settings card stood here. It was removed
-// in 0.9.1 along with the bundled yt-dlp runtime it controlled — see the
-// CHANGELOG. There is nothing left to switch on or off.)
 
-/**
- * Settings → Performance: the ONE switch for a device that cannot keep up.
- *
- * It is deliberately a single toggle with no sub-options. The person who needs it
- * is using an app that is stuttering and wants it to stop — asking them to pick
- * between four renderer settings is asking them to do the diagnosis. What it
- * does is stated in the card instead (they can read it if they want to), and
- * every one of those things is dropped together:
- *
- *  * the blurred halo behind every poster (three artwork layers per card plus a
- *    gaussian blur — the most expensive thing in the UI, and the one that costs
- *    the most while scrolling a row of posters);
- *  * the animated poster and loading treatments;
- *  * the width of a cross-extension search fan-out (fewer extensions asked at
- *    once, in more waves — the same servers are still found, just staggered);
- *  * the number of nuvio engines that may run at once (twelve QuickJS VMs is a
- *    lot to ask of a phone that is also drawing the screen).
- *
- * Nothing it turns off changes what can be PLAYED. The television gets the same
- * treatment from its own switch in TV & Remote; the two are OR'd (see
- * [com.hikari.app.data.PerfMode]), so a box with both on simply stays light.
- */
 @Composable
 private fun PerformanceBoosterCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
@@ -6371,20 +5651,6 @@ private fun PerformanceBoosterCard(app: HikariApp) {
     }
 }
 
-/**
- * The in-app lock (Settings → Privacy & Browsing → App lock).
- *
- * Two halves, and the order matters: a PASSWORD always has to exist for the
- * lock to be switchable on at all, and the fingerprint/face is an additional,
- * optional way in on top of it. That is the user's own rule — "have to choose
- * at least one password type" — and it is also the only shape that cannot lock
- * someone out of their own app on a phone whose sensor was never enrolled.
- *
- * There is no recovery, and the card says so BEFORE the password is set: what
- * is stored is a PBKDF2 derivation (see [AppLock]), so nothing in the app can
- * read the password back. The way out of a forgotten password is clearing the
- * app's data, exactly like every other app lock.
- */
 @Composable
 private fun AppLockCard(app: HikariApp) {
     val context = LocalContext.current
@@ -6393,9 +5659,6 @@ private fun AppLockCard(app: HikariApp) {
     val on by lockFlow.collectAsState(initial = false)
     val secretFlow = remember { app.store.appLockSecretFlow() }
     val secret by secretFlow.collectAsState(initial = "")
-    // How long the password is, recorded with it (see AppStore.APP_LOCK_LEN) so
-    // the unlock screen draws the right number of dots and submits on the last
-    // one instead of guessing.
     val lenFlow = remember { app.store.appLockLenFlow() }
     val secretLen by lenFlow.collectAsState(initial = 0)
     val bioFlow = remember { app.store.appLockBioFlow() }
@@ -6411,24 +5674,12 @@ private fun AppLockCard(app: HikariApp) {
     var delay by remember { mutableStateOf(0) }
     LaunchedEffect(storedDelay) { delay = storedDelay }
     val hasSecret = AppLock.isSet(secret)
-    // Whether this device can offer the fingerprint at all: no sensor, nothing
-    // enrolled, or a biometric stack that says no all read as "not available",
-    // and the toggle is then explained rather than shown as a switch that can
-    // never work.
     val biometrics = remember(context) { Biometrics.available(context) }
     var setDialog by remember { mutableStateOf(false) }
     var first by remember { mutableStateOf("") }
     var second by remember { mutableStateOf("") }
-    // What the user says the CURRENT password is. Only asked for when one
-    // exists, and checked (never stored) before anything is changed: a phone
-    // that is already unlocked should still not let a passer-by replace the
-    // lock with one of their own — "if the real user who set old password is
-    // changing it" has to be the one doing the changing.
     var current by remember { mutableStateOf("") }
     var oldWrong by remember { mutableStateOf(false) }
-    // True while the dialog was opened by "Remove password" rather than by
-    // "Set/Change": the same dialog serves both, because both need exactly the
-    // same proof (the current password) and only differ in what happens next.
     var removing by remember { mutableStateOf(false) }
     val tooShort = first.isNotEmpty() && first.length < 4
     val mismatch = second.isNotEmpty() && first != second
@@ -6442,9 +5693,6 @@ private fun AppLockCard(app: HikariApp) {
             supporting = if (on) tr("On — the app opens locked") else tr("Off"),
             checked = on,
             onCheckedChange = { want ->
-                // Switching it on with no password yet must not leave the app in
-                // a lock that cannot be opened: the password comes first, and the
-                // switch is turned on when it is saved.
                 if (want && !hasSecret) {
                     first = ""
                     second = ""
@@ -6480,10 +5728,6 @@ private fun AppLockCard(app: HikariApp) {
                     scope.launch { runCatching { app.store.setAppLockScreenOff(it) } }
                 },
             )
-            // The leaving trigger's own switch, the twin of the screen-off one
-            // above: with it off, switching away from Hikari never draws the
-            // unlock card — only the screen turning off (if that is on) or a
-            // fresh start of the app does.
             SettingsToggle(
                 label = tr("Lock when I leave the app"),
                 supporting = if (leaveLocks) {
@@ -6500,10 +5744,6 @@ private fun AppLockCard(app: HikariApp) {
             // only offered while at least one of them is.
             if (leaveLocks || screenOffLocks) {
                 Spacer(Modifier.height(8.dp))
-                // The grace period: Instant, then every minute up to 60. A slider
-                // with one step per minute rather than a list of presets, because
-                // that is the shape asked for and because 61 points covers the whole
-                // range with no rounding between the control and the stored value.
                 SettingsSlider(
                     label = tr("Lock after leaving"),
                     value = delay.toFloat(),
@@ -6551,12 +5791,6 @@ private fun AppLockCard(app: HikariApp) {
                 }
             }
         } else if (on) {
-            // The lock is on but the stored password cannot be read: this is the
-            // state an install that set its password before the encoding fix is
-            // in (see [AppLock.encode]) — the unlock screen cannot accept any
-            // password, so the card says so and offers the way out in one tap
-            // rather than letting the user keep typing into a lock that is
-            // already broken.
             Spacer(Modifier.height(6.dp))
             Text(
                 tr(
@@ -6632,9 +5866,6 @@ private fun AppLockCard(app: HikariApp) {
                         }
                         if (secretLen > 0 && !oldWrong) {
                             Spacer(Modifier.height(6.dp))
-                            // Says how long the current one is, which is what the
-                            // unlock keypad's dots show too — the field itself
-                            // cannot be read back (see [AppLock]).
                             Text(
                                 tr("Your current password is ") + secretLen + " " +
                                     (if (secretLen == 4) tr("digits") else tr("characters")),
@@ -6712,9 +5943,6 @@ private fun AppLockCard(app: HikariApp) {
                         val wanted = first
                         scope.launch {
                             withContext(Dispatchers.Default) {
-                                // The old password is verified BEFORE anything is
-                                // written, and only ever a verification — it is
-                                // never stored, and a failure changes nothing.
                                 if (hasSecret && !AppLock.verify(current, secret)) {
                                     oldWrong = true
                                     return@withContext
@@ -6725,9 +5953,6 @@ private fun AppLockCard(app: HikariApp) {
                                     app.store.setAppLockLen(0)
                                 } else {
                                     app.store.setAppLockSecret(AppLock.encode(wanted))
-                                    // The length travels with the secret: the
-                                    // unlock screen's dots and its "this is the
-                                    // last digit" both come from it.
                                     app.store.setAppLockLen(wanted.length)
                                     app.store.setAppLock(true)
                                     app.store.setAppLockBio(biometrics)
@@ -6747,22 +5972,6 @@ private fun AppLockCard(app: HikariApp) {
     }
 }
 
-/**
- * The My Stuff lock (Settings → Privacy & Browsing → My Stuff lock).
- *
- * A second, independent password guarding only the My Stuff tab (library,
- * history, downloads), so the app can stay open — handed to someone else,
- * even — while that section stays shut. It mirrors the app lock's proof rules
- * (the current password is verified before anything is changed or removed,
- * and only ever a verification) but nothing else: no biometrics, no grace
- * period, and the unlock lives only in process memory (see MyStuffUnlock), so
- * opening My Stuff asks once per app launch.
- *
- * The secret is stored exactly like the app lock's (`algo:salt:hash` via
- * [AppLock]) and is device-local with it (see AppStore.DeviceLocal): a backup
- * file or a pairing payload never carries it, and restoring one never changes
- * this device's lock.
- */
 @Composable
 private fun MyStuffLockCard(app: HikariApp) {
     val scope = rememberCoroutineScope()
@@ -6789,9 +5998,6 @@ private fun MyStuffLockCard(app: HikariApp) {
             supporting = if (on) tr("On — the tab opens locked") else tr("Off"),
             checked = on,
             onCheckedChange = { want ->
-                // Like the app lock: switching on with no password yet must
-                // not leave a lock that cannot be opened — the password comes
-                // first, and the switch is turned on when it is saved.
                 if (want && !hasSecret) {
                     first = ""
                     second = ""
@@ -6961,24 +6167,6 @@ private fun MyStuffLockCard(app: HikariApp) {
     }
 }
 
-/**
- * Trackers (Settings → Trackers).
- *
- * The services the user already keeps a list on — AniList, MyAnimeList, Kitsu,
- * Simkl, Shikimori and Trakt — and the switch that reports what they watch to
- * them. The feature the user asked for by name ("login with their id for
- * tracking, like CloudStream"): sign in once, and the episode you just finished
- * lands on your list without opening anything.
- *
- * Two things the card is careful to be honest about, because both are the
- * difference between a tracker that works and one that *looks* like it works:
- *  * the credentials are the user's own ([TrackerKind.registerUrl] — why is
- *    explained at length on [TrackerKind]), and the card says so plainly rather
- *    than pretending a sign-in is one tap away;
- *  * what happens is always written down under the buttons (the last run's
- *    result, which failures included), so a title that could not be matched, or
- *    a service that refused the token, is visible instead of silent.
- */
 @Composable
 private fun TrackerServiceCard(
     kind: TrackerKind,
@@ -7412,12 +6600,6 @@ private fun TrackersCard(app: HikariApp) {
 private fun LanguageCard(app: HikariApp, current: String) {
     var pickerOpen by remember { mutableStateOf(false) }
     val selected = LanguageManager.ALL.firstOrNull { it.tag == current } ?: LanguageManager.SYSTEM
-    // The System-default entry says what it will actually do rather than always
-    // claiming English: on a phone whose own language is Arabic, or for a user
-    // who picked Arabic for Hikari in Android's app-language screen, "System
-    // default" means Arabic — and it used to say "(English)" either way, which
-    // is exactly why a user could be sure they had "selected Arabic in the app"
-    // and still see an English interface.
     val systemLabel = "System default" + " (" +
         (LanguageManager.nameOf(LanguageManager.platformTag()) ?: "English") + ")"
     val selectedName = if (selected.tag.isBlank()) systemLabel else selected.name
@@ -7435,9 +6617,6 @@ private fun LanguageCard(app: HikariApp, current: String) {
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Spacer(Modifier.height(12.dp))
-        // The pattern every "pick one of several" setting in the app follows:
-        // one glass row showing what is in use, tapping it opens a scrollable
-        // glass page of choices (see ChoiceRow/ChoiceDialog).
         ChoiceRow(
             value = selectedName,
             leadingIcon = Icons.Filled.Translate,
@@ -7457,10 +6636,6 @@ private fun LanguageCard(app: HikariApp, current: String) {
                 )
             },
             selectedKey = selected.tag,
-            // Persist FIRST (in memory + on the app scope), then hand the locale
-            // to the platform: the apply recreates the activity, and a write
-            // launched on the dying composition's scope was cancelled by it —
-            // which is why the same language had to be picked twice.
             onPick = { tag -> LanguageManager.choose(app, tag) },
             onDismiss = { pickerOpen = false },
             maxHeight = 420.dp,
@@ -7673,15 +6848,6 @@ private fun WebViewSafetyCard(app: HikariApp) {
     }
 }
 
-/**
- * Settings → Backup & Restore: the whole setup (installed extensions, sources
- * and every pref this app owns) in one JSON file, and the way back.
- *
- * What a backup deliberately does NOT contain — offline videos, the poster and
- * adblock caches, the download queue — is documented in BackupManager; the short
- * version is that a backup stays small enough to e-mail to yourself, and a
- * restore can never point the app at a video file this phone does not have.
- */
 @Composable
 private fun BackupCard(app: HikariApp, onPair: () -> Unit) {
     val context = LocalContext.current
@@ -7699,9 +6865,6 @@ private fun BackupCard(app: HikariApp, onPair: () -> Unit) {
         Toast.makeText(context, r.message, Toast.LENGTH_SHORT).show()
     }
 
-    // Restore goes through the system file picker (SAF) rather than a path: the
-    // backup is usually in Downloads or was sent over a chat, and the picker
-    // hands back a URI anyone can read — no storage permission needed.
     val picker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
@@ -7715,9 +6878,6 @@ private fun BackupCard(app: HikariApp, onPair: () -> Unit) {
                         ?: BackupManager.Report(false, "Could not read that file.")
                 }
             }.getOrElse {
-                // The reason is logged (Settings → Logs & diagnostics) as well
-                // as shown: a bare "Backup failed" with no cause is what made
-                // this bug unreportable.
                 runCatching {
                     com.hikari.app.data.Logs.log(
                         "Backup",
@@ -7756,10 +6916,6 @@ private fun BackupCard(app: HikariApp, onPair: () -> Unit) {
         scope.launch {
             val result = runCatching {
                 val name = BackupManager.fileName()
-                // Fast path first: stream the backup straight into Downloads
-                // (no cache double-write) with parallel file encoding and live
-                // progress. Old devices / OEM MediaStore refusals take the
-                // previous cache-file route instead.
                 val (bytes, saved) = withContext(Dispatchers.IO) {
                     var lastBeat = 0L
                     val opened = com.hikari.app.data.DownloadsSaver
@@ -8200,9 +7356,6 @@ private fun AdBlockingCard(app: HikariApp) {
                 color = MaterialTheme.colorScheme.onSurface
             )
             Spacer(Modifier.height(6.dp))
-            // FlowRow so all three presets stay visible (the third wraps to a
-            // second line instead of overflowing off the right edge), with no
-            // dead space between the chips and the row below.
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -8269,9 +7422,6 @@ private fun AdBlockingCard(app: HikariApp) {
                     onClick = {
                         updating = true
                         updateStatus = null
-                        // Downloads are blocking okhttp + retries — must NOT run
-                        // on the main thread (it froze the app / ANR-crashed).
-                        // One bad list can never abort the rest or crash.
                         scope.launch(Dispatchers.IO) {
                             val total = runCatching { AdBlocker.refreshAll(lists, context) }
                                 .getOrDefault(emptySet()).size
@@ -8618,9 +7768,6 @@ private fun VideoEnhanceCard(app: HikariApp) {
         if (customs.size < 12 || activeCustom != null) Spacer(Modifier.height(8.dp))
     }
 
-    // Built-ins plus the user's own presets: a glass page of choices beats a
-    // wall of a Material dropdown menu, and it matches every other "pick one"
-    // setting in the app.
     if (menuOpen) {
         ChoiceDialog(
             title = tr("Video enhance"),
@@ -8655,13 +7802,6 @@ private fun VideoEnhanceCard(app: HikariApp) {
     }
 }
 
-/**
- * Builds or edits one custom enhance preset: a name plus the five grading
- * sliders (brightness, saturation, contrast, gamma, hue). Saving selects the
- * preset straight away; deleting falls back to Natural when it was active.
- * Gamma is a midtone lift — media3 has no true gamma curve, and the dialog
- * says so under the slider.
- */
 @Composable
 private fun CustomEnhanceEditorDialog(
     app: HikariApp,
@@ -8836,17 +7976,6 @@ private fun AccentCard(
     }
 }
 
-/**
- * The aura ring's colour picker — Settings → App Layout → Poster styling /
- * Loading screen → Aura ring colour.
- *
- * A ring is the one poster/loading treatment whose whole character is its
- * colour, so it gets its own choice instead of being nailed to the app accent:
- * "Accent" (first swatch, and the default, so nothing changes for anyone
- * upgrading) follows MaterialTheme's primary, exactly as the ring always drew.
- * The rest are the app's own palette ([HikariAccent]), so the ring can only ever
- * be one of the colours the rest of the app is built from.
- */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun AuraColorRow(selected: String, onPick: (String) -> Unit) {

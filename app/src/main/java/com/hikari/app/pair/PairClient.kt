@@ -9,28 +9,6 @@ import java.io.File
 import java.net.DatagramPacket
 import java.util.concurrent.TimeUnit
 
-/**
- * The receiving end of device pairing: a device that was just installed (or
- * reset) pulls another Hikari's setup over the Wi-Fi.
- *
- * Two steps, in this order:
- *
- *  1. [discover] — only when the guest was given a code and no address. A UDP
- *     broadcast carries the code, the host that owns it answers with its port,
- *     and the reply's source address IS the host's address (no parsing of
- *     "where am I" out of anything). This is the step that makes a television
- *     usable as a guest: no camera to scan the QR with, no keyboard to type an
- *     IP on.
- *  2. [download] — a plain HTTP GET of `/bundle?t=<code>`, which is the backup
- *     file byte for byte, and the caller hands it to [com.hikari.app.data.BackupManager.restore]
- *     — the same code path a file picked from Downloads takes, with the same path
- *     validation and the same live-state refresh. The network part of this
- *     feature therefore cannot damage anything the file path could not.
- *
- * Nothing here throws a raw network exception at the UI: a failure is a
- * [PairException] with a sentence a user can act on ("No other device answered"),
- * because "SocketTimeoutException" is not a thing to show a person.
- */
 object PairClient {
 
     /** A hard ceiling on what a guest will accept. A real setup is single-digit
@@ -41,12 +19,6 @@ object PairClient {
 
     class PairException(message: String) : Exception(message)
 
-    /**
-     * Finds the device that owns [code] on this network, or null after
-     * [timeoutMs]. Never throws: "no answer" is the normal outcome on a Wi-Fi
-     * that filters broadcasts, and the caller's next move is the manual address
-     * the QR carries.
-     */
     suspend fun discover(code: String, timeoutMs: Long = 6000L): PairTarget? =
         withContext(Dispatchers.IO) {
             if (code.isBlank()) return@withContext null
@@ -87,13 +59,6 @@ object PairClient {
             }
         }
 
-    /**
-     * Fetches the other device's setup into [dest], streaming so a large setup
-     * never sits in memory whole ([MAX_BUNDLE_BYTES] still caps what a guest
-     * will accept). Returns the byte count. Throws [PairException] with a
-     * sentence for every failure the user can cause (wrong code, nothing
-     * listening, the two devices on different networks).
-     */
     suspend fun downloadTo(target: PairTarget, dest: File): Long = withContext(Dispatchers.IO) {
         if (target.host.isBlank()) throw PairException("No address to connect to")
         dest.parentFile?.mkdirs()
@@ -109,9 +74,6 @@ object PairClient {
         try {
             client.newCall(request).execute().use { response ->
                 if (response.code == 403) {
-                    // The only refusal the server has: the token did not match the
-                    // code it is showing. Worth its own sentence, because the fix
-                    // (re-read the code) is different from every other failure.
                     throw PairException("That code was refused — check it on the other device")
                 }
                 if (!response.isSuccessful) {

@@ -1,27 +1,5 @@
 package com.hikari.app.data
 
-/**
- * Identity helpers for extension source URLs.
- *
- * An extension's origin is remembered verbatim in [ProviderConfig.extra] — the
- * exact string the repo.json served when it was installed — but repos rewrite
- * the same file's URL over time. The very same plugin can appear as
- * `raw.githubusercontent.com/o/r/<branch>/X.cs3`,
- * `.../o/r/refs/heads/<branch>/X.cs3`, or through the jsDelivr mirror
- * (`cdn.jsdelivr.net/gh/o/r@<branch>/X.cs3`), and the CNC repo for example
- * mixes both raw spellings in one build.
- *
- * A repo built by CI publishes its files as GitHub RELEASE ASSETS instead
- * (`github.com/o/r/releases/download/<tag>/X.cs3`). Those used to collapse
- * onto the repo root, i.e. every extension of such a repo shared one identity.
- *
- * Comparing those strings literally made Hikari treat an already-installed
- * extension as "not installed" (an Install button in the repo it came from,
- * while the extension kept working on Home), and let one repo be added twice
- * under two spellings of the same URL — the second copy showing every
- * extension as uninstalled again. Every such comparison goes through the
- * canonical forms below instead.
- */
 object SourceUrls {
 
     private val JSDELIVR = Regex(
@@ -32,29 +10,10 @@ object SourceUrls {
         "^https?://raw\\.githubusercontent\\.com/([^/]+)/([^/]+)/(.+)$",
         RegexOption.IGNORE_CASE,
     )
-    /** A github.com FILE link (`github.com/o/r/blob/<ref>/<path>`, `raw/…`,
-     *  `resolve/…`) — the web spelling of a raw file. It must be folded onto
-     *  its raw.githubusercontent.com form, NOT onto the repo root: collapsing
-     *  these to `github.com/o/r` gave every plugin of such a repo the SAME
-     *  identity, so uninstalling one extension removed the whole repo's worth
-     *  (and a re-added repo handed out Install buttons again). */
     private val GH_FILE = Regex(
         "^https?://(?:www\\.)?github\\.com/([^/]+)/([^/]+)/(?:blob|raw|resolve)/(.+)$",
         RegexOption.IGNORE_CASE,
     )
-    /**
-     * A GitHub RELEASE-ASSET link
-     * (`github.com/o/r/releases/download/<tag>/<file>`, and the `latest` form).
-     *
-     * This is the shape extension repos that are built by CI publish, and it
-     * must be handled before the repo-page rule below: without it, every asset
-     * of a repo collapsed onto the repo ROOT, i.e. every extension in a repo
-     * built this way shared ONE identity. Installing one made the whole repo
-     * read as installed (each row showing Uninstall with the Install button
-     * nowhere), Install-all skipped everything, and uninstalling a row could
-     * take a different extension with it — the reported "installing one shows
-     * all installed, uninstalling one shows all uninstalled".
-     */
     private val GH_RELEASE = Regex(
         "^https?://(?:www\\.)?github\\.com/([^/]+)/([^/]+)/releases/" +
             "(?:download/([^/]+)/(.+)|latest/download/(.+))$",
@@ -66,28 +25,6 @@ object SourceUrls {
     )
     private val SCHEME_HOST = Regex("^([a-z][a-z0-9+.-]*)://([^/]+)(.*)$", RegexOption.IGNORE_CASE)
 
-    /**
-     * One string per repo/file, whatever spelling it arrived in: the jsDelivr
-     * mirror and the `github.com` web page collapse onto their raw
-     * raw.githubusercontent.com form, `/refs/heads/<branch>/` and
-     * `/<branch>/` collapse together, and trailing slashes / queries / `%20`
-     * vs a literal space no longer distinguish two URLs.
-     */
-    /**
-     * The memoised form of [canonical].
-     *
-     * These helpers run on the DRAW path — every provider row's "is this
-     * installed / is there an update" check goes through [anyKeyIn], the
-     * Extensions lists resolve [com.hikari.app.data.RepoProvenance] for every
-     * provider, and Home's picker builds that map for the whole installed list
-     * the moment it opens. Each call used to re-run up to six regexes over the
-     * URL, and the same few hundred URLs were re-parsed thousands of times; the
-     * canonical form of a URL does not change while the app runs, so it is
-     * computed once and remembered.
-     *
-     * Bounded and access-ordered, like this file's other caches: a session
-     * touches a few thousand distinct URLs at most.
-     */
     private const val CACHE_MAX = 4096
 
     private val canonicalCache =
@@ -121,9 +58,6 @@ object SourceUrls {
             return "https://raw.githubusercontent.com/${m.groupValues[1].lowercase()}/" +
                 "${m.groupValues[2].lowercase()}/${dropRefPrefix(m.groupValues[3])}"
         }
-        // A release asset keeps its tag: two files in the same repo are two
-        // files, and the tag only pins WHICH build of that file (a new tag is
-        // the same file — see [fileKey], which ignores it).
         GH_RELEASE.find(t)?.let { m ->
             return "https://github.com/${m.groupValues[1].lowercase()}/" +
                 "${m.groupValues[2].lowercase()}/releases/download/" +
@@ -144,18 +78,6 @@ object SourceUrls {
         return base
     }
 
-    /**
-     * The identity of one *repository file*: which GitHub repo (or host+path) it
-     * belongs to, ignoring the branch it was fetched from.
-     *
-     * `owner/repo/builds/repo.json` and `owner/repo/main/repo.json` are the SAME
-     * repo (the same plugin list, published on two branches), and adding one
-     * after the other used to grow a second folder in the repo list with the same
-     * name — which read as "I added the same repo twice and it made a duplicate".
-     * Everything that compares repos as a whole (adding, removing, the stored
-     * list's own dedupe) keys on this; [canonical] stays the identity of the
-     * exact FILE, which is what extension matching needs.
-     */
     fun repoKey(raw: String): String? {
         val c = canonical(clean(raw))
         if (c.isEmpty()) return null
@@ -176,20 +98,6 @@ object SourceUrls {
         return c.trimEnd('/')
     }
 
-    /**
-     * Which FILE a Mihon/Aniyomi repo publishes its extension list in is not
-     * part of the repo's identity: `…/repo/index.json` and
-     * `…/repo/index.min.json` are the same repository, and Hikari may store one
-     * spelling while fetching the other — keiyoushi's minified file is a
-     * two-entry "update your app" stub, so the real list always comes from
-     * `index.json` (see AniyomiExtensionManager.indexCandidatesFor). Without
-     * this, re-adding the same repo with the other spelling grew a second,
-     * empty-looking folder.
-     *
-     * Only the Mihon/Aniyomi index names are folded away — `repo.json`,
-     * `manifest.json` and `plugins.json` are the repo FILES of the other kinds
-     * and keep their identity.
-     */
     private val INDEX_FILE_NAMES = listOf(
         "index.json",
         "index.min.json",
@@ -212,12 +120,6 @@ object SourceUrls {
         return a == b
     }
 
-    /**
-     * The identity of one *file* inside a GitHub repo: `owner/repo/FileName`.
-     * Used as a second chance when a repo moved the file (a new branch, a new
-     * path) so an installed extension is still recognised, while keeping
-     * different repos' (and different files') identities apart.
-     */
     fun fileKey(raw: String): String? {
         val c = canonical(clean(raw))
         RAW_GH.find(c)?.let { m ->
@@ -225,10 +127,6 @@ object SourceUrls {
             if (file.isBlank()) return null
             return "${m.groupValues[1].lowercase()}/${m.groupValues[2].lowercase()}/$file"
         }
-        // The same release asset under another tag (`continuous` → `v1.2`, or
-        // GitHub's `latest`) is the same extension, so the tag is not part of
-        // the file's identity — exactly as the branch is not part of a raw
-        // file's.
         GH_RELEASE.find(c)?.let { m ->
             val file = (m.groupValues[4].ifBlank { m.groupValues[5] })
                 .substringAfterLast('/').lowercase()
@@ -238,20 +136,6 @@ object SourceUrls {
         return null
     }
 
-    /**
-     * The version-stripped form of [fileKey]: repos that version their file
-     * names (`Reanime-v24.cs3` → `-v25` → `-v26`, the AllForU builds-branch
-     * convention) rename the file on EVERY upstream bump, so the installed
-     * copy's key never equals the listing's key and the row reads Install
-     * forever — for every extension of such a repo, on every device. The
-     * stripped key (`owner/repo/reanime.cs3`) is the lineage identity both
-     * spellings share, so the row converges on Installed/Update instead.
-     *
-     * Deliberately narrow — only a trailing `-vN`/`_vN` build marker is
-     * stripped, never a bare number, so two genuinely different files
-     * (`movie-2023` vs `movie-2024`) keep distinct identities and can never
-     * match (or uninstall) each other.
-     */
     private val VERSION_SUFFIX = Regex("^(.*?)[-_ ]v\\d[\\w.]*$", RegexOption.IGNORE_CASE)
 
     fun strippedFileKey(raw: String): String? {
@@ -267,13 +151,6 @@ object SourceUrls {
         return k.substring(0, i + 1) + stem.lowercase() + ext
     }
 
-    /**
-     * Every string [raw] should be recognised by: itself, its canonical form,
-     * its file key, and its version-stripped file key. Anything sourced from
-     * [raw] then matches a repo listing that spells the URL differently, in
-     * either direction — including a listing that renamed the file for a new
-     * build (`-v24` → `-v25`).
-     */
     private val matchKeysCache =
         object : LinkedHashMap<String, List<String>>(256, 0.75f, true) {
             override fun removeEldestEntry(
@@ -292,36 +169,12 @@ object SourceUrls {
         return keys
     }
 
-    /**
-     * True when [raw] is one of the file URLs in [keys] — however either side
-     * spells it (refs/heads vs a plain branch, the jsDelivr mirror, a
-     * github.com blob link, %20 vs a space).
-     *
-     * The repo listing and the installed set disagree about spelling far more
-     * often than they used to: a repo rewrites its file URLs between builds
-     * (a new branch name, a different mirror), and a github.com blob link is
-     * now recognised as the file it points at. Every "is this installed?"
-     * test goes through this instead of a literal `url in installedUrls`,
-     * which showed an Install button for an extension that was already there.
-     */
     fun anyKeyIn(raw: String, keys: Set<String>): Boolean {
         if (raw.isBlank() || keys.isEmpty()) return false
         if (raw in keys) return true
         return matchKeys(raw).any { it in keys }
     }
 
-    /**
-     * The GitHub `owner/repo` (lowercased) [raw] belongs to, or null when [raw]
-     * is not a GitHub URL.
-     *
-     * A repository page, a release asset, a raw file and the jsDelivr mirror of
-     * all of them share this — which is what lets an INSTALLED extension be
-     * traced back to the repository it came from. The two never agree on a path
-     * (the install remembers the extension FILE, the repo list remembers the
-     * repo's own index URL, and a CI-built repo publishes its files as release
-     * assets), so a whole-path comparison answers nothing; the repository
-     * answers everything. See [com.hikari.app.data.RepoProvenance].
-     */
     fun githubRoot(raw: String): String? =
         githubParts(raw)?.let { "${it.first}/${it.second}" }
 

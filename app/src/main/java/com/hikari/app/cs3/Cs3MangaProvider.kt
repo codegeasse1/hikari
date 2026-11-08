@@ -19,21 +19,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/**
- * A CloudStream manga module behind the manga tab's engine contract.
- *
- * CloudStream APK plugins whose `supportedTypes` name pages instead of video
- * ("manga", "manhwa", "manhua", …) are registered as [ProviderType.MANGA]
- * rows (`manga|cs3|<fileHash>|<i>`) instead of video rows, so installing a
- * manga extension from any CloudStream repo lands it in the manga tab —
- * Browse, search and the reader — instead of on Home as a video extension
- * that can never play (see [Cs3ProviderSync] for the install-time routing).
- *
- * Served through the plugin's own MainAPI, the same calls the video path
- * makes ([Cs3MainApiProvider]): catalogs from `mainPage`, chapters from
- * `load().episodes`, pages from `loadLinks` image URLs with the referer the
- * hotlink CDNs demand.
- */
 class Cs3MangaProvider(override val config: ProviderConfig) : ContentProvider {
 
     companion object {
@@ -44,12 +29,6 @@ class Cs3MangaProvider(override val config: ProviderConfig) : ContentProvider {
         /** Last chapter/page outcome per provider, read by the detail screen. */
         val lastOutcome = ConcurrentHashMap<String, String>()
 
-        /**
-         * `supportedTypes` entry names that mean chapters/pages instead of
-         * video. Name-based on purpose: it compiles whatever the vendored
-         * CloudStream enum carries, and a future enum value with one of these
-         * names is routed without an app change. Anything else stays video.
-         */
         private val MANGA_TYPE_NAMES = setOf(
             "manga", "manhwa", "manhua", "comic", "webtoon", "manhwa18",
             "doujinshi", "doujin",
@@ -168,11 +147,6 @@ class Cs3MangaProvider(override val config: ProviderConfig) : ContentProvider {
             if (item.id.isBlank()) return@withContext item
             val resp = runCatching { a.load(a.fixUrl(item.id)) }.getOrNull()
                 ?: return@withContext item
-            // Same fields the video path reads off the response (see
-            // Cs3MainApiProvider.getMeta): the canonical url is adopted like
-            // CloudStream does, the search-time title stays (a manga search
-            // title is already exact, and only AnimeLoadResponse carries a
-            // second English name).
             val canonicalUrl = resp.url.takeIf { it.isNotBlank() } ?: item.id
             item.copy(
                 id = canonicalUrl,
@@ -196,9 +170,6 @@ class Cs3MangaProvider(override val config: ProviderConfig) : ContentProvider {
                 fail("chapters failed — ${e.message}")
                 return@withContext null
             } ?: return@withContext null
-            // Manga modules serve chapters as episodes: AnimeLoadResponse
-            // carries them grouped in a map, TvSeriesLoadResponse flat (see
-            // Cs3MainApiProvider.getEpisodes for the same split).
             val eps: List<com.lagradost.cloudstream3.Episode> = when (resp) {
                 is com.lagradost.cloudstream3.AnimeLoadResponse ->
                     resp.episodes.values.flatten()
@@ -246,9 +217,6 @@ class Cs3MangaProvider(override val config: ProviderConfig) : ContentProvider {
                 // Image bytes, not a manifest: manga plugins hand out page
                 // URLs, never HLS/DASH (see the video path for the reverse).
                 if (url.contains(".m3u8", ignoreCase = true) || url.contains(".mpd", ignoreCase = true)) continue
-                // Hotlink CDNs answer image requests with an anti-hotlink
-                // page unless the Referer rides along (see the video path's
-                // header merge, same rule). Header values stay ASCII.
                 val headers = LinkedHashMap<String, String>()
                 headers["User-Agent"] = Http.UA
                 runCatching { l.headers }.getOrNull()?.forEach { (k, v) ->

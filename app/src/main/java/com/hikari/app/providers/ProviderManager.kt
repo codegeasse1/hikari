@@ -29,30 +29,7 @@ class ProviderManager(private val store: AppStore, private val context: Context)
      *  not a rebuild at all (see [refresh]). */
     private var lastConfigs: List<ProviderConfig> = emptyList()
 
-    /**
-     * Builds the provider list from the stored configs.
-     *
-     * The adult-content switch is applied HERE, at the source, rather than in
-     * each screen that lists providers (see [com.hikari.app.data.NsfwGate]): a
-     * provider that is not in this list is not instantiated, not asked for
-     * catalogues, not searched, and not shown — so with the switch off an 18+
-     * extension's titles cannot reach Home, a collection, the search queue or
-     * the "Continue watching" shelf by any route. Filtering the drawn lists
-     * instead would leave every one of those paths intact behind the UI.
-     *
-     * Flipping the switch is therefore the one thing that makes an adult
-     * provider appear or disappear mid-session, and
-     * [com.hikari.app.HikariApp] re-runs this when the preference changes.
-     */
     suspend fun refresh() = withContext(Dispatchers.IO) {
-        // COALESCED. An install asks for a rebuild when it finishes AND the
-        // extension manager asks again as its own load lands, and an
-        // "Install all" run asks after every single entry — while building the
-        // list costs one instantiation per installed provider and gets more
-        // expensive as the list grows. A request that arrives while a build is
-        // running is therefore answered by ONE more build afterwards instead of
-        // a build of its own, which keeps installing fast on a machine that is
-        // already busy with a download and a dex load.
         if (!refreshLock.tryLock()) {
             refreshQueued = true
             return@withContext
@@ -85,12 +62,6 @@ class ProviderManager(private val store: AppStore, private val context: Context)
                     )
                     runCatching { store.saveProviders(unique) }
                 }
-                // The NSFW filter may inspect an older Aniyomi/Manga
-                // extension's metadata. That is third-party APK code and must
-                // never be allowed to escape refresh: an install followed by a
-                // metadata exception used to kill MainActivity, after which
-                // Android relaunched Hikari on Home — the exact TV symptom this
-                // path is responsible for.
                 val configs = runCatching {
                     ExtensionNsfw.filter(context, unique)
                 }.onFailure { error ->
@@ -100,14 +71,6 @@ class ProviderManager(private val store: AppStore, private val context: Context)
                             (error.message ?: error.javaClass.simpleName),
                     )
                 }.getOrElse { unique }
-                // Same configs in, same providers out — and assigning the same
-                // list again is NOT harmless: it emits on [providers], which
-                // re-runs every screen effect that watches it (the extensions
-                // screen re-hashes its installed files and re-adopts the 18+
-                // flags on every emission), and it throws away the extension
-                // instances that are already instantiated. An install-all run
-                // ends with a rebuild, the store's own flow usually asks for one
-                // right after, and the second one used to be pure work.
                 if (configs == lastConfigs && _providers.value.isNotEmpty()) continue
                 lastConfigs = configs
                 // An extension is third-party code. A bad constructor or a
@@ -133,25 +96,6 @@ class ProviderManager(private val store: AppStore, private val context: Context)
         }
     }
 
-    /**
-     * Asks the installed extensions that nothing else could classify whether they
-     * are 18+ ones, and writes the answer onto their rows.
-     *
-     * [refresh] can only apply what is already KNOWN: the flag the repo listing
-     * declared ([ProviderConfig.nsfw]) or the extension metadata the manga/anime
-     * engines publish. A CloudStream/Hikari/SkyStream/Nuvio extension declares
-     * adult content per TITLE, so for one of those installed before the flag was
-     * recorded, the only source is the extension itself
-     * ([ContentProvider.adultExtension]) — which means loading it. That is why
-     * this is a separate, on-demand pass: it runs only with the switch OFF, it
-     * asks each extension at most once EVER (the answer is persisted on the row,
-     * so the next launch needs no load at all), and [limit] bounds how much of it
-     * one launch pays so a library of a hundred extensions cannot turn switching
-     * the filter off into a minute of background plugin loads.
-     *
-     * Returns true when an extension turned out to be an adult one, i.e. when the
-     * caller should [refresh] again so it actually disappears.
-     */
     suspend fun learnAdultFlags(limit: Int = 40): Boolean = withContext(Dispatchers.IO) {
         if (com.hikari.app.data.NsfwGate.enabled) return@withContext false
         var learnedAdult = false
@@ -183,9 +127,6 @@ class ProviderManager(private val store: AppStore, private val context: Context)
         ProviderType.NUVIO -> com.hikari.app.nuvio.NuvioScraper(c)
         ProviderType.SKYSTREAM -> com.hikari.app.skystream.SkyStreamProvider(c)
         ProviderType.ANIYOMI -> com.hikari.app.aniyomi.AniyomiProvider(c)
-        // LNReader novel sources ride the MANGA type (manga tab, novel
-        // reader) under an `lnreader|` id prefix — no new ProviderType, so
-        // every exhaustive type when keeps compiling untouched.
         ProviderType.MANGA -> if (com.hikari.app.lnreader.LnReaderProvider.isLnReaderId(c.id)) com.hikari.app.lnreader.LnReaderProvider(c) else if (com.hikari.app.cs3.Cs3MangaProvider.isCs3MangaId(c.id)) com.hikari.app.cs3.Cs3MangaProvider(c) else if (com.hikari.app.sora.SoraMangaProvider.isSoraMangaProviderId(c.id)) com.hikari.app.sora.SoraMangaProvider(c) else com.hikari.app.manga.MangaProvider(c)
         ProviderType.IPTV -> IptvProvider(c)
         ProviderType.VEGA -> com.hikari.app.providers.vega.VegaProvider(c)
@@ -200,46 +141,7 @@ class ProviderManager(private val store: AppStore, private val context: Context)
         _providers.value.firstOrNull { it.config.id == id }
 }
 
-/**
- * Serialises the calls Hikari makes into ONE extension instance.
- *
- * Every extension — a CloudStream `.cs3` plugin, a Hikari `.hiki` bundle, a
- * Nuvio script — is an object we do not control, and most of them keep mutable
- * state while a search runs. Two calls in flight at once (the origin pass and
- * the cross-repo pass, or a meta/episode fetch landing while a stream lookup is
- * still walking the same object) on the same instance is how an extension's own
- * unsynchronised `ArrayList` gets corrupted: the recorded crash
- * `ArrayIndexOutOfBoundsException: length=49; index=49 at java.util.ArrayList.add`
- * inside a bridge provider, thrown from an extension's own coroutine, is exactly
- * that — two `add`s racing on one list.
- *
- * Holding a per-provider lock costs nothing when the calls are already
- * sequential, and it removes the app's contribution to that race: Hikari never
- * has two calls inside the same extension at the same time. A wedged extension
- * cannot block the others (a lock each), and a call that throws simply releases
- * it.
- */
 object ProviderGate {
-    /**
-     * Which kind of caller wants the provider — and therefore who goes first.
-     *
-     * The gate serialises calls into one extension so Hikari never contributes
-     * to a race inside it. That is about *mutual exclusion*, not about *order*,
-     * and order is what this enum is for: a plain FIFO mutex made a screen the
-     * user is waiting on queue behind whatever background work happened to ask
-     * first. The reported shape of that was "Aniyomi and SkyStream take almost
-     * 15 seconds to load the episode list and everything on the detail page":
-     * the page's own source prefetch (a stream pass, tens of seconds inside one
-     * Aniyomi extension) ran on the same provider, and the metadata/episode
-     * calls the page was actually waiting on were queued behind it.
-     *
-     *  * [INTERACTIVE] — something the user is watching: meta, episodes, a
-     *    catalog page, a search they asked for. These queue in FIFO order among
-     *    themselves and are never overtaken.
-     *  * [BACKGROUND] — the cross pass, a background sweep, a stream prefetch.
-     *    These never START while interactive work is waiting or active (see
-     *    [withProvider]) so they can no longer hold a page up.
-     */
     enum class Lane { INTERACTIVE, BACKGROUND }
 
     private val locks = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.sync.Mutex>()
@@ -254,16 +156,6 @@ object ProviderGate {
     /** True while any interactive window is open — a page is being loaded. */
     fun interactiveActive(): Boolean = interactiveWindows.get() > 0
 
-    /**
-     * Marks [block] as a window in which the user is waiting on provider work
-     * (a detail page loading its meta and episodes). Inside it every provider
-     * call is INTERACTIVE, and — the part that matters — no BACKGROUND pass
-     * will START a provider call for the duration, so the page is not queued
-     * behind work nobody is watching.
-     *
-     * Bounded by nature: a window is one page load. Background work is never
-     * starved indefinitely (see [BACKGROUND_MAX_HOLD_MS]).
-     */
     suspend fun <T> interactive(block: suspend () -> T): T {
         interactiveWindows.incrementAndGet()
         try {
@@ -278,39 +170,13 @@ object ProviderGate {
      *  searching, and this is the backstop that says so. */
     private const val BACKGROUND_MAX_HOLD_MS = 20_000L
 
-    /**
-     * How long a BACKGROUND caller gives a page that is loading SOMEBODY ELSE a
-     * head start.
-     *
-     * The app-wide "is a page loading" check used to be the same 20-second hold
-     * the same-provider one gets, and that is a delay with nothing on the other
-     * side of it: a stream lookup could spend its first twenty seconds parked
-     * because an unrelated screen was loading an unrelated extension — no lock
-     * of its own was contended at all. A couple of seconds still lets a page get
-     * its own requests in first, which is the etiquette the check was for; the
-     * case that was ever REPORTED as a page being held up is the same-provider
-     * one, and that keeps its full hold.
-     */
     private const val BACKGROUND_COURTESY_MS = 2_000L
 
-    /** How long an INTERACTIVE caller waits for a busy extension before it
-     *  stops queueing and says so (see [ProviderStalledException]). A wedged
-     *  call used to hold this lock forever, so every later tap queued behind
-     *  the corpse, burned its whole budget, and answered "no playable
-     *  sources" — until an app restart cleared it. Generous on purpose: a
-     *  healthy long extraction must never trip it (see [ExtensionRecovery],
-     *  which also needs a repeat before it acts). */
     private const val INTERACTIVE_GATE_MAX_MS = 90_000L
 
     /** Same for BACKGROUND callers (their poll loop used to spin forever). */
     private const val BACKGROUND_GATE_MAX_MS = 120_000L
 
-    /** How long a waiter stands behind a busy extension before it stops
-     *  queueing and takes a fresh lane instead: the stuck call keeps its old
-     *  lock and keeps loading in the background, while the waiter proceeds
-     *  immediately on the new lock and its servers paint. A healthy overlap
-     *  (meta + episodes, a prefetch) finishes inside this window, so only a
-     *  genuinely stuck holder is ever bypassed. */
     private const val STUCK_GRACE_MS = 5_000L
 
     /** How long a background call may have waited before its wait is written to
@@ -318,14 +184,6 @@ object ProviderGate {
      *  minute before playback go" (see [withProvider]). */
     private const val WAIT_LOG_MS = 750L
 
-    /**
-     * Thrown when a provider call cannot even START because an earlier call
-     * into the same extension never let go of its lock. This is the signal
-     * that the extension's runtime is wedged — not slow, wedged — and it is
-     * what [com.hikari.app.providers.ExtensionRecovery] acts on. A plain
-     * [Exception] (not cancellation): the lookup must record it as a
-     * no-answer with a reason, never swallow it as a quiet cancel.
-     */
     class ProviderStalledException(
         val providerId: String,
         val waitedMs: Long,
@@ -345,16 +203,6 @@ object ProviderGate {
             val waiters = waitersFor(id)
             waiters.incrementAndGet()
             try {
-                // Bounded: an earlier call that will never return must not
-                // hold every later tap hostage (see [ProviderStalledException]
-                // and INTERACTIVE_GATE_MAX_MS). Still cancellable — the delays
-                // below yield like the old withLock did.
-                //
-                // And no waiter ever queues behind a stuck holder: once the
-                // wait passes STUCK_GRACE_MS the lane lock is replaced (the
-                // stuck call keeps the old one and keeps loading in the
-                // background) and this caller proceeds on the fresh lock, so
-                // its servers paint instead of standing in single file.
                 var mutex = lockFor(id)
                 val start = System.currentTimeMillis()
                 var contendedSince = -1L
@@ -432,9 +280,6 @@ object ProviderGate {
                         mutex.unlock()
                     }
                 }
-                // Same bypass as the interactive lane — but ONLY against this
-                // provider's own lock being held. Courtesy holds (a page
-                // loading elsewhere) still just wait out their window.
                 val now = System.currentTimeMillis()
                 if (contendedSince < 0L) contendedSince = now
                 if (now - contendedSince >= STUCK_GRACE_MS) {
@@ -453,20 +298,6 @@ object ProviderGate {
         }
     }
 
-    /**
-     * The stall breaker: replaces a provider's lock with a fresh one.
-     *
-     * Called when an extension is proven wedged (see
-     * [com.hikari.app.providers.ExtensionRecovery]): the stuck call keeps the
-     * OLD mutex — nothing can take it away from a thread parked forever — but
-     * every new call moves to the new one, so one corpse stops poisoning every
-     * later tap. The stuck thread still leaks (one thread per wedge), but it
-     * no longer decides what plays. Universally safe across engines because it
-     * touches only the app's own lock map, never extension state. Logs loudly:
-     * a healthy long call misdiagnosed as wedged would run concurrently with
-     * the next call, which is exactly the race this gate exists to prevent —
-     * the generous caps above are what keep that misdiagnosis rare.
-     */
     fun breaker(id: String) {
         locks[id] = kotlinx.coroutines.sync.Mutex()
         interactiveWaiters.remove(id)

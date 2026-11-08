@@ -1,40 +1,5 @@
 package com.hikari.app.player
 
-/**
- * Player interface skins (Settings → Player → Player UI).
- *
- * Four looks for the playback controls, so the overlay can match the taste of
- * whatever app the user came from:
- *
- *  - DEFAULT  — Hikari's own look, and what the app shipped with before the
- *               picker existed: frosted top bar, gradient bottom bar, round
- *               glass pills, accent-ringed play button, and the CURVED glass
- *               pane (the bent sheet with the neon running down its two bowed
- *               sides) behind every dialog — the server list loads inside the
- *               curving lines. This is the one the user means by "the old UI".
- *  - MINIMAL  — no bar backgrounds at all: the title and the controls read as
- *               text and icons floating directly on the picture, like VLC's
- *               compact overlay. Best for people who want the video, not the UI.
- *  - CINEMA   — MX Player / desktop-player feel: a solid rounded "deck" panel
- *               under the picture, square-ish control plates, a bigger play
- *               button. Reads as equipment rather than as chrome.
- *  - NEON     — floating rounded decks clear of the screen edges, with accent
- *               hairlines and a glowing play button. The "late night" skin.
- *
- * HOW IT IS APPLIED. [PlayerActivity] inflates one controller layout
- * (@layout/player_controller) and then calls its applyPlayerSkin(), which reads
- * [spec] and restyles the views it already has: bar backgrounds, pill drawables
- * and metrics, the play-button ring and the floating margins. The skins are
- * therefore a pure presentation layer — they cannot change what the controls DO
- * (every button, pill and media3 id is identical in all four skins), which also
- * means media3's own layout assumptions (the last child of exo_basic_controls,
- * the minimal-mode size thresholds) are unaffected by a skin change.
- *
- * The skin is stored under AppStore.PLAYER_SKIN and mirrored into the volatile
- * [current] below at startup (HikariApp), because the player is a View-based
- * Activity that has to know the value synchronously while it is being built —
- * the same pattern as [NetTuning] and TmdbResolver.contentLanguage.
- */
 object PlayerSkins {
 
     const val DEFAULT = "default"
@@ -47,31 +12,8 @@ object PlayerSkins {
     const val NEON = "neon"
     const val TV = "tv"
 
-    /**
-     * Every skin, in the order the picker lists them. [DEFAULT] leads because it
-     * IS Hikari's look — the curved glass everything was built around — and the
-     * others are deliberate departures from it. "Glass" is NOT a second entry
-     * any more: it and Default are the same thing, and listing one look twice
-     * made the picker read as broken (the user's report: "why did you in
-     * default also added that box one" — Default had grown a flat box while the
-     * curved pane they asked to be the default sat under the other name).
-     */
     val ALL = listOf(DEFAULT, MINIMAL, CINEMA, NEON, TV)
 
-    /**
-     * What an install that has never chosen a skin gets: Minimal.
-     *
-     * Hikari still ships Default, and it is still what the picker lists first —
-     * but a fresh install (and any stored value that is not one of [ALL]) now
-     * wears Minimal: no bar backgrounds, no glow, nothing over the picture
-     * except the controls themselves. That is the look a first run should have
-     * on a phone and on a television alike, and it is the cheapest to draw.
-     *
-     * An explicit choice ALWAYS wins: a stored `minimal`/`cinema`/`neon`/
-     * `default` is returned as-is, and the pre-picker key [GLASS] still
-     * resolves to [DEFAULT] so the people who chose it in the older build keep
-     * the look they picked rather than being moved to Minimal behind their back.
-     */
     const val FALLBACK = MINIMAL
 
     fun normalize(key: String?): String = when {
@@ -80,12 +22,6 @@ object PlayerSkins {
         else -> FALLBACK
     }
 
-    /** True when this skin's dialogs are the FLAT slab rather than the curved
-     *  pane (see [CurvedGlassPanel.applySkin]). Default is the curve; the three
-     *  looks that name a corner style of their own are flat. Callers that have
-     *  to reserve room for the neon — or decide how much air to keep around a
-     *  panel — ask this instead of comparing against [GLASS], which is no longer
-     *  a value [normalize] can ever return. */
     fun isFlat(key: String?): Boolean = normalize(key) != DEFAULT
 
     fun label(key: String?): String = when (normalize(key)) {
@@ -117,11 +53,6 @@ object PlayerSkins {
 
     // ---- Presentation spec ---------------------------------------------------
 
-    /**
-     * Everything [PlayerActivity] needs to restyle its controller. A `0` for a
-     * drawable means "draw nothing" (no background / no ring), and the dp values
-     * are applied to the inflated views as-is.
-     */
     class SkinSpec(
         /** Background for the top bar, or 0 for none. */
         val topBarBackground: Int,
@@ -213,10 +144,6 @@ object PlayerSkins {
             topBarPadBottom = 6,
         )
 
-        // DEFAULT — Hikari's own look, kept exactly as it always was: the
-        // frosted bars, the round glass pills and the accent-ringed play
-        // button, with the curved glass pane (see [CurvedGlassPanel]) behind
-        // every dialog. This is the skin the app shipped with.
         else -> SkinSpec(
             topBarBackground = com.hikari.app.R.drawable.top_bar_bg,
             bottomBarBackground = com.hikari.app.R.drawable.bottom_bar_bg,

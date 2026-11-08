@@ -19,24 +19,6 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 
-/**
- * Process-wide owner of the current search.
- *
- * The problem this fixes: searching across every extension is a long multi-page
- * scan (page 1 shows ~20 hits, then more pages keep streaming in up to ~100+).
- * Tapping a result opens the player in a separate Activity, which recreates the
- * Search screen's ViewModel when the user comes back — and a ViewModel-scoped
- * search job dies with it, so the whole scan restarted from page 1 and the
- * already-found results were thrown away.
- *
- * Holding the job + results here (instead of in the ViewModel) means:
- *  - the scan keeps running in the background while a result is playing, and
- *  - returning to Search instantly re-shows everything found so far and lets
- *    the same scan continue, instead of starting over.
- *
- * Items are stored already tokenized (tiny disk-cache tokens, see
- * [PosterLoader.tokenize]) so holding a hundred posters in memory stays cheap.
- */
 open class SearchSessionScope(private val snapshotName: String) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var job: Job? = null
@@ -51,12 +33,6 @@ open class SearchSessionScope(private val snapshotName: String) {
     private fun key(query: String, providers: Set<String>): String =
         query.trim() + "\u0000" + providers.sorted().joinToString(",")
 
-    /**
-     * Starts the search for [query]/[providers], or — if that exact search is
-     * already running or already finished — leaves the live session untouched so
-     * the caller just renders what has accumulated so far. Only a genuinely new
-     * query (or provider set) cancels the in-flight scan.
-     */
     fun search(repo: ContentRepository, query: String, providers: Set<String>) {
         val k = key(query, providers)
         // Same search: keep the running job and its partial results. This is
@@ -69,11 +45,6 @@ open class SearchSessionScope(private val snapshotName: String) {
             _searching.value = false
             return
         }
-        // Same search, but the process died in between (its in-memory session
-        // died with it): the disk snapshot has everything that had landed.
-        // Re-show it instantly, then keep scanning in the background — merging
-        // into what is already shown — until the scan finishes. Only a search
-        // the user fully left (empty query, see [clear]) drops the snapshot.
         readSnapshot()?.let { snap ->
             if (snap.key == k && snap.items.isNotEmpty()) {
                 job?.cancel()
@@ -91,21 +62,7 @@ open class SearchSessionScope(private val snapshotName: String) {
         launchScan(repo, k, merge = false)
     }
 
-    /**
-     * Runs the multi-page scan for key [k], publishing pages as they land.
-     * With [merge], late pages are folded into the restored snapshot (by
-     * uniqueId) instead of replacing it, so a resumed scan can only ADD.
-     * The scan runs until the repository finishes it — leaving the search
-     * (detail, player, another tab) never stops it; only a new query or an
-     * emptied box (see [clear]) does.
-     */
     private fun launchScan(repo: ContentRepository, k: String, merge: Boolean) {
-        // Register the scan as background work: it is a long multi-page sweep,
-        // and without this Android freezes the process the moment the user
-        // leaves the app, stopping the search mid-page. See [BackgroundWork].
-        // Holder first: the cancel callback below has to reach the job, and the
-        // token must exist BEFORE the work starts (a scan that finished in a
-        // millisecond could otherwise race the service's own start).
         var started: Job? = null
         val query = k.substringBefore(keySep())
         var lastDiskWrite = 0L
@@ -186,12 +143,6 @@ open class SearchSessionScope(private val snapshotName: String) {
         return out
     }
 
-    /**
-     * The disk snapshot: the key of the last scan plus what it had found
-     * (tokenized posters are tiny disk-cache tokens, so this stays small).
-     * Read on [search] when the in-memory session is gone; written throttled
-     * while a scan runs and once when it finishes.
-     */
     private data class Snapshot(val key: String, val items: List<MediaItem>)
 
     private fun snapshotFile(): File? = runCatching {
@@ -284,11 +235,4 @@ open class SearchSessionScope(private val snapshotName: String) {
  */
 object SearchSession : SearchSessionScope("search_session.json")
 
-/**
- * Home in-place search overlay scan owner (the scope pill plus Searching X
- * only line). A session of its own so it never cancels (or shows) the Search
- * tab scan and vice versa. Same resume-instead-of-restart contract: the
- * overlay leaves the composition while a title plays, so holding the job and
- * hits here keeps a visit to a title from restarting the search from page 1.
- */
 object HomeSearchSession : SearchSessionScope("home_search_session.json")

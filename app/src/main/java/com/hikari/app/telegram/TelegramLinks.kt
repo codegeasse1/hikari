@@ -4,21 +4,6 @@ import com.hikari.app.data.AppStore
 import org.json.JSONArray
 import org.json.JSONObject
 
-/**
- * The individual video links the Telegram tab keeps in its "Video links"
- * section.
- *
- * A channel is a FEED — adding one browses everything it posts. A video link is
- * ONE post, `t.me/<channel>/<id>`, which is what you have when someone sends you
- * a single video: there is no channel to browse, the video is the whole thing.
- *
- * The LINK is the identity. The title and the still are only what Telegram told
- * us about it when it was added, and the file itself is deliberately NOT stored:
- * a Telegram file reference expires within days, so a stored one is worthless
- * later. Every play re-reads the link ([Td.linkVideo] with the account,
- * [TelegramWeb.loadPost] without), which is what keeps a row playable months
- * after it was added.
- */
 object TelegramLinks {
 
     /** One stored link. */
@@ -83,17 +68,6 @@ object TelegramLinks {
         store.setTelegramLinks(encode(existing.filterNot { it.url.equals(url, true) }))
     }
 
-    /**
-     * [link] with its title (and, when telegram gives one up, its still) filled
-     * in.
-     *
-     * The account is asked first — it is the only reader that sees a post whose
-     * file Telegram withholds from browsers, and the only one that can read a
-     * private `c/…` link at all — and the post's own embed page second. Neither
-     * answering is not a reason to refuse the link: the title is cosmetic, and
-     * the file may well be readable once the user signs in (or after Telegram
-     * publishes it), which is why the row stores the link and re-reads it.
-     */
     suspend fun describe(link: Link): Link {
         if (Td.isSignedIn()) {
             val video = runCatching { Td.linkVideo(link.url) }.getOrNull()

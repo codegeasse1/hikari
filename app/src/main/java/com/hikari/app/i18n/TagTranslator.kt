@@ -8,29 +8,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentHashMap
 
-/**
- * Translates the labels that come from CONTENT into the app's own language.
- *
- * The app's own copy is covered by [I18n]'s dictionaries, and so are the TMDB
- * genres — but a CloudStream or Aniyomi extension invents its own tags
- * ("Martial Arts", "Xianxia", "Isekai", "Cultivation"), and those arrived in
- * whatever language the extension wrote them in no matter what language the app
- * was set to. That is the "the tags are still in English" report: on the detail
- * page of a Chinese anime whose extension labels it *Action, Adventure,
- * Fantasy, Martial Arts*, while the interface around them was Arabic.
- *
- * A fixed list cannot cover an unbounded vocabulary, so this asks the same free
- * translation endpoint the app already uses for titles (see [Translator]) and
- * keeps the answer per (language, tag). Tags repeat constantly — every action
- * film carries "Action" — so after the first few pages nearly every lookup is a
- * memory hit, and one round trip per distinct label is nothing next to the
- * artwork and metadata the same page is already loading.
- *
- * Deliberately NOT applied to: titles, overviews, episode names and cast names.
- * Those are the *content* the user came for and are already fetched in the
- * chosen language from TMDB — translating them again would be slow and would
- * turn proper nouns into nonsense.
- */
 object TagTranslator {
 
     /** 0 until something is cached, then steps once per completed batch. Compose
@@ -75,9 +52,6 @@ object TagTranslator {
     fun request(lang: String, tag: String) {
         val t = tag.trim()
         if (t.isBlank() || t.length < 2 || t.length > MAX_CHARS) return
-        // Labels an extension wrote in a non-Latin script (or a tag the source
-        // already localised) are left alone: there is no English word in them to
-        // translate, and asking would only risk mangling a proper noun.
         if (!ASCII_LETTER.containsMatchIn(t)) return
         val code = gtxCode(lang)
         if (code.isBlank() || code.startsWith("en")) return
@@ -86,9 +60,6 @@ object TagTranslator {
             if (inFlight.size > 24 || !inFlight.add(k)) return
         }
         scope.launch {
-            // `translateUi` refuses a result that lost (or gained) a "%s", which
-            // is the one thing machine translation does get wrong often enough
-            // to matter: a broken placeholder shows as literal "%s" in the UI.
             val out = runCatching { Translator.translateUi(t, code) }.getOrDefault(t)
             synchronized(inFlight) { inFlight.remove(k) }
             if (out.isBlank() || out == t) return@launch

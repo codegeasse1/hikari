@@ -1,21 +1,5 @@
 package com.hikari.app.data
 
-/**
- * One shared answer for "has this video been started / finished".
- *
- * The rule the app promises: playing anything for even a second marks it as
- * being watched, and watching it through to the end — except the closing
- * credits nobody sits through — marks it as watched. Credits are the last
- * [CREDIT_SKIP_MS] of a video, capped at [CREDIT_SKIP_FRAC] of its length so
- * a short clip is not "finished" after a few seconds, and floored at 10s so
- * the window is never nothing. A video whose length is unknown can be
- * started but never finished.
- *
- * Every reader uses this — the player's history writes, the detail page's
- * resume/finish tests and mark sheet, the Home Continue-watching shelf and
- * the tracker push — so a mark and a real play can never disagree about what
- * "watched" means.
- */
 object WatchProgress {
     /** Even a second of playback counts as started (the "1 second watched"
      *  marks it Watching" promise). */

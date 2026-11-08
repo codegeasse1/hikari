@@ -19,28 +19,6 @@ import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
-/**
- * Adapts a SkyStream plugin (`.sky` → plugin.js) to Hikari's ContentProvider
- * contract. Unlike nuvio providers, a SkyStream plugin carries its OWN
- * catalogue, search, details and streams — it is a whole site — so this class
- * maps one plugin onto every part of the contract:
- *
- *   catalogs()             <- getHome   { "<row>": [item, …] }
- *   getCatalog()           <- that row's items
- *   search(query)          <- search(query)
- *   getMeta()/getEpisodes() <- load(item.url)   (details + episodes[])
- *   getStreams()           <- loadStreams(episode.url or item.url)
- *
- * The item's `url` is an OPAQUE TOKEN the plugin invented (akashdh11's
- * providers encode `<base>|<type>|<id>`; others use a plain page URL or a
- * `tmdb:` id), so it is carried through Hikari verbatim as [MediaItem.id] and
- * handed straight back to the plugin — never parsed, never re-encoded.
- *
- * "Instant Load": a plugin may attach `streams[]` to each episode of the `load`
- * result. Those are mapped once in [getEpisodes] and replayed by [getStreams]
- * without touching the engine again, so tapping an episode the site already
- * resolved starts playing immediately instead of paying for a second scrape.
- */
 class SkyStreamProvider(override val config: ProviderConfig) : ContentProvider {
 
     companion object {
@@ -77,14 +55,6 @@ class SkyStreamProvider(override val config: ProviderConfig) : ContentProvider {
     private val packageName: String get() = SkyStreamPluginManager.packageOf(config.id)
     private val subId: String? get() = SkyStreamPluginManager.subIdOf(config.id)
 
-    /**
-     * The plugin's script. `config.url` holds the absolute path captured at
-     * install time; if that no longer resolves (a restored backup, a moved data
-     * dir, an app the OS relocated) fall back to the canonical location the
-     * manager writes to — `filesDir/skystream/plugins/<packageName>/plugin.js`.
-     * Reporting the extension as broken when its file is right there under the
-     * name it was installed with is never the right answer.
-     */
     private val scriptFile: File get() {
         val stored = File(config.url)
         if (stored.exists()) return stored
@@ -92,13 +62,6 @@ class SkyStreamProvider(override val config: ProviderConfig) : ContentProvider {
         return if (canonical.exists()) canonical else stored
     }
 
-    /**
-     * Why the last [invoke] produced nothing (file missing, unreadable payload).
-     * SkyStream's plugin API is one call per function with no pagination, so
-     * the ONLY honest way Home and search can tell "this extension is broken"
-     * apart from "this extension carries no such title" is to carry the real
-     * reason out of here instead of returning a bare null.
-     */
     @Volatile
     private var lastFailure: String? = null
 
@@ -179,13 +142,6 @@ class SkyStreamProvider(override val config: ProviderConfig) : ContentProvider {
 
     override suspend fun getCatalog(ref: CatalogRef, page: Int): List<MediaItem> =
         withContext(Dispatchers.IO) {
-            // Page numbers are 1-BASED across Hikari (see ContentProvider and
-            // every other provider: `page.coerceAtLeast(1)`, `skip=(page-1)*100`).
-            // Treating page 1 as "not the first page" here made every SkyStream
-            // row come back empty the instant it was asked for, which is why
-            // these extensions showed "Couldn't load …" on Home and answered
-            // every cross-search in ~5ms with "no matching title". A SkyStream
-            // plugin returns its whole row in ONE call, so only page 1 has items.
             if (page > 1) return@withContext emptyList()
             val home = home() ?: return@withContext emptyList()
             val name = ref.id.removePrefix("cat:")
@@ -234,28 +190,8 @@ class SkyStreamProvider(override val config: ProviderConfig) : ContentProvider {
         }
     }
 
-    /**
-     * Why this extension produced no catalog, in Hikari's own words.
-     *
-     * Cloudflare is named ONLY when it is genuinely the reason: this
-     * extension's own site is a host we could not pass a challenge on, or the
-     * plugin's own error text says it hit a verification wall. Otherwise the
-     * extension's real error is surfaced verbatim — a site that is down, a
-     * plugin that crashed and an extension that really has no catalog are three
-     * different stories, and telling the user the wrong one sends them to a
-     * WebView that cannot help. (The old version asked
-     * `CloudflareVerifier.blockedHost()` — the most recently challenged host in
-     * the whole app — so one blocked site anywhere made every extension's
-     * failure read as a Cloudflare wall.)
-     */
     private fun catalogReason(err: String?, empty: Boolean): String {
         val e = err.orEmpty()
-        // Cloudflare is named ONLY when this extension's OWN site is the host
-        // that was challenged (or its own error text says so). The old check
-        // asked `blockedHost()` — the most recently challenged host in the
-        // WHOLE app — so one blocked site anywhere made every extension's empty
-        // catalog read as "Cloudflare wants a verification", extensions that
-        // were never behind a challenge included.
         if (com.hikari.app.net.CloudflareVerifier.isVerificationMessage(e)) return CF_REASON
         val host = siteHost()
         if (host != null && com.hikari.app.net.CloudflareVerifier.isBlockedHost(host)) return CF_REASON
@@ -281,9 +217,6 @@ class SkyStreamProvider(override val config: ProviderConfig) : ContentProvider {
                 lastOutcome[config.id] = "✗ $why".take(80)
                 return@withContext emptyList()
             }
-            // It answered: any note left by an earlier failure of this pass is
-            // stale, and carrying it forward is what made a healthy repo read
-            // back as "couldn't be searched".
             lastOutcome.remove(config.id)
             val data = res.opt("data")
             val arr = when (data) {
@@ -330,9 +263,6 @@ class SkyStreamProvider(override val config: ProviderConfig) : ContentProvider {
         if (!res.optBoolean("ok", false)) {
             val err = res.optString("error")
             if (err.isNotBlank()) streamErrors[config.id] = "✗ $err"
-            // The origin "answering nothing" for a title starts here: without
-            // the plugin's own words in the log there is no telling a walled
-            // site from a changed page from a crashed call.
             com.hikari.app.data.Logs.log(
                 "Provider",
                 "${config.name} [SkyStream]: details failed for \"${item.title}\" — " +
@@ -413,17 +343,6 @@ class SkyStreamProvider(override val config: ProviderConfig) : ContentProvider {
         if (streams.isNotEmpty()) instantStreams[token] = streams
     }
 
-    /**
-     * Which plugin link `loadStreams` is actually asked for.
-     *
-     * The requested episode id is only usable when the plugin's own episode
-     * list contains it. Anime sites commonly list a split season as its OWN
-     * season 1 (or renumber it), while the detail page asks with the TMDB
-     * season — handing that foreign id to `loadStreams` answers empty in
-     * under a second (the log-proven "answered nothing" class). So: exact id
-     * first, then the same season+number, then the same number inside THIS
-     * title (never another show), and only then the title link itself.
-     */
     private fun resolveToken(item: MediaItem, episode: Episode?): String {
         val eps = loadedEpisodes[item.id].orEmpty()
         val wanted = episode?.id?.takeIf { it.isNotBlank() }
@@ -452,9 +371,6 @@ class SkyStreamProvider(override val config: ProviderConfig) : ContentProvider {
             if (!scriptFile.exists()) {
                 return@withContext fail("✗ Extension file missing — reinstall this extension.")
             }
-            // The episode list is what the token is resolved against: make
-            // sure one load has run before resolving, so a cold cache does
-            // not resolve every series tap to the title link.
             if (loadedEpisodes[item.id] == null && loadedMeta[item.id] == null) {
                 getMeta(item)
             }
@@ -475,12 +391,6 @@ class SkyStreamProvider(override val config: ProviderConfig) : ContentProvider {
                 com.hikari.app.net.StreamProbe.warmAsync(distinct)
                 return@withContext distinct
             }
-            // The title link itself answered nothing and there was no usable
-            // episode: one bounded re-search INSIDE this origin (strict
-            // normalised-title equality only — never a neighbouring show),
-            // then load + episode match + one more extraction. Covers a
-            // detail page that was opened from a catalogue row whose link the
-            // site has since rotated.
             if (token == item.id) {
                 val via = searchFallback(item, episode)
                 if (via.isNotEmpty()) {
@@ -522,12 +432,6 @@ class SkyStreamProvider(override val config: ProviderConfig) : ContentProvider {
         return mapStreams(arr)
     }
 
-    /**
-     * Origin-only re-search for a title whose own link yields nothing: tries
-     * the title and its sequel-stripped base, accepts ONLY a result whose
-     * normalised title equals the query (same show, never a neighbour), loads
-     * it, matches the wanted episode inside it and extracts once.
-     */
     private suspend fun searchFallback(item: MediaItem, episode: Episode?): List<StreamSource> {
         val queries = LinkedHashSet<String>()
         if (item.title.isNotBlank()) queries.add(item.title)
@@ -573,17 +477,6 @@ class SkyStreamProvider(override val config: ProviderConfig) : ContentProvider {
         return out
     }
 
-    /**
-     * One SkyStream `StreamResult` → Hikari [StreamSource].
-     *
-     * SkyStream's app routes `MAGIC_PROXY_v1`/`MAGIC_PROXY_v2`/`magic_m3u8:`
-     * URLs through its own local proxy, which is what injects the headers the
-     * CDN needs (and what serves a plugin-generated playlist). Hikari has no
-     * such proxy, so the payloads are decoded here instead: both proxy forms
-     * carry the REAL url (v2 also the headers to send with it), which is
-     * exactly what the player needs, and a `magic_m3u8:` playlist becomes a
-     * `data:` URL the player can read directly.
-     */
     private fun toStreamSource(o: JSONObject): StreamSource? {
         var url = o.optString("url")
         if (url.isBlank()) return null
@@ -591,9 +484,6 @@ class SkyStreamProvider(override val config: ProviderConfig) : ContentProvider {
 
         url = decodeMagic(url, headers)
 
-        // SkyStream's own StreamResult carries `name` (not `source`), an
-        // optional `size` ("1.7 GB") and an explicit `isM3U8` flag — read all
-        // three instead of guessing from the URL alone (see shim.js).
         val source = o.optString("source").ifBlank { o.optString("name") }
         val quality = o.optString("quality")
         val size = o.optString("size")
@@ -628,10 +518,6 @@ class SkyStreamProvider(override val config: ProviderConfig) : ContentProvider {
         val isM3u8 = o.optBoolean("isM3U8", false) ||
             url.startsWith("data:application/vnd.apple.mpegurl") || url.contains(".m3u8", true)
         val isMpd = url.contains(".mpd", true)
-        // Protected streams carry their DRM grant on the entry (the reference
-        // app's StreamResult.drmKid/drmKey/licenseUrl) — dropping it left a
-        // black screen on protected manifests instead of a media3 DRM session
-        // (see DrmSpec).
         val kid = o.optString("drmKid").takeIf { it.isNotBlank() }
         val key = o.optString("drmKey").takeIf { it.isNotBlank() }
         val license = o.optString("licenseUrl").takeIf { it.isNotBlank() }

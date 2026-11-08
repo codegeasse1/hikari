@@ -45,12 +45,6 @@ object MouseMode {
     yFrac = (yFrac + dy).coerceIn(0.05f, 0.95f)
   }
 
-  /**
-   * Presses whatever is under the cursor: a synthetic DOWN+UP at the cursor's
-   * position, dispatched to the view, the same technique WebViewActivity's own
-   * cursor uses. This is what makes OK in mouse mode click the circled target
-   * instead of whatever the (invisible, unmoved) focus happens to sit on.
-   */
   fun clickAt(view: android.view.View) {
     val w = view.width
     val h = view.height
@@ -73,9 +67,6 @@ object MouseMode {
 fun TvMouseCursorOverlay(modifier: Modifier = Modifier) {
   if (!MouseMode.enabled) return
   val density = LocalDensity.current
-  // Draw-only: arrow keys are driven by the root handler in AppNav (a sibling
-  // overlay never sits in the focus path, so its own preview handler never
-  // fired and the cursor sat dead).
   Box(modifier.fillMaxSize()) {
     androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxSize()) {
       val px = with(density) { (maxWidth * MouseMode.xFrac).toPx() }

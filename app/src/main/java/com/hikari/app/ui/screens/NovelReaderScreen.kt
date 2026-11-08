@@ -75,25 +75,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
-/**
- * The novel reader: text chapters from plain novel sources (see
- * [com.hikari.app.manga.MangaExtensionManager.isNovelId]).
- *
- * Separate from the image reader on purpose: text needs flowing paragraphs,
- * font sizing and light/sepia/dark themes — none of which belongs in the
- * image pipeline. Chapters, the chapter list and progress ride the same
- * [MangaStore] the image reader uses (same key shape), so follows, history
- * and "where was I" work across both.
- *
- * Chapter text arrives as [com.hikari.app.data.StreamSource.text] parts via
- * the provider's novel `getStreams` branch (blank urls, so the image reader
- * can never pick them up); they are joined here in order.
- *
- * The Mark button highlights words, lines or whole paragraphs in 12 colors —
- * saved per novel+chapter and restored on reopen. A long-press on any word
- * (~0.5s) starts a copy-like selection anywhere: drag to the wanted word or
- * line and release to commit it.
- */
 @Composable
 fun NovelReaderScreen(
     nav: NavHostController,
@@ -123,15 +104,9 @@ fun NovelReaderScreen(
     // 0 = dark, 1 = sepia, 2 = light.
     var theme by remember { mutableIntStateOf(0) }
     var showChapters by remember { mutableStateOf(false) }
-    // Highlighter: mark mode + word/line/paragraph unit + the active color.
-    // Highlights persist per novel+chapter (see MangaStore) and are restored
-    // whenever the chapter loads.
     var highlightMode by remember { mutableStateOf(false) }
     var hlUnit by remember { mutableIntStateOf(0) }
     var hlColor by remember { mutableIntStateOf(NovelHighlight.COLORS.first()) }
-    // Erase mode: tap removes the highlight under the finger, a long-press
-    // drag removes every highlight the drag touches (the only way to undo a
-    // free-dragged range, which can never be re-tapped exactly).
     var hlErase by remember { mutableStateOf(false) }
     var highlights by remember { mutableStateOf<List<NovelHighlight>>(emptyList()) }
     // Translator (floating button): same engines + languages as manga text.
@@ -231,9 +206,6 @@ fun NovelReaderScreen(
         translating = false
         error = null
         loading = true
-        // This chapter's own saved spot, read BEFORE the load below overwrites
-        // the single-slot progress with page 0 (a fresh Next chapter then has
-        // none and correctly starts at the top).
         val prevSaved = MangaStore.progressFor(key)?.takeIf { it.chapterUrl == chapter }
         val prevOwn = chapterPages[chapter]
         val idx0 = chapters.indexOfFirst { it.url == chapter }

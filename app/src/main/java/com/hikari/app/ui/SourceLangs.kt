@@ -2,24 +2,6 @@ package com.hikari.app.ui
 
 import com.hikari.app.providers.ContentProvider
 
-/**
- * Mihon-style language groups for the Sources screen: every installed source
- * lands in exactly one group (Multi, English, हिन्दी, Español, … — or Other
- * when it declares and names none), each group with its own enable-all
- * toggle and each source with its own checkbox.
- *
- * A source's language is resolved in this order, and never guessed beyond
- * what is written down:
- *  1. the plugin's own declared language ([ProviderConfig.lang] — CloudStream
- *     banks it at install), matched exactly (`pt-BR` → Portuguese);
- *  2. multi markers in the name (`Multi`, `Dual Audio`, `Multilingual`) —
- *     a pack that serves several languages is Multi, not any one of them;
- *  3. an explicit 2-letter tag (`[HI]`, `(EN)`);
- *  4. a language name / 3-letter code as a whole word in the name;
- *  5. the site host's country TLD (`.br` → Portuguese, …) — only TLDs that
- *     name one language are listed;
- *  6. Other.
- */
 object SourceLangs {
 
     const val MULTI = "multi"

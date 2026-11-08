@@ -208,18 +208,6 @@ import com.hikari.app.tv.tvToggle
 import com.hikari.app.tv.tvAdjust
 import com.hikari.app.tv.tvTextFieldKeys
 
-/**
- * The Collections manager: the "New Collection" / "New Folder" screens of the
- * reference client, folded into one destination with three stages (list →
- * collection → folder) so a whole collection can be built without the back
- * stack growing per keystroke.
- *
- * A collection is a NAME plus one or more folders, and a folder is a name plus
- * a list of catalog sources. A source is either a TMDB preset (Marvel Studios,
- * HBO, Prime Video…) — which needs no extension installed — or one catalog of
- * an installed extension. Saving writes the whole collection to [AppStore];
- * Home's extension picker then offers it next to the extensions.
- */
 @Composable
 fun CollectionsScreen(nav: NavHostController, onBack: () -> Unit) {
     val context = LocalContext.current
@@ -284,13 +272,6 @@ fun CollectionsScreen(nav: NavHostController, onBack: () -> Unit) {
                 title = tr("Collections"),
                 subtitle = tr("Your own folders of catalogs, shown on Home."),
                 onBack = onBack,
-                // The clipboard sits where the reference app puts it, because
-                // that is where a user who came from there will look: importing
-                // a file is about the COLLECTION list, not about one folder
-                // inside one collection. (It used to live in the folder editor,
-                // where a Nuvio/SkyStream export — which already carries its own
-                // folders — had nowhere to go but into the folder the user had
-                // just made by hand.)
                 actions = {
                     IconButton(onClick = { importOpen = true }) {
                         Icon(
@@ -299,12 +280,6 @@ fun CollectionsScreen(nav: NavHostController, onBack: () -> Unit) {
                             tint = MaterialTheme.colorScheme.primary,
                         )
                     }
-                    // The way OUT of the app: the same file the import reads,
-                    // written from what is on this screen. A personal catalog is
-                    // an afternoon's work, and until now the only copy of it was
-                    // inside this install — there was no way to move it to a
-                    // second device, send it to a friend, or keep it before a
-                    // reinstall.
                     IconButton(
                         enabled = collections.isNotEmpty(),
                         onClick = {
@@ -378,12 +353,6 @@ fun CollectionsScreen(nav: NavHostController, onBack: () -> Unit) {
                         }
                     }
                 }
-                // The second way in: a file that was already made somewhere else
-                // (the reference app's collections export, a friend's copy)
-                // already says which folders it holds and which catalog each one
-                // shows, so it becomes collections directly — nothing to rebuild
-                // by hand. Sits next to "New collection" because that is the same
-                // decision: how do the collections on this screen come to exist.
                 item {
                     Surface(
                         onClick = { importOpen = true },
@@ -442,9 +411,6 @@ fun CollectionsScreen(nav: NavHostController, onBack: () -> Unit) {
                         onOpen = { Routes.safeNavigate(nav, Routes.collectionView(c.id)) },
                         onEdit = { openEditor(c) },
                         onDelete = { confirmDelete = c },
-                        // Collections are kept — and drawn on Home — in the order
-                        // they are listed, so the up/down pair here is what makes
-                        // "my own order" possible without a drag nobody can see.
                         canMoveUp = index > 0,
                         canMoveDown = index < collections.lastIndex,
                         onMoveUp = {
@@ -461,10 +427,6 @@ fun CollectionsScreen(nav: NavHostController, onBack: () -> Unit) {
                                 )
                             }
                         },
-                        // A folder tile opens that folder directly. The block is
-                        // a browsable preview of the collection, so the tap a
-                        // user makes on a tile has to be the tap they meant —
-                        // not "open the collection, then find this folder again".
                         onOpenFolder = { f ->
                             Routes.safeNavigate(nav, Routes.collectionView(c.id, f.id))
                         },
@@ -661,18 +623,6 @@ private fun FolderSummary(c: Collection): String {
     return "$folders $f · $sources $s"
 }
 
-/**
- * One collection in the manager's list: the collection's own card, and then its
- * folders as a scrollable row of cover tiles.
- *
- * This is the arrangement the reference app's "personal catalog creator" shows
- * (a heading per collection with its folder tiles underneath, each tile wearing
- * the logo the user gave it — Netflix, Prime Video, DC…), and the reason the
- * folder tiles are here at all: a collection is mostly *seen* through its
- * folders, so the screen that manages collections should show them without a
- * second tap. The card above keeps the affordances the row had (open the whole
- * collection, rename it, delete it); the tiles themselves open their folder.
- */
 @Composable
 private fun CollectionBlock(
     collection: Collection,
@@ -701,10 +651,6 @@ private fun CollectionBlock(
         if (collection.folders.isEmpty()) return@Column
         LazyRow(
             modifier = Modifier.fillMaxWidth(),
-            // Only vertical padding: the list this block sits in already insets
-            // its items by 16dp a side, so the first folder tile starts on the
-            // same line as the collection card above it instead of 16dp further
-            // in than everything else on the screen.
             contentPadding = PaddingValues(vertical = 6.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
@@ -726,19 +672,6 @@ private fun CollectionBlock(
     }
 }
 
-/**
- * The width one folder tile takes in a horizontal row. A wide (16:9) tile needs
- * the most room to read as a wide tile; a poster keeps its 2:3 proportions in a
- * narrower column; a square sits between the two. Heights follow from the
- * shape ([TileShapes.aspect]), so the row stays even.
- *
- * These are deliberately SMALL. At the old sizes (178/134/124dp) a phone showed
- * barely two folder tiles at once, each one wrapped in its own glass panel with
- * two lines of text under the cover — reported as "showing 2 poster only in
- * screen, it's taking too much space because it wraps into glass box". A
- * folder's tile is a bookmark, not a poster: three fit on a phone now, the
- * covers are a little smaller, and the panel's padding is tighter.
- */
 fun folderTileWidth(shape: String): Dp = when (TileShapes.normalize(shape)) {
     TileShapes.WIDE -> 150.dp
     TileShapes.SQUARE -> 112.dp
@@ -791,9 +724,6 @@ private fun CollectionEditorPage(
                     name = collection.name,
                 )
             }
-            // How this catalog behaves on Home and how it draws itself: the
-            // reference app's collection settings, minus the Trakt/account half
-            // Hikari has no engine for.
             item {
                 GlassCard(
                     modifier = Modifier
@@ -963,9 +893,6 @@ private fun CollectionEditorPage(
                     )
                 }
             }
-            // Folders are listed — and saved — in the order they appear on Home,
-            // so their rows carry the same up/down pair the catalogs inside a
-            // folder do (see [MoveButtons]).
             itemsIndexed(collection.folders, key = { _, f -> f.id }) { index, f ->
                 FolderEditorRow(
                     folder = f,
@@ -1063,11 +990,6 @@ private fun FolderEditorRow(
     }
 }
 
-/**
- * The folder editor: its name and the catalogs it shows. "+ TMDB" opens the
- * ready-made presets (free — no extension needed); "+ Add catalog" lists the
- * installed extensions and then their catalogs, so a folder can mix both.
- */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun FolderEditorPage(
@@ -1076,17 +998,10 @@ private fun FolderEditorPage(
     onSave: (CollectionFolder) -> Unit,
 ) {
     var name by remember { mutableStateOf(folder.name) }
-    // The list this page works on. A folder can hold the same catalog twice
-    // (added twice, or restored from an older save) and two identical Lazy keys
-    // are a crash in Compose, so the repeats are dropped once here — from then on
-    // the order of this list IS the order the user sees and the order that saves.
     var sources by remember { mutableStateOf(folder.sources.distinctBy { it.key }) }
     var coverKind by remember { mutableStateOf(folder.coverKind) }
     var coverValue by remember { mutableStateOf(folder.coverValue) }
     var tileShape by remember { mutableStateOf(folder.tileShape) }
-    // The folder's own presentation switches (the reference app's folder
-    // settings): whether the tile carries its name, and whether an animated
-    // cover keeps animating when the tile is not focused.
     var hideTitle by remember { mutableStateOf(folder.hideTitle) }
     var gifAlways by remember { mutableStateOf(folder.gifAlways) }
     var heroBackdrop by remember { mutableStateOf(folder.heroBackdropUrl) }
@@ -1114,9 +1029,6 @@ private fun FolderEditorPage(
     val listState = com.hikari.app.ui.components.keptListState("folderEdit:${folder.id}")
     val dragScope = rememberCoroutineScope()
     val haptics = LocalHapticFeedback.current
-    // Plain holders, not state: these are only ever read inside the drag
-    // gesture (never during composition), and writing them from
-    // onGloballyPositioned would recompose the whole page on every scroll.
     val rowCentres = remember { HashMap<String, Float>() }
     val dragY = remember { floatArrayOf(0f) }
     val lastMoveAt = remember { longArrayOf(0L) }
@@ -1140,9 +1052,6 @@ private fun FolderEditorPage(
             title = tr("Folder"),
             subtitle = tr("What this folder shows."),
             onBack = onBack,
-            // The folder's search, up in the header where Home keeps its own:
-            // finding ONE film or show should not mean describing a whole
-            // catalog first (see TitleSearchSheet).
             actions = {
                 IconButton(onClick = { titleSheet = true }) {
                     Icon(
@@ -1362,12 +1271,6 @@ private fun FolderEditorPage(
                     )
                 }
             }
-            // The key carries the row's position as well as the catalog's own
-            // key, so a list that somehow held the same catalog twice can never
-            // crash the page (`Key "prov|cs3|…" was already used` — the crash a
-            // user reported while picking catalogs in the personal catalog
-            // creator). The list is deduped on load and on save, so the index is
-            // only ever the second half of a key that was already unique.
             itemsIndexed(sources, key = { index, s -> "$index|" + s.key }) { index, s ->
                 SourceRow(
                     source = s,
@@ -1557,15 +1460,6 @@ private fun FolderEditorPage(
     }
 }
 
-/**
- * The up/down pair that reorders one row of a list.
- *
- * Two small chevrons rather than a drag handle: a drag has to be aimed, is
- * awkward while the page itself scrolls, and needs a long-press on a row that is
- * already a button — where a chevron is one tap, behaves the same for a
- * two-source folder as for a twenty-source one, and says by fading out at the
- * ends that there is no further to go.
- */
 @Composable
 private fun MoveButtons(
     canMoveUp: Boolean,
@@ -1618,15 +1512,6 @@ private fun <T> List<T>.moveItem(from: Int, to: Int): List<T> {
 private fun List<CatalogSource>.toggleSource(source: CatalogSource): List<CatalogSource> =
     if (any { it.key == source.key }) filterNot { it.key == source.key } else this + source
 
-/**
- * One catalog source line inside the folder editor.
- *
- * The up/down pair reorders this folder's catalogs, and a folder's row on Home
- * shows its sources in exactly this order (see CollectionsRepository), so moving
- * HBO above Netflix here is what puts it first there. A newly added source lands
- * at the bottom, which is why the pair is how a source ends up where the user
- * wants it rather than only where it happened to land.
- */
 @Composable
 private fun SourceRow(
     source: CatalogSource,
@@ -1638,9 +1523,6 @@ private fun SourceRow(
     onMoveDown: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
-    // A short wobble the moment the row is picked up — with the haptic tick and
-    // the lift below it, that is what says "this catalog is in your hand now",
-    // instead of leaving the user to guess whether the long press took.
     val wobble = remember { Animatable(0f) }
     LaunchedEffect(lifted) {
         wobble.snapTo(0f)
@@ -1723,9 +1605,6 @@ private fun SourceRow(
                 }
             }
         }
-        // The row in your hand, ringed in the accent colour. Drawn over the card
-        // (not passed to GlassCard) because a border in the card's own modifier
-        // chain is painted UNDER its fill and would never be seen.
         if (lifted) {
             Box(
                 Modifier
@@ -1737,17 +1616,6 @@ private fun SourceRow(
     }
 }
 
-/**
- * Where the row in hand should move to on this frame: one step up or down the
- * moment the finger passes the neighbouring row's centre, otherwise nowhere.
- *
- * Stepping (rather than computing a final slot from the drag distance) is what
- * makes the rows swap under the finger, and it only ever asks about the two
- * neighbours — which are on screen beside the row in hand — so it cannot be
- * confused by the rows that scrolled out of view. Each row's own centre is the
- * measure, not a fixed row height: a TMDB preset's row is taller than one whose
- * title is one short line.
- */
 private fun dragTarget(
     sources: List<CatalogSource>,
     centres: Map<String, Float>,
@@ -1763,13 +1631,6 @@ private fun dragTarget(
     return from
 }
 
-/**
- * How far the list should scroll while the finger is held near its top or
- * bottom edge — `0` when it is not.
- *
- * Dragging the last catalog of a fifty-row folder up to the first slot means
- * going further than the screen is tall, so the list has to follow the finger.
- */
 private fun autoScrollStep(pointerY: Float, top: Float, bottom: Float, edge: Float): Float =
     when {
         bottom <= top -> 0f
@@ -1778,34 +1639,7 @@ private fun autoScrollStep(pointerY: Float, top: Float, bottom: Float, edge: Flo
         else -> 0f
     }
 
-/**
- * The "TMDB sources" editor — the reference client's source-type chips
- * (Presets, Public list, Production, Network, Collection, Person, Director,
- * Custom) plus the small form that turns an id, a name or a themoviedb.org URL
- * into a saved [CatalogSource].
- *
- * What a saved source carries is always a plain numeric TMDB id (plus its kind,
- * media and order), so a row keeps working even if TMDB renames a studio — and
- * so the language the app is set to is the only thing that decides which
- * language the row's own items are titled in.
- *
- * A preset is one tap, and the sheet stays open so several can be added in a
- * row: a preset already in the folder is ticked, and tapping it again takes it
- * back out. The hand-built form is still one source and then the sheet closes.
- */
 
-/**
- * A Custom (discover) source's advanced filters: one entry per TMDB parameter,
- * as (state key, field label, hint that says exactly what TMDB wants).
- *
- * These are the same filters the reference app's custom-source editor exposes —
- * genres (its `,`/`|` id syntax), excluded genres, a release-date window, a
- * rating and vote floor, original language, origin country, keywords and
- * excluded keywords, companies, networks and a streaming-provider pair with a
- * watch region — and they are passed through verbatim, so "90s Japanese horror,
- * rated 7+, on Netflix in the US" is one row. Anything left blank sends no
- * parameter, which is why an untouched section behaves exactly as before.
- */
 private val TMDB_ADV_FILTERS: List<Triple<String, String, String>> = listOf(
     Triple("genresText", "Genres", "TMDB genre ids — 28,12 = both, 28|12 = either"),
     Triple("genresExclude", "Exclude genres", "TMDB genre ids, comma separated"),
@@ -2259,21 +2093,6 @@ private fun TmdbSourceSheet(
     }
 }
 
-/**
- * "Find a title and add it" — the search the folder editor's header carries.
- *
- * Building a personal catalog used to mean describing a CATALOG (a studio, a
- * network, a list, a director) and only then hunting for the one film you
- * actually wanted inside it: there was a search, but it lived three taps deep
- * inside the TMDB source form, under a type chip. This is the same idea the Home
- * tab's header already offers — a search button, up front — except that what it
- * finds is a single title, and picking one adds exactly that title to the folder
- * as a one-title source (see [TmdbSourceType.TITLE]).
- *
- * Several can be added in a row: the sheet stays open, a title already in the
- * folder is ticked, and tapping it again takes it back out — the same rules the
- * preset list follows.
- */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun TitleSearchSheet(
@@ -2300,9 +2119,6 @@ private fun TitleSearchSheet(
         ).encode(),
     )
 
-    // Typing searches: a title search is cheap (one TMDB request) and the whole
-    // point of the sheet is that the answer appears as you narrow the name. The
-    // delay keeps a burst of keystrokes to one request.
     LaunchedEffect(query) {
         val q = query.trim()
         if (q.length < 2) {
@@ -2486,25 +2302,6 @@ private fun ChoiceChip(label: String, selected: Boolean, onClick: () -> Unit) { 
     )
 }
 
-/**
- * Imports collections that were made somewhere else — the reference app's
- * "Import Collections", a friend's export, a file kept from before.
- *
- * The file (see [NuvioCollectionsImport]) is an array of collections, each
- * holding folders, each folder holding the catalogs it shows. That is Hikari's
- * own model, so an import recreates the STRUCTURE: the folders appear as
- * folders and the catalogs as catalogs, with the covers the file carried.
- * Nothing has to be rebuilt by hand.
- *
- * Deliberately two-step, like every import in the app: paste (or open a file),
- * then see what was found — how many collections, how many folders, how many
- * catalogs, and how many sources have to be skipped because nothing installed
- * can serve them. Nothing is written until the button is tapped.
- *
- * A file that turns out to be a plain list of titles (not collections) is
- * imported too, as one collection holding one folder: the same guarantee —
- * "paste it and it works" — without pretending it had a structure it did not.
- */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ImportCollectionsSheet(
@@ -2539,16 +2336,6 @@ private fun ImportCollectionsSheet(
         }
     }
 
-    // Parse whatever is ALREADY in the field, however it got there.
-    //
-    // The field's only wiring used to be the Paste button — pasting with the
-    // keyboard (a long-press → Paste, or a paste from a password manager) set
-    // the text but never ran the parser, so no plan existed and the Import
-    // button stayed dead: "I paste the JSON and nothing happens, the button
-    // does nothing". Watching the text means every route in — typed, pasted,
-    // restored from a previous screen — produces the preview and enables the
-    // button. Debounced (a real export is hundreds of kilobytes, and every
-    // keystroke would re-parse it) and off the main thread for the same reason.
     LaunchedEffect(body) {
         if (body.isBlank() || plan != null) return@LaunchedEffect
         delay(280)
@@ -2730,13 +2517,6 @@ private fun ImportCollectionsSheet(
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
-                                    // A collection whose sources are ALL
-                                    // catalogs this install does not have (or
-                                    // Trakt lists, which have no engine here)
-                                    // imports as folders that load nothing.
-                                    // Saying so BEFORE the import is the
-                                    // difference between "the file was wrong"
-                                    // and "you have to build it again by hand".
                                     if (c.folders.isNotEmpty() &&
                                         c.folders.sumOf { it.sources.size } == 0
                                     ) {
@@ -2785,15 +2565,6 @@ private fun ImportCollectionsSheet(
                     val p = plan ?: return@Surface
                     busy = true
                     scope.launch {
-                        // On IO, with a deadline. This walks every catalog the
-                        // file names and asks the installed extensions which of
-                        // them they expose — and an extension whose host has
-                        // stopped answering answers NOTHING, so without the
-                        // timeout the button span forever and the sheet sat on
-                        // its spinner (the "it just keeps loading and never
-                        // imports" report). A timed-out lookup drops that one
-                        // source and imports the rest, which is what the user
-                        // asked for anyway.
                         val summary = withContext(Dispatchers.IO) {
                             runCatching {
                                 withTimeoutOrNull(90_000L) { importCollections(app, p) }
@@ -2833,30 +2604,11 @@ private fun ImportCollectionsSheet(
     }
 }
 
-/**
- * Writes an imported [NuvioCollectionsImport.Plan] into the store and reports
- * what happened in one line.
- *
- * Saving is the ONLY side effect, and it happens once, at the end: a plan whose
- * catalogs cannot all be matched still becomes collections (the folders the
- * user drew are worth keeping even when a source has to be dropped), and the
- * count of what was dropped is part of the message rather than a log line
- * nobody reads.
- */
 private suspend fun importCollections(
     app: HikariApp,
     plan: NuvioCollectionsImport.Plan,
 ): String {
-    // One catalog list per installed extension, shared by every source in the
-    // file: a real export names the same addon dozens of times (one "Latest",
-    // one "Trending", one per genre…), and enumerating an extension's catalogs
-    // can hit its host. Asking once per extension instead of once per source
-    // keeps a 100-source file to a handful of requests.
     val catalogCache = HashMap<String, List<CatalogRef>>()
-    // One deadline for the whole matching phase: see CATALOG_MATCH_BUDGET_MS.
-    // An import is a local write and must never be held open by a plugin's
-    // host — the sources that could not be matched inside the budget are
-    // dropped and reported, which is what the summary line is for.
     val matchDeadline = System.currentTimeMillis() + CATALOG_MATCH_BUDGET_MS
     // Shared by every source in the file — see MAX_GUESSED_ADDONS.
     val guessedAddons = HashSet<String>()
@@ -2875,20 +2627,12 @@ private suspend fun importCollections(
         collections++
         folders += c.folders.size
     }
-    // Not collections after all: a plain list of titles. It becomes one
-    // collection holding one folder per named list in the file, so it behaves
-    // exactly like a list the user built by hand.
     if (collections == 0) {
         val lists = plan.titleLists.filter { it.items.isNotEmpty() }
         if (lists.isNotEmpty()) {
             val built = lists.mapNotNull { group ->
                 val json = NuvioCatalogImport.encode(group.items)
                 if (json.isEmpty()) return@mapNotNull null
-                // The folder's own cover: the imported file has none, so the
-                // FIRST title's poster stands in. An imported list that arrived
-                // as a nameless grey tile reads as "the import did nothing"
-                // (it is the reported "no thumbnail"), while the poster of the
-                // first thing in the list says exactly what the folder holds.
                 val cover = group.items
                     .firstOrNull { !it.posterUrl.isNullOrBlank() }
                     ?.posterUrl
@@ -2956,41 +2700,10 @@ private suspend fun importCollections(
     return if (notes.isEmpty()) head else head + " — " + notes.joinToString(", ")
 }
 
-/**
- * Which installed extension exposes [catalogId] of [type] — the bridge between
- * an imported file's `addonId` ("com.linvo.cinemeta") and Hikari's own provider
- * id (which is derived from the addon's URL, not its manifest id, so they never
- * match directly).
- *
- * The addon's last name segment is the usable hint ("cinemeta"), and it is
- * looked for in the extension's name and address.
- *
- * ONLY HINTED EXTENSIONS ARE EVER ASKED. The previous version walked the whole
- * installed list (200-400 providers on a normal install) asking each one to
- * enumerate its catalogs, with a 12 s cap on each — so an import whose file
- * names an addon the user does not have spent *minutes* inside the first
- * source, and a dozen of them never finished at all. That is the reported
- * "importing json just keeps loading and never imports": the Import button sat
- * on its spinner while the loop plodded through every extension, and the whole
- * app went unresponsive behind it. Now a source either matches one of the few
- * providers that LOOK like the addon it names (a handful of calls, all inside
- * one shared deadline) or is dropped and COUNTED, which the summary line
- * already reports honestly ("N catalogs are from an addon that is not
- * installed").
- *
- * A small guess is still made when nothing looks like the addon, so a file that
- * names addons by a different spelling is not imported empty: at most
- * [MAX_GUESSED_PROVIDERS] of them, with a much shorter cap each.
- */
 /** How long one HINTED extension gets to list its catalogs. Generous (an
  *  extension that has to load a plugin and fetch its index is slow the first
  *  time) but bounded. */
 private const val CATALOG_LOOKUP_MS = 8_000L
-/** The cap for a provider that is only a GUESS (see [matchInstalledCatalog]).
- *  Deliberately small: a guess is a lottery ticket, and the file in the report
- *  names a dozen catalogs of an addon the user does not have — at 3 s each they
- *  were eating the whole matching budget before the first TMDB folder could be
- *  written. */
 private const val CATALOG_GUESS_MS = 1_200L
 /** The most guessed providers ONE import will ask. */
 private const val MAX_GUESSED_PROVIDERS = 6
@@ -3022,9 +2735,6 @@ private suspend fun matchInstalledCatalog(
     val wanted = catalogId.trim()
     if (wanted.isBlank()) return@withContext null
     if (System.currentTimeMillis() > deadline) return@withContext null
-    // The file says which KIND the catalog is ("series"/"movie"): an addon that
-    // exposes both a movie and a series catalog under the same id ("year") must
-    // be matched to the right one, or the folder is built on the wrong shelf.
     val wantType = when (type.trim().lowercase()) {
         "movie", "movies", "film" -> MediaType.MOVIE
         "series", "tv", "show", "shows", "anime" -> MediaType.SERIES
@@ -3041,12 +2751,6 @@ private suspend fun matchInstalledCatalog(
         }
     }
     if (hinted.isEmpty()) {
-        // Nothing looks like this addon. Try a few anyway (a file may spell the
-        // addon differently from the extension's own name), cheaply — and only
-        // for a handful of addons per import, so a long file full of addons
-        // Hikari does not know cannot spend the whole matching phase guessing.
-        // Guessing for an addon that has already been guessed is free: its
-        // catalog list is in [cache] by then.
         val key = addonId.lowercase()
         if (key !in guessedAddons) {
             if (guessedAddons.size >= MAX_GUESSED_ADDONS) return@withContext null
@@ -3075,11 +2779,6 @@ private fun pickCatalog(refs: List<CatalogRef>, wanted: String, wantType: MediaT
     refs.firstOrNull { it.id == wanted && wantType != MediaType.UNKNOWN && it.type == wantType }
         ?: refs.firstOrNull { it.id == wanted }
 
-/** One extension's catalog list, asked at most ONCE per import — a real export
- *  names the same addon dozens of times (one "Latest", one "Trending", one per
- *  genre), and enumerating an extension's catalogs can hit its host. Bounded,
- *  like every other extension call in the app: a provider whose host has
- *  stopped answering must not be able to hold the whole import open. */
 private suspend fun catalogsOf(
     p: ContentProvider,
     cache: MutableMap<String, List<CatalogRef>>,
@@ -3117,9 +2816,6 @@ private fun ExtensionPickerSheet(
         else sorted.filter { it.config.name.contains(query, ignoreCase = true) }
     }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    // Engine + repository under each row: the names repeat (four different
-    // "AniKoto"s are installed in a normal setup), and the repo is what tells
-    // them apart. See [RepoProvenance].
     val repos by remember { app.store.reposFlow() }.collectAsState(initial = emptyList())
     val repoNameByProvider = remember(all, repos) {
         RepoProvenance.nameMap(all.map { it.config }, repos)
@@ -3175,11 +2871,6 @@ private fun ExtensionPickerSheet(
     }
 }
 
-/**
- * One line in a picker sheet: a label, an optional caption, a check. Flat, with
- * a hairline under it — the same minimal list the Home extension picker uses
- * (a card per row turned a long list of near-identical names into a wall).
- */
 @Composable
 private fun PickerLine(
     label: String,
@@ -3258,11 +2949,6 @@ private fun SheetHeading(text: String) {
     )
 }
 
-/**
- * The row that closes a multi-select sheet. A picker that keeps itself open has
- * no "tap one and it's gone" moment to tell you it is finished, so it says it
- * outright instead of leaving the user to guess at the scrim.
- */
 @Composable
 private fun SheetDoneRow(onDone: () -> Unit) {
     Surface(
@@ -3284,27 +2970,11 @@ private fun SheetDoneRow(onDone: () -> Unit) {
     }
 }
 
-/**
- * Covers for collections and folders.
- *
- * A cover is one of: nothing (the folder glyph), an emoji, an image URL, or an
- * animated GIF URL — the four choices of the reference client's "Edit Folder"
- * screen. The value lives in [com.hikari.app.data.Collection] /
- * [com.hikari.app.data.CollectionFolder].
- */
 private object CollectionCovers {
 
     private fun dir(context: Context): File =
         File(context.filesDir, "covers").apply { if (!exists()) mkdirs() }
 
-    /**
-     * Copies a picked gallery image into the app's own storage and returns the
-     * `file://` URI to store.
-     *
-     * The copy is the point: a `content://` URI from the photo picker is a
-     * grant that dies with the process, so storing the URI directly is how a
-     * cover becomes a blank tile after the next launch.
-     */
     fun copyFromUri(context: Context, uri: Uri): String? = runCatching {
         val name = "cover-" + System.currentTimeMillis().toString(36) +
             "-" + (1000 + (Math.random() * 8999).toInt())
@@ -3399,14 +3069,6 @@ private object CollectionCovers {
         }.getOrDefault(bmp)
     }
 
-    /**
-     * Writes a cropped cover into our own storage and returns its `file://` URI.
-     *
-     * The crop is a NEW file rather than a rewrite of the picked one: the
-     * original copy is deleted by the caller once the new value is in place, and
-     * keeping the write separate means a failure here cannot leave the cover
-     * pointing at a half-written file.
-     */
     fun saveCropped(context: Context, bitmap: Bitmap): String? = runCatching {
         val name = "cover-" + System.currentTimeMillis().toString(36) +
             "-" + (1000 + (Math.random() * 8999).toInt())
@@ -3434,11 +3096,6 @@ private val COVER_CHOICES: List<Pair<String, String>>
 /** A handful of one-tap covers for the Emoji choice. */
 private val COVER_EMOJIS = listOf("🎬", "📺", "🍿", "🎭", "🔥", "⭐", "🌙", "🎞️")
 
-/**
- * A collection/folder cover, drawn into the tile shape the user picked: a
- * poster (2:3), a square, or a wide 16:9 tile. With no cover configured it
- * falls back to the folder glyph, so a tile always has something in it.
- */
 @Composable
 private fun CoverArt(
     kind: String,
@@ -3467,13 +3124,6 @@ private fun CoverArt(
 ) {
     val tokens = rememberGlassTokens()
     val k = CoverKinds.normalize(kind)
-    // The user's own poster styling — Settings → App Layout → Poster styling —
-    // applied to a personal-catalog cover exactly as it is to a TMDB poster:
-    // the corner rounding, the halo, and the chosen effect (aura ring, 3D tilt,
-    // sheen…). A cover the user picked is still a poster, and asking for the
-    // aura ring while browsing and then getting a plain rectangle inside their
-    // own catalog was the report. The effect is drawn by [PosterArt], the one
-    // place poster styling lives.
     val posterStyle = rememberPosterStyle()
     // What THIS artwork is drawn with. A caller that already draws the tile's
     // glass panel (see [FolderTile]) asks for no surface of its own and for the
@@ -3494,11 +3144,6 @@ private fun CoverArt(
     val sized = if (shaped) Modifier.aspectRatio(TileShapes.aspect(shape)) else Modifier
     if ((k == CoverKinds.URL || k == CoverKinds.GIF) && value.isNotBlank()) {
         PosterArt(
-            // A held-still gif resolves to its first frame, and to NULL while
-            // that frame is being fetched — [PosterArt] draws nothing for a null
-            // model, and this cell is recomposed the moment the frame lands
-            // (PosterLoader's waiting-counter), so the tile fills in rather than
-            // staying empty.
             model = if (k == CoverKinds.GIF && !animateGif) {
                 PosterLoader.stillModel(value)
             } else {
@@ -3511,11 +3156,6 @@ private fun CoverArt(
         )
         return
     }
-    // The glyph tile (an emoji cover, or a folder with none): the same
-    // one-surface rule as the artwork above. With [ownGlass] false the caller's
-    // panel already provides the fill, and drawing another here would be the
-    // second box again — and a visibly darker one, since the panel's fill is
-    // semi-transparent.
     val glyphShape = cornerRadius?.let { RoundedCornerShape(it) } ?: GlassShape
     Box(
         modifier
@@ -3553,25 +3193,6 @@ private fun CoverArt(
     }
 }
 
-/**
- * Crops the cover image the user is adding.
- *
- * A cover tile is a fixed shape — a 2:3 poster, a square, a 16:9 wide tile —
- * and a photo straight out of the gallery almost never matches it: a portrait
- * shot in a wide tile loses most of itself, and there was nothing the user could
- * do about it (the report: "there is no crop button so if the image is long the
- * user is unable to adjust it"). So the picked image opens here at the exact
- * shape of the tile it is going into, and the user drags and pinches until the
- * part they want fills that shape; what they see is exactly what the tile will
- * show, because the crop is the viewport itself.
- *
- * The maths is deliberately exact rather than approximate: the preview draws the
- * bitmap with one scale and one offset, and the saved crop is derived from the
- * SAME scale and offset, so there is no way for the two to disagree about which
- * pixels were kept. Zooming never lets the frame show empty space (the scale
- * starts at "cover the frame" and only ever grows, and the drag is clamped to
- * the image's edges).
- */
 @Composable
 private fun CoverCropDialog(
     value: String,
@@ -3604,9 +3225,6 @@ private fun CoverCropDialog(
         loading = false
     }
 
-    // The scale at which the image first exactly covers the frame. Everything
-    // else is expressed relative to it, so a rotation/zoom gesture only ever
-    // moves the zoom factor in [1, 6].
     fun baseScale(vp: IntSize, bmp: Bitmap): Float {
         if (vp.width == 0 || vp.height == 0) return 1f
         return maxOf(
@@ -3802,12 +3420,6 @@ private fun CoverCropDialog(
     }
 }
 
-/**
- * The "Appearance" half of a collection/folder form: the cover choice, its
- * input (a text field, an emoji strip, or a gallery pick), a live preview, and
- * the shape of the tile. Shared by the editor pages and the create dialogs so
- * creating something and editing it later offer exactly the same options.
- */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun CoverSection(
@@ -4008,9 +3620,6 @@ private fun CoverSection(
             onDismiss = { cropOpen = false },
             onDone = { cropped ->
                 cropOpen = false
-                // The old copy (ours, if the cover came from the gallery) is
-                // dropped as the new crop takes its place, so cropping three
-                // times does not leave three files behind.
                 CollectionCovers.deleteCopy(context, value)
                 // Cropping a GIF keeps its picture, not its animation, so the
                 // kind follows the value: a GIF cover becomes a still one.
@@ -4021,11 +3630,6 @@ private fun CoverSection(
     }
 }
 
-/**
- * The create dialog for a new collection or folder: its name, and the same
- * cover + tile-shape choices the editor pages offer, so the cover is asked for
- * at the moment the thing is made (and can still be changed later).
- */
 @Composable
 private fun NameCoverDialog(
     title: String,
@@ -4084,15 +3688,6 @@ private fun NameCoverDialog(
     )
 }
 
-/**
- * Shows one collection: either its folder tiles, or (when a folder is selected) the
- * catalogs inside that folder as rows, exactly like a Home shelf.
- *
- * Both shapes live in one destination ([Routes.collectionView]) because they
- * are two zoom levels of the same thing: `fid` blank shows the tiles, `fid` set
- * shows that folder. Every item opens the normal detail page, so playback is
- * the app's usual player with every installed extension searching for sources.
- */
 @Composable
 fun CollectionViewScreen(nav: NavHostController, collectionId: String, folderId: String) {
     val app = LocalContext.current.applicationContext as HikariApp
@@ -4124,11 +3719,6 @@ fun CollectionViewScreen(nav: NavHostController, collectionId: String, folderId:
 
     val folder = c.folders.firstOrNull { it.id == folderId }
     if (folder == null) {
-        // A collection whose own view mode is TABS opens as a tab strip — one
-        // tab per folder, and an "All" tab when the user left it on — instead of
-        // the folder grid. Its folders are all still reachable, just one at a
-        // time, and each tab's body is the same page tapping that folder's tile
-        // would have opened (see [CollectionTabsContent]).
         if (c.viewMode == CollectionViewModes.TABS && c.folders.isNotEmpty()) {
             CollectionTabsContent(nav = nav, collection = c)
         } else {
@@ -4139,18 +3729,6 @@ fun CollectionViewScreen(nav: NavHostController, collectionId: String, folderId:
     }
 }
 
-/**
- * A collection browsed as a TAB STRIP: one tab per folder (plus an "All" tab
- * holding every folder's catalogs, when the user left that on), and the picked
- * tab's shelves below it.
- *
- * This is the reference app's other collection view mode, and the reason it
- * exists is the one the user hit with a nine-folder collection: rows of folders
- * make you scroll past seven to reach the eighth, while tabs put every folder
- * one tap away. Nothing about the content changes — each tab paints exactly what
- * that folder's page paints (the same [FolderRowList], so "Show all", an
- * imported title list and a failing source all behave identically).
- */
 @Composable
 private fun CollectionTabsContent(nav: NavHostController, collection: Collection) {
     val app = LocalContext.current.applicationContext as HikariApp
@@ -4261,9 +3839,6 @@ private fun CollectionFoldersPage(nav: NavHostController, collection: Collection
             // The collection's own wide backdrop, when it has one — the hero the
             // reference app opens a catalog with.
             heroBackdrop = collection.backdropUrl,
-            // Same magnifier as a folder page, for the collection itself — the
-            // "abc" header the user marked. Searching here spans every folder
-            // and every source of the collection.
             actions = {
                 IconButton(onClick = { Routes.safeNavigate(nav, Routes.searchInCollection(collection.id)) }) {
                     Icon(
@@ -4294,10 +3869,6 @@ private fun CollectionFoldersPage(nav: NavHostController, collection: Collection
             items(collection.folders, key = { it.id }) { f ->
                 FolderTile(
                     folder = f,
-                    // A folder with no cover of its own borrows its
-                    // collection's, so an image picked for the collection is
-                    // visible here too instead of every folder showing the
-                    // drawn fallback.
                     inheritedKind = collection.coverKind,
                     inheritedValue = collection.coverValue,
                     inheritedShape = collection.tileShape,
@@ -4317,16 +3888,6 @@ private fun CollectionFoldersPage(nav: NavHostController, collection: Collection
  *  [FolderTile]. */
 private val TILE_PADDING = 7.dp
 
-/** How much of a folder tile's width its panel's corner may take.
- *
- *  [GlassCornerRadius] is 26dp, which is right for a full-width card and wrong
- *  for a 102dp tile: at that size a quarter of the tile is corner, the panel
- *  reads as a pill, and the arc sweeps through the artwork's own bottom corners
- *  — which is where a category cover (a wordmark image, i.e. every cover
- *  imported from the reference app) keeps its letters. A fraction of the tile's
- *  own width keeps a small tile's corner small, and the cap is reached at about
- *  163dp, so a television's larger grid cells keep the app's full glass
- *  rounding. */
 private const val TILE_CORNER_FRACTION = 0.16f
 
 /** One folder tile: its cover (or the collection's, when the folder has none of
@@ -4347,58 +3908,17 @@ fun FolderTile(
     val ownCover = CoverKinds.normalize(folder.coverKind) != CoverKinds.NONE &&
         folder.coverValue.isNotBlank()
     val tokens = rememberGlassTokens()
-    // An animated cover animates when the folder itself asks for it, or when
-    // this device is set to animate them (Settings → App Layout). Otherwise the
-    // first frame is drawn — the reference app's "Show GIF when configured",
-    // with the per-device override it also has, since a phone and a TV stick
-    // want different answers from the same file.
     val app = LocalContext.current.applicationContext as HikariApp
     val gifAnimFlow = remember { app.store.gifAnimFlow() }
     val animateGif by gifAnimFlow.collectAsState(initial = true)
-    // A television with its performance mode on draws the FIRST FRAME of an
-    // animated cover: a gif is a decode plus a full-size texture upload on every
-    // frame, and it is the one thing on this screen that never stops working.
-    // The same rule, and the same switch, as the poster effects that
-    // [rememberPosterStyle] drops on a television. A folder that asks for its
-    // own animation ([CollectionFolder.gifAlways], "Show GIF when configured")
-    // keeps it — this only overrides the device-level default. Read from the
-    // synchronous mirror rather than the store, so a tile does not open a
-    // second DataStore collection on every row.
     val tvQuiet = com.hikari.app.data.PerfMode.tvDevice && com.hikari.app.data.PerfMode.tvOn
-    // The tile's rounded panel is DRAWN (fill + border in [panelShape]) rather
-    // than CLIPPED — a `.clip` here is what used to slice the first and last
-    // letters off a small tile's name, because the curve reached further in from
-    // the edge than the text's 10dp inset.
-    //
-    // Two things were still wrong with the drawn shape, and both are fixed here:
-    //
-    //  - The radius was the app's flat [GlassCornerRadius] (26dp) whatever the
-    //    tile's width. A folder tile is 102-150dp wide, so on a small one the
-    //    corner was a quarter of the whole tile: the panel read as a pill, and
-    //    the arc swept through the artwork's own bottom corners. Where the cover
-    //    is a wordmark image — every category cover imported from the reference
-    //    app — that is the reported "glasy corner is cutting some name". The
-    //    radius is now a FRACTION of the tile's own width (capped at
-    //    [GlassCornerRadius]), so a small tile gets a small corner.
-    //  - The cover drew a SECOND glass hairline of its own (the poster style's
-    //    `glass`, see [CoverArt]), inset inside this panel's — the "glass box
-    //    inside the glass box". The cover now draws no surface at all, and takes
-    //    the panel's radius MINUS this panel's padding, so the two arcs are
-    //    concentric instead of fighting. One box per tile.
     BoxWithConstraints(
         modifier = Modifier.then(
             if (width != null) Modifier.width(width) else Modifier.fillMaxWidth(),
         ),
     ) {
-        // `maxWidth` is Dp.Infinity for a tile with no width of its own at all,
-        // and minOf then keeps the plain glass radius — the cap can never be the
-        // reason a tile has no rounding.
         val panelRadius = minOf(GlassCornerRadius, maxWidth * TILE_CORNER_FRACTION)
         val panelShape = RoundedCornerShape(panelRadius)
-        // The classic concentric-corner rule: a surface inset by `p` inside an
-        // outer corner of `r` looks right when its own radius is `r - p`. Here
-        // that is the cover inside [TILE_PADDING] of the panel's edge, which is
-        // what makes the two curves run parallel rather than meet at an angle.
         val coverRadius = (panelRadius - TILE_PADDING).coerceAtLeast(0.dp)
         Column(
             Modifier
@@ -4429,11 +3949,6 @@ fun FolderTile(
                     modifier = Modifier.padding(horizontal = 3.dp),
                 )
             }
-            // The small grey line under the name used to name the folder's FIRST
-            // catalog and count the rest — "Recent +2", "الاحداث +2" — which told
-            // the user nothing they could act on and read as a stray label on
-            // every tile ("show remove the text that showing"). What is left is
-            // the one case that IS information: a folder that has nothing in it.
             if (folder.sources.isEmpty()) {
                 Text(
                     tr("Empty folder"),
@@ -4485,14 +4000,6 @@ private fun CollectionFolderContent(
             // an emoji or a plain colour stays on the tile.
             heroBackdrop = folder.heroBackdropUrl.ifBlank { folderCoverUrl(folder) },
             titleLogo = folder.titleLogoUrl,
-            // Search INSIDE this catalog: the magnifier opens the Search tab
-            // scoped to the collection this folder belongs to, so a title can be
-            // looked for across exactly the sources the user picked for it
-            // (Amazon, HBO, whatever each folder holds). Asked for in these
-            // words: "add the search icon above in side of header abc in catalog
-            // so I can search any movie or series there to watch from those
-            // selected categories". The results are normal Search results, so
-            // anything found opens and plays like any other title.
             actions = {
                 IconButton(onClick = { Routes.safeNavigate(nav, Routes.searchInCollection(collection.id)) }) {
                     Icon(
@@ -4520,14 +4027,6 @@ private fun CollectionFolderContent(
     }
 }
 
-/**
- * The shelves of one folder — or of every folder at once, for the tab view's
- * "All" tab — with the loading and empty states that go with them.
- *
- * Shared so a folder opened directly (a tile tap) and a folder shown inside a
- * tab strip are the same page: same rows, same "Show all" behaviour, same
- * explanation when a source comes back with nothing.
- */
 @Composable
 private fun FolderRowList(
     nav: NavHostController,
@@ -4535,15 +4034,6 @@ private fun FolderRowList(
     loaded: List<CatalogRow>?,
     emptyTitle: String,
     emptySubtitle: String,
-    /**
-     * Whether a row draws the "Collection · Folder" line under its title.
-     *
-     * False when the page IS one folder: the header above already says which
-     * folder this is, and repeating its name over every row is what the user
-     * circled — "then again write netflix subhesder of next row… we know we are
-     * on it". True for the tab view's "All" tab, where the rows really do come
-     * from different folders and the line is the only thing that says which.
-     */
     showProviderName: Boolean = true,
     /** ScrollKeeper slot for this row list (see ScrollKeeper): Back from a
      *  title lands where the rows were. Blank keeps a plain state. */
@@ -4610,10 +4100,6 @@ private fun FolderRowList(
                         }
                     )
                 },
-                // An imported list already puts ALL of its titles in this row,
-                // and there is no upstream catalog to page through, so it has no
-                // "Show all" — offering one would open an empty screen. Every
-                // other kind keeps it.
                 onShowAll = if (src?.kind == CatalogSourceKind.ITEMS) null else {
                     {
                         if (src?.kind == CatalogSourceKind.TMDB) {
@@ -4627,13 +4113,6 @@ private fun FolderRowList(
                                 }
                             )
                         } else {
-                            // The EXTENSION's own catalog id and raw type, never
-                            // [CatalogRow.catalogId] — on a row that came out of a
-                            // personal catalog that field holds the SOURCE's key
-                            // ("prov|cs3|movie|trending"), not a catalog id, and
-                            // the extension answers a lookup for it with nothing:
-                            // the "Show all" page then opened on "Nothing here
-                            // right now" for every row of every personal catalog.
                             Routes.safeNavigate(
                                 nav,
                                 Routes.catalog(
@@ -4688,10 +4167,6 @@ private fun PageHeader(
     titleLogo: String? = null,
 ) {
     Column(Modifier.fillMaxWidth()) {
-        // An image that will not load must not leave a blank band where the
-        // header was: the hero falls back to the title row, and the logo falls
-        // back to the title text. A failed hero is also remembered per URL, so
-        // the page does not flicker on every recomposition.
         var heroFailed by remember(heroBackdrop) { mutableStateOf(false) }
         var logoFailed by remember(titleLogo) { mutableStateOf(false) }
         if (!heroBackdrop.isNullOrBlank() && !heroFailed) {
@@ -4758,13 +4233,6 @@ private fun PageHeader(
     }
 }
 
-/**
- * One TMDB preset as a full, paged grid — the "Show All" of a preset row.
- *
- * Paging is TMDB')s own (20 items a page), and the grid is deliberately the same
- * component the extension catalogs use, so a preset and an extension catalog
- * look and behave identically.
- */
 class TmdbGridViewModel(
     app: Application,
     private val presetKey: String,
@@ -4808,9 +4276,6 @@ class TmdbGridViewModel(
                 else if (presetNow != null) TmdbPresets.page(presetNow, page)
                 else emptyList()
             }.getOrDefault(emptyList())
-            // A page that adds nothing new ends the list — a collection (whose
-            // parts all arrive on page 1) and a list TMDB has exhausted must
-            // both stop the grid, not leave it scrolling forever.
             val seen = _items.value.map { it.uniqueId }.toMutableSet()
             val added = fresh.filter { seen.add(it.uniqueId) }
             if (added.isEmpty()) {
@@ -4874,21 +4339,8 @@ fun TmdbGridScreen(
     val preset = remember(presetKey) { TmdbPresets.byKey(presetKey) }
     val name = title.ifBlank { spec?.let { TmdbSources.fallbackName(it) } ?: preset?.name ?: presetKey }
     val style = rememberPosterStyle()
-    // The adult-content switch filters this grid too (see [NsfwGate]): a catalog
-    // page is a grid of items, and it would otherwise be the one screen where a
-    // hidden title survived.
     val gridItems = rememberVisibleItems(items)
 
-    // ---- This catalog's own search box ----
-    //
-    // A production, a network, a public list and a person are all one PAGED TMDB
-    // query (20 titles a page), and the title a reader came for can be dozens of
-    // pages in. Typing a name here must therefore filter what is loaded AND keep
-    // walking the catalog until it is found — but it must NOT hand the name to
-    // the app's own Search tab: that searches every source in the app and would
-    // leave this catalog entirely, which is exactly what was reported ("search
-    // inside a production sends me to Hikari search"). Nothing here leaves the
-    // page.
     var filterText by rememberSaveable(specJson, presetKey) { mutableStateOf("") }
     val needle = filterText.trim()
     val matched = remember(gridItems, needle) {
@@ -4898,18 +4350,6 @@ fun TmdbGridScreen(
                 (it.originalTitle?.contains(needle, ignoreCase = true) == true)
         }
     }
-    // ---- What KIND of title to show ------------------------------------
-    //
-    // The genre a reader taps on Home ("Action") is ONE TMDB query that answers
-    // films and series mixed together — and, for a genre like Animation, the
-    // anime those films and series carry as a genre tag with them. A page headed
-    // "Action" therefore opened on a wall of everything at once, and the only
-    // way to ask for one kind was to leave the page and search (reported as
-    // "it showing all mix like movie, series, anime"). The chips cut the SAME
-    // already-loaded pages, so picking one is instant and refetches nothing —
-    // and the walk below keeps pulling more pages while the CHOICE is empty, so
-    // asking for a kind this catalog has not reached yet still finds it instead
-    // of dead-ending on "nothing here".
     var kindKey by rememberSaveable(specJson, presetKey) { mutableStateOf(KIND_ALL) }
     val shown = remember(matched, kindKey) {
         when (kindKey) {
@@ -4922,10 +4362,6 @@ fun TmdbGridScreen(
             else -> matched
         }
     }
-    // The walk. Eight pages (160 titles) is the bound: far enough that a studio's
-    // catalogue is genuinely searched for a name, bounded enough that a typo does
-    // not sit there pulling the whole catalogue over the network. The counter
-    // resets whenever the query changes, so a second search gets its own budget.
     var deepened by remember { mutableIntStateOf(0) }
     LaunchedEffect(needle, kindKey) { deepened = 0 }
     // "The reader has narrowed this catalog" — by a name, by a kind, or both.
@@ -4939,10 +4375,6 @@ fun TmdbGridScreen(
         }
     }
 
-    // Grid position held per preset+search (see ScrollKeeper): Back from a
-    // title lands where the grid was. Keys re-find the exact item when the
-    // order shifts, and the waiter keeps pulling pages while the saved cell
-    // is not loaded yet.
     val tmdbKeys = remember(shown) { shown.map { it.uniqueId } }
     val gridState = com.hikari.app.ui.components.keptGridState(
         "tmdbGrid:$presetKey|$specJson|$needle|$kindKey",
@@ -4978,10 +4410,6 @@ fun TmdbGridScreen(
                 .fillMaxWidth()
                 .padding(start = 12.dp, end = 12.dp, bottom = 8.dp),
         )
-        // All · Movies · Series · Anime · Movies & series — the same split the
-        // Search tab's kind chips offer, applied to what this page has already
-        // loaded (see [kindKey]). It is a plain strip, so a television's D-pad
-        // steps through it like any other row.
         Row(
             Modifier
                 .fillMaxWidth()
@@ -5017,12 +4445,6 @@ fun TmdbGridScreen(
                 CircularProgressIndicator()
             }
         } else if (shown.isEmpty() && narrowed && !done) {
-            // The filter is still walking the catalog: the spinner is what says
-            // so, because "nothing matched" and "still looking" are different
-            // answers and this grid must not give the wrong one while it works.
-            // Gated on !done: once the catalog is exhausted the walk below stops
-            // firing, and without the gate this branch spun forever on a filter
-            // the catalog genuinely has nothing for.
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     CircularProgressIndicator(Modifier.size(28.dp))
@@ -5097,9 +4519,6 @@ private fun TmdbGridCard(item: MediaItem, style: PosterStyle, onClick: () -> Uni
     val hero = if (cinema) Artwork.heroModel(item) else null
     Column(
         Modifier
-            // Not clipped to the poster rounding: at high corner values the
-            // curve cut into the title's first and last letters. The artwork
-            // rounds itself.
             .clickable(onClick = onClick)
     ) {
         PosterArt(
@@ -5109,10 +4528,6 @@ private fun TmdbGridCard(item: MediaItem, style: PosterStyle, onClick: () -> Uni
             rating = item.rating,
             imdb = badge,
             item = item,
-            // Cinema is always a full-bleed 16:9 crop anchored exactly like the
-            // home rail (see Artwork.CINEMA_ALIGNMENT) — never a letterboxed
-            // Fit with blank sides, never a centred crop that beheads the
-            // same poster the rail shows fine.
             contentScale = ContentScale.Crop,
             imageAlignment = if (cinema) com.hikari.app.ui.Artwork.CINEMA_ALIGNMENT else Alignment.Center,
             modifier = Modifier
@@ -5133,15 +4548,6 @@ private fun TmdbGridCard(item: MediaItem, style: PosterStyle, onClick: () -> Uni
 }
 
 
-/**
- * The whole collection as ONE grid — the destination of every "Show all" while
- * a collection is being browsed.
- *
- * The rows arrive per catalog ([CollectionsRepository.allRows]) and each one is
- * painted as a full-width shelf heading followed by its own posters, so a
- * single scroll shows everything the collection holds while still saying which
- * folder and which catalog a title came from.
- */
 @Composable
 fun CollectionGridScreen(nav: NavHostController, collectionId: String) {
     val app = LocalContext.current.applicationContext as HikariApp
@@ -5163,12 +4569,6 @@ fun CollectionGridScreen(nav: NavHostController, collectionId: String) {
         val c = withContext(Dispatchers.IO) { app.store.collection(collectionId) }
         collection = c
         if (c == null) {
-            // The id names no collection (it was deleted, or the link is older
-            // than the collection). Say THAT — this page used to fall through to
-            // "0 titles · 0 catalogs" above "this collection's catalogs returned
-            // no content", which blames the extensions for a page that has
-            // nothing to do with them. The header alone, exactly as
-            // [CollectionViewScreen] answers the same question.
             missing = true
             rows = emptyList()
             return@LaunchedEffect
@@ -5183,22 +4583,11 @@ fun CollectionGridScreen(nav: NavHostController, collectionId: String) {
             }
         }
         if (landed) return@LaunchedEffect
-        // The "All" pass came back with nothing. Before telling the user the
-        // catalogs are empty, show what HOME shows for this collection — its own
-        // shelf rows ([CollectionsRepository.pickRows] is exactly "what Home
-        // shows"). An extension row's "Show all" inside a personal catalog lands
-        // on this page, so Home and this page disagreeing about whether there is
-        // anything to show was the report.
         val picked = runCatching { repo.pickRows(c).lastOrNull() }.getOrNull().orEmpty()
         if (picked.isNotEmpty()) {
             rows = decorate(picked)
             return@LaunchedEffect
         }
-        // Neither pass found anything. Hand over to the folder tiles: they are
-        // the way in (each one opens that folder's own catalogs), and a page
-        // that only ever said "nothing here right now" left the user with no
-        // route to them at all. A collection with no folders gets that page's
-        // own empty state, which points at the Personal Catalog creator.
         rows = emptyList()
         folderHandover = true
     }
@@ -5235,9 +4624,6 @@ fun CollectionGridScreen(nav: NavHostController, collectionId: String) {
                 }
             },
         )
-        // A missing collection gets the header and nothing else, exactly as
-        // [CollectionViewScreen] answers the same question: the "no content"
-        // empty state blames the catalogs, and there are no catalogs here.
         if (missing) return@Column
         if (loaded == null) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -5257,9 +4643,6 @@ fun CollectionGridScreen(nav: NavHostController, collectionId: String) {
             }
             return@Column
         }
-        // Collection grid position held per collection (see ScrollKeeper).
-        // Keys mirror the grid order (headers + cells) so the return lands
-        // on the exact item even when rows arrive in a different order.
         val colKeys = remember(loaded) {
             buildList {
                 loaded.forEachIndexed { rowIndex, row ->

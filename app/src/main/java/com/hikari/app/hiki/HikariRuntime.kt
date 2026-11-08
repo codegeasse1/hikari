@@ -5,16 +5,6 @@ import com.hikari.app.data.ProviderConfig
 import com.hikari.ext.HikariProvider
 import java.io.File
 
-/**
- * Resolves a [HikariProvider] instance for a HIKARI provider config:
- *  - config.url blank      → built-in provider: extra is the fully-qualified
- *                            class name on the app classpath (the bundled YTS
- *                            demo).
- *  - config.url is a .hiki → external extension jar loaded via
- *                            [HikariPluginManager]; extra encodes the optional
- *                            source URL plus the provider index:
- *                            "<sourceUrl>|<index>" (or just "<index>").
- */
 object HikariRuntime {
 
     fun providerFor(config: ProviderConfig): HikariProvider? {

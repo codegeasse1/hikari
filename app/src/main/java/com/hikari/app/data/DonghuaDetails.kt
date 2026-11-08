@@ -7,26 +7,6 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
 
-/**
- * Anime/donghua metadata fallback for titles TMDB mistranslates.
- *
- * TMDB's search index is live-action-first: a generic English title like "Big
- * Brother" resolves to the sitcom (wrong poster, wrong overview, 165 fake
- * episodes) while every donghua around it resolves fine. Anime databases know
- * these titles natively, so anime candidates try them FIRST — a confident hit
- * wins outright and TMDB is never consulted for that title.
- *
- * Chain: AniList GraphQL (no key, best donghua coverage) → Bangumi (no key,
- * strongest for Chinese-original entries) → null (caller keeps TMDB/provider
- * art as before). The result is mapped into [AnimeInfo], which the callers
- * translate into whatever they would otherwise have read from TMDB; [source]
- * carries an "anilist:"/"bangumi:"-prefixed id so the UI labels the score
- * honestly and nobody ever calls a TMDB season endpoint with a foreign id.
- *
- * Port of the desktop client's DonghuaDetails, mapped onto this tree's shapes
- * (there is no TmdbDetails.Details here — the consumers are TmdbMeta,
- * TmdbScreenshots, TmdbStills and Ratings directly).
- */
 object DonghuaDetails {
 
     /** One anime hit, in the fields the TMDB consumers need. All URLs here are
@@ -45,11 +25,6 @@ object DonghuaDetails {
         val studios: List<String> = emptyList(),
     )
 
-    /** What a title is, once the animation gate has run: [Anime] (AniList or
-     *  Bangumi knew it — use that and never touch TMDB for this title),
-     *  [Tmdb] (not an anime candidate, or TMDB itself confirmed animation —
-     *  the normal TMDB path), [None] (an anime candidate neither source knew —
-     *  the caller falls back to its old TMDB/provider behaviour). */
     sealed interface Pick {
         data class Anime(val info: AnimeInfo) : Pick
         object Tmdb : Pick
@@ -63,15 +38,6 @@ object DonghuaDetails {
         return p.contains("anime") || p.contains("donghua")
     }
 
-    /**
-     * The gate every TMDB consumer runs before resolving [item]. Anime
-     * candidates get the animation check first: when TMDB's own details put
-     * the title in Animation (genre id 16 or the name "Animation") TMDB knows
-     * what it is and the normal path stands; otherwise AniList/Bangumi are
-     * asked, and a confident hit wins outright so a Hollywood mistranslation
-     * can never overwrite the donghua. An empty genre list is unknown, not a
-     * verdict — candidates still try the anime sources in that case.
-     */
     /** A hit counts only when it has something to show: overview, score or votes.
      *  A cover-only / score-zero / blank-overview hit is a miss — the caller
      *  falls through to TMDB instead of going bare (the DonghuaStream bare case). */
@@ -79,30 +45,12 @@ object DonghuaDetails {
         info.overview.isNotBlank() || info.score10 > 0.0 || info.votes > 0
 
     suspend fun pick(item: MediaItem): Pick {
-        // Site scrapers never tag anime, so untagged items used to go straight
-        // to TMDB — where a live-action namesake wins ("Big Brother" → the US
-        // reality show). Those get one exact-title anime probe first instead.
         if (!isAnimeCandidate(item)) return secondChancePick(item)
         if (isTmdbAnimation(item)) return Pick.Tmdb
         val info = load(item) ?: return Pick.None
         return if (isUsable(info)) Pick.Anime(info) else Pick.None
     }
 
-    /**
-     * Second chance for items no provider tagged as anime. TMDB-first already
-     * resolved them, possibly to a live-action namesake — one exact-title
-     * AniList probe decides whether an anime namesake exists, and when TMDB's
-     * own details are not Animation and the probe is exact-level confident,
-     * the anime wins outright. Namespaced providers (TMDB rows, tracker rows)
-     * already resolve correctly and are never second-guessed.
-     *
-     * The exact probe alone used to be the WHOLE second chance: a decorated
-     * provider title burned the one search while the clean names sat behind
-     * it untried, and Bangumi was never asked at all — untagged donghua
-     * stayed TMDB-only forever. The probe still runs first (cheap, exact),
-     * but a miss now falls through to the full multi-query AniList + Bangumi
-     * lookup, kept at the same exactness bar (60) so a mistranslated
-     * live-action entry still cannot flip onto an anime namesake. */
     private suspend fun secondChancePick(item: MediaItem): Pick {
         val p = item.providerId.lowercase()
         if (p == "tmdb" || p.startsWith("tmdb|") ||
@@ -252,9 +200,6 @@ object DonghuaDetails {
                     if (y == item.year) score += 25
                     else if (y > 0 && kotlin.math.abs(y - item.year) <= 1) score += 8
                 }
-                // Animation-only index: no genre penalty needed, but a
-                // series-length donghua matching a series-length entry wins
-                // over a movie-length one.
                 if (score > bestScore) {
                     bestScore = score
                     best = m
@@ -317,10 +262,6 @@ object DonghuaDetails {
     }
 
     private fun anilistNames(m: JSONObject): List<String> {
-        // Every name AniList knows the show under: the three titles AND the
-        // synonyms. Alias pairs ("Renegade Immortal" / "Xian Ni", "A Mortal's
-        // Journey to Immortality" / "Fanren Xiu Xian Chuan") live in synonyms,
-        // and scoring titles alone left every such title unmatched.
         val out = ArrayList<String>(8)
         val t = m.optJSONObject("title")
         if (t != null) {

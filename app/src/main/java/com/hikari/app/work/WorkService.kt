@@ -18,20 +18,6 @@ import androidx.core.content.ContextCompat
 import com.hikari.app.MainActivity
 import com.hikari.app.R
 
-/**
- * Keeps the process alive (and awake) while [BackgroundWork] has registered
- * tasks — a foreground `dataSync` service.
- *
- * Without it, pressing Home puts the app into the cached state, where the
- * platform freezes the process: catalog loads, searches and provider scans all
- * stop dead and only resume when the app is reopened. A foreground service (see
- * [BackgroundWork] for the full explanation) is what makes them continue while
- * the user is in another app.
- *
- * The service owns one quiet, ongoing notification saying what is running, and
- * a partial wakelock so work also survives the screen turning off. It stops
- * itself when the last task ends.
- */
 class WorkService : Service() {
 
     @Volatile
@@ -46,14 +32,6 @@ class WorkService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // Android requires startForeground() shortly after every
-        // startForegroundService() call — even when the service is about to
-        // stop immediately. The registry can become empty between
-        // BackgroundWork.begin() and this callback (a token that ends its work
-        // within a few milliseconds, e.g. a cache hit), and stopping without
-        // ever going foreground makes the platform kill the whole process with
-        // ForegroundServiceDidNotStartInTimeException. So always step into the
-        // foreground first, then decide whether there is anything left to do.
         acquireWakeLock()
         startInForeground()
         if (intent?.action == ACTION_STOP || !BackgroundWork.isActive()) {
@@ -71,17 +49,6 @@ class WorkService : Service() {
         super.onDestroy()
     }
 
-    /**
-     * The user swiped Hikari off the recents list.
-     *
-     * That is a real "the app is closed" — not a "they are looking at something
-     * else" — so the work this service was keeping alive is cancelled outright
-     * ([BackgroundWork.cancelAll]) instead of being left to run with the
-     * notification still on screen. Without this the app kept searching every
-     * installed extension in the background and the user's status bar kept saying
-     * `Opening "…"` long after they had closed it (the "it says it is still
-     * running, and the app won't open any more" report).
-     */
     override fun onTaskRemoved(rootIntent: Intent?) {
         BackgroundWork.cancelAll("the app was swiped off the recents list")
         stopSelfWork()
@@ -98,9 +65,6 @@ class WorkService : Service() {
             }
         }
         ok.onFailure {
-            // If this ever fails the platform will kill the process, so make
-            // sure the reason ends up in the on-device log instead of only in
-            // logcat.
             com.hikari.app.data.Logs.logError("Work", "startForeground failed", it)
         }
     }
@@ -141,12 +105,6 @@ class WorkService : Service() {
         }
     }
 
-    /**
-     * Takes (or refreshes) the partial wakelock. Called on every command and
-     * again each minute by [BackgroundWork]'s sweep while work is running; the
-     * timeout means a token that is somehow never ended cannot hold the CPU
-     * forever.
-     */
     private fun acquireWakeLock() {
         runCatching {
             val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return

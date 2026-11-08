@@ -133,9 +133,6 @@ fun MediaRow(
     onItemFocus: ((MediaItem) -> Unit)? = null,
 ) {
     val style = rememberPosterStyle()
-    // Rebuilt (never reused) whenever the poster shape changes: a Cinema
-    // 16:9 pick redraws every shelf as landscape on the next frame, and no
-    // portrait row can survive the switch (or the way back).
     key(style.posterType) {
         if (TvMode.current()) {
             com.hikari.app.tv.TvCinemaRow(title = title, providerName = providerName, items = items, onOpen = onClick, onShowAll = if (showViewAll) onShowAll else null, vertical = !style.isCinema(true), keeperKey = keeperKey, onItemFocus = onItemFocus)
@@ -147,12 +144,6 @@ fun MediaRow(
     }
 }
 
-/**
- * The portrait shelf of a [MediaRow]: title, provider, and a horizontal
- * strip of 2:3 posters. A top-level composable (rather than an inline
- * branch) so the cinema/phone switch in [MediaRow] stays a plain if/else
- * with no early returns inside an inline scope.
- */
 @Composable
 private fun MediaRowVertical(
     title: String,
@@ -174,21 +165,12 @@ private fun MediaRowVertical(
         ) {
             Column(Modifier.weight(1f)) {
                 Text(
-                    // Catalog/row names come from the extensions, so they are
-                    // English strings from outside the app: tr() translates the
-                    // ones the i18n files know and leaves the rest untouched.
                     tr(title),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                // Blank means "the row does not need to say where it came from":
-                // a folder's own page already says which folder this is (its
-                // header), so repeating the folder's name above every row was
-                // noise the user asked to lose — "we created netflix folder we
-                // know we are on it". Rows that DO mix several folders (the
-                // tab view's "All") still pass a name and still draw it.
                 if (providerName.isNotBlank()) {
                     Text(
                         providerName.uppercase(),
@@ -203,25 +185,7 @@ private fun MediaRowVertical(
                 }
             }
         }
-        // The style is read ONCE for the row and handed to every cell. Read per
-        // cell it opened one DataStore collection per poster on screen, so a
-        // Home feed with three rows of twelve visible cards had ~36 live
-        // subscriptions to the same preferences, all re-mapping on every
-        // settings write and all allocating inside the scroll path. One read per
-        // row is the same look with a fraction of the work.
-        // (Read once at the top of MediaRow and shared by every card below.)
-        // A row's items come from an extension, and an extension is free to
-        // list the same title twice (or to hand back two entries that share an
-        // id). Compose does not warn about a duplicated key — it throws, taking
-        // the whole screen with it — so the key is the item's own identity, with
-        // literal repeats dropped before they are drawn. Deduped ONCE per row
-        // rather than on every recomposition of it (a row recomposes on every
-        // scroll step): this is a fresh list otherwise.
         val uniqueItems = rememberVisibleItems(items)
-        // A row's horizontal scroll dies with the page unless it is kept: in
-        // a one-row folder the row IS the browsing position, and losing it
-        // read as "Back jumps". Keys re-find the exact poster when the row
-        // reloads in a different order (see ScrollKeeper).
         val rowKeys = remember(uniqueItems) { uniqueItems.map { it.uniqueId } }
         // Instant vertical: warm portrait art with the row, symmetric to cinema.
         LaunchedEffect(uniqueItems) {
@@ -231,12 +195,6 @@ private fun MediaRowVertical(
                 }
             }
         }
-        // The adult-content gate is applied where the row is DRAWN (see
-        // [NsfwGate] and [rememberVisibleItems]): every shelf in the app funnels
-        // through this composable — Home, collections, the detail page's
-        // shelves — and applying it here rather than in the stores is what makes
-        // the Settings switch take effect on the next frame, with no re-fetch and
-        // no stale cached row to trip over.
         LazyRow(
             state = if (keeperKey.isBlank()) androidx.compose.foundation.lazy.rememberLazyListState()
             else keptListState(keeperKey, itemKeys = rowKeys),
@@ -250,14 +208,6 @@ private fun MediaRowVertical(
     }
 }
 
-/**
- * The cinema shelf of a [MediaRow]: title, provider, and a horizontal strip
- * of 16:9 landscape cards (see [TvCinemaCard]) — what a phone draws when the
- * poster shape is Cinema 16:9. Phone-only: the TV shelves keep their own
- * focus-expanding row (see TvCinemaRow), which needs a remote, not a finger —
- * an expand-on-focus card can never go wide on touch, so it must not back
- * this branch.
- */
 @Composable
 private fun MediaRowCinema(
     title: String,
@@ -270,9 +220,6 @@ private fun MediaRowCinema(
 ) {
     val uniqueItems = rememberVisibleItems(items)
     val rowKeys = remember(uniqueItems) { uniqueItems.map { it.uniqueId } }
-    // Instant cinema: warm wide art for the visible cards the moment the row
-    // appears, so 16:9 paints sharp instead of blurred portraits that only
-    // healed after a detail open. Single-flighted, bounded, never throws.
     LaunchedEffect(uniqueItems) {
         runCatching {
             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
@@ -327,26 +274,6 @@ private fun MediaRowCinema(
     }
 }
 
-/**
- * The frame a hero card is drawn in.
- *
- * On a phone that is simply the card's own aspect ratio at full width — the
- * shape the design asks for. On a television it is the same card CAPPED to
- * about half the screen's height, because a 16:9 hero across a 848dp-wide
- * television screen wants 477dp of a 540dp-tall display: the banner then IS the
- * page, and nothing below it is ever seen (the "the hero banner takes the whole
- * screen" half of the TV-layout report). Capping keeps the artwork's shape —
- * `ContentScale.Crop` takes care of the crop — while leaving the rows
- * underneath on screen.
- *
- * [aspect] is width/height, and [horizontalInsets] is the width the card's own
- * padding takes off the screen (a carousel's peek-in, for example).
- *
- * [scale] is Home's featured-banner size (Settings → App Layout → Featured
- * banner → Header size), 0.5–1.5: the card's width AND height scale together —
- * one slider for the whole header. Below 100% the card narrows (centred) and
- * shortens; above, it keeps full width and grows taller.
- */
 @Composable
 private fun heroFrame(aspect: Float, horizontalInsets: Float = 0f, scale: Float = 1f): Modifier {
     val width = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp.toFloat()
@@ -359,9 +286,6 @@ private fun heroFrame(aspect: Float, horizontalInsets: Float = 0f, scale: Float 
         return if (s >= 1f) {
             Modifier.fillMaxWidth().aspectRatio(aspect / (s * hf))
         } else {
-            // Narrower AND shorter, centred: symmetric side padding in place of
-            // a width fraction (this Compose version's fillMaxWidth takes no
-            // alignment), so the card shrinks towards the middle of the page.
             val side = ((width - horizontalInsets) * (1f - s) / 2f).dp
             Modifier.fillMaxWidth().padding(horizontal = side).aspectRatio(aspect / hf)
         }
@@ -372,15 +296,6 @@ private fun heroFrame(aspect: Float, horizontalInsets: Float = 0f, scale: Float 
         .height((natural * s * hf).coerceAtMost(height * 0.52f * s * hf).dp)
 }
 
-/**
- * [AsyncImage] with a little self-healing: a request that FAILS (dropped
- * connection, a 503 from the CDN, a momentarily busy decoder) is re-issued
- * after a growing delay. Coil never retries by itself, so without this a poster
- * that failed once stayed blank until its row happened to be scrolled out of
- * view and back — the "it loads some fine, but when I scroll down some images
- * just don't load" report. The re-request is a new [coil.request.ImageRequest]
- * carrying a retry parameter, which is what makes Coil's AsyncImage restart it.
- */
 @Composable
 fun PosterImage(
     model: Any?,
@@ -414,16 +329,6 @@ fun PosterImage(
     )
 }
 
-/**
- * Artwork for a wide hero/banner frame.
- *
- * EVERYTHING fills the frame edge to edge (ContentScale.Crop): a real 16:9
- * backdrop loses almost nothing, and a portrait poster is cropped into the
- * frame anchored near the TOP so faces and title art stay in frame instead of
- * the poster's middle hair strip. Letterboxing (Fit on a dark wash) is gone:
- * a narrow poster floating between blank sides is what the cinema look must
- * never show.
- */
 @Composable
 fun HeroArtwork(
     model: Any?,
@@ -456,32 +361,16 @@ fun PosterCard(
     /** Hold-menu play action (opens detail with autoplay); plain open when null. */
     onQuickPlay: ((MediaItem) -> Unit)? = null,
 ) {
-    // With the score badge switched on this warms the ratings cache for the
-    // title and repaints the cell when the answer lands (see
-    // rememberPosterScore). Off, it costs nothing at all.
     val badge = rememberPosterScore(item, style)
-    // On a television the same card is drawn half-size, sized from THIS screen's
-    // height rather than a constant (see TvUi.posterWidth) so several rows fit
-    // on one screen instead of one row covering it.
     val cardWidth = if (TvMode.current()) TvUi.posterWidth() else 120.dp
-    // 1-second-hold quick menu (info / play / library / close) — see PosterQuickMenu.
-    // The lambdas are hoisted into refs so the gesture (keyed on Unit, never
-    // restarted) can never close over a stale item after recomposition.
     val quickMenu = rememberQuickMenuState()
     val latestClick by rememberUpdatedState(onClick)
     val latestPlay by rememberUpdatedState(onQuickPlay)
     val latestItem by rememberUpdatedState(item)
-    // Hold-menu Library pick: the title the sheet files (null = no sheet).
-    // The sheet lives here — beside the gesture that opens it — so it works
-    // over every grid that uses this card, with no change at the call sites.
     var quickLibraryItem by remember { mutableStateOf<MediaItem?>(null) }
     Column(
         Modifier
             .width(cardWidth)
-            // Deliberately NOT clipped to the poster's rounding: the outer
-            // corner curve reached down into the title and bit the first and
-            // last letters off it at high corner values. The artwork applies
-            // the rounding to itself (see PosterArt).
             .clickable(onClick = onClick)
     ) {
         Box(
@@ -596,9 +485,6 @@ fun EmptyState(
             else MaterialTheme.colorScheme.onSurfaceVariant
         )
         Spacer(Modifier.height(12.dp))
-        // tr() here (not at every call site) so an error/empty state written
-        // anywhere in the app is translated: an unknown string — a raw error
-        // from an extension, say — comes back unchanged.
         Text(
             tr(title),
             style = MaterialTheme.typography.titleMedium,
@@ -709,10 +595,6 @@ fun GlassSearchField(
                         else MaterialTheme.colorScheme.onSurface
                     ),
                     cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                    // A remote must be able to leave the box — see
-                    // [com.hikari.app.tv.tvTextFieldKeys]: on a television the
-                    // arrows belong to the caret, and a caret at the end of the
-                    // line leaves the focus stuck in the search bar.
                     modifier = Modifier.fillMaxWidth().tvTextFieldKeys(value)
                         .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
                 )
@@ -732,15 +614,6 @@ fun GlassSearchField(
     }
 }
 
-/**
- * The shapes Home's featured banner can take — Settings → App Layout →
- * Featured banner.
- *
- * All four show the same titles; they differ in how much of the page the banner
- * owns and how much of each title it tells you. [COMPACT] gets out of the way as
- * fast as possible, [SPOTLIGHT] is the full cinematic treatment, and
- * [SHOWCASE] puts the poster beside the details so the artwork is never cropped.
- */
 object HeroStyles {
     const val CAROUSEL = "carousel"
     const val SPOTLIGHT = "spotlight"
@@ -770,12 +643,6 @@ object HeroStyles {
     }
 }
 
-/**
- * What the featured banner should draw: which shape, and which of the optional
- * lines. The three flags are the "overlay metadata" switches — a plot summary,
- * the score and the type/genre/year line can each be turned off, so a banner can
- * be pure artwork if that is what the user wants.
- */
 data class HeroConfig(
     val style: String = HeroStyles.CAROUSEL,
     val showOverview: Boolean = true,
@@ -793,11 +660,6 @@ fun HeroBanner(
     config: HeroConfig = HeroConfig(),
 ) {
     if (items.isEmpty()) return
-    // Television: one STILL card, never a pager. A pager re-settles every time
-    // the feed lands more rows (its page count is a lambda over the live
-    // list), and the D-pad pages it by accident while walking focus — which is
-    // the "the header image keeps jittering right and left" report. A single
-    // card cannot move at all.
     if (TvMode.current()) {
         HeroStaticCard(item = items.first(), onClick = onClick, modifier = modifier, config = config)
         return
@@ -811,16 +673,6 @@ fun HeroBanner(
     }
 }
 
-/**
- * The "Immersive" header: the artwork runs edge to edge and melts into the feed
- * underneath, with a big centred title, a one-line type · genre · year, a white
- * "View Details" pill and dots that stretch into a pill as the pager moves.
- *
- * Swiping is meant to feel fluid: the page fades while it leaves, the text
- * slides a little faster than the picture (a light parallax), the dots morph
- * with the finger instead of jumping, and the auto-advance glides on an eased
- * curve. The height follows Settings → Featured banner (size + Header height).
- */
 @Composable
 private fun HeroImmersive(
     items: List<MediaItem>,
@@ -1007,15 +859,6 @@ private fun HeroImmersive(
     }
 }
 
-/** A carousel of wide, movie-shaped featured cards for the top of Home — the
- *  backdrop art with the title/metadata and a "View Details" pill over a bottom
- *  scrim, and pagination dots while more than one featured title exists.
- *  Swiping left/right moves between featured titles (the dots track it), and
- *  tapping anywhere on a card opens the title that card shows.
- *
- *  The cards are 16:9 and inset from the screen edges so the neighbours peek
- *  in: that is what makes it read as a "poster carousel" instead of the tall
- *  portrait hero that used to eat the top third of Home. */
 @Composable
 private fun HeroCarousel(
     items: List<MediaItem>,
@@ -1025,9 +868,6 @@ private fun HeroCarousel(
 ) {
     if (items.isEmpty()) return
     val pagerState = rememberPagerState { items.size }
-    // Auto-advance every 6s, but stand still while the user is dragging so a
-    // swipe never fights the timer (the clock restarts after the drag ends).
-    // Not at all on a television — see [HeroAutoAdvance].
     if (!TvMode.current()) {
         LaunchedEffect(pagerState, items) {
             if (items.size <= 1) return@LaunchedEffect
@@ -1044,9 +884,6 @@ private fun HeroCarousel(
         HorizontalPager(
             state = pagerState,
             modifier = Modifier.fillMaxWidth(),
-            // The neighbours peek in at the sides: a wide, movie-shaped card
-            // that clearly belongs to a carousel, instead of the old
-            // full-bleed portrait hero that filled a third of the screen.
             contentPadding = PaddingValues(horizontal = 20.dp),
             pageSpacing = 12.dp,
         ) { page ->
@@ -1184,14 +1021,6 @@ private fun HeroCarousel(
 private fun rememberHeroScore(item: MediaItem): String? =
     rememberPosterScore(item, PosterStyle(showRatings = true))
 
-/**
- * The television hero: the carousel's card drawn ONCE, with no pager, no dots
- * and no timer around it (see [HeroBanner]). Same artwork, scrim, title, meta,
- * overview, score and "View Details" pill as the carousel's first page — only
- * the motion is gone, so the header stands perfectly still while the feed
- * keeps landing rows underneath it. The card itself stays clickable, so the
- * D-pad still reaches and opens it.
- */
 @Composable
 private fun HeroStaticCard(
     item: MediaItem,
@@ -1403,10 +1232,6 @@ private fun HeroDots(active: Int, count: Int, modifier: Modifier = Modifier) {
  *  a swipe never fights the timer. */
 @Composable
 private fun HeroAutoAdvance(pagerState: androidx.compose.foundation.pager.PagerState, count: Int, everyMs: Long) {
-    // A television's hero stands still. The remote is how a viewer moves
-    // through things there, and a banner that slides sideways every few seconds
-    // under a focused screen is the "the hero keeps jittering" report — on a
-    // weak TV box the animation also drops frames while it does it.
     if (TvMode.current()) return
     LaunchedEffect(pagerState, count) {
         if (count <= 1) return@LaunchedEffect
@@ -1419,12 +1244,6 @@ private fun HeroAutoAdvance(pagerState: androidx.compose.foundation.pager.PagerS
     }
 }
 
-/**
- * The SPOTLIGHT banner: one edge-to-edge cinematic frame per featured title,
- * taller than the carousel and carrying the whole story — title, metadata, a
- * two-line plot summary, the score and the action pill — over a deep bottom
- * scrim so the text always reads, whatever the artwork is doing underneath.
- */
 @Composable
 private fun HeroSpotlight(
     items: List<MediaItem>,
@@ -1539,12 +1358,6 @@ private fun HeroSpotlight(
     }
 }
 
-/**
- * The COMPACT strip: a short, edge-to-edge band — art, title, one metadata line,
- * a play chip on the right and a hairline progress bar instead of dots. For
- * someone who came for the rows underneath, this is the featured banner that
- * costs the least screen.
- */
 @Composable
 private fun HeroCompact(
     items: List<MediaItem>,
@@ -1579,9 +1392,6 @@ private fun HeroCompact(
                     contentDescription = item.title,
                     modifier = Modifier.fillMaxSize(),
                 )
-                // Reads left to right, so the scrim is too: the copy sits on the
-                // left, the play chip on the right, and neither needs a caption
-                // box under it.
                 Box(
                     Modifier
                         .fillMaxSize()
@@ -1676,11 +1486,6 @@ private fun HeroCompact(
     }
 }
 
-/**
- * The SHOWCASE banner: the poster kept at its own 2:3 shape beside the details,
- * on a glass card. Nothing is cropped and nothing is darkened, so a title whose
- * artwork matters more than its backdrop is the one this shape is for.
- */
 @Composable
 private fun HeroShowcase(
     items: List<MediaItem>,
@@ -1706,9 +1511,6 @@ private fun HeroShowcase(
                     .fillMaxWidth()
                     .clickable { onClick(item) },
             ) {
-                // TMDB backdrop behind the detail: the art lookup (TMDB first,
-                // provider art as fallback) paints over the flat surface the
-                // moment it lands, so the card is never a black box.
                 Box {
                     val backdrop = Artwork.backdropModel(item)
                     if (backdrop != null) {
@@ -1833,12 +1635,6 @@ fun ContinueWatchingRow(
     if (entries.isEmpty()) return
     // Defensive dedupe: a duplicate Compose key would crash the whole row.
     val unique = remember(entries) { entries.distinctBy { it.uniqueKey } }
-    // Adult titles are hidden here too (see [NsfwGate]): Continue Watching is fed
-    // from the same watch history as the History tab, so something watched before
-    // the switch was turned off would otherwise come straight back onto the Home
-    // feed. A history entry carries no genre list or provider flag, so the name is
-    // what this can judge on — and [rememberNsfwEnabled] is what makes the row drop
-    // those cards the moment the switch is flipped.
     val nsfwOn = com.hikari.app.ui.rememberNsfwEnabled()
     val shown = remember(unique, nsfwOn) {
         if (nsfwOn) unique
@@ -1978,11 +1774,6 @@ private fun ContinueWatchingCard(
                     .align(Alignment.BottomStart)
                     .padding(start = 10.dp, end = 10.dp, bottom = 8.dp)
             ) {
-                // Movies wear no episode line: a film that was ever resolved
-                // through an episode path used to file "Episode 1" history,
-                // and the card repeated it under the title — a movie with an
-                // episode label. Series entries (and legacy movie entries
-                // filed before the type correction) keep theirs.
                 if ((h.episodeName.isNotBlank() || h.episodeId.isNotBlank()) &&
                     h.type != com.hikari.app.data.MediaType.MOVIE
                 ) {
@@ -2061,18 +1852,6 @@ private fun fmtRemaining(ms: Long): String {
     return if (m >= 60L) "${m / 60}h ${m % 60}m" else "${m}m"
 }
 
-/**
- * The one corner radius the app rounds a box with.
- *
- * Every card is drawn at this radius, and so is every box INSIDE one — the
- * action buttons, the pickers, the small icon tiles, the form fields. Mixing
- * radii on one screen is the thing that reads as unfinished: a card rounded at
- * 26.dp with a 4.dp field, or a half-rounded row, sitting in it looks like two
- * designs laid on top of each other. A short box (a button, a chip, a tile) ends
- * up a capsule at this radius, which is what "fully rounded" should look like,
- * and a tall one keeps the card's own curve — so everything inside a card
- * matches the card it is inside.
- */
 val GlassCornerRadius = 26.dp
 val GlassShape = RoundedCornerShape(GlassCornerRadius)
 
@@ -2084,18 +1863,11 @@ fun GlassCard(
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val glass = rememberGlassTokens()
-    // Television cards wear the desktop language — flat elevated-black with
-    // 12dp corners and a hairline edge — while phones keep the glass card.
-    // One branch here repaints every settings card and repo row on TV.
     val tv = TvMode.current()
     val cardShape = if (tv) RoundedCornerShape(com.hikari.app.tv.TvDesktop.CornerLarge) else shape
     Column(
         modifier
             .fillMaxWidth()
-            // The shadow is for the LIGHT theme only: there a translucent card
-            // would otherwise float with no edge against the paper background.
-            // On the dark themes the shadow would simply mud the translucent
-            // fill, and the hairline below does the separating instead.
             .then(if (glass.dark || tv) Modifier else Modifier.shadow(3.dp, shape, clip = false))
             .clip(cardShape)
             // A whisper of white at the top falling to half of that at the
@@ -2114,46 +1886,16 @@ fun GlassCard(
     )
 }
 
-/**
- * The app's modal panel: a dimming scrim over the page with a glass card in the
- * middle — the same fill/edge/size recipe as [GlassCard], so a dialog looks like
- * the rest of Hikari instead of the platform's grey Material box.
- *
- * Tapping the scrim anywhere dismisses (so every dialog can be cancelled with a
- * single tap), while taps INSIDE the card are swallowed by an empty clickable —
- * otherwise they would fall through to the scrim and close the dialog the moment
- * someone reached for a row.
- */
 @Composable
 fun GlassDialog(
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
     title: String? = null,
     showClose: Boolean = true,
-    /**
-     * The control the remote should land on when this dialog opens on a
-     * television. Optional: without it the dialog still works (the first
-     * focusable inside it takes the focus), but a caller whose content is a LIST
-     * should pass the requester of its first row, so the very first arrow press
-     * walks the list instead of starting on the ✕.
-     *
-     * This exists because of what the scrim and the tap-swallower below used to
-     * do: both are `clickable` (a tap outside closes the dialog, a tap on the
-     * card must not), and a `clickable` is a FOCUS TARGET — so on a television
-     * the first thing the D-pad landed on when a picker opened was the
-     * full-screen scrim, and pressing OK on it ran `onDismiss`. The reported
-     * "I cannot change the app language with the remote — the D-pad does not
-     * select any language": the picker was closing instead of picking. Both
-     * containers are now non-focusable on a television (touch is untouched —
-     * `focusProperties` only removes the focus target).
-     */
     initialFocus: FocusRequester? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val glass = rememberGlassTokens()
-    // Television wears the desktop dialog language: a flat elevated-black
-    // box with 12dp corners and a hairline edge (the reference's dialog
-    // panels are flat, never glass). Phones keep the glass panel untouched.
     val tv = TvMode.current()
     val shape = if (tv) RoundedCornerShape(com.hikari.app.tv.TvDesktop.CornerLarge) else GlassShape
 
@@ -2201,15 +1943,6 @@ fun GlassDialog(
     LaunchedEffect(Unit) { appear.animateTo(1f, tween(durationMillis = 170)) }
     val a = appear.value
 
-    // Put the remote's focus INSIDE the panel as soon as the new window exists.
-    // A Dialog is a second window, and Compose can only deliver focus to it once
-    // the platform has attached it — which is not the frame the composable first
-    // runs in — so the request is retried over the next few frames instead of
-    // being lost. `requestFocus` throws while the requester is unattached, which
-    // is exactly what the retry condition tests for. The budget is generous on
-    // purpose: a cold television box can take a moment to compose and attach a
-    // new window, and the cost of giving up early is a picker whose D-pad starts
-    // on the ✕ instead of the list.
     LaunchedEffect(tv, initialFocus) {
         val target = initialFocus ?: return@LaunchedEffect
         if (!tv) return@LaunchedEffect
@@ -2295,17 +2028,6 @@ fun GlassDialog(
         )
     }
 
-    // A REAL window, not a Box drawn into whichever subtree happened to open
-    // the dialog. That distinction is the whole fix for "the picker opens at
-    // the BOTTOM of the page and I have to scroll to it": the panel used to be
-    // composed inside the card that opened it — i.e. inside one item of a
-    // LazyColumn — so its height was added to that card instead of being laid
-    // over the screen. It looked centred in English (short labels, a card near
-    // the top of a page) and landed below everything in Arabic (longer,
-    // right-to-left labels, and a taller card), which is exactly the report.
-    // In its own window the panel is centred on the SCREEN in every language,
-    // on every screen, and it draws over the taskbar and the navigation rail
-    // instead of behind them.
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(
@@ -2320,10 +2042,6 @@ fun GlassDialog(
                 .fillMaxSize()
                 .graphicsLayer { alpha = a }
                 .background(Color.Black.copy(alpha = 0.62f * a))
-                // A television must not be able to LAND on the scrim: it is a
-                // focus target only because it is clickable, and a remote OK on
-                // it would dismiss the dialog the user just opened (see
-                // [initialFocus]). Touch is unaffected.
                 .then(if (tv) Modifier.focusProperties { canFocus = false } else Modifier)
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
@@ -2359,29 +2077,6 @@ private fun glassDialogHostActivity(context: android.content.Context): android.a
     return null
 }
 
-/**
- * The "this is taking a while — a verification may be in the way" nudge.
- *
- * The user's report: an extension's catalog or chapter list can sit there
- * spinning forever with nothing on screen explaining why, and the reason is
- * almost always Cloudflare — the site wants its check passed in a real browser
- * before it will answer an extension's request (see
- * [com.hikari.app.net.CloudflareVerifier]). The fix is the WebView button, which
- * the Manga tab and every catalog header already carry — but a button the user
- * does not know to press is not a fix.
- *
- * So: when [waiting] has been true for [WAIT_MS] (ten seconds — long enough that
- * a slow-but-working site never trips it, short enough that a blocked one does
- * not leave the user staring at a spinner), a SMALL chip appears for
- * [SHOW_MS] (three seconds) saying to tap it for the verification view, with its
- * own ✕. Tapping the chip opens that view directly, because telling someone to
- * go and press another button is one step worse than the button itself.
- *
- * Deliberately tiny and out of the way: it is a note, not an error state, and it
- * must not push the content around or read as a failure. It re-arms only when
- * the load succeeds and fails again (i.e. on the next real wait), so a site that
- * is merely slow cannot nag.
- */
 @Composable
 fun VerificationNudge(
     waiting: Boolean,

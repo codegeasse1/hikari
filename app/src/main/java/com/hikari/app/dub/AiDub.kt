@@ -62,15 +62,6 @@ object AiDubLangs {
     fun byCode(code: String): AiDubLang = all.firstOrNull { it.code == code } ?: all[0]
 }
 
-/**
- * AI Dub: speaks subtitle lines (and translated hardcoded on-video text) in
- * the dub language while the player ducks its own audio underneath.
- *
- * Two engines. System TTS (any TTS engine on the phone — Google, Samsung,
- * eSpeak, RHVoice) is instant and free. Piper (sherpa-onnx + per-language
- * int8 voice packs downloaded on demand) is the natural offline voice.
- * Anything Piper cannot do falls back to System TTS, never silence.
- */
 class AiDubManager(private val appCtx: Context) {
     companion object {
         const val ENGINE_SYSTEM = "system"

@@ -3,17 +3,6 @@ package com.hikari.app.net
 import android.util.Base64
 import java.net.InetAddress
 
-/**
- * Just enough of RFC 1035 to speak DNS-over-HTTPS in its native wire format
- * (`application/dns-message`), which is what every public DoH resolver serves.
- *
- * The shared JSON API (`application/dns-json`) exists only on Cloudflare and
- * Google, so a "DNS mode" that let the user pick AdGuard or Quad9 could not be
- * built on it. The wire format is the common denominator, it is a couple of
- * hundred bytes of hand-rolled encoding instead of a DNS library, and the
- * queries this app sends are always one question of type A or AAAA with a zero
- * transaction id, which keeps it tiny.
- */
 object DnsWire {
 
     /** Base64url, unpadded, of a `?name&type` query — the `dns=` parameter. */
@@ -53,11 +42,6 @@ object DnsWire {
     fun isTruncated(response: ByteArray): Boolean =
         response.size >= 4 && (response[2].toInt() and 0x02) != 0
 
-    /**
-     * The A/AAAA addresses in a response, or an empty list. A response that
-     * carries no answer (NXDOMAIN, a blocked name, a CNAME chain that ends
-     * nowhere) simply yields nothing — the caller decides what to try next.
-     */
     fun parseAnswers(response: ByteArray): List<InetAddress> {        if (response.size < 12) return emptyList()
         val out = ArrayList<InetAddress>(4)
 

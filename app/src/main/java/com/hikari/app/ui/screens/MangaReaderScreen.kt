@@ -112,47 +112,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
-/**
- * The reader.
- *
- * A chapter arrives from the engine as a list of [StreamSource]s whose `url` is
- * one PAGE IMAGE and whose `headers` are the source's own request headers (many
- * manga CDNs reject a page fetched without the site's Referer). That is the whole
- * reason the manga provider reuses the video "stream" shape: the page list, the
- * per-source headers and the "one stream at a time" plumbing all already exist.
- *
- * The screen itself is the shell; the reading is done by Nekoread's reader,
- * ported whole:
- *
- *  * [YomiWebtoonReader] — the continuous-strip reader (a RecyclerView of
- *    subsampling page frames, chapter dividers between streamed chapters and a
- *    trailing item that reports the next chapter's loading/error/end state).
- *  * [ChimahonPagerReader] — the paged reader (a DirectionalViewPager of the
- *    same page frames) for left-to-right, right-to-left and vertical reading.
- *  * [WebtoonPageCache] — the on-device page cache both of them render from:
- *    every page's bytes are downloaded ONCE, through the source's own client
- *    (see [HikariPageSource]) which is what carries the headers a hotlink
- *    protected CDN insists on.
- *  * [YomiReaderChrome] — every reader option: the reading-mode / fit /
- *    orientation pickers, crop borders (per mode), tap zones and their
- *    inversion, side padding, page scale, zoom, page transitions, auto-scroll,
- *    the hide threshold, brightness, colour filter, grayscale/invert/enhance,
- *    quality, the background, the chapter list and the per-series override.
- *
- * Why the pages used to come out broken, and why they do not any more: the old
- * reader drew one ordinary `Image` per page from a bitmap it decoded itself, so
- * a page that failed to decode (or a URL that 403'd because the request carried
- * the app's headers and not the source's) left a torn or blank cell in the
- * strip — and its "fit" only ever changed how that one bitmap was scaled, which
- * is why the fit buttons looked like they did nothing. Every page here is a
- * file in [WebtoonPageCache], fetched by the source, region-decoded by
- * SubsamplingScaleImageView, and re-fetched/retried by the page holder itself —
- * so a page either has its own Retry row or it is drawn whole.
- *
- * Progress is written into [MangaStore] on every page change — debounced — and
- * again when the screen goes away, so the detail screen, the Manga tab and the
- * My Stuff shelf all agree where the reader stopped.
- */
 @Composable
 fun MangaReaderScreen(
     nav: NavHostController,
@@ -275,10 +234,6 @@ fun MangaReaderScreen(
     // The page the chapter opens on, decided when its pages arrive. Reset by the
     // chapter key, so a chapter picked from the list starts at its top.
     var openPage by remember(chapter) { mutableIntStateOf(0) }
-    // The chapter whose previous neighbour should be prepended to the strip,
-    // set when the reader was moved to a chapter from inside the reader (so
-    // scrolling up returns to the chapter it came from) — null when the chapter
-    // is the one the screen was opened on.
     var jumpSeedChapter by remember { mutableStateOf<String?>(null) }
 
     // The reader's own [MangaSource]: one page cache and one client for the whole
@@ -306,15 +261,7 @@ fun MangaReaderScreen(
         val out = runCatching { p.getStreams(item, ep) }.getOrNull().orEmpty()
             .filter { it.url.isNotBlank() && it.url != url && !isPreview(it.url) && (poster.isBlank() || (it.url != poster && norm(it.url) != norm(poster))) }
             .distinctBy { norm(it.url) }
-        // Every page is downloaded through the extension's OWN source (see
-        // [HikariPageSource]): `getImage(page)` is what carries the extension's
-        // imageRequest headers and its own interceptors, which is the whole
-        // difference between a page that loads and one that comes back refused or
-        // scrambled. Set here, before the viewers ask the cache for anything.
         pageSource.httpSource = (p as? MangaProvider)?.httpSource()
-        // Every page's own headers go into the one map the page cache reads, so a
-        // page fetched by a viewer bind (not by this screen) still carries them —
-        // the fallback path, for a source with no HttpSource behind it.
         for (s in out) knownHeaders[s.url] = s.headers
         pageSource.setHeaders(HashMap(knownHeaders))
         out
@@ -333,12 +280,6 @@ fun MangaReaderScreen(
         // Where to start: the page saved for THIS chapter if the reader has been
         // here before, otherwise the top.
         val saved = MangaStore.progressFor(key)
-        // Where to start: the page saved for THIS chapter if the reader has been
-        // here before, otherwise the top. A chapter the reader was moved to from
-        // inside the reader (`jumpSeedChapter`) always opens at its TOP — the
-        // saved page belongs to the last time that chapter was read, and opening a
-        // chapter the user just asked for at its first page is the whole point of
-        // going there.
         val fromReaderJump = jumpSeedChapter == chapter
         val restored = if (!fromReaderJump && saved != null && saved.chapterUrl == chapter) {
             saved.page.coerceIn(0, (out.size - 1).coerceAtLeast(0))
@@ -365,19 +306,6 @@ fun MangaReaderScreen(
         loading = false
     }
 
-    // ---- The continuous strip's stream ----
-    //
-    // In webtoon mode the pages on screen are a RUN of chapters, not one. A
-    // webtoon's artwork has no chapter-sized break in it, so the strip must not
-    // stop at one: reaching the end of a chapter fetches the next and appends
-    // it, and a jump from inside the reader prepends the chapter it came from so
-    // scrolling up returns to it. A title card is drawn where each chapter
-    // begins. Paged modes keep a single chapter, so the run stays empty.
-    //
-    // The queue holds the chapters (id + label, what the chrome's chapter list
-    // needs) and the segments hold their [StreamSource]s — from which the
-    // descriptor lists the viewers take are derived, so the source headers stay
-    // available in one place.
     var streamQueue by remember(chapter) { mutableStateOf<List<ReaderChapter>>(emptyList()) }
     var streamSegments by remember(chapter) { mutableStateOf<List<List<StreamSource>>>(emptyList()) }
     var loadingNext by remember(chapter) { mutableStateOf(false) }
@@ -423,10 +351,6 @@ fun MangaReaderScreen(
     }
 
     fun saveTranslate(next: MangaTranslateSettings) {
-        // Synchronous: holders rebind on this write instantly (the
-        // LaunchedEffect below fires a frame later — after reloadPages already
-        // rebound them against the STALE value, which is why the open page
-        // waited for a scroll in both directions).
         MangaTranslateRuntime.settings = next
         if (seriesOverrideEnabled) saveTranslateSeries(translateSeries + (key to next.toJson().toString()))
         else {
@@ -453,11 +377,6 @@ fun MangaReaderScreen(
                     ReaderChapter(chapter, labelOf(chapter)),
                 )
                 streamSegments = listOf(prevPages, pages)
-                // The reader is on the SECOND segment (the prepended chapter is
-                // above it) and on the page it was told to open at. Seeding the
-                // reported position here is what makes the chapter title, the page
-                // counter and the ◀ ▶ neighbours right from the first frame
-                // instead of for a moment reporting the chapter above.
                 viewerPos = Triple(1, openPage + 1, pages.size)
                 return@LaunchedEffect
             }
@@ -489,12 +408,6 @@ fun MangaReaderScreen(
         }
     }
 
-    /** Streams the PREVIOUS chapter in above the strip — the mirror of
-     *  [loadNextIntoStream], and what makes the strip readable upwards as well as
-     *  down: with it the reader can scroll from the chapter it opened on all the
-     *  way back to chapter 1, one chapter at a time, exactly as it already walks
-     *  forward to the last one. The viewer holds the reader's place while the list
-     *  grows at the head (see WebtoonViewer.setItems). */
     fun prependIntoStream(prevUrl: String) {
         scope.launch {
             val list = fetchPages(prevUrl)
@@ -524,21 +437,11 @@ fun MangaReaderScreen(
         derivedStateOf { if (isWebtoon) streamPosition.third else pages.size }
     }
 
-    // The global adapter position the webtoon viewer opens at. The current
-    // chapter sits after the prepended one's divider and pages, so its first
-    // page is one divider plus the previous segment's page count in.
     val webtoonInitialPos = remember(streamQueue, streamSegments, openPage, chapter) {
         val segIdx = streamQueue.indexOfFirst { it.id == chapter }.coerceAtLeast(0)
         streamSegments.take(segIdx).sumOf { it.size } + segIdx + openPage
     }
 
-    // ---- Progress ----
-    //
-    // Saved from a `snapshotFlow` rather than a LaunchedEffect keyed on the
-    // page: a key is evaluated in the composition's own scope, so keying on the
-    // page number made every page turn invalidate this whole screen.
-    // `collectLatest` + the delay debounces it, so flipping through ten pages
-    // writes once, at the tenth.
     fun saveProgress(p: Int, url: String) {
         val list = if (url == chapter) {
             pages
@@ -591,12 +494,6 @@ fun MangaReaderScreen(
             runCatching { saveProgress(page - 1, activeChapterUrl) }
         }
     }
-    // Leaving the reader records the page immediately (the debounce above would
-    // otherwise be cancelled by the disposal). Everything the write needs is
-    // re-captured on every recomposition ([rememberUpdatedState]), because the
-    // position states are `remember`ed per chapter — a closure captured once at
-    // the first composition would still be holding the chapter the reader was
-    // opened on.
     val disposeSave = rememberUpdatedState<() -> Unit> {
         val url = if (isWebtoon) activeChapterUrl else chapter
         saveProgress(currentPage - 1, url)
@@ -605,14 +502,6 @@ fun MangaReaderScreen(
         onDispose { runCatching { disposeSave.value() } }
     }
 
-    // ---- Reading statistics (the Stats page) ------------------------------
-    //
-    // The reader feeds the same store the video player does: one "chapter
-    // consumed" the first time a chapter is opened in this session, and the
-    // wall-clock time the reader was actually on screen. Counting a chapter
-    // once per session rather than per position change matters in webtoon
-    // mode, where scrolling through the strip walks the reader across several
-    // chapters and back again.
     val countedChapters = remember { mutableSetOf<String>() }
     LaunchedEffect(activeChapterUrl) {
         val url = activeChapterUrl
@@ -625,16 +514,6 @@ fun MangaReaderScreen(
             )
         }
     }
-    // The clock only counts while the activity is RESUMED: a reader left open
-    // in the background is not being read, and counting it would turn "time
-    // spent" into "time the app was open".
-    //
-    // One clock for the WHOLE reader, not one per chapter (it used to be keyed
-    // on [activeChapterUrl]): switching chapters — and, in webtoon mode,
-    // scrolling across the chapters the strip holds — restarted the timer, so a
-    // reader who moved faster than one tick, or who flipped through chapters,
-    // was never credited ANY time. That is why "time spent" could sit at 0m
-    // while chapters piled up in the same document.
     LaunchedEffect(key) {
         var last = System.currentTimeMillis()
         while (true) {
@@ -663,14 +542,7 @@ fun MangaReaderScreen(
 
     // ---- Navigation ---- (chapter jumps and page seeks)
     fun openChapter(url: String) {
-        // Compared against the chapter the VIEWER is in, not the one the screen was
-        // seeded with: after a jump into a chapter the strip already held, those two
-        // differ, and guarding on the seed made the button a no-op exactly when the
-        // user was trying to step back over a chapter they had just passed.
         if (url == activeChapterUrl) return
-        // A chapter the strip already holds (a neighbour it pulled in) is jumped
-        // to rather than rebuilt — its pages are right there, and its first page is
-        // where a chapter change should land.
         if (streamQueue.any { it.id == url }) {
             val seg = streamQueue.indexOfFirst { it.id == url }
             if (seg >= 0) {
@@ -689,9 +561,6 @@ fun MangaReaderScreen(
     val streamNextChapter = neighbourOf(streamQueue.lastOrNull()?.id ?: chapter, +1, navChapters, chapters)
     val streamPrevChapter = neighbourOf(streamQueue.firstOrNull()?.id ?: chapter, -1, navChapters, chapters)
 
-    // When the reader nears the bottom of the strip, fetch and append the next
-    // chapter. The viewer reports this: true while the last few pages of the
-    // last streamed chapter are on screen.
     LaunchedEffect(nearEnd, streamQueue.size, loadingNext, nextError, isWebtoon) {
         if (!isWebtoon) return@LaunchedEffect
         if (!nearEnd) return@LaunchedEffect
@@ -700,13 +569,6 @@ fun MangaReaderScreen(
         if (streamQueue.none { it.id == next }) loadNextIntoStream(next)
     }
 
-    // …and the same at the TOP of the strip: reaching the first pages of the first
-    // streamed chapter streams the previous one in above the reader, so the strip
-    // is continuous in BOTH directions and the reader can walk back to chapter 1
-    // without ever leaving it. The flag is consumed here rather than relied on
-    // again: the prepend shifts the reader into the second segment, so the viewer
-    // reports "not at the start" as soon as the list has grown and the next
-    // previous chapter is only asked for once the user really scrolls up again.
     LaunchedEffect(nearStart, streamQueue.size, prependTried, isWebtoon) {
         if (!isWebtoon) return@LaunchedEffect
         if (!nearStart) return@LaunchedEffect
@@ -718,15 +580,6 @@ fun MangaReaderScreen(
         prependIntoStream(prev)
     }
 
-    // ---- The reader's own way past a Cloudflare check ----------------------
-    //
-    // The Manga tab has a globe per engine and every catalog header has one, but
-    // a chapter can be behind its own verification page. The reader carries the
-    // same escape hatch: the engine's own site is opened in [WebViewActivity],
-    // the user passes whatever check the site wants, and the chapter is
-    // re-fetched on the way back — between opening the view and closing it, the
-    // answer the site gives an extension's request can go from a challenge to the
-    // real page list.
     var showHud by remember { mutableStateOf(true) }
     val verifyLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -736,9 +589,6 @@ fun MangaReaderScreen(
     }
     val openVerify: () -> Unit = {
         scope.launch {
-            // The chain ends at the chapter's own page AND the manga's page:
-            // even an engine whose extension will not load still opens its
-            // site from one of the URLs the reader already holds.
             val site = withContext(Dispatchers.IO) {
                 runCatching {
                     app.providers.byId(providerId)?.let { webUrlChainAsync(it, chapter, activeChapterUrl, mangaUrl) }
@@ -817,14 +667,7 @@ fun MangaReaderScreen(
     // decodes full colour (no RGB_565), and High and above add a bounded
     // unsharp-mask pass so upscaled sources read crisp.
     val webtoonDecodeWidth = (screenWidthPx * settings.readerQuality / 100f).roundToInt().coerceIn(360, 2160)
-    // Full colour at every tier: the old Low-tier RGB_565 decode banded gradients
-    // and dulled text for a memory saving the pixel-budget cap already covers,
-    // so it is gone — tall strips decode at 4 bytes/px like everything else.
     val useRgb565 = false
-    // Crispness pass at High quality and above (Ultra/4K included): a bounded
-    // unsharp-mask over the decoded page. Low/Medium stay on the fast plain
-    // path. MUST match ReaderPageImageView's bind (config.sharpen comes from
-    // this same flag via the viewer) or the warm's bitmap never hits.
     val sharpenPages = settings.readerQuality >= 100
     val displayDecodeWidth = if (isWebtoon) webtoonDecodeWidth else screenWidthPx
     val cacheDir = remember { File(context.cacheDir, "webtoon_pages") }
@@ -937,9 +780,6 @@ fun MangaReaderScreen(
             val segIdx = streamPosition.first.coerceIn(0, segs.lastIndex)
             val segSize = segs[segIdx].size
             val globCur = (starts[segIdx] + (currentPage - 1).coerceIn(0, segSize - 1)).coerceIn(0, total - 1)
-            // 12 pages behind and 60 ahead: the strip leans AHEAD because that is
-            // the direction the reader scrolls, and the lead time is what lets a
-            // slow source finish a page before it enters the viewport.
             val warmFrom = (globCur - 12).coerceAtLeast(0)
             val warmTo = (globCur + 60).coerceAtMost(total - 1)
             val maxDist = maxOf(globCur - warmFrom, warmTo - globCur)
@@ -988,9 +828,6 @@ fun MangaReaderScreen(
                 }
             }
 
-            // Rolling memory refresh for the pages just ahead (short pages only):
-            // at most one warm in flight, one new page per tick, and a page
-            // re-warmed only after the position has moved on a few pages.
             val cacheBytes = (imageLoader.memoryCache?.maxSize ?: 0).toLong()
             val estPageBytes = WEBTOON_MAX_DECODE_PIXELS * 4L
             val aheadPages = if (cacheBytes > 0L) {
@@ -1035,9 +872,6 @@ fun MangaReaderScreen(
                                     .allowHardware(!settings.cropBorders)
                                     .decoderDispatcher(readerPageDecodeDispatcher)
                                     .apply { if (settings.cropBorders) cropBorders(true) }
-                                    // Same crispness flag as the bind (see sharpenPages):
-                                    // transformations key the memory cache, so a
-                                    // mismatched warm would never hit.
                                     .apply { if (sharpenPages) transformations(SharpenTransformation()) }
                                     .build(),
                             )
@@ -1140,10 +974,6 @@ fun MangaReaderScreen(
         }
     }
 
-    // Dedup-aware index of the chapter being read, shared by the chapter rows
-    // below and the reader's chapter sheet (whose own ids are the deduped urls
-    // — a raw active-url lookup there misses whenever the active chapter is
-    // another scanlator's copy of the same number).
     val chapterInitialIndex = remember(navChapters, chapters, activeChapterUrl) {
         navIndexOf(navChapters, activeChapterUrl, chapters)
     }
@@ -1274,10 +1104,6 @@ fun MangaReaderScreen(
             )
         }
 
-        // A chapter whose PAGE LIST never arrives is usually a verification wall
-        // (the site gates chapter requests, not just its catalog), so the reader
-        // says so once, ten seconds in — and the nudge itself is the way to the
-        // WebView.
         if (pages.isEmpty()) {
             VerificationNudge(
                 waiting = loading,
@@ -1461,29 +1287,14 @@ fun MangaReaderScreen(
     }
 }
 
-// How many in-window webtoon pages the prewarm fetches at once. A small
-// concurrent batch keeps the window filled ahead of the scroll even when every
-// page costs a full download — a sequential one-at-a-time loop cannot keep up on
-// slow sources.
 private const val WEBTOON_BATCH = 8
 
-// Rolling memory-refresh horizon: up to this many pages just ahead (and a couple
-// behind) are kept warm in Coil's memory cache, re-warmed as the reader
-// advances. The depth is derived from the memory cache's capacity and clamped,
-// so a big-heap device gets a long runway for flings while a small-heap one
-// cannot overflow the cache and thrash.
 private const val WEBTOON_MEM_HORIZON_AHEAD_MIN = 6
 private const val WEBTOON_MEM_HORIZON_AHEAD_MAX = 12
 private const val WEBTOON_MEM_HORIZON_BEHIND = 3
 
-// The rolling memory refresh never floods the decoder: at most this many warm
-// executes are in flight at once (one), which also guarantees a visible-page
-// bind always has a free slot in the shared decode dispatcher.
 private const val WEBTOON_MEM_WARM_CONCURRENCY = 1
 
-// A page is re-warmed only after the position has advanced this many pages, so
-// near pages get re-touched enough to survive LRU eviction without re-decoding
-// on every tick.
 private const val WEBTOON_MEM_WARM_STALE = 2
 
 /** The chapter [delta] away from [url] in the de-duplicated reading order. */
@@ -1507,14 +1318,6 @@ private fun navIndexOf(nav: List<MangaChapter>, url: String, all: List<MangaChap
     return nav.indexOfFirst { chapterNo(it) == no }
 }
 
-/**
- * The number a chapter is known by: the source's own `chapter_number` when it has
- * one, otherwise read out of its name — plenty of sources leave the number unset
- * and put everything in the title ("Chapter 12.5", "Ch. 12", "Vol. 3 Ch. 12").
- * A name with a volume number in it is why "ch" is looked for FIRST: "Vol. 3 Ch.
- * 12" must be chapter 12, not chapter 3, or two different chapters would be
- * treated as the same one. -1 when no number can be found at all.
- */
 private fun chapterNo(c: MangaChapter): Float {
     if (c.number > 0f) return c.number
     val name = c.name
@@ -1525,16 +1328,6 @@ private fun chapterNo(c: MangaChapter): Float {
     return match.groupValues.getOrNull(1)?.toFloatOrNull() ?: -1f
 }
 
-/**
- * One entry per chapter NUMBER, in reading order.
- *
- * An aggregator lists the same chapter once per scanlation group, so walking the
- * raw list stepped to the same chapter from the next group. For each number the
- * release by [preferScanlator] wins when there is one, so stepping forward keeps
- * the translation the reader is already reading; otherwise the first release
- * wins. Chapters whose number cannot be read at all are kept as their own
- * entries, so nothing is ever merged by accident.
- */
 private fun dedupeChapters(list: List<MangaChapter>, preferScanlator: String?): List<MangaChapter> {
     val group = preferScanlator?.takeIf { it.isNotBlank() }
     val slots = ArrayList<Pair<Float, MangaChapter>>(list.size)

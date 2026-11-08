@@ -13,33 +13,6 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 
-/**
- * On-device rolling logs, so a bug report is a share button instead of a photo
- * of the screen.
- *
- * Three files live in `filesDir/logs/` (shared out through the app's
- * FileProvider — see `res/xml/file_paths.xml`):
- *
- *  - `app.log`          the current session log; rolls over at [FILE_MAX_BYTES]
- *  - `app.previous.log` the session before it (exactly two app logs are kept)
- *  - `crash.log`        the full, untruncated report for the last uncaught
- *                       exception, including the last [RING_MAX] log lines
- *                       ("breadcrumbs") so the cause is visible, not guessed
- *
- * Everything is best-effort: a log write must never be the thing that crashes
- * the app, so every file operation is wrapped and the in-memory ring keeps
- * working even if the directory can't be created.
- *
- * FILE I/O IS OFF THE CALLING THREAD. [log] is called for every interesting UI
- * event — i.e. on the MAIN thread — and it used to append to `app.log` and
- * stat the file inline to check the roll-over size. On a slow/cheap device that
- * is a disk write plus an `fstat` in the middle of a frame, on every event, and
- * it is invisible in a profile until the list starts to jank. Now [log] only
- * touches the in-memory ring and hands the line to a single daemon writer
- * thread ([queue]), which owns the files: ordering is preserved, rotation
- * happens there, and a caller that needs to READ the files (Settings → share
- * logs, the crash banner) calls [flush] first.
- */
 object Logs {
 
     /** Roll `app.log` over once it passes this size. */
@@ -76,11 +49,6 @@ object Logs {
 
     private val queue = LinkedBlockingQueue<Op>()
 
-    /**
-     * The single log writer. Daemon + owned by this object, so the app shutting
-     * down is never delayed by it, and its own failures can never propagate
-     * into user code (every op is wrapped).
-     */
     private val writer: Thread by lazy {
         Thread({
             while (true) {
@@ -196,14 +164,6 @@ object Logs {
         if (t != null && enabled) append(stackTrace(t))
     }
 
-    /**
-     * Standing rule, enforced by convention (see docs/LOGGING.md): EVERY
-     * user-visible flow logs its start, its end with wall-clock duration, and
-     * its outcome/failure through [log] — a bug report must be answerable
-     * from Settings → Logs, never from a screenshot. New features use this
-     * helper so the start/end/duration lines exist from day one; a flow with
-     * inner stages logs each stage the same way at its own call site.
-     */
     suspend fun <T> timed(tag: String, label: String, block: suspend () -> T): T {
         val t0 = android.os.SystemClock.elapsedRealtime()
         log(tag, "$label start")
@@ -221,14 +181,6 @@ object Logs {
         }
     }
 
-    /**
-     * Write the full crash report for an uncaught exception. Returns the report
-     * text so the caller can surface it in the in-app crash banner.
-     *
-     * crash.log is written SYNCHRONOUSLY (after draining the queue, so its
-     * breadcrumbs include everything that happened): the process may be killed
-     * the instant this returns, and a queued write could be lost.
-     */
     fun recordCrash(threadName: String, t: Throwable): String {
         val report = buildString {
             appendLine("Hikari crash report")
@@ -245,9 +197,6 @@ object Logs {
         val crashLine = "${stampOf(stamp)} [crash] $threadName: ${t.javaClass.name}: ${t.message}"
         synchronized(lock) { pushRing(crashLine) }
         if (enabled) {
-            // Drain first: the report's breadcrumbs are already snapshotted on
-            // the main thread, but app.log should reach the crash line before
-            // the report is offered for sharing.
             flush()
             // Exactly one crash file: the newest crash replaces the last.
             runCatching { dir?.let { File(it, "crash.log").writeText(report) } }

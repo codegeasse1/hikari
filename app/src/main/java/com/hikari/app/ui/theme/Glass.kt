@@ -6,30 +6,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 
-/**
- * The one place Hikari's "roundy glass" card recipe lives.
- *
- * Every panel in the app (settings cards, extension cards, search field,
- * bottom bar) paints itself from these four values, so the whole UI reads as
- * one material: a translucent panel with a soft top-to-bottom falloff and a
- * 1px hairline edge, sitting on a near-black page with a faint accent glow
- * above it (drawn by AppRoot).
- *
- * Two reasons this is a single packed recipe instead of raw alphas at each call
- * site:
- *
- *  * it has to work on BOTH ends of the scale — on the dark/glass/AMOLED themes
- *    a card is a WHISPER of white over the page, while on the light theme the
- *    same card has to be a white panel with a soft grey edge;
- *  * the numbers are tuned together (fill vs. border vs. shadow); changing one
- *    without the others is what makes a glass UI look like dark grey boxes, so
- *    there is deliberately only one place to change them.
- *
- * [dark] is decided by the theme's own background luminance, which means a
- * future theme gets the right treatment automatically. Note the Dark Glass
- * theme's background is [Color.Transparent] — its luminance is 0, so it lands on
- * the dark side, which is correct: it is a glass theme.
- */
 data class GlassTokens(
     /** Fill at the card's top edge. */
     val fillTop: Color,
@@ -47,9 +23,6 @@ data class GlassTokens(
 @Composable
 fun rememberGlassTokens(): GlassTokens {
     val dark = MaterialTheme.colorScheme.background.luminance() < 0.5f
-    // Built once per theme rather than once per card: this is called by every
-    // panel in the app (settings cards, extensions, search field, the bottom
-    // bar), i.e. hundreds of times per screen.
     return remember(dark) {
         if (dark) {
             GlassTokens(

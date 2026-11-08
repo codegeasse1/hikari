@@ -10,30 +10,6 @@ import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
-/**
- * Native crypto bridges for the nuvio JS runtime, mirroring the contract the
- * NuvioMobile app's CryptoBridge exposes. The polyfill (boot.js) calls these
- * synchronous functions with hex-encoded args and expects a hex-encoded return.
- *
- * Exact contract (do not change — boot.js depends on it):
- *   __crypto_digest_hex_raw(alg, hexData)                  -> hex digest
- *   __crypto_hmac_hex_raw(alg, hexKey, hexData)            -> hex mac
- *   __crypto_pbkdf2_hex(hexPass, hexSalt, iters, keyBits, hash) -> hex key
- *   __crypto_aes_encrypt_hex(mode, hexKey, hexIv, hexData) -> hex ciphertext
- *   __crypto_aes_decrypt_hex(mode, hexKey, hexIv, hexData) -> hex plaintext
- *   __crypto_get_random_values_hex(byteLength)             -> hex random
- *
- * alg/hash/mode names are UPPERCASE without dashes (SHA1, SHA256, MD5, ...;
- * AES-CBC, AES-ECB, AES-GCM, optionally suffixed -NoPadding). The polyfill
- * passes RAW unpadded data for CBC/ECB, so PKCS7 padding is applied here
- * (Java's PKCS5Padding is identical to PKCS7 for AES's 16-byte block). GCM
- * uses a 128-bit tag and no padding.
- *
- * Sign/verify bridges are intentionally NOT registered: the polyfill performs
- * HMAC signing itself and reports a clean "Native signature bridge is
- * unavailable" error for RSA/ECDSA — matching nuvio, which registers no
- * signature bridges either.
- */
 object NuvioCryptoBridge {
 
     private val random = SecureRandom()

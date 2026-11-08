@@ -35,17 +35,6 @@ import kotlinx.coroutines.withContext
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
-/**
- * Hardcoded-subtitle dub: donghua-style videos burn the subs into the
- * picture (often English over Chinese, like the user's screenshot), so no
- * subtitle track exists. This samples the bottom band of the video a few
- * times a second, OCRs it (Latin + Chinese recognizers, English preferred
- * as the translation pivot), shows the translation in an overlay, and
- * speaks it through [AiDubManager].
- *
- * It stands down whenever a real subtitle cue fired recently, so the two
- * never talk over each other, and it never touches playback itself.
- */
 class HardSubDub(
     private val activity: Activity,
     private val view: PlayerView,

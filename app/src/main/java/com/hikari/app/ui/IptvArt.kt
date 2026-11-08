@@ -13,26 +13,6 @@ import com.hikari.app.data.MediaItem
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
-/**
- * A tile drawn for a LIVE TV channel that shipped no logo of its own.
- *
- * Plenty of playlists — regional Indian/Bangladeshi and "24-7 movie channel"
- * lists especially — leave `tvg-logo` empty for a good part of their channels,
- * and those rows sat on the generic film-clapper placeholder, which on a wall of
- * channels reads as "these images just don't load" (the reported "some iptv
- * movie channel not loading images").
- *
- * The fix is local and offline: a poster-shaped tile in the channel's own
- * colours, carrying its initials, its name and its group, drawn once and kept in
- * the app's own storage so the second visit is a plain file read. Nothing here
- * touches TMDB — a live channel has no TMDB entry, and the lookup that used to
- * fill these cells matched unrelated FILMS by name (see
- * [com.hikari.app.data.IptvMark]).
- *
- * The tile is written as a real PNG under `filesDir/iptv_art` and handed to Coil
- * through a `file://` URL, so it flows through exactly the same poster pipeline
- * (and the same disk caching) as every other cover in the app.
- */
 object IptvArt {
 
     private const val W = 360
@@ -43,17 +23,6 @@ object IptvArt {
 
     private val lock = Any()
 
-    /**
-     * The tile for [item], or null when nothing could be drawn (no name, or no
-     * writable storage). Safe to call from any thread — the artwork lookup calls
-     * it from its own worker.
-     *
-     * Keyed by the channel's NAME and group, so the same channel in two playlists
-     * (or the same name in a group and in "All channels") reuses one file. [live]
-     * decides the corner marker: a live channel wears LIVE, while a saved network
-     * stream — one file, played as VOD — must not (it is keyed apart so the two
-     * never share a file).
-     */
     fun tile(item: MediaItem, live: Boolean = true): String? {
         val name = item.title.trim()
         if (name.isEmpty()) return null

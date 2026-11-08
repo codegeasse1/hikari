@@ -73,19 +73,6 @@ object AnymexPluginManager {
         }
     }
 
-    /**
-     * The module's own site root: the `baseUrl` the script itself declares in
-     * its sources entry (`mangayomiSources`, `kegaretaSauces`, … — every
-     * Mangayomi module ships one), else the install-time index entry in
-     * meta.json. The script's own value wins: mirrors move between index
-     * refreshes, and installs that predate meta.json carry no index value at
-     * all. Null when neither names one — callers show "couldn't determine"
-     * instead of opening something that is not the site.
-     *
-     * Deliberately NOT the install URL's origin: that is the repo raw host
-     * (raw.githubusercontent.com), whose pages are the module's own script —
-     * opening it showed the source instead of the site.
-     */
     fun siteUrlOf(config: ProviderConfig): String? {
         moduleBaseUrl(config)?.let { return it }
         val metaFile = File(dirOf(config), "meta.json")
@@ -94,9 +81,6 @@ object AnymexPluginManager {
             val o = JSONObject(metaFile.readText())
             o.optString("baseUrl").trim().takeIf { it.startsWith("http") }
                 ?: o.optString("apiUrl").trim().takeIf { it.startsWith("http") }?.let { api ->
-                    // Last resort inside our own metadata: the API host is the
-                    // site host for these modules, and a site host always
-                    // beats the "couldn't determine" dead end for the globe.
                     runCatching {
                         val u = java.net.URI(api)
                         u.scheme + "://" + u.authority + "/"
@@ -105,16 +89,6 @@ object AnymexPluginManager {
         }.getOrNull()
     }
 
-    /**
-     * The `baseUrl` the module's own sources entry declares — the same const
-     * the runtime boots the script with (see
-     * [AnymexRuntime.parseSourceFromModule], which only knows the standard
-     * spelling). Repos rename the const freely, so this scans the file for
-     * the first declared baseUrl instead of one variable name. The whole
-     * module file is scanned (capped): declarations past the old 8KB head
-     * used to resolve to null and the globe showed "couldn't determine"
-     * instead of the site.
-     */
     private fun moduleBaseUrl(config: ProviderConfig): String? {
         val mod = runCatching { File(config.url) }.getOrNull()
             ?.takeIf { it.isFile } ?: return null
@@ -280,10 +254,6 @@ object AnymexPluginManager {
             val info = runCatching {
                 AnymexRuntime.inspect(context, source, hostMeta)
             }.getOrNull()
-            // Some scripts throw on first probe (missing optional host APIs) but
-            // still define DefaultExtension and run fine once prefs are seeded.
-            // Accept any script that clearly is a Mangayomi module and let the
-            // first catalog call surface a real error if it cannot run.
             val looksValid = source.contains("DefaultExtension") &&
                 (source.contains("MProvider") || source.contains("getPopular") ||
                     source.contains("getVideoList") || source.contains("getPageList"))
@@ -309,9 +279,6 @@ object AnymexPluginManager {
             val name = info?.name?.ifBlank { null } ?: plugin.name
             val prefix = if (isManga) "anymexm|" else "anymex|"
             val type = if (isManga) ProviderType.ANYMEX_MANGA else ProviderType.ANYMEX
-            // ID must be unique per source URL — safe(name) collapsed every
-            // non-ASCII name to underscores, so installing one Chinese manga
-            // replaced another (Install A → B shows Uninstall, Install B → A gone).
             val idKey = plugin.url.trim().ifBlank { name }
                 .substringAfter("://")
                 .replace(Regex("[^A-Za-z0-9_.-]"), "_")

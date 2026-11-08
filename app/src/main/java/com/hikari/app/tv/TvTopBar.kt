@@ -131,23 +131,12 @@ import com.hikari.app.data.RepoProvenance
 import com.hikari.app.ui.navigation.Routes
 import com.hikari.app.ui.screens.holdOrTap
 
-/**
- * Process-level catalog-name cache for the TV feed mixer (see the prefetch in
- * [TvManageFeedDialog]). The phone picker never loads these; without the
- * cache every box open re-fired one load per installed provider.
- */
 private val catalogNameCache = java.util.concurrent.ConcurrentHashMap<String, List<String>>()
 
 /** Install-set signature [catalogNameCache] was built for; a mismatch drops it. */
 @Volatile
 private var catalogNameCacheKey = ""
 
-/**
- * The television top-right cluster, in the shape of the CloudStream desktop
- * reference: a provider pill (icon + name, opens the provider box) and a
- * profile pill (avatar + name, opens the profile menu). Row is right-aligned
- * so it hugs the screen's top-right corner above the feed.
- */
 @Composable
 fun TvHomeTopBar(
     providerName: String?,
@@ -272,17 +261,6 @@ fun TvProfilePill(
     }
 }
 
-/**
- * The television home header as ONE line, CloudStream-desktop-style: the
- * title and tagline on the left, then the mouse, search, translate and
- * site buttons, then the provider pill and the profile pill — everything in
- * a single row, so the pills row and the button row can never stack into two.
- *
- * [selected] is the header's extension pick (null on All/collections): it
- * gates the translate and site buttons exactly like the phone header, and
- * [onSettings] is non-null only while the Settings tab is hidden from the
- * taskbar.
- */
 @Composable
 fun TvHomeHeaderBar(
     providerName: String?,
@@ -389,11 +367,6 @@ fun TvProviderIcon(
     size: androidx.compose.ui.unit.Dp,
     modifier: Modifier = Modifier,
 ) {
-    // White-on-white reads as an empty tile (a white logo on the old white
-    // disc, or a failed load that never replaces it), so the tile is dark and
-    // a failed load falls back to the letter tile below — the row never shows
-    // a blank disc. Fit (never Crop) with a little padding, so a wide or tall
-    // logo draws whole instead of bleeding off the edge.
     var failed by remember(iconUrl) { mutableStateOf(false) }
     if (!iconUrl.isNullOrBlank() && !failed) {
         AsyncImage(
@@ -425,12 +398,6 @@ fun TvProviderIcon(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Provider box + feed mixer, one-to-one with the CloudStream desktop
-// reference (ProviderSelectionDialog + HomeManagementDialog, same layout,
-// same strings, same ratios). TV-only: the phone picker is
-// HomeScreen.ProviderPickerSheet and is untouched.
-// ---------------------------------------------------------------------------
 
 /** Reference card subtitle: the first two content types, then the host. */
 private fun refProviderSubtitle(p: ContentProvider): String {
@@ -483,13 +450,6 @@ private fun RefDialogFrame(
     }
 }
 
-/**
- * "Select Provider", one-to-one with the reference ProviderSelectionDialog:
- * title + subtitle on the left, the "All Plugins (Global)" pill top-right, a
- * full-width filter below, then the providers side by side in an adaptive grid
- * of icon+name+type cards, the pick tinted purple. A tap picks and closes; the
- * pill picks global. One box shared by Home and Search on TV.
- */
 @Composable
 fun TvSelectProviderDialog(
     providers: List<ContentProvider>,
@@ -501,18 +461,12 @@ fun TvSelectProviderDialog(
     /** The user's own collections, drawn full-width above the provider grid. */
     collections: List<Collection> = emptyList(),
 ) {
-    // Portrait phones run this same TV UI: 65% of a narrow portrait screen is a
-    // vertical strip, while the reference desktop is landscape-only. Same
-    // reference fraction on wide screens, near-full width on narrow ones.
     val selectCfg = LocalConfiguration.current
     val selectW = if (selectCfg.screenWidthDp < 600) (selectCfg.screenWidthDp * 0.92f).dp else minOf((selectCfg.screenWidthDp * 0.65f).dp, 760.dp)
     var providerModalSearch by remember { mutableStateOf("") }
     val narrow = selectCfg.screenWidthDp < 600
     var isAdvancedMode by remember { mutableStateOf(selection.size > 1) }
     val dlgFocus = remember { FocusRequester() }
-    // Explicit D-pad chain (pill → filter → websites → toggle → grid): the
-    // toggle sits at its row's far end and the 2D search kept walking past
-    // it, so every stop names its neighbours instead of relying on geometry.
     val filterReq = remember { FocusRequester() }
     val webReq = remember { FocusRequester() }
     val toggleReq = remember { FocusRequester() }
@@ -520,9 +474,6 @@ fun TvSelectProviderDialog(
     val firstCardReq = remember { FocusRequester() }
     LaunchedEffect(Unit) { runCatching { dlgFocus.requestFocus() } }
     val working = remember(selection) { mutableStateOf(ArrayList(selection)) }
-    // Repo display names for the "(repo)" duplicate tags — the reference tells
-    // same-named installs apart by the parent folder of the plugin path, which
-    // is exactly what the repo name is here.
     val app = LocalContext.current.applicationContext as HikariApp
     val repos by remember { app.store.reposFlow() }.collectAsState(initial = emptyList())
     val repoLabels = remember(providers, repos) {
@@ -590,10 +541,6 @@ fun TvSelectProviderDialog(
                 shape = RoundedCornerShape(10.dp),
             )
 
-            // The user's saved websites (Extensions → Webview sites): one
-            // "Websites" pill under the filter, opening the full saved list
-            // under it — a tap on a site loads it at once in the ad-free
-            // WebView, straight from this picker.
             val sites by remember { app.store.sitesFlow() }.collectAsState(initial = emptyList<Site>())
             val shownSites = remember(sites, providerModalSearch) {
                 if (providerModalSearch.isBlank()) sites
@@ -680,9 +627,6 @@ fun TvSelectProviderDialog(
             Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(text = tr("Enable Multi-Provider Feed"), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                 Spacer(modifier = Modifier.width(8.dp))
-                // A bare Switch at the row's far end is what the 2D search
-                // kept skipping (see [Modifier.tvToggle]): the switch answers
-                // the D-pad itself now, and the row above/below hand to it.
                 Switch(checked = isAdvancedMode, modifier = Modifier.focusRequester(toggleReq).focusProperties { up = webReq }.tvToggle(isAdvancedMode) { enabled ->
                     isAdvancedMode = enabled
                     if (enabled && working.value.isEmpty()) { selection.firstOrNull()?.let { working.value = ArrayList(listOf(it)) } }
@@ -817,12 +761,6 @@ private fun SelectAvailPane(inactive: List<ContentProvider>, working: androidx.c
 }
 
 /** One reference Select-Provider card: 28dp round icon + name/tag + subtitle. */
-/**
- * One-line text that shrinks to fit instead of truncating: starts at
- * [baseSize] and steps down 1sp per overflow layout pass to [minScale], so a
- * long provider name in a narrow 4-per-row card still reads in full. The loop
- * terminates (bounded below, only shrinks on real visual overflow).
- */
 @Composable
 private fun ShrinkText(
     text: String,
@@ -934,14 +872,6 @@ private fun RefProviderCard(
     }
 }
 
-/**
- * "Manage Home Screen Feed", one-to-one with the reference
- * HomeManagementDialog: an "Enable Multi-Provider Feed" switch, type chips,
- * and either a single-provider grid (switch off — a tap picks and closes) or
- * the Active/Available two-pane feed mixer (switch on — reorder with arrows or
- * drag, expand rows to toggle catalogs, add/remove, Save & Close applies the
- * mix). Home-only on TV.
- */
 @Composable
 fun TvManageFeedDialog(
     providers: List<ContentProvider>,
@@ -1985,13 +1915,6 @@ private fun RefActiveProviderItem(
     }
 }
 
-/**
- * One provider card for the PHONE picker sheet (HomeScreen.ProviderPickerSheet —
- * untouched): icon + name + repo tag + supporting line, purple when picked. A
- * tap picks; on touch a half-second hold ticks the multi-pick (tvPress only
- * answers remote keys, so the press is timed here and clickable stays OFF on
- * that path, or the tap would fire twice).
- */
 @Composable
 fun TvProviderCard(
     name: String,
@@ -2011,9 +1934,6 @@ fun TvProviderCard(
     trailing: (@Composable () -> Unit)? = null,
 ) {
     val shape = RoundedCornerShape(20.dp)
-    // Fresh lambdas for the gesture below (see PickerRow's note): the touch
-    // hold's pointerInput key never changes, so without these every tap after
-    // the first recomposition would compute from a dead snapshot.
     val latestClick by rememberUpdatedState(onClick)
     val latestHold by rememberUpdatedState(onHold)
     Row(
@@ -2037,11 +1957,6 @@ fun TvProviderCard(
                     // Television keeps the remote key hold it already had.
                     TvMode.isTv -> Modifier.clickable(onClick = onClick)
                         .tvPress(previewPass = true, onClick = onClick, onHold = onHold)
-                    // Touch never reached onHold (tvPress only answers remote
-                    // keys), so a held card did nothing on phones: the press
-                    // is timed here — a tap picks, half a second ticks the
-                    // multi-pick — and clickable stays OFF, or the tap would
-                    // fire twice (once from each handler).
                     else -> Modifier
                         .tvPress(previewPass = true, onClick = { latestClick() }, onHold = { latestHold?.invoke() })
                         .pointerInput(Unit) { holdOrTap({ latestHold?.invoke() }, { latestClick() }) }
@@ -2106,12 +2021,6 @@ fun TvProviderCard(
     }
 }
 
-/**
- * The profile menu: the active profile first, every other profile to switch
- * into, an inline Add row, and Manage (which opens Settings, where the full
- * profile management lives). A locked target refuses the switch — the caller
- * reports it (see [onLockedTarget]).
- */
 @Composable
 fun TvProfileMenuDialog(
     profiles: List<Profiles.Profile>,

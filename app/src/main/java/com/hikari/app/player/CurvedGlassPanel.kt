@@ -19,58 +19,8 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sqrt
 
-/**
- * The player's dialog glass: ONE curved surface that carries its own light.
- *
- * Three things make the reference panel read the way it does, and this view does
- * all three:
- *
- *  - its outline is the curved pane in [GlassShape]: the right edge bulges
- *    outward and the left edge bows inward, so the panel itself is a bent sheet
- *    of glass rather than a rounded rectangle (the old `dialog_panel` drawable)
- *    or a barely-bowed superellipse.
- *  - the neon light runs along the panel's OWN two bowed sides — [sidesPath],
- *    stroked in [onDraw] — not along the flat top and bottom, and it fades to
- *    nothing at the ends. That is what the reference does, and it is why the
- *    panel has no "box" lines: the light never leaves the arcs, so there is
- *    neither a horizontal line across the top or bottom nor a short horizontal
- *    stub where a side meets a corner. The light used to live in a separate
- *    ring view parked behind the panel, which is what the user kept pointing
- *    at: a box with a curve behind it, instead of one shape whose edge IS the
- *    curve.
- *  - its rows follow the bend. [bendHost] names each container whose children
- *    are rows (which may be nested, e.g. a list inside a scroll view); each row
- *    is pulled in to the silhouette's own left and right edges at its own
- *    height, so the pill stack's envelope IS the shape instead of a uniform
- *    stack sitting inside a curved glass. [bendLoose] registers a container
- *    whose OTHER children — a message line above the list, say — should follow
- *    the bend too, instead of being laid out at the panel's full width and then
- *    sliced by the bowed edge.
- *
- * Rows are positioned by adjusting their margins, measured from where they
- * actually landed (`offsetDescendantRectToMyCoords`) rather than from a guess,
- * so an ancestor's padding or a scroll view in between cannot throw the maths
- * off. The target depends only on the row's height — which horizontal margins do
- * not move — so the follow-up layout pass settles immediately instead of
- * oscillating.
- *
- * [haloPx] reserves room inside this view's bounds for the glow to bloom into;
- * the silhouette (and the content) live inset by that much, so the light is
- * never sliced off by the view edge.
- */
 class CurvedGlassPanel(context: Context) : LinearLayout(context) {
 
-    /**
-     * The containers whose CHILDREN are the visible rows. Each is bent
-     * independently, so a dialog whose rows live in two places (a track list
-     * plus a stack of control rows) can hand both over and every row follows the
-     * curve. When empty, the panel bends its own children, which is right for a
-     * panel that holds its content directly (the progress panel) or one whose
-     * single child is a scroll view.
-     *
-     * Never register a container AND one of its ancestors: the ancestor would be
-     * bent as one block and could clip the rows the inner container then moves.
-     */
     private val hosts = ArrayList<ViewGroup>()
 
     /** Containers whose children are bent only when they are NOT part of a
@@ -82,20 +32,6 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
         if (container !== this && !hosts.contains(container)) hosts.add(container)
     }
 
-    /**
-     * Registers a container whose children are bent UNLESS they are a registered
-     * host, or hold one deeper inside.
-     *
-     * A dialog's content container is the usual one: it may carry rows that were
-     * handed over with [bendHost] AND loose children of its own — a message line
-     * above the list, say. Those loose children used to be laid out at the
-     * panel's full inner width and then sliced by the bowed edge (the download
-     * sheet's "Episode 683 · …" line lost its first four letters to the left
-     * curve and wrapped the rest of the way round), because only the registered
-     * hosts were ever bent. Registering the container here bends everything it
-     * holds that [bendHost] does not already cover, without bending a host's
-     * rows twice.
-     */
     fun bendLoose(container: ViewGroup) {
         if (container === this) return
         // A container that is ALSO a row host is already fully bent, child by
@@ -152,32 +88,10 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
     var flatBorder: Int = 0x26FFFFFF
     var flatBorderPx: Float = resources.displayMetrics.density
 
-    /** Air kept between a row and the silhouette's edge, at the widest point.
-     *  13dp rather than a hairline: the panel's edge carries a bright rim and
-     *  core line, and text sitting a couple of dp off it reads as sliced by the
-     *  curve even when it is not — which is exactly how the section headers
-     *  ("HIKARI · 5", "ANIME4I · 2") were being reported. */
     var rowGapPx: Float = 13f * resources.displayMetrics.density
 
-    /** Air a FLAT panel keeps between its own left/right edge and the content.
-     *
-     *  The curved pane has no use for this: its rows are bent to the silhouette
-     *  at their own height, so their envelope IS the shape. A flat panel has
-     *  straight sides, so its padding is the only inset there is — and with
-     *  none, a row (a pill, whose background reaches its own edges) sat flush
-     *  against the panel's rounded edge and the corner arc cut into it: the
-     *  reported "the server roundy ui is fully attached to the box" plus "the
-     *  All chip's box is cut by the main box's round corner". 8dp of air is
-     *  enough to read as a deliberate margin without wasting row width — see
-     *  [flatTopGapPx] for the extra the corner arc needs. */
     var flatSideGapPx: Float = 8f * resources.displayMetrics.density
 
-    /** How far below its own top edge a FLAT panel starts its content. The
-     *  corner arc intrudes furthest exactly at the top, so the content's first
-     *  line must start below it by at least as much as the arc has come in at
-     *  that depth — [onSizeChanged] derives the horizontal inset from this
-     *  figure and the corner radius, so a chip strip at the top of the panel
-     *  can never be sliced by the corner. */
     var flatTopGapPx: Float = 8f * resources.displayMetrics.density
 
     /** Accent the glow is tinted with, top to bottom. */
@@ -185,23 +99,10 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
     var midColor: Int = Color.rgb(150, 140, 255)
     var endColor: Int = Color.rgb(240, 160, 255)
 
-    /**
-     * Wears the Player UI skin [key] (see [PlayerSkins]).
-     *
-     * Default keeps the curved pane and its neon edge — this view was built for
-     * it and nothing here changes it. The other three skins get the flat
-     * silhouette plus their own fill and hairline, sized to match the control
-     * bar they appear over: Minimal is a barely-there slab with a small radius,
-     * Cinema a solid deck with a squarer corner and a plain hairline, Neon a
-     * fully rounded floating card edged in the accent colour.
-     */
     fun applySkin(key: String) {
         val density = resources.displayMetrics.density
         when (PlayerSkins.normalize(key)) {
             PlayerSkins.MINIMAL -> {
-                // Barely there: a flat slab with NO edge line at all, so the
-                // rows read as if they were floating on the picture (which is
-                // what Minimal's control bar does too).
                 flat = true
                 flatCornerPx = 10f * density
                 flatFill = 0xEE0A0B10.toInt()
@@ -279,18 +180,6 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
     /** How far the content has been scrolled SIDEWAYS inside the panel, in px. */
     private var rowOffsetX = 0
 
-    /**
-     * Tells the panel that its content has been dragged sideways by [x] px, and
-     * re-bends.
-     *
-     * A row's position is read in the PANEL's own coordinates, so a sideways drag
-     * moves every row's edges out from under the panel — and the bend, which
-     * exists to keep a row's visible content clear of the bowed glass, would read
-     * that as a row hanging over the left edge and pull it back in by its own
-     * cap. Every row of a user-scrolled strip would shrink as they dragged it.
-     * Subtracting the offset before the maths puts the row back where it was laid
-     * out, so the shape of the stack does not change when the strip is scrolled.
-     */
     fun setRowOffsetX(x: Int) {
         if (x == rowOffsetX) return
         rowOffsetX = x
@@ -335,18 +224,6 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
         rebuildShape(w, h)
     }
 
-    /**
-     * (Re)builds the silhouette, its paint and the content padding for [w]×[h].
-     *
-     * This used to live inline in [onSizeChanged], which only runs when the
-     * SIZE changes — but the outline also moves when the SKIN changes (see
-     * [applySkin]: flat vs curved, another corner radius), and the first
-     * layout can measure before the real size is known. Both left the clip in
-     * [dispatchDraw] cutting along a stale box while the rows had already been
-     * laid out for the new one: boxes sliced until something resized the panel
-     * (reopening always did). The path now rebuilds for the size on screen
-     * whenever it is stale, wherever the change came from.
-     */
     private fun rebuildShape(w: Int, h: Int) {
         if (w <= 0 || h <= 0) return
         shapeW = w
@@ -357,9 +234,6 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
         val right = shapeRight()
         val bottom = shapeBottom()
         if (flat) {
-            // A plain rounded rectangle: the same box the curved pane occupies,
-            // with the skin's own corner radius. sidesPath is left empty so the
-            // glow loops in onDraw have nothing to stroke (see [applySkin]).
             val radius = flatCornerPx.coerceAtMost((bottom - top) / 2f)
                 .coerceAtMost((right - left) / 2f)
             shapePath.reset()
@@ -383,11 +257,6 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
             floatArrayOf(0f, 0.10f, 0.90f, 1f),
             Shader.TileMode.CLAMP,
         )
-        // Light travels down the panel's own edge: bright through the middle,
-        // fading out well before the ends, so the arcs taper away instead of
-        // running into the top and bottom corners. Sampled along the
-        // silhouette's vertical span so the gradient tracks the shape rather
-        // than the view.
         glowPaint.shader = LinearGradient(
             0f, top, 0f, bottom,
             intArrayOf(
@@ -453,9 +322,6 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
             // neon — the glow belongs to the Glass pane (see [applySkin]).
             fillPaint.color = flatFill
             canvas.drawPath(shapePath, fillPaint)
-            // Minimal asks for no edge at all (see applySkin): a stroked path
-            // with width 0 is a hairline in Skia, not "nothing", so it is
-            // skipped outright instead.
             if (flatBorderPx > 0f) {
                 rimPaint.strokeWidth = flatBorderPx
                 rimPaint.color = flatBorder
@@ -463,10 +329,6 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
             }
             return
         }
-        // The bloom, the panel, then the hot line back on the very edge: drawn
-        // in this order the fill hides the inner half of each glow stroke, so
-        // the light reads as coming OFF the panel rather than ringed around it.
-        // Both are stroked on [sidesPath] only, never the closed outline.
         val density = resources.displayMetrics.density
         for (i in STROKE_DP.indices) {
             glowPaint.strokeWidth = STROKE_DP[i] * density
@@ -503,35 +365,13 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
         bendRows()
     }
 
-    /**
-     * Re-bends the rows after something other than a size change moved them —
-     * in practice a scroll, which changes the height inside the panel that each
-     * row sits at, and therefore which part of the curve it has to clear. The
-     * pass cap is reset so a long scroll can never exhaust it.
-     *
-     * Calls are coalesced onto the next frame's animation phase: a scroll emits
-     * a change event per pixel, and bending on each of them re-laid out the
-     * whole panel several times per frame. The animation phase runs before that
-     * frame's traversal, so the fresh margins are applied by the same frame.
-     */
     fun rebend() {
         if (rebendPosted || !isAttachedToWindow) return
         rebendPosted = true
         postOnAnimation(rebendRunnable)
     }
 
-    /**
-     * Pulls every row's edges in to the silhouette at that row's own height.
-     * The pane is asymmetric — the left boundary moves with height in the
-     * opposite direction to the right one — so each side is measured from its
-     * own curve. Rows that sit outside the panel's vertical span (deep inside a
-     * scrolling list) are simply left alone.
-     */
     private fun bendRows() {
-        // A flat panel (every skin but Glass) has straight sides, so there is no
-        // curve for a row to follow: rows keep the margins they were built with
-        // and the panel's own padding is the only inset. Bending them here would
-        // add the row gap on top of that for nothing.
         if (flat) return
         var shifted = false
         if (hosts.isEmpty()) {
@@ -539,10 +379,6 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
         } else {
             for (i in hosts.indices) shifted = bendHostChildren(hosts[i]) || shifted
         }
-        // Loose children of a container (see [bendLoose]) — text that sits in
-        // the panel but was never handed over as a row host, e.g. a dialog's
-        // message line. Bent AFTER the hosts so a child that holds one is
-        // recognised and skipped.
         for (i in looseHosts.indices) {
             shifted = bendHostChildren(looseHosts[i], skipHosts = true) || shifted
         }
@@ -550,20 +386,11 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
         // nothing left to change. The cap is belt-and-braces against a view
         // whose own layout keeps moving underneath us (a scrolling list).
         if (!shifted || passes >= PASS_LIMIT) return
-        // Inside a layout pass the margins are picked up by the traversal that
-        // is already scheduled, so scheduling another one from here would fight
-        // it (and, mid-scroll, never settle).
         if (inLayout) return
         passes++
         if (isAttachedToWindow) postOnAnimation { bendRows() } else requestLayout()
     }
 
-    /** Bends the visible children of one row container. Returns true if any of
-     *  them had to move. [skipHosts] is set for a "loose" container (see
-     *  [bendLoose]): a child that is a registered host — or that holds one
-     *  deeper inside — is left alone, because that host's rows are already bent
-     *  individually and moving the container as a block would shift them twice.
-     */
     private fun bendHostChildren(host: ViewGroup, skipHosts: Boolean = false): Boolean {
         val left = shapeLeft()
         val top = shapeTop()
@@ -576,11 +403,6 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
             if (child.visibility != View.VISIBLE) continue
             if (skipHosts && holdsHost(child)) continue
             if (child.width <= 0 || child.height <= 0) {
-                // A row that is VISIBLE but has no size is exactly what an empty
-                // band in the panel looks like: it holds its line open but can
-                // paint nothing. Put its margins back so the next layout gives
-                // it a size again, and say so once — silence here is what let a
-                // squeezed row sit in the list looking like a gap.
                 if (host.isLaidOut && host.width > 0 && sizedOnce.containsKey(child) &&
                     collapsedLogged.put(child, true) == null
                 ) {
@@ -594,70 +416,20 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
                 continue
             }
             sizedOnce[child] = true
-            // offsetDescendantRectToMyCoords ADDS the descendant's own offset to
-            // the rect it is handed, so the rect has to be reseeded with the
-            // child's bounds every single time. Reusing it across iterations
-            // (as this used to) compounds row 1's offset into row 2, row 2's into
-            // row 3 and so on, so only the first row of each container ended up
-            // on the curve — every later row kept the container's full width and
-            // was sliced off by the bowed left and right edges, which is exactly
-            // the "the curve is cutting the text" the panel kept showing.
             rect.set(0, 0, child.width, child.height)
             offsetDescendantRectToMyCoords(child, rect)
-            // `offsetDescendantRectToMyCoords` also carries the content's own
-            // sideways scroll (see [setRowOffsetX]): undoing it here keeps a row
-            // on the curve it was laid out against, whatever the strip has been
-            // dragged to.
             if (rowOffsetX != 0) rect.offset(rowOffsetX, 0)
             if (rect.bottom <= top || rect.top >= top + h) continue
             val lp = child.layoutParams as? ViewGroup.MarginLayoutParams ?: continue
             val base = baseMargins.getOrPut(child) { intArrayOf(lp.leftMargin, lp.rightMargin) }
-            // Where this row sits with the bend taken back off. Margins are
-            // always derived from this reference, never from the margins the
-            // previous pass applied: a row's width is what its inset is measured
-            // against, so counting from the last result let each pass shrink the
-            // next one, and a row could be pulled in until nothing was left of
-            // it. From the base, the same layout always yields the same margins.
             val baseLeft = rect.left - (lp.leftMargin - base[0])
             val baseRight = rect.right + (lp.rightMargin - base[1])
             val baseWidth = baseRight - baseLeft
             if (baseWidth <= 0) continue
-            // A block that spans the panel's full height IS the scrolling
-            // viewport: its own extremes sit where the sides sweep back to
-            // their corners, so measuring them there would clamp the whole list
-            // to the corner width. Evaluate the curve a little inside.
             val yTop = if (rect.top <= top) top + h * 0.06f else rect.top.toFloat()
             val yBottom = if (rect.bottom >= top + h) top + h * 0.94f else rect.bottom.toFloat()
-            // The row has to clear the curve at EVERY height it covers, but only
-            // where its BACKGROUND actually reaches. A row is a stadium (a
-            // 999px corner radius clamps to half its height), so at a distance
-            // |off| from the row's own middle its edge is already inset by
-            // r - sqrt(r^2 - off^2). Charging that inset against the curve is
-            // what lets the rows FOLLOW the bend: each row is pushed in only as
-            // far as its visible background needs, so the top and bottom rows
-            // sit out wide near the glass's narrow ends while the middle ones
-            // ride the bow. Asking instead for the plain worst case — every row
-            // clamped to the deepest point of the curve inside its own height,
-            // which for a 51dp row is very nearly the panel's mid-height —
-            // flattened the whole stack into one uniform column, i.e. a
-            // rectangle floating inside a warped panel.
-            // The radius is taken from the row's UNBENT width: its bent width is
-            // an effect of the bend, so feeding it back in made the inset (and
-            // so the next width) a function of itself.
             val radius = min(child.height.toFloat(), baseWidth.toFloat()) / 2f
             val centerY = (rect.top + rect.bottom) / 2f
-            // How far the row's BOX may still overhang the silhouette. A pill's
-            // empty rounded cap may cross the edge — that is what lets the rows
-            // ride the bow instead of floating inside a warped rectangle — but
-            // only as far as the row's own content padding reaches, minus half
-            // the row gap, so the CONTENT (the label, the sub-line, a section
-            // header's first letter) always stays clear of the glass. A child
-            // with no padding of its own on a side (a section header, the chip
-            // strip, a dialog's message line) therefore gets NO overhang at all:
-            // it was exactly that allowance — credited to rows that have no
-            // rounded background to spend it on — that left the first letter of
-            // every "HIKARI · n" / "ANIME4I · n" header sitting on the bowed
-            // edge with the bright rim slicing through the glyph.
             val allowLeft = max(0f, child.paddingLeft.toFloat() - rowGapPx * 0.5f)
             val allowRight = max(0f, child.paddingRight.toFloat() - rowGapPx * 0.5f)
             var needLeft = 0f
@@ -673,26 +445,11 @@ class CurvedGlassPanel(context: Context) : LinearLayout(context) {
                     radius - sqrt(radius * radius - off * off)
                 }
                 val dy = y - top
-                // The silhouette does NOT start at this view's own edge: the
-                // halo (0..shapeLeft() on the left, shapeRight()..width on the
-                // right) is where the glow lives, and the glass edge is
-                // [left]/[top] plus the curve. Measuring the boundary from the
-                // view's edge instead is why the rows — and, with a section
-                // header's text sitting flush at its own left edge, every
-                // "HIKARI · n" / "NUVIO · n" header — ended up ON the glass:
-                // the bowed edge cut the rounded cap off every row and sliced
-                // the first letter off every header.
                 val boundLeft = left + GlassShape.leftEdge(w, h, dy, bulgeX, concaveX)
                 val boundRight = left + GlassShape.rightEdge(w, h, dy, bulgeX, concaveX)
                 needLeft = max(needLeft, boundLeft - baseLeft - min(inset, allowLeft))
                 needRight = max(needRight, baseRight - boundRight - min(inset, allowRight))
             }
-            // With the halo counted in, the need is a real distance inside the
-            // panel rather than the couple of dp the bow alone is worth, so the
-            // cap is what stops a stale rect (a row mid-layout, or one measured
-            // during a scroll) from pulling a row out of existence. Coerced at
-            // zero too: a child that already sits inside the glass is left
-            // where it is instead of being pushed back out over the edge.
             val cap = baseWidth * 0.22f
             needLeft = needLeft.coerceIn(0f, cap)
             needRight = needRight.coerceIn(0f, cap)

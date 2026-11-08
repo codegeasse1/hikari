@@ -60,14 +60,6 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-/**
- * Settings → Logs & diagnostics: the two rolling app logs and the crash log,
- * each with a Share button and a Save-to-storage button, plus a "Share all".
- *
- * The point is that a bug report never needs a screenshot again: the user opens
- * this page, taps Share on whatever the developer asked for, and Android's share
- * sheet hands over the real text.
- */
 @Composable
 fun LogsPage(app: HikariApp, onBack: () -> Unit) {
     val context = LocalContext.current
@@ -365,11 +357,6 @@ internal fun shareFiles(context: Context, files: List<File>, subject: String) {
     }
 }
 
-/**
- * Save one log into `Downloads/Hikari` (see [DownloadsSaver]) and record WHY it
- * failed when it does, so the next "could not save" report carries its reason in
- * the app log instead of being a dead end.
- */
 private fun saveLog(context: Context, file: File): Result<String> {
     val result = DownloadsSaver.save(context, file, "hikari-" + file.name, "text/plain")
     result.exceptionOrNull()?.let { Logs.logError("Downloads", "save ${file.name} failed", it) }

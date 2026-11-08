@@ -15,23 +15,6 @@ import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
-/**
- * Turns a saved [Collection] into the same [CatalogRow] shape the Home feed
- * uses, so a collection needs no bespoke rendering: Home's rows, the "Show All"
- * grid, the detail page and the player are all the existing ones.
- *
- * Two shapes are produced:
- *  - [folderRows] — one row per SOURCE of one folder ("HBO", "Marvel Studios",
- *    "Trending Now" side by side). This is what a folder page shows.
- *  - [collectionRows] — one row per FOLDER, each holding the merged items of
- *    that folder's sources. This is what Home shows when a collection is
- *    picked: the folder names become the shelf titles, and everything under
- *    them is already the content the user asked for.
- *
- * Rows are emitted as each source lands (not after every one finished), gated
- * by a small semaphore and tight timeouts so a collection full of slow
- * extensions can neither stall the screen nor flood the network pool.
- */
 class CollectionsRepository(private val manager: ProviderManager) {
 
     private val gate = Semaphore(6)
@@ -48,12 +31,6 @@ class CollectionsRepository(private val manager: ProviderManager) {
     /** One row per source of [folder], in the folder's own source order. */
     fun folderRows(collection: Collection, folder: CollectionFolder): Flow<List<CatalogRow>> =
         channelFlow flow@{
-            // Deduped by key: two sources with the same key ARE the same
-            // catalog, and two rows with the same key crash any lazy list that
-            // draws them (`Key "prov|cs3|…" was already used`). AppStore drops
-            // the copies when it reads a collection, but a collection built in
-            // memory (the editor, a just-imported list) can still carry a pair,
-            // so the row builder refuses them too.
             val sources = folder.sources.distinctBy { it.key }
             if (sources.isEmpty()) {
                 send(emptyList())
@@ -119,33 +96,13 @@ class CollectionsRepository(private val manager: ProviderManager) {
     suspend fun allRowsOnce(collection: Collection): List<CatalogRow> =
         allRows(collection).lastOrNull().orEmpty()
 
-    /**
-     * The rows Home shows for a collection pick.
-     *
-     * One folder => that folder's own CATALOGS, one shelf each ("Netflix",
-     * "Hulu", "Pixar" side by side), because a collection with a single folder
-     * is just a grouping of sources the user picked — collapsing them into one
-     * mixed shelf hides exactly what they chose. Two or more folders => one
-     * shelf per folder, so the folder names are the shelves and the content
-     * stays where the user filed it.
-     */
     fun pickRows(collection: Collection): Flow<List<CatalogRow>> {
         val only = collection.folders.singleOrNull()
         return if (only != null) folderRows(collection, only) else collectionRows(collection)
     }
 
-    /**
-     * Every catalog of every folder as its own row — the "Show all" page of a
-     * whole collection. Rows land as each source answers, in folder-then-source
-     * order, and each row's title carries its folder's name when the collection
-     * has more than one (so a flat grid still says where a shelf came from).
-     */
     fun allRows(collection: Collection): Flow<List<CatalogRow>> = channelFlow flow@{
         val slots = ArrayList<Pair<CollectionFolder, CatalogSource>>()
-        // One slot per DISTINCT source of each folder (see [folderRows]): the
-        // "Show all" page draws one row per slot, and two slots with the same
-        // catalog key are two rows with the same key — a lazy list crash, and a
-        // duplicate shelf for the user.
         collection.folders.forEach { f ->
             f.sources.distinctBy { it.key }.forEach { s -> slots += f to s }
         }
@@ -176,16 +133,6 @@ class CollectionsRepository(private val manager: ProviderManager) {
         }
     }
 
-    /** Publish what has arrived so far, in slot order, so late rows slot in
-     *  where they belong instead of jumping to the end of the list.
-     *
-     *  [force] publishes even an EMPTY list. The three flows above end with a
-     *  forced publish once every slot has answered, because a flow that never
-     *  emits at all is invisible progress: the screen's "loading" state is a
-     *  null list, so a collection whose catalogs all answered nothing used to
-     *  wait for ever rather than say so. Intermediate publishes stay
-     *  non-forced — an early empty list would read as "loaded and empty" while
-     *  the first source is still working. */
     private suspend fun publish(
         scope: ProducerScope<List<CatalogRow>>,
         placed: Map<Int, CatalogRow>,
@@ -206,11 +153,6 @@ class CollectionsRepository(private val manager: ProviderManager) {
             .filter { it.isNotBlank() }
             .joinToString(" · ")
         if (source.kind == CatalogSourceKind.ITEMS) {
-            // A list the user imported (a Nuvio/Stremio export, a shared JSON
-            // file — see NuvioCatalogImport). Its titles live inside the
-            // collection, so this row needs no network at all: the items are
-            // already MediaItems, already TMDB-addressed, and open and play
-            // exactly like any other Hikari title.
             val items = withContext(Dispatchers.Default) {
                 NuvioCatalogImport.decode(source.itemsJson)
             }
@@ -293,44 +235,13 @@ class CollectionsRepository(private val manager: ProviderManager) {
         val label: String,
     )
 
-    /**
-     * The LOCAL half of Search: the titles the user's own collections carry,
-     * matched by name and labelled with the collection they came from.
-     *
-     * Imported lists ([CatalogSourceKind.ITEMS]) are already [MediaItem]s inside
-     * the collection, so they are matched with no network at all — and that is
-     * the case that matters most, because a personal catalog is usually exactly
-     * that: a list someone imported. A hand-built TMDB source has no local copy
-     * of its titles, so its first page is fetched (under the same small gate
-     * and a tight timeout the rows use). PROVIDER sources are skipped on
-     * purpose: their extension is what the search itself searches, and asking
-     * it here as well would double every result.
-     */
     suspend fun searchTitles(
         query: String,
         limit: Int = 24,
-        /** Called with the hits gathered SO FAR, as each source answers.
-         *  Imported lists are instant but an extension catalog is a network
-         *  fetch, so without this the row stayed empty until the slowest source
-         *  of the folder had answered; the caller can then show the local
-         *  matches the moment they exist. Always called at least once (with the
-         *  final list). */
         onPartial: ((List<CollectionHit>) -> Unit)? = null,
     ): List<CollectionHit> =
         searchIn(query, emptySet(), limit, onPartial)
 
-    /**
-     * The same match, narrowed to a set of collections — what the Search tab
-     * asks for when the user has picked a personal catalog in its provider row
-     * ("search inside abc"), and what the magnifier on a catalog page opens.
-     *
-     * An EMPTY [collectionIds] means every collection, which is what the
-     * unscoped lookup ([searchTitles]) has always done; a non-empty set reads
-     * only what those collections hold. Imported lists still cost nothing, and
-     * the network-backed sources (a hand-built TMDB source, an extension
-     * catalog filed inside a personal catalog) still share the one probe budget,
-     * so picking a catalog can never turn a search into a stampede.
-     */
     suspend fun searchIn(
         query: String,
         collectionIds: Set<String> = emptySet(),
@@ -347,11 +258,6 @@ class CollectionsRepository(private val manager: ProviderManager) {
                 .filter { collectionIds.isEmpty() || it.id in collectionIds }
             val out = ArrayList<CollectionHit>()
             val seen = HashSet<String>()
-            // Only a bounded number of SOURCES THAT NEED THE NETWORK are probed
-            // per search. Imported lists are free (their titles live in the
-            // collection already), but a user with thirty hand-built TMDB
-            // sources would otherwise fire thirty page requests on every
-            // keystroke pause — a search is not allowed to become a stampede.
             var remoteProbes = 0
             for (collection in collections) {
                 for (folder in collection.folders) {
@@ -384,14 +290,6 @@ class CollectionsRepository(private val manager: ProviderManager) {
                                 }
                             }
 
-                            // An extension catalog the user filed in their own
-                            // catalog: its first page is fetched through the very
-                            // same [sourceRow] the folder's rows use, so a title
-                            // that lives in a personal catalog is findable in
-                            // Search like everything else — it used to be the ONE
-                            // kind skipped here ("my personal catalog doesn't
-                            // show up in search at all"). Bounded by the same
-                            // remote probe budget as a TMDB source.
                             CatalogSourceKind.PROVIDER -> {
                                 if (remoteProbes >= maxRemoteProbes) {
                                     emptyList()
@@ -414,11 +312,6 @@ class CollectionsRepository(private val manager: ProviderManager) {
                             .joinToString(" · ")
                         for (item in items) {
                             if (out.size >= limit) break
-                            // Both names count: the display title (what the user
-                            // reads, in the app's TMDB language) and the original
-                            // one (what the sites and the user's own memories of
-                            // the film call it) — otherwise a Spanish-language
-                            // install cannot find "Avengers: Endgame" at all.
                             val names = item.allTitles.map { it.lowercase() }
                             if (names.none { it.contains(needle) }) continue
                             if (!seen.add(item.uniqueId + "|" + collection.id)) continue

@@ -8,22 +8,6 @@ import org.json.JSONObject
 import java.io.File
 import java.io.InputStreamReader
 
-/**
- * Loads compiled Hikari `.hiki` extension archives exactly the way CloudStream
- * loads `.cs3` plugins (see Cs3PluginManager): mark the file read-only (Android
- * 14+ refuses writable dex files), open a PathClassLoader on the archive
- * (parent = the app, which resolves the com.hikari.ext API classes), read
- * manifest.json → mainClass, and instantiate each class implementing
- * [HikariProvider].
- *
- * manifest.json keys:
- *   { "name": "My Extension", "version": 1,
- *     "mainClass": "com.example.MyProvider" }          // or an array
- *
- * Instances are cached per file path. The last failure (if any) is surfaced on
- * [lastError] so the Extensions screen can show the real reason an extension
- * refused to load.
- */
 object HikariPluginManager {
 
     private val cache = java.util.concurrent.ConcurrentHashMap<String, List<HikariProvider>>()
@@ -37,13 +21,6 @@ object HikariPluginManager {
 
     private const val FAIL_RETRY_MS = 60_000L
 
-    /**
-     * Drops the cached providers for [path] WITHOUT reloading (see
-     * [ExtensionRecovery]): the next call lazily loads them fresh instead of
-     * reusing a wedged object. The failure backoff goes with it — a stall is
-     * not a failed load, and the very next lookup must be allowed to try the
-     * fresh object immediately. Lighter than [reload] (no class-load here).
-     */
     fun evict(path: String) {
         cache.remove(path)
         lastFail.remove(path)
@@ -53,13 +30,6 @@ object HikariPluginManager {
     var lastError: String? = null
         private set
 
-    /**
-     * Loading is serialised PER PATH and shares the process-wide load slots with
-     * the CloudStream runtime (see [LoadGate]). Both entry points used to be
-     * `@Synchronized`, i.e. ONE lock on the whole object, so with a few hundred
-     * `.hiki` extensions installed every load queued behind the slowest one —
-     * which is why Home and the cross-extension search crawled.
-     */
     fun providersFor(context: Context, file: File): List<HikariProvider> {
         val path = file.absolutePath
         cache[path]?.let { return it }
@@ -75,11 +45,6 @@ object HikariPluginManager {
                 val list = try {
                     LoadGate.withSlot { loadFile(context, file) }
                 } catch (e: LoadGate.LoadQueueBusyException) {
-                    // Bounded slot wait expired: treat it as a failure of THIS
-                    // extension and let the caller carry on with the rest,
-                    // instead of throwing into the Home / search coroutine
-                    // (a single jam used to abort the entire sweep, which is
-                    // why nothing was searched after it got stuck once).
                     lastError = e.message
                     emptyList()
                 }

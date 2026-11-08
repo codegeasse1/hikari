@@ -20,23 +20,6 @@ import org.jsoup.Jsoup
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
-/**
- * One LNReader novel source, exposed to the rest of the app as an ordinary
- * [ContentProvider] of [com.hikari.app.data.ProviderType.MANGA].
- *
- * Everything Hikari already does with a manga provider therefore works for
- * novels too: the manga tab lists it (see MangaScreen's engine filter), the
- * detail screen opens it, chapters travel as [Episode]s cached in
- * [MangaStore], and chapter text travels as [StreamSource.text] parts — the
- * same shape the plain-Source novel extensions use, so the novel reader joins
- * them unchanged and the image reader (which skips blank urls) never sees
- * them.
- *
- * Mapping onto the plugin contract: a "catalog" is `popularNovels` (Latest via
- * `showLatestNovels`), search is `searchNovels`, meta + chapters are
- * `parseNovel` (plus `parsePage` for paginated chapter lists), and a chapter's
- * text is `parseChapter` HTML reduced to paragraphs.
- */
 class LnReaderProvider(override val config: ProviderConfig) : ContentProvider {
 
     companion object {
@@ -308,11 +291,6 @@ class LnReaderProvider(override val config: ProviderConfig) : ContentProvider {
 
     // ---- Chapter text ----
 
-    /**
-     * The chapter's HTML reduced to paragraphs. Block elements become
-     * paragraph breaks (the novel reader splits on blank lines); script,
-     * style and navigation nodes are dropped, never read aloud as text.
-     */
     private fun htmlToText(html: String): String {
         val doc = runCatching { Jsoup.parseBodyFragment(html) }.getOrNull()
             ?: return html.trim().take(200_000)

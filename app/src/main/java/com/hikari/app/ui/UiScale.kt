@@ -5,22 +5,6 @@ import android.content.res.Configuration
 import android.util.DisplayMetrics
 import kotlin.math.roundToInt
 
-/**
- * The "In-app UI scale" preference (Settings → App Layout → In-app UI scale), mirrored into
- * plain SharedPreferences so it can be read SYNCHRONOUSLY while an Activity is
- * being created.
- *
- * The Compose part of the app scales itself in [com.hikari.app.ui.theme.HikariTheme],
- * but this app also has plain View-based screens (the player and the WebView)
- * which live outside that tree — they pick up the scale here, via
- * [wrap] in each Activity's `attachBaseContext`.
- *
- * When the scale is ON the phone's Font size AND Display size settings are
- * ignored app-wide: `fontScale` is pinned to 1.0 and the density is rebuilt
- * from the device's STABLE physical density times the chosen scale, so every
- * device renders the same layout. OFF = the context is returned untouched and
- * the system settings apply as before.
- */
 object UiScale {
 
     private const val PREFS = "hikari_ui_scale"

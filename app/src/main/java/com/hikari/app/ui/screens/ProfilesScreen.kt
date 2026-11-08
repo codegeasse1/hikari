@@ -84,21 +84,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/**
- * Settings → Profiles: the picker, and the place a profile is created, renamed
- * or removed.
- *
- * A profile is a whole setup kept apart from the others on the same device (see
- * [Profiles]) — what the user gets is exactly what the request described: a new
- * profile looks like Hikari freshly installed (no extensions installed, an empty
- * Library, an empty history, its own settings), and choosing an older one brings
- * everything back, because the old setup was never deleted, only put away.
- *
- * The page is deliberately plain about the one thing that IS shared: the
- * extension files and the films already downloaded stay on the device, so a new
- * profile installs an extension without downloading it twice, and deleting a
- * profile never deletes the user's videos.
- */
 @Composable
 fun ProfilesScreen(app: HikariApp, onBack: () -> Unit) {
     val context = LocalContext.current
@@ -109,9 +94,6 @@ fun ProfilesScreen(app: HikariApp, onBack: () -> Unit) {
     val profiles by Profiles.all.collectAsState()
     val activeId by Profiles.activeId.collectAsState()
 
-    // Hoisted strings: `tr` is composable, and the ones below are also read from
-    // plain lambdas — a coroutine that has finished switching, a dialog button —
-    // which cannot call it.
     val msgNowUsing = tr("Now using")
     val msgOtherKept = tr("The other setup is still here — switch back any time.")
     val msgSwitchFailed = tr("Could not switch profile. The current one is unchanged.")
@@ -173,16 +155,8 @@ fun ProfilesScreen(app: HikariApp, onBack: () -> Unit) {
             }
         }
     }
-    // The PER-PROFILE gate: opening, renaming, deleting or re-locking a
-    // profile that has its own password asks for THAT password — never the
-    // app lock's. A profile with no password of its own runs ungated.
     var profileGateTarget by remember { mutableStateOf<Profiles.Profile?>(null) }
     var profileGateAction by remember { mutableStateOf<(() -> Unit)?>(null) }
-    // True when the pending gate guards a SWITCH into the target (as opposed
-    // to a one-off rename/delete/re-lock): switches stay unlocked while the
-    // entered profile is in use (Profiles.switchTo re-locks the rest), while
-    // one-off gates re-lock the moment their sheet opens — every selection
-    // asks again.
     var profileGateIsSwitch by remember { mutableStateOf(false) }
     var profileGatePw by remember { mutableStateOf("") }
     var profileGateWrong by remember { mutableStateOf(false) }
@@ -214,9 +188,6 @@ fun ProfilesScreen(app: HikariApp, onBack: () -> Unit) {
             action()
         }
     }
-    // What each profile holds, read from its own snapshot (the active one is read
-    // from the live store instead — its snapshot is only as fresh as the last
-    // switch away from it).
     var summaries by remember { mutableStateOf<Map<String, Profiles.Summary>>(emptyMap()) }
 
     LaunchedEffect(profiles, activeId) {
@@ -233,9 +204,6 @@ fun ProfilesScreen(app: HikariApp, onBack: () -> Unit) {
         summaries = map
     }
 
-    // The registry lives in the files directory, so this page is also what makes
-    // sure the app's flows are showing it (a profile restored from a backup, or
-    // an app whose data was cleared, is picked up here).
     LaunchedEffect(Unit) { runCatching { Profiles.load(app) } }
 
     BackHandler { onBack() }
@@ -247,9 +215,6 @@ fun ProfilesScreen(app: HikariApp, onBack: () -> Unit) {
         scope.launch {
             val result = runCatching { Profiles.switchTo(app, profile.id) }
             busy = false
-            // switchTo itself refuses a locked target (defense in depth: the
-            // row already asked via askProfileGate, but no caller may enter a
-            // locked profile without its password).
             val moved = result.getOrDefault(false)
             status = if (moved) {
                 msgNowUsing + " \"" + profile.name + "\". " + msgOtherKept
@@ -318,9 +283,6 @@ fun ProfilesScreen(app: HikariApp, onBack: () -> Unit) {
                     active = profile.id == activeId,
                     summary = summaryText(summaries[profile.id]),
                     busy = busy,
-                    // The last profile is not offered for deletion: with none
-                    // left the picker would be an empty page describing a
-                    // feature with nothing in it.
                     canDelete = profiles.size > 1,
                     onOpen = { askProfileGate(profile, isSwitch = true) { switchTo(profile) } },
                     onRename = {
@@ -375,11 +337,6 @@ fun ProfilesScreen(app: HikariApp, onBack: () -> Unit) {
                     }
                 }
             }
-            // An explanation paragraph, so it obeys the hide-explanations switch
-            // like every other one (it was the line that kept showing with the
-            // switch off). The `if` is INSIDE the item because `LocalHideHelp`
-            // is a composition-local read and the LazyColumn's content lambda is
-            // not composable — reading it out there is a compile error.
             item(key = "profiles-note") {
                 if (!LocalHideHelp.current) {
                     Text(
@@ -608,11 +565,6 @@ fun ProfilesScreen(app: HikariApp, onBack: () -> Unit) {
                         profileGateAction = null
                         profileGateIsSwitch = false
                         run?.invoke()
-                        // One-time gate: a password typed for rename/delete/
-                        // re-lock must not leave the profile open — the next
-                        // tap (e.g. switching into it) asks again. Switches
-                        // are excluded: Profiles.switchTo re-locks everything
-                        // except the entered profile itself.
                         if (!wasSwitch && target.id != Profiles.activeId.value) {
                             Profiles.reLock(target.id)
                         }
@@ -779,12 +731,6 @@ fun ProfilesScreen(app: HikariApp, onBack: () -> Unit) {
     }
 }
 
-/**
- * What one profile holds, in the user's own words — "12 extensions · 34 saved ·
- * 120 watched", or a sentence when there is nothing in it yet (which is what a
- * profile that has never been used looks like, and worth saying plainly so it
- * does not read as a broken row).
- */
 @Composable
 private fun summaryText(summary: Profiles.Summary?): String {
     if (summary == null) return ""
@@ -875,11 +821,6 @@ private fun ProfileAvatar(
     }
 }
 
-/**
- * Creation sheet: name, a picture row (built-in gradients + a storage photo
- * via the system picker — no storage permission needed), and Create. The
- * photo is applied after the profile exists (see the caller).
- */
 @Composable
 private fun ProfileCreateDialog(
     title: String,
@@ -925,9 +866,6 @@ private fun ProfileCreateDialog(
                     }
                 }
                 Spacer(Modifier.height(12.dp))
-                // Picture tiles wrap into two rows: whatever does not fit on the
-                // first line sits on the second — no sideways scroll, no sliver
-                // (the red-marked report). 8 gradients + the storage tile.
                 val hasPhoto = photoUri != null || cropped != null
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(
@@ -1005,13 +943,6 @@ private fun ProfileCreateDialog(
     )
 }
 
-/**
- * Square crop sheet for a storage-picked picture: the photo draws under a
- * circular preview mask, pinch (two fingers) zooms 1x-4x, drag pans, and
- * confirm center-crops the square the preview shows. Zooming in crops a
- * smaller center region (enlarged to the avatar size), so the face/detail can
- * be fitted exactly; zoomed out the whole photo's center square is used.
- */
 @Composable
 private fun ProfileCropDialog(
     uri: Uri,

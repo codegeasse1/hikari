@@ -18,59 +18,8 @@ import android.webkit.CookieManager
 import android.webkit.WebView
 import android.webkit.WebViewClient
 
-/**
- * A link the user pasted into the IPTV tab as a NETWORK STREAM, resolved to
- * something the player can actually open.
- *
- * A playlist's channels are URLs the provider is told are already playable, and
- * for an M3U panel that is true. A network stream is the other case: the user has
- * a link to a *file* on a host — an m3u8, a Terabox share, a Telebox box, an
- * MDisk file, a Diskwala/HubCloud-class download page — and what stands behind
- * the link has to be worked out before it can be played ("add network stream …
- * so user can add any link to stream … m3u8 link, terabox link, telebox link,
- * mdisk, diskwala and many more"). That work is here, so that everything else
- * about such an entry is an ordinary IPTV provider: it lists in the tab, its
- * channels (usually exactly one) are browseable, and the player asks it for
- * streams like any other.
- *
- * **The order of the attempts, and why.** Cheapest and most certain first, so a
- * link that is already playable never pays for a network round trip it does not
- * need, and each stage is bounded by its own timeout:
- *
- *  1. a media URL by its own shape (`.m3u8`, `.mp4`, …) — answered with no
- *     request at all;
- *  2. the two hosts whose flow is a two-line transformation (Google Drive, by
- *     [Http.normalizeDriveUrl], and Pixeldrain, whose API path is the share path
- *     with `/api/file/…?download`);
- *  3. Terabox and the box hosts that run the same API (Telebox, 1024tera, …) —
- *     see [terabox], which is the one flow here that is a real protocol;
- *  3b. MDisk-class download pages with a known API shape (Diskwala) — see
- *     [mdisk]; every other mdisk-class page keeps the generic stack;
- *  4. Hikari's own extraction stack ([FallbackResolver]): it fetches the page,
- *     unpacks packed player JS, scans for HLS/MP4, runs the dood/rumble dances,
- *     probes extensionless HLS and finally hands the URL to CloudStream's whole
- *     extractor registry — which is what covers "and many more": any host an
- *     installed CloudStream plugin knows how to open works here too;
- *  5. a Content-Type probe, for a direct-ish link with no extension;
- *  6. the link itself.
- *
- * That last step is deliberate. A link that nothing could open is still handed
- * to the player exactly as the user wrote it, rather than answered with "no
- * playable sources": the URL is the user's own, the player is the thing that
- * can say what a machine-readable resolver cannot ("this is a page, not a
- * video"), and dropping it would look like the app had lost the entry.
- */
 object NetworkStream {
 
-    /**
-     * How a network stream is marked on its [ProviderConfig].
-     *
-     * The entry IS an IPTV provider — same listing, same browsing, same play
-     * path — and this is what tells the two apart: [ProviderConfig.extra] is the
-     * one free-form field a row already has, so a stream entry needs no new
-     * storage schema and an older build reading one simply treats it as a
-     * one-channel playlist (which is exactly what it would have been).
-     */
     const val MARKER = "netstream"
 
     /** True when [config] was added through the tab's "Network stream" mode. */
@@ -168,16 +117,6 @@ object NetworkStream {
     fun isTorrentConfig(config: ProviderConfig): Boolean =
         config.type == ProviderType.IPTV && isTorrentLink(config.url)
 
-    /**
-     * True when [url] is a single playable file/stream address (a direct m3u8, mp4/mkv,
-     * and friends) rather than a playlist of channels.
-     *
-     * The m3u extension is deliberately NOT on this list: it is the playlist format IPTV
-     * panels speak, while m3u8/media extensions name one stream. The playlist-adding flows
-     * refuse these so a lone video link can never become a one-channel
-     * All-channels/Ungrouped folder that plays as live TV — Network stream mode
-     * is the path that resolves and plays them as the files they are.
-     */
     fun isDirectMediaLink(url: String): Boolean {
         val u = url.trim()
         if (isTorrentLink(u)) return false
@@ -222,14 +161,6 @@ object NetworkStream {
     private const val STAGE_TIMEOUT_MS = 20_000L
     private const val RESOLVE_BUDGET_MS = 45_000L
 
-    /**
-     * Every playable source behind [rawUrl], ready for the player.
-     *
-     * Never throws and never returns an empty list for a link that has a scheme:
-     * see the class doc for the last-resort step. [label] is the entry's name
-     * (the channel's), used for the source's own label in the player's server
-     * list.
-     */
     suspend fun resolve(
         rawUrl: String,
         label: String,
@@ -251,12 +182,6 @@ object NetworkStream {
             emptyList()
         }
         val chosen = sources.ifEmpty {
-            // A box share page is NEVER playable bytes: handing it back as a
-            // "server" only moves the failure into the player
-            // (CONTAINER_UNSUPPORTED on HTML) while the cover counts a server
-            // that can never play. Report no servers honestly, so the sheet
-            // and the shared log say the API refused (see the terabox errno
-            // lines) instead of failing in the player.
             if (isBoxLink(url) && boxShareKey(url) != null) return@withContext emptyList()
             listOf(sourceOf(url, name))
         }
@@ -270,28 +195,6 @@ object NetworkStream {
         }
     }
 
-    /**
-     * The headers a BROWSER would send for this stream, filled in wherever the
-     * link itself did not say.
-     *
-     * A "network stream" is an address copied out of a page — the player page,
-     * a share, a copied video address — and those hosts hotlink-protect it: the
-     * CDN checks the request's Referer and User-Agent and answers 403 without
-     * them, which the player reports as
-     * `ExoPlaybackException [ERROR_CODE_IO_BAD_HTTP_STATUS] 403` on a playlist
-     * that plays fine in the browser it was copied from.
-     *
-     * The page's ORIGIN is the right Referer: [pageUrl] is what the user pasted
-     * (before any extraction), so it is the page the link came from — and when
-     * they pasted the stream address itself, it is the stream's own origin, which
-     * is what such hosts check for. Headers an extractor already chose are kept
-     * untouched (the box hosts' own User-Agent/Referer/Cookie, for instance).
-     *
-     * Nothing here can break a link that already works: the player drops headers
-     * one step at a time when a server rejects them (see
-     * PlayerActivity.headerVariant), so a wrong guess costs one retry while a
-     * missing one costs the whole play.
-     */
     private fun withStreamHeaders(
         headers: Map<String, String>,
         pageUrl: String,
@@ -322,9 +225,6 @@ object NetworkStream {
                 ),
             )
         }
-        // A torrent FILE is not playable bytes — the player would be handed
-        // the file itself and fail. Parse it into the info hash (+ trackers)
-        // the torrent engine needs instead.
         if (isTorrentFile(url)) {
             resolveTorrentFile(url, label)?.let { return listOf(it) }
             return listOf(
@@ -346,12 +246,6 @@ object NetworkStream {
 
         // 3. The box hosts (Terabox / Telebox / …).
         if (isBoxLink(url)) {
-            // A share link (…/s/<key>) resolves ONLY through the box API: the
-            // generic stack below would hand back the share page itself as a
-            // "server", and the player cannot parse HTML as video
-            // (CONTAINER_UNSUPPORTED). Returning the API result directly keeps
-            // a refused list honest ("no servers", errno in the log) instead
-            // of a fake row that dies in the player.
             if (boxShareKey(url) != null) return stage { terabox(url) }.orEmpty()
             val files = stage { terabox(url) }.orEmpty()
             if (files.isNotEmpty()) return files
@@ -363,9 +257,6 @@ object NetworkStream {
             if (files.isNotEmpty()) return files
         }
 
-        // 4. Hikari's own extraction stack — a page with embeds, then the page
-        //    treated as a single embed, then CloudStream's whole registry. Each
-        //    of the three is bounded inside FallbackResolver as well.
         val generic = stage { FallbackResolver.resolve(url) }.orEmpty()
         if (generic.isNotEmpty()) return generic
         val embed = stage { FallbackResolver.resolveEmbedUrl(url, url) }.orEmpty()
@@ -407,11 +298,6 @@ object NetworkStream {
     }
 
 
-    /**
-     * Public for the extension engines: turn a torrent FILE url into its
-     * torrent source (info hash + trackers parsed out of the file), or null
-     * when the file cannot be fetched or parsed. Bounded inside, never throws.
-     */
     suspend fun torrentFileInfo(url: String, label: String): StreamSource? =
         runCatching { resolveTorrentFile(url, label) }.getOrNull()
 
@@ -591,44 +477,10 @@ private class BReader(val b: ByteArray) {
         return if (param.startsWith("1")) param else "1$param"
     }
 
-    /**
-     * A Terabox-family share, as a list of playable files.
-     *
-     * The flow is the service's own web API, in the order it needs:
-     *
-     *  1. the host's home page, for `jsToken` (an anti-bot token the API refuses
-     *     requests without) and for the cookies it sets;
-     *  2. `/api/shorturlinfo?shorturl=<key>&root=1` — the share's metadata,
-     *     including its `randsk` (URL-decoded to the list call's `sekey`);
-     *  3. `/share/list?…&shorturl=<key>&root=1&sekey=<sekey>&sign=<sign>&
-     *     timestamp=<ts>` — its entries, `dlink` per file. `sign`+`timestamp`
-     *     are the share page's own signature (Baidu-family request signing —
-     *     a list call without them is refused with errno 105; the sekey is
-     *     the decoded `randsk`, which earlier builds never read — the other
-     *     half of the 105 chain). The call also carries
-     *     the share's own `shareid`+`uk` from the metadata answer — the web
-     *     client's own identifiers — because some mirrors refuse a call the
-     *     short key alone names.
-     *
-     * Everything is asked of the link's OWN host: the box service lives on a
-     * dozen mirror domains (terabox.com, 1024tera.com, 4funbox.com, telebox.link
-     * …), they are all the same API, and going through a fixed host would mean
-     * every link from another mirror failed. A host that answers the list call
-     * with the "verify" errno (`4000020`) is retried once with freshly minted
-     * cookies, which is what that errno means.
-     *
-     * The returned sources carry the box user agent, the host as Referer and the
-     * session cookie: a `dlink` is hotlink-protected and answers a bare request
-     * with an error page rather than the file.
-     */
     private suspend fun terabox(url: String): List<StreamSource> {
         val key = boxShareKey(url) ?: return emptyList()
         val origin = originOf(url)
         val jar = LinkedList<String>()
-        // Tokens and cookies come from the SHARE page first: it sets the
-        // share cookies and (on most mirrors) embeds the jsToken, while /main
-        // is the fallback when the share page carries neither (bot-walled
-        // HTML, a redirect that dropped the token).
         val shareHtml = fetchText(url, BOX_UA, jar, referer = origin)
         var token = if (!shareHtml.isNullOrBlank()) jsTokenOf(shareHtml) else ""
         val home = if (token.isNotBlank()) {
@@ -642,9 +494,6 @@ private class BReader(val b: ByteArray) {
             Logs.log("NetStream", "terabox: no page html for $origin (share + /main both empty)")
             return emptyList()
         }
-        // Shape of the share page, for the next report: a verify-walled or
-        // bot-walled fetch answers short JSON with no tokens at all, while
-        // the real page carries the jsToken (and usually yunData/sign).
         Logs.log(
             "NetStream",
             "terabox: share page ${shareHtml?.length ?: 0} chars" +
@@ -669,9 +518,6 @@ private class BReader(val b: ByteArray) {
         }
         val tokensErrno = runCatching { JSONObject(tokens).optInt("errno", -1) }.getOrDefault(-1)
         var sekey = boxSekeyOf(tokens)
-        // The metadata answer carries the share's own sign+timestamp (its
-        // keys prove it) while the bot-walled share page usually has neither
-        // — read both, page first.
         var sig = boxSignOf(shareHtml) ?: boxSignOf(tokens)
         var ids = boxShareIdsOf(tokens)
         Logs.log(
@@ -690,10 +536,6 @@ private class BReader(val b: ByteArray) {
             return emptyList()
         }
 
-        // Some mirrors embed the share's file list in the metadata answer
-        // itself (its keys carry exactly that alongside randsk/sign/
-        // timestamp/shareid/uk) — when its entries already carry dlinks,
-        // no list call is needed at all.
         val infoEntries = if (tokensErrno == 0) boxInfoList(tokens) else null
         if (infoEntries != null) {
             var infoDlink = 0
@@ -741,14 +583,6 @@ private class BReader(val b: ByteArray) {
             } else {
                 boxList(origin, key, jsTokenOf(retryHome), retryJar, sekey, sig, ids, pageUrl = url)
             }
-            // Family-wide fallback (bounded, 2 extra hosts): some mirrors refuse
-            // the list call with errno 105 while the canonical backend answers
-            // the same key. Same credentials, same key — never per-mirror code.
-            // A browser session goes first: a refused list on a share the
-            // metadata says exists is the session gate (the box only trusts
-            // its own page visit — cookies plus JS-set values a plain GET
-            // never runs), and a real visit passes it the way the resolver
-            // sites' own backends do.
             if (list == null) {
                 val shareAlive = runCatching { JSONObject(tokens).optInt("errno", -1) == 0 }
                     .getOrDefault(false)
@@ -799,11 +633,6 @@ private class BReader(val b: ByteArray) {
         return files
     }
 
-    /** The share's `sekey` inside a shorturlinfo answer — the list call's
-     *  password for THAT share. The official field is `randsk` (URL-encoded:
-     *  the sekey is its decoded form); a literal `sekey` is the fallback some
-     *  mirrors send decoded already. Top level first, then the first
-     *  `shorturlinfo` entry, then a `data` object; null when absent. */
     private fun boxSekeyOf(tokens: String): String? {
         val root = runCatching { JSONObject(tokens) }.getOrNull() ?: return null
         val scopes = listOf(
@@ -824,16 +653,6 @@ private class BReader(val b: ByteArray) {
         return null
     }
 
-    /**
-     * The share's own ids inside a shorturlinfo answer — what the service's
-     * own web client sends on the list call (`shareid` + `uk`), instead of
-     * the short key. Read defensively by scanning the whole answer
-     * recursively (top level, `shorturlinfo` entries, `data`/`records`, any
-     * casing: `shareid`/`share_id`/`shareId`, `uk`/`share_uk`/`shareUk`):
-     * mirrors that refuse an unsigned call with errno 105 get the exact
-     * credential shape the web client uses. Null when the metadata carries
-     * neither (the short key stays the only identifier, as before).
-     */
     private fun boxShareIdsOf(tokens: String): Pair<String, String>? {
         val root = runCatching { JSONObject(tokens) }.getOrNull() ?: return null
         var shareid: String? = null
@@ -869,14 +688,6 @@ private class BReader(val b: ByteArray) {
         return null
     }
 
-    /** The share page's own `sign`+`timestamp` (Baidu-family request signing —
-     *  the list call's real credential; see the [terabox] flow). Read from the
-     *  page's embedded data (the `yunData` blob the web client's own calls
-     *  carry: `"sign":"…"`, `"timestamp":…`) or back out of the page URL's own
-     *  query. The timestamp may be seconds (10 digits) or millis (13) — the
-     *  API wants seconds, so millis are truncated. Null when the page is
-     *  bot-walled or carries neither, in which case the list call goes out
-     *  unsigned exactly as before. */
     private fun boxSignOf(html: String?): Pair<String, Long>? {
         if (html.isNullOrBlank()) return null
         val sign = Regex(""""sign"\s*[:=]\s*"([A-Za-z0-9+/=_-]{16,})"""").find(html)?.groupValues?.get(1)
@@ -938,9 +749,6 @@ private class BReader(val b: ByteArray) {
     ): List<JSONObject>? {
         val root = boxListPage(origin, key, jsToken, jar, sekey, sig, ids, pageUrl, dir = null, cfg = cfg) ?: return null
         val out = ArrayList<JSONObject>(root)
-        // A share of a season is a folder of episodes: one level down, and at
-        // most a few folders, keeps a huge share from turning into a hundred
-        // requests.
         var folders = 0
         for (e in root) {
             if (folders >= 3) break
@@ -967,25 +775,15 @@ private class BReader(val b: ByteArray) {
     ): List<JSONObject>? {
         val query = buildString {
             append("$origin/share/list?$BOX_APP_QUERY")
-            // The token can carry URL-hostile characters — encode it exactly
-            // like the sekey below (an unencoded token breaks the whole query
-            // and the call is refused as if it were never signed).
             if (jsToken.isNotBlank() && !cfg.skipToken) append("&jsToken=").append(URLEncoder.encode(jsToken, "UTF-8"))
             if (!sekey.isNullOrBlank()) append("&sekey=").append(URLEncoder.encode(sekey, "UTF-8"))
             // The page's own signature — the web client's calls always carry
             // it, and the endpoint refuses unsigned calls with errno 105.
             if (sig != null) append("&sign=").append(sig.first).append("&timestamp=").append(sig.second)
-            // The web client's own identifiers for the share (from the
-            // shorturlinfo answer): some mirrors refuse the call when only
-            // the short key names it. The short key stays too — mirrors that
-            // adapted their backend around it keep working.
             if (ids != null) append("&shareid=").append(ids.first).append("&uk=").append(ids.second)
             append("&shorturl=").append(key)
             append("&by=name&order=asc&num=20000&page=1")
             if (dir.isNullOrBlank()) {
-                // The reference client sends an empty `dir` alongside `root=1`
-                // (not root alone), and the share page itself as Referer, the
-                // way a browser's own API calls look.
                 append("&dir=&root=1")
             } else {
                 append("&dir=").append(URLEncoder.encode(dir, "UTF-8"))
@@ -1006,13 +804,6 @@ private class BReader(val b: ByteArray) {
         return (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }
     }
 
-    /**
-     * Entries straight from the metadata answer: some mirrors embed the
-     * share's file `list` in shorturlinfo itself (its top-level keys carry
-     * exactly that alongside randsk/sign/timestamp/shareid/uk), in which
-     * case no list call is needed at all. The entries parse the same way as
-     * [boxListPage]. Null when the answer carries no list.
-     */
     private fun boxInfoList(tokens: String?): List<JSONObject>? {
         if (tokens.isNullOrBlank()) return null
         val root = runCatching { JSONObject(tokens) }.getOrNull() ?: return null
@@ -1027,13 +818,6 @@ private class BReader(val b: ByteArray) {
         return out
     }
 
-    /**
-     * The same list call with a real browser session: the share page loads in
-     * a hidden WebView (real cookies, real JS-set values — the gate a plain
-     * GET never passes), then the metadata + list calls replay with that
-     * session's cookies and freshly read tokens. Null when the browser
-     * session itself yields nothing; the plain-HTTP result then stands.
-     */
     private suspend fun boxWebList(
         origin: String,
         pageUrl: String,
@@ -1042,9 +826,6 @@ private class BReader(val b: ByteArray) {
         sig: Pair<String, Long>?,
         ids: Pair<String, String>?,
     ): List<JSONObject>? {
-        // One page load, not two: the live view stays up so the page's own
-        // list fetch runs inside it right after the read below — a second
-        // load never fits the attempt budgets (see boxWebPageFetch).
         val sess = boxWebViewSession(pageUrl) ?: run {
             Logs.log("NetStream", "terabox: web session empty for $origin")
             return null
@@ -1065,10 +846,6 @@ private class BReader(val b: ByteArray) {
             var webSig = boxSignOf(html) ?: sig
             var webSekey = sekey
             var webIds = ids
-            // The metadata call re-read under the browser session: a rotated
-            // sekey or missing ids must not doom the replay. The re-read is
-            // also the freshest sign+timestamp (the metadata answer carries
-            // its own — the page often has none).
             val meta = fetchText(
                 "$origin/api/shorturlinfo?shorturl=$key&root=1",
                 BOX_UA,
@@ -1091,18 +868,12 @@ private class BReader(val b: ByteArray) {
                     " sign=" + (if (webSig != null) "yes" else "none") +
                     " ids=" + (if (webIds != null) "yes" else "none"),
             )
-            // What the rendered page actually carries (token-shaped markers), so
-            // the next report shows whether the gate stripped the page or just
-            // the API answer — presence only, never values.
             val markers = listOf("yunData", "jsToken", "randsk", "\"sign\"", "\"timestamp\"", "shareid")
             Logs.log(
                 "NetStream",
                 "terabox: web page markers=" +
                     markers.joinToString(" ") { it + "=" + (if (html.contains(it, ignoreCase = true)) "yes" else "no") },
             )
-            // The list call from inside the page itself (same-origin fetch with
-            // the page's real cookies and JS state — the official client's own
-            // call, which plain-HTTP replay can only imitate).
             boxWebPageFetch(web, origin, key)?.let {
                 Logs.log("NetStream", "terabox: list answered via web page-list for $origin")
                 return it
@@ -1125,21 +896,7 @@ private class BReader(val b: ByteArray) {
         }
     }
 
-    /**
-     * The share page in a real browser: a hidden WebView loads it (cookies +
-     * JS run exactly like the user's own browser, which is what passes the
-     * box's session gate), then the rendered HTML, the session cookies AND
-     * the live view come back — the view stays up so the caller can run the
-     * page's own list fetch inside it (one load, not two) before destroying
-     * it in its own finally. Bounded and never fatal — null on anything
-     * unexpected, including devices with no WebView provider; the watchdog
-     * destroys the view on every path the caller never takes.
-     */
     private suspend fun boxWebViewSession(pageUrl: String): Triple<String, List<String>, WebView>? {
-        // The main thread only HOSTS the view — it is never blocked: the
-        // load runs there, the caller waits on a deferred from its own
-        // stage thread, and both the settle read and the watchdog below
-        // finish the deferred whatever happens first.
         val done = CompletableDeferred<Triple<String, List<String>, WebView?>?>()
         val main = Handler(Looper.getMainLooper())
         val holder = arrayOfNulls<WebView>(1)
@@ -1221,20 +978,6 @@ private class BReader(val b: ByteArray) {
         return withTimeoutOrNull(9000) { done.await() }
     }
 
-    /**
-     * The share's list call run from INSIDE its own rendered page (see the
-     * errno=105 chain): on the live view the share loaded in, the list
-     * request goes out as the page's own same-origin `fetch` — carrying the
-     * page's real cookies plus whatever JS-set proof a plain-HTTP replay can
-     * never hold — with the call shaped from the tokens the page itself
-     * embeds (`jsToken`, `randsk`/`sekey`, `sign`+`timestamp`,
-     * `shareid`+`uk`, falling back to whatever subset exists). Root plus one
-     * folder level come back in a single script run; the entries parse the
-     * same way as [boxListPage]. The caller owns the view (it destroys it);
-     * null when the page returns nothing or the in-page call is refused too
-     * (logged with the page's own token shapes + errno — the honest report
-     * when the gate is the device/IP rather than the call shape).
-     */
     private suspend fun boxWebPageFetch(
         web: WebView,
         origin: String,
@@ -1368,12 +1111,6 @@ private class BReader(val b: ByteArray) {
         return sb.toString()
     }
 
-    /**
-     * Variant probe for a refused list on an existing share (see the
-     * errno=105 chain): the same root call in several cheap shapes, each
-     * logged with its own name, first errno=0 wins and feeds the full list
-     * (folders included). Null when every shape is refused — honest-empty.
-     */
     private suspend fun boxProbeList(
         origin: String,
         key: String,
@@ -1400,9 +1137,6 @@ private class BReader(val b: ByteArray) {
                 return boxList(origin, key, jsToken, jar, sekey, sig, ids, pageUrl, noToken)
             }
         Logs.log("NetStream", "terabox: probe notoken refused for $origin")
-        // Same call naming the share by short key only: no probe has ever
-        // gone out without the metadata ids riding along, and some mirrors
-        // refuse a call the ids name instead of the key.
         boxListPage(origin, key, jsToken, jar, sekey, sig, null, pageUrl, dir = null)
             ?.let {
                 Logs.log("NetStream", "terabox: probe noids errno=0 entries=${it.size} for $origin")
@@ -1453,13 +1187,6 @@ private class BReader(val b: ByteArray) {
         return null
     }
 
-    /**
-     * Reconnaissance on the browser-rendered share page (see [boxWebList]):
-     * the official client's own bundle URLs sit in the DOM, and same-origin
-     * bundles are fetched (bounded) and scanned for the token/list endpoints
-     * the DOM never carries. Findings go to the shared log for the next
-     * report; nothing here changes the result — best effort only.
-     */
     private suspend fun boxBundleRecon(
         html: String,
         webJar: List<String>,
@@ -1477,9 +1204,6 @@ private class BReader(val b: ByteArray) {
         val srcs = Regex("""<script[^>]+src="([^"]+)"""").findAll(html)
             .map { it.groupValues[1].trim() }.filter { it.isNotBlank() }.toList()
         Logs.log("NetStream", "terabox: recon scripts=" + srcs.size)
-        // The rendered page itself may already carry the file (title, size,
-        // a link): scan the DOM for file data too, not just the bundles —
-        // a share of one file embeds it, and then no list call is needed.
         val title = Regex("""<title[^>]*>(.*?)</title>""", RegexOption.DOT_MATCHES_ALL)
             .find(html)?.groupValues?.get(1)?.trim()?.take(160)
         if (!title.isNullOrBlank()) {
@@ -1556,13 +1280,6 @@ private class BReader(val b: ByteArray) {
 
     // ---- mdisk-class download pages (diskwala) ----
 
-    /**
-     * Diskwala / MDisk-class download pages. Their file API signs every
-     * request (Appicrypt headers over a canonical SHA-256 — the site's own
-     * bundle computes it in a signer module). Best-effort: the plain-hash
-     * equivalents are attempted, and anything the server refuses falls through
-     * to the generic extraction stack below, so a wrong guess costs nothing.
-     */
     private fun isMdiskLink(url: String): Boolean {
         val host = hostOf(url).lowercase()
         return MDISK_HOSTS.any { host.contains(it) }
@@ -1597,10 +1314,6 @@ private class BReader(val b: ByteArray) {
                 java.net.URI(apiUrl).path.removePrefix("/api/v1")
             }.getOrDefault("/file/sign")
             val ts = System.currentTimeMillis().toString()
-            // Canonical form, exactly like the site's own signer builds it:
-            // "METHOD path | params=<sorted JSON or empty> | body=<sorted JSON
-            // or empty> | ts=<ms>". Our bodies are single-key compact JSON, so
-            // they already match the signer's sorted form.
             val canonical = "POST $path | params= | body=$body | ts=$ts"
             val digest = runCatching {
                 val md = java.security.MessageDigest.getInstance("SHA-256")

@@ -6,17 +6,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
 
-/**
- * TMDB artwork backdrops ("screenshots") for the television detail page's
- * banner and Screenshots section, like the desktop client's own artwork.
- *
- * One `/movie/{id}/images` (or `/tv/...`) call per title, backdrops only,
- * capped at 8. English/unflagged art leads, then art in any language: a
- * zh-tagged donghua backdrop still beats a provider thumbnail stretched over
- * the hero. Cached process-wide, fills blanks and never throws: an
- * unresolvable title or a dead network is an empty list, and the page falls
- * back to provider art.
- */
 object TmdbScreenshots {
 
     private const val IMG_BACKDROP = "https://image.tmdb.org/t/p/w1280"
@@ -29,11 +18,6 @@ object TmdbScreenshots {
     /** Portrait-art twin of [mem]: one `/images` call carries both lists. */
     private val posterMem = ConcurrentHashMap<String, List<String>>()
 
-    /** First header-sized art per title id, filled whenever [backdropsFor]
-     *  succeeds — the Play intent reads this synchronously (it cannot suspend)
-     *  so the player's cover and server screen paint the same TMDB image the
-     *  detail header settled on, instead of the single backdrop_path that is
-     *  often null while /images has art. */
     private val firstByKey = ConcurrentHashMap<String, String>()
 
     /** The FULL plural list behind [firstCached], per title id — the Play
@@ -67,9 +51,6 @@ object TmdbScreenshots {
 
     suspend fun backdropsFor(item: MediaItem): List<String> =
         runCatching {
-            // Catalog rows carry UNKNOWN until the episode list lands (see
-            // SoraProvider): the lookup is title-based anyway, so they resolve
-            // exactly like typed rows instead of going bare.
             if (item.type != MediaType.SERIES && item.type != MediaType.MOVIE &&
                 item.type != MediaType.UNKNOWN
             ) return emptyList()
@@ -85,13 +66,7 @@ object TmdbScreenshots {
                     if (list.isNotEmpty()) {
                         firstByKey[item.uniqueId] = list.first()
                         listByKey[item.uniqueId] = list
-                        // The row must paint what the header settles on: publish
-                        // the header art into the row lookup's key (see
-                        // Artwork.noteHeaderArt) the moment the header banks it.
                         Artwork.noteHeaderArt(item, pick.info.cover, list.first())
-                        // The anime's own cover is its portrait art — the
-                        // vertical server page rotates through it the same way
-                        // the horizontal one rotates backdrops.
                         listOfNotNull(pick.info.cover).takeIf { it.isNotEmpty() }?.let {
                             firstPosterByKey[item.uniqueId] = it.first()
                             listPosterByKey[item.uniqueId] = it
@@ -101,17 +76,8 @@ object TmdbScreenshots {
                 }
                 else -> null
             }
-            // Null when TMDB cannot resolve the title at all (mistranslated
-            // donghua, provider-only rows): the anime fallback below still
-            // gets its chance instead of bailing out here.
-            // TVDB bridge: the title search above misses while TVDB knows the
-            // exact TMDB id (Bigg Boss class) — resolve exactly instead of
-            // going bare, so the /images below run for the right entry.
             val resolved = TmdbResolver.resolve(item)
                 ?: runCatching { TvdbArt.tmdbBridge(item) }.getOrNull()
-            // "anime" is TMDB's tv namespace (see TmdbResolver): the images
-            // endpoint is the same one. Resolving any other way 404s every
-            // anime/donghua title.
             val seg = if (resolved?.mediaType == "movie") "movie" else "tv"
             resolved?.let { r ->
                 mem[seg + "/" + r.tmdbId]?.let {
@@ -143,18 +109,10 @@ object TmdbScreenshots {
             val out = if (resolved == null) {
                 emptyList()
             } else withContext(Dispatchers.IO) {
-                // No language filter (desktop parity): a zh-tagged donghua
-                // backdrop beats a provider thumbnail stretched over the
-                // hero. English/unflagged art first, then art in any
-                // language, best-voted first inside each group.
                 val obj = TmdbResolver.apiGet(
                     "/$seg/${resolved.tmdbId}/images",
                     emptyMap(),
                 ) ?: return@withContext emptyList()
-                // Portraits ride the same response (`posters`) under the same
-                // rule — the vertical page rotates these, capped like the
-                // backdrops so the intent stays small. Parsed (and banked)
-                // first, so a response without backdrops still leaves them.
                 runCatching {
                     val parr = obj.optJSONArray("posters") ?: return@runCatching
                     val posterPref = ArrayList<Pair<Double, String>>()
@@ -210,9 +168,6 @@ object TmdbScreenshots {
                 listByKey.remove(item.uniqueId)
             }
             if (combined.isEmpty()) {
-                // User order: TVDB before anime sources. TVDB banner is real
-                // 16:9 (keyless website search API), so cinema rows stop
-                // sitting on blurred portraits when TMDB misses.
                 runCatching { TvdbArt.lookup(item) }.getOrNull()?.let { tv ->
                     val fb = listOfNotNull(tv.banner, tv.poster).distinct()
                     if (fb.isNotEmpty()) {
@@ -226,10 +181,6 @@ object TmdbScreenshots {
                         return fb
                     }
                 }
-                // Universal fallback (parity with TmdbMeta.artwork): a title
-                // TMDB missed still gets the anime sources' own banner/cover
-                // sharp instead of a blurred provider poster. This is the
-                // cover-only/scoreless case the usable-pick gate sends here.
                 runCatching { DonghuaDetails.load(item) }.getOrNull()?.let { a ->
                     val fb = listOfNotNull(a.banner, a.cover).distinct()
                     if (fb.isNotEmpty()) {

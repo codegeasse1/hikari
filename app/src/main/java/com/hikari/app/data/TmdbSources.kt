@@ -4,18 +4,6 @@ import com.hikari.app.nuvio.TmdbResolver
 import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
 
-/**
- * The KINDS of TMDB source a folder can hold — the type chips of the reference
- * client's "TMDB Sources" screen: Presets, Public list, Production, Network,
- * Collection, Person, Director, Custom.
- *
- * A preset is a ready-made row (Marvel Studios, HBO) that ships with the app,
- * and everything else is a live TMDB query the user describes with an id, a
- * name or a URL. All of them produce the exact same [MediaItem] shape
- * (`providerId = "tmdb"`, numeric TMDB id, `rawType = "tmdb"`), so the detail
- * page, its shelves and the player resolve a hand-built source through the very
- * path a preset already used.
- */
 enum class TmdbSourceType(val key: String, val label: String) {
     PRESET("preset", "Presets"),
     TITLE("title", "Movie or series"),
@@ -107,13 +95,6 @@ data class TmdbHit(
     val posterUrl: String = "",
 )
 
-/**
- * A saved TMDB source, stored as JSON in [CatalogSource.tmdbSpec].
- *
- * [media] is "movie", "tv" or "all" (both — what a person/director source
- * wants). [id] is a plain TMDB id by the time the source is saved; the editor
- * turns "Marvel Studios", "420" and a themoviedb.org URL into the id.
- */
 data class TmdbSpec(
     val type: TmdbSourceType = TmdbSourceType.PRESET,
     val id: String = "",
@@ -164,11 +145,6 @@ data class TmdbSpec(
         else -> MediaType.UNKNOWN
     }
 
-    /** Identity for dedupe — [title] is deliberately excluded, since renaming a
-     *  source must not let the same source be added twice. Every filter is part
-     *  of it: two discover rows that differ only in their filters are two
-     *  different rows, and without this they would collide and one of them would
-     *  quietly disappear from the folder. */
     val identity: String
         get() = listOf(
             type.key, id, preset, media, sort, genre.toString(), year.toString(),
@@ -242,14 +218,6 @@ data class TmdbSpec(
     }
 }
 
-/**
- * The network half of a TMDB source: id/URL parsing, name search, the display
- * name of a saved source, and one page of items.
- *
- * Every request goes through [TmdbResolver.apiGet], which means the app's
- * chosen title language rides along automatically — a Spanish install gets
- * Spanish titles out of a TMDB source with no work here.
- */
 object TmdbSources {
 
     private const val IMG = "https://image.tmdb.org/t/p/w500"
@@ -279,10 +247,6 @@ object TmdbSources {
         if (spec.type == TmdbSourceType.PRESET) return TmdbPresets.nameOf(spec.preset)
         val id = numericId(spec.id)
         if (id != null) {
-            // A TITLE source is one movie OR one show and the spec's media
-            // decides which — but a source saved before its shape was known
-            // (media "" / "all") is asked as both and answers with whichever
-            // one exists.
             val endpoints = when (spec.type) {
                 TmdbSourceType.TITLE -> if (spec.isTv) listOf("/tv/$id")
                     else if (spec.isMovie) listOf("/movie/$id")
@@ -391,9 +355,6 @@ object TmdbSources {
         val q = query.trim()
         if (q.isBlank()) return emptyList()
         numericId(q)?.let { id ->
-            // A one-title source: the typed id IS the title, and TMDB is asked
-            // for both shapes so the hit can say which one it is (an id is
-            // only unique per shape — 550 is Fight Club, 1399 is a show).
             if (type == TmdbSourceType.TITLE) {
                 val hits = ArrayList<TmdbHit>()
                 for (m in listOf("movie", "tv")) {
@@ -425,9 +386,6 @@ object TmdbSources {
             TmdbSourceType.COLLECTION -> "/search/collection"
             TmdbSourceType.PERSON, TmdbSourceType.DIRECTOR -> "/search/person"
             TmdbSourceType.LIST -> "/search/list"
-            // One query, both shapes: /search/multi answers with movies and
-            // shows at once, which is exactly the "which one do you mean?"
-            // question a one-title source is asking.
             TmdbSourceType.TITLE -> "/search/multi"
             else -> return emptyList()
         }
@@ -475,10 +433,6 @@ object TmdbSources {
             TmdbSourceType.PERSON -> person(spec, director = false)
             TmdbSourceType.DIRECTOR -> person(spec, director = true)
             TmdbSourceType.COMPANY -> if (spec.isAll) {
-                // A studio makes films AND series, and TMDB has no endpoint that
-                // answers for both — so the two discover pages are merged into
-                // one, alternating, and neither kind can bury the other. This is
-                // what "tap a production and see everything it made" needs.
                 mergeMedia(
                     discover(spec, p, "movie", "with_companies"),
                     discover(spec, p, "tv", "with_companies"),
@@ -486,13 +440,6 @@ object TmdbSources {
             } else discover(spec, p, spec.media.ifBlank { "movie" }, "with_companies")
             TmdbSourceType.NETWORK -> discover(spec, p, "tv", "with_networks")
             TmdbSourceType.DISCOVER -> if (spec.isAll) {
-                // "Everything tagged with this" is BOTH kinds: TMDB has no
-                // endpoint that answers for films and series at once, so the two
-                // discover pages are merged, alternating, exactly as a studio's
-                // are. Sending the same genre filter to both is safe because a
-                // genre carries the id EACH namespace knows it by (see Home's
-                // genre strip) — TMDB ignores the id that belongs to the other
-                // namespace rather than erroring, verified against the live API.
                 mergeMedia(
                     discover(spec, p, "movie", null),
                     discover(spec, p, "tv", null),
@@ -501,12 +448,6 @@ object TmdbSources {
         }
     }
 
-    /**
-     * A one-title source: the user picked THIS movie or THIS show, so the row
-     * is that title and nothing else. The spec's media says which shape to ask
-     * for; a spec with no shape yet is asked as a movie first and then as a
-     * series, so an old or hand-written source still resolves.
-     */
     private suspend fun title(spec: TmdbSpec): List<MediaItem> {
         val id = numericId(spec.id) ?: return emptyList()
         val order = when {
@@ -522,12 +463,6 @@ object TmdbSources {
         return emptyList()
     }
 
-    /**
-     * Two media kinds' pages as one row, alternating so neither kind buries the
-     * other. A company's own catalogue is the case: TMDB answers films and
-     * series from two different endpoints, and one page of the grid has to carry
-     * both.
-     */
     private fun mergeMedia(a: List<MediaItem>, b: List<MediaItem>): List<MediaItem> {
         if (a.isEmpty()) return b
         if (b.isEmpty()) return a
@@ -588,15 +523,9 @@ object TmdbSources {
             val id = numericId(spec.id) ?: return emptyList()
             query[filterKey] = id
         }
-        // The genre FILTER text wins over the single-genre chip when both are
-        // set: typed text can express what a chip cannot (several genres ANDed
-        // with "," or ORed with "|", and an exclude list).
         if (spec.genresText.isNotBlank()) query["with_genres"] = spec.genresText.trim()
         else if (spec.genre > 0) query["with_genres"] = spec.genre.toString()
         if (spec.genresExclude.isNotBlank()) query["without_genres"] = spec.genresExclude.trim()
-        // The date fields differ per endpoint — TMDB rejects a movie's release
-        // field on /discover/tv — so the right pair is chosen for the segment
-        // being asked.
         val dateGte = if (seg == "tv") "first_air_date.gte" else "primary_release_date.gte"
         val dateLte = if (seg == "tv") "first_air_date.lte" else "primary_release_date.lte"
         if (spec.dateFrom.isNotBlank()) query[dateGte] = spec.dateFrom.trim()
@@ -658,9 +587,6 @@ object TmdbSources {
         }
         val sort = spec.sort.ifBlank { "popularity.desc" }
         query["sort_by"] = sort
-        // TMDB's average-vote sort is meaningless without a floor on the number
-        // of votes — without it the row fills with 10.0-rated films nobody saw.
-        // A user-set floor is respected: it is their filter, not this guard.
         if (sort.startsWith("vote_average") && votes.isBlank()) query["vote_count.gte"] = "200"
         query["page"] = page.toString()
         val data = TmdbResolver.apiGet("/discover/$seg", query) ?: return emptyList()
@@ -682,17 +608,6 @@ object TmdbSources {
     /** Keyword names TMDB had no id for, so a miss is not re-asked per page. */
     private val keywordMisses = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
-    /**
-     * A `with_keywords` value as the id list TMDB needs: numeric tokens are
-     * passed through, a NAME is resolved through TMDB's `/search/keyword`
-     * (`"isekai" → 210024`, `"high school" → …`) and the ids are OR-ed
-     * together. Null when nothing resolved, so the caller sends no parameter
-     * instead of an empty one.
-     *
-     * The resolution is cached for the process (hits and misses), because it is
-     * asked once per page of a grid — a keyword search per page for a chip the
-     * user is scrolling would be a request per scroll.
-     */
     private suspend fun keywordsAsIds(raw: String): String? {
         val tokens = raw.split('|', ',', '+', ';')
             .map { it.trim() }
@@ -728,9 +643,6 @@ object TmdbSources {
                 exact = id
                 break
             }
-            // TMDB's keyword search is fuzzy ("school life" also answers
-            // "school"), so a non-exact hit is only used when it CONTAINS the
-            // whole query — never a partial-word match.
             if (loose == null && hit.contains(key)) loose = id
         }
         val found = exact ?: loose
@@ -783,21 +695,10 @@ object TmdbSources {
             // The name the extensions index this title under, when the app's
             // TMDB language has renamed it (see MediaItem.originalTitle).
             originalTitle = originalOf(o),
-            // TMDB's own adult marker (see [MediaItem.nsfw]) — the one signal a
-            // catalogue response carries, and what the NSFW gate hides when the
-            // user has turned adult material off.
             nsfw = o.optBoolean("adult", false),
         )
     }
 
-    /**
-     * The genre names for [item], from the response's `genre_ids` (what every
-     * discover/list/credit response carries) via [TmdbGenres], falling back to
-     * an inline `genres` array when the endpoint embeds objects instead.
-     *
-     * Discover items used to drop this entirely, so a genre page's Anime chip
-     * filtered on empty genre lists and could never match anything.
-     */
     private fun genreNames(o: JSONObject, type: MediaType): List<String> {
         val media = if (type == MediaType.SERIES) "tv" else "movie"
         val ids = o.optJSONArray("genre_ids")
@@ -832,14 +733,6 @@ object TmdbSources {
     }
 }
 
-/**
- * App language → TMDB language, for translating titles and overviews.
- *
- * The user's app language is an Android tag; TMDB wants its own region-tagged
- * code, and the two disagree exactly where it matters (the app's `zh-CN` is
- * TMDB's `zh-CN`, but its `pt-BR` is TMDB's `pt-BR` while its plain `es` is
- * TMDB's `es-ES`). A tag with no entry simply leaves TMDB on its default.
- */
 object TmdbLang {
 
     /** App language → TMDB code. */

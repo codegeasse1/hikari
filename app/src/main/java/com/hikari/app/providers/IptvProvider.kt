@@ -72,12 +72,6 @@ class IptvProvider(override val config: ProviderConfig) : ContentProvider {
         private const val ALL = "iptv-all"
         private const val GROUP_PREFIX = "iptv-group:"
 
-        /**
-         * The catalog id of a playlist's "all channels" shelf. Public, with
-         * [catalogIdForGroup], because the IPTV tab builds the same refs the
-         * provider hands out — a group tile then links straight to the paged
-         * channel grid instead of a second, parallel code path.
-         */
         const val CATALOG_ALL = ALL
 
         /** The catalog id of one group's shelf. */
@@ -99,12 +93,6 @@ class IptvProvider(override val config: ProviderConfig) : ContentProvider {
         /** The catalog id of one country bucket's shelf. */
         fun catalogIdForCountry(country: String): String = COUNTRY_PREFIX + country
 
-        /**
-         * Drops everything remembered about a removed playlist — its last
-         * failure, its channel count and the "read at" stamp. The provider row
-         * itself is gone, so nothing may keep reporting a playlist that is no
-         * longer installed (see the IPTV tab's remove button).
-         */
         fun forget(providerId: String) {
             iptvErrors.remove(providerId)
             channelCounts.remove(providerId)
@@ -130,11 +118,6 @@ class IptvProvider(override val config: ProviderConfig) : ContentProvider {
             return u.startsWith("http://") || u.startsWith("https://") || File(u).exists()
         }
 
-        /** Channels of [url] without needing a provider instance — used by the
-         *  Add dialog to say how many channels a link holds before saving it.
-         *  M3U and JSON playlists (plain or `TERAPLAY_ENC:`-encrypted — see
-         *  [JsonPlaylist]) both count; a Stremio manifest is refused with the
-         *  address of the flow that takes it. */
         suspend fun preview(url: String): Result<Int> = withContext(Dispatchers.IO) {
             val cached = previewCache[url]
             if (cached != null) return@withContext Result.success(cached)
@@ -252,11 +235,6 @@ class IptvProvider(override val config: ProviderConfig) : ContentProvider {
             config.url.substringAfter("://").substringBefore('/').ifBlank { "IPTV" }
         }
 
-    /**
-     * The playlist's channels, downloaded and parsed at most once per [TTL_MS].
-     * [force] re-reads it (the folder's Refresh action). A failed read leaves any
-     * previously parsed list in place, so a dead panel does not empty Home.
-     */
     suspend fun channels(force: Boolean = false): List<IptvChannel> = loadLock.withLock {
         val cached = channelsCache
         if (!force && cached != null && System.currentTimeMillis() - (loadedAt[config.id] ?: 0L) < TTL_MS) {
@@ -288,12 +266,6 @@ class IptvProvider(override val config: ProviderConfig) : ContentProvider {
             withTimeoutOrNull(FETCH_TIMEOUT_MS) {
                 withContext(Dispatchers.IO) {
                     val text = readSource(selfCheckUrl)
-                    // The playlist's own address is handed to the parser so a
-                    // relative `tvg-logo` resolves to a real URL (see
-                    // IptvPlaylist.resolveLogo). JSON playlists (plain or
-                    // TERAPLAY_ENC:-encrypted) parse by their own reader — and
-                    // stay JSON: falling through to the M3U reader would list
-                    // a config object as channels.
                     if (text == null) null
                     else com.hikari.app.data.JsonPlaylist.parse(text)?.channels
                         ?: IptvPlaylist.parse(text, base = selfCheckUrl)
@@ -380,9 +352,6 @@ class IptvProvider(override val config: ProviderConfig) : ContentProvider {
             out += CatalogRef(config.id, MediaType.MOVIE, ALL, all.first().name, "torrent")
             return out
         }
-        // A NETWORK STREAM is one file, not a channel list either: a single shelf named
-        // after the stream — never an "All channels" shelf plus an "Ungrouped" tile
-        // (see [com.hikari.app.data.NetworkStream]).
         if (com.hikari.app.data.NetworkStream.isStream(config)) {
             out += CatalogRef(config.id, MediaType.MOVIE, ALL, all.first().name, "stream")
             return out
@@ -424,12 +393,6 @@ class IptvProvider(override val config: ProviderConfig) : ContentProvider {
         return hit.subList(from, minOf(from + PAGE, hit.size)).map { toItem(it) }
     }
 
-    /**
-     * Search INSIDE one catalog (a group / language / category / country tile):
-     * the same name/group match as [search], but scoped to the tile's channels
-     * first — so searching "sony" inside Germany never offers a channel from
-     * another country. Same paging as [getCatalog].
-     */
     suspend fun searchInCatalog(refId: String, query: String, page: Int): List<MediaItem> {
         val q = query.trim()
         if (q.isBlank()) return emptyList()
@@ -441,17 +404,6 @@ class IptvProvider(override val config: ProviderConfig) : ContentProvider {
         return hit.subList(from, minOf(from + PAGE, hit.size)).map { toItem(it) }
     }
 
-    /**
-     * A channel's stream IS its URL — there is nothing to extract, which is why
-     * an IPTV playlist is the fastest source in the app: the server list gets
-     * the exact link the playlist declared, with the playlist's own group as its
-     * secondary line.
-     *
-     * The exception is a NETWORK STREAM (see [com.hikari.app.data.NetworkStream]):
-     * a link the user pasted as one file on some host, where what is behind the
-     * link has to be worked out before it can be played. That happens here, on
-     * Play — the moment every other engine does its own extraction.
-     */
     override suspend fun getStreams(item: MediaItem, episode: Episode?): List<StreamSource> {
         val all = channels()
         val channel = all.firstOrNull { it.url == item.id }
@@ -471,10 +423,6 @@ class IptvProvider(override val config: ProviderConfig) : ContentProvider {
                 return emptyList()
             }
         val url = channel.url
-        // A torrent link plays through the torrent engine even when the row
-        // predates the MARKER (legacy rows saved without it): resolve first,
-        // whatever the row carries, so an old torrent entry plays instead of
-        // handing a magnet to the player as a plain URL.
         if (com.hikari.app.data.NetworkStream.isTorrentLink(url)) {
             val resolved = com.hikari.app.data.NetworkStream.resolve(
                 rawUrl = url,
@@ -488,12 +436,6 @@ class IptvProvider(override val config: ProviderConfig) : ContentProvider {
             }
             return resolved
         }
-        // A NETWORK STREAM is not a URL the player can open as it stands: it is
-        // a link to a FILE on some host, and what is behind it has to be worked
-        // out first (an m3u8, a Terabox share, an MDisk page, a download page an
-        // installed CloudStream extractor knows). That happens here, on Play —
-        // the same moment every other engine does its extraction — and the
-        // sources it answers with are the channel's servers.
         if (com.hikari.app.data.NetworkStream.isStream(config)) {
             val resolved = com.hikari.app.data.NetworkStream.resolve(
                 rawUrl = url,
@@ -507,9 +449,6 @@ class IptvProvider(override val config: ProviderConfig) : ContentProvider {
             }
             return resolved
         }
-        // A Terabox-family share inside a playlist resolves the same way a
-        // pasted one does — the share page is fetched and its files listed at
-        // play time (see [com.hikari.app.data.NetworkStream]).
         if (channel.kind == com.hikari.app.data.IptvChannel.KIND_TERABOX ||
             com.hikari.app.data.NetworkStream.isBoxShare(url)
         ) {
@@ -569,13 +508,6 @@ class IptvProvider(override val config: ProviderConfig) : ContentProvider {
         return u.contains(".m3u8") || u.endsWith(".ts") || u.endsWith(".m3u")
     }
 
-    /**
-     * Headers a channel plays with: the playlist's own `#EXTVLCOPT` headers
-     * first (the provider put them there because the CDN demands them), then
-     * the playlist origin as Referer fallback + desktop UA. Live HLS panels
-     * 403 bare requests the same way Fastream does — a headerless channel is
-     * the "m3u8 channels not streaming" report.
-     */
     private fun channelHeaders(channel: IptvChannel): Map<String, String> {
         val out = LinkedHashMap<String, String>()
         channel.headers.forEach { (k, v) ->
@@ -615,9 +547,6 @@ class IptvProvider(override val config: ProviderConfig) : ContentProvider {
         type = MediaType.MOVIE,
         posterUrl = c.logo,
         overview = IptvPlaylist.groupOf(c).takeIf { it != "Ungrouped" },
-        // "torrent" keeps saved magnets out of the live-channel treatment
-        // (LIVE tile, live playback) — see Artwork and PlayerActivity. "stream"
-        // does the same for network streams: one file, played as VOD.
         rawType = when {
             com.hikari.app.data.NetworkStream.isTorrentLink(c.url) -> "torrent"
             com.hikari.app.data.NetworkStream.isStream(config) -> "stream"

@@ -4,30 +4,6 @@ import android.os.Handler
 import android.os.Looper
 import com.hikari.app.HikariApp
 
-/**
- * Refcounted registry of "Hikari must keep working" tasks.
- *
- * Why this exists: an Android process with no visible UI drops into the
- * *cached* state the moment the user presses Home, and the platform then
- * FREEZES it (the Android 11+ app freezer) and lets the CPU/radio sleep. Every
- * coroutine in the process is stopped mid-sentence and only continues when the
- * user comes back — which is exactly the reported behaviour: a catalog stops
- * loading, a title search stops finding results, and everything resumes the
- * moment the app is reopened.
- *
- * A foreground service moves the process into the *perceptible* state, which
- * is exempt from the freezer, and a partial wakelock keeps the CPU running
- * when the screen goes off. Registering a piece of work here (a search, a
- * catalog fetch, a provider scan, an extension install) therefore keeps Hikari
- * alive in the background for exactly as long as that work runs; when the last
- * token is ended the service shuts itself down — after a short grace window, so
- * a burst of tiny tasks doesn't thrash it.
- *
- * Tokens are reference counted, so overlapping searches/catalogs simply keep
- * one service running. A safety sweep force-expires a token that was never
- * ended (a bug, or a task that somehow lost its `finally`) so the notification
- * can never get stuck on screen forever.
- */
 object BackgroundWork {
 
     /** A token that was never ended is dropped after this long. */
@@ -59,15 +35,6 @@ object BackgroundWork {
     private var stopScheduled = false
     private var sweeping = false
 
-    /**
-     * True between [cancelAll] and the next Activity starting ([reopen]).
-     *
-     * While the app is closed, work that is still unwinding must not be able to
-     * bring the service back up — an app-scope search that has not noticed yet
-     * would otherwise register a fresh token a second after the user closed the
-     * app, restart the foreground service and put that "Hikari keeps running
-     * while you use other apps" notification straight back on screen.
-     */
     @Volatile
     private var closed = false
 
@@ -76,19 +43,11 @@ object BackgroundWork {
 
     private val sweepRunnable = object : Runnable {
         override fun run() {
-            // The sweeper keeps its own life as long as there is work to sweep —
-            // and retires when there is none, so an idle app is not woken every
-            // minute by a handler that stopped mattering.
             if (sweep()) handler.postDelayed(this, SWEEP_INTERVAL_MS)
             else synchronized(lock) { sweeping = false }
         }
     }
 
-    /**
-     * Registers [label] as running work and makes sure the process keeps
-     * running in the background. Always pair with [end] (a `finally`, or a
-     * job's `invokeOnCompletion`) so the service can stop.
-     */
     fun begin(label: String, onCancel: (() -> Unit)? = null): Token {
         val id = synchronized(lock) {
             val i = nextId++
@@ -104,12 +63,6 @@ object BackgroundWork {
         return Token(id)
     }
 
-    /**
-     * An Activity is up again, so background work may hold the process once more.
-     * Called from the application's activity lifecycle (see HikariApp), which is
-     * also what makes [cancelAll] a per-session thing rather than a permanent
-     * switch.
-     */
     fun reopen() {
         closed = false
     }
@@ -125,24 +78,6 @@ object BackgroundWork {
 
     fun isActive(): Boolean = synchronized(lock) { active.isNotEmpty() }
 
-    /**
-     * Drops EVERYTHING and cancels the work behind it — "the user closed the
-     * app, nothing of ours should still be running".
-     *
-     * This is the counterpart to [begin]. The registry exists so work survives
-     * the user leaving the app (Home, another app); it must NOT survive the user
-     * closing it, which is what this is for. Without it, a long multi-extension
-     * search kept the process in the foreground-service state after the app was
-     * closed: a permanent "Hikari keeps running while you use other apps"
-     * notification, hundreds of live network calls, and — because the process
-     * stayed warm and busy — the next launch crawling through its splash screen
-     * (reported as "it just stays stuck on the Hikari logo and won't open").
-     *
-     * Called when the last Activity is destroyed because it is FINISHING (Back
-     * out of the app), and from [WorkService.onTaskRemoved] (swiped off the
-     * recents list). Deliberately not from onStop: pressing Home also stops every
-     * activity, and continuing there is the feature.
-     */
     fun cancelAll(reason: String) {
         closed = true
         val dropped = synchronized(lock) {

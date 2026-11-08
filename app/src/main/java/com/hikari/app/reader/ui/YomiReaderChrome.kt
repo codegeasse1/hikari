@@ -125,13 +125,6 @@ private val Accent = Color(0xFF8AB4F8)
 private val OnDark = Color(0xFFEDEDF0)
 private val Muted = Color(0xFF9AA0B4)
 
-/**
- * Yomi-style reader chrome ported into Nekoread: a dark top bar with bookmark / overflow /
- * expandable auto-scroll controls, a floating chapter navigator pill with prev/next + page slider,
- * and a 5-button bottom bar (reading mode, orientation, crop borders, chapter list, settings) that
- * opens yomi-style Reading mode / General / Color settings sheets. The chrome is stateless: the
- * screen passes current values in and receives intents out.
- */
 @Composable
 fun YomiReaderChrome(
     visible: Boolean,
@@ -151,9 +144,6 @@ fun YomiReaderChrome(
     onPrevChapter: () -> Unit,
     nextEnabled: Boolean,
     onNextChapter: () -> Unit,
-    // Providers rather than values: the page indicator is the only thing that changes on every page
-    // turn, and reading the state here (in the caller's recompose scope) would recompose the whole
-    // reader screen once per page. The pill reads these inside its own scope instead.
     currentPage: () -> Int,
     totalPages: () -> Int,
     onSeekPage: (Int) -> Unit,
@@ -248,9 +238,6 @@ fun YomiReaderChrome(
     var showChapterList by remember { mutableStateOf(false) }
     var autoScrollExpanded by remember { mutableStateOf(false) }
 
-    // The bottom-bar crop toggle operates on whichever crop setting applies to the current reading
-    // mode: webtoon (continuous) â the classic crop setting, webtoon with gaps â its own setting,
-    // paged modes (left-to-right / right-to-left / vertical) â the paged crop setting.
     val activeCrop = when (readerMode) {
         ReaderMode.WEBTOON -> cropBorders
         ReaderMode.WEBTOON_GAPS -> cropBordersContinuous
@@ -2030,14 +2017,6 @@ private fun ChapterListSheet(
     chapterCoverModel: Any? = null,
 ) {
     val ctx = LocalContext.current
-    // Opens FULLY expanded: with the default half-expanded sheet the first
-    // drag only grows the sheet and the list starts scrolling on the second
-    // one. The scroll ALSO starts on the chapter being read, from the first
-    // frame (initialFirstVisibleItemIndex, not just the effect below), so
-    // reopening after picking chapter 50 lands on chapter 50 instead of the
-    // top. The index is the reader's dedup-aware one: the sheet's own ids are
-    // the deduped urls, so a raw active-url lookup misses whenever the active
-    // chapter is another scanlator's copy of the same number.
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     fun resolveIndex(): Int =
         initialChapterIndex.takeIf { it in chapters.indices }
@@ -2176,9 +2155,6 @@ private fun ToggleRow(
         Switch(
             checked = checked,
             onCheckedChange = onCheckedChange,
-            // A remote cannot land on a bare Switch at the end of a row, and
-            // cannot flip one from wherever the focus happens to be — see
-            // [Modifier.tvToggle].
             modifier = Modifier.tvToggle(checked, onValueChange = onCheckedChange),
         )
     }

@@ -19,15 +19,6 @@ import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 
-/**
- * The single source of truth for the download queue. In-memory state is a
- * [StateFlow] the Downloads screen collects; it is mirrored into DataStore
- * ([DownloadStore]) on every status change and throttled during progress.
- *
- * Concurrency model: [pump] claims the next QUEUED task ATOMICALLY (under
- * [claimLock]) and flips it to RUNNING, so two pumps — the service's, plus one
- * started by a fresh enqueue — can never run the same task twice.
- */
 object DownloadsRepository {
 
     private const val DEFAULT_CONCURRENCY = 3
@@ -106,9 +97,6 @@ object DownloadsRepository {
         cancelFlag(task.id).set(false)
         lastFlush = 0L
         scope.launch {
-            // Load the persisted queue FIRST — otherwise a download started
-            // before the Downloads tab was ever opened would replace the stored
-            // task list with just this one task.
             ensureLoaded(ctx)
             _tasks.update { list -> list.filterNot { it.id == task.id } + task }
             flush(ctx, true)
@@ -154,11 +142,6 @@ object DownloadsRepository {
             if (path != null && !path.startsWith("content:")) {
                 runCatching {
                     val f = File(path)
-                    // An HLS copy is a bundle dir (index.m3u8 + parts): drop
-                    // the episode dir. A single file is deleted on its own —
-                    // its parent is the shared title folder now, which must
-                    // survive while sibling episodes are still in it. The
-                    // per-task work dir is cleaned below either way.
                     if (f.name == "index.m3u8") f.parentFile?.deleteRecursively()
                     else f.delete()
                 }
@@ -197,14 +180,6 @@ object DownloadsRepository {
     fun workDirFor(ctx: Context, id: String): File =
         File(File(ctx.filesDir, "downloads"), id.replace(Regex("[^A-Za-z0-9_.-]"), "_"))
 
-    /**
-     * Moves a finished OFFLINE copy into its title folder —
-     * filesDir/downloads/<Title>/<ep>/… — so every episode of a title shares
-     * one folder (a later EP4 joins the folder EP3 created), exactly like the
-     * phone-storage exports. Returns the new on-disk path, or the original
-     * when the move is impossible (playback then uses the old path). Runs on
-     * success only, so pause/resume keep working out of the per-task work dir.
-     */
     private fun relocateOffline(ctx: Context, task: DownloadTask, path: String?): String? {
         if (path.isNullOrBlank()) return path
         return runCatching {

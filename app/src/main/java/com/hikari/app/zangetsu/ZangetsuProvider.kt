@@ -15,16 +15,6 @@ import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
-/**
- * A Zangetsu provider — one self-contained `.js` scraper speaking `getHome`
- * / `popular` / `search` / `getDetail` / `getEpisodes` / `getVideoSources`
- * (see [ZangetsuRuntime]).
- *
- * Items carry the source's own URL as their id; episodes carry the source's
- * episode URL (often a custom scheme packing season+episode). Anime sources
- * map to SERIES + rawType "anime" (tracker parity, so anime plays down the
- * anime path); movie sources map by their own type string.
- */
 class ZangetsuProvider(override val config: ProviderConfig) : ContentProvider {
 
     companion object {
@@ -217,10 +207,6 @@ class ZangetsuProvider(override val config: ProviderConfig) : ContentProvider {
                 }
             }
             if (list.isNotEmpty()) return@withContext list
-            // A movie page whose download blocks the provider's own selectors
-            // no longer match (site markup drifted): build its single packed
-            // episode from the page itself, so Detail still offers Play and
-            // the tap below carries a packed id the JS can unpack.
             harvestedEpisode(item)?.let { return@withContext listOf(it) }
             null
         }
@@ -231,10 +217,6 @@ class ZangetsuProvider(override val config: ProviderConfig) : ContentProvider {
         withContext(Dispatchers.IO) {
             var ep = episode
             if (ep == null) {
-                // A movie tap carries no episode — but the pack-scheme
-                // providers cannot unpack the bare detail URL (their instant
-                // "no download links" reject). The packed single-episode id
-                // from the provider's own list is the playback credential.
                 val eps = runCatching { getEpisodes(item) }.getOrNull()
                 ep = when {
                     eps.isNullOrEmpty() -> null
@@ -251,12 +233,6 @@ class ZangetsuProvider(override val config: ProviderConfig) : ContentProvider {
             var payload = ZangetsuRuntime.call(dir, sourceId, "getVideoSources", "[${JSONObject.quote(epUrl)}]")
             var data = dataOf(payload) as? JSONArray
             if ((data == null || data.length() == 0) && item.id.trim().startsWith("http")) {
-                // The bare detail URL reached a JS unpacker (stale or missing
-                // episode) — or a PACKED id answered empty because the page's
-                // hub links drifted past the installed script's selectors
-                // (uhdmovies' thenaukriadda ?sid= move). Harvest the page's hub
-                // links and re-ask packed when the set is new, then fall back
-                // to direct media files on the same page.
                 val hrefs = harvestHubLinks(item.id.trim())
                 val scheme = PACK_SCHEMES[sourceId]
                 if (hrefs.isNotEmpty() && scheme != null) {
@@ -340,20 +316,6 @@ class ZangetsuProvider(override val config: ProviderConfig) : ContentProvider {
     /** Marker the uhdmovies auto-patch leaves in provider.js (idempotent). */
     private val uhdNaukriMarker = "thenaukriadda-bypass-v2"
 
-    /**
-     * uhdmovies moved its maxbutton targets to `en.thenaukriadda.in/?sid=…`
-     * (LinkPress `_lp_http` gate) while the shipped 1.0.3 script only resolves
-     * hrefli/unblockedgames gates: the new gate was GET-only through the stock
-     * chain, so every title ended as "no playable links resolved" (log-proven
-     * on Bad Apples / Spider-Man / Evil Dead Burn — 12 harvested links
-     * re-asked packed, zero resolved). The upstream repo is still on 1.0.3, so
-     * the installed file is patched in place on first use: the gate is POSTed
-     * once, then every landing form behind it is POSTed in turn (the runtime
-     * now keeps cookies like the reference app, so the session survives the
-     * walk) until a ?go= ticket or driveseed page appears for _resolveOne to
-     * finish. Skipped (with a log line) when the file already moved on;
-     * v1-patched files are upgraded to v2 in place.
-     */
     private fun ensureUhdNaukriPatch() {
         if (sourceId != "uhdmovies") return
         try {
@@ -404,11 +366,6 @@ class ZangetsuProvider(override val config: ProviderConfig) : ContentProvider {
     }
 
     private val uhdNaukriJs = """
-// thenaukriadda-bypass-v2: uhdmovies moved its maxbutton targets to
-// en.thenaukriadda.in/?sid=... (LinkPress _lp_http gate). POST the gate once,
-// then walk every landing form behind it (cookies persist in the runtime like
-// the reference app) until a ?go= ticket or a driveseed/driveleech page shows
-// up for _resolveOne to finish.
 function _naukriSid(h) {
   var m = h.match(/name=["']_lp_http["'][^>]*value=["']([^"']+)["']/i) ||
     h.match(/value=["']([^"']+)["'][^>]*name=["']_lp_http["']/i);
@@ -504,17 +461,6 @@ function _bypassNaukri(url) {
         return Episode(number = 1, id = packed, name = item.title.ifBlank { "Movie" })
     }
 
-    /**
-     * Hub/intermediate links off a movie/series detail page, for pages whose
-     * own provider selectors no longer match (site markup drifted: hosts move
-     * to fresh link-shortener domains like `greenmotors.club/?id=…` while the
-     * installed `.js` still filters the old ones).
-     *
-     * Deliberately broader than any one provider's filter — hub pages,
-     * redirect gates and button links — but never page furniture (styles,
-     * scripts, images, anchors) and never video files (those are
-     * [harvestDirectMedia]'s job).
-     */
     private fun harvestHubLinks(pageUrl: String): List<String> {
         harvestCache[pageUrl]?.let { return it }
         val html = fetchPageHtml(pageUrl)

@@ -5,12 +5,6 @@ import androidx.compose.runtime.MutableIntState
 import androidx.compose.runtime.mutableIntStateOf
 import com.hikari.app.HikariApp
 
-/**
- * The Home header's HEIGHT setting (Settings → App Layout → Featured banner →
- * Header height). Kept in its own small preferences file so it needs nothing
- * from the rest of the settings store. The value is a Compose state, so every
- * banner on screen redraws the moment the slider moves.
- */
 object HeaderPrefs {
     const val MIN_PERCENT = 50
     const val MAX_PERCENT = 150
@@ -36,11 +30,6 @@ object HeaderPrefs {
     /** [heightPercent] as a multiplier (1f = unchanged). */
     val heightFactor: Float get() = heightState.intValue / 100f
 
-    /**
-     * The multiplier to apply when the size slider is already at [scale]: the
-     * two together never make the banner shorter than 40% of its natural
-     * height, because the title and buttons need that much room.
-     */
     fun heightFactorFor(scale: Float): Float {
         val s = scale.coerceIn(0.5f, 1.5f)
         val f = heightFactor

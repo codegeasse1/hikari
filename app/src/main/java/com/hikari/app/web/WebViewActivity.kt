@@ -47,28 +47,6 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
 
-/**
- * Ad-free web view for user-added movie/streaming websites.
- *
- * Everything is tuned to behave like a real Chrome browser so the sites' own
- * HTML5 players work:
- *  - Full cookie support INCLUDING third-party cookies (CDN auth cookies and
- *    Cloudflare cf_clearance are set/read cross-origin), flushed to disk so
- *    they survive activity restarts.
- *  - A current desktop-class Chrome user agent (sites serve their normal
- *    player instead of a mobile/fallback page, and Cloudflare challenges get
- *    the least suspicious fingerprint possible).
- *  - An hls.js polyfill: Android's WebView CANNOT decode HLS (.m3u8) in a
- *    <video> tag, which is exactly why "the site loads but the video buffers
- *    forever". The polyfill injects hls.js and attaches it to any m3u8 video
- *    the page creates (their own hls.js is detected and left alone).
- *  - Ads are HIDDEN (never removed, and never touching <video>), so scripts
- *    that reference ad elements keep working and the player is never torn
- *    down by our cleanup.
- *  - A floating ▶ button hands any REAL detected HLS/DASH/MP4 source straight
- *    to Hikari's ExoPlayer as a fallback when a site's player won't cooperate,
- *    carrying cookies + the page URL as Referer for hotlink-protected CDNs.
- */
 class WebViewActivity : ComponentActivity() {
 
     /** In-app UI scale: keeps this View-based screen on the same interface size
@@ -83,10 +61,6 @@ class WebViewActivity : ComponentActivity() {
     private lateinit var videoChip: TextView
     private lateinit var rootView: LinearLayout
     private var contentFrame: FrameLayout? = null
-    // Remote-mouse cursor (Home header toggle): a D-pad-driven ring over the
-    // page. Arrows move it, OK taps the page AT the ring by dispatching a real
-    // touch to the WebView — so a Cloudflare "I'm not a robot" checkbox and
-    // any other target can be pressed from the sofa.
     private var mouseMode = false
     private var cursorView: View? = null
     private var cursorX = 0f
@@ -96,14 +70,8 @@ class WebViewActivity : ComponentActivity() {
     private var pageTitle: String = ""
     private var startUrl: String = ""
 
-    // Provider this WebView was opened for (null = a plain site/URL). Used by
-    // the per-extension auto-translate feature to decide whether the page's
-    // text should be translated to English.
     private var providerId: String? = null
 
-    // Whether to translate this page's text into English. True when the intent
-    // asked for it explicitly ("Just this time") or the provider has "Always
-    // translate" turned on in the store.
     @Volatile
     private var translateEnabled = false
 
@@ -114,14 +82,7 @@ class WebViewActivity : ComponentActivity() {
     private var autoCloseWhenCloudflarePassed = false
     private var challengeSeen = false
     private var verifyDone = false
-    // Consecutive polls where the verify page looked like a hard WAF block
-    // ("you have been blocked") rather than a solvable challenge — a block can
-    // never mint a clearance, so after a few ticks the view closes itself
-    // instead of lingering on top of the player forever.
     private var blockedCount = 0
-    // Consecutive polls where the verify page showed neither a challenge nor a
-    // hard block — i.e. it loaded as ordinary content and has nothing to
-    // verify. After a few ticks the view closes itself instead of lingering.
     private var noChallengePolls = 0
     // Set when this view was opened to pass a Cloudflare challenge for a host
     // (intent extra "verifyHost"). CloudflareVerifier is NOT the launcher — it
@@ -132,28 +93,13 @@ class WebViewActivity : ComponentActivity() {
     // Renderer-crash recoveries already spent by this view (carried across the
     // relaunch via the intent, see onRenderProcessGone).
     private var renderRestarts = 0
-    // Video-verification mode (set alongside verifyHost): this view is open
-    // solely to pass a CF challenge for a STREAMING site, and
-    // the site's redirect to the real video page is legitimate — so main-frame
-    // redirects are NOT blocked here (the browsing view's redirect protection
-    // cancels exactly those, which is what kept the movie page from opening).
-    // Ad hosts are still blocked and popups are still dropped, so it can't
-    // spiral into ad sites.
     @Volatile
     private var verifyAllowRedirects = false
-    // Set when this view is an addon's OWN configuration page (the page a
-    // Stremio addon publishes, see StremioAddon.configurationPage): the link
-    // that page hands back to install the configured addon is captured and
-    // returned to the caller instead of being loaded. Nothing else about the
-    // page is special-cased.
     @Volatile
     private var addonConfig = false
     private val verifyHandler = Handler(Looper.getMainLooper())
     private var verifyRunnable: Runnable? = null
 
-    // Persisted element-block selectors (WebView menu → Element blocker). Loaded
-    // from the store on launch, kept in sync by the bridge, and handed to the
-    // page's ELEMENT_BLOCK_JS on every load so blocked elements stay hidden.
     private val blockedSelectors = java.util.LinkedHashSet<String>()
 
     // Ad blocking (WebView requests only) — resolved from the user's lists on
@@ -176,22 +122,9 @@ class WebViewActivity : ComponentActivity() {
     @Volatile
     private var popupProtection = true
     @Volatile private var blockedToastShown = false
-    // Hosts the user explicitly allowed redirects to (Settings → Privacy & Browsing → WebView safety
-    // → Allowed redirect links). Navigations to these are never blocked.
-    //
-    // Seeded from the in-memory mirror rather than empty (see RedirectAllow):
-    // the store read below is asynchronous, and a page's first redirect can
-    // easily beat it — which is how an allowed link (net77.cc) was still
-    // "Blocked redirect to net77.cc" in the verification view.
     @Volatile
     private var allowedRedirectHosts: Set<String> = com.hikari.app.data.RedirectAllow.now()
 
-    /**
-     * The main-frame navigation the redirect protection refused LAST, so the ⋯
-     * menu can offer to allow it and open it in one tap (see
-     * [allowBlockedRedirect]). Cleared on every new page ([onPageStarted]), so
-     * the offer can never point at a link from a page the user has left.
-     */
     @Volatile
     private var lastBlockedRedirectUrl: String? = null
     @Volatile
@@ -201,18 +134,6 @@ class WebViewActivity : ComponentActivity() {
     private fun allowedNow(): Set<String> =
         allowedRedirectHosts + com.hikari.app.data.RedirectAllow.now()
 
-    /**
-     * True when a navigation to [url] is one the USER allowed (Settings →
-     * Privacy & Browsing → WebView safety → "Allowed redirect links", or the
-     * WebView's own ⋯ menu). Both forms the list accepts are honoured: a host
-     * ("net77.cc", subdomains included) and a bare word ("filester", any link
-     * that contains it — see [com.hikari.app.data.RedirectAllow]).
-     *
-     * The activity's own copy of the list is consulted as well as the in-memory
-     * mirror, because the activity reads the store itself on launch (see
-     * [allowedNow]): whichever of the two holds the entry, the redirect is the
-     * user's own decision and must not be cancelled.
-     */
     private fun isRedirectAllowed(url: String?): Boolean =
         com.hikari.app.data.RedirectAllow.allowsIn(url, allowedNow())
 
@@ -224,23 +145,11 @@ class WebViewActivity : ComponentActivity() {
             runCatching { java.net.URI(url).host?.lowercase() }.getOrNull()
     }
 
-    /**
-     * The one-line toast for a refused redirect: which host was cancelled, and
-     * where the way out is. The ⋯ menu carries "Allow redirect to <host>" for
-     * exactly this link (see [allowBlockedRedirect]), which is what makes an
-     * extension's file host a one-tap decision instead of a trip to Settings.
-     */
     private fun blockedRedirectToast(url: Uri): String =
         "Blocked redirect to " + (url.host ?: "unknown") + " — open the menu to allow it"
 
-    // Guards the auto hand-off to the external player: a page that genuinely
-    // can't start its own <video> gets handed to Hikari's ExoPlayer ONCE (reset
-    // on every navigation), so the user never stares at an infinite spinner.
     private var autoLaunched = false
 
-    // True while any <video> on the page is actively playing (kept fresh by the
-    // periodic scan). Popups opened while a video is playing are ads — players
-    // pop them on click — so they're dropped instead of replacing the video.
     @Volatile
     private var videoPlaying = false
 
@@ -256,18 +165,8 @@ class WebViewActivity : ComponentActivity() {
     private val scanHandler = Handler(Looper.getMainLooper())
     private var scanRunnable: Runnable? = null
 
-    // Temporary child WebView that relays window.open() popups into the main
-    // view. Android CRASHES with "Parent WebView cannot host its own popup
-    // window" if a popup's transport targets the parent WebView itself, so the
-    // popup URL is captured in a throwaway child and loaded in the main view.
     private var popupChild: WebView? = null
 
-    /**
-     * Popup hosts the user chose "Always allow" for (see [askPopupPermission]):
-     * a blocked popup from one of these opens without asking again. Kept in
-     * this view's own preferences (not the store): it is a per-device browsing
-     * choice, exactly like a browser's pop-up exceptions list.
-     */
     private val popupAllowPrefs by lazy {
         getSharedPreferences("webview_popup_allow", MODE_PRIVATE)
     }
@@ -335,19 +234,6 @@ class WebViewActivity : ComponentActivity() {
         if (prefsAllow.remove(norm)) popupAllowPrefs.edit().putStringSet("hosts", prefsAllow).apply()
     }
 
-    /**
-     * A popup the user's own tap opened, but protection would drop: instead of
-     * a "Blocked popup" toast and a dead end, the tap gets a choice — Allow
-     * once, Always allow this site, Block always, or Cancel (which just drops
-     * it, like before). Only ever called for popups a real tap produced:
-     * automatic popunders never reach here, so they can never nag. A host on
-     * the Block-always list never reaches here either — it is dropped
-     * silently in the relay below.
-     *
-     * The choice is built as explicit buttons, not a list adapter: on some
-     * themes the list rows rendered with no visible text, which is exactly
-     * the reported "no option" dialog.
-     */
     private fun askPopupPermission(url: String, host: String?, onAllow: (String) -> Unit) {
         runOnUiThread {
             if (isFinishing || isDestroyed) return@runOnUiThread
@@ -387,12 +273,6 @@ class WebViewActivity : ComponentActivity() {
         }
     }
 
-    /**
-     * A vertical stack of full-width buttons for a choice dialog (see
-     * [askPopupPermission]): every option is always visible and tappable,
-     * whatever the theme does to list rows. [onPick] runs after the dialog
-     * is dismissed, around the option's own action.
-     */
     private fun choiceBox(vararg options: Pair<String, () -> Unit>, onPick: () -> Unit): LinearLayout {
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -427,14 +307,6 @@ class WebViewActivity : ComponentActivity() {
         return true
     }
 
-    /**
-     * A main-frame navigation the user's own tap opened toward a foreign host
-     * that redirect protection would refuse: instead of a bare "Blocked
-     * redirect" toast and a trip to the ⋯ menu, the tap gets the same choice
-     * popups get — Allow once, Always allow this host, Block always, Cancel.
-     * Automatic redirects (no gesture) keep the silent block exactly as
-     * before, so ad-hijack redirects can never nag.
-     */
     private fun askRedirectPermission(url: String, host: String?) {
         runOnUiThread {
             if (isFinishing || isDestroyed) return@runOnUiThread
@@ -463,12 +335,6 @@ class WebViewActivity : ComponentActivity() {
         }
     }
 
-    /**
-     * Adds [host] to the user's "Allowed redirect links" (the SAME list
-     * Settings edits) and loads [url] straight away — the ⋯ menu's "Allow
-     * redirect" generalized for the tap-choice dialog (see
-     * [askRedirectPermission] and [allowBlockedRedirect]).
-     */
     private fun allowRedirectTo(url: String, host: String?) {
         val entry = host?.takeIf { it.isNotBlank() } ?: return
         lifecycleScope.launch(Dispatchers.IO) {
@@ -488,12 +354,6 @@ class WebViewActivity : ComponentActivity() {
         }
     }
 
-    /**
-     * A host the user chose "Block always" for on a tapped link (see
-     * [askRedirectPermission]): its requests never load again AND its popups
-     * never ask again — the same two lists "Block this ad site" writes (see
-     * [blockAdSite]), so the entry is visible and revertible in Settings.
-     */
     private fun blockHostForever(host: String) {
         val norm = AdBlocker.normalizeDomain(host.trim().trimEnd('.').lowercase())
         if (norm.isBlank()) return
@@ -557,10 +417,6 @@ class WebViewActivity : ComponentActivity() {
                 "addonConfig=$addonConfig)"
         )
 
-        // An extension's "support us" link is never opened: it is a funding
-        // pitch, not something to watch (see PromoGuard — the same rule the
-        // page itself is held to). Refused before the WebView is built, so the
-        // user gets a reason instead of a blank page.
         if (PromoGuard.isDonationUrl(startUrl)) {
             com.hikari.app.data.Logs.log("WebView", "refused donation page $startUrl")
             Toast.makeText(this, "Blocked a donation page", Toast.LENGTH_SHORT).show()
@@ -584,13 +440,6 @@ class WebViewActivity : ComponentActivity() {
             setOnClickListener { playVideo() }
         }
 
-        // A TELEVISION BOX MAY HAVE NO WEBVIEW AT ALL. The WebView is part of
-        // the system on a phone, but plenty of cheap Android TV / Fire TV boxes
-        // ship without a usable provider — and constructing one there throws
-        // (MissingWebViewPackageException from WebViewFactory) instead of
-        // failing politely, which used to be an instant crash the moment a
-        // title, a Cloudflare check or a site link tried to open a web page.
-        // Now it is a message and a closed screen.
         webView = try {
             WebView(this)
         } catch (t: Throwable) {
@@ -606,15 +455,8 @@ class WebViewActivity : ComponentActivity() {
             finish()
             return
         }
-        // JS → Kotlin bridge for the auto hand-off: when a page's own <video>
-        // is stuck buffering forever (common on WebView-hostile tube sites),
-        // the page calls HikariBridge.stuckVideo(url) and we hand the real
-        // source to Hikari's ExoPlayer so playback actually starts.
         webView.addJavascriptInterface(HikariJsBridge(), "HikariBridge")
 
-        // Small floating ⋯ pill in the top-right corner — the only always-visible
-        // control. Tapping it opens a small menu (Back/Forward/Reload/Player) so
-        // the app never draws a header bar over the site's own header or search.
         val togglePill = TextView(this).apply {
             text = I18n.t("\u22EF")
             textSize = 18f
@@ -656,9 +498,6 @@ class WebViewActivity : ComponentActivity() {
         contentFrame = rootView.getChildAt(1) as? FrameLayout
         mouseMode = com.hikari.app.tv.MouseMode.enabled
         if (mouseMode) showCursor(center = true)
-        // Draggable ⋯ pill: it floats over the site (top-right by default) and
-        // can cover a site's search/header button, so let the user drag it
-        // anywhere along the top edge. A plain tap still opens the menu.
         val pillLp = togglePill.layoutParams as FrameLayout.LayoutParams
         var pillDownX = 0f
         var pillDownY = 0f
@@ -716,10 +555,6 @@ class WebViewActivity : ComponentActivity() {
             popupProtection = app.store.webviewPopup()
             allowedRedirectHosts = app.store.webviewRedirectAllow().toSet() +
                 com.hikari.app.data.RedirectAllow.now()
-            // Popup exceptions (Settings → Privacy & Browsing → WebView safety).
-            // One-time migration: older builds kept "always allow" in this
-            // view's own preferences — fold them into the store once, so the
-            // Settings list shows them and they can be reverted there.
             popupAllowHosts = runCatching { app.store.webviewPopupAllow() }.getOrDefault(emptyList())
                 .map { it.trim().trimEnd('.').lowercase() }.filter { it.isNotBlank() }.toSet()
             popupBlockHosts = runCatching { app.store.webviewPopupBlock() }.getOrDefault(emptyList())
@@ -784,9 +619,6 @@ class WebViewActivity : ComponentActivity() {
             blockedSelectors += app.elementBlocks
             runCatching { blockedSelectors += app.store.elementBlocks() }
             runOnUiThread { injectElementBlocker(webView) }
-            // Per-extension auto-translate: on when the intent asked for it
-            // explicitly ("Just this time") or the provider has "Always
-            // translate" turned on.
             translateEnabled = forceTranslate ||
                 (providerId != null && providerId in app.store.translateProviders())
             if (translateEnabled) {
@@ -825,16 +657,8 @@ class WebViewActivity : ComponentActivity() {
         ws.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
         ws.cacheMode = WebSettings.LOAD_DEFAULT
         ws.offscreenPreRaster = true
-        // UA comes from Settings → Privacy & Browsing → WebView user agent: stock Android default
-        // (passes Cloudflare's JS challenge) unless the user overrides with a
-        // custom one. See HikariApp.effectiveWebViewUa.
         ws.userAgentString = (application as HikariApp).effectiveWebViewUa()
 
-        // Cookies are the backbone of most streaming CDNs (session tokens) and
-        // Cloudflare (cf_clearance). Accept them, accept THIRD-party ones (the
-        // player page is site A, the CDN is site B), and flush to disk so they
-        // survive activity restarts — this is what makes "works in my browser"
-        // actually work in the app.
         CookieManager.getInstance().apply {
             setAcceptCookie(true)
             setAcceptThirdPartyCookies(webView, true)
@@ -845,20 +669,10 @@ class WebViewActivity : ComponentActivity() {
                 view: WebView?,
                 request: WebResourceRequest
             ): Boolean {
-                // A donation / "support the developer" page is never part of
-                // watching something (see PromoGuard) — these are exactly the
-                // links an extension hangs off its content, and once they load
-                // they are a funding pitch with a progress bar and a pay
-                // button. Refused here, before a single byte of them arrives.
                 if (PromoGuard.isDonationUrl(request.url.toString())) {
                     showBlockedToast("Blocked a donation page")
                     return true
                 }
-                // An addon's configuration page ENDS by navigating to the
-                // configured addon's own manifest — a stremio:// link the
-                // WebView cannot follow, or a manifest URL. That navigation IS
-                // the user pressing "Install", so it is taken here and handed
-                // back to the caller, which installs/replaces the addon.
                 if (addonConfig) {
                     val install = addonInstallUrl(request.url.toString())
                     if (install != null) {
@@ -866,16 +680,7 @@ class WebViewActivity : ComponentActivity() {
                         return true
                     }
                 }
-                // Video-verification mode (verifyAllowRedirects): the streaming
-                // site's redirect to the real video page is the whole point —
-                // skip ALL main-frame redirect blocking here. Ad hosts are
-                // still blocked below and popups are still dropped, so it
-                // can't spiral into ad sites.
                 if (!verifyAllowRedirects && !addonConfig) {
-                    // Cloudflare-verification mode: ONLY the CF challenge may ever
-                    // load (the site + Cloudflare's challenge infra). Any other
-                    // redirect target is cancelled before it loads — the view is
-                    // open solely to pass the challenge, never to surf.
                     if (autoCloseWhenCloudflarePassed && request.isForMainFrame &&
                         !isVerifyAllowed(request.url.toString())
                     ) {
@@ -883,10 +688,6 @@ class WebViewActivity : ComponentActivity() {
                         rememberBlockedRedirect(request.url.toString())
                         return true
                     }
-                    // Redirect protection: cancel main-frame navigations away from
-                    // the site before they load (ad-hijack redirects). Same-site
-                    // pages, subdomains, whitelisted hosts and user-allowed
-                    // redirect hosts still work.
                     if (redirectProtection && request.isForMainFrame) {
                         val host = request.url.host
                         val cur = currentPageHost()
@@ -895,11 +696,6 @@ class WebViewActivity : ComponentActivity() {
                             !isRedirectAllowed(request.url.toString()) &&
                             !isSameSite(host, cur)
                         ) {
-                            // The USER tapped this link (a real gesture): it gets
-                            // the Allow / Always / Block-always choice inline
-                            // (see askRedirectPermission), not a bare toast and
-                            // a trip to the ⋯ menu. Automatic redirects keep the
-                            // silent block — they are never the user's tap.
                             if (request.hasGesture()) {
                                 askRedirectPermission(request.url.toString(), host)
                             } else {
@@ -919,16 +715,7 @@ class WebViewActivity : ComponentActivity() {
             ): WebResourceResponse? {
                 val u = request.url.toString()
                 val host = request.url.host ?: ""
-                // Cloudflare's own challenge traffic is never ad traffic (see
-                // isCloudflareInfra): letting the challenge's scripts, iframes
-                // and /cdn-cgi/ endpoints load is what lets it COMPLETE. Block
-                // or rewrite them and the page simply reloads itself into the
-                // same challenge — the verify page looping instead of passing.
                 if (isCloudflareInfra(u)) return null
-                // Donation / funding pages are refused at the request level
-                // too: a main-frame navigation that reached the network any
-                // other way (a meta refresh, a script assignment, a redirect
-                // chain) still gets an empty body instead of a donate card.
                 if (request.isForMainFrame && PromoGuard.isDonationUrl(u)) {
                     showBlockedToast("Blocked a donation page")
                     return WebResourceResponse(
@@ -942,34 +729,19 @@ class WebViewActivity : ComponentActivity() {
                         return null
                     }
                     if (AdBlocker.matches(host, blockedDomains)) {
-                        // NEVER block actual media — blocklists routinely contain
-                        // tube-site CDN domains (phncdn.com, …) that serve the
-                        // actual video. Blocking those turns "video loads" into
-                        // "video buffering forever" (the Pornhub-style stall).
                         if (!isMediaRequest(request)) {
                             return WebResourceResponse("text/plain", "utf-8", ByteArrayInputStream(ByteArray(0)))
                         }
                     }
-                    // URL-pattern rules (the uBO-style half): catches what
-                    // hosts cannot — ads from the site's OWN domain, ad
-                    // subdomains no list names, rotating popunder hosts. Same
-                    // guarantees as above: whitelist already won, media never
-                    // blocked.
                     if (!isMediaRequest(request) &&
                         AdBlocker.matchesPattern(request, currentPageHost())
                     ) {
                         return WebResourceResponse("text/plain", "utf-8", ByteArrayInputStream(ByteArray(0)))
                     }
                 }
-                // Only count it as a video if it actually IS one: probe the
-                // content-type in the background so ad previews, gifs and
-                // image placeholders never populate the chip.
                 if (VIDEO_URL_RE.containsMatchIn(u)) {
                     maybeAddVideo(u)
                 }
-                // Video-verification mode: main-frame redirects are allowed
-                // (the streaming site's redirect to the video page), but ad
-                // subresources are still blocked above.
                 if (!verifyAllowRedirects) {
                     // Cloudflare-verification mode: never let a redirect land on a
                     // foreign page while the view is just passing a challenge.
@@ -995,9 +767,6 @@ class WebViewActivity : ComponentActivity() {
                             !isRedirectAllowed(u) &&
                             !isSameSite(host, cur)
                         ) {
-                            // Same tap-choice as the override gate above: a
-                            // user-gesture navigation asks inline, an
-                            // automatic one is dropped silently.
                             if (request.hasGesture()) {
                                 askRedirectPermission(u, host)
                             } else {
@@ -1046,9 +815,6 @@ class WebViewActivity : ComponentActivity() {
                 }
                 view?.evaluateJavascript(AD_CLEAN_JS, null)
                 view?.evaluateJavascript(PROMO_CLEAN_JS, null)
-                // The verification view exists only to pass a Cloudflare
-                // challenge — it must never offer to play or hand off video
-                // (the site page would just start its player + ads).
                 if (autoCloseWhenCloudflarePassed) {
                     videoChip.visibility = View.GONE
                     if (translateEnabled) view?.evaluateJavascript(TRANSLATE_JS, null)
@@ -1060,10 +826,6 @@ class WebViewActivity : ComponentActivity() {
                 view?.evaluateJavascript(STUCK_MONITOR_JS, null)
                 if (translateEnabled) view?.evaluateJavascript(TRANSLATE_JS, null)
                 injectElementBlocker(view)
-                // Some players create <video> from JS without a network URL we
-                // can see — scan the DOM for the real element too. The runnable
-                // keeps re-scanning so single-page-app players (which swap the
-                // player without a full navigation) still light the chip.
                 scanRunnable?.let { scanHandler.removeCallbacks(it) }
                 val r = object : Runnable {
                     override fun run() {
@@ -1087,20 +849,11 @@ class WebViewActivity : ComponentActivity() {
                 view: WebView?,
                 detail: RenderProcessGoneDetail?
             ): Boolean {
-                // A verification view is never relaunched: it exists only to
-                // pass a challenge, and a Cloudflare page that just killed the
-                // renderer will kill it again on the next load — relaunching
-                // turned that into a loop of verify views opening one after
-                // another. Close instead and leave the user in control.
                 if (autoCloseWhenCloudflarePassed) {
                     verifyDone = true
                     runCatching { finish() }
                     return true
                 }
-                // The renderer crashed (often a heavyweight site) — relaunch the
-                // activity instead of showing a dead white screen. Bounded: a
-                // page that crashes the renderer once will do it every time, so
-                // one retry, then close rather than reopened-forever.
                 if (renderRestarts >= MAX_RENDER_RESTARTS) {
                     runCatching { finish() }
                     return true
@@ -1124,42 +877,15 @@ class WebViewActivity : ComponentActivity() {
                 isUserGesture: Boolean,
                 resultMsg: Message?
             ): Boolean {
-                // Cloudflare-verification view: NEVER relay popups. It is only
-                // open to pass the challenge, and these streaming pages' players
-                // use window.open to pop ads the moment you click the video.
                 if (autoCloseWhenCloudflarePassed) return false
-                // Popup protection: a window.open that is NOT backed by a user
-                // gesture is an auto-popunder — site scripts fire these on page
-                // load and on the first stray tap, which is exactly the "popup
-                // ad appears after the site loads" report. Only a
-                // gesture-driven window.open (a real click, e.g. a player's
-                // "open in new window") is relayed.
-                //
-                // An addon's config page is exempt: it is user-driven setup,
-                // not a video site, and its login buttons (Google "Sign in"
-                // via GIS, debrid API-key flows) pop their windows WITHOUT a
-                // gesture the WebView credits — the script opens them from a
-                // cross-origin frame, so isUserGesture arrives false and the
-                // page sat on "Waiting for Google..." forever with the popup
-                // dropped. Same-site/video gates below still apply to
-                // everything that is not a config page.
                 if (popupProtection && !isUserGesture && !addonConfig) {
                     showBlockedToast("Blocked popup")
                     return false
                 }
-                // While a video is actively playing, a window.open popup is an
-                // ad (players pop them on click) — relaying it into the main
-                // view would replace the playing video with the ad page.
                 if (videoPlaying) {
                     showBlockedToast("Blocked popup during playback")
                     return false
                 }
-                // Route popups (some players open in window.open) into this
-                // same web view so video keeps working. The transport CANNOT
-                // target the parent WebView itself — Android throws
-                // "Parent WebView cannot host its own popup window". Instead a
-                // throwaway child WebView captures the popup's URL and loads it
-                // in the main view.
                 val transport = resultMsg?.obj as? WebView.WebViewTransport ?: return false
                 val child = WebView(this@WebViewActivity).apply {
                     setBackgroundColor(0xFF000000.toInt())
@@ -1177,9 +903,6 @@ class WebViewActivity : ComponentActivity() {
                                 lastPopupHost = runCatching { java.net.URI(url).host }
                                     .getOrNull()?.trim()?.trimEnd('.')?.lowercase()
                             }
-                            // A config page's "install" popup is the install
-                            // signal, exactly like a main-frame navigation to it
-                            // (see addonInstallUrl).
                             if (addonConfig) {
                                 addonInstallUrl(url)?.let { finishWithManifest(it) }
                                 return
@@ -1190,13 +913,6 @@ class WebViewActivity : ComponentActivity() {
                                 showBlockedToast("Blocked a donation page")
                                 return
                             }
-                            // A popup to an ad-pattern URL is an ad popup, not
-                            // a choice: dropped outright instead of asking
-                            // Allow once / Always for it (the deputize…-class
-                            // popunders from the user's own screenshot). Same
-                            // guarantees as request blocking — whitelisted
-                            // hosts are checked before this is ever reached…
-                            // (checked below via the same whitelistDomains).
                             if (popupProtection && !addonConfig) {
                                 val ph = runCatching { java.net.URI(url).host }
                                     .getOrNull()?.trim()?.trimEnd('.').orEmpty()
@@ -1208,34 +924,9 @@ class WebViewActivity : ComponentActivity() {
                                     return
                                 }
                             }
-                            // Popup protection: only relay popups that belong to
-                            // the site (same host/subdomain or whitelisted).
-                            // about:blank popunders and foreign ad popups are
-                            // dropped entirely.
-                            //
-                            // An extension's settings page is user-driven
-                            // setup, not a video site: its login buttons (a
-                            // Google "Sign in", a debrid API-key flow) pop
-                            // windows on FOREIGN hosts (accounts.google.com)
-                            // that the same-site gate below would drop — and
-                            // the page then sits on "Waiting for Google..."
-                            // forever, which is exactly the reported hang.
-                            // Relay them so the login can finish like in a
-                            // real browser (the popup URL loads in this view,
-                            // the provider redirects back to the settings
-                            // page signed in).
-                            //
-                            // A tap-opened popup that still fails this gate is
-                            // not dropped with a bare toast any more: the tap
-                            // gets its choice (Allow once / Always / Cancel —
-                            // see askPopupPermission), and a site already
-                            // allowed opens straight through.
                             if (popupProtection && !addonConfig) {
                                 val host = runCatching { java.net.URI(url).host }.getOrNull()
                                 val cur = currentPageHost()
-                                // "Block always" wins over everything: dropped
-                                // silently, never asked again (revert it in
-                                // Settings → Privacy & Browsing → WebView safety).
                                 if (!host.isNullOrBlank() && isPopupHostBlocked(host)) {
                                     showBlockedToast("Blocked popup from $host")
                                     return
@@ -1374,24 +1065,10 @@ class WebViewActivity : ComponentActivity() {
         menu.menu.add(0, 4, 0, "\u2302 Go to app home")
         menu.menu.add(0, 5, 0, "\u25B6 Open in player")
         menu.menu.add(0, 6, 0, "Open in browser")
-        // The way out of a blocked redirect, without a trip to Settings. The
-        // host of the main-frame navigation that was just refused (see
-        // [rememberBlockedRedirect]) is added to Settings' own "Allowed redirect
-        // links" and the page is opened — so a link the redirect protection took
-        // for an ad hijack, or an extension's rotating file host, is one tap.
-        // Offered only while there is a refused link to offer.
         val blockedHost = lastBlockedRedirectHost
         if (blockedHost != null && blockedHost.isNotBlank()) {
             menu.menu.add(0, 11, 6, "✔ Allow redirect to $blockedHost")
         }
-        // "Block this ad site": the ad host behind the last popup or the last
-        // blocked redirect — the thing that opened (or tried to open) the ad
-        // page. Offered only for a FOREIGN host, never for the site being
-        // browsed: blocking the site's own domain would break the site
-        // itself (the Cindy-style overlay lives on the page, use the Element
-        // blocker for that). One tap adds it to the manual blocklist AND to
-        // the popup block-always list, so its requests never load and its
-        // popups never ask again. Revert it in Settings.
         val adHost = (lastPopupHost?.takeIf { it.isNotBlank() }
             ?: lastBlockedRedirectHost?.takeIf { it.isNotBlank() })
             ?.trim()?.trimEnd('.')?.lowercase()
@@ -1404,10 +1081,6 @@ class WebViewActivity : ComponentActivity() {
         menu.menu.add(0, 9, 9, "\u2715 Clear all blocks")
         if (translateEnabled) menu.menu.add(0, 10, 10, "\u2716 Translation off")
         menu.menu.add(0, 12, 12, if (mouseMode) "\u2716 Mouse cursor off" else "\u2316 Mouse cursor on")
-        // Per-site adblock switch, instant: a site the blocker breaks goes on
-        // the whitelist from here (and back off with the same tap), no trip
-        // to Settings. The in-memory set is swapped and the page reloaded, so
-        // the new rule applies to the very next load.
         val menuHost = currentPageHost()?.trim()?.trimEnd('.').orEmpty()
         if (menuHost.isNotBlank()) {
             val siteOpen = AdBlocker.matches(menuHost, whitelistDomains)
@@ -1457,13 +1130,6 @@ class WebViewActivity : ComponentActivity() {
         menu.show()
     }
 
-    /**
-     * The ⋯ menu's "Block this ad site" (see [showMenu]): the ad host behind
-     * the last popup or blocked redirect goes on the manual blocklist (its
-     * requests never load again) AND on the popup block-always list (its
-     * popups never ask again). Both lists are the same ones Settings edits,
-     * so a mistaken block is reverted there, not here.
-     */
     private fun blockAdSite() {
         val host = (lastPopupHost?.takeIf { it.isNotBlank() }
             ?: lastBlockedRedirectHost?.takeIf { it.isNotBlank() })
@@ -1500,12 +1166,6 @@ class WebViewActivity : ComponentActivity() {
         }
     }
 
-    /**
-     * The ⋯ menu's per-site adblock switch (see [showMenu]): flips the current
-     * site on/off the Settings whitelist, swaps the in-memory set this page
-     * checks, and reloads — so the change bites on the very next load, not on
-     * the next visit. Subdomains ride along (the whitelist matches them too).
-     */
     private fun toggleSiteAdblock() {
         val host = currentPageHost()?.trim()?.trimEnd('.')?.lowercase()
         if (host.isNullOrBlank()) return
@@ -1530,21 +1190,6 @@ class WebViewActivity : ComponentActivity() {
         }
     }
 
-    /**
-     * "Allow redirect to <host>" — the ⋯ menu's own way out of a blocked
-     * redirect.
-     *
-     * The host of the link that was just refused is added to the user's
-     * "Allowed redirect links" list — the SAME list Settings edits, so the entry
-     * is visible and removable there and covers every later navigation to it
-     * (and to its subdomains). The refused page is then loaded straight away, so
-     * the link the user clicked finally lands.
-     *
-     * Saved through [com.hikari.app.data.AppStore.setWebviewRedirectAllow],
-     * which writes the in-memory mirror BEFORE the DataStore write, so this very
-     * navigation — and any a page makes while it loads — already sees the entry
-     * (see RedirectAllow for why that ordering matters).
-     */
     private fun toggleMouse() {
         mouseMode = !mouseMode
         com.hikari.app.tv.MouseMode.enabled = mouseMode
@@ -1712,12 +1357,6 @@ class WebViewActivity : ComponentActivity() {
     private fun jsString(s: String): String =
         "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
 
-    /**
-     * Translates one string into English via Google's free gtx endpoint (no
-     * API key, CORS-free since the app does the request server-side). Returns
-     * the original text when nothing could be translated so the page keeps
-     * working even if translation is unavailable.
-     */
     private fun fetchTranslation(text: String): String {
         if (text.isBlank()) return text
         val url = "https://translate.googleapis.com/translate_a/single?client=gtx" +
@@ -1732,13 +1371,6 @@ class WebViewActivity : ComponentActivity() {
 
     /** Injects the blocker script + the persisted selectors into the page. */
     private fun injectElementBlocker(view: WebView?) {
-        // Never touch a Cloudflare-verification page. The element blocker is
-        // built for ad iframes/overlays, and a challenge's widget lives in an
-        // iframe of its own — hiding the wrong node (or the wrapper the whole
-        // challenge renders into) leaves Cloudflare's script to re-render and
-        // re-request the challenge, which is exactly the "the verification page
-        // keeps opening in a loop" report. The verify view has no ads to block
-        // anyway: it is one page shown solely to pass the check.
         if (autoCloseWhenCloudflarePassed) return
         view?.evaluateJavascript(ELEMENT_BLOCK_JS, null)
         val arr = JSONArray().apply { blockedSelectors.forEach { put(it) } }
@@ -1758,12 +1390,6 @@ class WebViewActivity : ComponentActivity() {
     private fun isSameSite(host: String, current: String): Boolean =
         host == current || host.endsWith("." + current) || current.endsWith("." + host)
 
-    /** Cloudflare's own challenge infrastructure — the scripts, iframes and
-     *  /cdn-cgi/ endpoints that mint the cf_clearance cookie. These must NEVER
-     *  be treated as ad traffic: an ad host list that carries (or a user
-     *  blocklist that happens to carry) a Cloudflare challenge host turns the
-     *  challenge's own bootstrap into a blocked request, so the page reloads
-     *  itself and asks again — the challenge loops instead of completing. */
     private fun isCloudflareInfra(url: String?): Boolean {
         if (url == null) return false
         if (url.contains("/cdn-cgi/")) return true
@@ -1780,14 +1406,6 @@ class WebViewActivity : ComponentActivity() {
     private fun isVerifyAllowed(url: String?): Boolean {
         if (url == null) return false
         val host = runCatching { java.net.URI(url).host?.lowercase() }.getOrNull() ?: return false
-        // A link the user put on the allowed-redirect list is allowed here too:
-        // an extension's own site very often answers on a mirror host
-        // (net77.cc and friends), and "Verify for Cloudflare" was refusing
-        // exactly the redirect the user had already permitted — the reported
-        // "I allowed net77.cc and the verification WebView still says Blocked
-        // redirect to net77.cc". The allow list only ever carries what the user
-        // chose (a host, or a word they typed), so honouring it cannot open the
-        // challenge view to ad-hijack redirects.
         if (isRedirectAllowed(url)) return true
         val orig = runCatching { java.net.URI(startUrl).host?.lowercase() }.getOrNull() ?: return true
         if (host == orig) return true
@@ -1805,17 +1423,6 @@ class WebViewActivity : ComponentActivity() {
         verifyHandler.post { Toast.makeText(this, msg, Toast.LENGTH_SHORT).show() }
     }
 
-    /**
-     * The manifest URL inside a link an addon's configuration page hands back,
-     * or null when the link is not one.
-     *
-     * A Stremio addon's config page installs the configured addon by navigating
-     * to `stremio://<host>/<path>/manifest.json` (an older spelling is
-     * `stremio://<percent-encoded absolute URL>`), and a few pages simply link
-     * the manifest itself. Both are normalised to the https manifest URL the
-     * addon-install path expects — the path that config produced is the whole
-     * point, so it is never discarded.
-     */
     private fun addonInstallUrl(raw: String): String? {
         val url = raw.trim()
         if (url.isEmpty()) return null
@@ -1850,14 +1457,6 @@ class WebViewActivity : ComponentActivity() {
         finish()
     }
 
-    /**
-     * "Verify for Cloudflare" mode: every ~1.2s ask the page whether it still
-     * looks like a WAF challenge. The moment a challenge we've already seen
-     * turns into real content (the user completed the verification and the
-     * page reloaded), finish this activity so the caller reloads the extension
-     * catalog with the now-valid cf_clearance cookie. If no challenge ever
-     * appears the user just closes the view normally.
-     */
     private fun pollCloudflarePass() {
         verifyHandler.removeCallbacksAndMessages(null)
         val r = object : Runnable {
@@ -1889,9 +1488,6 @@ class WebViewActivity : ComponentActivity() {
                             noChallengePolls = 0
                         }
                         "2" -> {
-                            // Hard WAF block — no challenge to pass. Give the
-                            // page a beat (Cloudflare may still be mid-redirect)
-                            // then close instead of sitting on the player.
                             blockedCount++
                             noChallengePolls = 0
                             if (blockedCount >= 3) {
@@ -1968,12 +1564,6 @@ class WebViewActivity : ComponentActivity() {
         }.start()
     }
 
-    /**
-     * True for requests that carry actual media (a Range request, a video
-     * Accept header, or a media-looking URL). The ad-blocker never blocks
-     * these: blocklists contain video-CDN domains (tube-site CDNs especially)
-     * and blocking the media itself is what makes videos spin forever.
-     */
     private fun isMediaRequest(request: WebResourceRequest): Boolean {
         val h = request.requestHeaders
         if (h?.containsKey("Range") == true) return true
@@ -2085,25 +1675,7 @@ class WebViewActivity : ComponentActivity() {
         java.net.URI(u).host ?: u.take(48)
     }.getOrDefault(u.take(48))
 
-    /**
-     * Handed to the page as `window.HikariBridge`. Called by STUCK_MONITOR_JS
-     * when a real <video> on the page has been trying to play for ~9s without
-     * producing a single frame — the site's player is never going to start on
-     * this WebView, so hand the exact source to Hikari's ExoPlayer (with the
-     * page as Referer + shared cookies) and let it play there instead.
-     */
     private inner class HikariJsBridge {
-        /**
-         * Every bridge call is routed through here. A `@JavascriptInterface`
-         * method is Java code invoked FROM Chromium's native layer, so an
-         * exception escaping it is rethrown into native as
-         * `JniAndroid$UncaughtException` and reaches our default uncaught
-         * handler — which records a crash and kills the process. The user then
-         * sees the "app crashed on a previous launch" banner on Home for what
-         * was, from their point of view, an ordinary WebView page. Swallowing
-         * (and logging) bridge failures keeps a broken userscript or a null
-         * WebView from taking the whole app down.
-         */
         private inline fun <T> safe(tag: String, block: () -> T): T? =
             runCatching { block() }.onFailure {
                 android.util.Log.w("HikariBridge", "$tag failed (swallowed)", it)
@@ -2221,14 +1793,6 @@ class WebViewActivity : ComponentActivity() {
         // Persist cookies/DOM-storage to disk the moment the WebView leaves the
         // foreground so logins and sessions survive even a force-kill.
         runCatching { CookieManager.getInstance().flush() }
-        // Stop whatever the page is PLAYING. A WebView plays media in its own
-        // process and does not pause just because the activity it lives in went
-        // to the background — so a trailer (or any video page) opened here kept
-        // its audio running under whatever the user did next, including the
-        // player's own video: the reported "the trailer sound is still coming
-        // while I watch something". pausing the WebView halts timers/rendering,
-        // and the JS is the belt-and-braces for a page that started playback
-        // through its own element rather than the WebView's media APIs.
         runCatching { webView.onPause() }
         runCatching { popupChild?.onPause() }
         runCatching {
@@ -2262,13 +1826,6 @@ class WebViewActivity : ComponentActivity() {
          *  should close itself instead of lingering (~14s). */
         private const val VERIFY_NO_CHALLENGE_POLLS = 12
 
-        /** How many times a crashed renderer may be recovered by relaunching
-         *  this activity inside one browsing session. A page that kills
-         *  Chromium's renderer does it again on the next load — before this
-         *  limit the activity relaunched itself from its own intent, so a
-         *  crash-on-load page (a Cloudflare challenge on a low-end device is the
-         *  classic one) reopened and crashed in a loop: "it keeps opening over
-         *  and over". After the limit the view just closes. */
         private const val MAX_RENDER_RESTARTS = 1
 
         /** HLS/DASH/MP4 URLs ending the request path (optional query). */
@@ -2295,9 +1852,6 @@ class WebViewActivity : ComponentActivity() {
                 '[class*="chat-widget"]','[id*="chat-widget"]','[class*="chat-bubble"]','[class*="message-from"]',
                 '[class*="fake-chat"]','[class*="fake-message"]','[class*="dating-widget"]','[class*="meet-widget"]'
               ];
-              // Fake chat/date bait overlays (the "1 MESSAGE FROM: CINDY / Haha
-              // loved your joke, let's chat more" card): a small fixed box with
-              // a photo, a message count and a chat invitation. Never a video.
               var BAIT=/\b\d+\s*messages?\s*from\b|message from\s*:\s*\w+|loved your joke|let'?s chat|chat (with )?me|hot singles|meet (hot |lonely |local )?(singles|girls|women)|verify you are (human|18|over 18)|you'?ve won|claim your (prize|reward)/i;
               function isBaitBox(e){
                 try{
@@ -2328,12 +1882,6 @@ class WebViewActivity : ComponentActivity() {
                   }
                 }catch(x){}
               }
-              // "Close Ad" interstitial overlays (the full-page dim + "Close Ad
-              // x" pill over video/download pages): the pill itself is tiny, so
-              // the pill's overlay ANCESTOR goes — the highest fixed/absolute
-              // box above it that still looks like an overlay (smaller than
-              // the viewport), or the pill alone when there is none. Never a
-              // video: anything holding a <video> is left intact.
               var CLOSEAD=/^\s*close ad\s*[x\u2715\u00d7]?\$/i;
               function hasVideo(e){
                 try{
@@ -2396,17 +1944,6 @@ class WebViewActivity : ComponentActivity() {
             })();
         """.trimIndent()
 
-        /**
-         * Hides the extensions' (and the pages') funding pitch — the "goal
-         * achieved / send extra love / watch an ad to support" card, the ko-fi
-         * and Patreon buttons, the donate strip. Hiding (not removing) keeps
-         * page scripts that query those nodes working, and a video is never
-         * touched. It looks for two things: the usual class/id/caption of a
-         * money box, and the ASK itself — a short element whose text is only a
-         * funding line and which contains a link or button — so a card with no
-         * telling class still goes, while a real page mentioning donations in a
-         * paragraph (a login page's terms, an article) stays.
-         */
         private val PROMO_CLEAN_JS = """
             (function(){
               if(window.__hikariPromoClean)return;
@@ -2460,12 +1997,6 @@ class WebViewActivity : ComponentActivity() {
                     }
                   }
                 }catch(x){}
-                // A funding MODAL — the "Help keep <repo> alive" card a repo
-                // overlays its own page with. It is a big fixed/absolute box
-                // over the content, so it never looks like one of the links
-                // above: it is hidden outright, and its own dismiss control
-                // ("Maybe Later", "✕") is clicked, because a merely hidden
-                // overlay still eats every tap on the page underneath.
                 try{
                   els=document.querySelectorAll('div,section,aside,article,main,dialog');
                   var vw=window.innerWidth||0,vh=window.innerHeight||0;
@@ -2502,10 +2033,6 @@ class WebViewActivity : ComponentActivity() {
                 }catch(x){}
               }
               clean();
-              // Throttled: an ad-heavy extension page mutates constantly, and
-              // walking every link on every mutation is work the page cannot
-              // afford — one pass every 400ms is invisible to the user and
-              // cheap enough to never fight the site's own scripts.
               var pending=false;
               function later(){
                 if(pending)return;
@@ -2518,14 +2045,6 @@ class WebViewActivity : ComponentActivity() {
             })();
         """.trimIndent()
 
-        /**
-         * hls.js polyfill. Android WebView CANNOT decode HLS in a <video>, so
-         * sites that feed the player a plain .m3u8 buffer forever. If the page
-         * already runs its own hls.js (window.Hls exists) we reuse it; otherwise
-         * we load hls.js from CDN and attach it to every m3u8 video, including
-         * ones the site creates later. Videos the page already plays via a
-         * blob: src (their own hls.js) are skipped so we never double-attach.
-         */
         private val VIDEO_POLYFILL_JS = """
             (function(){
               if(window.__hikariHlsInit)return;
@@ -2616,13 +2135,6 @@ class WebViewActivity : ComponentActivity() {
             })();
         """.trimIndent()
 
-        /**
-         * Watches every <video> on the page. If one has a real http(s) source
-         * but has spent ~9 seconds trying to play without producing a single
-         * frame (or failed outright), the site's player is never going to start
-         * on this WebView — hand the exact source to the app so it plays in
-         * Hikari's ExoPlayer instead of spinning forever.
-         */
         private val STUCK_MONITOR_JS = """
             (function(){
               if(window.__hikariStuckMon)return;
@@ -2659,30 +2171,6 @@ class WebViewActivity : ComponentActivity() {
             })();
         """.trimIndent()
 
-        /**
-         * Element blocker. Always injected (guarded by a page-scoped flag) so
-         * the menu's "Element blocker" toggle just flips
-         * window.__hikariBlockerActive; the next tap on the page picks the
-         * tapped element, computes a stable CSS selector, hides it, pushes it
-         * to the registry + __hikariBlocks and calls
-         * HikariBridge.blockElement(selector) so the app persists it. The
-         * toggle switches itself off after one block. Persisted selectors from
-         * __hikariBlocks are re-hidden on every load + on DOM mutations (SPAs
-         * re-mount nodes), and __hikariRestoreSelector/__hikariRestoreAll undo
-         * a block / all blocks without a reload.
-         */
-                /**
-         * Element blocker. Always injected (guarded by a page-scoped flag).
-         * Menu → "Element blocker" TOGGLES the mode: when on, the first tap
-         * HIGHLIGHTS the element in red (outline + scroll into view) so you see
-         * exactly what would be removed; a second tap on the SAME element hides
-         * + persists it. Tapping a different element just moves the highlight.
-         * Toggle off (or a completed block) clears the highlight.
-         * Persisted selectors from __hikariBlocks are re-hidden on every load,
-         * on DOM mutations AND on a 500ms interval — sites that re-render ads
-         * (rotating GIF banners, SPA sliders) recreate containers with the same
-         * selectors, which is what made blocked elements "come back".
-         */
         private val ELEMENT_BLOCK_JS = """
             (function(){
               if(window.__hikariBlockerInit)return;
@@ -2829,15 +2317,6 @@ class WebViewActivity : ComponentActivity() {
             })();
         """.trimIndent()
 
-        /**
-         * Auto-translate (per-extension, English only). Walks the page's text
-         * nodes, batches the unique strings to `HikariBridge.translate()` (the
-         * app fetches Google's gtx endpoint — no CORS issue, no API key) and
-         * swaps the translated text back in place. Works for ANY language
-         * (CJK, Korean, accented Latin, Cyrillic, …): text that's already
-         * English is recognized by its stopwords and left alone, everything
-         * else is auto-detected by the translator and turned into English.
-         */
         private val TRANSLATE_JS = """
             (function(){
               if(window.__hikariTranslateInit)return;
@@ -2850,11 +2329,6 @@ class WebViewActivity : ComponentActivity() {
               var reqCounter=0;
               var walker=null;
               var applied=new WeakSet();
-              // English stopwords: a pure-ASCII text containing any of these is
-              // almost certainly already English and is skipped (saves the
-              // translation round-trips). Everything else — CJK, Korean,
-              // accented Latin, Cyrillic, or ASCII without stopwords — is sent
-              // to the translator, which auto-detects the language.
               var EN_STOP=/^(the|and|of|to|in|is|are|was|were|for|with|on|at|by|this|that|these|those|you|your|we|our|they|their|them|it|its|a|an|or|but|as|from|not|be|have|has|had|i|me|my|do|does|did|what|which|who|when|where|why|there|here|can|will|would|should|could|then|than|so|if|up|out|about|just|more|most|all|any|some|also|only|into|over|under|no|yes)$/i;
               function looksEnglish(t){
                 var m=t.match(/[A-Za-z]+/g);

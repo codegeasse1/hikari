@@ -15,22 +15,6 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 
-/**
- * Install/uninstall of Sora modules, plus first-run seeding of the Sora
- * module repos so the feature works out of the box.
- *
- * A Sora repo is either ONE module manifest (a `{sourceName, scriptUrl, …}`
- * JSON file like `streamex.json`), an INDEX (`modules.json`) pointing at
- * many manifests (see [repoPlugins]), or a `github.com/owner/repo` page,
- * resolved to its manifests through the GitHub API (see [loadRepoPlugins])
- * — some repos publish no index at all. Video modules install as video
- * providers; manga/novel modules install as manga-tab providers behind
- * [SoraMangaProvider] (kanzen mangas/novels call shape).
- *
- * Like every other engine, nothing is pre-installed for the user: the repos
- * are seeded so the Extensions screen's Sora folders are never empty, and
- * which modules are installed is the user's choice.
- */
 object SoraPluginManager {
 
     fun modulesDir(context: Context): File =
@@ -79,15 +63,6 @@ object SoraPluginManager {
         }
     }
 
-    /**
-     * The installable entries of a Sora repo listing.
-     *
-     * Two shapes: an INDEX (`{modules: [{name, iconUrl, manifestUrl, …}]}`)
-     * and a bare MODULE MANIFEST (`{sourceName, scriptUrl, type, …}` — the
-     * repo IS the module, e.g. `streamex.json`). A module entry's `url` is
-     * its MANIFEST url; the script is resolved at install/test time so a
-     * listing never pays for every module's script up front.
-     */
     fun repoPlugins(indexText: String, indexUrl: String): List<Cs3RepoPlugin> {
         val root = runCatching { JSONObject(indexText) }.getOrNull() ?: return emptyList()
         val out = LinkedHashMap<String, Cs3RepoPlugin>()
@@ -190,12 +165,6 @@ object SoraPluginManager {
     private const val GITHUB_API = "https://api.github.com"
     private const val MAX_GITHUB_MANIFESTS = 30
 
-    /**
-     * The installable entries of whatever [url] names — a manifest, an index,
-     * or a `github.com/owner/repo` page — plus the URL to store for refreshes.
-     * The stored URL is the page itself for GitHub repos (their manifests are
-     * re-discovered on every refresh), otherwise the document that served.
-     */
     suspend fun loadRepoPlugins(url: String): Result<Pair<List<Cs3RepoPlugin>, String>> =
         withContext(Dispatchers.IO) {
             val t = url.trim()
@@ -219,12 +188,6 @@ object SoraPluginManager {
             resolveGithubRepo(gh.first, gh.second).map { it to t }
         }
 
-    /**
-     * Discovers a GitHub repo's Sora manifests without a published index: a
-     * root `modules.json`/`index.json`/`sora.json` first, then every `*.json`
-     * in the recursive file tree (one API call), then a one-level contents
-     * walk as a fallback.
-     */
     suspend fun resolveGithubRepo(owner: String, repo: String): Result<List<Cs3RepoPlugin>> {
         for (branch in listOf("main", "master")) {
             for (name in listOf("modules.json", "index.json", "sora.json")) {
@@ -312,11 +275,6 @@ object SoraPluginManager {
         return fetchManifests(raws.take(MAX_GITHUB_MANIFESTS))
     }
 
-    /**
-     * Downloads a module manifest + script and registers it: video modules
-     * as SORA providers, manga/novel modules as manga-tab providers (see
-     * [SoraMangaProvider]) — like Aniyomi/LnReader engines.
-     */
     suspend fun install(context: Context, plugin: Cs3RepoPlugin): Result<Int> =
         withContext(Dispatchers.IO) {
             val manifestText = runCatching {

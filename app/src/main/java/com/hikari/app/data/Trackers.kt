@@ -3,25 +3,6 @@ package com.hikari.app.data
 import org.json.JSONArray
 import org.json.JSONObject
 
-/**
- * The watch-progress services Hikari can sign in to (Settings → Trackers).
- *
- * The same shape CloudStream and Aniyomi offer: the user signs in ONCE with the
- * account they already have, and from then on what they watch in Hikari shows up
- * on that service's list without them ever opening it. Nothing is uploaded until
- * a title has actually been watched far enough to count (see
- * [com.hikari.app.tracker.TrackerSync]), and no service is contacted at all
- * until the user signs in to it.
- *
- * **Each service keeps its OWN credentials.** Every one of these APIs needs an
- * "app" registered with it (a client id, sometimes a secret) before anyone can
- * log in — that is how each service tells one third-party client from another.
- * Hikari ships its own registrations ([TrackerBuiltIn], registered by the app
- * owner — never somebody else's), so the card goes straight to Sign in; only
- * services with no shipped id still ask for the user's own, once, with the
- * exact page to get it ([registerUrl]) and the exact redirect URI to paste
- * ([com.hikari.app.tracker.TrackerApi.REDIRECT_URI]) spelled out.
- */
 enum class TrackerKind(
     /** Stable id — what the stored rows are keyed by, never shown. */
     val key: String,
@@ -100,13 +81,6 @@ enum class TrackerKind(
 
 /** How a service's sign-in works — see [com.hikari.app.tracker.TrackerApi]. */
 enum class TrackerFlow {
-    /**
-     * Legacy: the access token arrived in the redirect (AniList's implicit
-     * grant). No service uses this any more — AniList's server answers it
-     * with `unsupported_grant_type` (the user's own screenshot), so AniList
-     * is a [CODE] flow now. Kept so old links and old pasted tokens still
-     * finish instead of crashing a `when`.
-     */
     TOKEN,
 
     /** An authorization code arrives in the redirect and is exchanged. */
@@ -133,12 +107,6 @@ enum class TrackerScope {
     val tracksVideo: Boolean get() = this != ANIME
 }
 
-/**
- * One signed-in service, as stored. The token is a secret — it is a live session
- * on the user's own account: it lives in the app's private DataStore, is only
- * ever sent to the service that issued it, and is dropped the moment the user
- * signs out (see [AppStore.removeTrackerAccount]).
- */
 data class TrackerAccount(
     val kind: TrackerKind,
     /** The account's display name, as the service reports it. */
@@ -168,22 +136,6 @@ data class TrackerClient(
     val ready: Boolean get() = id.isNotBlank() && (!kind.needsSecret || secret.isNotBlank())
 }
 
-/**
- * The app's OWN registrations, one per service — what makes every sign-in
- * one tap: with these filled, the dialog skips its "register your own app"
- * step entirely and goes straight to Sign in → browser login page → approve
- * → back in the app (the `hikari://oauth` return path is already wired).
- *
- * Registered by the app owner for Hikari itself (AniList/MAL/Simkl/Trakt ids
- * live-verified at embed time via their device/authorize endpoints). Shikimori
- * is still empty — its id AND secret are both required and were never supplied,
- * so Shikimori keeps the manual step until they are. AniList's id is shipped
- * but its SECRET is still missing (the code flow needs it — see
- * [com.hikari.app.tracker.TrackerApi.exchangeCode]), so AniList also keeps the
- * manual step until the secret for app 51890 is embedded below. Kitsu needs nothing at
- * all (password grant with no app registration). A user-typed id/secret in
- * the dialog still overrides these per device.
- */
 object TrackerBuiltIn {
     /** Client ids shipped with the app, keyed by [TrackerKind.key]. */
     private val IDS = mapOf(
@@ -238,14 +190,6 @@ data class TrackerMatch(
     val english: String = "",
 )
 
-/**
- * The title a push is about, in the terms a tracker search understands.
- *
- * Hikari's own [MediaType] only knows MOVIE/SERIES — an anime film and a
- * Hollywood film are the same value — so the services' own databases decide the
- * rest: an anime-only tracker searched for a live-action title simply finds no
- * confident match, which is the correct outcome and needs no hint from here.
- */
 data class TrackerMedia(
     val title: String,
     val year: Int = 0,
@@ -259,17 +203,6 @@ data class TrackerMedia(
     val season: Int = 0,
 )
 
-/**
- * The title's words, lowercased and stripped of everything that differs between
- * an extension's spelling and a tracker's: punctuation, accents, a leading
- * article, a trailing season/cour marker, a year, and the release-tag noise an
- * extension puts in its names ("Hindi Dub", "1080p", "Complete").
- *
- * "Re:Zero − Starting Life in Another World" and "ReZERO Starting Life in
- * Another World" land on the same key, and so do "One Piece" and "One Piece
- * [Hindi Dub] 1080p" — which is the point: without this, one extension's
- * punctuation or language tag would look like a different show to every tracker.
- */
 fun normalizeTitle(raw: String): String {
     val lowered = java.text.Normalizer.normalize(raw, java.text.Normalizer.Form.NFD)
         .replace(Regex("\\p{Mn}+"), "")
@@ -281,23 +214,10 @@ fun normalizeTitle(raw: String): String {
     s = s.replace(Regex("\\b(season|s)\\s*\\d{1,2}\\b"), " ")
     s = s.replace(Regex("\\b(part|cour|chapter)\\s*\\d{1,2}\\b"), " ")
     s = s.replace(Regex("[^a-z0-9]+"), " ")
-    // Words that carry no title information at all. Kept as a LIST rather than a
-    // regex so the reason for each one is readable: a language/quality tag is
-    // how an extension spells the same show, and "the"/"of" disappear from one
-    // service's title and not another's.
     for (noise in NOISE_WORDS) s = s.replace(Regex("\\b$noise\\b"), " ")
     return s.trim().replace(Regex("\\s+"), " ")
 }
 
-/**
- * Words dropped from a title before comparing it (see [normalizeTitle]).
- *
- * These are exactly the words that appear in ONE of the two spellings of a title
- * and not the other: the release tags an extension appends, and the little words
- * one database keeps and another drops. A word that changes WHICH title it is
- * ("shippuden", "brotherhood", "z", "gt") is deliberately absent — those must
- * keep two different shows apart.
- */
 private val NOISE_WORDS = listOf(
     "the", "a", "an", "of", "and", "to", "in", "on", "no",
     "dub", "sub", "subbed", "dubbed", "hindi", "tamil", "telugu", "malayalam",
@@ -313,29 +233,6 @@ private val NOISE_WORDS = listOf(
 private fun wordsOf(normalized: String): List<String> =
     normalized.split(' ').filter { it.isNotEmpty() }
 
-/**
- * How well a candidate's title matches what is being watched — the whole reason
- * an automatic push is safe to make at all.
- *
- * Watching "Naruto" must never mark "Naruto Shippuden" episode 5 complete, and
- * an extension's title is often the ROMAJI one while the tracker lists the
- * English name (or the reverse), so an exact string compare alone would quietly
- * refuse most real matches. Both lists are normalised first ([normalizeTitle]):
- * punctuation, articles, release tags, season numbers and years are already
- * gone by the time anything is scored.
- *
- *  * identical after normalising → 1.0;
- *  * one is the other with only trailing noise → 1.0 (the noise is already
- *    removed, so this is the identical case, and it is why "One Piece Dub" finds
- *    "One Piece");
- *  * the shorter one's words are a strict SUBSET → 0.85 at most, i.e. under
- *    [TrackerMatch.AUTO_THRESHOLD] on purpose: "Naruto" ⊂ "Naruto Shippuden" is
- *    exactly the pair that must not be pushed without being sure;
- *  * otherwise the Sørensen–Dice overlap of the two word sets.
- *
- * A year mismatch costs 0.15 when both years are known, which is what keeps a
- * remake apart from the original of the same name.
- */
 fun matchScore(wanted: String, candidate: String, wantedYear: Int = 0, candidateYear: Int = 0): Double {
     val a = normalizeTitle(wanted)
     val b = normalizeTitle(candidate)
@@ -359,12 +256,6 @@ fun matchScore(wanted: String, candidate: String, wantedYear: Int = 0, candidate
 /** The score above which a match is pushed without asking. See [matchScore]. */
 const val TRACKER_AUTO_THRESHOLD = 0.9
 
-/**
- * The sequel tail stripped off a normalised title, so two season markers for
- * the same show compare equal: "jade dynasty season 4" and "jade dynasty
- * final" are both "jade dynasty", while "naruto" and "naruto shippuden" stay
- * apart ("shippuden" is a distinctive subtitle, not a generic marker).
- */
 fun sequelBase(normalized: String): String {
     var s = " " + normalized.trim() + " "
     s = s.replace(Regex("\\b(movie|film|ova|ona|oad|special|specials|part|cour|season|s)\\s*\\d{1,2}\\b"), " ")
@@ -373,11 +264,6 @@ fun sequelBase(normalized: String): String {
     return s.trim().replace(Regex("\\s+"), " ")
 }
 
-/**
- * Known same-show spellings, keyed by any of their forms: donghua especially
- * ship under several names at once (a pinyin title, an English title and a
- * loose translation), and an extension's spelling is rarely the tracker's.
- */
 private val TITLE_ALIASES = listOf(
     setOf("doupo cangqiong", "battle through heavens", "fights break sphere", "fight sphere", "btth"),
     setOf("zhu xian", "jade dynasty"),
@@ -426,13 +312,6 @@ fun titleVariants(title: String): List<String> {
     return out.toList()
 }
 
-/**
- * The season number out of a series title ("Battle Through The Heavens Season
- * 5" → 5), for history entries written before the season was stored (or whose
- * extension never numbers seasons). Only explicit markers count — a bare
- * number in a title is a sequel index, not a season — and 0 means "not found",
- * which keeps today's behaviour for everything without one.
- */
 fun seasonFromTitle(title: String): Int {
     val t = title.trim()
     if (t.isEmpty()) return 0
@@ -462,12 +341,6 @@ private fun cnNumeral(s: String): Int {
     return v[s.singleOrNull()] ?: 0
 }
 
-/**
- * True when a tied candidate belongs on the main sequel line: specials, OVAs
- * and OADs are side content that must not shift a release-order season pick
- * (a "Specials" entry sitting between season 4 and season 5 makes season 5
- * land on the wrong id). Films only count when a film is being watched.
- */
 fun isMainlineEntry(title: String, movie: Boolean): Boolean {
     val t = " $title ".lowercase()
     if (Regex("""\bspecials?\b""").containsMatchIn(t)) return false
@@ -478,13 +351,6 @@ fun isMainlineEntry(title: String, movie: Boolean): Boolean {
     return true
 }
 
-/**
- * 1 when the candidate's own display title IS the watched title (its romaji,
- * English or native title, or the name it matched through, normalises equal)
- * — the signal that separates the entry literally called "Hidden Marriage"
- * from the one that merely carries it as a synonym. 0 otherwise, which keeps
- * every non-exact tie exactly as tied as before.
- */
 fun exactTitleHit(wanted: String, c: TrackerMatch): Int {
     val w = normalizeTitle(wanted)
     if (w.isBlank()) return 0
@@ -494,14 +360,6 @@ fun exactTitleHit(wanted: String, c: TrackerMatch): Int {
     return 0
 }
 
-/**
- * [matchScore], but against every known spelling of both sides: the best
- * pairing wins, with one guardrail — a pairing that only matches after the
- * sequel tail is stripped ([sequelBase]) scores 0.95, above
- * [TRACKER_AUTO_THRESHOLD] yet below an exact match, so "Jade Dynasty Season
- * 4" finds "Jade Dynasty Final" while "Naruto" still cannot claim "Naruto
- * Shippuden" (no generic marker is stripped there, so it stays at 0.85).
- */
 fun matchScoreAny(wanted: String, candidate: String, wantedYear: Int = 0, candidateYear: Int = 0): Double {
     var best = matchScore(wanted, candidate, wantedYear, candidateYear)
     val wb = sequelBase(normalizeTitle(wanted))
@@ -516,12 +374,6 @@ fun matchScoreAny(wanted: String, candidate: String, wantedYear: Int = 0, candid
     return best.coerceIn(0.0, 1.0)
 }
 
-/**
- * The stored shape of the tracker rows — plain JSON, so a row written by an
- * older build (or restored from a backup) is read as far as it goes instead of
- * throwing the whole list away. A row that cannot be read is skipped, never
- * fatal: one corrupt entry must not cost the user their other sign-ins.
- */
 object TrackerStore {
 
     fun encodeAccounts(accounts: List<TrackerAccount>): String {
@@ -595,12 +447,6 @@ object TrackerStore {
     /** The key a matched title is remembered under: service + normalised title. */
     fun matchKey(kind: TrackerKind, title: String): String = kind.key + "|" + normalizeTitle(title)
 
-    /**
-     * The matches already resolved, so a push needs no search: the same title
-     * watched twenty times must not mean twenty searches (the services rate-limit,
-     * and the user is waiting on the next episode), and the answer for a title
-     * never changes unless the cache is dropped.
-     */
     fun encodeMatches(matches: Map<String, TrackerMatch>): String {
         val arr = JSONArray()
         for ((key, m) in matches.entries.take(MAX_MATCHES)) {
@@ -648,11 +494,6 @@ object TrackerStore {
         }
     }
 
-    /**
-     * What has already been reported, as `key → when`. Without this, "Sync
-     * watch history" would re-upload everything every time it is pressed (and
-     * Simkl/Trakt would count each one as a separate play).
-     */
     fun encodeDone(done: Map<String, Long>): String {
         val arr = JSONArray()
         for ((key, at) in done.entries.sortedByDescending { it.value }.take(MAX_DONE)) {

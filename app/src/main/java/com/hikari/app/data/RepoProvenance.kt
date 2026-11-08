@@ -1,31 +1,5 @@
 package com.hikari.app.data
 
-/**
- * Which repository an installed extension came from.
- *
- * Every engine records the URL of the FILE it downloaded in
- * [ProviderConfig.extra] (Hikari appends the source index after a `|`), while
- * the repo list records the URL of the repo's own index (`repo.json`,
- * `manifest.json`, `index.min.json`, …). Those two strings agree on nothing —
- * the same extension is a `…/builds/Foo.cs3` inside one and a
- * `…/builds/repo.json` or a `…/releases/download/v1/Foo.cs3` outside it — so
- * comparing them literally can never answer the question. What they DO share is
- * the repository, so the match is made in this order:
- *
- *  1. the exact repo key ([SourceUrls.repoKey]) — the same file;
- *  2. the same GitHub `owner/repo` AND the same in-repo directory — the shape
- *     every repo that publishes more than one repository out of one GitHub
- *     project has (`owner/repo` holding a `repo.json` and an Aniyomi index);
- *  3. the same GitHub `owner/repo` — the shape of a CI-built repo, whose files
- *     are release assets and whose index sits at the repo root.
- *
- * It is deliberately best-effort: a provider installed by hand, or from a repo
- * the user has since removed, simply gets no label, and the row keeps showing
- * only its engine. The alternative (remembering the repo in [ProviderConfig])
- * would only ever work for installs made after the field was added, which is
- * exactly the opposite of the reported problem — four already-installed
- * "AniKoto" rows that nobody can tell apart.
- */
 object RepoProvenance {
 
     /** The URL the extension was installed from, or null for a provider that
@@ -43,18 +17,6 @@ object RepoProvenance {
         return raw?.takeIf { it.startsWith("http://", true) || it.startsWith("https://", true) }
     }
 
-    /**
-     * [repos] pre-indexed three ways, so ONE provider lookup is O(1) instead of
-     * a walk over the repo list.
-     *
-     * This is what makes [nameMap] usable on the draw path. It used to answer
-     * each provider by SCANNING every repo (and computing each repo's identity
-     * inside the scan, which meant re-parsing every repo URL once per provider)
-     * — O(providers × repos) URL parses. With five hundred installed providers
-     * and a couple of hundred added repos that was hundreds of thousands of
-     * regexes, run the moment Home's provider picker opened, which is the
-     * second of delay a tap on the provider pill used to have.
-     */
     class Index(private val repos: List<Cs3Repo>) {
 
         private val byKey = HashMap<String, Cs3Repo>()
@@ -91,12 +53,6 @@ object RepoProvenance {
         repoFor(c, repos)?.name?.takeIf { it.isNotBlank() }
             ?: fallbackLabel(c)
 
-    /**
-     * When no added repo matches — the repo was removed, or the extension came
-     * from a bundle that imported it from elsewhere — the row still says WHERE
-     * the file came from (`owner/repo`, else the host) instead of showing a
-     * bare engine. Hand-added rows (no URL at all) still get no label.
-     */
     fun fallbackLabel(c: ProviderConfig): String? {
         val origin = originOf(c) ?: return null
         SourceUrls.githubRoot(origin)?.let { return it }
@@ -106,12 +62,6 @@ object RepoProvenance {
         }.getOrNull()?.takeIf { it.isNotBlank() && it.contains('.') }
     }
 
-    /**
-     * One entry per provider id, for the rows that only have the config: the map
-     * the Extensions lists, Home's picker and the collection picker all draw
-     * from. The repo list is indexed ONCE here (see [Index]), so the whole map
-     * costs one pass over the repos plus one pass over the providers.
-     */
     fun nameMap(providers: List<ProviderConfig>, repos: List<Cs3Repo>): Map<String, String> {
         if (providers.isEmpty()) return emptyMap()
         val index = if (repos.isEmpty()) null else Index(repos)

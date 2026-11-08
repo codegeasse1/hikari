@@ -31,51 +31,15 @@ import java.util.concurrent.ConcurrentHashMap
 import org.json.JSONArray
 import org.json.JSONObject
 
-/**
- * One manga engine, exposed to the rest of the app as an ordinary
- * [ContentProvider].
- *
- * Everything Hikari already does with a provider therefore works for manga too:
- * it appears in the Extensions list, in the Home picker, in Search, in the
- * engine filter — because it IS one. What differs is only what the calls mean:
- * a "catalog" is the source's Popular or Latest list, an "episode" is a chapter,
- * and a "stream" is one PAGE of that chapter (its image), which is exactly what
- * the reader needs and lets the whole page list travel through the existing
- * episode/stream plumbing unchanged.
- *
- * Manga sources are third-party code and every call can throw `LinkageError` or
- * `AbstractMethodError` (an extension built against a newer extensions-lib), so
- * every call is wrapped and reports a short reason through
- * [com.hikari.app.providers.ProviderGate]/`lastOutcome` like the anime engine
- * does — a broken extension shows a line in the UI instead of crashing a screen.
- */
 class MangaProvider(override val config: ProviderConfig) : ContentProvider {
 
     /** "Popular" / "Latest" — the two lists every catalogue source offers. */
     companion object {
         const val CATALOG_POPULAR = "popular"
         const val CATALOG_LATEST = "latest"
-        /**
-         * Ceilings on the extension's own calls. Several sites hang instead
-         * of failing — a catalogue read that never returns is the reported
-         * "takes forever to load" extension. Past these the call is
-         * abandoned and the honest reason ("the site took too long") is
-         * recorded for the empty state; the funnel in
-         * [com.hikari.app.data.ContentRepository.loadCatalogPage] carries
-         * its own ceiling too, so the screen can never spin longer than the
-         * shorter of the two.
-         */
         const val EXT_CALL_TIMEOUT_MS = 30_000L
         const val WARM_SITE_TIMEOUT_MS = 15_000L
         val lastOutcome = ConcurrentHashMap<String, String>()
-        /** True when the engine's last recorded outcome for [providerId] looks
-         *  like a bot wall (HTTP 403/429/503/Cloudflare) rather than a dead
-         *  site or a broken extension — the ONLY case where opening the site
-         *  in the WebView can help. Catalogue screens gate their "Verify site"
-         *  nudge/button on this, so a site that is simply down (521/404/500)
-         *  says so instead of sending the reader to pass a check that was
-         *  never the issue. No outcome yet (never tried) counts as true — the
-         *  button is a tool until a failure says otherwise. */
         fun isWallOutcome(providerId: String): Boolean {
             val s = lastOutcome[providerId] ?: return true
             if (s.startsWith("✓") || s.startsWith("✔") || s.startsWith("○")) return false
@@ -187,40 +151,10 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
         }.getOrDefault("").trim()
     }
 
-    /**
-     * The site this engine reads, for a warm-up.
-     *
-     * A manga provider's `config.url` is the LOCAL `.ext` path, so the site has
-     * to come out of the extension's own source (`baseUrl`) — BLOCKING, which is
-     * fine here because every caller is already inside [gate] on IO. Cached per
-     * provider by the manager.
-     */
     private fun siteUrl(): String? = runCatching {
         MangaExtensionManager.siteUrlOf(config)
     }.getOrNull()?.takeIf { it.isNotBlank() }
 
-    /**
-     * Be the browser for one failed request — WITHOUT waiting for the user to
-     * tap the globe.
-     *
-     * The reported shape was: a manga catalogue (and its chapter list) comes up
-     * empty, no verification is ever offered, and the only thing that makes it
-     * load is opening the site in the WebView by hand and closing it again —
-     * i.e. the site wanted a real browser session and the app never tried to give
-     * it one. The extension's own client only solves a challenge it can
-     * RECOGNISE (see [com.hikari.app.net.ExtensionCloudflareInterceptor]), and a
-     * manga source that builds its own OkHttp stack, or a site that answers the
-     * XHR with an empty 200, leaves nothing to recognise — so the page stayed
-     * blank.
-     *
-     * This loads the site once in the offscreen WebView ([CloudflareSolver.warm],
-     * spaced per host) and says whether that earned something worth retrying.
-     * NOTHING opens on the user's screen.
-     *
-     * With a ceiling: the offscreen load hangs indefinitely on some hosts,
-     * and without it a catalogue that was merely slow became one that never
-     * answers (the reported "takes forever to load" extensions).
-     */
     private suspend fun warmSite(): Boolean =
         withTimeoutOrNull(WARM_SITE_TIMEOUT_MS) {
             val site = siteUrl() ?: return@withTimeoutOrNull false
@@ -235,11 +169,6 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
         ok
     } ?: false
 
-    /** HTTP statuses worth one more ask after a breather: rate limits and
-     *  transient edge/gateway failures. An app that fires hundreds of requests
-     *  in parallel trips these far more often than a reader that taps one
-     *  title at a time. Anything else (404/403, parse failures, timeouts)
-     *  answers the same way twice, so only these retry. */
     private fun isRetryableHttp(t: Throwable?): Boolean {
         var c: Throwable? = t
         while (c != null) {
@@ -266,15 +195,6 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
         Logs.log("Manga", "${config.name}: empty $what answer from $host")
     }
 
-    /**
-     * Records a site as needing the user's own verification when a failure is a
-     * bot wall rather than a broken extension — HTTP 403/429/503/Cloudflare.
-     *
-     * The anime engine has always done this ([
-     * com.hikari.app.aniyomi.AniyomiProvider]); the manga engine did not, so a
-     * walled manga site was never named to the UI and was never skipped by the
-     * cross-extension search — it just answered nothing, every time.
-     */
     private fun noteWall(text: String) {
         if (text.isBlank() || !WALL_MESSAGE.containsMatchIn(text)) return
         siteUrl()?.let { com.hikari.app.net.CloudflareVerifier.markBlocked(it) }
@@ -288,28 +208,12 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
         RegexOption.IGNORE_CASE,
     )
 
-    /**
-     * True when this provider reads a MangaTime-shaped site — by its host, or
-     * by the extension class itself. The native tRPC fallback below only ever
-     * runs for those sources: its request shape is MangaTime's own
-     * `search.searchSeries` contract, not a generic manga API.
-     */
     private fun isMangaTimeSite(): Boolean {
         if (siteUrl().orEmpty().contains("mangatime", ignoreCase = true)) return true
         return runCatching { source()?.javaClass?.name }.getOrNull()
             ?.contains("mangatime", ignoreCase = true) == true
     }
 
-    /**
-     * MangaTime's own catalog query, run directly — the exact call its
-     * extension makes (`searchSeries(page, limit 24, sortBy, "desc", query)`
-     * against `/api/trpc/search.searchSeries?batch=1&input=…`), so a source
-     * whose extension path answers empty-or-failed while the site is up still
-     * lists Popular, Latest and search. Returned as plain [SManga]s in the
-     * extension's own url shape (`/$type/$slug#$id`), so details, chapters and
-     * pages keep flowing through the extension unchanged. BLOCKING — every
-     * caller is already inside [gate] on IO.
-     */
     private fun nativeMangaTime(ref: CatalogRef?, page: Int, query: String?): List<SManga>? {
         val base = siteUrl()?.trim()?.trimEnd('/')?.takeIf { it.isNotBlank() } ?: return null
         val sortBy = when {
@@ -397,10 +301,6 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
         var mangas = first.getOrNull()
         var failure = first.exceptionOrNull()?.takeIf { it !is kotlinx.coroutines.CancellationException }
             ?.let { reason(it) }
-        // One more ask after a breather on rate limits / transient edge
-        // failures (see [isRetryableHttp]) — page 2+ has no warm-up retry, so
-        // a refused page used to end the whole list ("That's everything"
-        // after a dozen titles).
         if (mangas == null && isRetryableHttp(first.exceptionOrNull())) {
             kotlinx.coroutines.delay(2_000)
             val retry = runCatching { withTimeoutOrNull(EXT_CALL_TIMEOUT_MS) { ask() } }
@@ -413,9 +313,6 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
             }
         }
         if (mangas == null && failure == null) {
-            // The bounded ask gave up on a hung site (null verdict, no
-            // exception): name it so the catalogue screen can say the site
-            // timed out instead of spinning or crying wolf about a block.
             failure = "the site took too long to answer (over ${EXT_CALL_TIMEOUT_MS / 1000}s)"
         }
         val catalogHung = mangas == null && first.exceptionOrNull() == null
@@ -441,9 +338,6 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
             }
         }
         if (mangas == null) {
-            // The extension path failed outright. On MangaTime-shaped sources the
-            // catalog is a plain tRPC call (see nativeMangaTime) — ask the site
-            // directly before reporting the failure.
             if (isMangaTimeSite()) {
                 val native = runCatching { nativeMangaTime(ref, page, null) }.getOrNull()
                 if (!native.isNullOrEmpty()) {
@@ -455,23 +349,8 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
             noteWall(why)
             return@gate fail("catalog failed: $why", emptyList())
         }
-        // An EMPTY page is not a success, and calling it one is what left the
-        // reader staring at "The site may be blocking or down" with nothing else
-        // to go on: no exception was thrown, so no reason was recorded anywhere,
-        // and the one thing the app could have said ("the site answered, but this
-        // list came back with no titles in it") was lost. It is reported now — it
-        // is a different problem from a block, and it is the one the reader can
-        // take back to the extension's own page (the site's markup moved), rather
-        // than to a Cloudflare check that was never the issue.
         if (mangas.isEmpty()) {
-            // An empty answer carries no exception, so log where it came from
-            // (see [logEmptyAnswer]) — a wrong URL and a refused right URL
-            // need different fixes.
             logEmptyAnswer("${ref.name.lowercase()} page $page", src, null)
-            // The reported MangaTime shape: the extension answers 200 with no
-            // titles while the site itself is up. Its catalog is one tRPC query
-            // (see nativeMangaTime) — run that exact query directly. Page 1
-            // only: an empty page 2+ is the end of the list, not a failure.
             if (page == 1 && isMangaTimeSite()) {
                 val native = runCatching { nativeMangaTime(ref, page, null) }.getOrNull()
                 if (!native.isNullOrEmpty()) {
@@ -503,15 +382,8 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
         var failure = first.exceptionOrNull()?.takeIf { it !is kotlinx.coroutines.CancellationException }
             ?.let { reason(it) }
         first.exceptionOrNull()?.let { if (it is kotlinx.coroutines.CancellationException) throw it }
-        // A hung site abandons the ask with NO exception (null verdict): name
-        // it, and skip the warm-up retry — warming a host that just hung only
-        // doubles the wait.
         val searchHung = found == null && failure == null
         if (searchHung) failure = "the site took too long to answer (over ${EXT_CALL_TIMEOUT_MS / 1000}s)"
-        // Only a FAILED search is retried: an empty result list is a perfectly
-        // ordinary answer ("this engine has no such title"), and warming the
-        // site for every miss would be a WebView load per search. A 403 from a
-        // browser check is not an answer.
         if (found == null && !searchHung && warmSite()) {
             val second = runCatching { withTimeoutOrNull(EXT_CALL_TIMEOUT_MS) { ask() } }
             second.exceptionOrNull()?.let {
@@ -539,15 +411,6 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
         found.map { toItem(it, src) }
     }
 
-    /**
-     * A TAG search, not a title search: tapping a genre chip (Fantasy) must
-     * return manga that CARRY the tag, not manga with the word in the title.
-     * Runs the extension's own genre filter (the same filter list its browse
-     * page offers) with an empty keyword, so the site answers from its tag
-     * index. Returns null when the extension declares no usable genre filter
-     * (callers then fall back to a keyword search plus the client-side tag
-     * filter in MangaScreen) — null is "unsupported", never "no results".
-     */
     suspend fun searchByGenre(genre: String, page: Int): List<MediaItem>? = gate {
         if (isNovel) return@gate null
         val src = source() ?: return@gate null
@@ -682,16 +545,7 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
         }
     }
 
-    /**
-     * The chapter list, ALSO cached in [MangaStore] — the reader needs the whole
-     * list for chapter navigation, the detail screen needs the names and dates,
-     * and a source that is slow or blocked should not have to be asked twice for
-     * the same thing.
-     */
     override suspend fun getEpisodes(item: MediaItem): List<Episode>? = gate {
-        // Novel chapters come straight from the novel source's chapter list —
-        // the same Episode shape, cached in the same store, so the detail
-        // screen and the novel reader work unchanged.
         if (isNovel) {
             val nsrc = novelSrc() ?: return@gate failEpisodes(missingReason())
             val raw = runCatching { nsrc.getChapterList(sm(item)) }.getOrNull()
@@ -717,9 +571,6 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
         first.exceptionOrNull()?.let { if (it is kotlinx.coroutines.CancellationException) throw it }
         var raw = first.getOrNull()
         var failure = first.exceptionOrNull()?.let { reason(it) }
-        // One more ask after a breather on rate limits / transient edge
-        // failures (see [isRetryableHttp]) — a refused chapter list used to
-        // read as "no chapters" with nothing to retry it.
         if (raw == null && isRetryableHttp(first.exceptionOrNull())) {
             kotlinx.coroutines.delay(2_000)
             val retry = runCatching { withTimeoutOrNull(EXT_CALL_TIMEOUT_MS) { ask() } }
@@ -737,10 +588,6 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
         // A hung first ask skips the warm-up retry (see the catalogue): the
         // site already burned the whole ceiling once.
         val episodesHung = raw == null && first.exceptionOrNull() == null
-        // The same refused-site case as the catalogue: an empty (or failed)
-        // chapter list on a site behind a browser check is what made the globe
-        // button the only way to make a title's chapters appear. Warm the site
-        // once and ask again.
         if (!episodesHung && (raw == null || raw.isEmpty())) {
             if (warmSite()) {
                 val second = runCatching { withTimeoutOrNull(EXT_CALL_TIMEOUT_MS) { ask() } }
@@ -760,9 +607,6 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
             noteWall(why)
             return@gate failEpisodes("chapters failed: $why")
         }
-        // An empty answer is not chapters: some sites need the details call to
-        // prime the session before the list exists. Prime once before calling
-        // it empty, so a first-open "0 chapters" can still recover.
         if (raw.isEmpty()) {
             runCatching { withTimeoutOrNull(EXT_CALL_TIMEOUT_MS) { updateOf(src, item, details = true, chapters = true) } }
             val retry = runCatching { withTimeoutOrNull(EXT_CALL_TIMEOUT_MS) { ask() } }.getOrNull()
@@ -795,39 +639,13 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
     }
 
     private fun failEpisodes(msg: String): List<Episode>? {
-        // 72 characters cut the REASON off the line — "chapters failed: …okhttp"
-        // and nothing more, exactly as reported. The detail screen prints this row
-        // and has room for the whole sentence, and the log line below is never
-        // truncated, so the cap only ever hid the one thing worth reading.
         lastOutcome[config.id] = "✗ " + msg.take(200)
         Logs.log("Manga", "${config.name}: $msg")
-        // The cached list (when there is one) beats an empty screen: a source
-        // that is temporarily down still lets the user open the chapters already
-        // fetched for this title.
         return null
     }
 
-    /**
-     * The pages of one chapter, each as a [StreamSource]: `url` is the image URL
-     * to load, `pageUrl` is the page's own URL on the site and `headers` carries
-     * the source's own headers, so the reader's image loader can fetch from a
-     * hotlink-protected CDN the way the extension itself would.
-     *
-     * This is Nekoread's `TachiyomiHttpSourceAdapter.getPageDescriptors` for this
-     * app's plumbing: it builds each page from the extension's own `getPageList`
-     * and resolves the image URL exactly as that class does (`page.imageUrl ?:
-     * ext.getImageUrl(page)`, written back onto the page), so the pair the reader
-     * downloads with is the pair the extension would send. The page URL is NOT
-     * decoration: an extension's `imageRequest(page)` builds its Referer/Origin
-     * from it, which is why a page fetched with an empty one came back refused or
-     * scrambled.
-     */
     override suspend fun getStreams(item: MediaItem, episode: Episode?): List<StreamSource> =
         gate(ProviderGate.Lane.BACKGROUND) {
-        // A novel chapter is TEXT, not pages: each part travels as a
-        // StreamSource with its text set and a blank url (the image reader
-        // skips blank urls, so these can never leak into it). The novel
-        // reader joins the parts in order.
         if (isNovel) {
             // Fork novels (skepsun / hany18h NovelChapterContent HTML) read
             // through their own bridges — no Tachiyomi novel source exists.
@@ -915,10 +733,6 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
         }
         val src = source() ?: return@gate fail(missingReason(), emptyList())
         val chapter = episode ?: return@gate fail("No chapter selected", emptyList())
-        // Universal Webtoons strips (same class as the Anymex fix): a chapter
-        // that IS a webtoons.com viewer link carries its own imageList — prefer
-        // it over whatever the engine's page list serves (which can be the same
-        // 2 previews for every chapter). Engine path below stays as fallback.
         if ("webtoons.com" in chapter.id.lowercase() && "viewer" in chapter.id.lowercase()) {
             val native = nativeWebtoonsPages(chapter.id)
             if (native.isNotEmpty()) {
@@ -927,16 +741,7 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
             }
         }
         try {
-            // Mihon parity: a stale chapter entry (site moved the pages, session
-            // rotated) fails getPageList with "Refresh Chapter List". Refresh the
-            // chapter list once through the same combined call the chapter screen
-            // uses (works for old and Kei sources alike) and retry on the fresh
-            // entry before reporting failure.
             var pageList = runCatching { src.getPageList(ch(chapter.id)) }.getOrNull()
-            // A site behind a browser check refuses the page list the same way
-            // it refuses the chapter list (which warms in getEpisodes) — warm
-            // once and ask again before the stale-entry retry, so a walled
-            // chapter reads after verification instead of reporting failure.
             if (pageList == null && warmSite()) {
                 pageList = runCatching { src.getPageList(ch(chapter.id)) }.getOrNull()
             }
@@ -949,12 +754,6 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
                 }
             }
             val pages = pageList ?: return@gate fail("pages failed: Refresh Chapter List", emptyList())
-            // The plain-client fallback (HikariPageSource.downloadTo) sends
-            // exactly these headers: a source whose own headers name no Referer
-            // gets one per page — the page's own URL first (hotlink guards
-            // check the chapter, not the site root, and refuse a root Referer
-            // with no wall to solve), the site root only when the page URL is
-            // not absolute.
             val base = sourceHeaders(src)
             val hasRef = base.keys.any { it.equals("Referer", ignoreCase = true) }
             val hasUA = base.keys.any { it.equals("User-Agent", ignoreCase = true) }
@@ -979,9 +778,6 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
                             origin?.let { o -> o.trimEnd('/') + "/" + rel.trimStart('/') }
                         } ?: site)
                     if (ref != null) h = h + ("Referer" to ref)
-                    // Hotlink/CDN guards beyond Referer: Origin + UA travel with
-                    // every page so a "Couldn't load page" is not one missing
-                    // header away. Values already present are never overwritten.
                     val useRef = h["Referer"] ?: ref
                     val originV = originOf(useRef)
                     if (originV != null && h.keys.none { it.equals("Origin", ignoreCase = true) }) h = h + ("Origin" to originV)
@@ -994,12 +790,6 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
                     headers = headers,
                     pageUrl = page.url,
                 )
-                // A page without its own image is not a page: the fallback above
-                // leaves the chapter URL itself as the image, so every page of
-                // the chapter would download the same chapter/cover bytes and
-                // the whole chapter (and every chapter like it) shows the same
-                // image. Drop those, exact duplicates, and any page equal to
-                // the detail poster (a covers-only answer), keeping story order.
             }.filter { p ->
                 val poster = item.posterUrl?.trim().orEmpty()
                 p.url.isNotBlank() && p.url != chapter.id && !isPreviewUrl(p.url) &&
@@ -1021,25 +811,8 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
         }
     }
 
-    /**
-     * The extension's own source, for the reader's page fetches.
-     *
-     * A chapter's pages are downloaded through THIS object — not through a
-     * generic HTTP client — so the extension's `imageRequest(page)` headers,
-     * its per-host rate limits and its own interceptors (a Descrambler on the
-     * sites that scramble their pages, a 404 fallback, cookie handling) all
-     * apply. Nekoread routes a page through `ext.getImage(page)` for exactly
-     * this reason; [com.hikari.app.reader.source.HikariPageSource] does the
-     * same with the source handed out here. BLOCKING (loading the extension is
-     * part of it), so never call it on the main thread.
-     */
     fun httpSource(): HttpSource? = runCatching { source() as? HttpSource }.getOrNull()
 
-    /** The source's own request headers (its User-Agent, Referer, Origin, any
-     *  cookies it set), which the reader's image loader replays so a
-     *  hotlink-protected CDN accepts the page. Only an [HttpSource] has them —
-     *  a source with its own network stack gets an empty map, and its pages are
-     *  then fetched plainly. */
     private fun sourceHeaders(src: CatalogueSource): Map<String, String> = runCatching {
         val http = src as? HttpSource ?: return emptyMap()
         http.headers.toMultimap().mapValues { it.value.firstOrNull().orEmpty() }
@@ -1063,13 +836,6 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
         return url
     }
 
-    /**
-     * Universal Webtoons viewer strips (mirrors the Anymex engine's own
-     * imageList reader): the episode HTML carries every full-size strip in
-     * `var imageList = [{url, ...}]` in story order. A present-but-empty list
-     * is a locked episode — honest empty, never fallback covers. The phinf scan
-     * is older-markup fallback only (thumbs/previews filtered, never served).
-     */
     private fun nativeWebtoonsPages(chapterUrl: String): List<StreamSource> {
         val u = chapterUrl.trim()
             .replace("&amp;", "&")
@@ -1175,43 +941,13 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
     private fun SChapter.labelOf(): String =
         name.ifBlank { if (chapter_number >= 0f) "Chapter $chapter_number" else "Chapter" }
 
-    /**
-     * Newest-last, so the reader's "next chapter" walks forward in reading order.
-     * Sources hand chapters back in whatever order their site lists them in
-     * (usually newest first), and a source that numbers its chapters is sorted by
-     * that number — Mihon's own rule.
-     */
     private fun sortChapters(list: List<SChapter>): List<SChapter> {
         val numbered = list.filter { it.chapter_number > 0f }
         if (numbered.size >= 2) return list.sortedBy { if (it.chapter_number > 0f) it.chapter_number else Float.MAX_VALUE }
         return list.reversed()
     }
 
-    /**
-     * The most useful one-line description of [t].
-     *
-     * The DEEPEST cause is NOT the answer, and treating it as one is why the only
-     * thing this app could say about a failed chapter list was
-     * "OnNextValue: OnError while emitting onNext value: okhttp…".
-     *
-     * A manga source's request runs through the extension's own RxJava-1 HTTP
-     * path (`HttpSource.fetchChapterList` → `Call.asObservableSuccess().map {
-     * chapterListParse(it) }`), and Rx appends its own marker to the END of the
-     * cause chain: `OnErrorThrowable.addValueAsLastCause` hangs an `OnNextValue`
-     * — whose message names the VALUE that was being delivered (an okhttp
-     * `Response`) — off the real throwable. So walking to the innermost cause
-     * landed on Rx's wrapper and printed it as though it were the failure,
-     * hiding the actual error underneath: a linkage error, an `HttpException`, an
-     * exception out of the extension's own parser.
-     *
-     * So the wrappers are skipped and the innermost NON-wrapper is reported.
-     * When that error carries no message of its own, the wrapper's is kept — it
-     * at least names what was in flight when the parse blew up.
-     */
     private fun reason(t: Throwable): String {
-        // The cause chain, outermost first. `seen` is an identity set because a
-        // throwable whose cause is itself — or a loop of two — would otherwise
-        // spin here forever.
         val chain = ArrayList<Throwable>(4)
         val seen = java.util.IdentityHashMap<Throwable, Boolean>()
         var cursor: Throwable? = t
@@ -1222,19 +958,6 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
         val wrapper = chain.lastOrNull { isRxWrapper(it) }
         val real = chain.lastOrNull { !isRxWrapper(it) } ?: wrapper ?: t
         val label = real.javaClass.simpleName.ifBlank { real.javaClass.name }
-        // A failing LINKAGE is worth a plain word, because it is not the site: a
-        // manga extension is a separate APK compiled against its own copy of the
-        // HTTP library, so a NoSuchMethodError/NoClassDefFoundError here means the
-        // extension and this app disagree about that library's version.
-        //
-        // A bare `UnsupportedOperationException` is the same kind of statement from
-        // the other side: the vendored base classes throw one from every hook an
-        // extension MAY override (`HttpSource.chapterListParse` is the one on the
-        // chapter-list path), so hitting it means this extension never provided
-        // that hook — which is what an extension built against a different
-        // version of the extensions library looks like. It is the "0 chapters
-        // failed: UnsupportedOperationException" row, and it is an extension
-        // problem, not a connection one, so it is said in words.
         val compat = when {
             real is LinkageError ->
                 " — this extension was built against a different version of the app's HTTP library"
@@ -1244,10 +967,6 @@ class MangaProvider(override val config: ProviderConfig) : ContentProvider {
                     "extensions library. Try another extension for this title."
             else -> ""
         }
-        // The Rx wrapper's text only names what was in flight ("OnError while
-        // emitting onNext value: okhttp3.Response.class"), which says nothing
-        // about the failure — with a bare UnsupportedOperationException above it,
-        // printing it made the whole row unreadable.
         val detail = real.message?.takeIf { it.isNotBlank() }
             ?: if (real is UnsupportedOperationException) null
             else wrapper?.message?.takeIf { it.isNotBlank() }
@@ -1299,13 +1018,6 @@ object MangaMark {
         posterUrl = item.posterUrl,
     )
 
-    /**
-     * The source's published status ("Ongoing", "Completed", …) for an item, when
-     * the source has told us — the `SManga` behind the item carries it, and it is
-     * only knowable while that item is still in the cache (it comes from the
-     * catalogue/search response that produced it). Null when unknown, which the
-     * detail screen simply leaves out.
-     */
     fun statusLabel(item: MediaItem): String? {
         val raw = MangaRecordCache.get(item)?.status ?: return null
         return mangaStatusLabel(raw)

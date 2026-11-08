@@ -8,13 +8,6 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.unit.dp
 
-/**
- * Line-style source glyphs drawn in the app's own icon language (white strokes
- * on the glass tile, tinted accent like every material glyph there) for the
- * two rows no material icon covers: Hikari's torii gate and Stremio's
- * diamond-play. Motifs follow the supplied artwork; the rendering is strokes,
- * never pictures.
- */
 private fun strokeNodes(data: String) = PathParser().parsePathString(data).toNodes()
 
 private fun strokeBuilder(name: String): ImageVector.Builder =

@@ -32,11 +32,6 @@ import com.hikari.app.net.Updater.UpdateStatus
 import kotlinx.coroutines.launch
 import java.io.File
 
-/**
- * Check-for-updates dialog. With [initialStatus] == null it checks GitHub itself on
- * open; Settings passes a pre-checked [UpdateStatus] so the row can show a spinner
- * and the dialog opens instantly. Handles download-with-progress and in-app install.
- */
 @Composable
 fun UpdateDialog(
     context: Context,

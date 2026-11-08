@@ -34,17 +34,6 @@ object Updater {
             "unknown"
         }
 
-    /** The build this phone should install: its own processor type's APK when
-     *  the release carries one, otherwise the universal one that works
-     *  anywhere.
-     *
-     *  Hikari is published as an ABI split (see app/build.gradle.kts): a
-     *  release holds `hikari-arm64-v8a.apk` for 64-bit arm phones,
-     *  `hikari-armeabi-v7a.apk` for the older 32-bit ones, and `hikari.apk`
-     *  which contains both. Every phone can install any of them (same
-     *  applicationId, key and version), so picking the matching one is purely
-     *  about not downloading a second set of native libraries the device can
-     *  never load. */
     private fun preferredAssetName(): String =
         if (Build.SUPPORTED_ABIS.any { it == "arm64-v8a" }) "hikari-arm64-v8a.apk"
         else "hikari-armeabi-v7a.apk"
@@ -121,11 +110,6 @@ object Updater {
         )
     }
 
-    /**
-     * Downloads the newest signed APK into the app's cache. [onProgress] is called
-     * with (downloadedBytes, totalBytes) from a background thread — marshal to main
-     * in the caller.
-     */
     suspend fun download(
         context: Context,
         onProgress: (downloaded: Long, total: Long) -> Unit,

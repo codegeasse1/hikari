@@ -16,26 +16,6 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import java.io.File
 
-/**
- * Install/uninstall of Vega providers, plus first-run seeding of the official
- * Vega repository.
- *
- * A Vega provider repository publishes a **bare JSON array** at `manifest.json`
- * — every entry is one provider — and the provider's code lives in
- * `dist/<value>/{catalog,posts,meta,stream,episodes,settings}.js`. There is no
- * single downloadable artifact: an install fetches whichever of those six files
- * exist (a movie-only provider has no episodes.js, `moviesApi` has only
- * stream.js) and keeps them in one folder per provider:
- *
- *   filesDir/vega/providers/<value>/posts.js
- *   filesDir/vega/providers/<value>/stream.js
- *   …
- *
- * The folder path is stored in the provider's `url` and the manifest entry's
- * dist URL in `extra`, exactly how every other engine records its source, so
- * uninstall and the provenance label work the same way they do for a
- * CloudStream/Hikari/Nuvio extension.
- */
 object VegaPluginManager {
 
     /** Ceiling for one provider file. The published files are 1–40 KB; anything
@@ -71,24 +51,6 @@ object VegaPluginManager {
     private fun safe(name: String): String =
         name.replace(Regex("[^A-Za-z0-9_.-]"), "_").ifBlank { "provider" }
 
-    /**
-     * Compatibility patch for the GokuHD provider's `sourceHeading` helper
-     * (multi-season download posts reading "Source 1 / Source 2" with no
-     * season or quality).
-     *
-     * The page groups its buttons under `h4` season/quality headings that sit
-     * BESIDE the `<p><center>` button wrapper, but the shipped helper searches
-     * from `anchor.closest("center, p, div")` — which stops at the inner
-     * `<center>` — so `prevAll("h4, …")` finds nothing and every row falls
-     * back to the bare button text. The replacement climbs up to four
-     * ancestors, checking each level's preceding headings (h2–h5) for the
-     * season/quality line instead of stopping at the first wrapper.
-     *
-     * Pure and exact-match: a build that does not carry the known-buggy
-     * snippet — including a future upstream fix, which will read different —
-     * passes through byte-identical, so this self-disables the moment the
-     * repo fixes it for real. Applied to `meta` only.
-     */
     fun compatPatch(fileName: String, bytes: ByteArray): ByteArray {
         if (fileName != "meta") return bytes
         val text = runCatching { bytes.toString(Charsets.UTF_8) }.getOrNull() ?: return bytes
@@ -134,17 +96,6 @@ object VegaPluginManager {
         }
     }
 
-    /**
-     * The providers a Vega manifest lists. The manifest is a bare array of
-     * `{display_name, value, version, icon, disabled, hasSettings}`.
-     * `disabled` entries are the repo owner's flag for a provider that stopped
-     * working — they are still LISTED (with a "disabled by repo" marker), never
-     * hidden: the reference app shows them too, and hiding them is what left
-     * repos reading short next to it. An install of one either works (its dist
-     * files are still served) or fails honestly when they are gone.
-     * `url` is the provider's dist folder (the install path appends `<name>.js`
-     * to it).
-     */
     fun repoPlugins(manifestText: String, manifestUrl: String): List<Cs3RepoPlugin> {
         val arr = runCatching { JSONArray(manifestText) }.getOrNull() ?: return emptyList()
         val base = manifestUrl.trim().trimEnd('/').substringBeforeLast('/')
@@ -178,16 +129,6 @@ object VegaPluginManager {
         return out.values.toList()
     }
 
-    /**
-     * Downloads one provider's files (in parallel — the repo is on GitHub and
-     * the six files are independent) and installs them.
-     *
-     * Only files that really exist are kept: a 404 is the normal answer for the
-     * five providers with no episodes.js and for `moviesApi`, which publishes
-     * only stream.js. The install succeeds as long as the provider exports
-     * something usable — [VegaRuntime.validate] decides that by loading its
-     * stream/posts/meta module.
-     */
     suspend fun install(context: Context, plugin: Cs3RepoPlugin): Result<Int> = withContext(Dispatchers.IO) {
         val value = valueOf(plugin.url)
         if (value.isBlank()) {
@@ -200,11 +141,6 @@ object VegaPluginManager {
             }.map { it.await() }
         }
         val files = fetched.filter { (_, bytes) -> bytes != null && bytes.isNotEmpty() }
-            // Installs carry compatPatch's fixes (e.g. the GokuHD heading
-            // walk-up): live with the patched build, and the background
-            // freshness check compares against it too, so a patched install
-            // reads "current" instead of reinstalling every session. Exact
-            // match only — an upstream-fixed build passes through untouched.
             .associate { (name, bytes) -> name to compatPatch(name, bytes!!) }
         if (files.isEmpty()) {
             return@withContext Result.failure(
@@ -312,13 +248,6 @@ object VegaPluginManager {
         return dir.listFiles()?.none { it.isFile && it.name.endsWith(".js") } ?: true
     }
 
-    /**
-     * True when an installed Vega provider publishes its own `settings.js` —
-     * the module that declares its settings screen (`getSettingsSchema`, see
-     * [VegaRuntime.settingsSchema]). A directory listing, not an engine boot,
-     * which is what lets the Extensions screen's gear show a real settings
-     * screen for exactly the providers that have one.
-     */
     fun hasSettings(config: ProviderConfig): Boolean {
         if (config.type != ProviderType.VEGA) return false
         return File(dirOf(config), "settings.js").isFile

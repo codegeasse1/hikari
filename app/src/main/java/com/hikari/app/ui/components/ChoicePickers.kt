@@ -46,13 +46,6 @@ import com.hikari.app.ui.navigation.LocalTaskbarInset
 import com.hikari.app.ui.theme.rememberGlassTokens
 import com.hikari.app.tv.tvTextFieldKeys
 
-/**
- * One option in a [ChoiceDialog].
- *
- * [leading] is a short bit of text drawn before the name — a flag for languages,
- * "Aa" for a font — and [supporting] is the line under it (a note, a code, an
- * address). Both are optional.
- */
 data class ChoiceItem(
     val key: String,
     val label: String,
@@ -60,17 +53,6 @@ data class ChoiceItem(
     val leading: String? = null,
 )
 
-/**
- * The app's one "pick one of many" surface: a glass panel with a scrollable list
- * of options, the one in use tinted and ticked. Tapping an option picks it and
- * closes the panel; the X or anywhere outside closes it unchanged.
- *
- * Settings that offer a lot of choices (the app font, the TMDB title language,
- * the DNS resolver) open this instead of printing every option into their own
- * card: a card stays the height of one row whatever is chosen, a choice of
- * thirty is a scroll rather than a page-long wall of radio buttons, and every
- * long list in Settings looks and behaves the same way.
- */
 @Composable
 fun ChoiceDialog(
     title: String,
@@ -92,9 +74,6 @@ fun ChoiceDialog(
     GlassDialog(onDismiss = onDismiss, title = title, initialFocus = firstRow) {
         LazyColumn(
             Modifier.heightIn(max = maxHeight),
-            // The panel is drawn over the page, so it can end up sitting behind
-            // the floating taskbar on a tab screen. Without this the last few
-            // options could neither be tapped nor scrolled clear of the bar.
             contentPadding = PaddingValues(bottom = LocalTaskbarInset.current),
         ) {
             items(options.size) { index ->
@@ -154,20 +133,6 @@ fun ChoiceDialog(
     }
 }
 
-/**
- * The multi-select twin of [ChoiceDialog]: the same glass panel and the same
- * scrollable list, but tapping a row TOGGLES it instead of closing the panel, and
- * several rows can be on at once. Used by the two "pick one or more" settings —
- * the poster treatments and the loading-screen treatments — and by the Server
- * search exception list, where [searchable] adds a filter field over what can be
- * a hundred-plus installed extensions.
- *
- * [onToggle] fires on every tap, so the caller writes each change straight
- * through to the store: the list behind the panel (and the poster grid itself)
- * updates as the user ticks rows. The panel stays open until they close it, which
- * is the whole point of a multi-select — picking two things should not be two
- * trips through the menu.
- */
 @Composable
 fun MultiChoiceDialog(
     title: String,
@@ -196,10 +161,6 @@ fun MultiChoiceDialog(
 ) {
     val options = items
     var query by remember { mutableStateOf("") }
-    // The remote's landing spot on a television (see [GlassDialog.initialFocus]).
-    // The rows, not the filter field: the list is what the user came for, and a
-    // text field would swallow the arrows (the field has its own
-    // [tvTextFieldKeys] once it is focused deliberately).
     val firstRow = remember { FocusRequester() }
     // Television rows read white/muted (see [ChoiceDialog]).
     val tvChoice = TvMode.current()
@@ -347,16 +308,6 @@ fun MultiChoiceDialog(
     }
 }
 
-/**
- * The row that opens a [ChoiceDialog]: an optional icon or glyph, the choice in
- * use, the line under it, and a chevron saying it leads somewhere. Every "tap to
- * choose" setting in the app is one of these, so it reads as one control rather
- * than a menu in one card and a list of radios in the next.
- *
- * Its rounding is the app's one box radius (`GlassShape` in Components.kt), the
- * same corner the card around it is drawn with; this is the row the
- * app-language card leads with on Appearance & Theme.
- */
 @Composable
 fun ChoiceRow(
     value: String,

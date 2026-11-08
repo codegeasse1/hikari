@@ -33,11 +33,6 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 
 class MainActivity : AppCompatActivity() {
-    /** Settings → App Layout → "Turn off full screen app mode". The system
-     *  bars are shown/hidden from onResume, onWindowFocusChanged and the
-     *  Compose side, none of which can await DataStore — so the value is
-     *  mirrored here (read once at launch, kept current by a flow collector in
-     *  setContent). See [applyImmersiveMode]. */
     @Volatile
     private var fullscreenOff = false
 
@@ -50,29 +45,14 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         HikariApp.mainActivity = this
-        // Expose the activity to the CloudStream runtime as early as possible:
-        // plugins are warmed from HikariApp.onCreate's background coroutine,
-        // which can run before onStart, and plugins cast this context to an
-        // Activity/AppCompatActivity.
         com.lagradost.cloudstream3.CommonActivity.setActivityInstance(this)
         // No window title bar, ever — every screen is header-free by design.
         window.requestFeature(android.view.Window.FEATURE_NO_TITLE)
-        // Edge-to-edge: the app draws behind the status + navigation bars so
-        // the dark background covers the whole screen (no color band at the
-        // top), like a real fullscreen streaming app. Light status icons for
-        // the dark themes.
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
         )
         installSplashScreen()
-        // A saved fragment the APK no longer ships (crash-log-proven:
-        // com.cncverse.M3UPlaylistPlayer.Settings — an extension's settings
-        // screen persisted across an update/uninstall) makes super.onCreate
-        // throw during FragmentManager state restore and the app dies on launch
-        // every time until data is cleared. Fragments here are only ever plugin
-        // dialogs/sheets (the app UI is Compose), so dropping the saved fragment
-        // back-stack is safe — and it can never crash the cold start again.
         runCatching { savedInstanceState?.remove("android:support:fragments") }
         super.onCreate(savedInstanceState)
         // Publish a real result launcher to the CloudStream runtime. Extension
@@ -87,10 +67,6 @@ class MainActivity : AppCompatActivity() {
                     androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
                 ) { }
         }
-        // API 33+: the download and background-work notifications are how the
-        // user sees (and controls) work that keeps running while Hikari is in
-        // the background, so ask for the permission up front instead of only
-        // when the first download starts.
         if (android.os.Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) !=
             android.content.pm.PackageManager.PERMISSION_GRANTED
@@ -120,9 +96,6 @@ class MainActivity : AppCompatActivity() {
                     f: androidx.fragment.app.Fragment,
                     savedInstanceState: android.os.Bundle?,
                 ) {
-                    // Dismissed BEFORE the dialog is built, so a verification
-                    // page an extension opens by itself never gets a frame on
-                    // screen (see dismissExtensionPopup).
                     dismissExtensionPopup(f)
                 }
 
@@ -139,11 +112,6 @@ class MainActivity : AppCompatActivity() {
             true,
         )
         val store = (application as HikariApp).store
-        // Which kind of device this is. Asked again here — HikariApp asked at
-        // process start — because a few boxes only settle their UI mode once an
-        // Activity exists. The user's override is read synchronously for the
-        // same reason the fullscreen flag below is: the very first frame has to
-        // already be the right layout, and Compose cannot await DataStore.
         TvMode.detect(this)
         (application as HikariApp).syncTvDeviceFlag()
         val storedTvMode = runCatching {
@@ -158,23 +126,10 @@ class MainActivity : AppCompatActivity() {
                 " (stored=" + storedTvMode + " override=" + TvMode.override +
                 " " + TvMode.describe(this) + ")",
         )
-        // A tracker sign-in that came back through the DEVICE'S BROWSER lands
-        // here as the launch intent (see [handleTrackerRedirect] and the
-        // `hikari://oauth` filter in the manifest).
         handleTrackerRedirect(intent)
         // A repo link forwarded by RepoLinkActivity ("Open with → Hikari" in
         // a browser) lands here the same way on a cold start.
         handleRepoLink(intent)
-        // A television shows this app LANDSCAPE, always.
-        //
-        // The TV layout is a landscape design (a rail down the left, rows to the
-        // right of it), and a box that reports a portrait screen — or a phone
-        // whose user has switched the television layout on to look at it — would
-        // otherwise letterbox it: the app draws a 16:9 interface inside a tall
-        // window, with black bands above and below, which is exactly the "the
-        // app is not full screen on my TV" report. Asking for landscape makes
-        // the window take the whole display, and every rail, hero and grid in
-        // the app is drawn against the shape it was designed for.
         if (TvMode.isTv) {
             runCatching {
                 requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
@@ -202,62 +157,20 @@ class MainActivity : AppCompatActivity() {
             // Remember the Flow — a fresh store.themeFlow() per recomposition
             // would make collectAsState reset to the initial key each time.
             val themeFlow = remember { store.themeFlow() }
-            // Seeded from the SYNCHRONOUS mirror, not from the stock default: a
-            // first frame drawn in the wrong theme is one full screen of the
-            // wrong colours, and DataStore's answer arrives a moment later — the
-            // reported "the accent I chose reset to the default and then changed
-            // back", seen every time the app came back from the player. See
-            // [AccentStore.theme].
             val themeKey by themeFlow.collectAsState(
                 initial = AccentStore.theme(this@MainActivity)
             )
             val themeMode = HikariThemeMode.fromKey(themeKey)
 
-            // App language (Settings → Appearance & Theme). The map is
-            // handed to the whole tree through I18n.LocalMap, so every screen
-            // that wraps a literal with tr(...) re-renders in the new language
-            // the moment the choice changes — app-wide, live, no restart.
             val languageFlow = remember { store.languageFlow() }
             val storedLanguage by languageFlow.collectAsState(
-                // The mirror first (see [LanguageManager.stored]): with "" the
-                // interface would come up in the platform's language and then
-                // repaint into the user's chosen one a moment later.
                 initial = com.hikari.app.ui.LanguageManager.stored(this@MainActivity)
             )
-            // The picker's choice is kept in memory (LanguageManager.pending)
-            // until the store catches up, so the activity recreation the locale
-            // change triggers can never show the previous language.
             val languageTag = com.hikari.app.ui.LanguageManager.pending() ?: storedLanguage
-            // The language the INTERFACE speaks. `languageTag` is Hikari's own
-            // setting (which the TMDB title language follows), but when it is
-            // empty — "System default" — the platform's answer (Android's
-            // per-app language screen for Hikari, or the device locale) decides,
-            // so choosing Arabic for the app ANYWHERE translates it. See
-            // LanguageManager.effectiveTag.
             val uiLanguageTag = com.hikari.app.ui.LanguageManager.effectiveTag(languageTag)
             val i18nMap = remember(uiLanguageTag) {
                 com.hikari.app.i18n.I18n.mapFor(this@MainActivity, uiLanguageTag)
             }
-            // The language the UI is DRAWN in, applied through Compose instead of
-            // by asking Android to rebuild the activity.
-            //
-            // This is the "I change the language and half the screen stays
-            // English until I restart" bug. The platform's per-app locale (see
-            // LanguageManager.apply) is still set — the player's View-based
-            // overlay reads values-<lang>/strings.xml, so it has to be — but the
-            // activity declares `locale|layoutDirection` in android:configChanges,
-            // so Android hands the change to onConfigurationChanged instead of
-            // recreating anything. The result was a single frame in which the
-            // composables that read the configuration had the new language and
-            // the rest still held the old one, which reads as a screen written
-            // in two languages at once, and only a cold start made it uniform.
-            //
-            // Providing the configuration ourselves makes it one atomic change:
-            // every tr() re-reads LocalMap, every read of LocalConfiguration and
-            // LocalLayoutDirection sees the new language on the same frame, and
-            // an RTL language flips the layout in the same pass. Nothing is
-            // recreated, so scroll position, the open settings card and the
-            // navigation stack all survive the switch.
             val localizedConfig = remember(uiLanguageTag) {
                 val base = Configuration(this@MainActivity.resources.configuration)
                 val locale = if (uiLanguageTag.isBlank()) {
@@ -272,11 +185,6 @@ class MainActivity : AppCompatActivity() {
             val rtl = localizedConfig.layoutDirection == android.view.View.LAYOUT_DIRECTION_RTL
             LaunchedEffect(i18nMap, uiLanguageTag) {
                 com.hikari.app.i18n.I18n.setCurrent(i18nMap, uiLanguageTag)
-                // One line, deliberately: the interface language is the one
-                // thing a user reports as "I set Arabic and it is still
-                // English", and this says which tag was resolved, what Hikari's
-                // own setting held, and how many strings the dictionary
-                // actually had — the three questions that answer it.
                 com.hikari.app.data.Logs.log(
                     "i18n",
                     "interface language '$uiLanguageTag' (setting '$languageTag', " +
@@ -286,9 +194,6 @@ class MainActivity : AppCompatActivity() {
             }
             LaunchedEffect(storedLanguage) {
                 com.hikari.app.ui.LanguageManager.reconcile(storedLanguage)
-                // Keep the synchronous mirror in step (both when this screen set
-                // it and when something else did — a backup restore, Android's
-                // own per-app language screen).
                 com.hikari.app.ui.LanguageManager.rememberStored(this@MainActivity, storedLanguage)
             }
 
@@ -298,12 +203,6 @@ class MainActivity : AppCompatActivity() {
             val appAccentFlow = remember { store.appAccentFlow() }
             val playerAccentFlow = remember { store.playerAccentFlow() }
             val themeLinkedFlow = remember { store.themeLinkedFlow() }
-            // Seeded from the SYNCHRONOUS mirrors (see [AccentStore]) rather
-            // than from the stock defaults: with the defaults the first frame
-            // after the Activity was created painted the stock gold accent and
-            // the stock dark theme, and DataStore's answer arrived a frame or
-            // two later — the reported "the accent I picked reset to the default
-            // and then changed back", seen on every return from the player.
             val appAccentKey by appAccentFlow.collectAsState(
                 initial = AccentStore.app(this@MainActivity).key
             )
@@ -326,9 +225,6 @@ class MainActivity : AppCompatActivity() {
             // In-app UI scale (Settings → App Layout → In-app UI scale): when on, the app
             // stops following the phone's font/display size and uses this.
             val uiScaleEnabledFlow = remember { store.uiScaleEnabledFlow() }
-            // Same seeding rule as the accents: the synchronous mirror, so the
-            // first frame is already laid out at the saved scale instead of at
-            // 100% and then jumping.
             val uiScaleMirror = remember {
                 com.hikari.app.ui.UiScale.current(this@MainActivity)
             }
@@ -338,19 +234,12 @@ class MainActivity : AppCompatActivity() {
             val uiScaleFlow = remember { store.uiScaleFlow() }
             val uiScale by uiScaleFlow.collectAsState(initial = uiScaleMirror.second)
 
-            // Keep the synchronous mirror of the preference current, so
-            // View-based screens (player, WebView) and the next cold start
-            // apply it without waiting on DataStore.
             LaunchedEffect(uiScaleEnabled, uiScale) {
                 com.hikari.app.ui.UiScale.sync(
                     this@MainActivity, uiScaleEnabled, uiScale
                 )
             }
 
-            // Full screen app mode (Settings → App Layout): switching it shows
-            // or hides the phone's own status + navigation bars right away,
-            // without a restart. The mirror above is kept in step so the next
-            // onResume/onWindowFocusChanged re-applies the same mode.
             val fullscreenOffFlow = remember { store.fullscreenOffFlow() }
             val fullscreenOffPref by fullscreenOffFlow.collectAsState(initial = fullscreenOff)
             LaunchedEffect(fullscreenOffPref) {
@@ -384,16 +273,9 @@ class MainActivity : AppCompatActivity() {
                 com.hikari.app.ui.AppFonts.fontFamily(this@MainActivity, appFontKey, appFontFile)
             }
 
-            // Hide the explanation lines (Settings → App Layout → "Explanations"):
-            // provided app-wide below, so every caption in the app answers to one
-            // switch. See [com.hikari.app.ui.components.LocalHideHelp].
             val hideHelpFlow = remember { store.hideHelpFlow() }
             val hideHelp by hideHelpFlow.collectAsState(initial = false)
 
-            // Which language TMDB answers in. "" follows the app language (the
-            // point of the feature: switch the app to Spanish and the movies
-            // and series are titled in Spanish too), "none" leaves TMDB on
-            // English, anything else is an explicit TMDB code.
             val tmdbLanguageFlow = remember { store.tmdbLanguageFlow() }
             val tmdbLanguageMode by tmdbLanguageFlow.collectAsState(initial = "")
             val tmdbLanguage = when (tmdbLanguageMode) {
@@ -402,9 +284,6 @@ class MainActivity : AppCompatActivity() {
                 else -> tmdbLanguageMode
             }
             LaunchedEffect(tmdbLanguage) {
-                // Applies the language AND, when it really changed, invalidates
-                // the content that was localized under the previous one — so the
-                // switch is live instead of waiting for a restart.
                 (application as HikariApp).applyContentLanguage(tmdbLanguage)
             }
 
@@ -427,13 +306,6 @@ class MainActivity : AppCompatActivity() {
                 updateChecked = true
             }
 
-            // One-time community invitation per version. Held back until the update
-            // check has finished so the two dialogs never stack. "Don't show
-            // this again" holds for the CURRENT version only: after an update
-            // the dialog comes back once even for a user who ticked it before,
-            // and ticking it again holds the new version. Coming back once per
-            // update (not just first install) is what surfaces the
-            // Telegram/Reddit/Discord links to existing users too.
             var showTelegramDialog by remember { mutableStateOf(false) }
             LaunchedEffect(Unit) {
                 val current = runCatching { com.hikari.app.BuildConfig.VERSION_NAME }.getOrDefault("")
@@ -444,18 +316,10 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
-            // The television layout can be chosen at runtime (Settings → TV &
-            // Remote → "This device is a TV"), so the mirror the whole app reads
-            // is kept in step with the stored choice — switching it re-lays-out
-            // the interface live, without a restart.
             val tvModeFlow = remember { store.tvModeFlow() }
             LaunchedEffect(tvModeFlow) {
                 tvModeFlow.collect {
                     TvMode.setOverride(it)
-                    // Switching the television layout on (or off) also switches
-                    // the window's orientation with it, and re-applies the bars:
-                    // the rail is a landscape design, and the phone layout must
-                    // be left free to rotate as the user holds the device.
                     runCatching {
                         requestedOrientation =
                             if (TvMode.isTv) android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
@@ -481,17 +345,7 @@ class MainActivity : AppCompatActivity() {
                 uiScale = uiScale,
                 fontFamily = appFontFamily,
             ) {
-                // On a television, every clickable in the app inherits the focus
-                // ring from here (see TvFocusProvider) — including the dialogs
-                // below, which is why the provider wraps them too. On a phone
-                // this is a pass-through and the platform ripple is unchanged.
                 TvFocusProvider(androidx.compose.material3.MaterialTheme.colorScheme.primary) {
-                // The in-app lock (Settings → Privacy & Browsing → App lock).
-                // While it is on and the app has not been unlocked, this is the
-                // only thing on screen — the gate draws the unlock card INSTEAD
-                // of AppRoot and of the dialogs below, so nothing of the app (a
-                // title, a poster, a notification about an update) can be read
-                // over the lock.
                 com.hikari.app.ui.AppLockGate(this@MainActivity) {
                 AppRoot(themeMode.key)
                 if (showUpdateDialog) {
@@ -532,15 +386,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Feeds the television focus ring (see [com.hikari.app.tv.TvInput]).
-     *
-     * A remote's key reaches the window here, before any composable sees it, so
-     * this is the one place that knows the user is driving the app with a remote
-     * rather than a finger — including on a box that reports itself as a phone,
-     * where the app would otherwise draw no focus cursor at all. Nothing is
-     * consumed or altered: the event goes on to the rest of the app unchanged.
-     */
     override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
         com.hikari.app.tv.TvInput.noteKey(event)
         return super.dispatchKeyEvent(event)
@@ -568,19 +413,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        // Coming back from the background (or another activity) the system
-        // restores the status/navigation bars, so re-apply the immersive mode —
-        // otherwise the app is left with a status-bar-sized blank band that
-        // pushes every screen down until the next launch.
         applyImmersiveMode()
-        // Heal a stuck window orientation on every foregrounding. The layout
-        // switch applies instantly in memory while the store write is still
-        // in flight, so the window can be left showing the TV layout in a
-        // portrait window (or the phone layout in a landscape one) until the
-        // round-trip lands — and a wedged/failed write left it there for good.
-        // Re-asserting the orientation that matches the EFFECTIVE mode here
-        // (and in onCreate, and in the store collector below) closes all three
-        // gaps with one idempotent assignment: same value is a no-op.
         runCatching {
             requestedOrientation =
                 if (TvMode.isTv) android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
@@ -588,29 +421,11 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Immersive fullscreen: hide the system status + navigation bars so the
-     * content fills the entire screen (swiping from an edge briefly reveals
-     * them). Applied at launch AND on every resume/focus gain — this is not
-     * sticky on its own, and when the bars come back they leave an empty band
-     * above the content (the "fullscreen leaves a blank bar under the status
-     * bar" report), which shows up on some devices and not others.
-     *
-     * When Settings → App Layout → "Turn off full screen app mode" is on, the
-     * bars are shown instead and left to behave normally. Either way the window
-     * stays edge-to-edge (the bars are transparent over the app's own
-     * backdrop), and the screens pad themselves by the reported insets.
-     */
     private fun applyImmersiveMode() {
         runCatching {
             androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
             val controller =
                 androidx.core.view.WindowCompat.getInsetsController(window, window.decorView)
-            // A television is always fullscreen: there is no status bar to read
-            // and no navigation bar to reach, and every television app hides the
-            // two rows a touch device would show. The "Turn off full screen app
-            // mode" preference is therefore a phone-only setting (its card is
-            // hidden there too) — it cannot take the bars back on a TV.
             if (fullscreenOff && !TvMode.isTv) {
                 controller.show(androidx.core.view.WindowInsetsCompat.Type.systemBars())
                 controller.systemBarsBehavior =
@@ -627,12 +442,6 @@ class MainActivity : AppCompatActivity() {
         if (com.lagradost.cloudstream3.CommonActivity.activity === this) {
             com.lagradost.cloudstream3.CommonActivity.setActivityInstance(null)
         }
-        // NOTE: HikariApp.mainActivity is intentionally NOT cleared here. A
-        // plugin load can happen while the app is backgrounded (a catalog
-        // refresh, a settings reload), and plugins cast this context to an
-        // Activity — clearing it on stop was exactly what made SKTech throw
-        // "HikariApp cannot be cast to AppCompatActivity". It is cleared in
-        // onDestroy instead.
         super.onStop()
     }
 
@@ -643,13 +452,6 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
     }
 
-    /**
-     * When a plugin's own settings screen (a DialogFragment the plugin shows,
-     * like SKTech's sub-provider picker) is dismissed, this window regains
-     * focus. Re-load the plugin it belongs to and refresh the provider list so
-     * the change is reflected immediately (home catalogs, provider names) —
-     * without needing the app restart some plugins ask for.
-     */
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (!hasFocus) return
@@ -658,11 +460,6 @@ class MainActivity : AppCompatActivity() {
         // focus back so the UI stays fullscreen.
         applyImmersiveMode()
         val app = application as HikariApp
-        // Focus coming back is also the one moment an extension can flip its own
-        // Cloudflare-WebView switch — a plugin's settings sheet writes plugin
-        // prefs straight through CloudStreamApp.setKey. Re-assert the user's
-        // choice, so closing a plugin's settings can never leave an extension
-        // able to open a verification page on its own (see ExtensionVerifyGuard).
         app.appScope.launch {
             runCatching {
                 com.hikari.app.net.ExtensionVerifyGuard.apply(
@@ -683,25 +480,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Android is handing the app a URL (a `hikari://oauth` tracker redirect
-     * finished in the device's own browser — see [TrackerRedirect]).
-     *
-     * The window is `singleTask` (see the manifest), so this is the running
-     * instance coming back to the front, not a second one being built: the
-     * dialog that started the sign-in is still on screen, and it is the one that
-     * must finish the link, because the `state` the service will check is a
-     * value only that dialog knows (it is MyAnimeList's PKCE `code_verifier`).
-     * So an open dialog simply receives it.
-     *
-     * With nothing on screen — a link opened long after the app was closed, or
-     * one that arrives before the app has any UI — the activity finishes what it
-     * CAN finish on its own: a token link (an old AniList implicit-grant link,
-     * which needs nothing but the client id already stored in the settings) or
-     * a code link whose sign-in record survived (see [TrackerApi.Pending]).
-     * Anything else says so, with the one instruction that works, rather than
-     * pretending the link was received and silently doing nothing with it.
-     */
     private fun handleTrackerRedirect(intent: android.content.Intent?) {
         val url = intent?.data?.toString().orEmpty()
         if (!url.startsWith(com.hikari.app.tracker.TrackerApi.REDIRECT_URI)) return
@@ -734,13 +512,6 @@ class MainActivity : AppCompatActivity() {
             }
             return
         }
-        // A code flow (MyAnimeList, Shikimori, AniList) with no dialog on screen.
-        // The code alone is not enough to exchange: the token endpoint also wants
-        // the `state` the redirect echoes back, because for MyAnimeList that same
-        // value IS the PKCE `code_verifier`. The dialog persists it when the login
-        // page opens (see TrackerApi.Pending), so the link can be finished here —
-        // which is what makes a browser sign-in work even when Android reclaimed
-        // the app in between, the case that used to end in "paste it yourself".
         val code = com.hikari.app.tracker.TrackerApi.codeFromRedirect(url)
         val echoed = com.hikari.app.tracker.TrackerApi.stateFromRedirect(url)
         if (code != null && echoed != null) {
@@ -782,9 +553,6 @@ class MainActivity : AppCompatActivity() {
             }
             return
         }
-        // Nothing to exchange (no code, or no echoed state): the honest answer is
-        // where to put the link. The dialog's paste box reads a code out of a
-        // whole URL.
         toast(com.hikari.app.i18n.I18n.t("This sign-in link has to be finished in the app: Settings → Trackers → paste it into the code field."))
     }
 
@@ -802,12 +570,6 @@ class MainActivity : AppCompatActivity() {
         handleRepoLink(intent)
     }
 
-    /**
-     * A repo link forwarded by [com.hikari.app.deeplink.RepoLinkActivity]
-     * ("Open with → Hikari" on a repo link in a browser): published for AppRoot,
-     * which switches to the Extensions tab — the Extensions screen installs it
-     * into the section it belongs to and opens that repo's folder.
-     */
     private fun handleRepoLink(intent: android.content.Intent?) {
         val url = intent?.getStringExtra(com.hikari.app.deeplink.RepoLinkActivity.EXTRA_REPO_LINK)
             .orEmpty().trim()
@@ -830,31 +592,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Fixes a plugin's settings bottom sheet so its whole list is reachable.
-     *
-     * These sheets (e.g. SK Tech's res/layout/settings.xml) are plain
-     * BottomSheetDialogFragments and open in STATE_COLLAPSED. When the list is
-     * long the sheet is as tall as the screen yet is positioned at the
-     * collapsed offset, so its lower half — including the bottom of the inner
-     * ScrollView's viewport — hangs below the bottom edge of the screen: the
-     * list scrolls, but its last rows can never be brought into view, and once
-     * the sheet is made non-draggable the user cannot expand it either.
-     *
-     * Expanding the sheet (skipCollapsed) aligns its bottom with the screen so
-     * the whole viewport is visible, and leaving it non-draggable means drags
-     * on the list scroll it instead of dismissing the sheet. Only
-     * plugin-supplied sheets are touched — their classes are loaded by the
-     * plugin's own PathClassLoader, never this activity's.
-     */
-    /**
-     * Extension auto-open guard (see [com.hikari.app.net.ExtensionUiGuard]):
-     * external intents from extension code pass only on a user gesture (or
-     * inside the allow-window). Our own calls always pass.
-     *
-     * Deliberately NO getSystemService/WindowManager interception here (a
-     * proxy crashes EVERY dialog — ClassCastException on WindowManagerImpl).
-     */
     override fun startActivity(intent: android.content.Intent) {
         if (com.hikari.app.net.ExtensionUiGuardMixins.startAllowed(intent)) super.startActivity(intent)
     }
@@ -865,23 +602,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Closes an extension's own popup the moment it appears.
-     *
-     * Hikari's rule is that a Cloudflare/Turnstile verification page opens only
-     * when the user taps the app's own verify (globe) button. Extensions cannot
-     * be made to follow that rule by their preferences alone (see
-     * [com.hikari.app.net.ExtensionVerifyGuard.blocksPopup] for the disassembled
-     * proof — Anichi ships `AnichiTurnstileDialog` and shows it by itself while
-     * it resolves links), so this is the enforcement point: every fragment that
-     * reaches this activity is offered to the guard, and one that looks like an
-     * extension's verification or funding screen is dismissed before it can
-     * draw.
-     *
-     * A fragment from another class loader is an extension's (our own screens
-     * are compiled into this APK) — the same test [fixPluginSheetScrolling]
-     * uses. A plugin's settings sheet never matches, so that fix is unaffected.
-     */
     private fun dismissExtensionPopup(fragment: androidx.fragment.app.Fragment) {
         if (fragment.javaClass.classLoader === javaClass.classLoader) return
         val popup = fragment as? androidx.fragment.app.DialogFragment ?: return
@@ -904,16 +624,9 @@ class MainActivity : AppCompatActivity() {
         val dialog = (fragment as? androidx.fragment.app.DialogFragment)?.dialog ?: return
         if (fragment.javaClass.classLoader === javaClass.classLoader) return
         val decor = dialog.window?.decorView ?: return
-        // Plugin settings sheets are dismissed how the plugin's own header says
-        // — and SK Tech's has ONLY a Save button. Expanding the sheet to full
-        // height (below) then leaves no outside area to tap, so Save was the
-        // only visible way out. Mirror it with a Close button.
         if (dialog is com.google.android.material.bottomsheet.BottomSheetDialog) {
             addSettingsCloseButton(dialog, decor)
             expandSheet(dialog)
-            // Re-apply once the sheet has actually been laid out: a
-            // BottomSheetDialog settles into its collapsed state during the
-            // first layout pass, which can undo a state change made before it.
             decor.post {
                 addSettingsCloseButton(dialog, decor)
                 expandSheet(dialog)
@@ -922,26 +635,11 @@ class MainActivity : AppCompatActivity() {
         val scrollView = findPlainScrollView(decor) ?: return
         if (dialog is com.google.android.material.bottomsheet.BottomSheetDialog) {
             boundScrollView(scrollView)
-            // Safety net: once the expansion animation has settled, if the
-            // list's viewport still reaches below the bottom of the screen,
-            // shorten it so its last row can be scrolled into view.
             decor.postDelayed({ clampScrollViewToScreen(dialog, decor, scrollView) }, 600L)
             decor.postDelayed({ clampScrollViewToScreen(dialog, decor, scrollView) }, 1600L)
         }
     }
 
-    /**
-     * Adds a Close (✕) button beside the plugin settings header's own Save
-     * button, so the screen can be dismissed without changing anything.
-     *
-     * Plugins normally ship only a Save control in that header (SK Tech's
-     * res/layout/settings.xml has a title and one save ImageButton), and since
-     * Hikari opens the sheet fully expanded and non-draggable there is no
-     * outside area left to tap — Save was literally the only way out. The
-     * button is tinted like the header's title so it matches whatever theme the
-     * plugin's sheet uses. Best-effort: a header shaped differently just gets
-     * no extra button (Back still dismisses the sheet).
-     */
     private fun addSettingsCloseButton(
         dialog: com.google.android.material.bottomsheet.BottomSheetDialog,
         decor: android.view.View,
@@ -950,9 +648,6 @@ class MainActivity : AppCompatActivity() {
             if (decor.findViewById<android.view.View>(settingsCloseButtonId) != null) return@runCatching
             val save = findSettingsHeaderAction(decor) ?: return@runCatching
             val header = save.parent as? android.widget.RelativeLayout ?: return@runCatching
-            // Only titled header bars (title + action inside one row) get the
-            // extra button — that shape is the settings header, and the title
-            // also tells us which color the sheet expects its icons to be.
             val title = settingsHeaderTitle(header) ?: return@runCatching
             val context = header.context
             val size = dpToPx(context, 44)
@@ -985,9 +680,6 @@ class MainActivity : AppCompatActivity() {
             }
             lp.addRule(android.widget.RelativeLayout.CENTER_VERTICAL)
             header.addView(close, lp)
-            // Safety net: with the sheet non-draggable, Back/outside-tap are the
-            // only other exits. Allow both — this is a settings sheet, so
-            // dismissing it never destroys anything.
             runCatching {
                 dialog.setCancelable(true)
                 dialog.setCanceledOnTouchOutside(true)
@@ -1031,12 +723,6 @@ class MainActivity : AppCompatActivity() {
     private fun dpToPx(context: android.content.Context, dp: Int): Int =
         (dp * context.resources.displayMetrics.density).toInt()
 
-    /**
-     * Shortens [scrollView] if, with the sheet fully open, its bottom edge still
-     * sits below the bottom of [decor]. Only ever shrinks the view, and only
-     * once the sheet has settled in STATE_EXPANDED, so it cannot fight the
-     * sheet's own layout.
-     */
     private fun clampScrollViewToScreen(
         dialog: com.google.android.material.bottomsheet.BottomSheetDialog,
         decor: android.view.View,
@@ -1078,13 +764,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Plugin settings layouts often give their ScrollView
-     * android:layout_height="match_parent" while its parent is a wrap_content
-     * LinearLayout. Measuring it as wrap_content sizes it against the space
-     * that is actually left, so the sheet's content cannot grow past the
-     * available height.
-     */
     private fun boundScrollView(scrollView: android.widget.ScrollView) {
         runCatching {
             val lp = scrollView.layoutParams ?: return@runCatching

@@ -1,19 +1,5 @@
 package com.hikari.app.telegram
 
-/**
- * TDLib's error strings, said in English.
- *
- * TDLib answers a refused request with a result like `PHONE_NUMBER_INVALID` or
- * `FLOOD_WAIT_34` — codes meant for a log, not for a person standing in a phone
- * field. Every login step in the Telegram tab shows what came back, so the
- * messages have to be worth reading: what happened, and what to do about it.
- *
- * Matching is done on the raw code with [String.contains], because TDLib
- * sometimes wraps the code in a sentence ("400: PHONE_NUMBER_INVALID") and
- * sometimes adds the offending value. Anything not recognised is passed through
- * with the code in brackets rather than swallowed: an unexplained refusal is
- * still a thousand times better than a button that appears to do nothing.
- */
 object TelegramError {
 
     fun explain(raw: String?): String {

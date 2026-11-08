@@ -53,11 +53,6 @@ object NuvioCollectionsImport {
         val sort: String,
         val genre: Int,
         val year: Int,
-        /** The rest of the reference app's discover filter set, as the raw
-         *  strings the file carries (`filters.withGenres`, `…releaseDateGte`,
-         *  `…withWatchProviders` …). Empty string = the file did not set it, so
-         *  the parameter is simply not sent — which is what keeps an imported
-         *  row behaving exactly like the one that produced the file. */
         val genresText: String = "",
         val genresExclude: String = "",
         val dateFrom: String = "",
@@ -87,11 +82,6 @@ object NuvioCollectionsImport {
         val emoji: String,
         val shape: String,
         val sources: List<DraftSource>,
-        /** Titles the folder carries ITSELF, rather than naming a catalog to
-         *  fetch. A Nuvio export can do either: a folder holding a catalog
-         *  descriptor has `sources`, and a folder holding actual titles has
-         *  `items`. Ignoring the second shape is why an imported file that
-         *  plainly contained titles produced folders that loaded nothing. */
         val items: List<MediaItem> = emptyList(),
         /** The folder's own toggles and hero, carried over so an imported file
          *  looks the way it looked in the app it came from. */
@@ -222,10 +212,6 @@ object NuvioCollectionsImport {
         val out = ArrayList<DraftSource>(arr.length())
         for (i in 0 until arr.length()) {
             val s = arr.optJSONObject(i) ?: continue
-            // The whole discover filter set travels with the source. It is read
-            // as text and passed straight through to TMDB: a filter the file set
-            // must survive the import, or "the same JSON" would produce a row
-            // that lists different titles than it did in the app it came from.
             val f = s.optJSONObject("filters")
             fun fx(key: String): String =
                 f?.opt(key)?.toString()?.takeIf { it != "null" && it != "0" && it.isNotBlank() }
@@ -284,11 +270,6 @@ object NuvioCollectionsImport {
         val droppedAddons: Int,
     )
 
-    /** Turns a [Plan] into saved-ready [Collection]s.
-     *
-     *  [resolveCatalog] answers "which installed extension exposes this catalog
-     *  id of this type?" for one `addon` source, or null when nothing does — see
-     *  the call site, which asks the provider manager once per import. */
     suspend fun materialise(
         plan: Plan,
         newId: (String) -> String,
@@ -302,12 +283,6 @@ object NuvioCollectionsImport {
             val folders = ArrayList<CollectionFolder>(draft.folders.size)
             for (fd in draft.folders) {
                 val sources = ArrayList<CatalogSource>(fd.sources.size + 1)
-                // Titles the folder carries itself come FIRST: they are the
-                // folder's own content, and (unlike a catalog descriptor) they
-                // need nothing installed to load. This is the shape a Nuvio
-                // export uses when a folder holds titles directly, and dropping
-                // it is why such a file imported "successfully" into folders
-                // that showed nothing at all.
                 if (fd.items.isNotEmpty()) {
                     val json = NuvioCatalogImport.encode(fd.items)
                     if (json.isNotEmpty()) {
@@ -341,12 +316,6 @@ object NuvioCollectionsImport {
                         else -> addons++
                     }
                 }
-                // No cover in the file: the first title's poster stands in, so
-                // the imported folder is recognisable instead of a grey tile.
-                // A folder that carries BOTH a still cover and a focus GIF keeps
-                // its still: Hikari's tile has one artwork field, and the still
-                // is the one that is right whether or not the tile is focused.
-                // Only a gif-only folder is stored as [CoverKinds.GIF].
                 val still = fd.coverUrl.takeIf { it.isNotBlank() }
                 val gif = fd.gifUrl.takeIf { it.isNotBlank() }
                 val inheritedCover = still ?: gif
@@ -416,18 +385,6 @@ object NuvioCollectionsImport {
         else -> "movie"
     }
 
-    /**
-     * The ordering TMDB will actually accept for [media].
-     *
-     * A file can pair a movie's date field with a TELEVISION discovery (the
-     * example export asks for `/discover/tv` sorted by
-     * `primary_release_date.desc`, which is a movie-only field): TMDB answers
-     * that with an error and the row would come back empty with nothing to
-     * explain why. The date field is swapped for the one the endpoint has —
-     * `first_air_date` for series, `primary_release_date` for films — and every
-     * other ordering (`popularity.desc`, `vote_average.desc`, …) is passed
-     * through untouched.
-     */
     private fun sortFor(raw: String, media: String): String {
         val sort = raw.trim().ifBlank { "popularity.desc" }
         return when {
@@ -462,10 +419,6 @@ object NuvioCollectionsImport {
         if (type.isEntity && sd.tmdbId.isBlank()) return null
         if (type == TmdbSourceType.TITLE && sd.tmdbId.isBlank()) return null
         if (type.isPerson && sd.tmdbId.isBlank()) return null
-        // A list or a director that did not say which kind it is carries BOTH
-        // films and series in the reference app, so "all" is the faithful
-        // mapping — [mediaOf]'s "movie" default would silently drop every series
-        // of a director whose file left `mediaType` empty.
         val media = if (sd.media.isBlank() &&
             (type == TmdbSourceType.LIST || type == TmdbSourceType.DIRECTOR)
         ) {
@@ -521,22 +474,6 @@ object NuvioCollectionsImport {
     }
 }
 
-/**
- * The other half of [NuvioCollectionsImport]: the user's collections written
- * back out as the JSON the reference app produces.
- *
- * This is the "Copy JSON" the personal catalog creator needs — the way to move
- * a hand-built catalog to another install, to send it to a friend, or simply to
- * keep a copy before a reinstall. It is deliberately the SAME shape this file's
- * importer reads (collection → folders → sources, with the reference app's own
- * field names), so an export from Hikari is a file Hikari can import again and
- * that the other app understands too: folder covers, tile shapes, hide-title,
- * pin-to-top, the view mode and every discover filter are all carried.
- *
- * Imported TITLE lists (`kind = ITEMS`) are written as a folder's own `items`
- * array, which is the shape the importer already understands for a folder that
- * holds titles rather than a catalog descriptor.
- */
 object NuvioCollectionsExport {
 
     fun encode(collections: List<Collection>): String {

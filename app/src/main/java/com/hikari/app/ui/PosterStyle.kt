@@ -61,34 +61,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Dispatchers
 
-/**
- * The visual treatments a poster card can wear — Settings → App Layout →
- * Poster styling → Poster effect.
- *
- * These are the "signature" card styles the reference clients are known for,
- * built from nothing but what a card already draws: the artwork it is loading,
- * the accent colour, and one animation clock. None of them costs an extra
- * network request or a second copy of the image, so switching one on is instant
- * and works offline over a cached poster.
- *
- *  - [GLOW]      the coloured halo behind the art, pushed harder than the blur
- *                slider's quiet default — this is the reference client's look.
- *  - [TILT]      the card leans back in 3D, as if laid on a table seen from the
- *                side, with a matching highlight.
- *  - [SHEEN]     a band of light sweeps across the art every couple of seconds,
- *                the way a glossy print does when you tilt it.
- *  - [AURA]      a breathing accent-gradient ring around the card.
- *  - [SPOTLIGHT] an accent spotlight behind the card plus a bottom scrim, so
- *                the artwork reads as lit from the page rather than pasted on.
- *  - [FRAME]     a gallery mat: the art inset behind a hairline frame with a
- *                soft accent tint, like a print in a mount.
- *  - [LIT]       one light over the card, standing wherever the reader put it
- *                (Settings → Poster styling → Edge light): the artwork is
- *                brightened where the light falls and taken down towards shadow
- *                everywhere else, which is what makes a flat poster read as a
- *                lit object. The only treatment here whose LOOK is the user's
- *                (see [PosterStyle.glowX]/[PosterStyle.glowY]).
- */
 object PosterEffects {
     const val NONE = "none"
     const val GLOW = "glow"
@@ -104,11 +76,6 @@ object PosterEffects {
 
     fun normalize(key: String?): String = if (key != null && key in ALL) key else NONE
 
-    /** The treatments named by [keys], in [ALL] order and without [NONE].
-     *
-     *  A card can wear SEVERAL at once — the choice is a set in Settings, so
-     *  "sheen and aura ring" or "gallery frame and 3D tilt" are each one
-     *  selection, and each treatment draws its own layer (see [PosterArt]). */
     fun normalizeSet(keys: Collection<String>?): Set<String> =
         if (keys.isNullOrEmpty()) emptySet()
         else ALL.filter { it != NONE && it in keys }.toSet()
@@ -180,27 +147,6 @@ object PosterEffects {
     fun haloed(key: String): Boolean = haloed(normalizeSet(listOf(key)))
 }
 
-/**
- * The user's poster styling — Settings → App Layout → Poster styling.
- *
- * These are the knobs the reference client offers on its artwork: the dynamic
- * iOS-style blur behind a poster, the corner rounding, whether the title and the
- * score are drawn over the art at all, and which of the [PosterEffects] the card
- * wears (one, several, or none). Every grid in the app reads them from
- * [rememberPosterStyle] and renders through [PosterArt], so a change in Settings
- * is visible on the very next frame everywhere at once.
- */
-/**
- * Which shape catalogue cards take — Settings → App Layout → Poster styling →
- * Poster type.
- *
- *  - [AUTO]    televisions draw cinema 16:9 landscape cards, phones draw
- *              vertical 2:3 posters — what every screen did before the choice
- *              existed, so a stored value always wins and nobody's layout
- *              changes on update;
- *  - [CINEMA]  16:9 everywhere, phones included;
- *  - [VERTICAL] 2:3 everywhere, televisions included.
- */
 object PosterTypes {
     const val AUTO = "auto"
     const val CINEMA = "cinema"
@@ -271,11 +217,6 @@ data class PosterStyle(
     }
 }
 
-/** The live poster style, collected from the store. Remembered flows, so the
- *  subscriptions survive recomposition.
- *
- *  Called ONCE per row/grid and passed down (see [PosterArt]); a copy per poster
- *  cell would open one DataStore collection per card on screen. */
 @Composable
 fun rememberPosterStyle(): PosterStyle {
     val app = LocalContext.current.applicationContext as HikariApp
@@ -292,16 +233,8 @@ fun rememberPosterStyle(): PosterStyle {
     val glowPointFlow = remember { app.store.posterGlowPointFlow() }
     val glowStrengthFlow = remember { app.store.posterGlowStrengthFlow() }
     val posterTypeFlow = remember { app.store.posterTypeFlow() }    // Television performance mode (Settings → TV & Remote): a TV stick is
-    // decoding 1080p with a chip a phone would have called slow, so while it is
-    // on the expensive per-poster work is dropped — the animated treatments and
-    // the blurred halo behind each card — and the posters are drawn plain.
     val perfFlow = remember { app.store.tvPerfFlow() }
     val tvPerf by perfFlow.collectAsState(initial = false)
-    // The PERFORMANCE BOOSTER (Settings → Performance) drops exactly the same
-    // work, because it is the same complaint from the other kind of device: the
-    // blur behind every poster is three artwork layers per card and a gaussian
-    // blur on API 31+, which is the single most expensive thing Hikari's UI does
-    // per frame. Read here, where that cost is decided.
     val boosterFlow = remember { app.store.perfModeFlow() }
     val booster by boosterFlow.collectAsState(initial = false)
     val perf = tvPerf || booster
@@ -331,9 +264,6 @@ fun rememberPosterStyle(): PosterStyle {
         auraColor = AuraColors.normalize(auraColor),
         glowX = glowPoint.first.coerceIn(0f, 1f),
         glowY = glowPoint.second.coerceIn(0f, 1f),
-        // The light is a per-card gradient, and a television in performance mode
-        // is not drawing treatments at all (the set above is empty then) — the
-        // zero is belt and braces for any card that asks for it directly.
         glowStrength = if (perf) 0 else glowStrength.coerceIn(0, 100),
         posterType = PosterTypes.normalize(posterType),
     )
@@ -342,23 +272,6 @@ fun rememberPosterStyle(): PosterStyle {
 /** The rounded shape a poster at [style] uses. */
 fun PosterStyle.shape(): RoundedCornerShape = RoundedCornerShape(corner.dp)
 
-/**
- * The score a poster's badge should print for [item], or null when the badges
- * are switched off or nothing is known about the title yet.
- *
- * This is the ONE place a poster grid asks for a score, so every grid warms and
- * repaints identically: the cell registers itself for a background lookup
- * ([Ratings.ensure] — cheap once the title is on file), reads the revision so
- * only the cells showing that title repaint when the answer lands
- * ([Ratings.revision]), and prints whatever the cache holds
- * ([Ratings.cachedBadge] — IMDb first, then TMDB's own average). A grid that
- * only did the cache read showed a score for the titles the user had already
- * opened and a blank corner for the rest.
- *
- * The item's own TMDB average ([MediaItem.rating], carried by every TMDB-sourced
- * row) is the last fallback, so a row that came in with scores prints them on
- * the first frame instead of waiting for a lookup.
- */
 @Composable
 fun rememberPosterScore(item: MediaItem, style: PosterStyle): String? {
     if (!style.showRatings) return null
@@ -380,40 +293,12 @@ fun rememberPosterScore(item: MediaItem, style: PosterStyle): String? {
             ?.let { ((it * 10f).roundToInt() / 10f).toString() }
 }
 
-/**
- * The tags a poster draws in its top-left corner, in the order they are stacked:
- * first the one that is switched on alone, then the second directly under it.
- *
- *  - the QUALITY tag ([com.hikari.app.data.TitleQuality]) — the best quality the
- *    app has actually seen for this title, never a guess;
- *  - the TYPE tag — "MOVIE" or "SERIES", so a grid tells a film from a show
- *    without opening it.
- *
- * The order is fixed rather than "quality first when it exists": with both
- * switched on the pair must not swap places between two posters, and with only
- * one switched on it must simply sit at the top (the reported "when only one is
- * on it shows above, not down below") — which is exactly what a Column anchored
- * at the top-left does, whatever it is handed.
- */
 @Composable
 fun rememberPosterBadges(item: MediaItem?, style: PosterStyle): List<String> {
     if (item == null || (!style.showType && !style.showQuality)) return emptyList()
-    // Re-reads itself when a new quality lands, so a grid that is already on
-    // screen picks up the badge the moment a search teaches the app the answer
-    // (see [com.hikari.app.data.TitleQuality.revision]).
     val revision by com.hikari.app.data.TitleQuality.revision.collectAsState()
-    // The labels are resolved OUT here: `tr` is a composable, so it cannot be
-    // called from inside a `remember` lambda. They are also the two things that
-    // change when the app's language does, so the value below is keyed on them.
-    // NOT upper-cased: the reference chips read "Web" / "Blu-ray" in title case,
-    // and shouting "SERIES" next to a quiet "1080p" would be two different
-    // designs in one corner.
     val movieLabel = com.hikari.app.i18n.tr("Movie")
     val seriesLabel = com.hikari.app.i18n.tr("Series")
-    // The corrected type needs the episode COUNT, which lives in the same
-    // disk cache the Ep pills below read (never network on a poster). Null =
-    // never loaded: the declared tag stands until the count lands, and
-    // [epRevision] repaints the cell the moment it does.
     val epRevision by com.hikari.app.data.MetaCache.epRevision.collectAsState()
     var epCount by remember(item.uniqueId) { mutableStateOf<Int?>(null) }
     LaunchedEffect(item.uniqueId, epRevision) {
@@ -437,19 +322,6 @@ fun rememberPosterBadges(item: MediaItem?, style: PosterStyle): List<String> {
     }
 }
 
-/**
- * The Dub/Sub + latest-episode pills a poster draws in its top-center corner,
- * CloudStream-style ("Dub Ep 12" over "Sub Ep 14").
- *
- * The numbers come from the title's CACHED episode list only
- * ([com.hikari.app.data.MetaCache.cachedEpisodes] — the same stale-while-
- * revalidate store the detail page paints from), read off the main thread, so
- * a grid of posters costs no network and no per-card disk storm after the
- * first read (the cache holds an in-process mirror). A title whose episodes
- * were never loaded shows nothing rather than a guess. [MetaCache.epRevision]
- * repaints cells that are already on screen the moment some title's episodes
- * land.
- */
 @Composable
 fun rememberPosterEpBadges(item: MediaItem?): List<String> {
     if (item == null) return emptyList()
@@ -483,9 +355,6 @@ private fun epPillsFor(item: MediaItem, dubLabel: String, subLabel: String): Lis
     val eps = com.hikari.app.data.MetaCache.cachedEpisodes(key)
         ?: com.hikari.app.data.MetaCache.cachedEpisodes(key + "|trk2")
         ?: return emptyList()
-    // A corrected movie wears no episode pills: a single-episode
-    // site-scraper "series" is a film, so "Ep 1" would re-attach the wrong
-    // tag the badge above just removed.
     if (screenTypeFor(item, eps.size) == com.hikari.app.data.MediaType.MOVIE) return emptyList()
     var dub = 0
     var sub = 0
@@ -505,24 +374,6 @@ private fun epPillsFor(item: MediaItem, dubLabel: String, subLabel: String): Lis
     }
 }
 
-/**
- * The poster edge light ([PosterEffects.LIT]) as a draw modifier: a card lit
- * from ([centerX], [centerY]) — expressed as fractions of the card, so the same
- * numbers mean "a third of the way across, just under the top edge" on a 90dp
- * grid cell and on a 400dp hero — and falling into shadow away from it.
- *
- * Two radial gradients, and both are needed for the look to read as LIGHT
- * rather than as a bright blob:
- *
- *  * a soft white pool centred on the point, which is the light itself;
- *  * a shadow that grows with distance from the same point, because a lit object
- *    is not only brighter where the light falls, it is darker where it does not.
- *    Without this half the card is uniformly bright and reads as pasted on.
- *
- * Nothing is decoded, blurred or cached for either: a radial gradient is a draw
- * call, so the treatment costs the same on a 4K television as on a phone, and it
- * works over an artwork that has not finished loading.
- */
 fun Modifier.edgeLight(centerX: Float, centerY: Float, strength: Float): Modifier =
     if (strength <= 0f) this
     else drawBehind {
@@ -562,29 +413,6 @@ fun Modifier.edgeLight(centerX: Float, centerY: Float, strength: Float): Modifie
         )
     }
 
-/**
- * One poster cell, styled.
- *
- * This is the single place poster styling is applied, so every grid — Home's
- * rows, Show All, Search, Library, a collection's TMDB source — looks the same
- * and honours the same settings.
- *
- * The "iOS-style blur" is the artwork itself, enlarged a touch and blurred,
- * sitting behind the crisp poster as a soft coloured halo: that is what gives
- * the reference client's cards their glow, and it costs one extra draw of an
- * image the card is loading anyway. The blur is a tiny decode scaled back up
- * ([PosterLoader.haloModel]), not `Modifier.blur` — that modifier does not exist
- * below Android 12, so the halo used to show for some users and not others.
- *
- * @param model   the Coil model (see [Artwork.model])
- * @param rating  TMDB score to badge, when [PosterStyle.showRatings] is on and
- *                the item actually has one
- * @param imdb    the score already on file for this title ([Ratings] — the IMDb
- *                number when one could be resolved, otherwise TMDB's average),
- *                which wins over [rating] when present — it is the number the
- *                score badge is *for*, and the one the reference client prints
- * @param overlay extra content on top of the art (a heart badge, a kebab menu…)
- */
 @Composable
 fun PosterArt(
     model: Any?,
@@ -598,22 +426,11 @@ fun PosterArt(
      *  puts its own buttons in the top-right (Library's favourites) needs the
      *  badge somewhere else rather than on top of them. */
     ratingAlignment: Alignment = Alignment.TopEnd,
-    /** Corner the type/quality tag stack hangs from. The top-LEFT default is the
-     *  free corner on every standard grid (the score badge has the top-right);
-     *  a cell that already spends the top-left on its own badge — the
-     *  Related/Similar shelves put the score there, because the kebab owns the
-     *  top-right — passes another corner instead of stacking the two on top of
-     *  each other. */
     badgeAlignment: Alignment = Alignment.TopStart,
     /** Where the artwork itself sits inside its frame. [Alignment.TopCenter] is
      *  what the personal-catalog cover tiles ask for: a phone photo used as a
      *  poster keeps its top rather than being cut in the middle. */
     imageAlignment: Alignment = Alignment.Center,
-    /** The catalogue item this art belongs to, when the caller has one: the
-     *  movie/series tag and the quality tag are derived from it (see
-     *  [rememberPosterBadges]). Optional, so a card that draws art for something
-     *  that is not a catalogue item (a cast portrait, a collection tile) simply
-     *  passes nothing and gets no tags. */
     item: MediaItem? = null,
     /** Fires when the main artwork is definitively dead (see [PosterImage]):
      *  the detail hero uses it to fall back to looked-up art. Placed before
@@ -635,10 +452,6 @@ fun PosterArt(
     // 0-1, and 0 when the light is not one of this card's treatments: every layer
     // below is skipped outright at zero, so a card without it pays nothing.
     val lightStrength = if (lit) style.glowStrength.coerceIn(0, 100) / 100f else 0f
-    // One animation clock per card, created only when one of the chosen
-    // treatments animates. The animated values are read INSIDE graphicsLayer,
-    // never in composition, so a moving sheen or a breathing ring invalidates
-    // the card's drawing layer and nothing else — no recomposition per frame.
     val clock = if (sheened || ringed) {
         rememberInfiniteTransition(label = "poster-effect")
     } else {
@@ -666,21 +479,12 @@ fun PosterArt(
     }
     val accent = MaterialTheme.colorScheme.primary
     val accentAlt = MaterialTheme.colorScheme.tertiary
-    // The aura ring's colour: its own setting (Settings → App Layout → Poster
-    // styling → Aura ring colour), or the app accent when that is left on
-    // "Accent". See [AuraColors].
     val auraStart = AuraColors.color(style.auraColor, accent)
     val auraEnd = AuraColors.color(style.auraColor, accentAlt)
     // Glow/Spotlight ask for a halo regardless of the blur slider; the other
     // treatments leave the slider's own value alone.
     val halo = if (PosterEffects.haloed(effects)) maxOf(style.blur, 16) else style.blur
     val innerCorner = (style.corner - 3).coerceAtLeast(0)
-    // IMDb's own yellow, not the app accent: the badge is a score from that
-    // site, and the colour is what makes "9.8" read as an IMDb rating at a
-    // glance instead of as one more piece of the app's chrome.
-    // The cached score first (IMDb, else TMDB — see Ratings.cachedBadge), then
-    // the row's own TMDB value: three chances at a number, so a poster that
-    // carries any score at all prints one instead of an empty corner.
     val badge = imdb?.takeIf { it.isNotBlank() }
         ?: rating?.takeIf { it > 0.0 }?.let { ((it * 10f).roundToInt() / 10f).toString() }
     Box(
@@ -710,11 +514,6 @@ fun PosterArt(
         )
     ) {
         if (tilted) {
-            // The shadow the lean casts: the card's own silhouette, pushed down
-            // and towards the side the card leans away from, so the tilt reads
-            // as a card standing in front of the page rather than as a slanted
-            // picture. Drawn inside the tilting layer (it leans with the card)
-            // and before the art, so only the peeking edge is visible.
             Box(
                 Modifier
                     .matchParentSize()
@@ -836,11 +635,6 @@ fun PosterArt(
                 )
             }
             if (lightStrength > 0f) {
-                // The reader's own light (see [PosterEffects.LIT]): over the
-                // artwork, under everything the other treatments draw on top of
-                // it — a light is part of how the art is LIT, not a layer above
-                // the art, so a card wearing both this and a sheen keeps the
-                // sheen on top.
                 Box(
                     Modifier
                         .matchParentSize()
@@ -860,10 +654,6 @@ fun PosterArt(
                 )
             }
             if (tilted) {
-                // The highlight the lean promises: the near (right/top) edge of
-                // the card catches the light, the far edge falls into shade.
-                // Drawn over the art, inside the tilting layer, so it follows
-                // the card's angle.
                 Box(
                     Modifier
                         .matchParentSize()
@@ -903,10 +693,6 @@ fun PosterArt(
                         .padding(5.dp),
                 )
             }
-            // The type/quality tags stack down from the top-LEFT corner — the
-            // score badge's own corner is the top-right on every grid, so the
-            // two can never land on each other. One tag sits at the top of the
-            // stack, two sit one above the other with a hairline gap.
             if (badges.isNotEmpty()) {
                 Column(
                     modifier = Modifier
@@ -919,9 +705,6 @@ fun PosterArt(
                     }
                 }
             }
-            // The Dub/Sub + latest-episode pills hang from the top-CENTER, so
-            // they can never land on the score badge (top-right) or the
-            // type/quality stack (top-left), whatever corners those use.
             if (epPills.isNotEmpty()) {
                 Column(
                     modifier = Modifier
@@ -949,13 +732,6 @@ fun PosterArt(
                     )
             )
         }
-        // The aura ring draws on every Android version — plain borders, no
-        // effect API — so a missing ring is never the OS. Two layers, because
-        // a 2dp hairline alone drowns in busy artwork on a small phone (the
-        // "selected Aura ring but no ring on the poster" report): a soft outer
-        // spill that reads on any art, then the crisp breathing ring itself.
-        // The ring no longer depends on the animation clock either — if the
-        // clock is ever absent the ring still draws, simply steady.
         if (ringed) {
             Box(
                 Modifier
@@ -976,18 +752,6 @@ fun PosterArt(
     }
 }
 
-/**
- * A poster's corner tag: the quality ("4K", "1080p", "Blu-ray") and the type
- * ("Movie", "Series").
- *
- * Deliberately NOT [RatingBadge]: that one is IMDb-yellow because a score IS an
- * IMDb number, and a yellow "Movie" would read as one more rating. The tags are
- * plain white on the same dark translucent pill, which is the shape the
- * reference clients draw their own quality chips in (their "4K" / "Web" /
- * "Blu-ray" labels are white on a dark rounded chip in the poster's top-left
- * corner), so the two kinds of badge stay distinguishable at a glance on a cell
- * that carries both.
- */
 @Composable
 fun PosterTag(text: String, modifier: Modifier = Modifier) {
     Box(
@@ -1007,12 +771,6 @@ fun PosterTag(text: String, modifier: Modifier = Modifier) {
     }
 }
 
-/**
- * The score chip: IMDb's yellow number on a dark translucent pill so it stays
- * readable over any artwork. Deliberately SMALL and tucked into the poster's
- * top-right corner — a grid is for the art, and a score the size of the title
- * would be the loudest thing on the page.
- */
 @Composable
 fun RatingBadge(text: String, modifier: Modifier = Modifier) {
     Box(

@@ -114,15 +114,6 @@ fun DownloadsScreen(nav: NavHostController, embedded: Boolean = false) {
                         modifier = Modifier.padding(bottom = 4.dp)
                     )
                 }
-                // Foldered by title: every episode of a title lands under one
-                // folder header, so EP4 joins the "Renegade Immortal" folder
-                // EP3 already created — same grouping as on-disk downloads.
-                // Keys are namespaced, and each list is de-duplicated by id: this
-                // ONE lazy list holds both sections, and a task that appeared in
-                // both (a state race, or a store that kept a stale copy) would
-                // hand Compose the same key twice — which it refuses to draw, and
-                // the whole screen goes down with it. Same rule as the Extensions
-                // list that produced the reported crash.
                 val activeGroups = active.distinctBy { it.id }
                     .groupBy { it.title.ifBlank { blankTitle } }
                 for ((folder, folderTasks) in activeGroups) {

@@ -33,27 +33,6 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 
-/**
- * Runs a Mangayomi-format JavaScript extension (Anymex / Mangayomi /
- * Dartotsu — one script defining `mangayomiSources` + a `DefaultExtension
- * extends MProvider` class) inside a fresh embedded QuickJS engine.
- *
- * The script reads the network through `Client` (backed by the same
- * asynchronous OkHttp bridge the other runtimes use), parses pages through
- * `Document` (backed by the cheerio bundle), keeps settings in
- * `SharedPreferences` (persisted per provider to kv.json) and uses the
- * Kotlin-style `String.substringAfter/substringBefore` helpers mangayomi
- * defines — all recreated in assets/anymex/harness.js. Loaded underneath is
- * nuvio's harness (global `fetch`, `Buffer`) because `Client` is implemented
- * on top of it.
- *
- * ONE MODULE PER CALL: the file is evaluated at top level (the class must
- * land in global scope), the call script invokes one `DefaultExtension`
- * method, and the engine is closed afterwards. The module source is
- * bytecode-cached per provider+content so only the first call pays the parse
- * cost. Dart extensions (`.dart` sources) cannot run here at all — they are
- * listed but never installed (see AnymexPluginManager).
- */
 object AnymexRuntime {
 
     private const val MAX_CONCURRENT = 8
@@ -208,9 +187,6 @@ object AnymexRuntime {
                 inFlight.decrementAndGet()
             }
         }
-        // The AES/MD5/HMAC/PBKDF2 natives behind boot.js's CryptoJS — without
-        // these every extension-side CryptoJS.AES call throws, killing video
-        // extraction for any host using encrypted streams.
         com.hikari.app.nuvio.NuvioCryptoBridge.bindAll(qjs)
 
         qjs.evaluateCached("boot.js", bootJs)
@@ -344,20 +320,9 @@ object AnymexRuntime {
     suspend fun search(moduleFile: File, providerId: String, query: String, page: Int): String =
         run(moduleFile, providerId, "search", "[${quote(query)}, $page, []]", CATALOG_TIMEOUT_MS)
 
-    /**
-     * The extension's category/sort filters (`getFilterList`) — the
-     * "Categories" a video site exposes (123AV's Recommended/Censored/… list
-     * and its Recent Update / Most viewed today / … sorts). Empty when the
-     * module does not implement it.
-     */
     suspend fun filterList(moduleFile: File, providerId: String): String =
         run(moduleFile, providerId, "getFilterList", "[]", CALL_TIMEOUT_MS)
 
-    /**
-     * An empty-query search with one filter answered ([filtersJson] is a JSON
-     * array of `{type, state, values:[{name, value}]}` in Mangayomi's own
-     * shape) — what a filter category lists when opened.
-     */
     suspend fun searchFiltered(
         moduleFile: File,
         providerId: String,

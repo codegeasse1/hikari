@@ -33,32 +33,6 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
-/**
- * Adapts ONE source of an installed **Aniyomi** extension to Hikari's
- * [ContentProvider] contract — the same shape [com.hikari.app.skystream.SkyStreamProvider]
- * gives a SkyStream plugin, but speaking Aniyomi's `AnimeSource` API:
- *
- *   catalogs()             <- "Popular", plus "Latest" when the source supports it
- *   getCatalog(ref, page)  <- getPopularAnime(page) / getLatestUpdates(page)
- *   search(query, page)    <- getSearchAnime(page, query, filters)
- *   getMeta() / getEpisodes() <- getAnimeEpisodeUpdate(...) (with a fallback to
- *                              the older getAnimeDetails()/getEpisodeList())
- *   getStreams()           <- getHosterList → getVideoList(hoster) → resolveVideo
- *                              (or, for an extensions-lib 14 source, straight to
- *                              getVideoList(episode)), exactly the walk the
- *                              Aniyomi player itself does (EpisodeLoader).
- *
- * An Aniyomi source hands out RELATIVE urls — `SAnime.url` and `SEpisode.url` are
- * the site path, and the source's own `animeDetailsRequest` prepends its
- * `baseUrl`. So both are carried through Hikari as an opaque token in
- * [MediaItem.id]/[Episode.id], and the live `SAnime`/`SEpisode` objects are
- * cached so a meta → episodes → streams round trip never rebuilds them by hand.
- *
- * Extensions are third-party code built against several versions of
- * extensions-lib: every single call is wrapped, and an `AbstractMethodError`
- * from a method an older lib never declared surfaces as a readable line in
- * [streamErrors] instead of an unexplained empty server list.
- */
 class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
 
     companion object {
@@ -96,15 +70,6 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
          *  `http://localhost:1…` placeholder to the live port, like Yomi). */
         private val httpServers = ConcurrentHashMap<String, HttpServer>()
 
-        /**
-         * Yomi parity resolve-on-tap (their `HosterLoader.getResolvedVideo`):
-         * runs the extension's `resolveVideo` ONCE on the tapped video (plus a
-         * `getVideoUrl` fill when the url is still unresolved), rewrites local
-         * HTTP-server URLs to the live port, and returns a playable
-         * [StreamSource] — or null when this tap cannot be resolved (the
-         * player then fails over to the next server, exactly like Yomi
-         * marking that video ERROR and trying the next candidate).
-         */
         suspend fun resolveForPlay(providerId: String, url: String): StreamSource? =
             withContext(Dispatchers.IO) {
                 val inst = instances[providerId] ?: return@withContext null
@@ -117,13 +82,6 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
 
     private val sourceIndex: Int get() = AniyomiExtensionManager.indexOf(config)
 
-    /**
-     * The extension's private `.ext` file. `config.url` holds the absolute path
-     * captured at install time; if that no longer resolves (a restored backup, a
-     * moved data dir) fall back to the canonical location under `filesDir` —
-     * reporting an extension as broken while its file sits right there under the
-     * name it was installed with is never the right answer.
-     */
     private val extFile: File get() {
         val stored = File(config.url)
         if (stored.exists()) return stored
@@ -212,23 +170,10 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
     private fun fail(msg: String): List<StreamSource> {
         streamErrors[config.id] = msg
         lastOutcome[config.id] = msg.take(80)
-        // A source that failed to LOAD is not a wall, but a site answering
-        // 403/503 on the episode or video call is — and that is the case the
-        // user can clear with the globe button (the extension's own client
-        // reuses whatever clearance the verification earns).
         noteWall(msg)
         return emptyList()
     }
 
-    /** Why this extension's sources are unavailable, in this extension's own
-     *  words.
-     *
-     *  The per-extension reason ([AniyomiExtensionManager.loadFailure]) comes
-     *  FIRST: it is the only one that describes THIS row, and it is a real cause
-     *  ("none of its sources could be loaded", "built against extensions-lib
-     *  19", a class-load failure) rather than a guess about the site. The global
-     *  lastError is the fallback for a reason recorded outside a load — a
-     *  hoster/video call that threw later. */
     private fun missingReason(): String =
         AniyomiExtensionManager.loadFailure(extFile)
             ?: AniyomiExtensionManager.lastError
@@ -251,19 +196,6 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, List<Episode>>?) = size > 32
     }
 
-    /**
-     * `MediaItem.id -> the time an episode fetch came back EMPTY`.
-     *
-     * An empty episode list is never cached as an answer ([episodesByAnime] only
-     * ever holds a non-empty list), because it is almost always a TRANSIENT
-     * failure: the site was slow, the extension's request hit a wall, or our
-     * budget ran out. Remembering it for the life of the process is how a series
-     * the extension plainly carries sat on "Episodes (0) — no episode list
-     * available" until the app was restarted, and (because the episode is what
-     * the server lookup maps onto) also produced NO servers from that extension.
-     * The short TTL only stops a burst of callers from re-asking in the same
-     * second.
-     */
     private val episodesMissAt = object : LinkedHashMap<String, Long>(16, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>?) = size > 64
     }
@@ -279,11 +211,6 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
         synchronized(map) { map[key] = value }
     }
 
-    /**
-     * Per provider: does this extension implement the extensions-lib 17
-     * combined call? Asked once per process (see [combinedSupported]) — the
-     * answer is a property of the installed class, not of a title.
-     */
     private val combinedCalls = ConcurrentHashMap<String, Boolean>()
 
     // ---- Catalogue ----
@@ -348,25 +275,6 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
         return emptyList()
     }
 
-    /**
-     * Lazy-poster repair for DooPlay-theme sites (animeonline.ninja and kin).
-     *
-     * Their catalog markup serves a blank SVG `data:` placeholder in every
-     * `img[src]` and keeps the real poster in `img[data-src]`. An extension
-     * that reads `src` therefore hands out the placeholder as `thumbnail_url`
-     * (now dropped to null by [artUrl]) while the titles themselves are fine —
-     * exactly the reported "titles load, posters stay blank". Mangayomi/JS
-     * extensions read `data-src` first for the same reason (see the anymex
-     * harness `pickImg`).
-     *
-     * When most of a page came back poster-less, this re-reads the SAME
-     * catalog URL the extension itself asked for
-     * (`popularAnimeRequest`/`latestUpdatesRequest` on [AnimeHttpSource],
-     * reached by reflection because it is protected) and fills posters from
-     * `article.item .poster img[data-src]` matched by detail URL. One extra
-     * GET per poster-less page, only when needed; anything unmatched keeps
-     * whatever the extension gave.
-     */
     private fun repairLazyPosters(
         src: AnimeSource,
         ref: CatalogRef,
@@ -427,20 +335,6 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
         return out
     }
 
-    /**
-     * Records the extension's OWN site as walled when a failure is a bot wall
-     * rather than a broken extension — HTTP 403/429/503, or a Cloudflare /
-     * "One moment, please" challenge body.
-     *
-     * The extension client clears these by itself where it can (see
-     * [com.hikari.app.net.CloudflareSolver], wired in on
-     * [eu.kanade.tachiyomi.network.NetworkHelper]'s client), and this is what
-     * happens when even that did not work: the host lands in
-     * [com.hikari.app.net.CloudflareVerifier], which is what lets Home offer the
-     * globe ("Verify site") for exactly this extension instead of reporting it
-     * as broken, and what keeps the cross-extension search from asking the same
-     * walled site on every lookup.
-     */
     private fun noteWall(t: Throwable) = noteWall(t.message.orEmpty())
 
     /** [noteWall] for a failure already reduced to text (the stream path keeps
@@ -534,31 +428,6 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
 
     // ---- Details + episodes ----
 
-    /**
-     * Whether this source implements the extensions-lib 17 combined call
-     * (`getAnimeEpisodeUpdate`), which fetches the details AND the episodes in
-     * ONE request.
-     *
-     * Decided by DECLARATION, never by calling it: the method is abstract in
-     * [AnimeSource], so an extension built against extensions-lib 14/16 does not
-     * implement it and calling it throws `AbstractMethodError` — free, but
-     * indistinguishable from a real failure, and the old code compensated by
-     * trying every call shape every time. A source that answered empty on the
-     * first shape then walked the other two, and the "details first, then list"
-     * pass walked them all again: up to seven serial requests for one episode
-     * list, which on a slow extension is the reported "almost 15 seconds to load
-     * the episode and everything on the detail page".
-     *
-     * Reflection answers it exactly, and without naming the parameter types:
-     * look for a 4-arg `getAnimeEpisodeUpdate` whose [java.lang.reflect.Method.getDeclaringClass]
-     * is NOT [AnimeSource] itself. A method declared by the interface means "the
-     * extension never overrode it" (a 14/16 source); a method declared by the
-     * extension (or a base it extends) means it is implemented. Matching by name
-     * and arity rather than by exact parameter types matters: the boolean
-     * parameters are `boolean` or `java.lang.Boolean` depending on whether the
-     * source's Kotlin signature used `Boolean` or `Boolean?`, and a mismatch
-     * would silently report "unsupported" for a source that does implement it.
-     */
     private fun combinedSupported(src: AnimeSource): Boolean =
         combinedCalls.getOrPut(config.id) {
             runCatching {
@@ -577,12 +446,6 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
     private suspend fun metaLocked(item: MediaItem): MediaItem {
         val src = source() ?: return item
         val anime = animeFor(item)
-        // ONE round trip for the details AND the episodes whenever the source
-        // speaks the combined API: `fetchDetails = true, fetchEpisodes = true`
-        // IS "give me everything about this title". Asking for the episodes
-        // first and the details after — two calls, the first of them through the
-        // three-shape walk below — is exactly what the combined call exists to
-        // replace, and it is what a slow Aniyomi extension was paying.
         var detailed: SAnime? = null
         var episodes: List<Episode> = emptyList()
         if (combinedSupported(src)) {
@@ -605,22 +468,6 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
             episodes = episodesLocked(src, anime, item.id, full)
         }
 
-        // Deliberately NOT "MOVIE when the episode list is empty": an Aniyomi
-        // source is an anime source either way, and a slow extension whose
-        // episode list did not answer yet is not evidence that the title is a
-        // film. Reclassifying it that way is what hid the episode grid, made the
-        // Play button skip the episode the user had chosen, and told the cross
-        // pass there was no S1E5 to match.
-        //
-        // But exactly ONE episode IS evidence: an Aniyomi film is an anime
-        // with a single episode, so a one-row list plays and tags as a movie
-        // (no Series chip, no "Ep 1" pill, no Episodes (1) page) — the same
-        // universal differential as [screenTypeFor].
-        //
-        // And an empty list proves nothing either way, so the row keeps the
-        // type it arrived with (UNKNOWN from the catalog — never a fresh
-        // SERIES claim): the detail page's movie probe decides instead of a
-        // guess here (see DetailViewModel).
         val type = screenTypeFor(item, episodes.size).takeUnless { episodes.isEmpty() }
             ?: item.type
         val out = MediaItem(
@@ -651,21 +498,6 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
         episodesLocked(src, anime, item.id).takeIf { it.isNotEmpty() }
     }
 
-    /**
-     * The episode list for [anime] — the extensions-lib 17 combined call when
-     * the source implements it, otherwise the older `getEpisodeList` (the
-     * vendored `AnimeHttpSource` is what actually performs that fetch).
-     * Returns an empty list (never throws) so a source that can't answer is a
-     * blank episode list rather than a crashed detail page.
-     *
-     * [preDetailed] is a [SAnime] the CALLER has already enriched (the combined
-     * call, or a details fetch). Some sources cannot list episodes for a title
-     * they have not detailed yet — their episode parse reads a field only their
-     * details call fills in — and handing the richer object straight in is what
-     * removes the "empty, so fetch the details, so try again" double pass. It is
-     * only used as the first attempt; the details-then-retry path below stays
-     * for callers that have nothing enriched.
-     */
     private suspend fun episodesLocked(
         src: AnimeSource,
         anime: SAnime,
@@ -680,11 +512,6 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
         var why: Throwable? = null
         var raw = fetchEpisodeList(src, preDetailed ?: anime) { why = it }
         if (raw.isEmpty() && preDetailed == null) {
-            // Some sources cannot list a title they have not DETAILED yet: their
-            // episode parse reads a field (an id, a slug, a "seasons" block) that
-            // only their details call fills in. Ask for the details and try again
-            // with the richer object — and keep it, since everything else about
-            // this title benefits from the fuller metadata too.
             val detailed = runCatching { src.getAnimeDetails(anime) }.getOrNull()
             if (detailed != null && detailed !== anime) {
                 lockedPut(animeCache, animeId, detailed)
@@ -725,14 +552,6 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
         return out
     }
 
-    /**
-     * The episode list through the call shapes this source can actually answer:
-     * the shape it IMPLEMENTS first (see [combinedSupported]), the other one as
-     * the single fallback. A shape the source does not implement throws
-     * `UnsupportedOperationException`/`AbstractMethodError` (the vendored base
-     * class's default) and costs nothing; the first non-empty answer wins and
-     * ends the walk, so a source that answers costs ONE request.
-     */
     private suspend fun fetchEpisodeList(
         src: AnimeSource,
         anime: SAnime,
@@ -815,27 +634,6 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
         return distinct
     }
 
-    /**
-     * Every video the source can produce for [episode], paired with the hoster
-     * it came from — Yomi's `EpisodeLoader` walk, 1-to-1:
-     *
-     *  - a source that declares hoster support is asked for its hoster list
-     *    (ONE call, no cap — Yomi lists every hoster it is given);
-     *  - an extensions-lib 14 source is asked straight for its video list,
-     *    wrapped as one pseudo-hoster.
-     *
-     *  Hoster/video ordering is left to the source's own `sortHosters`/
-     *  `sortVideos`, which is what Yomi does (and what makes VidCloud-style
-     *  mirrors come first). Those are `protected` in some extensions-lib builds,
-     *  so a refusal degrades to the unsorted list rather than losing the results.
-     *
-     *  And like Yomi, this LIST step never resolves: videos are cached
-     *  unresolved and finished once, on tap, by [resolveForPlay] (their
-     *  `HosterLoader.getResolvedVideo`). Resolving every video up front —
-     *  hundreds of embed unpacks before a single server shows — burned
-     *  single-use tokens, tripped rate limits, and dropped every video whose
-     *  resolve failed at search time although it resolved fine on tap.
-     */
     private suspend fun loadVideos(src: AnimeSource, episode: SEpisode): List<Pair<String, Video>> {
         val http = src as? AnimeHttpSource
         if (http == null) {
@@ -863,9 +661,6 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
         }
         if (hosters.isEmpty()) return emptyList()
 
-        // Every hoster on its own: fetched in parallel, each bounded, each
-        // failure costing only that hoster — a hung or throwing mirror can
-        // never again void the whole episode (their per-hoster ERROR rows).
         val perHoster: List<List<Pair<String, Video>>> = supervisorScope {
             hosters.map { hoster ->
                 async(Dispatchers.IO) {
@@ -904,14 +699,6 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
         return out
     }
 
-    /**
-     * One hoster's videos, unresolved (list step; the tap resolves). A hoster
-     * that already carries its list — lazy or pre-grouped — is taken as-is
-     * (Yomi lists those without resolving); otherwise one `getVideoList`
-     * plus the `"null"`-url fill. Only truly blank urls are dropped: an
-     * unresolvable-looking video stays on the list and gets its bounded
-     * resolve on tap, exactly like Yomi's QUEUE rows.
-     */
     private suspend fun videosForHoster(http: AnimeHttpSource, hoster: Hoster): List<Pair<String, Video>> {
         val fromHoster = hoster.videoList
         val videos = if (fromHoster != null) {
@@ -938,12 +725,6 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
         return u.equals("null", true) || u.equals("undefined", true) || u.equals("none", true)
     }
 
-    /**
-     * extensions-lib 14 hands out videos whose `videoUrl` is the literal
-     * `"null"`, to be filled in by a second request (`getVideoUrl`). Same
-     * two-step as Yomi's `parseVideoUrls` (theirs fills only `"null"`; ours
-     * also covers the blank/`"undefined"`/`"none"` shapes).
-     */
     private suspend fun parseVideoUrls(http: AnimeHttpSource, videos: List<Video>): List<Video> =
         videos.map { video ->
             val current = video.videoUrl.trim()
@@ -952,12 +733,6 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
             if (url.isNullOrBlank() || isUnresolved(url)) video else video.copy(videoUrl = url)
         }
 
-    /**
-     * Whether this source has the extensions-lib 16 hoster API at all — the
-     * reflection walk Aniyomi's own `EpisodeLoader.checkHasHosters` performs,
-     * stopping at the library base classes (whose `getHosterList` is a
-     * self-recursive stub that would recurse forever if ever called).
-     */
     private fun hasHosters(source: AnimeHttpSource): Boolean = runCatching {
         var current: Class<*>? = source.javaClass
         while (current != null) {
@@ -1028,15 +803,6 @@ class AniyomiProvider(override val config: ProviderConfig) : ContentProvider {
         else -> "${t.javaClass.simpleName}: ${t.message}".take(140)
     }
 
-    /** Runs [block] inside Hikari's per-provider lock (mutex, NOT re-entrant —
-     *  the private `…Locked` helpers are what the public overrides compose).
-     *
-     *  [lane] is the PRIORITY: metadata and catalogs are what the user is
-     *  looking at ([ProviderGate.Lane.INTERACTIVE]), a stream search is
-     *  background work that must never queue in front of them
-     *  ([ProviderGate.Lane.BACKGROUND]) — a stream search inside one Aniyomi
-     *  extension walks up to eight hosters, so a detail page queued behind one
-     *  is the reported "~15 seconds to load the episode list". */
     private suspend fun <T> gate(
         lane: ProviderGate.Lane = ProviderGate.Lane.INTERACTIVE,
         block: suspend () -> T,

@@ -15,17 +15,6 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.ConcurrentHashMap
 
-/**
- * Video rows from Kotatsu forks — skepsun VIDEO/HENTAI_VIDEO sources and hany18h
- * ANIME sources — exposed as an ordinary [ContentProvider] so the whole video
- * pipeline (Home rows, search, detail, episodes, player) works unchanged.
- *
- * Row ids are `forkvideo|<owner>|<ENUM>` (`skepsun` = kototoro parsers,
- * `hany18h` = hany18h parsers). Catalogue/search/detail/episodes ride the fork
- * bridges ([SkepsunBridge]/[Hany18hBridge]); streams are the parsers' own
- * playback: skepsun video pages ARE the video urls (M3U8/MP4 per page), hany18h
- * anime chapters resolve via `getVideoStreams` to direct HLS/MP4 [AnimeStream]s.
- */
 class ForkVideoProvider(override val config: ProviderConfig) : ContentProvider {
 
 	companion object {
@@ -219,7 +208,7 @@ class ForkVideoProvider(override val config: ProviderConfig) : ContentProvider {
 
 	override suspend fun getStreams(item: MediaItem, episode: Episode?): List<StreamSource> =
 		gate(ProviderGate.Lane.BACKGROUND) {
-			val chapter = episode ?: return@gate fail("No episode selected", emptyList())
+			val chapter = episode ?: Episode(number = 1, id = item.id, name = item.title, season = 1)
 			try {
 				if (isSkepsun) {
 					val b = skepsunBridge() ?: return@gate fail("source missing — reinstall it", emptyList())

@@ -67,16 +67,6 @@ import com.hikari.app.i18n.tr
 import com.hikari.app.tv.tvToggle
 import kotlinx.coroutines.launch
 
-/**
- * "Which categories should this go in?" — the sheet behind Add to library and
- * behind Move to.
- *
- * The picks are a SET, not a radio group: a title can be both a Series and an
- * Action, which is the whole reason the Library has categories rather than
- * folders. A new category can be invented from inside the sheet, and it is
- * picked as soon as it is created, so the user never has to re-open the sheet to
- * finish what they were doing.
- */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CategoryPickerSheet(
@@ -95,18 +85,10 @@ fun CategoryPickerSheet(
     onRemove: (() -> Unit)? = null,
 ) {
     val scope = rememberCoroutineScope()
-    // Deliberately NOT keyed on `selected`: the sheet is the authority on what
-    // is ticked while it is open, and re-keying would silently drop a tick the
-    // user just made as soon as anything else wrote a filing.
     var picked by remember { mutableStateOf(selected) }
     var creating by remember { mutableStateOf(false) }
     var newName by remember { mutableStateOf("") }
 
-    // Full height from the start. A partially-expanded sheet is a little over
-    // half the screen, which is shorter than title + list + "Create a new
-    // category" + the confirm button — the reported "the Add to library button
-    // is hidden below the fold" (the sheet could be dragged up, but nothing
-    // said so, and a drag on the list just scrolled the list).
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
         Column(
@@ -297,26 +279,11 @@ private fun CategoryToggleRow(name: String, checked: Boolean, onToggle: () -> Un
         Modifier
             .fillMaxWidth()
             .padding(vertical = 2.dp)
-            // The whole line is the target — for a FINGER as well: a tap
-            // anywhere on the row ticks or unticks the category. This is the
-            // half that was missing: the row used to answer only the D-pad (see
-            // [Modifier.tvToggle]) while its Checkbox was decorative
-            // (`onCheckedChange = null`), so on a phone a tap on the row did
-            // nothing at all and there was no way to untick what was ticked —
-            // "clicking anything to tick, untick is unclickable".
-            //
-            // [Modifier.toggleable] is what gives a row the touch handler, the
-            // pressed-state ripple AND the accessibility semantics a checkbox
-            // row needs, in one modifier — the same thing Material's own
-            // Checkbox is built on.
             .toggleable(
                 value = checked,
                 role = Role.Checkbox,
                 onValueChange = { onToggle() },
             )
-            // …and this is the half that was already there: the D-pad presses
-            // and left/right flips arrive in the PREVIEW pass, so a remote
-            // cannot tick it twice through both modifiers.
             .tvToggle(checked, onValueChange = { onToggle() }),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -331,11 +298,6 @@ private fun CategoryToggleRow(name: String, checked: Boolean, onToggle: () -> Un
     }
 }
 
-/**
- * Manage the categories themselves: rename one, delete one, add one. Opened
- * from the Library header, so the list the user is looking at is the list they
- * are editing.
- */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CategoryManagerSheet(
@@ -350,9 +312,6 @@ fun CategoryManagerSheet(
     var editingId by remember { mutableStateOf<String?>(null) }
     var editingText by remember { mutableStateOf("") }
     var liftedId by remember { mutableStateOf<String?>(null) }
-    // Local order while dragging so moves don't jump the finger to a freshly
-    // recomposed row halfway across the list (store writes used to fire on
-    // every small drag, which made the list reorder too fast).
     var dragOrder by remember { mutableStateOf<List<LibraryCategory>?>(null) }
     val displayCategories = dragOrder ?: categories
     val listState = rememberLazyListState()
@@ -591,13 +550,6 @@ fun CategoryManagerSheet(
     }
 }
 
-/**
- * The poster hold-menu's Library slot (see PosterQuickMenu slot 2): the SAME
- * "which categories?" sheet the detail screen's heart opens, over any poster
- * grid. A hold-menu tap used to file the title silently into the Library with
- * no category choice — now it asks, with the type-appropriate category
- * pre-ticked so the common case is one tap, exactly like the detail screen.
- */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun QuickAddToLibrarySheet(item: MediaItem, onDismiss: () -> Unit) {

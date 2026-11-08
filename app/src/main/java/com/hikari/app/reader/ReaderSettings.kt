@@ -2,12 +2,6 @@ package com.hikari.app.reader
 
 import org.json.JSONObject
 
-/**
- * The reader's modes, backgrounds, fits and orientation lock — Nekoread's own
- * enums (`com.example.ui`), kept as plain Kotlin enums with no string resources
- * so the ported chrome can label them and the ported native viewers can consume
- * their values directly.
- */
 
 /** How the reader advances through a chapter. */
 enum class ReaderMode {
@@ -35,14 +29,6 @@ enum class ReaderBg {
     WHITE,
 }
 
-/**
- * How a page is fitted to the screen in the PAGED modes.
- *
- * The webtoon modes ignore this by design (as in Nekoread): a long strip is
- * always drawn at the screen's width, because that is what a strip is drawn for —
- * fitting it to the height would leave two thirds of a phone screen empty beside
- * every page.
- */
 enum class ReaderFit {
     /** Whole page inside the screen, letterboxed, nothing off-screen. */
     FIT,
@@ -74,39 +60,12 @@ enum class ReaderOrientation {
 val ReaderMode.isWebtoon: Boolean
     get() = this == ReaderMode.WEBTOON || this == ReaderMode.WEBTOON_GAPS
 
-/**
- * One chapter as the reader's chrome needs it — Nekoread's `ChapterEntity`, with
- * only the three fields its chapter list draws: the id the reader jumps by (this
- * app's chapter URL), the label, and whether it has been read.
- */
 data class ReaderChapter(
     val id: String,
     val name: String,
     val read: Boolean = false,
 )
 
-/**
- * Every reader option, in one object.
- *
- * This is the ported chrome's whole settings surface (Nekoread keeps these in its
- * ViewModel's `StateFlow`s). It is stored as one JSON blob rather than thirty
- * preferences: the settings travel together — a backup, a reset and the reader's
- * own "Reset settings" row all mean this object — and a new option added later
- * needs no new key. The legacy per-key preferences this app used before are read
- * once as the defaults for the fields they cover (see [fromLegacy]), so nobody
- * loses the reading mode or background they had picked.
- *
- * Defaults are the reference reader's own out-of-the-box states (the settings
- * screens the user went through and asked to be the app's defaults): webtoon mode
- * with a pure black backdrop, page transitions and smooth auto-scroll ON, and
- * every gesture that would otherwise change what a plain swipe does OFF — pinch
- * to zoom, double-tap to zoom and tap-to-turn-the-page — because on a long strip
- * those turn a scroll into a jump. Tap zones are `Edge`, the webtoon scale type
- * is `Fit`, the menu hides at the `Normal` threshold, and pages are decoded at
- * the `Ultra` quality. A fresh install therefore reads a chapter exactly
- * the way the reference app does, and every one of them is one tap away in the
- * chrome (or one tap on *Reset to defaults*).
- */
 data class ReaderSettings(
     val mode: ReaderMode = ReaderMode.WEBTOON,
     val bg: ReaderBg = ReaderBg.PURE_BLACK,
@@ -215,11 +174,6 @@ data class ReaderSettings(
         /** The fallback for every field a stored blob does not name. */
         val DEFAULTS = ReaderSettings()
 
-        /**
-         * Builds settings from this app's older per-key preferences (reading mode,
-         * fit, background, keep-awake, page number), used when there is no stored
-         * blob yet so an existing install keeps the reader it had.
-         */
         fun fromLegacy(
             mode: ReaderMode,
             fit: ReaderFit,

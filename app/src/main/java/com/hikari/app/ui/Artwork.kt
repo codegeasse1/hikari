@@ -14,34 +14,8 @@ import java.util.concurrent.atomic.AtomicLong
 import org.json.JSONArray
 import org.json.JSONObject
 
-/**
- * Artwork fill-in for items an extension shipped without a poster.
- *
- * Plenty of catalogs (regional/Indian ones especially) return a bare title with
- * no `poster`/`image` at all, and those cells used to sit on the placeholder
- * icon forever. This asks TMDB — and, when TMDB has nothing, IMDb — for the
- * missing art and hands the result to Coil through the same [PosterLoader]
- * path as every other poster.
- *
- * It is a *fallback*: an item that already has art never touches the network
- * here. And because the answers arrive asynchronously, [revision] is read on
- * every lookup so a cell repaints itself the moment its artwork lands
- * (the same trick [PosterLoader] uses).
- *
- * Results — including misses — are cached on disk. A miss is re-tried after
- * [MISS_TTL_MS] rather than forever, so a title that gets art on TMDB later
- * eventually picks it up without hammering the API in the meantime.
- */
 object Artwork {
 
-    /**
-     * The ONE crop anchor every 16:9 cinema frame uses — the home rail, Show
-     * All grids, search grids, collection grids and the detail banner. Near the
-     * top so faces and title art stay in frame, a touch below pure top so a
-     * tall sky does not eat the whole frame. Every site that crops wide art
-     * must use this; a second anchor anywhere is the "same poster looks
-     * different here" bug.
-     */
     val CINEMA_ALIGNMENT: androidx.compose.ui.Alignment =
         androidx.compose.ui.BiasAlignment(0f, -0.65f)
 
@@ -49,11 +23,6 @@ object Artwork {
 
     private const val MISS_TTL_MS = 3L * 24L * 60L * 60L * 1000L
     private const val MAX_ENTRIES = 1500
-    /** v7: v6 keys split row vs detail by exact title + type ("Dexter:
-     *  Resurrection (Season 2)|2025|UNKNOWN" vs "...|SERIES"), so rows stuck
-     *  on poster-only never saw the wide art the detail header found. v7
-     *  drops those stale answers and keys by season-normalized title + year
-     *  (no type), so every surface shares one entry. */
     private const val CACHE_FILE = "artwork-cache-v7.json"
 
     private val memory = ConcurrentHashMap<String, Entry>()
@@ -76,11 +45,6 @@ object Artwork {
 
     /** Grid/row cell model: the item's own art, else the art we looked up. */
     fun model(item: MediaItem): Any? {
-        // A manga cover goes through its EXTENSION's own client rather than
-        // Coil's bare request (see PosterLoader.coverModel(url, providerId)): a manga
-        // CDN is the kind that refuses a request with no Referer, which is why
-        // these covers were the blank tiles in a grid. `null` for every other
-        // provider, so nothing else in the app changes path.
         val mangaPid = item.providerId
             .takeIf { com.hikari.app.manga.MangaExtensionManager.isMangaProviderId(it) }
         if (mangaPid != null) {
@@ -93,11 +57,6 @@ object Artwork {
         return PosterLoader.model(poster(item) ?: backdrop(item))
     }
 
-    /** Wide-hero model: the item's own backdrop, then the wide art we looked
-     *  up, then the item's own poster. Asking the lookup for the backdrop
-     *  BEFORE falling back to the item's portrait poster matters for banners:
-     *  plenty of catalog entries ship a poster only, and using that in a 16:9
-     *  hero crops it to a narrow strip (which is what beheads the subject). */
     fun backdropModel(item: MediaItem): Any? {
         item.backdropUrl?.takeIf { it.isNotBlank() }?.let { return PosterLoader.model(it) }
         backdrop(item)?.let { return PosterLoader.model(it) }
@@ -105,25 +64,7 @@ object Artwork {
         return PosterLoader.model(poster(item))
     }
 
-    /**
-     * Hero art as (model, isWide). [isWide] is true only for genuinely wide
-     * (backdrop-shaped) art; when only a portrait poster exists the caller must
-     * NOT centre-crop it into a 16:9 frame — see `HeroArtwork`. Like the other
-     * lookups this reads [revision], so a hero swaps to the real backdrop the
-     * moment its lookup lands.
-     *
-     * TMDB first, provider art second: the provider's own backdrop is frequently
-     * a low-res thumb that stretches into a blurry band full-bleed (the
-     * screenshot-proven donghua detail pages), while TMDB carries the same
-     * high-quality backdrop the reference client shows. Applies on phones and
-     * televisions alike — every hero/cinema surface paints from here.
-     */
     fun heroModel(item: MediaItem, skipExtensionBackdrop: Boolean = false): Pair<Any?, Boolean> {
-        // A live TV channel wears its OWN logo: the generated initials tile
-        // must never shadow a real `tvg-logo` here. The channel grid draws
-        // cinema cards from this (see CatalogScreen's iptvCinema path), and the
-        // lookup below always answers a drawn tile for a channel — so without
-        // this guard every logoed channel sat on initials instead of its logo.
         if (IptvMark.of(item) && item.rawType == "channel") {
             item.posterUrl?.takeIf { it.isNotBlank() }?.let { return PosterLoader.model(it) to false }
         }
@@ -142,19 +83,6 @@ object Artwork {
     /** Looked-up wide art for [item] (null while the lookup is still running). */
     fun backdrop(item: MediaItem): String? = lookup(item) { it.backdrop }
 
-    /**
-     * Starts the TMDB/IMDb artwork lookup for [item] WITHOUT subscribing the
-     * caller to the result.
-     *
-     * The normal lookups kick off lazily on first read, which on the
-     * television detail page meant the TMDB round-trip only started once the
-     * provider's own detail response had landed — the backdrop then arrived a
-     * beat after everything else. The detail page (and the home hero) call
-     * this the moment the title opens, from nav args alone, so the art is
-     * already in flight — ideally already cached — when the page paints.
-     * Single-flight and disk-cached like everything else here, so calling it
-     * early never costs a duplicate request.
-     */
     fun prefetch(item: MediaItem) {
         val key = keyOf(item) ?: return
         loadOnce()
@@ -168,42 +96,14 @@ object Artwork {
         enqueue(key, item)
     }
 
-    /**
-     * Warms a whole row (cinema + vertical): first 20 items prefetch in the
-     * background and stale misses retry, so switching poster shape paints real
-     * 16:9/2:3 instantly instead of blurred portraits that only heal after a
-     * detail open. Bounded, single-flighted, never throws.
-     */
     fun warmRow(items: List<MediaItem>) {
         runCatching {
             items.take(20).forEach { prefetch(it); retryMiss(it) }
         }
     }
 
-    /**
-     * Hero art for the TELEVISION layout as (model, isWide). Same as
-     * [heroModel] now that it is TMDB-first everywhere (see above): kept as a
-     * named entry point so television callers keep reading their intent.
-     */
     fun tvHeroModel(item: MediaItem): Pair<Any?, Boolean> = heroModel(item)
 
-    /**
-     * Re-runs the artwork lookup for [item] when the cached answer is a MISS.
-     *
-     * A miss is cached for days (see [MISS_TTL_MS]), so a title the matcher
-     * could not resolve in an older build keeps showing provider art long
-     * after the matcher learned it — the television detail page proved it:
-     * TMDB ratings and overview (resolved fresh on every open) showed while
-     * the banner stayed on the provider image (a stale miss). Television
-     * calls this on open so a healed title picks up its TMDB art by itself.
-     *
-     * Only a FULL miss retries: a title with a real poster but no backdrop
-     * keeps its answer, otherwise every open would re-ask the API for titles
-     * TMDB genuinely has no backdrop for. And a miss fresher than a minute
-     * stays cached (a dead network on open must not re-fire on every
-     * recompose) — anything older re-asks once, single-flighted like the
-     * normal lookup.
-     */
     fun retryMiss(item: MediaItem) {
         val key = keyOf(item) ?: return
         loadOnce()
@@ -215,10 +115,6 @@ object Artwork {
                 enqueue(key, item)
                 return
             }
-            // Poster-only answers retry for a backdrop once an hour: a title
-            // the matcher could not resolve wide art for keeps its poster,
-            // but a newly indexed banner (or a healed matcher) still heals
-            // the row instead of parking it on blurred portrait forever.
             if (e.backdrop.isNullOrBlank() &&
                 System.currentTimeMillis() - e.at > 3_600_000L
             ) {
@@ -229,16 +125,6 @@ object Artwork {
         enqueue(key, item)
     }
 
-    /**
-     * The row paints what the detail screen settled on. The header banks
-     * wide art per title id (see TmdbScreenshots); rows keyed by the same
-     * canonical title+year read that art here the moment the header writes
-     * it, so a cinema card heals to the detail background without a detail
-     * open healing it first. Fill-only for the portrait half (never swaps
-     * a settled poster); the wide half follows the header (what the user
-     * asked the row to paint). Wakes every observing row via [revision].
-     * Never throws.
-     */
     fun noteHeaderArt(item: MediaItem, poster: String?, backdrop: String?) {
         val key = runCatching { keyOf(item) }.getOrNull() ?: return
         runCatching {
@@ -252,10 +138,6 @@ object Artwork {
             if (p == cur?.poster && b == cur?.backdrop) return
             val e = Entry(p, b, System.currentTimeMillis())
             memory[key] = e
-            // File every variant together: rows name the same title with
-            // years, seasons, dubs and site suffixes the detail never
-            // carries (and vice versa) — any of those must find what the
-            // header settled, or cinema cards stay blurred portrait.
             runCatching { keysFor(item) }.getOrNull()?.forEach { k ->
                 if (k != key) memory[k] = e
             }
@@ -270,10 +152,6 @@ object Artwork {
         loadOnce()
         val keys = runCatching { keysFor(item) }.getOrNull().orEmpty()
         if (keys.isEmpty()) return null
-        // Every variant in order: the exact title+year first, so a remake
-        // never wears another year's art, then every other name the title
-        // is known under. A miss on one key must not stop the rest — that
-        // early return is what left rows blurred while a twin key held art.
         for (key in keys) {
             memory[key]?.let { e ->
                 pick(e)?.takeIf { s -> s.isNotBlank() }?.let { return it }
@@ -291,13 +169,6 @@ object Artwork {
         return null
     }
 
-    /** Cache key shared by every surface: season-normalized title + year.
-     *  Deliberately WITHOUT the media type — catalog rows arrive UNKNOWN
-     *  while the detail page is SERIES/MOVIE, and one entry must serve both,
-     *  or rows keep a poster-only answer while detail holds the backdrop.
-     *  Normalization mirrors TmdbMeta.queryVariants (season/part suffixes
-     *  stripped, spaces collapsed), so "Dexter: Resurrection (Season 2)"
-     *  and "Dexter: Resurrection" resolve to the same key. */
     private fun keyOf(item: MediaItem): String? {
         val canon = canonicalTitle(item.title) ?: return null
         val year = item.year?.toString().orEmpty()
@@ -312,11 +183,6 @@ object Artwork {
     private val SPACES = Regex("\\s+")
 
     private fun canonicalTitle(raw: String): String? {
-        // The PLAIN form of the title: provider rows decorate ("… Season 2",
-        // "Hindi Dubbed", "1080p", site suffixes) while the detail banks the
-        // bare name — keying the decorated form kept the two apart forever.
-        // queryVariants already computes every stripped form with the plainest
-        // last, so both sides land on it no matter who decorated what.
         val plain = runCatching {
             com.hikari.app.data.TmdbMeta.queryVariants(raw).lastOrNull()
         }.getOrNull()?.takeIf { it.isNotBlank() } ?: raw
@@ -341,11 +207,6 @@ object Artwork {
         return out.filter { it.isNotBlank() }.take(6)
     }
 
-    /** Every cache key this item answers to: each known title in its plain
-     *  form, yearful and yearless. Lookup tries them all in order (exact
-     *  title+year first, so a remake never wears another year's art);
-     *  banking files them all, so whichever name a surface asks under, the
-     *  art is there. Bounded: at most a dozen keys per item. */
     private fun keysFor(item: MediaItem): List<String> {
         val out = ArrayList<String>(12)
         val year = item.year?.takeIf { it > 0 }?.toString().orEmpty()
@@ -389,24 +250,11 @@ object Artwork {
                     runCatching {
                         runBlocking {
                             val art = TmdbMeta.artwork(item)
-                            // Detail-header parity: the detail page paints the
-                            // plural TMDB/anime-banner list first
-                            // (TmdbScreenshots.backdropsFor), while rows only had
-                            // this single lookup — so rows stayed blurred
-                            // poster-only on titles whose wide art resolves
-                            // there. Union them: the anime/TMDB portrait wins
-                            // for the vertical poster, and any /images backdrop
-                            // fills the landscape the single lookup missed.
                     val shots = TmdbScreenshots.backdropsFor(item)
                     val poster = art?.first
                         ?: TmdbScreenshots.firstPosterCached(item.uniqueId)
                         ?: TmdbScreenshots.allPostersCached(item.uniqueId).firstOrNull()
                         ?: siblingPosterCached(item)
-                    // Detail-header parity, extended: the detail page
-                    // caches wide art under its own SERIES/MOVIE id
-                    // while rows carry UNKNOWN, so a row also reads
-                    // the caches its detail page wrote before falling
-                    // back to poster-only.
                     val backdrop = art?.second ?: shots.firstOrNull()
                         ?: TmdbScreenshots.firstCached(item.uniqueId)
                         ?: TmdbScreenshots.allCached(item.uniqueId).firstOrNull()
@@ -417,11 +265,6 @@ object Artwork {
                     }.getOrNull()
                 }
                 memory[key] = Entry(res?.first, res?.second, System.currentTimeMillis())
-                // File EVERY variant together (fill-only): whichever name a
-                // surface asks under must see what this lookup resolved, or
-                // rows keep the blurred portrait after the detail healed.
-                // Never overwrite settled art with nulls: a thin re-read
-                // must not un-heal a twin.
                 runCatching { keysFor(item) }.getOrNull()?.forEach { k ->
                     if (k == key) return@forEach
                     val cur = memory[k]

@@ -1,20 +1,5 @@
 package com.hikari.app.player
 
-/**
- * Sources sheet page layout (Settings → Playback & Servers → Server page
- * layout).
- *
- *  - HORIZONTAL — today's look: full-bleed rows floating over the title's
- *    landscape backdrop art.
- *  - VERTICAL — same glass rows floating over art, but the sheet is a
- *    narrow portrait column (capped at 560dp, centered) over the title's
- *    portrait poster art instead of full-bleed.
- *
- * Stored under AppStore.SERVER_LAYOUT and mirrored into the volatile
- * [current] below at startup (HikariApp), because the player is a View-based
- * Activity that has to know the value synchronously while its sheet is being
- * built — the same pattern as [PlayerSkins].
- */
 object ServerLayouts {
 
     const val HORIZONTAL = "horizontal"

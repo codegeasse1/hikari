@@ -245,9 +245,6 @@ private fun AnimePage(nav: NavHostController) {
 
 @Composable
 private fun TmdbCalendarPage(nav: NavHostController, defaultKind: ReleaseCalendarRepository.Kind) {
-    // Keyed by the tab's own kind: the Movies and Series pages are separate
-    // compositions sharing one saveable registry, so an unkeyed state let one
-    // tab's Movie/TV/Episode chip leak into the other.
     var kindKey by rememberSaveable(defaultKind.key) { mutableStateOf(defaultKind.key) }
     val kind = runCatching { ReleaseCalendarRepository.Kind.valueOf(kindKey.uppercase()) }
         .getOrDefault(defaultKind)

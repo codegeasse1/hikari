@@ -166,14 +166,6 @@ import java.io.File
 import com.hikari.app.tv.tvPress
 import com.hikari.app.tv.tvToggle
 import com.hikari.app.tv.tvTextFieldKeys
-/**
- * What a schema-driven settings screen produced.
- *
- * Three engines describe their settings as DATA for the app to draw — a nuvio
- * scraper's `onSettings()`, a Vega provider's `settings.js`, an Aniyomi/Manga
- * extension's own `setupPreferenceScreen` — so the dialog below takes a loader
- * instead of reaching for one engine's runtime itself.
- */
 sealed interface SchemaLoad {
     class Ok(
         val elements: JSONArray,
@@ -188,16 +180,6 @@ sealed interface SchemaLoad {
     class Failed(val message: String) : SchemaLoad
 }
 
-/**
- * A settings screen the APP draws from a schema the extension itself declares.
- *
- * [load] runs once when the dialog opens (off the main thread — it can boot a
- * JS engine or instantiate an extension), [save] when the user confirms. The
- * elements keep the shape the older nuvio-only dialog established —
- * `{type, key, label, description, defaultValue, options, isPassword}` with
- * types header/info/toggle/select/multi/number/text — because that is what
- * [SettingsElementRow] draws, and it now draws every engine's schema.
- */
 @Composable
 fun SchemaSettingsDialog(
     title: String,
@@ -271,11 +253,6 @@ fun SchemaSettingsDialog(
                     val arr = elements
                     if (arr != null && !saving) {
                         saving = true
-                        // Saved off the main thread: a save writes a settings
-                        // file (nuvio), a provider's own kv.json (Vega) or the
-                        // extension's SharedPreferences through its OWN
-                        // preference listeners (Aniyomi/Manga) — none of which
-                        // belongs on the UI thread.
                         scope.launch {
                             runCatching {
                                 withContext(Dispatchers.IO) { save(arr, values, toggles) }
@@ -293,12 +270,6 @@ fun SchemaSettingsDialog(
     )
 }
 
-/**
- * The values a schema dialog starts with: every element's own `defaultValue`,
- * with anything already saved merged over it. [saved] is the store the engine
- * keeps its values in (a nuvio settings file, a Vega provider's kv.json) — the
- * only thing that differs between the engines.
- */
 fun schemaDefaults(
     elements: JSONArray,
     saved: JSONObject?,
@@ -489,15 +460,6 @@ fun AniyomiSettingsDialog(
     )
 }
 
-/**
- * What an extension IS, for the engines whose format has no settings screen to
- * open at all (a `.hiki` bundle, a universal scraper, a SkyStream extension), or
- * for one whose own screen could not be read.
- *
- * The gear has to answer something for every row; saying WHICH KIND of extension
- * this is, where it came from, and that its format carries no settings, is the
- * honest answer — the old generic line read as if Hikari had lost them.
- */
 @Composable
 fun ExtensionPrefDialog(
     title: String,
@@ -755,12 +717,6 @@ fun SoraSettingsDialog(
     )
 }
 
-/**
- * A SkyStream extension's mirror-domain picker — the reference app's domain
- * selector (see DEVELOPER.md "Declaring Mirror Domains"): the manifest's
- * `domains` become `manifest.baseUrl` candidates, and the pick is stored next
- * to plugin.json and injected at engine boot (see SkyStreamRuntime).
- */
 @Composable
 fun SkyStreamSettingsDialog(
     provider: ContentProvider,
@@ -943,18 +899,6 @@ fun ProviderInfoDialog(provider: ContentProvider, onDismiss: () -> Unit) {
     )
 }
 
-/**
- * What a Stremio addon IS, for an addon whose manifest declares NO
- * configuration page.
- *
- * The gear on an addon used to open [NuvioSettingsDialog], which reads the
- * provider's FILE (`File(provider.config.url)`) — an addon is a remote manifest
- * URL, so it read nothing and answered "Provider file missing — reinstall this
- * extension" over a perfectly healthy addon. An addon WITH a config page now
- * opens that page instead (see openProviderSettings in ExtensionsScreen); this dialog is what
- * remains for the ones that genuinely have nothing to configure, and it says so
- * in those terms rather than claiming no addon ever has settings.
- */
 @Composable
 fun StremioAddonInfoDialog(provider: ContentProvider, onDismiss: () -> Unit) {
     val id = provider.config.id
@@ -1009,13 +953,6 @@ fun StremioAddonInfoDialog(provider: ContentProvider, onDismiss: () -> Unit) {
     )
 }
 
-/**
- * What an IPTV playlist IS: where it was read from, how many channels it holds,
- * and a way to read it again (a panel that added channels, or a link that was
- * briefly down). A playlist has no settings of its own, so a Nuvio-style
- * settings screen would only ever report a missing file — this is the honest
- * version of that screen for a playlist.
- */
 @Composable
 fun IptvInfoDialog(
     provider: ContentProvider,
@@ -1091,11 +1028,6 @@ fun SettingsElementRow(
     val type = el.optString("type")
     val rawLabel = el.optString("label")
     val rawDescription = el.optString("description").ifBlank { null }
-    // Extensions write this screen's rows themselves, and a "header"/"info"
-    // row is a favourite place for a funding ask ("Support us on Patreon", a
-    // ko-fi link). Nothing about MONEY belongs in an extension's settings, so
-    // a promo-only row is dropped outright and every other string is cleaned
-    // (markup and donation links stripped) before it is drawn.
     if ((type == "header" || type == "info") && PromoGuard.isPromoText(rawLabel)) return
     val label = PromoGuard.cleanText(rawLabel).ifBlank { rawLabel }
     val description = rawDescription?.let { PromoGuard.cleanText(it).ifBlank { null } }
@@ -1188,10 +1120,6 @@ fun SettingsElementRow(
             val key = el.optString("key")
             val options = runCatching { el.getJSONArray("options") }.getOrNull()
                 ?: return
-            // Carried as a comma-joined string (see ExtensionPreferences): a
-            // multi-select is a Set<String> in the extension's own preferences,
-            // and this keeps the dialog's two plain value maps enough for every
-            // engine's schema.
             val selected = (values[key] ?: el.optString("defaultValue"))
                 .split(',')
                 .map { it.trim() }
@@ -1232,9 +1160,6 @@ fun SettingsElementRow(
         else -> {
             val key = el.optString("key")
             val isPassword = el.optBoolean("isPassword", false)
-            // A numeric field (an Aniyomi `SeekBarPreference`, a port setting):
-            // non-digits are dropped as they are typed, so the value that gets
-            // saved is always a number the extension can parse.
             val isNumber = el.optBoolean("isNumber", false)
             val value = values[key] ?: el.optString("defaultValue")
             Column(Modifier.padding(vertical = 4.dp)) {
@@ -1263,14 +1188,6 @@ fun SettingsElementRow(
         }
     }
 }
-/**
- * The extension-settings dialog for any provider, shared by the Extensions
- * screen and the catalogue 3-dot button (see CatalogScreen): a schema-driven
- * screen for the engines that describe their settings as data (nuvio's own
- * `onSettings()`, a Vega provider's settings.js, an Aniyomi/Manga
- * extension's own preference tree, Anymex/Sora prefs, SkyStream mirrors) and
- * the provider-info dialog for formats with no settings screen of their own.
- */
 @Composable
 fun ProviderSettingsDialog(provider: ContentProvider, onDismiss: () -> Unit) {
     when (provider.config.type) {

@@ -40,11 +40,6 @@
 # Never rename anything (see above).
 -dontobfuscate
 
-# Reflection, generics and annotations are load-bearing here: Jackson and Gson
-# read field names and annotations, Injekt resolves types from generic
-# signatures, kotlinx.serialization looks for generated serializers, and
-# Compose reads its own annotations. Stripping these attributes breaks all of
-# them, usually at runtime, in one plugin, on one device.
 -keepattributes *Annotation*,Signature,InnerClasses,EnclosingMethod,MethodParameters,Exceptions
 
 # Keep line numbers: Hikari's own crash logger writes stack traces to a file
@@ -181,27 +176,11 @@
 -keep class okhttp3.** { *; }
 -keep class okio.** { *; }
 -keep class org.jsoup.** { *; }
-# The zstd codec OkHttp 5's `okhttp3.zstd.Zstd` / `okhttp3.CompressionInterceptor`
-# drive — and, again, one that only extension bytecode calls: the newer
-# keiyoushi multisrc families name `com.squareup.zstd.okio.OkioZstd` directly
-# (it is what applies the zstd filter to their on-disk response cache), so
-# without this line their sources would compile against it, ship, and then die
-# with a NoClassDefFoundError in the release build only. `com.squareup.zstd` is
-# the codec behind that adapter, reached through JNI, so it has to stay whole.
 -keep class com.squareup.zstd.** { *; }
 -dontwarn com.squareup.zstd.**
 -dontwarn org.brotli.**
 -keep class rx.** { *; }
 -keep class io.reactivex.** { *; }
-# NanoHTTPD is published under two package names, and the two extension hosts
-# we support do not agree on which. `fi.iki.elonen.**` is the original one, and
-# it is the one the Aniyomi extension API vendored into this module actually
-# extends: `eu/kanade/tachiyomi/animesource/model/HttpServer.kt` implements
-# `fi.iki.elonen.NanoHTTPD`, and an extension's `createHttpServer()` hands that
-# socket to the reader. `org.nanohttpd.**` is the later fork, kept for
-# extensions built against it. Neither is referenced by Hikari's own source, so
-# these two lines are the only thing standing between an extension that serves
-# its own pages and a NoClassDefFoundError.
 -keep class fi.iki.elonen.** { *; }
 -keep class org.nanohttpd.** { *; }
 -keep class org.mozilla.javascript.** { *; }
@@ -209,9 +188,6 @@
 -keep class com.google.gson.** { *; }
 -keep class io.ktor.** { *; }
 -keep class com.fleeksoft.** { *; }
-# (NiceHttp — the HTTP client CloudStream extensions use — is
-# `com.lagradost.nicehttp.**`, and the CloudStream rule above already keeps it
-# whole. There is no `com.github.blatzar.**` in this app.)
 -keep class org.conscrypt.** { *; }
 -keep class io.github.anilbeesetti.** { *; }
 -keep class coil.** { *; }
@@ -410,18 +386,6 @@
 -dontwarn okhttp3.**
 -dontwarn okio.**
 -dontwarn org.mozilla.javascript.**
-# org.json is the platform's — see the note above `configurations.configureEach`
-# in build.gradle.kts, which keeps the org.json:json that NiceHttp declares off
-# our classpath entirely. That exclusion is the fix for the 0.9.2 startup crash:
-# R8 took the shadowed copy as the definition of `JSONObject` and inlined its
-# `JSONObject(String)` body into our classes, producing a
-# `new JSONTokener(String, JSONParserConfiguration)` call that only the copy
-# has. This line is only here for the compile warnings the exclusion leaves
-# behind (methods a prebuilt jar calls that the platform's org.json lacks).
-#
-# A copy can only come back with a dependency that declares org.json:json, and
-# if it does, the crash comes back with it — a bundled org.json can never be
-# the copy the device runs. Check for it when adding a dependency.
 -dontwarn org.json.**
 -dontwarn org.jsoup.**
 -dontwarn org.conscrypt.**

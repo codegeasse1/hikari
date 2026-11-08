@@ -15,32 +15,6 @@ import java.net.DatagramSocket
 import java.net.InetSocketAddress
 import java.net.SocketTimeoutException
 
-/**
- * The sending end of device pairing: this device (already set up) hands its whole
- * install to another one on the same Wi-Fi.
- *
- * Two things listen while it runs, and only while the pairing screen is open:
- *
- *  * an HTTP server that serves the backup bytes on `/bundle`, and a small page
- *    on `/` for anyone who opens the address in a browser (the user checking that
- *    the two devices can see each other, or a support chat);
- *  * a UDP beacon that answers `HIKARI-PAIR?<code>` with its own port, which is
- *    how a guest that was given nothing but a typed code finds this device's
- *    address without anybody reading IP numbers off a screen.
- *
- * Both are gated on the code (see [PairProtocol]): the page is the only thing
- * that answers without it, and the page deliberately does NOT print the code —
- * otherwise anyone on the Wi-Fi could read the secret off the server that is
- * guarding it.
- *
- * The payload is [BackupManager.exportToFile] — the same bytes as "Back up Hikari
- * data", built ONCE at [start] into a temp file and then streamed from disk per
- * request. Holding it in memory instead capped pairing at the same ~300 MB
- * wall that broke Backup & Restore (see [BackupManager.exportToFile]), and
- * building it per request would walk the whole extension directory again for a
- * file that cannot have changed (the user is looking at the pairing screen).
- * [served] counts the handovers so the screen can say that it worked.
- */
 class PairHost(private val app: HikariApp) {
 
     /** What the hosting screen shows: where to connect and the code to type. */
@@ -84,11 +58,6 @@ class PairHost(private val app: HikariApp) {
     @Volatile
     private var payloadFile: java.io.File? = null
 
-    /**
-     * Builds the payload, opens a port and starts listening. Throws only when
-     * there is nothing to serve or no port to serve it on; every other failure
-     * ends as a null/degraded [Session] the screen can describe.
-     */
     suspend fun start(): Session = withContext(Dispatchers.IO) {
         stop()
         val file = java.io.File(app.cacheDir, "pair/bundle.json")
@@ -110,15 +79,6 @@ class PairHost(private val app: HikariApp) {
         session
     }
 
-    /**
-     * The HTTP server, on the first free port at or above [PairProtocol.DEFAULT_PORT].
-     *
-     * The walk matters on a real phone: 8787 can be taken by anything (another
-     * Hikari install hosting, a dev tool), and the old behaviour of "the port is
-     * busy, so pairing is broken" is indistinguishable from "pairing is broken"
-     * for the user. The port that actually opened travels in the QR and in the
-     * beacon's reply, so the guest never has to know about the walk.
-     */
     private fun openServer(payload: java.io.File, payloadBytes: Long): Server {
         val code = PairProtocol.newCode()
         var last: IOException? = null
@@ -140,17 +100,6 @@ class PairHost(private val app: HikariApp) {
         throw last ?: IOException("no free port")
     }
 
-    /**
-     * The UDP beacon. Answers a probe that carries the right code with its own
-     * port, so `255.255.255.255` reaches us on any interface without us having to
-     * enumerate them.
-     *
-     * A multicast lock is held for as long as it listens: Wi-Fi power saving
-     * filters broadcast packets almost immediately when nothing holds one, and a
-     * beacon that misses the probe is exactly the "it did not find the other
-     * device" the user cannot diagnose from the outside. It is released on
-     * [stop], so the radio's behaviour is untouched once pairing is over.
-     */
     private fun startBeacon(port: Int, code: String) {
         runCatching {
             val wifi = app.applicationContext
@@ -170,9 +119,6 @@ class PairHost(private val app: HikariApp) {
                 }
             }.getOrNull()
             if (socket == null) {
-                // No beacon is survivable: the QR still carries the address, and
-                // the guest can always type it. Say so in the log rather than
-                // failing a pairing that is otherwise fine.
                 Logs.log("Pair", "beacon could not bind udp/${PairProtocol.UDP_PORT}")
             } else {
                 beaconSocket = socket
@@ -233,11 +179,6 @@ class PairHost(private val app: HikariApp) {
 
     fun appVersion(): String = BuildConfig.VERSION_NAME
 
-    /**
-     * The pairing HTTP server. NanoHTTPD is already on the classpath (an Aniyomi
-     * extension API names it), so this is a handful of lines rather than a new
-     * dependency and a new way to be wrong about sockets.
-     */
     private class Server(
         /** The port this server was asked for, which is the one the QR and the
          *  beacon advertise. Kept as our own property rather than read back from
@@ -275,9 +216,6 @@ class PairHost(private val app: HikariApp) {
                         )
                     }
                 }
-                // The page is for a human who typed the address into a browser.
-                // It carries NO code: this is the one thing that answers without
-                // one, so it must not be the place the code leaks from.
                 else -> NanoHTTPD.newFixedLengthResponse(
                     NanoHTTPD.Response.Status.OK,
                     "text/html",

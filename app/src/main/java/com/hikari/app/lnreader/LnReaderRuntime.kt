@@ -16,34 +16,6 @@ import java.io.File
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
-/**
- * Runs LNReader novel-source plugins (compiled CommonJS off
- * `github.com/lnreader/lnreader-plugins`) inside a fresh embedded QuickJS
- * engine per call — the same shape as [com.hikari.app.nuvio.NuvioRuntime]:
- * one `QuickJs.create` per call, boot.js polyfills + the real cheerio bundle
- * + the nuvio provider harness evaluated in, every network request through the
- * same asynchronous fetch bridge (OkHttp, no WebView, no Cloudflare solving).
- *
- * The plugin contract (see the lnreader-plugins docs) is a default-exported
- * instance with `popularNovels(page, options)`, `parseNovel(path)`,
- * `parseChapter(path)`, `searchNovels(term, page)` and an optional
- * `parsePage(novelPath, page)`, importing `cheerio` and the `@libs/`
- * helpers
- * through `require(...)`. The harness already gives us a CommonJS `require`,
- * a standard `fetch` and cheerio; the [LNREADER_GLUE] below registers the
- * `@libs/` modules on top of those (fetch wrappers over the harness fetch,
- * NovelStatus/FilterTypes enums with their documented wire values, a
- * file-backed `storage`, a small but real `dayjs`, `urlencode`,
- * `isAbsoluteUrl`, `defaultCover`, `utils`) so a plugin's imports resolve to
- * working implementations instead of MODULE_NOT_FOUND.
- *
- * Deliberately v1: `fetchProto` (protobuf APIs — rare) and AES-GCM throw
- * an honest "not supported" only if a plugin actually reaches for them;
- * `customJS`/`customCSS` are stored at install but not executed (cosmetic
- * page tweaks); plugin settings screens are not exposed (their defaults
- * apply). None of that fails an install — a plugin that needs one of them
- * reports its own error on the call that needs it.
- */
 object LnReaderRuntime {
 
     private const val CALL_TIMEOUT_MS = 60_000L
@@ -83,12 +55,6 @@ object LnReaderRuntime {
         evaluate<Any?>(source, name, false)
     }
 
-    /**
-     * The LNReader module registry + plugin loader, evaluated after the nuvio
-     * harness (which owns `require`, `fetch` and cheerio). Written as plain
-     * string concatenation — no `$` or backticks anywhere, so Kotlin never
-     * mistakes JS for a template.
-     */
     private val LNREADER_GLUE: String =
         "globalThis.__lnreaderStorageData = {};" +
             "globalThis.__lnreaderStorageToJson = function () { return JSON.stringify(globalThis.__lnreaderStorageData || {}); };" +
@@ -395,12 +361,6 @@ object LnReaderRuntime {
         return qjs
     }
 
-    /**
-     * Runs one plugin method call in a fresh engine. [inner] is JS that runs
-     * with `plugin` bound to the loaded instance and must end by calling
-     * `globalThis.__lnreaderDone(CID, {...})` exactly once. Returns the raw
-     * payload string (`{"ok":true,"data":…}` or `{"ok":false,"error":"…"}`).
-     */
     private suspend fun runPlugin(pluginFile: File, pluginId: String, inner: String): String {
         return concurrency.withPermit {
             withTimeoutOrNull(CALL_TIMEOUT_MS) {

@@ -16,27 +16,6 @@ import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
-/**
- * A Sora manga/novel module behind the manga tab's engine contract.
- *
- * Sora manga modules speak the kanzen mangas shape
- * (`searchResults` / `extractDetails` / `extractChapters` / `extractImages`,
- * pages as direct image URLs) and novel modules the novels shape
- * (`searchResults` / `extractDetails` / `extractChapters` / `extractText`,
- * chapter HTML) — see [SoraRuntime]. This provider maps that onto chapters
- * and pages/text so installed Sora manga modules browse, search and read
- * exactly like Aniyomi/LnReader engines:
- *
- *   search()      <- searchResults(keyword)
- *   getMeta()     <- extractDetails(url)        -> {description, tags}
- *   getEpisodes() <- extractChapters(url)       -> kanzen {en: [...]} / [{title, href, number}]
- *   manga pages   <- extractImages(chapterUrl)  -> [imageUrl, ...]
- *   novel text    <- extractText(chapterUrl)     -> HTML
- *
- * Novel-kind rows serve one text part per chapter (the same StreamSource
- * shape [MangaProvider] serves novel rows: blank url + text), so the novel
- * reader opens them without knowing the engine.
- */
 class SoraMangaProvider(override val config: ProviderConfig) : ContentProvider {
 
     companion object {

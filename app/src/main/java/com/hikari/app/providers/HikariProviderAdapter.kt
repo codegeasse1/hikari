@@ -16,11 +16,6 @@ import com.hikari.ext.HikariMediaType
 import com.hikari.ext.HikariProvider
 import com.hikari.ext.HikariStream
 
-/**
- * Adapts a [HikariProvider] (bundled or loaded from a .hiki jar) to the app's
- * [ContentProvider] interface, so extensions plug into Home, search, detail
- * and the player exactly like Stremio addons and CloudStream plugins.
- */
 class HikariProviderAdapter(override val config: ProviderConfig) : ContentProvider,
     com.hikari.app.providers.StallResettable {
 
@@ -32,14 +27,6 @@ class HikariProviderAdapter(override val config: ProviderConfig) : ContentProvid
         }
     }
 
-    /**
-     * Forgets the cached extension so the next call lazily loads a fresh one
-     * (see [com.hikari.app.providers.ExtensionRecovery]): the wedged object —
-     * with whatever internal lock or state the stuck call died holding — is
-     * abandoned, never reused. The stuck thread itself still leaks (nothing
-     * can pull a thread out of a plugin that never returns), but it no longer
-     * decides what the next tap plays.
-     */
     override fun resetForStall() = dropCachedProvider()
 
     @Volatile
@@ -53,22 +40,6 @@ class HikariProviderAdapter(override val config: ProviderConfig) : ContentProvid
          *  sources" panel so HIKARI providers aren't a silent wall of mystery. */
         val streamErrors = java.util.concurrent.ConcurrentHashMap<String, String>()
 
-        /**
-         * Per-provider reason a `.hiki` extension could not serve its catalog.
-         *
-         * Home's empty state used to have no HIKARI entry in its failure chain
-         * at all, so ANY `.hiki` catalog that came back empty fell through to
-         * "Nothing came back from this extension. Retry, or open its site in
-         * the WebView …" — a message that points at the extension's website and
-         * at a Cloudflare verification page, neither of which is ever the
-         * reason for a bundled-plugin extension. The real reasons are local
-         * (the extension archive is missing its plugin, the plugin's load()
-         * threw, it registered nothing, its home page is empty) and the
-         * extension itself now says which one it is (see the bridge's
-         * IllegalStateException), so they are recorded here and shown instead.
-         *
-         * Cleared as soon as the same call succeeds.
-         */
         val catalogErrors = java.util.concurrent.ConcurrentHashMap<String, String>()
     }
 
@@ -90,18 +61,6 @@ class HikariProviderAdapter(override val config: ProviderConfig) : ContentProvid
             }
         }
 
-    /**
-     * Same as [provider], but waits briefly when the extension is not ready
-     * yet instead of answering null instantly.
-     *
-     * The first access loads the plugin (a dex load plus the plugin's own
-     * init), and a Play tap that lands mid-load used to read the transient
-     * null as a PERMANENT empty answer — "no playable sources" for a title
-     * whose extension simply had not finished loading, while the next tap met
-     * a warm runtime and played. Only a sustained null (past the wait) is
-     * believed. Bounded and short: this runs inside the provider gate and the
-     * pass budgets, so it can never hold a lookup hostage.
-     */
     private suspend fun awaitProvider(timeoutMs: Long = 2_500L): HikariProvider? {
         provider?.let { return it }
         val end = System.currentTimeMillis() + timeoutMs
@@ -112,17 +71,6 @@ class HikariProviderAdapter(override val config: ProviderConfig) : ContentProvid
         return provider
     }
 
-    /**
-     * The `.hiki` bundle's own answer to "is this an 18+ extension", read
-     * straight out of the archive.
-     *
-     * Unlike [provider] above, this loads no plugin class: a `.hiki` is a zip
-     * (the runtime loads its `classes.dex` from it), so its `manifest.json` is
-     * one entry read. Null when the bundle says nothing about adult content —
-     * an older bundle written before those fields existed — which leaves the
-     * answer to the repo that published it (see
-     * [com.hikari.app.data.ExtensionNsfw.repoEntryNsfw]).
-     */
     override fun adultExtension(): Boolean? = runCatching {
         val file = java.io.File(config.url)
         if (!file.isFile) return null
@@ -180,9 +128,6 @@ class HikariProviderAdapter(override val config: ProviderConfig) : ContentProvid
             val items = p.getCatalog(HikariCatalog(ref.id, ref.name, ref.type.toExt(), ref.rawType), page)
                 .map { it.toApp(config.id) }
             if (items.isEmpty()) {
-                // Keep a reason already recorded by catalogs()/an earlier
-                // catalog (a provider with one dead shelf and one live one is
-                // not "broken"), but never leave the empty state unexplained.
                 catalogErrors.putIfAbsent(
                     config.id,
                     "\"${ref.name}\" came back empty from this extension"

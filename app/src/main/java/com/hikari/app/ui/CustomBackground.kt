@@ -51,17 +51,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/**
- * The user's own picture as the app background (Settings -> Customize ->
- * "Custom background").
- *
- * The picture is copied into the app's private storage (so it keeps working
- * after the gallery picture is moved or deleted) and drawn behind every screen
- * by [CustomBackgroundLayer], which AppRoot places right after the theme's own
- * backdrop. A "darkness" overlay in the theme's background colour keeps text
- * readable over any picture. Without a picture nothing changes: the normal
- * theme backdrop is what shows.
- */
 object CustomBackground {
     private const val PREFS = "hikari_custom_bg"
     private const val KEY_DIM = "dim"
@@ -196,11 +185,6 @@ object CustomBackground {
     }
 }
 
-/**
- * The theme's real page colour, provided by HikariTheme. While a custom
- * background picture is set the scheme's own `background` is made see-through,
- * so the darkness layer over the picture takes its colour from here instead.
- */
 val LocalPageScrim = staticCompositionLocalOf { Color.Black }
 
 /**

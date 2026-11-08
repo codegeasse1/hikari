@@ -2,33 +2,6 @@ package com.hikari.app.net
 
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
-/**
- * The resolvers Hikari can be pointed at (Settings → Network and Internet →
- * DNS mode).
- *
- * Every entry is a real DNS server the app can talk to itself, which is the
- * only kind of "DNS mode" an Android app can actually enforce: the phone's own
- * resolver belongs to the system, so an app cannot hand it a different server,
- * but every name this app looks up can go somewhere else. Two transports cover
- * the public resolvers:
- *
- *  * DNS-over-HTTPS ([url]) — plain DNS carried inside an HTTPS request to the
- *    resolver's own `dns-query` endpoint. Encrypted, invisible to the network,
- *    and reached by hostname with the [bootstrap] addresses of the same service
- *    pinned, which is what lets the request leave the phone when the phone's own
- *    DNS is the thing that is broken — the one case Hikari's resolver has always
- *    existed to fix.
- *  * plain DNS ([plain]) — the classic port-53 lookup, sent by the app straight
- *    to the server's address over UDP. The phone's resolver is still out of the
- *    loop (so a chosen server is honoured, and a broken resolver is bypassed),
- *    but the answers travel unencrypted and any network in between can read or
- *    change them. It exists for the resolvers that never added an encrypted
- *    service, so a list of "free DNS" options doesn't have to leave holes in it.
- *
- * [SYSTEM] is not a server: it means "ask the phone first, exactly as before",
- * and it is the default so nothing changes for anyone who never opens the page.
- * [CUSTOM] takes a URL the user types.
- */
 data class DnsProvider(
     /** Stable id, persisted. */
     val key: String,

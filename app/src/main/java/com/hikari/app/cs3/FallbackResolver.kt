@@ -13,25 +13,6 @@ import org.json.JSONObject
 import org.jsoup.Jsoup
 import kotlin.math.min
 
-/**
- * Self-contained fallback extraction engine.
- *
- * CloudStream's own extractors live in cloudstream3.jar and are driven through
- * `loadExtractor()`, but plugins' `loadLinks()` often return "true" while
- * producing zero links (a matching extractor that silently failed), or the
- * plugin's own regex fallbacks can't decode packed player configs. This engine
- * replicates the core of CloudStream's extraction — P.A.C.K.E.R. JS unpacking,
- * JWPlayer `sources:`/m3u8 parsing, the dood `pass_md5` dance — INDEPENDENTLY
- * of the jar, so a broken/mismatched extractor can never leave the user with
- * "no playable sources" while the same video plays in CloudStream.
- *
- * Strategy per embed page (highest coverage first):
- *  1. fetch the embed page with the video page as Referer,
- *  2. unpack any packed JS configs and scan the decoded text for m3u8/mp4,
- *  3. run the dood `pass_md5` dance for dood-style hosts,
- *  4. as a last resort, hand the URL to the jar's full extractor registry
- *     (which now includes HikariExtractorRegistry's aliases).
- */
 object FallbackResolver {
 
     private val PACKED_REGEX = Regex(
@@ -67,12 +48,6 @@ object FallbackResolver {
         val headers: Map<String, String> = emptyMap(),
     )
 
-    /** Resolve every embed on a plugin video page into playable StreamSources.
-     *  Runs BOTH our own scraping AND the jar's full extractor registry — the
-     *  same `loadExtractor` every CloudStream plugin delegates to — on every
-     *  embed it finds, so the resulting server list matches CloudStream's
-     *  regardless of which plugin produced the page or whether that plugin's
-     *  own resolver for a host (Rumble, ok.ru, dailymotion…) is broken. */
     suspend fun resolve(pageUrl: String): List<StreamSource> {
         val html = runCatching {
             app.get(pageUrl, referer = pageUrl).text
@@ -85,10 +60,6 @@ object FallbackResolver {
         val rawsSync = java.util.Collections.synchronizedMap(raws)
         val subsSync = java.util.Collections.synchronizedList(subs)
 
-        // Embeds resolve IN PARALLEL (CloudStream fires all its extractors at
-        // once too) — the old sequential loop could take 12 × 14s = 3 minutes
-        // of nothing before the player opened. Now the slowest single embed
-        // bounds the whole pass.
         val embeds = collectEmbeds(html, pageUrl).take(12)
         val needsMegaPlay = isMegaPlayPage(pageUrl)
         if (embeds.isNotEmpty() || needsMegaPlay) {
@@ -104,9 +75,6 @@ object FallbackResolver {
                                 }
                             }
                         }
-                        // Anikoto & friends resolve their servers via AJAX (not
-                        // iframes) — replicate the getSources dance in parallel
-                        // so a stalled plugin can never leave the user empty.
                         val megaJobs = if (needsMegaPlay) {
                             listOf(async {
                                 runCatching {
@@ -122,11 +90,6 @@ object FallbackResolver {
             }
         }
 
-        // The page URL itself may BE the embed (an extension handing a bare
-        // fastream/dood/rumble link to the extractor bridge, or a video page
-        // whose only server is one): the dances below also run against it, so
-        // a host that needs its own handshake (Fastream's /dl POST) never
-        // reports "no playable sources" while the same link plays elsewhere.
         if (raws.isEmpty()) {
             if (isFastreamUrl(pageUrl)) {
                 runCatching { withTimeoutOrNull(12_000) { fastreamExtract(pageUrl, raws) } }
@@ -158,19 +121,6 @@ object FallbackResolver {
         return toSources(raws, subs)
     }
 
-    /**
-     * Resolves ONE embed URL — the shape a SkyStream plugin's `loadExtractor(url,
-     * cb)` hands us — with the same engine [resolve] runs per embed: fetch with
-     * the video page as Referer, unpack the player config, scan for HLS/MP4, run
-     * the dood/rumble dances, and finally the jar's own extractor registry.
-     *
-     * SkyStream's CLI tree-shakes its extractor library INTO the plugin, so this
-     * is the legacy call — but plugins written against the older API still reach
-     * for it, and answering with Hikari's own stack is strictly better than the
-     * "no sources" those plugins would otherwise report.
-     *
-     * Time-boxed: the caller (a QuickJS bridge) blocks a plugin thread on it.
-     */
     suspend fun resolveEmbedUrl(embedUrl: String, referer: String? = null): List<StreamSource> {
         if (!embedUrl.startsWith("http")) return emptyList()
         val raws = java.util.Collections.synchronizedMap(LinkedHashMap<String, RawStream>())
@@ -187,15 +137,7 @@ object FallbackResolver {
         raws: Map<String, RawStream>,
         subs: List<SubtitleSource>,
     ): List<StreamSource> = raws.values.map { r ->
-        // The extractor's own headers first (a jar extractor that names an
-        // Origin/Cookie earned it), then the guaranteed Referer + UA on top of
-        // anything still missing — a link that arrived with no headers at all
-        // keeps the old behaviour exactly.
         val headers = LinkedHashMap<String, String>(r.headers)
-        // Fastream's check wants the page that minted the signed URL — the
-        // embed page CloudStream itself sends (see fastreamExtract) — never
-        // the numbered CDN host the URL lives on. The site root is only the
-        // last resort for a link that arrived with no referer at all.
         if (r.url.contains("fastream", true)) {
             val ref = r.referer.takeIf { it.contains("fastream", true) }
                 ?: "https://fastream.to/"
@@ -224,10 +166,6 @@ object FallbackResolver {
         if (html.isNullOrBlank()) return
 
         val text = getAndUnpack(html)
-        // LuluStream (luluvdo.com & friends) expects its CDN requests to carry
-        // the site ROOT as Referer (CloudStream's LuluStream uses mainUrl) — a
-        // full embed URL can make the CDN's hotlink check answer 403. All other
-        // hosts keep the embed URL as referer, like before.
         val scanReferer = if (isLuluHost(embedUrl)) baseOf(embedUrl) + "/" else embedUrl
         scanForUrls(text, scanReferer, raws)
         runCatching { subs += scanSubtitles(text) }
@@ -242,10 +180,6 @@ object FallbackResolver {
             runCatching { rumbleExtract(embedUrl, raws) }
         }
 
-        // The full jar registry (incl. aliases) — CloudStream plugins get their
-        // OkRuSSL/Dailymotion/… servers through this exact call, so we always
-        // run it instead of only as a last resort. A broken plugin-side
-        // resolver for a host can then never lose a server the jar knows.
         runCatching {
             withTimeoutOrNull(10_000) {
                 loadExtractor(embedUrl, pageUrl, { }, { addRaw(it, pageUrl, raws) })
@@ -255,9 +189,6 @@ object FallbackResolver {
 
     private fun getAndUnpack(html: String): String {
         var text = html.replace("\\/", "/")
-        // Unicode escapes inside packed code cut URL regexes short,
-        // (a packed file URL stops matching at the first backslash), handing
-        // the player a truncated URL that fails as "Server failed".
         text = runCatching {
             Regex("\\\\u([0-9a-fA-F]{4})").replace(text) { m ->
                 runCatching { m.groupValues[1].toInt(16).toChar().toString() }.getOrDefault(m.value)
@@ -276,13 +207,6 @@ object FallbackResolver {
         if (raws.size < 10) probeCandidates(text, referer, raws)
     }
 
-    /**
-     * Many anime/NSFW CDNs serve extensionless HLS (the playlist URL has no
-     * `.m3u8` suffix — the CDN sniffs the request). URL patterns can't catch
-     * those, so probe the most promising http(s) URLs in the page text and
-     * keep the ones that actually answer with `#EXTM3U` / `#EXT-X` (or an
-     * MP4 box header).
-     */
     private suspend fun probeCandidates(text: String, referer: String, raws: MutableMap<String, RawStream>) {
         val candidates = ALL_URL_RE.findAll(text)
             .map { it.value.replace("\\/", "/").trim().trimEnd('"', '\'', ',', ';', ')', '}') }
@@ -393,10 +317,6 @@ object FallbackResolver {
         url.lowercase().contains("fastream")
 
     private suspend fun fastreamExtract(embedUrl: String, raws: MutableMap<String, RawStream>) {
-        // Every Fastream embed shape in the wild: /embed-CODE.html (the common
-        // one — the old pattern never matched it, so this whole function was a
-        // no-op for most Fastream embeds), /e/CODE, /embedapp-CODE,
-        // /emb.html?CODE and ?id=/file_code= links.
         val id = Regex("""embedapp-([^/?#&.]+)""").find(embedUrl)?.groupValues?.getOrNull(1)
             ?: Regex("""/e/([^/?#&.]+)""").find(embedUrl)?.groupValues?.getOrNull(1)
             ?: Regex("""embed-([^/?#&.]+?)(?:\.html)?(?:[?#]|$)""").find(embedUrl)?.groupValues?.getOrNull(1)
@@ -407,10 +327,6 @@ object FallbackResolver {
         val code = id.trim().takeIf { it.isNotEmpty() } ?: return
         val body = "op=embed&file_code=" +
             runCatching { java.net.URLEncoder.encode(code, "UTF-8") }.getOrDefault(code) + "&auto=1"
-        // The /dl handshake can set session cookies the CDN then wants back on
-        // the playlist request — CloudStream's client jar carries them
-        // automatically, but the player uses its own data source, so they are
-        // captured here and attached to every Fastream link below.
         var cookie = ""
         val resp = runCatching {
             Http.post(
@@ -430,11 +346,6 @@ object FallbackResolver {
         }.getOrNull()
         if (resp.isNullOrBlank()) return
         val fastHeaders = if (cookie.isNotBlank()) mapOf("Cookie" to cookie) else emptyMap()
-        // CloudStream's own Fastream extractor hands the player the EMBED page
-        // as Referer (see JwPlayerHelper's urlset fallback: `referer = url`),
-        // not the site root — the signed CDN URL is bound to the page that
-        // minted it, and the site root alone 403s. Every link below carries
-        // the embed page it was extracted from.
         val text = getAndUnpack(resp)
         for (m in M3U8_RE.findAll(text)) {
             val u = cleanUrl(m.value) ?: continue
@@ -458,9 +369,6 @@ object FallbackResolver {
             )
         }
         if (raws.isEmpty()) {
-            // The /dl answer carries the stream in a shape the patterns miss
-            // (JSON-escaped file URLs, extensionless HLS variants): probe the
-            // promising URLs directly and keep the ones that answer as media.
             runCatching { probeCandidates(text, embedUrl, raws) }
         }
     }
@@ -484,9 +392,6 @@ object FallbackResolver {
         return u
     }
 
-    // ------------------------------------------------------------------
-    //  P.A.C.K.E.R. unpacker (classic jsunpack algorithm, reimplemented)
-    // ------------------------------------------------------------------
     private fun unpackPacked(input: String): String? {
         val m = PACKED_REGEX.find(input) ?: return null
         val p = m.groupValues[1]
@@ -510,13 +415,6 @@ object FallbackResolver {
         return out
     }
 
-    // ------------------------------------------------------------------
-    //  megaplay family (megaplay.buzz / megacloud / rapid-cloud / vidplay…)
-    //  — the `getSources` AJAX dance anime plugins use. The jar ships NO
-    //  megaplay extractor and plugins' own resolver can stall or 403 in-app,
-    //  so this core fallback hits the same endpoints with the same XHR
-    //  headers — "no source available" in Hikari while CloudStream plays.
-    // ------------------------------------------------------------------
     private fun isMegaPlayPage(pageUrl: String): Boolean {
         val lower = pageUrl.lowercase()
         if (lower.contains("anikoto")) return true
@@ -533,13 +431,6 @@ object FallbackResolver {
             h.contains("shiora")
     }
 
-    /**
-     * Anikoto-style episode pages: the megaplay fast path straight from the
-     * api's `embed` id, plus the site's own ajax server list (`ids` param →
-     * `/ajax/server/list` → `/ajax/server?get=` → megaplay embeds). Mirrors
-     * AnikotoProvider.loadLinks so the fallback engine yields the SAME servers
-     * as CloudStream even when the plugin's own resolver comes up empty.
-     */
     private suspend fun megaPlayFromPage(
         pageUrl: String,
         raws: MutableMap<String, RawStream>,
@@ -568,9 +459,6 @@ object FallbackResolver {
             li.attr("data-link-id").ifBlank { li.attr("data-id") }.takeIf { it.isNotBlank() }
         }
         if (linkIds.isEmpty()) return
-        // Resolve every server's embed IN PARALLEL (the old sequential loop
-        // added ~1s per server — a 4-server page could stall the player for
-        // 10s while sources sat one request away).
         runCatching {
             withTimeoutOrNull(9_000) {
                 coroutineScope {
@@ -595,11 +483,6 @@ object FallbackResolver {
         }
     }
 
-    /**
-     * The getSources dance: GET {host}/stream/getSources?id={epId} with the
-     * XHR header megaplay requires (a plain fetch answers 403 "AJAX requests
-     * only"). Emits the JSON `sources` as MegaPlay servers + `tracks` subs.
-     */
     private suspend fun megaPlayEmbedExtract(
         embedUrl: String,
         raws: MutableMap<String, RawStream>,
@@ -672,9 +555,6 @@ object FallbackResolver {
         return trimmed
     }
 
-    // ------------------------------------------------------------------
-    //  dood `pass_md5` dance (same as CloudStream's DoodLaExtractor)
-    // ------------------------------------------------------------------
     private fun isDoodHost(url: String): Boolean {
         val h = url.lowercase()
         return h.contains("dood") || h.contains("playmogo") || h.contains("ds2play") ||
@@ -708,14 +588,6 @@ object FallbackResolver {
         }
     }
 
-    /**
-     * Rumble embeds (rumble.com/embed/… and rumble.com/v/…). The jar has no
-     * Rumble extractor, so plugins either scrape the embed page themselves
-     * (and break when their regex misses) or can't offer Rumble at all — which
-     * is why Rumble servers show up in CloudStream but not in Hikari. This is
-     * core-level: fetch with the rumble referer and find the HLS/mp4 URLs in
-     * the player config, exactly like CloudStream's rumble sources do.
-     */
     private suspend fun rumbleExtract(embedUrl: String, raws: MutableMap<String, RawStream>) {
         val html = runCatching {
             app.get(embedUrl, referer = "https://rumble.com/").text
@@ -746,9 +618,6 @@ object FallbackResolver {
         repeat(10) { append(ALNUM.random()) }
     }
 
-    // ------------------------------------------------------------------
-    //  embed collection (mirrors LeakPornerProvider.loadLinks scraping)
-    // ------------------------------------------------------------------
     private fun collectEmbeds(html: String, pageUrl: String): List<String> {
         val raw = LinkedHashSet<String>()
         for (m in Regex("""data-embed=["']([^"']+)["']""", RegexOption.IGNORE_CASE).findAll(html)) {

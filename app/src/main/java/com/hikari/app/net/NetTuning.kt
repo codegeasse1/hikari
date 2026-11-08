@@ -2,18 +2,6 @@ package com.hikari.app.net
 
 import java.util.concurrent.CopyOnWriteArrayList
 
-/**
- * Runtime network tuning, driven by the Settings "Slow connection mode" toggle
- * (mobile data / weak Wi-Fi). When it is on, every source-search and
- * stream-probe timeout is scaled up and a provider that comes back empty is
- * retried once, so a slow link gets enough time to answer instead of the app
- * reporting "No playable sources found" purely because a response arrived late.
- *
- * Off by default, so a fast connection keeps its snappy timeouts. The flag is
- * persisted in [com.hikari.app.data.AppStore] and mirrored here at startup and
- * on every change, so the network layer can read it synchronously (the
- * timeouts it feeds are plain constants used all over the search/probe code).
- */
 object NetTuning {
 
     /** How much longer every timeout gets while slow mode is on. */

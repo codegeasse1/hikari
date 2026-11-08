@@ -31,32 +31,6 @@ import java.util.concurrent.ConcurrentLinkedDeque
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 
-/**
- * Runs a Vega provider (github.com/Zenda-Cross/vega-providers) inside a fresh
- * embedded QuickJS engine.
- *
- * A Vega provider is a set of standalone CommonJS modules — one file per
- * function — that the real Vega app loads with `require` and hands a
- * `providerContext` holding axios, cheerio, the repo's common headers, a
- * per-provider key/value store and a WebView solver. [VegaRuntime] recreates
- * that surface (see assets/vega/harness.js) on top of the pieces Hikari already
- * ships for nuvio: boot.js's polyfills, the real cheerio bundle, and nuvio's
- * harness (global `fetch`, `Buffer`, `require`), with every request going
- * through the ASYNCHRONOUS `__hikariFetch` bridge below so a provider's
- * `Promise.all([...])` really is parallel.
- *
- * ONE MODULE PER CALL. Vega's files are self-contained bundles (no cross-file
- * `require` anywhere in the published dist), so a call only ever needs its own
- * file: a catalog read loads catalog.js, a search loads posts.js, a stream
- * lookup loads stream.js. The file is wrapped in a CommonJS function so its
- * top-level `var`s cannot collide with anything, and the wrapper is compiled to
- * QuickJS bytecode once and reused for every later call ([bytecodeCache]) —
- * the same trick [com.hikari.app.nuvio.NuvioRuntime] uses to stop paying the
- * parse cost per provider. The ONE exception is [detail], which loads meta.js
- * and episodes.js into a single engine because the season list it needs lives
- * inside the meta document — two files, one boot, instead of two boots for one
- * page (see its own doc, and `__vegaDetail` in assets/vega/harness.js).
- */
 object VegaRuntime {
 
     /** Engines running at once. A Vega call is one native VM plus (usually) the
@@ -64,16 +38,6 @@ object VegaRuntime {
     private const val MAX_CONCURRENT = 8
     /** [MAX_CONCURRENT] with the performance booster on (Settings → Performance). */
     private const val PERF_CONCURRENT = 4
-    /**
-     * [MAX_CONCURRENT] on a TELEVISION (see
-     * [com.hikari.app.data.PerfMode.tvDevice]): two engines at once.
-     *
-     * A Vega call is the heaviest single thing the app runs in-process — a native
-     * VM plus the cheerio bundle plus, for a detail view, a whole meta document
-     * AND the season requests it asks for — so on the 1-1.5GB boxes this is for it
-     * is the first pool to narrow. There are usually only a handful of Vega
-     * extensions installed, so two at a time still walks through them all.
-     */
     private const val TV_CONCURRENT = 2
     private const val FETCH_TIMEOUT_MS = 30_000L
     /** One provider call. Same ceiling nuvio uses: a cold engine plus a slow
@@ -92,12 +56,6 @@ object VegaRuntime {
     private const val TIMER_MAX_WAIT_MS = 1_500L
     private const val ENGINE_MEMORY_LIMIT = 256L * 1024 * 1024
 
-    /**
-     * [ENGINE_MEMORY_LIMIT] as it applies on THIS device — the television value
-     * from [com.hikari.app.data.PerfMode.tvEngineMemoryLimit] when there is one,
-     * else the flat ceiling above. See the constant's own note in
-     * [com.hikari.app.nuvio.NuvioRuntime] for why a television is different.
-     */
     private val engineMemoryLimit: Long
         get() = com.hikari.app.data.PerfMode.tvEngineMemoryLimit ?: ENGINE_MEMORY_LIMIT
 
@@ -369,9 +327,6 @@ object VegaRuntime {
         // 3. nuvio's harness: global fetch over the bridge, Buffer, require, the
         //    module registry cheerio is registered in.
         qjs.evaluateCached("nuvio-harness.js", nuvioHarnessJs)
-        // 4. Register glue: cheerio module, the fetch bridge, the module loader
-        //    for the common-headers object, and this provider's value + kv. Not
-        //    cached — it carries per-call state.
         qjs.evaluate<Any?>(
             buildRegisterScript(kv, value),
             "vega-register.js",
@@ -382,15 +337,6 @@ object VegaRuntime {
         return qjs
     }
 
-    /**
-     * The glue that ties nuvio's harness to Vega's expectations.
-     *
-     * `__vegaLoadIsolated` compiles a CommonJS file inside a real function scope
-     * (`new Function`) so its top-level `var`s never leak into the engine's
-     * global scope — used for the shared common-headers module, whose helper
-     * names (`__defProp`, `__export`, …) are the same ones every provider bundle
-     * declares.
-     */
     private fun buildRegisterScript(kv: Kv, value: String): String =
         "globalThis.__nuvioRegisterModule('cheerio', globalThis.__nuvioCheerio);" +
             "globalThis.__nuvioFetchImpl = function (url, method, headersJson, body, followRedirects) {" +
@@ -430,16 +376,6 @@ object VegaRuntime {
         evaluate<Any?>(source, name, false)
     }
 
-    /** Wraps a provider module body in a CommonJS function and runs it, leaving
-     *  its exports on `globalThis.__vegaExports`. The wrapper is what makes the
-     *  module's top-level `var`s private and, being a single script, it is
-     *  bytecode-cached per provider+file+content.
-     *
-     *  `module`/`module.exports` are the SAME object handed to the body as both
-     *  parameters, exactly as CommonJS does — a body that writes
-     *  `exports.foo = …` must end up in `module.exports`, and one that
-     *  reassigns `module.exports = …` (the published `headers.js` does) must be
-     *  what the caller reads back. */
     private suspend fun QuickJs.loadModule(cacheKey: String, name: String, source: String) {
         val wrapped =
             "globalThis.__vegaExports = (function () {\n" +
@@ -449,22 +385,12 @@ object VegaRuntime {
                 "\n  })(module, module.exports, globalThis.__nuvioRequire, '/', '/' + ${quote("$name.js")});\n" +
                 "  return module.exports;\n" +
                 "})();\n" +
-                // Every loaded file is also filed by its own name, because ONE
-                // call can need two of them (see [detail]: meta.js's getMeta and
-                // episodes.js's getEpisodes in the same engine) and
-                // `__vegaExports` only ever holds the file loaded last.
                 "globalThis.__vegaModules = globalThis.__vegaModules || {};\n" +
                 "globalThis.__vegaModules[${quote("$name.js")}] = globalThis.__vegaExports;\n" +
                 "void 0;"
         evaluateCached(cacheKey, wrapped)
     }
 
-    /**
-     * Loads one provider file and runs [callScript] (which uses the harness's
-     * `__vegaCall`/`__vegaCallMany`/`__vegaCatalogJson`), returning the raw
-     * payload the provider produced (`{"ok":true,"data":…}` or
-     * `{"ok":false,"error":"…"}`).
-     */
     private suspend fun run(
         providerDir: File,
         providerId: String,
@@ -501,9 +427,6 @@ object VegaRuntime {
                         qjs.loadModule(key, fileName, source)
                         for ((extraName, extraSource) in extraModules) {
                             if (extraSource.isBlank()) continue
-                            // A companion file that will not compile must not cost
-                            // the caller its main answer: the harness simply will
-                            // not find the function it was loaded for.
                             try {
                                 qjs.loadModule(
                                     "vega/v2/$providerId/$extraName/${extraSource.hashCode()}",
@@ -522,11 +445,6 @@ object VegaRuntime {
                         while (!deferred.isCompleted && System.currentTimeMillis() < deadline) {
                             val next = qjs.evaluate<Any?>("__vegaFireTimer()", "vega-timer.js", false)
                             if (deferred.isCompleted) break
-                            // -1 = nothing parked, 0 = a timer just fired, >0 =
-                            // ms until the next one is due (never early — providers
-                            // use setTimeout for Promise.race guards and retry
-                            // backoff, and firing early would abort a healthy
-                            // request).
                             val wait = (next as? Number)?.toLong() ?: -1L
                             val busy = inFlight.get() > 0
                             when {
@@ -543,11 +461,6 @@ object VegaRuntime {
                                     delay(1)
                                 }
                                 else -> {
-                                    // Nothing parked and nothing in flight: the
-                                    // provider either finished on its own (and a
-                                    // promise `then` is about to run) or has
-                                    // stopped responding. A few rounds is enough
-                                    // to notice the former.
                                     idleRounds++
                                     if (idleRounds >= 6) {
                                         idleBail = true
@@ -641,30 +554,6 @@ object VegaRuntime {
         callScript = "__vegaCallMany(${quote(fnName)}, ${quote(argsArrayJson)});",
     )
 
-    /**
-     * A whole detail view in ONE engine: meta.js's `getMeta` and, in the same
-     * engine and straight after it, episodes.js's `getEpisodes` for every season
-     * the Info's `linkList` asks for. The payload is
-     * `{"ok":true,"data":{"info":<Info>,"episodes":[<array|null>,…]}}`, and
-     * [onInfo] is handed the Info's JSON the moment it answers so the page's
-     * header does not have to wait for the seasons.
-     *
-     * This exists because the detail page used to cost TWO engine boots: one to
-     * read the meta document, and a second to read the episodes out of the
-     * season links that document carries. Booting is the expensive half — a
-     * fresh QuickJS VM, the polyfills, 450KB of cheerio, nuvio's harness and the
-     * provider's own module, all over again — and paying it twice in a row for
-     * what the user reads as one page is what "taking too much time to show info
-     * and episode in detail screen" was. The season list is inside the document,
-     * so there is nothing to parallelise: the only way to make it fast is to ask
-     * both questions of the engine that is already up.
-     *
-     * The index alignment matters: the episode array holds one entry per
-     * `linkList` entry with a non-blank `episodesLink`, in list order, and the
-     * caller maps it back by walking that same list the same way (see
-     * [com.hikari.app.providers.vega.VegaProvider]). A season whose request
-     * throws contributes `null` rather than failing the whole page.
-     */
     suspend fun detail(
         providerDir: File,
         providerId: String,
@@ -686,11 +575,6 @@ object VegaRuntime {
         )
     }
 
-    /**
-     * True when the provider's files load and it exports something usable.
-     * Starts with "OK"; "NO" means "not a Vega provider"; "ERR:…" carries a
-     * detail message.
-     */
     suspend fun validate(context: Context, providerDir: File, providerId: String, value: String): String =
         withContext(Dispatchers.Default) {
             val probe = listOf("stream" to "getStream", "posts" to "getPosts", "meta" to "getMeta")
@@ -728,20 +612,6 @@ object VegaRuntime {
 
     // ---- settings ----
 
-    /**
-     * A Vega provider's OWN settings screen, read from its `settings.js`.
-     *
-     * A Vega provider declares its settings the way the rest of it is written:
-     * a module exporting `getSettingsSchema({providerContext})` that answers an
-     * array of fields (`{key, type, label, description, defaultValue, options}`
-     * — toggle / select / text / number). This runs that module exactly like any
-     * other provider call, so the screen is the provider's own rather than a
-     * list Hikari made up. Answers the raw `{"ok":…}` payload.
-     *
-     * The values those fields edit live in the provider's own `kv.json` — the
-     * store its modules read through `providerContext.kvStore` (see
-     * [savedSettings] and [saveSettings]).
-     */
     suspend fun settingsSchema(
         providerDir: File,
         providerId: String,
@@ -760,14 +630,6 @@ object VegaRuntime {
     fun savedSettings(providerDir: File): JSONObject =
         runCatching { Kv(File(providerDir, "kv.json")).obj }.getOrDefault(JSONObject())
 
-    /**
-     * Writes the user's choices into that same store.
-     *
-     * Deliberately not a second store of Hikari's own: a Vega provider reads its
-     * settings from `providerContext.kvStore`, which IS this file, so anything
-     * else would show settings the provider never sees. The keys are the
-     * provider's own (`4khdhub_quickDownload`, …), taken from its schema.
-     */
     suspend fun saveSettings(providerDir: File, values: JSONObject) = withContext(Dispatchers.IO) {
         if (values.length() == 0) return@withContext
         val kv = Kv(File(providerDir, "kv.json"))
@@ -839,13 +701,6 @@ object VegaRuntime {
                         fun finish(resp: Response): Fetched {
                             return try {
                             val bytes = resp.body?.bytes() ?: ByteArray(0)
-                            // Vega's Cinewood helper only invokes its WebView WAF
-                            // solver when axios sees HTTP 403. Cloudflare also
-                            // serves the interstitial as HTTP 200 on some edges,
-                            // which previously made getWithWAF treat the challenge
-                            // HTML as the real page and then produced no links.
-                            // Normalize a genuine CF interstitial to 403 so the
-                            // provider's existing WAF recovery path is activated.
                             val effectiveStatus =
                                 if (resp.code in 200..299 && isCloudflareChallenge(bytes)) 403
                                 else resp.code
@@ -928,10 +783,6 @@ object VegaRuntime {
         val h = runCatching { JSONObject(mergeJarCookies(url, headersJson)) }.getOrNull()
         if (h != null) {
             h.keys().forEach { k ->
-                // OkHttp only decompresses gzip/br transparently when the REQUEST
-                // carries no Accept-Encoding of its own — forwarding the
-                // provider's "gzip, deflate, br" handed JS raw compressed bytes
-                // decoded as UTF-8 (same fix as the nuvio bridge).
                 if (k.equals("Accept-Encoding", ignoreCase = true)) return@forEach
                 val v = runCatching { h.getString(k) }.getOrNull() ?: return@forEach
                 if (v.isBlank()) return@forEach

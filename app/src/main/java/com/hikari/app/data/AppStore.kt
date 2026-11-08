@@ -43,11 +43,6 @@ data class LastSource(
     val headerVariant: Int = 0,
 )
 
-/**
- * One stored preference in a backup file: its key, a one-letter type code and
- * the value itself (already flattened to something JSON can carry). See
- * [AppStore.snapshotPreferences] for why the type rides along explicitly.
- */
 data class PrefRecord(
     val key: String,
     /** "s" string · "b" boolean · "i" int · "l" long · "f" float · "d" double ·
@@ -56,16 +51,6 @@ data class PrefRecord(
     val value: Any?,
 )
 
-/**
- * The three sections of the merged "My Stuff" tab, named in ONE place.
- *
- * They live in the data layer (not beside the screen that draws them) because
- * their per-section switches are stored preferences: the store has to be able to
- * name a section to look up whether it is on, and a data-layer object reaching
- * into a UI object for a string is the kind of dependency that silently breaks
- * the day somebody moves the screen. [com.hikari.app.ui.screens.MyStuff] reads
- * these constants, so the names have exactly one definition.
- */
 object MyStuffSection {
     const val LIBRARY = "library"
     const val HISTORY = "history"
@@ -125,27 +110,7 @@ class AppStore(private val ctx: Context) {
         val HIDE_CONTINUE = booleanPreferencesKey("hideContinue")
         /** Animate animated covers on tiles (see [gifAnimFlow]). */
         val GIF_ANIM = booleanPreferencesKey("gifAnim")
-        /**
-         * Draw the app's small grey EXPLANATION lines: the caption under a
-         * settings row, a sheet's note, a dialog's paragraph. ON is the app as
-         * it has always been; OFF removes them everywhere at once and leaves the
-         * titles, the controls and the values — see
-         * [com.hikari.app.ui.components.LocalHideHelp], which is how every
-         * screen reads it.
-         */
         val HIDE_HELP = booleanPreferencesKey("hideHelp")
-        /**
-         * Which profile the store's contents currently ARE — the only link
-         * between the preferences file and the profile registry that lives in
-         * the app's files directory (see [Profiles]).
-         *
-         * It is what makes "the store and the registry agree" a checkable fact
-         * instead of an assumption: it is written on every profile switch, and a
-         * mismatch (the app's data was cleared, or restored from a file, while
-         * the registry survived) is what tells the app to re-apply the active
-         * profile's snapshot instead of showing an empty app under a profile
-         * that says otherwise.
-         */
         val PROFILE_TAG = stringPreferencesKey("profileTag")
         val LAST_SOURCE = stringPreferencesKey("lastSource")
         val ELEMENT_BLOCKS = stringPreferencesKey("elementBlocks")
@@ -164,12 +129,6 @@ class AppStore(private val ctx: Context) {
         val WEBVIEW_CUSTOM_UA = stringPreferencesKey("webviewCustomUa")
         val LANGUAGE = stringPreferencesKey("appLanguage")
         val HOME_PROVIDER = stringPreferencesKey("homeProvider")
-        /**
-         * A MULTI pick for Home: the provider/collection keys the Home feed is
-         * built from when the user has long-pressed the source pill and picked
-         * several sources. Empty (or one entry, which is what a plain tap
-         * writes) means the single [HOME_PROVIDER] pick is in force.
-         */
         val HOME_PROVIDERS = stringPreferencesKey("homeProviders")
         val TRANSLATE_PROVIDERS = stringPreferencesKey("translateProviders")
         val TRANSLATE_CACHE = stringPreferencesKey("translateCache")
@@ -220,47 +179,13 @@ class AppStore(private val ctx: Context) {
          *  (see AppStore.telegramView and TgView in the Telegram screen). */
         val TELEGRAM_VIEW = stringPreferencesKey("telegramViewStyle")
         val HIDDEN_TABS = stringPreferencesKey("hiddenTabs")
-        /**
-         * The queries the user has actually searched for on the Search tab,
-         * newest first, as JSON — see [searchHistory]. Capped and de-duplicated
-         * there; this is the store, not the rule.
-         */
         val SEARCH_HISTORY = stringPreferencesKey("searchHistory")
-        /**
-         * Whether the IPTV tab's button is drawn in the taskbar. Its OWN
-         * preference rather than an entry in [HIDDEN_TABS] because IPTV has to
-         * be off by default on every install, including the ones that already
-         * have a hidden-tabs list stored: an entry in that list can only be
-         * written by the user, so a default-off tab could never be expressed
-         * there.
-         */
         val IPTV_TAB = booleanPreferencesKey("showIptvTab")
         val MANGA_TAB = booleanPreferencesKey("showMangaTab")
-        /**
-         * Whether the Stats tab's button is drawn in the taskbar. Off by default
-         * for the same reason as IPTV/Manga: it is a page a user goes looking
-         * for, not one every install needs a button for (Settings → Taskbar
-         * buttons switches it on).
-         */
         val STATS_TAB = booleanPreferencesKey("showStatsTab")
-        /**
-         * Whether the Telegram tab's button is drawn in the taskbar. ON by
-         * default (like Manga's, unlike IPTV/Stats'): the tab is the user's own
-         * video library, so a fresh install gets a button for it — and it is a
-         * preference of its own rather than an entry in [HIDDEN_TABS] so that a
-         * user who switches it OFF has that `false` recorded here and keeps it
-         * (an entry in the hidden list can only ever be written by the user, so
-         * a default-on tab could not be expressed there).
-         */
         val TELEGRAM_TAB = booleanPreferencesKey("showTelegramTab")
         /** The Telegram channels the Telegram tab browses, as JSON. */
         val TELEGRAM_CHANNELS = stringPreferencesKey("telegramChannels")
-        /**
-         * The individual Telegram video LINKS the tab's "Video links" section
-         * keeps, as JSON — see [com.hikari.app.telegram.TelegramLinks]. Kept
-         * apart from [TELEGRAM_CHANNELS] because the two are different things:
-         * a channel is a feed to browse, a link is one post to play.
-         */
         val TELEGRAM_LINKS = stringPreferencesKey("telegramLinks")
 
         /** The user's own Telegram API credentials (see telegramApiIdFlow). */
@@ -270,65 +195,13 @@ class AppStore(private val ctx: Context) {
         val APP_LOCK = booleanPreferencesKey("appLock")
         /** The lock's secret as `algo:salt:hash` (PBKDF2); blank = never set. */
         val APP_LOCK_SECRET = stringPreferencesKey("appLockSecret")
-        /**
-         * How many characters the lock's password has, so the unlock screen can
-         * draw the right number of dots and stop typing exactly when it is
-         * complete instead of guessing (a 4-digit PIN used to be drawn as six
-         * empty dots, which read as "it wants six digits").
-         *
-         * Not a secret in any useful sense: it says nothing about WHICH
-         * characters, and the unlock screen has to look right. 0 = unknown (a
-         * lock set before this was recorded), and the screen then falls back to
-         * checking every prefix of four or more digits.
-         */
         val APP_LOCK_LEN = intPreferencesKey("appLockLength")
         /** Unlock with the device's fingerprint/face as well as the password. */
         val APP_LOCK_BIO = booleanPreferencesKey("appLockBiometric")
-        /**
-         * Lock when the SCREEN turns off, not only when the app is left
-         * (Settings → Privacy & Browsing → App lock). On by default, which is
-         * what the lock has always done — turning the screen off stops the
-         * activity, and the lock could not tell the two apart before this key
-         * existed. Off + a grace period is "lock after I actually leave the
-         * app, not every time I put the phone down".
-         */
         val APP_LOCK_SCREEN_OFF = booleanPreferencesKey("appLockScreenOff")
-        /**
-         * How many minutes the app may stay unlocked after the app is left (0 =
-         * lock immediately). The unlock screen's grace period: see
-         * [com.hikari.app.ui.AppLockGate]. Storage is minutes, 0..60, and the
-         * settings slider offers every minute from Instant to 60.
-         */
         val APP_LOCK_DELAY_MIN = intPreferencesKey("appLockDelayMin")
-        /**
-         * Lock when the APP is left (Settings → Privacy & Browsing → App lock).
-         * On by default — what the lock has always done. Off, leaving the app
-         * never draws the unlock card: only a screen-off (when that is on too,
-         * see [APP_LOCK_SCREEN_OFF]) or a fresh process start does. The grace
-         * period still applies to whichever triggers remain on.
-         */
         val APP_LOCK_LEAVE = booleanPreferencesKey("appLockLeave")
-        /**
-         * Whether the CURRENT unlock is still in force — the one piece of lock
-         * state that has to survive the process being killed.
-         *
-         * The gate's own `unlocked` flag lives in the composition, so it dies
-         * with the process; that was fine while the lock's two triggers were the
-         * only way to reach the unlock card, but it is wrong for the trigger
-         * that is OFF. Removing Hikari from the background kills its process on
-         * almost every launcher, so "Lock when I leave the app" off still asked
-         * for the password on the next open — the one thing that switch exists
-         * to prevent. Written true the moment the user unlocks (with
-         * [APP_LOCK_SESSION_AT]) and false whenever the app locks, so a fresh
-         * process can tell "the user was in and never locked it" from "it locked
-         * and nobody has opened it since".
-         */
         val APP_LOCK_SESSION_OPEN = booleanPreferencesKey("appLockSessionOpen")
-        /**
-         * When the current unlock was granted (wall clock, ms). The grace period
-         * is measured from it on the first frame of a fresh process, exactly as
-         * it is measured from `leftAt` inside a live one.
-         */
         val APP_LOCK_SESSION_AT = longPreferencesKey("appLockSessionAt")
         /** My Stuff lock — the switch itself (Settings → Privacy & Browsing).
          *  A second, independent password guarding only the My Stuff tab
@@ -340,11 +213,6 @@ class AppStore(private val ctx: Context) {
          *  device-local (see [DeviceLocal]): it must never travel in a backup
          *  file or a pairing payload. */
         val MYSTUFF_LOCK_SECRET = stringPreferencesKey("myStuffLockSecret")
-        /**
-         * The trackers the user signed in to (Settings → Trackers), as JSON —
-         * one row per service, with that service's token. See
-         * [com.hikari.app.data.TrackerStore].
-         */
         val TRACKERS = stringPreferencesKey("trackers")
         /** The app id/secret the user registered with each service (JSON). */
         val TRACKER_CLIENTS = stringPreferencesKey("trackerClients")
@@ -419,14 +287,6 @@ class AppStore(private val ctx: Context) {
          *  Settings → App Layout → Episode UI). Applies to list, grid and big
          *  cards alike. */
         val EPISODE_GLASS = booleanPreferencesKey("episodeGlass")
-        /**
-         * The player's volume BOOSTER: +6 dB (2× the amplitude) applied to the
-         * audio session by an `android.media.audiofx.LoudnessEnhancer`, so a
-         * film whose dialogue was mixed quiet can be turned up past the device's
-         * own 100% without touching the video's own volume key. OFF by default
-         * — it is a change to the sound, and the honest default is "as
-         * mastered". See [volumeBoostFlow] and PlayerActivity.attachVolumeBoost.
-         */
         val VOLUME_BOOST = booleanPreferencesKey("volumeBoost")
         /** Subtitles selected automatically when a video opens (ON by default;
          *  Settings → Player → Subtitles). Off means every video starts with
@@ -444,31 +304,8 @@ class AppStore(private val ctx: Context) {
         /** Keep the screen on while reading, and print "12 / 40" over the page. */
         val MANGA_KEEP_AWAKE = booleanPreferencesKey("mangaKeepAwake")
         val MANGA_SHOW_PAGE_NUMBER = booleanPreferencesKey("mangaShowPageNumber")
-        /**
-         * Colour-enhance the pages while reading.
-         *
-         * Off by default (a scan is the artist's own colour, and "enhancing" it
-         * behind the reader's back would be a surprising default), but one tap
-         * away in the reader's settings and applied at DRAW time — a colour
-         * matrix on the GPU (see [com.hikari.app.reader.ReaderSettings.imageEnhance])
-         * — so it costs no extra decode, no extra memory and no frame time: the
-         * user asked for exactly that ("enhance all image real time without any
-         * load on phone, not make laggy").
-         */
         val MANGA_ENHANCE = booleanPreferencesKey("mangaEnhance")
-    /**
-     * The reader's whole settings surface, as one JSON blob — Nekoread's chrome
-     * ported whole brought thirty-odd options with it, and they travel together
-     * (see [com.hikari.app.reader.ReaderSettings]). The per-key preferences
-     * above seed it on first run, so an existing install keeps its mode and
-     * background.
-     */
     val MANGA_READER_SETTINGS = stringPreferencesKey("mangaReaderSettings")
-    /**
-     * Per-series reading modes, as `mangaKey -> ReaderMode name` JSON: what the
-     * reader's "use different settings for this series" switch writes (see
-     * [mangaSeriesModesFlow]).
-     */
     val MANGA_SERIES_MODES = stringPreferencesKey("mangaSeriesModes")
     val MANGA_TRANSLATE_SETTINGS = stringPreferencesKey("mangaTranslateSettings")
     val MANGA_TRANSLATE_SERIES = stringPreferencesKey("mangaTranslateSeries")
@@ -476,19 +313,7 @@ class AppStore(private val ctx: Context) {
     val NOVEL_TRANSLATE_SERIES = stringPreferencesKey("novelTranslateSeries")
     /** Engine ids the reader pinned to the top of the Manga tab's Browse list. */
     val PINNED_MANGA_ENGINES = stringSetPreferencesKey("pinnedMangaEngines")
-    /**
-     * Provider ids the user pinned to the top of Home's \"Choose an extension\"
-     * list, **most recently pinned first** — a JSON array rather than a set,
-     * because the order IS the point here: the pin the user just tapped has to
-     * land above the ones pinned last week, which a set cannot express.
-     */
     val PINNED_PROVIDERS = stringPreferencesKey("pinnedProviders")
-    /**
-     * The user's own provider folders — a JSON array of
-     * `name<unit separator>id<unit separator>id…` strings (see
-     * [AppStore.providerFoldersFlow]). A folder is a saved PICK, not a new kind
-     * of key: choosing one selects the provider ids it holds.
-     */
     val PROVIDER_FOLDERS = stringPreferencesKey("providerFolders")
     /**
      * Per-provider disabled Home catalogs: provider id → JSON
@@ -500,30 +325,7 @@ class AppStore(private val ctx: Context) {
      * `{"id": ["catalog", …]}` in the user's order (mixer reorder + reset).
      */
     val CATALOG_ORDER = stringPreferencesKey("catalogOrder")
-        /**
-         * May adult material be shown (Settings → Content → NSFW)?
-         *
-         * ON by default, which is the app as it has always been: every installed
-         * extension is listed and every title a provider returns is shown. OFF, the
-         * app hides the extensions whose own metadata is tagged 18+ and filters
-         * adult titles out of every catalogue, shelf, search result and grid —
-         * [com.hikari.app.data.NsfwGate] is the single rule and the single place
-         * that decides, and it is applied where lists are DRAWN so flipping the
-         * switch is instant and cannot leave a stale row on screen.
-         */
         val NSFW_ENABLED = booleanPreferencesKey("nsfwEnabled")
-        /**
-         * The three sections of the merged "My Stuff" tab (Library, History,
-         * Downloads), each switchable in Settings → Taskbar buttons.
-         *
-         * The strip used to draw all three unconditionally — three buttons, a
-         * third of a phone's row, for someone who only ever opens one of them.
-         * The sections have their OWN preferences rather than entries in
-         * [HIDDEN_TABS]: they default to ON (which a set cannot express, since
-         * only the user can write into one), and keeping them out of the set the
-         * taskbar filters on means switching a section off can never hide a tab
-         * or trip the "the bar never becomes empty" rule.
-         */
         val MYSTUFF_LIBRARY = booleanPreferencesKey("mystuffLibrary")
         val MYSTUFF_HISTORY = booleanPreferencesKey("mystuffHistory")
         val MYSTUFF_DOWNLOADS = booleanPreferencesKey("mystuffDownloads")
@@ -645,11 +447,6 @@ class AppStore(private val ctx: Context) {
         /** Look of the "finding your server" card — see
          *  [com.hikari.app.ui.LoadingStyles]. */
         val LOADING_STYLE = stringPreferencesKey("loadingStyle")
-        /** The treatment drawn over the loading card (a sheen, an aura ring, a
-         *  gallery frame, an accent bloom) — see
-         *  [com.hikari.app.ui.LoadingEffects]. A SET, so several treatments can
-         *  be on at once. The old single-key preference ([LOADING_EFFECT]) is
-         *  still read as the starting set. */
         val LOADING_EFFECTS = stringSetPreferencesKey("loadingEffects")
         /** A single treatment stored by a build before multi-select existed. */
         val LOADING_EFFECT = stringPreferencesKey("loadingEffect")
@@ -676,32 +473,13 @@ class AppStore(private val ctx: Context) {
         /** The same choice for the loading screen's own aura ring. Kept apart
          *  from the poster's so the two screens can differ. */
         val LOADING_AURA_COLOR = stringPreferencesKey("loadingAuraColor")
-        /** "Search every installed extension" (Settings → Playback → Server
-         *  search). On by default: a title is searched across every installed
-         *  extension, the way it always has been. Off, only the extension the
-         *  title was opened from is asked — CloudStream's own model, where a
-         *  film plays from the repo you picked and nowhere else. See
-         *  [com.hikari.app.data.SearchScope]. */
         val SEARCH_ALL_EXTENSIONS = booleanPreferencesKey("searchAllExtensions")
         /** "Search every Nuvio provider" (Settings → Playback & Servers → Server
          *  search): a title opened FROM a nuvio provider also asks every other
          *  installed nuvio provider, whatever [SEARCH_ALL_EXTENSIONS] says. On by
          *  default — see [nuvioSearchAllFlow]. */
         val NUVIO_SEARCH_ALL = booleanPreferencesKey("nuvioSearchAllProviders")
-        /** "Search every Stremio addon" (Settings → Playback & Servers → Server
-         *  search): a title opened FROM a Stremio addon also asks every other
-         *  installed Stremio addon, whatever [SEARCH_ALL_EXTENSIONS] says — the
-         *  Stremio model, where the addons in one account all resolve the same
-         *  imdb/tmdb id, so the family is one source of servers. On by default —
-         *  see [stremioSearchAllFlow]. */
         val STREMIO_SEARCH_ALL = booleanPreferencesKey("stremioSearchAllAddons")
-        /** Per-ENGINE "search every repo of this engine too" switches, by
-         *  [ProviderType] name ("CS3", "HIKARI", "SKYSTREAM", "ANIYOMI",
-         *  "UNIVERSAL", …). The stored value is the set of engines that are ON;
-         *  an engine not in the set is OFF, and nuvio/Stremio keep their own
-         *  dedicated keys above so an existing choice of theirs survives.
-         *  Default OFF for every engine — see [engineFamiliesFlow] and
-         *  [com.hikari.app.data.SearchScope.engineFamilies]. */
         val SEARCH_FAMILY_TYPES = stringSetPreferencesKey("searchFamilyTypes")
         val SEARCH_NUVIO_IDS = stringSetPreferencesKey("searchNuvioIds")
         val SEARCH_STREMIO_IDS = stringSetPreferencesKey("searchStremioIds")
@@ -713,12 +491,6 @@ class AppStore(private val ctx: Context) {
          val TRACKER_STREMIO_SEARCH_ALL = booleanPreferencesKey("trackerStremioSearchAll")
          val TRACKER_FAMILY_TYPES = stringSetPreferencesKey("trackerFamilyTypes")
          val TRACKER_PROVIDER_IDS = stringSetPreferencesKey("trackerProviderIds")
-        /** "Exception extensions" (Settings → Playback & Servers → Server
-         *  search): extensions that are asked for servers for EVERY title, even
-         *  when [SEARCH_ALL_EXTENSIONS] is off. See
-         *  [com.hikari.app.data.SearchScope] for the one rule that goes with it
-         *  — a title opened FROM an exception extension plays from that
-         *  extension alone. */
         val SEARCH_EXCEPTION_ON = booleanPreferencesKey("searchExceptionOn")
         val SEARCH_EXCEPTION_IDS = stringSetPreferencesKey("searchExceptionIds")
         /** ENTIRE ENGINES marked as exceptions, by [ProviderType] name
@@ -738,12 +510,6 @@ class AppStore(private val ctx: Context) {
         /** providerId → seconds (20–100), as JSON. Only the extensions the user
          *  touched are in here; everything else reads the built-in budget. */
         val SERVER_TIMEOUTS = stringPreferencesKey("serverTimeouts")
-        /** profileId → lock secret (`algo:salt:hash`, see
-         *  [com.hikari.app.lock.AppLock]), as JSON. Device-local (see
-         *  [DeviceLocal]): a lock describes THIS device and must never travel
-         *  in a backup or pairing payload — same rule as the app lock's own
-         *  secret. The registry only carries the `locked` flag, which is
-         *  meaningless without the secret. */
         val PROFILE_LOCKS = stringPreferencesKey("profileLocks")
         /** Bottom navigation bar layout — see [com.hikari.app.ui.navigation.NavStyles]:
          *  "classic" | "floating" | "animated" (an old stored "borderless" is
@@ -760,12 +526,6 @@ class AppStore(private val ctx: Context) {
          *  them behind an immersive, swipe-to-reveal fullscreen. Off = the app
          *  is immersive (the way it ships); on = normal windowed layout. */
         val FULLSCREEN_OFF = booleanPreferencesKey("fullscreenOff")
-        // ---- Television ----
-        //
-        // One APK runs on phones and on televisions, and the layout follows the
-        // device it finds itself on (see [com.hikari.app.tv.TvMode]). These four
-        // preferences are the user's hand on that decision.
-        //
         /** "auto" (follow the device) | "tv" (always the television layout) |
          *  "phone" (never). Some boxes report themselves wrongly, and being
          *  stuck with an interface the remote cannot work is not acceptable. */
@@ -778,13 +538,6 @@ class AppStore(private val ctx: Context) {
          *  backdrop effects that a cheap TV stick's GPU cannot afford while it
          *  is also decoding video. */
         val TV_PERF = booleanPreferencesKey("tvPerf")
-        /** Whether the USER has made the performance-mode choice themselves.
-         *  Until they do, the mode follows the layout: it is switched on by
-         *  itself whenever the television layout is active (see
-         *  [com.hikari.app.HikariApp]'s `syncTvPerformance`) and off again for
-         *  the phone layout, which is what "turn performance mode on when the
-         *  TV layout is detected" means — and the moment the user works the
-         *  switch, their answer is kept and never overridden again. */
         val TV_PERF_CHOSEN = booleanPreferencesKey("tvPerfChosen")
         /** Whether the first-run television defaults have been applied to this
          *  install already (they must be applied once, not on every launch). */
@@ -802,88 +555,11 @@ class AppStore(private val ctx: Context) {
          *  the TV header button cycles, so a phone-side List choice can never
          *  drag the TV back to rows). */
         val TV_EPISODE_VIEW_MODE = intPreferencesKey("tvEpisodeViewMode")
-        /** The PERFORMANCE BOOSTER (Settings → Performance): one switch that
-         *  drops the heaviest work Hikari does on a slow device — the blurred
-         *  poster halo, the animated poster/loading treatments, and the width of
-         *  a cross-extension search fan-out — without changing what the app can
-         *  play. Off by default: on a device that keeps up, none of it is worth
-         *  giving up. See [perfModeFlow]. */
         val PERF_MODE = booleanPreferencesKey("perfMode")
     }
 
-    /**
-     * The settings that describe THIS DEVICE, and so may never travel to another
-     * one — the list behind the one rule that makes a backup and a device
-     * pairing safe: *a device keeps the settings that are about itself*.
-     *
-     * Both transfer paths answer to it, in both directions, which is the point
-     * of keeping the list here rather than at either call site: [snapshotPreferences]
-     * never puts these keys in a backup file (so a file handed to a support chat
-     * honestly does not contain them), and [restorePreferences] refuses to apply
-     * them even when a file DOES carry them — a file written by an older Hikari,
-     * or one from a device whose "backup" was made before this rule existed. That
-     * second half is not belt-and-braces: the reported bug was a *pairing* that
-     * arrived on a television with the phone's PIN lock and the phone's layout,
-     * and every file already sitting in somebody's Downloads was written by a
-     * build that had no rule at all.
-     *
-     * The test for a key is not "is it a setting?" but **"does its value mean the
-     * same thing on the device it arrives at?"** Everything a user BUILT (sources,
-     * accounts, history, favourites, catalogs, trackers, the theme, the font, the
-     * poster styling, the player preferences) means the same thing anywhere and
-     * travels. What is listed below means something only about the machine it was
-     * set on.
-     */
     object DeviceLocal {
 
-        /**
-         * The keys, grouped by why they are here:
-         *
-         *  * **The app lock** (`appLock*`) — a PIN is a secret for the device it
-         *    was set on, and a lock is the ONE setting whose arrival the receiver
-         *    cannot undo without the sender's secret. Copying one onto a
-         *    television locked a screen that has no keypad and that its owner
-         *    never asked to lock. It is also a security rule rather than a taste:
-         *    a restore must never change whether a device is locked, and an app
-         *    that silently unlocks itself on an update would be worse still — so
-         *    the receiving device keeps its own lock state, whatever the file
-         *    says.
-         *  * **The layout** (`tvMode`, `tvOverscan`, `uiScale*`,
-         *    `fullscreenOff`) — phone or television is DETECTED per device (see
-         *    [com.hikari.app.tv.TvMode]), and these are the choices that exist to
-         *    suit that screen. A phone's 100% interface scale on a four-metre
-         *    television, its windowed "full screen app mode off", or — the
-         *    reported case — a phone whose `tvMode` is the default "follow the
-         *    device" arriving on a box whose owner had set "this device is a TV"
-         *    (because the box misreports itself) and silently replacing it, are
-         *    all the same bug: the receiving device stopped describing itself and
-         *    started describing the sender.
-         *  * **The device's own capability and first-run state** (`tvPerf*`,
-         *    `tvSeeded`, `perfMode`, `playerEnhance*`) — whether this chip can
-         *    afford the poster treatments, whether this install has already
-         *    applied its own first-run television defaults, and whether the
-         *    video-enhance colour pass is on. `tvSeeded` arriving as `true` from a
-         *    phone is what stopped a television from ever choosing its own
-         *    ("no poster effects, 110% interface scale") again — and a phone's
-         *    "Vibrant" **playerEnhance** is a GPU pass on every decoded frame,
-         *    which a TV stick pays for in dropped frames, so it does not travel
-         *    either. `playerEnhanceUnsupported` is the same kind of value read
-         *    from the other side: a phone whose GL stack refused media3's
-         *    pipeline must not tell a television that IT cannot run one.
-         *  * **The launcher icon** (`appIcon`) — a phone's home-screen icon
-         *    alias. A television launcher draws the app's banner and has no icon
-         *    to change, and the alias is applied from this value on every launch
-         *    (see [com.hikari.app.ui.AppIconManager.ensureApplied]).
-         *
-         * Deliberately NOT here, because the same value means the same thing on
-         * any device and the user who set it should find it there: the taskbar
-         * and its buttons (`navBarStyle`, `tabLabels`, `hiddenTabs`, the
-         * `show*Tab` switches), which sections of My Stuff are drawn, and every
-         * look-and-feel choice from the theme down to the poster glow. The
-         * account logins travel too — the tracker tokens, the Telegram api pair —
-         * because they are the USER's, not the device's, and carrying them is
-         * what "move your setup to another device" means.
-         */
         val KEYS: Set<String> = setOf(
             K.APP_LOCK.name,
             K.APP_LOCK_SECRET.name,
@@ -956,11 +632,6 @@ class AppStore(private val ctx: Context) {
     @Volatile
     private var lastWriteWarningAt = 0L
 
-    /**
-     * Writes settings, retrying a failed attempt and reporting one that keeps
-     * failing — see the note above. [what] names the setting for the log line
-     * and the warning.
-     */
     private suspend fun write(
         what: String,
         transform: suspend (androidx.datastore.preferences.core.MutablePreferences) -> Unit,
@@ -1288,25 +959,6 @@ class AppStore(private val ctx: Context) {
         setFavoriteCategories(uniqueId, cur + categories)
     }
 
-    /**
-     * The look the app ships with — what a fresh install shows before the user
-     * has touched anything (Settings → App Layout).
-     *
-     * These are the defaults the reference clients are known for, so Hikari
-     * looks its best out of the box instead of asking the user to go and find
-     * the styling screen first:
-     *
-     *  - posters wear their own halo, rounded and badged — no effect layer over
-     *    the art (the gallery frame, aura ring and edge light are opt-in);
-     *  - Home's featured banner is the side-by-side Showcase;
-     *  - the detail page opens on "Art + poster";
-     *  - the player wears the Neon skin;
-     *  - the loading screen is the title's poster card, with no effect over it.
-     *
-     * They are only DEFAULTS: every one of them is a normal setting, and a user
-     * who picks something else keeps it (a stored value always wins — see each
-     * getter below).
-     */
     private companion object ShipDefaults {
         /** dp of halo behind each poster. */
         const val DEFAULT_POSTER_BLUR = 15
@@ -1324,12 +976,6 @@ class AppStore(private val ctx: Context) {
          *  dark poster, weak enough not to wash out a bright one. */
         const val DEFAULT_POSTER_GLOW_STRENGTH = 55
 
-        /** The signature card treatment ([com.hikari.app.ui.PosterEffects]).
-         *
-         *  NONE: a first-run poster is plain artwork. The gallery frame, the
-         *  aura ring and the edge light are all opt-in (Settings → Poster
-         *  styling → Effect) — a fresh install asked for none of them, and every
-         *  layer is work the device pays for on every card in a grid. */
         val DEFAULT_POSTER_EFFECT = com.hikari.app.ui.PosterEffects.NONE
 
         /** The signature card treatmentS — empty, i.e. nothing drawn over the
@@ -1359,18 +1005,8 @@ class AppStore(private val ctx: Context) {
          *  new user sees while a server is found is the film's artwork. */
         const val DEFAULT_LOADING_STYLE = com.hikari.app.ui.LoadingStyles.POSTER
 
-        /** The treatments over that card ([LoadingEffects]) — NONE by default:
-         *  the loading card is the title's poster on plain glass (see
-         *  [DEFAULT_LOADING_STYLE]). The sheen, the aura ring, the gallery frame
-         *  and the glow are each one switch in Settings → App Layout → Loading
-         *  screen → Effect. */
         val DEFAULT_LOADING_EFFECTS: Set<String> = emptySet()
 
-        /** The app theme a fresh install opens in. AMOLED Black — see
-         *  [com.hikari.app.ui.theme.HikariThemeMode.DEFAULT_KEY], which is the
-         *  one place this value is decided (the Compose side, the player's
-         *  synchronous mirror and this flow must not be able to disagree, and
-         *  on the first frame the Compose side has not read DataStore yet). */
         const val DEFAULT_THEME = HikariThemeMode.DEFAULT_KEY
     }
 
@@ -1474,9 +1110,6 @@ class AppStore(private val ctx: Context) {
     suspend fun posterEffects(): Set<String> = posterEffectsFlow().first()
 
     suspend fun setPosterEffects(keys: kotlin.collections.Collection<String>) {
-        // The legacy single key is CLEARED, not left behind: it is only ever read
-        // as the first-run/upgrade value, and a stale copy would resurrect an
-        // old choice if the new set were ever emptied by a restore.
         write("POSTER_EFFECTS") {
             it[K.POSTER_EFFECTS] = com.hikari.app.ui.PosterEffects.normalizeSet(keys)
             it.remove(K.POSTER_EFFECT)
@@ -1654,19 +1287,9 @@ class AppStore(private val ctx: Context) {
     /** Which shape catalogue cards take (see [com.hikari.app.ui.PosterTypes]). */
     fun posterTypeFlow(): Flow<String> =
         store.data.map {
-            // Fresh installs start on posters (VERTICAL): AUTO means cinema
-            // on TV, which is why a new install opened on wide cards while
-            // the phone showed posters. A stored choice always wins, so
-            // nobody who picked a style ever changes.
             com.hikari.app.ui.PosterTypes.normalize(it[K.POSTER_TYPE] ?: com.hikari.app.ui.PosterTypes.VERTICAL).also { v -> posterTypeMemory = v }
         }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
-    /**
-     * Last poster-type value seen this process (see [posterTypeFlow]). The
-     * first composition after a layout switch / activity recreation seeds
-     * from this instead of AUTO, so a Vertical user never gets a cinema
-     * first frame while the store re-emits.
-     */
     @Volatile
     var posterTypeMemory: String = com.hikari.app.ui.PosterTypes.VERTICAL
 
@@ -1679,16 +1302,6 @@ class AppStore(private val ctx: Context) {
         }
     }
 
-    /**
-     * Where the poster edge light ([com.hikari.app.ui.PosterEffects.LIT]) stands,
-     * as fractions of the card: (0, 0) is the top-left corner, (1, 1) the
-     * bottom-right.
-     *
-     * Two numbers rather than a list of presets, because the effect is a LIGHT
-     * and the only thing about a light worth choosing is where it stands — the
-     * picker in Settings is a card the user points at, and a preset menu would
-     * be a worse way to ask the same question.
-     */
     fun posterGlowPointFlow(): Flow<Pair<Float, Float>> =
         store.data.map {
             val x = it[K.POSTER_GLOW_X] ?: DEFAULT_POSTER_GLOW_X
@@ -1733,11 +1346,6 @@ class AppStore(private val ctx: Context) {
 
     // ---- The title wordmark on the loading cover ----
 
-    /** Draw the title's own wordmark (the art the detail header uses) on the
-     *  loading cover instead of the plain text title. On by default: it is the
-     *  same picture the user just tapped Play on, so the hand-off into the
-     *  player looks continuous rather than like two different designs. A title
-     *  with no wordmark keeps the text title either way. */
     fun loadingLogoFlow(): Flow<Boolean> =
         store.data.map { it[K.LOADING_LOGO] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
@@ -1761,20 +1369,6 @@ class AppStore(private val ctx: Context) {
 
     // ---- Performance booster (Settings → Performance) ----
 
-    /**
-     * The performance booster: one switch for a device that cannot keep up.
-     *
-     * It is deliberately the ONLY thing the user has to know. Turning it on
-     * drops the work that costs the most frames per second for the least
-     * information — the blurred halo drawn behind every poster (two extra
-     * blurred artwork layers per card, the single most expensive thing in
-     * Hikari's UI), the animated poster and loading treatments, and it narrows
-     * how many extensions are searched at once so a slow device's CPU and
-     * network are not saturated by a fan-out it cannot afford.
-     *
-     * Nothing is removed from what the app can PLAY: every provider, every
-     * server and every setting stays exactly as it was.
-     */
     fun perfModeFlow(): Flow<Boolean> =
         store.data.map { it[K.PERF_MODE] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
@@ -1786,18 +1380,6 @@ class AppStore(private val ctx: Context) {
 
     // ---- Server search (Settings → Playback) ----
 
-    /**
-     * May a lookup ask extensions OTHER than the one the title was opened from?
-     *
-     * OFF by default, which is the "only this extension" model: a title plays
-     * from the repo it was opened from, the way CloudStream works. Every engine
-     * still has its own family switch (see [engineFamiliesFlow]) — nuvio and
-     * Stremio on, everything else off — so "only this extension" means one repo
-     * for a CloudStream/Hikari/SkyStream/Aniyomi title and the addon's whole
-     * family for a Nuvio/Stremio one. On, every installed extension is searched
-     * for every title and the server list gathers whatever all of them found
-     * (cross pass, background sweep, borrowed episode lists, the lot).
-     */
     fun searchAllExtensionsFlow(): Flow<Boolean> =
         store.data.map { it[K.SEARCH_ALL_EXTENSIONS] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
@@ -1807,20 +1389,6 @@ class AppStore(private val ctx: Context) {
         write("SEARCH_ALL_EXTENSIONS") { it[K.SEARCH_ALL_EXTENSIONS] = all }
     }
 
-    /**
-     * "Search every Nuvio provider": a title opened FROM a nuvio provider is
-     * also searched in every other installed nuvio provider, whatever the
-     * "search all installed extensions" switch says.
-     *
-     * On by default, and it is the one widening that does not depend on that
-     * switch. The nuvio engines all resolve the same (tmdbId, mediaType, season,
-     * episode) tuple, so the family is one source of servers rather than a
-     * cross-search of unrelated sites — a reader browsing a nuvio catalogue
-     * wants their nuvio servers gathered for the title, the way the real nuvio
-     * app gathers them. Off, the scope switch means what it says everywhere,
-     * nuvio included (and the exception extensions still apply). See
-     * [com.hikari.app.data.SearchScope.nuvioFamily] for the flag the pass reads.
-     */
     fun nuvioSearchAllFlow(): Flow<Boolean> =
         store.data.map { it[K.NUVIO_SEARCH_ALL] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
@@ -1830,16 +1398,6 @@ class AppStore(private val ctx: Context) {
         write("NUVIO_SEARCH_ALL") { it[K.NUVIO_SEARCH_ALL] = on }
     }
 
-    /**
-     * "Search every Stremio addon" (Settings → Playback & Servers → Server
-     * search). The Stremio twin of [nuvioSearchAllFlow]: a title opened FROM a
-     * Stremio addon also asks every other installed Stremio addon, whatever the
-     * scope switch says, because the addons are handed the item's own imdb/tmdb
-     * id and therefore all resolve the same video. On by default. Off, and a
-     * Stremio origin searches only the addon it was opened from (the exception
-     * extensions still apply). See
-     * [com.hikari.app.data.SearchScope.stremioFamily].
-     */
     fun stremioSearchAllFlow(): Flow<Boolean> =
         store.data.map { it[K.STREMIO_SEARCH_ALL] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
@@ -1849,24 +1407,6 @@ class AppStore(private val ctx: Context) {
         write("STREMIO_SEARCH_ALL") { it[K.STREMIO_SEARCH_ALL] = on }
     }
 
-    /**
-     * Every engine whose whole installed family is searched for a title opened
-     * FROM one of its repos, as [ProviderType] names — the complete answer the
-     * search mirrors into
-     * [com.hikari.app.data.SearchScope.engineFamilies].
-     *
-     * ONE flow rather than three because the search reads it as one value, and
-     * because the three sources it is built from (the two dedicated switches
-     * and the per-engine set) must never be read half-applied: a pass that saw
-     * Nuvio on but Stremio's stored "on" unread would search a different set of
-     * repos than the settings screen shows.
-     *
-     * Defaults, which is the whole point of the shape: NUVIO and STREMIO on
-     * (their engines resolve an item by the id it already has — the family is
-     * genuinely one source of servers), everything else OFF, so a title opened
-     * inside one CloudStream/Hikari/SkyStream/Aniyomi repo plays from that repo
-     * alone until the user asks otherwise.
-     */
     fun engineFamiliesFlow(): Flow<Set<String>> = store.data.map { prefs ->
         val out = HashSet<String>(8)
         if (prefs[K.NUVIO_SEARCH_ALL] != false) out += ProviderType.NUVIO.name
@@ -1930,13 +1470,6 @@ class AppStore(private val ctx: Context) {
 
     // ---- Server search time (Settings → Playback & Servers) ----
 
-    /**
-     * The "same time for every extension" master value, in seconds. 0 (or
-     * absent) = off: every extension uses its own [serverTimeouts] entry or
-     * the built-in budget. 20–100 = every extension's server search gets that
-     * many seconds. Stored, never forced: an extension the user never touched
-     * keeps the built-in budget unless this master is on.
-     */
     fun serverTimeoutAllFlow(): Flow<Int> =
         store.data.map { (it[K.SERVER_TIMEOUT_ALL] ?: 0).coerceIn(0, 100) }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
@@ -1952,11 +1485,6 @@ class AppStore(private val ctx: Context) {
 
     suspend fun serverTimeouts(): Map<String, Int> = serverTimeoutsFlow().first()
 
-    /**
-     * The server-search budget for [providerId], in seconds, or null when that
-     * extension keeps the built-in budget. The master switch wins when it is
-     * on; otherwise the per-extension entry wins; otherwise null.
-     */
     suspend fun serverTimeoutFor(providerId: String): Int? {
         val all = serverTimeoutAll()
         if (all in 20..100) return all
@@ -2031,14 +1559,6 @@ class AppStore(private val ctx: Context) {
         write("IPTV_GROUP_MODE") { it[K.IPTV_GROUP_MODE] = normalizeIptvGroupMode(mode) }
     }
 
-    /**
-     * Are the "exception extensions" in force?
-     *
-     * On, the extensions picked in Settings (see [searchExceptionIds]) are asked
-     * for servers for EVERY title — even with [searchAllExtensions] off — while
-     * a title opened FROM one of them plays from that extension alone. Off (the
-     * default), they change nothing at all.
-     */
          // ---- Tracker-only server routing ------------------------------------
      fun trackerServerSearchAllFlow(): Flow<Boolean> = store.data.map { it[K.TRACKER_SERVER_SEARCH_ALL] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
      suspend fun trackerServerSearchAll(): Boolean = trackerServerSearchAllFlow().first()
@@ -2089,17 +1609,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
         write("SEARCH_EXCEPTION_IDS") { it[K.SEARCH_EXCEPTION_IDS] = ids.toSet() }
     }
 
-    /**
-     * WHOLE ENGINES marked as exceptions, by [ProviderType] name ("CS3",
-     * "HIKARI", "STREMIO", …).
-     *
-     * A user who wants "every CloudStream repo, always" should not have to tick
-     * a hundred and fifty rows — and, worse, a repo they install NEXT WEEK was
-     * not in the ticked list, so the choice silently went stale. An engine
-     * choice keeps applying to whatever of that engine is installed later, and
-     * several engines can be marked at once (CloudStream *and* Hikari), which
-     * the row-by-row picker could not express either.
-     */
     fun searchExceptionTypesFlow(): Flow<Set<String>> =
         store.data.map { it[K.SEARCH_EXCEPTION_TYPES] ?: emptySet() }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
@@ -2109,15 +1618,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
         write("SEARCH_EXCEPTION_TYPES") { it[K.SEARCH_EXCEPTION_TYPES] = types.toSet() }
     }
 
-    /**
-     * Extensions explicitly LEFT OUT of a marked engine: "all of CloudStream,
-     * except these two".
-     *
-     * Marking an engine covers everything installed for it, including next
-     * week's install — but it also has to be possible to say no to one of them,
-     * or the only way to exclude a single CloudStream repo would be to unmark
-     * the whole engine and tick 150 rows by hand.
-     */
     fun searchExceptionExcludesFlow(): Flow<Set<String>> =
         store.data.map { it[K.SEARCH_EXCEPTION_EXCLUDES] ?: emptySet() }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
@@ -2127,18 +1627,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
         write("SEARCH_EXCEPTION_EXCLUDES") { it[K.SEARCH_EXCEPTION_EXCLUDES] = ids.toSet() }
     }
 
-    /**
-     * The exception extensions that are actually IN FORCE: the chosen ids, the
-     * extensions of every chosen ENGINE, or nothing when the switch is off. This
-     * is the single value the search mirrors into
-     * [com.hikari.app.data.SearchScope.exceptions], so the switch, the engine
-     * chips and the list can never disagree mid-lookup.
-     *
-     * Engine exceptions are resolved against the provider list HERE, on every
-     * emission, so an extension installed after the engine was marked is an
-     * exception from the moment it exists (no stale list of ids to maintain),
-     * and uninstalling one simply drops it.
-     */
     fun activeSearchExceptionsFlow(): Flow<Set<String>> =
         store.data.map { prefs ->
             if (prefs[K.SEARCH_EXCEPTION_ON] != true) return@map emptySet<String>()
@@ -2348,26 +1836,12 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
 
     // ---- Recent searches (the Search tab) ----
 
-    /**
-     * The queries the user has actually searched for, newest first.
-     *
-     * Short by design ([SEARCH_HISTORY_MAX]): this is the list of things worth
-     * searching again, not a log of everything typed — the box changes on every
-     * keystroke, so only a query that settled and RAN is recorded (see the
-     * Search screen's view model).
-     */
     fun searchHistoryFlow(): Flow<List<String>> =
         store.data.map { parseStringList(it[K.SEARCH_HISTORY]) }
             .distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun searchHistory(): List<String> = searchHistoryFlow().first()
 
-    /**
-     * Records [query] as the most recent search. Searching for something again
-     * MOVES its entry to the top rather than adding a second copy (so the list
-     * is a set of searches, not a tally), and anything under two characters is
-     * ignored: a one-letter box is a search the user has not finished typing.
-     */
     suspend fun addSearchHistory(query: String) {
         val q = query.trim()
         if (q.length < 2) return
@@ -2424,11 +1898,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
         write("CUSTOM_DNS") { it[K.CUSTOM_DNS] = url }
     }
 
-    /** Playback start rule: false = start the moment the FIRST server is found
-     *  (default), true = wait until [playMinServers] servers are known. The
-     *  search finishing always counts as "enough", so a title with fewer
-     *  servers than the requested count still plays as soon as every installed
-     *  extension has answered. */
     fun playWaitServersFlow(): Flow<Boolean> =
         store.data.map { it[K.PLAY_WAIT_SERVERS] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
@@ -2448,14 +1917,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
         write("PLAY_MIN_SERVERS") { it[K.PLAY_MIN_SERVERS] = n.coerceIn(1, 5) }
     }
 
-    /**
-     * "Don't play directly — show all servers to choose": off (the default)
-     * keeps the instant-play behaviour, where the player starts on the first
-     * server it finds. On, the player opens with every server it could find,
-     * divided into one section per engine (CloudStream, Hikari, Nuvio,
-     * Stremio), and waits for the user to pick one instead of playing on its
-     * own.
-     */
     fun askServerOnPlayFlow(): Flow<Boolean> =
         store.data.map { it[K.ASK_SERVER] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
@@ -2465,18 +1926,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
         write("ASK_SERVER") { it[K.ASK_SERVER] = ask }
     }
 
-    /**
-     * What the player does when the server it is playing dies mid-video (a
-     * signed link expired, the mirror went away): on (the default) it asks —
-     * "try the next server" or "choose another server", with a countdown that
-     * switches automatically if the question is ignored. Off, it walks the list
-     * silently like it always did.
-     *
-     * Only a server the USER picked gets the question: a dead link discovered
-     * while the player is still walking the list on its own (the instant-play
-     * start, an automatic failover) keeps advancing on its own, so a title with
-     * a few dud servers never turns into a wall of dialogs.
-     */
     fun failoverAskOnFailureFlow(): Flow<Boolean> =
         store.data.map { it[K.FAILOVER_ASK] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
@@ -2553,11 +2002,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
         write("COMMUNITY_SEEN_VERSION") { it[K.COMMUNITY_SEEN_VERSION] = version }
     }
 
-    /** The app version "Don't show this again" was ticked on. The tick holds
-     *  only for THAT version: after an update the dialog comes back once even
-     *  for a user who ticked it before, and ticking it again holds the new
-     *  version. (The old permanent TELEGRAM_DONT_SHOW flag is retired — it is
-     *  what kept the dialog away forever after one tick.) */
     suspend fun communityDontShowVersion(): String = store.data.map { it[K.COMMUNITY_DONT_SHOW_VERSION].orEmpty() }
         .distinctUntilChanged().flowOn(Dispatchers.Default).first()
 
@@ -2565,14 +2009,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
         write("COMMUNITY_DONT_SHOW_VERSION") { it[K.COMMUNITY_DONT_SHOW_VERSION] = version }
     }
 
-    /**
-     * How a Telegram chat's videos are drawn — `list`, `tile` or `poster` (see
-     * TgView in the Telegram screen). A stored preference rather than per-screen
-     * state because it is about how the user reads a chat, not about one chat:
-     * having to re-pick "posters" on every channel would make the choice useless.
-     * Unknown/absent values mean `list`, which is what the page always looked
-     * like.
-     */
     suspend fun telegramView(): String = store.data.map { it[K.TELEGRAM_VIEW].orEmpty() }
         .distinctUntilChanged().flowOn(Dispatchers.Default).first()
 
@@ -2609,18 +2045,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
 
     suspend fun homeProviders(): Set<String> = homeProvidersFlow().first()
 
-    /**
-     * Saves a multi pick. Called with one key it is exactly a single pick — the
-     * old [setHomeProvider] preference is kept in step so a build that predates
-     * multi-select (and the Search tab's scope, which reads the same string)
-     * still agrees with what Home shows.
-     *
-     * Both keys go down in ONE store transaction: two separate writes let the
-     * pick watcher observe multi=empty with the single key still holding the
-     * old provider and revert the "All Plugins" tap back to it — the first
-     * All tap after a single pick always lost, the second one sticking only
-     * because the multi write was then a no-op.
-     */
     suspend fun setHomeProviders(ids: Set<String>) {
         val list = ids.filter { it.isNotBlank() }.toList()
         write("HOME_PROVIDERS") {
@@ -2672,14 +2096,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
 
     // ---- The Manga tab (ON by default; Settings → Taskbar buttons) ----
 
-    /**
-     * True when the Manga button is drawn in the taskbar — on by default, so
-     * the reading half of the app is reachable from a fresh install, and a
-     * switch in Settings → Taskbar buttons turns it off for a user who has no
-     * manga extension at all (see [com.hikari.app.data.AppStore.mangaTabFlow]
-     * callers; the tab itself is a reading-first home — continue reading, the
-     * followed titles, and one entry per manga extension to browse).
-     */
     fun mangaTabFlow(): Flow<Boolean> =
         store.data.map { it[K.MANGA_TAB] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
@@ -2703,15 +2119,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
 
     // ---- The Telegram tab (ON by default; Settings → Taskbar buttons) ----
 
-    /**
-     * True when the Telegram button is drawn in the taskbar — on by default,
-     * like Manga's and unlike IPTV/Stats: the tab is a viewer's own video
-     * library (channels to browse, links to play, a player for both), which is
-     * the same kind of thing the other tabs offer, and a fresh install should
-     * not have to find a switch to reach it. A switch in Settings → Taskbar
-     * buttons turns it off, and because [K.TELEGRAM_TAB] is its own key an
-     * install that has deliberately turned it off still reads `false` here.
-     */
     fun telegramTabFlow(): Flow<Boolean> =
         store.data.map { it[K.TELEGRAM_TAB] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
@@ -2721,13 +2128,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
         write("TELEGRAM_TAB") { it[K.TELEGRAM_TAB] = shown }
     }
 
-    /**
-     * The channels the Telegram tab browses, as JSON:
-     * `[{"name":"@channel","title":"Channel"}]`.
-     *
-     * Blank is the normal state of a fresh install — the tab then draws its
-     * "add a channel" empty state, and nothing else in the app changes.
-     */
     fun telegramChannelsFlow(): Flow<String> =
         store.data.map { it[K.TELEGRAM_CHANNELS] ?: "" }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
@@ -2765,10 +2165,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
     suspend fun setAppLock(on: Boolean) {
         write("APP_LOCK") { it[K.APP_LOCK] = on }
         if (on) {
-            // Turning the lock ON is not an unlock: the stored session is
-            // cleared, so the next launch asks for the new password even if the
-            // previous session had been unlocked (and even if the process is
-            // restarted right after this Settings tap).
             write("APP_LOCK_SESSION_OPEN") { it[K.APP_LOCK_SESSION_OPEN] = false }
         }
     }
@@ -2786,15 +2182,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
         write("APP_LOCK_SECRET") { it[K.APP_LOCK_SECRET] = value }
     }
 
-    // ---- My Stuff lock (Settings → Privacy & Browsing) ----------------------
-    //
-    // A second, independent password guarding only the My Stuff tab. It reuses
-    // the app lock's storage shape (`algo:salt:hash` via [com.hikari.app.lock.AppLock])
-    // but nothing else: a different password, no biometrics, and an unlock that
-    // lives only in process memory (see MyStuffUnlock), so opening My Stuff
-    // asks once per app launch. The keys are device-local (see [DeviceLocal]):
-    // a backup file or a pairing payload must never carry another device's
-    // password or lock state.
 
     /** True when opening the My Stuff tab asks for its password first. */
     fun myStuffLockFlow(): Flow<Boolean> =
@@ -2804,17 +2191,9 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
 
     suspend fun setMyStuffLock(on: Boolean) {
         write("MYSTUFF_LOCK") { it[K.MYSTUFF_LOCK] = on }
-        // Keep the in-memory unlock in step with the switch: enabling locks
-        // immediately (the very next entry asks), disabling opens it, so the
-        // gate below can read one flag instead of two.
         com.hikari.app.ui.screens.MyStuffUnlock.unlocked = !on
     }
 
-    /**
-     * The My Stuff lock's secret as `algo:salt:hash`, or blank when no
-     * password was ever set. The password itself is never stored — see
-     * [com.hikari.app.lock.AppLock].
-     */
     fun myStuffLockSecretFlow(): Flow<String> =
         store.data.map { it[K.MYSTUFF_LOCK_SECRET] ?: "" }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
@@ -2824,11 +2203,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
         write("MYSTUFF_LOCK_SECRET") { it[K.MYSTUFF_LOCK_SECRET] = value }
     }
 
-    /**
-     * How many characters the lock's password has (0 = not known — a lock set
-     * before this was recorded). See [K.APP_LOCK_LEN]: the unlock screen uses it
-     * for the number of dots and for "the password is complete now".
-     */
     fun appLockLenFlow(): Flow<Int> =
         store.data.map { (it[K.APP_LOCK_LEN] ?: 0).coerceIn(0, 128) }
             .distinctUntilChanged().flowOn(Dispatchers.Default)
@@ -2839,11 +2213,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
         write("APP_LOCK_LEN") { it[K.APP_LOCK_LEN] = value.coerceIn(0, 128) }
     }
 
-    /**
-     * Whether the device's fingerprint/face may unlock the app too (on by
-     * default). A password always has to exist: the fingerprint is an extra
-     * way in, never the only one (see [setAppLockSecret]).
-     */
     fun appLockBioFlow(): Flow<Boolean> =
         store.data.map { it[K.APP_LOCK_BIO] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
@@ -2853,12 +2222,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
         write("APP_LOCK_BIO") { it[K.APP_LOCK_BIO] = on }
     }
 
-    /**
-     * Lock when the screen turns off (on by default — what the lock has always
-     * done, since a screen-off stops the activity). Off, only LEAVING the app
-     * locks it, so putting the phone down and picking it up again does not ask
-     * for the password. The grace period below still applies.
-     */
     fun appLockScreenOffFlow(): Flow<Boolean> =
         store.data.map { it[K.APP_LOCK_SCREEN_OFF] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
@@ -2868,14 +2231,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
         write("APP_LOCK_SCREEN_OFF") { it[K.APP_LOCK_SCREEN_OFF] = on }
     }
 
-    /**
-     * Minutes the app may stay unlocked after it is left, 0 = lock immediately
-     * (the default, and the lock's historical behaviour). Read by
-     * [com.hikari.app.ui.AppLockGate] when the app comes back: inside the grace
-     * period the screen is simply shown again, past it the unlock card is
-     * drawn. Stored as minutes so the settings slider (Instant, 1..60) has a
-     * one-to-one mapping with no rounding between them.
-     */
     fun appLockDelayFlow(): Flow<Int> =
         store.data.map { (it[K.APP_LOCK_DELAY_MIN] ?: 0).coerceIn(0, 60) }
             .distinctUntilChanged().flowOn(Dispatchers.Default)
@@ -2886,13 +2241,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
         write("APP_LOCK_DELAY_MIN") { it[K.APP_LOCK_DELAY_MIN] = minutes.coerceIn(0, 60) }
     }
 
-    /**
-     * Lock when the app is LEFT (on by default). Off, the unlock card is never
-     * drawn for leaving the app — only a screen-off (see [appLockScreenOffFlow])
-     * or a fresh process start locks it. The grace period still applies to
-     * whichever triggers are on. Read live by
-     * [com.hikari.app.ui.AppLockGate]'s lifecycle observer.
-     */
     fun appLockLeaveFlow(): Flow<Boolean> =
         store.data.map { it[K.APP_LOCK_LEAVE] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
@@ -2902,20 +2250,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
         write("APP_LOCK_LEAVE") { it[K.APP_LOCK_LEAVE] = on }
     }
 
-    /**
-     * The unlock that outlives the process: `(open, grantedAt)`.
-     *
-     * `open` is true from the moment the user unlocks until the app locks again
-     * (by any of the triggers that are switched on, or by the lock being turned
-     * off, which is also "no unlock needed"). `grantedAt` is when that unlock
-     * was granted, for [appLockDelayFlow]'s grace period when the process is
-     * restarted rather than resumed.
-     *
-     * Both are read in ONE pass on the first frame of a fresh process (see
-     * [com.hikari.app.ui.AppLockGate]) so the gate can decide before it draws
-     * anything whether this launch is locked — the alternative, drawing the app
-     * and locking a frame later, is the screen-flash the gate exists to avoid.
-     */
     suspend fun appLockSession(): Pair<Boolean, Long> {
         val prefs = store.data.first()
         return (prefs[K.APP_LOCK_SESSION_OPEN] ?: false) to (prefs[K.APP_LOCK_SESSION_AT] ?: 0L)
@@ -2934,13 +2268,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
         write("APP_LOCK_SESSION_OPEN") { it[K.APP_LOCK_SESSION_OPEN] = false }
     }
 
-    // ---- Trackers (Settings → Trackers) ----------------------------------
-    //
-    // The services the user signed in to, so what they watch lands on their own
-    // list (see [com.hikari.app.data.TrackerKind]). Two stored documents, and
-    // the split matters: the ACCOUNTS hold live tokens, while the CLIENTS hold
-    // the app registration the user pasted in per service. Signing out drops the
-    // account only, so signing back in does not mean registering again.
 
     fun trackersFlow(): Flow<List<TrackerAccount>> =
         store.data.map { TrackerStore.parseAccounts(it[K.TRACKERS]) }
@@ -2968,12 +2295,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
         store.data.map { TrackerStore.parseClients(it[K.TRACKER_CLIENTS]) }
             .distinctUntilChanged().flowOn(Dispatchers.Default)
 
-    /**
-     * Every usable app id: what was stored, plus the app's OWN shipped
-     * registrations for services with nothing stored ([TrackerBuiltIn]) — so
-     * every reader (sync, search, detail) gets a working id without knowing
-     * where it came from. A stored id always wins over the shipped one.
-     */
     suspend fun trackerClients(): List<TrackerClient> {
         val stored = trackerClientsFlow().first()
         val missing = TrackerKind.entries
@@ -2993,11 +2314,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
         }
     }
 
-    /**
-     * Whether [kind]'s stored app id was explicitly typed by the user
-     * ("Use a different app id" → Continue) and must keep shadowing the
-     * shipped registration — see the login dialog.
-     */
     suspend fun trackerClientOverride(kind: TrackerKind): Boolean =
         store.data.first()[K.TRACKER_CLIENT_OVERRIDES]
             ?.split(",").orEmpty().any { it.trim() == kind.key } == true
@@ -3013,15 +2329,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
         }
     }
 
-    /**
-     * The sign-in that is waiting for a redirect to come back (see
-     * [com.hikari.app.tracker.TrackerApi.Pending]).
-     *
-     * It is written when the login page is opened and cleared when the sign-in
-     * finishes, so a `hikari://oauth` link that arrives after the app was closed
-     * still has the `state` — MyAnimeList's PKCE `code_verifier` — needed to
-     * exchange the code it carries.
-     */
     suspend fun trackerPending(): com.hikari.app.tracker.TrackerApi.Pending? =
         com.hikari.app.tracker.TrackerApi.Pending.decode(store.data.first()[K.TRACKER_PENDING])
 
@@ -3032,11 +2339,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
         }
     }
 
-    /**
-     * Whether a finished episode is reported at all. On by default: the user
-     * signed in to a tracker for exactly this, and a switch that starts off
-     * would make the sign-in look broken.
-     */
     fun trackerSyncFlow(): Flow<Boolean> =
         store.data.map { it[K.TRACKER_SYNC] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
@@ -3097,11 +2399,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
 
     // ---- Telegram (the TDLib client, see com.hikari.app.telegram.Td) ------
 
-    /**
-     * The user's OWN api_id, from my.telegram.org. Stored as a plain integer:
-     * it is not a secret (it identifies the application, not the account), and
-     * the tab shows it back to the user so they can check what they typed.
-     */
     fun telegramApiIdFlow(): Flow<Int> =
         store.data.map { (it[K.TELEGRAM_API_ID] ?: "").toIntOrNull() ?: 0 }
             .distinctUntilChanged().flowOn(Dispatchers.Default)
@@ -3112,12 +2409,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
         write("TELEGRAM_API_ID") { it[K.TELEGRAM_API_ID] = value.toString() }
     }
 
-    /**
-     * The user's api_hash. It is a secret — anyone holding it (with the api_id)
-     * can act as this application — but it has to be usable by the client at
-     * runtime, so it is kept here rather than hashed. It never leaves the
-     * device: the only thing that reads it is TDLib's own login.
-     */
     fun telegramApiHashFlow(): Flow<String> =
         store.data.map { it[K.TELEGRAM_API_HASH] ?: "" }.distinctUntilChanged()
             .flowOn(Dispatchers.Default)
@@ -3128,12 +2419,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
         write("TELEGRAM_API_HASH") { it[K.TELEGRAM_API_HASH] = value.trim() }
     }
 
-    // ---- Watch/read statistics (the Stats page) --------------------------
-    //
-    // Written as a read-modify-write INSIDE the store's own atomic `edit`, so
-    // the player's 60-second flush and the reader's chapter tick can never lose
-    // each other's write (a get-then-set from Kotlin would). See
-    // [com.hikari.app.data.WatchStats] for the shape of the document.
 
     /** The whole statistics document (JSON; blank = nothing logged yet). */
     fun watchStatsFlow(): Flow<String> =
@@ -3184,12 +2469,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
         write("WATCH_STATS") { it[K.WATCH_STATS] = "" }
     }
 
-    // ---- The manga reader's own settings ----
-    //
-    // Kept here (not in a private file) so they are part of the same store as
-    // every other preference — backed up with it and readable from anywhere,
-    // which is what lets the reader's chrome, the TV remote's page turn and a
-    // future Settings section all agree on one value.
 
     /** How pages advance: paged left-to-right, paged right-to-left, or one long
      *  vertical strip (see [com.hikari.app.manga.MangaReadMode]). */
@@ -3246,21 +2525,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
         write("MANGA_ENHANCE") { it[K.MANGA_ENHANCE] = on }
     }
 
-    /**
-     * The reader's whole settings surface, as one JSON blob (see
-     * [com.hikari.app.reader.ReaderSettings]).
-     *
-     * The reader has thirty-odd options now — Nekoread's chrome, ported whole —
-     * and one key rather than thirty is what makes a reset, a backup and "add one
-     * more option" all one-line changes. The per-key preferences above are read
-     * ONCE as the seed for the fields they cover (see
-     * [com.hikari.app.reader.ReaderSettings.fromLegacy]), so an install that had
-     * picked a reading mode or a background keeps it; from then on the blob is the
-     * authority.
-     *
-     * Null means "never written" — the reader then seeds from the legacy keys
-     * instead of the hard defaults.
-     */
     fun mangaReaderSettingsJsonFlow(): Flow<String?> =
         store.data.map { it[K.MANGA_READER_SETTINGS] }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
@@ -3268,15 +2532,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
         write("MANGA_READER_SETTINGS") { it[K.MANGA_READER_SETTINGS] = json }
     }
 
-    /**
-     * Per-series reading modes, as a JSON object of `mangaKey -> ReaderMode name`
-     * (see [K.MANGA_SERIES_MODES]).
-     *
-     * The reader's own "use different settings for this series" switch: with it
-     * on for a title, picking a reading mode changes the mode for THAT title
-     * instead of every title. A series with no entry reads with the global mode,
-     * which is also what deleting the entry means.
-     */
     fun mangaSeriesModesFlow(): Flow<String?> =
         store.data.map { it[K.MANGA_SERIES_MODES] }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
@@ -3312,16 +2567,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
         write("NOVEL_TRANSLATE_SERIES") { it[K.NOVEL_TRANSLATE_SERIES] = json }
     }
 
-    /**
-     * The manga engines the reader pinned to the top of the tab's Browse list
-     * (see [K.PINNED_MANGA_ENGINES]).
-     *
-     * Engine IDS, not names: a name is display text that can be translated or
-     * changed by an extension update, and a pin that fell off because of either
-     * would be worse than no pin at all. An id that no longer exists is simply
-     * ignored when the list is ordered, so uninstalling a pinned engine leaves
-     * nothing behind but a stale string.
-     */
     fun pinnedMangaEnginesFlow(): Flow<Set<String>> =
         store.data.map { it[K.PINNED_MANGA_ENGINES] ?: emptySet() }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
@@ -3333,25 +2578,11 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
 
     // ---- Pinned sources (Home → Choose an extension) ----
 
-    /**
-     * The provider ids pinned to the top of the source picker, newest first (see
-     * [K.PINNED_PROVIDERS]).
-     *
-     * Ids, not names, for the same reason the manga pins are: a name is display
-     * text an extension update can change, and a pin that fell off because of
-     * that would be worse than no pin. An id that is no longer installed is
-     * simply never matched when the list is ordered.
-     */
     fun pinnedProvidersFlow(): Flow<List<String>> =
         store.data.map { parseStringList(it[K.PINNED_PROVIDERS]) }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun pinnedProviders(): List<String> = pinnedProvidersFlow().first()
 
-    /**
-     * Pins [id] above every other source, or unpins it when it is already
-     * pinned. Read-modify-write inside the store's own edit transaction (rather
-     * than a set-then-write) so two taps in quick succession cannot lose one.
-     */
     suspend fun togglePinnedProvider(id: String) {
         if (id.isBlank()) return
         write("PINNED_PROVIDERS") { prefs ->
@@ -3363,37 +2594,12 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
 
     // ---- Provider folders (Home → Choose an extension → Save as folder) ----
 
-    /**
-     * The user's own provider FOLDERS: a name, and the provider ids it holds.
-     *
-     * The ask was a shortcut for the handful of extensions someone uses every day
-     * ("if user use 5 extension daily he can select those 5 extension and can add
-     * it into folder"). So a folder is stored as the PICK ITSELF — the ids — and
-     * not as a new kind of selection key: choosing one ticks exactly those ids,
-     * and nothing downstream changes. Home then loads from all of them and Search
-     * (and the player's server list, and every other consumer of the current
-     * pick) asks all of them, because as far as all of it is concerned the user
-     * multi-selected those five extensions by hand. That is what makes "the
-     * catalog on Home loads from all, and search results and everything shows
-     * from them" true without teaching every screen a new key type.
-     *
-     * Ids, not names, for the same reason a pin uses ids: a name is display text
-     * an extension update can change. A folder whose ids are all gone from the
-     * installed list is simply never matched.
-     */
     fun providerFoldersFlow(): Flow<List<ProviderFolder>> =
         store.data.map { parseProviderFolders(it[K.PROVIDER_FOLDERS]) }
             .distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun providerFolders(): List<ProviderFolder> = providerFoldersFlow().first()
 
-    /**
-     * Creates [name] holding [ids] — or re-saves a folder under a name it already
-     * has, which is an edit rather than a second folder with the same name.
-     *
-     * Read-modify-write inside the store's edit transaction, like the pins, so
-     * two saves in quick succession cannot lose one.
-     */
     suspend fun saveProviderFolder(name: String, ids: List<String>) {
         val clean = name.trim().replace(FOLDER_SEP, " ").take(48)
         val members = ids.map { it.trim() }.filter { it.isNotBlank() }.distinct()
@@ -3415,12 +2621,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
 
     // ---- Home feed catalog mixer (Manage Home Screen Feed) ----
 
-    /**
-     * Per-provider DISABLED catalogs: provider id → the catalog names the feed
-     * must skip (the mixer's per-row expander switches, and the single screen's
-     * Tune sub-screen). Names, not ids: an extension update can renumber ids,
-     * while the visible name is what the user switched off.
-     */
     fun disabledCatalogsFlow(): Flow<Map<String, Set<String>>> =
         store.data.map { parseStringSetMap(it[K.DISABLED_CATALOGS]) }
             .distinctUntilChanged().flowOn(Dispatchers.Default)
@@ -3436,11 +2636,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
         }
     }
 
-    /**
-     * Per-provider custom catalog ORDER: provider id → catalog names in the
-     * user's order (the mixer drag/up-down + Reset Order). Empty/absent = the
-     * extension's own order; unknown names sort last.
-     */
     fun catalogOrderFlow(): Flow<Map<String, List<String>>> =
         store.data.map { parseStringListMap(it[K.CATALOG_ORDER]) }
             .distinctUntilChanged().flowOn(Dispatchers.Default)
@@ -3519,9 +2714,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
 
     private fun encodeProviderFolders(list: List<ProviderFolder>): String {
         val arr = JSONArray()
-        // One string per folder: the name, then its ids, joined by a unit
-        // separator — a character a typed name cannot contain (and [saveProviderFolder]
-        // strips it anyway), while the JSON array keeps it safe on disk.
         for (f in list) arr.put((listOf(f.name) + f.ids).joinToString(FOLDER_SEP))
         return arr.toString()
     }
@@ -3538,13 +2730,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
 
     // ---- Adult content (Settings → Content) ----
 
-    /**
-     * May adult material be shown? ON by default — see [K.NSFW_ENABLED].
-     *
-     * Read synchronously on the draw path through
-     * [com.hikari.app.data.NsfwGate.enabled] (kept in step with this flow at
-     * start-up); this flow is what the Settings switch itself renders.
-     */
     fun nsfwEnabledFlow(): Flow<Boolean> =
         store.data.map { it[K.NSFW_ENABLED] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
@@ -3561,14 +2746,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
         else -> "black"
     }
 
-    // ---- The My Stuff tab's sections (Settings → Taskbar buttons) ----
-    //
-    // Library / History / Downloads share one taskbar slot and one segmented
-    // strip at the top of that page (see
-    // [com.hikari.app.ui.screens.MyStuffScreen]). Each can be switched off, and
-    // the strip then lays out the ones that are left so they SHARE the row —
-    // there is no reserved gap where the hidden one was. All three default to
-    // on, which is what every install had before the switches existed.
 
     /** Whether a section's pill is drawn in the My Stuff strip. */
     fun myStuffSectionFlow(section: String): Flow<Boolean> =
@@ -3586,17 +2763,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
 
     // ---- Animated covers on tiles ----
 
-    /**
-     * Whether an ANIMATED cover (a folder/collection GIF) actually animates on
-     * a tile, or is drawn as its first frame.
-     *
-     * Two switches decide it, and the folder's own setting wins: a folder whose
-     * "always animate" is on animates, and one whose is off only animates when
-     * this device-level setting is on. That is the reference app's split between
-     * "Show GIF when configured" (the catalog's preference) and the per-device
-     * override — a phone that renders a wall of GIFs smoothly and a TV stick
-     * that cannot both get what they need from the same imported file.
-     */
     fun gifAnimFlow(): Flow<Boolean> = store.data.map { it[K.GIF_ANIM] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun gifAnim(): Boolean = gifAnimFlow().first()
@@ -3605,12 +2771,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
         write("GIF_ANIM") { it[K.GIF_ANIM] = on }
     }
 
-    /**
-     * Whether the app's explanation lines are hidden (Settings → App Layout →
-     * "Explanations"). Off by default: the captions are what explain a setting
-     * to a user who has never seen it, and a user who does not want them can say
-     * so once — see [com.hikari.app.ui.components.LocalHideHelp].
-     */
     fun hideHelpFlow(): Flow<Boolean> =
         store.data.map { it[K.HIDE_HELP] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
@@ -3770,14 +2930,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
         write("PLAYER_UI_STYLE") { it[K.PLAYER_UI_STYLE] = json }
     }
 
-    /**
-     * Whether dragging up/down on the video surface changes the brightness (left
-     * half) and the volume (right half). ON by default — it is one of the
-     * player's advertised gestures — and switched off in Settings → Player →
-     * Player controls by anyone who would rather the surface did nothing but
-     * play. The player reads it when it opens, like the rest of its own
-     * preferences.
-     */
     fun playerSwipesFlow(): Flow<Boolean> =
         store.data.map { it[K.PLAYER_SWIPES] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
@@ -3787,14 +2939,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
         write("PLAYER_SWIPES") { it[K.PLAYER_SWIPES] = on }
     }
 
-    /**
-     * Whether a horizontal drag on the video surface scrubs the timeline (see
-     * [PLAYER_SLIDE_SEEK]). ON by default, switched off in Settings → Player →
-     * Player controls → Gestures. Independent of [playerSwipesFlow]: turning
-     * slide-to-seek off leaves the brightness/volume swipes exactly as they
-     * were. The player reads it when it opens, like the rest of its own
-     * preferences.
-     */
     fun playerSlideSeekFlow(): Flow<Boolean> =
         store.data.map { it[K.PLAYER_SLIDE_SEEK] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
@@ -3804,12 +2948,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
         write("PLAYER_SLIDE_SEEK") { it[K.PLAYER_SLIDE_SEEK] = on }
     }
 
-    /**
-     * Whether a two-finger pinch on the video surface zooms the picture (see
-     * [PLAYER_PINCH_ZOOM]). OFF by default — opt-in in Settings → Player →
-     * Player controls → Gestures. The player reads it when it opens, like the
-     * rest of its own preferences.
-     */
     fun playerPinchZoomFlow(): Flow<Boolean> =
         store.data.map { it[K.PLAYER_PINCH_ZOOM] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
@@ -3819,13 +2957,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
         write("PLAYER_PINCH_ZOOM") { it[K.PLAYER_PINCH_ZOOM] = on }
     }
 
-    /**
-     * Which decoders the player may use: "auto" (Best — hardware first with
-     * software fallback, plus the automatic software-escape), "hw"
-     * (hardware only) or "sw" (software first). "auto" by default; the
-     * player reads it when it opens, Settings and the player's own options
-     * menu both write it.
-     */
     fun playerDecoderModeFlow(): Flow<String> =
         store.data.map { DecoderModes.normalize(it[K.PLAYER_DECODER_MODE]) }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
@@ -4011,25 +3142,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
         write("EPISODE_GLASS") { it[K.EPISODE_GLASS] = on }
     }
 
-    /**
-     * The volume booster (Settings → Player). ON means the player's audio
-     * pipeline multiplies every PCM sample by 2× (a fixed software gain stage
-     * inside the ExoPlayer audio sink — see
-     * [com.hikari.app.player.VolumeBoostProcessor]), which is the "make the
-     * quiet dialogue audible" case at the top of the scale. Software-side on
-     * purpose: the old answer (a platform `LoudnessEnhancer` on the audio
-     * session) is refused by devices whose audio HAL has no such effect, and
-     * on those the switch only ever relabelled the volume number while the
-     * sound stayed exactly as loud — the reported "200% feels the same as
-     * 100%". A gain in the decoder path cannot be refused: it is audible on
-     * every device, with hard clipping at full scale so a loud film cannot
-     * distort past 0 dBFS. The platform's volume keys are not involved (they
-     * are already at their ceiling), so this is the only way to exceed 100%;
-     * it is OFF by default because a boosted track is a changed track.
-     *
-     * Stored as a preference rather than per-video state: a user who needs the
-     * boost needs it for the film they are watching and the next one too.
-     */
     fun volumeBoostFlow(): Flow<Boolean> =
         store.data.map { it[K.VOLUME_BOOST] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
@@ -4039,15 +3151,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
         write("VOLUME_BOOST") { it[K.VOLUME_BOOST] = on }
     }
 
-    /**
-     * Whether the player selects a subtitle track by itself when a video opens
-     * (see [SUBTITLES_DEFAULT_ON]). ON is the long-standing behaviour — the
-     * first (English-preferred) track is shown without asking. OFF starts
-     * every video with captions hidden; anything the user picks explicitly
-     * (a track, Auto, an added file) still shows, because an explicit pick
-     * outranks a default. The player reads it when it opens, like the rest of
-     * its own preferences.
-     */
     fun subsDefaultOnFlow(): Flow<Boolean> =
         store.data.map { it[K.SUBTITLES_DEFAULT_ON] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
@@ -4094,12 +3197,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
         write("PLAYER_ENHANCE_CHOSEN") { it[K.PLAYER_ENHANCE_CHOSEN] = chosen }
     }
 
-    /**
-     * True once a device has proven it cannot run media3's video-effects
-     * pipeline (its GL stack refuses the frame processor). Remembered so the
-     * player stops arming the pipeline — arming it on such a device would fail
-     * EVERY play, not just the one where the user first picked a preset.
-     */
     fun enhanceUnsupportedFlow(): Flow<Boolean> =
         store.data.map { it[K.PLAYER_ENHANCE_UNSUPPORTED] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
@@ -4195,11 +3292,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
         write("WEBVIEW_POPUP") { it[K.WEBVIEW_POPUP] = enabled }
     }
 
-    /** Legacy preference: "Solve Cloudflare checks automatically" used to exist
-     *  in Settings, and the value is left in place so an old install's stored
-     *  key still reads back cleanly. NOTHING reads it any more and the switch is
-     *  gone on purpose: no Cloudflare challenge is ever loaded on its own, so
-     *  there is nothing to toggle (see CloudflareVerifier). */
     fun cfAutoSolveFlow(): Flow<Boolean> =
         store.data.map { it[K.CF_AUTO_SOLVE] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
@@ -4209,24 +3301,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
         write("CF_AUTO_SOLVE") { it[K.CF_AUTO_SOLVE] = enabled }
     }
 
-    /**
-     * Whether EXTENSIONS may open their own Cloudflare verification page.
-     *
-     * OFF (the default) is Hikari's rule: the only thing that can open a
-     * verification page is the user tapping the app's own WebView (globe)
-     * button. Some extensions ship their own Cloudflare WebView and open it in
-     * the middle of loading sources (Cinemacity does — see
-     * com.hikari.app.net.ExtensionVerifyGuard for the disassembled proof), so
-     * while this is off the app forces those extensions' own switches to `false`
-     * at launch, again whenever a plugin's settings sheet closes, and whenever
-     * this switch changes.
-     *
-     * ON stops the forcing and nothing else: every read answers whatever the
-     * extension stored, and the extension's own switch keeps its own value. It
-     * deliberately does NOT write `true` into those switches — that would turn
-     * the very page this setting exists to prevent ON, and leave it on. For the
-     * rare case where an extension only works through its own bypass screen.
-     */
     fun extensionVerifyWebviewFlow(): Flow<Boolean> =
         store.data.map { it[K.EXT_VERIFY_WEBVIEW] ?: false }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
@@ -4248,10 +3322,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
         webviewRedirectAllowFlow().first().also { RedirectAllow.set(it) }
 
     suspend fun setWebviewRedirectAllow(list: List<String>) {
-        // Mirror FIRST (synchronously, in memory) and the DataStore write second:
-        // a WebView that is being redirected right now has to see a link the
-        // user just added (see RedirectAllow), and waiting for the store write
-        // would leave that first redirect blocked.
         RedirectAllow.set(list)
         write("WEBVIEW_REDIRECT_ALLOW") { it[K.WEBVIEW_REDIRECT_ALLOW] = encodeStringList(list) }
     }
@@ -4308,17 +3378,9 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
 
     suspend fun setLanguage(tag: String) {
         write("LANGUAGE") { it[K.LANGUAGE] = tag }
-        // Mirror it, so an Activity created while the write is still settling
-        // comes up in the chosen language rather than the platform's — and so a
-        // backup restore (which lands here, not through the picker) does too.
         runCatching { com.hikari.app.ui.LanguageManager.rememberStored(ctx, tag) }
     }
 
-    // ---- Universal extractor (yt-dlp fallback) ----
-    //
-    // REMOVED in 0.9.1, along with the whole bundled yt-dlp runtime. The
-    // preference key ("ytdlpEnabled") is deliberately not written or read any
-    // more: a stale value left in somebody's DataStore is simply ignored.
 
     private fun encodeHostLists(list: List<AdBlocker.HostList>): String {
         val arr = JSONArray()
@@ -4471,54 +3533,76 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
     fun providersFlow(): Flow<List<ProviderConfig>> =
         store.data.map { parseProviders(it[K.PROVIDERS]) }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
-    suspend fun providers(): List<ProviderConfig> = providersFlow().first()
+    suspend fun providers(): List<ProviderConfig> {
+        val persisted = providersFlow().first()
+        val burst = providerWrites.withLock {
+            if (burstDepth == 0) null
+            else burstRemoved.toSet() to burstAdded.values.toList()
+        } ?: return persisted
+        val (removed, added) = burst
+        if (removed.isEmpty() && added.isEmpty()) return persisted
+        val addIds = added.map { it.id }.toSet()
+        return persisted.filterNot { it.id in removed || it.id in addIds } + added
+    }
 
-    /**
-     * Every write to the installed-provider list goes through here, one at a
-     * time.
-     *
-     * The list is stored as ONE JSON array, so each change is a read (of the
-     * whole list), a copy with one entry added/removed/toggled, and a write —
-     * and two of those interleaving (a repo sync installing several extensions
-     * while the Extensions screen toggles one) lose whichever finished first.
-     * A lost update here does not just fail to add something: it writes back a
-     * list built from a snapshot that never had the other change in it, so
-     * INSTALLED extensions disappear from the store — which is the "sometimes it
-     * searches 140 repos, sometimes 238, and my Hikari repos are not all in
-     * either count" report. Serialising the read-modify-write removes the race
-     * (DataStore only makes each individual write atomic; it cannot make a
-     * caller's read-then-write atomic).
-     */
     suspend fun saveProviders(list: List<ProviderConfig>) = providerWrites.withLock {
         write("PROVIDERS") { it[K.PROVIDERS] = encodeProviders(list) }
     }
 
     private val providerWrites = Mutex()
 
-    /**
-     * The ATOMIC read-modify-write of the installed-provider list: [transform]
-     * sees the list as it is at the moment of the write, under the same lock
-     * every other provider write takes.
-     *
-     * Callers used to read the list themselves and hand the result to
-     * [saveProviders], which is a lost update waiting to happen (an extension
-     * repo sync writing its rebuilt list while an install adds one more provider
-     * drops the install — see [saveProviders]). Anything that rebuilds or prunes
-     * the list belongs in here.
-     */
+    /** Burst support for Install-all / Update-all (see
+     *  [com.hikari.app.ui.screens.ExtensionsViewModel.installAllPlugins]):
+     *  a 96-row batch used to rewrite the whole 600+ row provider blob on
+     *  EVERY row — 96 full parse/encode/write cycles plus 96 observer
+     *  storms — which is what made batch installs lag. Inside a burst every
+     *  [addProvider]/[updateProviders] call only records its intent in
+     *  memory ([burstAdded]/[burstRemoved]); [endProviderBurst] applies the
+     *  net result in ONE read-modify-write. Outside a burst everything
+     *  writes immediately, exactly as before. Nestable; the outermost
+     *  [endProviderBurst] flushes. */
+    private var burstDepth = 0
+    private val burstAdded = LinkedHashMap<String, ProviderConfig>()
+    private val burstRemoved = HashSet<String>()
+
+    suspend fun beginProviderBurst() = providerWrites.withLock { burstDepth++ }
+
+    suspend fun endProviderBurst() = providerWrites.withLock {
+        if (burstDepth > 0) burstDepth--
+        if (burstDepth > 0) return@withLock
+        if (burstAdded.isEmpty() && burstRemoved.isEmpty()) return@withLock
+        val added = burstAdded.values.toList()
+        val removed = burstRemoved.toSet()
+        burstAdded.clear()
+        burstRemoved.clear()
+        write("PROVIDERS") { prefs ->
+            val before = parseProviders(prefs[K.PROVIDERS]).filterNot { it.id in removed }
+            val addIds = added.map { it.id }.toSet()
+            prefs[K.PROVIDERS] = encodeProviders(before.filterNot { it.id in addIds } + added)
+        }
+    }
+
     suspend fun updateProviders(
         transform: (List<ProviderConfig>) -> List<ProviderConfig>,
     ): List<ProviderConfig> = providerWrites.withLock {
+        if (burstDepth > 0) {
+            val persisted = parseProviders(store.data.first()[K.PROVIDERS])
+            val view = persisted.filterNot { it.id in burstRemoved || it.id in burstAdded } +
+                burstAdded.values
+            val result = transform(view)
+            val newIds = result.map { it.id }.toSet()
+            val oldIds = persisted.map { it.id }.toSet() + burstAdded.keys
+            burstRemoved.clear()
+            burstRemoved.addAll(oldIds - newIds)
+            val per = persisted.associateBy { it.id }
+            burstAdded.clear()
+            for (r in result) if (per[r.id] != r) burstAdded[r.id] = r
+            return@withLock result
+        }
         var result: List<ProviderConfig> = emptyList()
         write("PROVIDERS") { prefs ->
             val before = parseProviders(prefs[K.PROVIDERS])
             result = transform(before)
-            // A transform that produced the same list is not a change, and
-            // writing it anyway is not free: every write re-encodes the whole
-            // list, serialises it, and emits on the preferences flow — which the
-            // screens observe. Callers like [markProvidersAdult] run on every
-            // provider-list change and are usually a no-op, so skipping the
-            // write here is what keeps that pass from being a write pass.
             if (result != before) prefs[K.PROVIDERS] = encodeProviders(result)
         }
         result
@@ -4526,6 +3610,11 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
 
     suspend fun addProvider(c: ProviderConfig) {
         providerWrites.withLock {
+            if (burstDepth > 0) {
+                burstRemoved.remove(c.id)
+                burstAdded[c.id] = c
+                return@withLock
+            }
             write("PROVIDERS") { prefs ->
                 prefs[K.PROVIDERS] =
                     encodeProviders(parseProviders(prefs[K.PROVIDERS]).filter { it.id != c.id } + c)
@@ -4533,21 +3622,21 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
         }
     }
 
-    /**
-     * Records what the repo listings say about the installed extensions.
-     *
-     * [items] is `source URL → tagged 18+`, exactly what a repo's plugin list
-     * carries (see [com.hikari.app.data.ExtensionNsfw.repoEntryNsfw]). Each entry
-     * is matched against the rows that were INSTALLED from it — the source URL is
-     * kept in [ProviderConfig.extra], under every spelling of itself
-     * ([com.hikari.app.data.SourceUrls.matchKeys]) — because a row stores the
-     * local FILE it runs from, not where it was downloaded from.
-     *
-     * This is what hides an already-installed 18+ extension when the switch is
-     * off: the flag is persisted on the row, so the answer needs no plugin load
-     * and survives the repo being removed. Returns true when a row changed, so
-     * the caller knows to rebuild the provider list.
-     */
+    /** Adds a whole batch of providers in ONE read-modify-write. Install-all
+     *  used to call [addProvider] per row — 96 full parse/encode/write cycles
+     *  of a 600+ row JSON blob plus 96 observer storms — which is what made
+     *  batch installs lag. One transaction, same result. */
+    suspend fun addProviders(rows: List<ProviderConfig>) {
+        if (rows.isEmpty()) return
+        providerWrites.withLock {
+            write("PROVIDERS") { prefs ->
+                val ids = rows.map { it.id }.toSet()
+                prefs[K.PROVIDERS] =
+                    encodeProviders(parseProviders(prefs[K.PROVIDERS]).filter { it.id !in ids } + rows)
+            }
+        }
+    }
+
     suspend fun markProvidersAdult(items: List<Pair<String, Boolean>>): Boolean {
         val byKey = HashMap<String, Boolean>()
         for ((url, adult) in items) {
@@ -4572,12 +3661,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
         return changed
     }
 
-    /**
-     * The source URL a row was installed from, or "" — [ProviderConfig.extra]
-     * holds it for the file-based kinds (a `.hiki` bundle appends its index:
-     * `source|0`). Rows added by hand (an IPTV playlist, a Stremio addon the user
-     * pasted) have no source and answer "".
-     */
     fun sourceUrlOf(c: ProviderConfig): String {
         val extra = c.extra ?: return ""
         if (!extra.startsWith("http")) return ""
@@ -4617,20 +3700,9 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
 
     suspend fun addCs3Repo(r: Cs3Repo) {
         upsertRepo(r)
-        // An explicit add is the user saying they want it: it lifts the
-        // removal mark, so a repo deleted long ago and re-added by hand (or
-        // restored from a backup) is not treated as deleted any more.
         clearRemovedRepoKey(repoId(r.url))
     }
 
-    /**
-     * The first-run seed path for the bundled default repos (see the
-     * `seedDefaults` in the Nuvio/SkyStream/Vega/Aniyomi/manga managers).
-     * Same upsert as [addCs3Repo], except a repo the user has explicitly
-     * removed is SKIPPED instead of re-added: those seeders run on every
-     * launch, and without this a deleted default repo came back on its own
-     * after some time. Returns false when the repo was skipped.
-     */
     suspend fun seedCs3Repo(r: Cs3Repo): Boolean {
         if (repoId(r.url) in removedRepoKeys()) return false
         upsertRepo(r)
@@ -4640,14 +3712,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
     private suspend fun upsertRepo(r: Cs3Repo) {
         val key = repoId(r.url)
         val existing = repos().firstOrNull { repoId(it.url) == key }
-        // The same REPOSITORY is one entry, however it was spelled and whichever
-        // branch the file was read from (see [SourceUrls.repoKey]): re-adding it
-        // — the same link, the jsDelivr mirror, `refs/heads/x` vs `x`, or the
-        // repo's other branch — updates the entry that is already there instead
-        // of growing a second folder with the same name. The stored URL is
-        // upgraded to the origin spelling when the existing entry is only a
-        // mirror, but an existing entry is otherwise left where it is: the
-        // extensions installed from it match THAT file's URL.
         val merged = if (existing == null || existing.url == r.url) r
         else existing.copy(
             name = existing.name.ifBlank { r.name },
@@ -4659,15 +3723,8 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
     }
 
     suspend fun removeCs3Repo(url: String) {
-        // Remove by identity, not by spelling: a repo stored twice under two
-        // URL spellings (from an older build) would otherwise reappear as soon
-        // as the list is read back.
         val key = repoId(url)
         saveRepos(repos().filter { repoId(it.url) != key })
-        // Remember the removal so the every-launch default seeding (see
-        // [seedCs3Repo]) does not push a deleted default back on the next
-        // start. Keyed by identity, so re-adding under another branch
-        // spelling still counts as the same repository.
         addRemovedRepoKey(key)
     }
 
@@ -4708,11 +3765,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
         }
     }
 
-    /**
-     * Collapses duplicate repo entries an older build left behind — the same
-     * repository stored twice (two branches, two URL spellings) shows as one.
-     * Runs once at startup; a no-op when there is nothing to collapse.
-     */
     suspend fun dedupeStoredRepos() {
         val before = repos()
         val after = dedupeRepos(before)
@@ -4723,12 +3775,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
         write("CS3_REPOS") { it[K.CS3_REPOS] = encodeRepos(dedupeRepos(list)) }
     }
 
-    /**
-     * One entry per repo whatever the spelling of its URL — the canonical
-     * form is the identity (see [SourceUrls]). The origin spelling wins over
-     * a jsDelivr mirror; otherwise the first entry seen is kept, so the repo
-     * list's order is stable.
-     */
     private fun dedupeRepos(list: List<Cs3Repo>): List<Cs3Repo> {
         val out = ArrayList<Cs3Repo>(list.size)
         val index = HashMap<String, Int>()
@@ -4867,15 +3913,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
     suspend fun sites(): List<Site> = sitesFlow().first()
 
     suspend fun addSite(s: Site) {
-        // The current list is read BEFORE the write. It used to be read inside
-        // the `edit` block (`sites()` → `store.data.first()`), and DataStore
-        // serves reads and writes through ONE actor: a read issued from inside a
-        // write's transform can never be answered, so the write never completes
-        // — and because that write holds the actor, EVERY later read and write
-        // in the whole app queues behind it forever. That is the reported
-        // "the app becomes buggy: settings stop saving, series show no episodes
-        // … fixed by closing and reopening it", and it is why the fix is to
-        // hoist the read out of the transaction.
         val list = sites().filter { it.url != s.url } + s
         write("SITES") { it[K.SITES] = encodeSites(list) }
     }
@@ -4914,46 +3951,14 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
 
     // ---- Backup & restore (Settings → Backup & Restore) ----
 
-    /**
-     * Every stored preference as plain data, for the backup file — minus the
-     * device-local ones (see [DeviceLocal], which is also why a pair's payload
-     * carries none of them).
-     *
-     * Deliberately a GENERIC dump rather than a hand-written list of the keys
-     * this class happens to declare today: the store is where the whole setup
-     * lives (installed sources and their configs, repos, history, favorites,
-     * per-provider settings, the lot), and a curated list silently drops every
-     * key added after it was written. [PrefRecord.type] keeps each value's exact
-     * type so a restore is byte-for-byte what was saved rather than a guess
-     * (a Long that comes back as a Double, or a String set that comes back as a
-     * list, is a subtly broken setting).
-     */
     suspend fun snapshotPreferences(): List<PrefRecord> =
         store.data.first().asMap()
             .mapNotNull { (key, value) -> recordOf(key.name, value) }
             .filterNot { DeviceLocal.contains(it.key) }
 
-    /**
-     * Applies records from a backup file, overwriting the values for those keys
-     * and leaving every other key alone. One edit transaction, so the app can
-     * never observe a half-restored store.
-     *
-     * Records naming a device-local setting are dropped without being applied
-     * (see [DeviceLocal]) — the receiving device keeps its own app lock, its own
-     * phone-or-television layout and its own icon, whatever the file says. That
-     * covers files this build would never have written: one made before the rule
-     * existed still carries the sender's lock, and refusing it here is what
-     * repairs that path rather than only closing it.
-     *
-     * Returns how many settings were actually applied, so the caller's report can
-     * be honest about what arrived.
-     */
     suspend fun restorePreferences(records: List<PrefRecord>): Int {
         val travelling = records.filterNot { DeviceLocal.contains(it.key) }
         if (travelling.isEmpty()) return 0
-        // One unreadable record (a key this build no longer knows, a value of
-        // an unexpected shape) must not fail the whole restore — the report
-        // below says how many actually landed instead of claiming them all.
         var applied = 0
         write("the restored backup") { prefs ->
             for (r in travelling) {
@@ -4963,26 +3968,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
         return applied
     }
 
-    /**
-     * Replaces the WHOLE store with [records] — except for the settings that
-     * describe THIS DEVICE ([DeviceLocal]), which are kept exactly as they are.
-     *
-     * This is what switching profile is (see [Profiles]): a profile is a
-     * snapshot of everything the user built — installed extensions, library,
-     * history, favourites, collections, accounts, preferences — so arriving in
-     * one has to leave nothing of the profile being left behind.
-     * [restorePreferences] deliberately cannot do that: it writes the keys it is
-     * handed and leaves every other key alone, which is right for a backup file
-     * (it must not wipe a setting the file predates) and wrong here.
-     *
-     * The device-local settings survive by design, for the same reason they do
-     * not travel in a backup: the app lock and the phone/television layout
-     * describe the MACHINE, and a second profile is not a second device. A
-     * profile therefore inherits this device's layout and lock rather than being
-     * able to lock or unlock the app by being switched to.
-     *
-     * Returns how many settings the incoming profile brought.
-     */
     suspend fun replacePreferences(records: List<PrefRecord>): Int {
         val keep = store.data.first().asMap()
             .filterKeys { DeviceLocal.contains(it.name) }
@@ -5022,11 +4007,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
             "f" -> (r.value as? Number)?.let { prefs[floatPreferencesKey(r.key)] = it.toFloat() }
             "d" -> (r.value as? Number)?.let { prefs[doublePreferencesKey(r.key)] = it.toDouble() }
             "ss" -> {
-                // A string set arrives as a List when it came from the store and
-                // as a JSONArray when it came from a JSON file (a backup or a
-                // profile snapshot), because org.json has no other way to carry
-                // one. Accepting only the List is how a restored "hidden tabs" /
-                // "disabled extensions" set used to be dropped in silence.
                 val list: List<*>? = when (val v = r.value) {
                     is List<*> -> v
                     is JSONArray -> (0 until v.length()).map { v.optString(it) }
@@ -5094,11 +4074,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
         write("HIDE_CONTINUE") { it[K.HIDE_CONTINUE] = hide }
     }
 
-    // ---- Last-used server per video ----
-    // Remembers which stream server a video was last played with (keyed exactly
-    // like HistoryEntry.uniqueKey), so replaying it continues on the same
-    // server — and, because that server's URL is already probe-resolved, starts
-    // instantly instead of re-running the source search from scratch.
 
     fun lastSourcesFlow(): Flow<Map<String, LastSource>> =
         store.data.map { parseLastSources(it[K.LAST_SOURCE]) }.distinctUntilChanged().flowOn(Dispatchers.Default)
@@ -5394,9 +4369,6 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
                                     itemsJson = so.optString("items"),
                                     uid = so.optString("uid"),
                                 )
-                                // A source that can't resolve to anything is a
-                                // row that would never load: drop it, but keep
-                                // the folder itself.
                                 val usable = when (kind) {
                                     CatalogSourceKind.TMDB ->
                                         TmdbPresets.byKey(source.tmdbPreset) != null ||
@@ -5413,24 +4385,10 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
                             CollectionFolder(
                                 id = fid,
                                 name = fname,
-                                // Deduped on the way IN, not just on the way out:
-                                // a folder that already holds the same catalog
-                                // twice (written by an older build, or restored
-                                // from a backup) used to reach a lazy list with
-                                // two identical keys and crash the editor and the
-                                // collection view with
-                                //   IllegalArgumentException: Key "prov|cs3|…"
-                                //   was already used.
-                                // Two entries with the same key ARE the same
-                                // catalog (same extension, same catalog id), so
-                                // dropping the copy loses nothing.
                                 sources = sources.distinctBy { it.key },
                                 coverKind = CoverKinds.normalize(fo.optString("coverKind")),
                                 coverValue = fo.optString("coverValue"),
                                 tileShape = TileShapes.normalize(fo.optString("tileShape")),
-                                // Defaults are the pre-existing behaviour, so a
-                                // save written before these fields existed reads
-                                // back exactly as it behaved then.
                                 hideTitle = fo.optBoolean("hideTitle", false),
                                 gifAlways = fo.optBoolean("gifAlways", false),
                                 heroBackdropUrl = fo.optString("heroBackdrop"),

@@ -7,14 +7,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
 
-/**
- * Minimal Tampermonkey-style userscript runner for the in-app WebView. Scripts
- * are stored in AppStore, matched against the page URL by their
- * `// ==UserScript==` header (@match / @include / @exclude / @run-at), and
- * injected with a small GM_* shim (getValue/setValue/deleteValue/listValues/
- * addStyle/addElement/setClipboard). GM values persist per script in a
- * SharedPreferences file. Scripts NEVER run outside the WebView.
- */
 object UserscriptManager {
 
     data class Parsed(

@@ -126,17 +126,6 @@ class CatalogViewModel(
 ) : AndroidViewModel(app) {
     private val manager = (app as HikariApp).providers
 
-    /**
-     * Which of the engine's OWN lists this page is showing.
-     *
-     * Every manga engine publishes exactly two — Popular and Latest (see
-     * [MangaProvider.catalogs]) — and the two pills on the engine's row in the
-     * Manga tab are how a reader reaches them. Once they are IN one of the two,
-     * switching to the other must not mean going back a screen and pressing the
-     * second pill: this page is the page that can do it (see the tabs in
-     * [CatalogScreen]), and the pills stay where they are for the reader who is
-     * still choosing which engine to read in.
-     */
     private val _catalog = MutableStateFlow(catalogId)
     val catalog: StateFlow<String> = _catalog.asStateFlow()
 
@@ -157,16 +146,6 @@ class CatalogViewModel(
     private val _done = MutableStateFlow(false)
     val done: StateFlow<Boolean> = _done.asStateFlow()
 
-    /**
-     * The title being searched for INSIDE this engine, "" while its own list is
-     * being browsed.
-     *
-     * Only a manga catalog page offers this (see [CatalogScreen]): the engine is
-     * the only thing that knows the site's own catalogue, walking it page by page
-     * is fine for a "Popular" shelf but useless for "where is <title> on this
-     * site" — and with a hundred extensions installed, the extension the reader
-     * wants may not be the one Home searches by default.
-     */
     private val _query = MutableStateFlow("")
     val query: StateFlow<String> = _query.asStateFlow()
 
@@ -176,29 +155,11 @@ class CatalogViewModel(
     private val _appliedQuery = MutableStateFlow("")
     val appliedQuery: StateFlow<String> = _appliedQuery.asStateFlow()
 
-    /**
-     * WHY this page is empty, when it is empty because the engine failed rather
-     * than because the site had nothing to give.
-     *
-     * Nothing used to be here, and the load's `catch` threw the exception away —
-     * so every failure rendered as the same "The site may be blocking or down"
-     * line and sent the reader off to pass a Cloudflare check that was never the
-     * problem. The real reasons (an extension that fails to LINK, a source whose
-     * `client` assertion refuses the app's OkHttp stack, an HTTP 403, a DNS
-     * failure) are already recorded by the engine — [MangaProvider.lastOutcome] /
-     * `AniyomiProvider.catalogErrors` — and are read back here and shown under
-     * the empty state, verbatim. This is the difference between a report the user
-     * can act on and a mystery.
-     */
     private val _reason = MutableStateFlow<String?>(null)
     val reason: StateFlow<String?> = _reason.asStateFlow()
 
     private var page = 1
     private var loadJob: kotlinx.coroutines.Job? = null
-    // Sparse pages are not the end: some catalogs answer an empty page in the
-    // middle of a long list (rotated trays, sparse skips). Up to 3 consecutive
-    // empty pages are stepped over before the list is declared done, so
-    // scrolling keeps loading instead of stopping at the first gap.
     private var emptyStreak = 0
 
     /** True on an IPTV channel shelf: it gets cinema cards and its own
@@ -209,11 +170,6 @@ class CatalogViewModel(
     private var trackerAll: List<MediaItem>? = null
     private val TRACKER_PAGE = 60
 
-    /**
-     * The engine's own record of the last call it made to this provider, when
-     * that call FAILED. Success lines ("✓ 40 title(s)") are not errors and are
-     * filtered out — only the reason an empty result may be shown to the reader.
-     */
     private fun providerReason(): String? {
         val p = manager.byId(providerId) ?: return null
         val raw = when (p.config.type) {
@@ -241,11 +197,6 @@ class CatalogViewModel(
         loadNext()
     }
 
-    /**
-     * Starts (or clears) an in-engine search. The list is emptied immediately so
-     * the grid cannot show the previous list's items under the new query — a tap
-     * during the debounce would otherwise open the wrong title.
-     */
     fun setQuery(q: String) {
         if (q == _query.value) return
         _query.value = q
@@ -256,12 +207,6 @@ class CatalogViewModel(
         _done.value = false
         _reason.value = null
         _appliedQuery.value = q.trim()
-        // Always re-ask: a blank query goes back to the catalog's own list, and
-        // loadNext pages whichever of the two is in force (see it, and note that
-        // it flips the spinner on synchronously — the grid must never be shown
-        // empty, which is what "no matches" flashing before every search was).
-        // The flag is cleared first: the cancelled job above died with it set, and
-        // loadNext refuses to start while it is up.
         _loading.value = false
         loadNext()
     }
@@ -274,23 +219,13 @@ class CatalogViewModel(
             loadTrackerNext()
             return
         }
-        // Set BEFORE the coroutine is launched, not inside it: the grid reads
-        // this to decide between the spinner and its empty state, and the frame
-        // between "the list was emptied" and "the coroutine ran" was long enough
-        // to show the empty state for a beat.
         _loading.value = true
-        // Keeps this page load running while the user is in another app (see
-        // [com.hikari.app.work.BackgroundWork]) — otherwise the OS freezes the
-        // process and the grid stops filling in until the app is reopened.
         val work = com.hikari.app.work.BackgroundWork.begin("Loading $catalogName") {
             loadJob?.cancel()
         }
         loadJob = viewModelScope.launch {
             val provider: ContentProvider? = manager.byId(providerId)
             val ref = CatalogRef(providerId, type, _catalog.value, catalogName, rawType)
-            // A FAILED page (exception, wall, timeout) is not an empty page and
-            // never advances the cursor: the same page is asked again on retry
-            // instead of the list silently ending pages early.
             var failed: Throwable? = null
             val fresh = try {
                 // A search is paged exactly like the catalog is: the same
@@ -305,24 +240,12 @@ class CatalogViewModel(
                     iptv?.searchInCatalog(_catalog.value, q, page)
                         ?: provider?.search(q, page) ?: emptyList()
                 } else {
-                    // One funnel for every engine (see
-                    // [ContentRepository.loadCatalogPage]): a catalogue host
-                    // that answers an empty page one moment and its real page the
-                    // next is re-asked here, and page 1 falls back to the last
-                    // answer this catalogue actually gave — so "Show all" shows
-                    // what the Home row just showed instead of "Nothing here
-                    // right now".
                     com.hikari.app.data.ContentRepository.loadCatalogPage(
                         provider,
                         ref,
                         page,
                         retryEmpty = page == 1,
                         onCached = { cached ->
-                            // Paint what this catalogue showed last time, the
-                            // instant the screen opens: the engine below is still
-                            // asked, and its fresh page replaces this one. First
-                            // page only — a cached page 2+ has no place above a
-                            // list that has not been filled yet.
                             if (page == 1 && cached.isNotEmpty() && _items.value.isEmpty()) {
                                 _items.value = cached.map { it.tokenizePoster() }
                                 _loading.value = false
@@ -332,23 +255,11 @@ class CatalogViewModel(
                 }
                 withContext(Dispatchers.IO) { raw.map { it.tokenizePoster() } }
             } catch (t: Throwable) {
-                // NOT swallowed any more. Two reasons: the message is what the
-                // empty state now shows (so a failure is diagnosable from the
-                // screen — see [_reason]), and a CANCELLATION must not be
-                // mistaken for an answer. The previous version turned every
-                // cancel into an empty page, and `loadNext` cancels the job it
-                // is replacing — so a cancelled load came back to mark the list
-                // "done" and clear the spinner while the load that replaced it
-                // was still running (pagination stopped dead after a search, and
-                // the grid looked like the engine had returned nothing).
                 if (t is kotlinx.coroutines.CancellationException) throw t
                 failed = t
                 emptyList()
             }
             if (failed != null) {
-                // The page was never answered: hold the cursor (same page is
-                // asked on retry), keep the list open, and say why — the
-                // footer's Retry button is the way back (see the grid below).
                 _reason.value = describeFailure(failed!!)
                 _loading.value = false
                 return@launch
@@ -360,9 +271,6 @@ class CatalogViewModel(
                 fresh
             }
             if (translated.isEmpty()) {
-                // A sparse middle page is stepped over (up to 3 in a row) — only
-                // a run of empty pages ends the list, so scrolling never stops
-                // at the first gap in a long catalogue.
                 if (page > 1 && emptyStreak < 3) {
                     emptyStreak++
                     page++
@@ -370,10 +278,6 @@ class CatalogViewModel(
                     loadNext()
                     return@launch
                 }
-                // The catalogue behind this page is gone from the install (or was
-                // never one — a tracker shelf opens through this same page), yet
-                // Home's row just showed its titles: serve the disk copy of that
-                // same page instead of "Nothing here right now".
                 if (page == 1 && _items.value.isEmpty()) {
                     val diskKey = MetaCache.catalogKey(providerId, ref, page)
                     val disk = MetaCache.cachedCatalog(diskKey, Long.MAX_VALUE).orEmpty()
@@ -385,10 +289,6 @@ class CatalogViewModel(
                         return@launch
                     }
                 }
-                // The engine's own record of the call wins over the generic
-                // message the caller caught: it is the one that names the real
-                // cause (a class-load failure, an assertion about our OkHttp
-                // stack, a 403). Cleared again the moment anything arrives.
                 _reason.value = providerReason() ?: _reason.value
                 _done.value = true
             } else {
@@ -404,13 +304,6 @@ class CatalogViewModel(
         loadJob?.invokeOnCompletion { com.hikari.app.work.BackgroundWork.end(work) }
     }
 
-    /**
-     * One page of a TRACKER shelf ("tracker:anilist" etc. — Home's tracker rows
-     * open through this same catalogue page, but no installed provider answers
-     * for those ids). The shelf is the tracker's own library listing, so the
-     * page shows exactly what the Home row showed, paged locally; the row's
-     * search box filters it locally too.
-     */
     private fun loadTrackerNext() {
         if (_loading.value || _done.value) return
         _loading.value = true
@@ -485,12 +378,6 @@ class CatalogViewModel(
     }
 }
 
-/** 51CG/MRDS/Porna91-style posters arrive as huge base64 data: URIs. A big
- * catalog holding thousands of those raw strings blows the heap the moment the
- * user scrolls — but simply dropping them left every grid cell blank. Collapse
- * each oversized poster into a tiny disk-cache token instead (decoded +
- * persisted once, off the main thread): the grid still shows the image, and
- * memory stays bounded. */
 private fun MediaItem.tokenizePoster(): MediaItem {
     val p = PosterLoader.tokenize(posterUrl)
     val b = PosterLoader.tokenize(backdropUrl)
@@ -523,24 +410,12 @@ fun CatalogScreen(
     val items by vm.items.collectAsState()
     val loading by vm.loading.collectAsState()
     val done by vm.done.collectAsState()
-    // The engine's own search. Only a MANGA catalog gets the box: its items are
-    // manga and this page is reached from the Manga tab, where nothing else can
-    // ask one specific engine for a title. A video extension already has Home's
-    // "search this extension" magnifier, and Search's own scope row.
     val searchable = rawType == "manga"
-    // An IPTV channel shelf (a group / language / category / country tile, or
-    // All channels) searches INSIDE itself — the same name/group match as the
-    // playlist's own in-folder search, scoped to this shelf, in place, never
-    // leaving for the Search tab. Torrent/stream single shelves are one item
-    // and need no box.
     val iptvShelfSearch = vm.isIptv && rawType == "channel"
     val catalogSearch = searchable || iptvShelfSearch
     val appliedQuery by vm.appliedQuery.collectAsState()
     val catalogReason by vm.reason.collectAsState()
     val selectedCatalog by vm.catalog.collectAsState()
-    // The engine's two own lists, as tabs (see [CatalogViewModel.catalog]).
-    // Offered only where they are the whole story: the page is a MANGA catalog
-    // (that is what the two labels mean here) and it is showing one of the two.
     val popularLabel = tr("Popular")
     val latestLabel = tr("Latest")
     val mangaPair = searchable &&
@@ -566,12 +441,6 @@ fun CatalogScreen(
     val hikari = app as HikariApp
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    // "Verify site" is only offered when the failure looks like a bot wall
-    // (403/429/503/Cloudflare) — the only case where passing a check in the
-    // WebView can help. A site that is simply down (521/404/500) or an
-    // extension that is broken says so in the empty state instead of sending
-    // the reader to a check that was never the issue. No outcome yet (still
-    // trying) keeps the button — it is a tool until a failure says otherwise.
     val verifyWanted = remember(providerId, catalogReason) {
         val prov = hikari.providers.byId(providerId)
         if (prov?.config?.type == ProviderType.MANGA) {
@@ -581,10 +450,6 @@ fun CatalogScreen(
             r == null || WALL_HINT.containsMatchIn(r)
         }
     }
-    // A verification WebView earns a cf_clearance cookie for the site. Coming
-    // back from it the grid MUST re-ask the source: the page that answered
-    // "nothing here" a moment ago answers properly now, and leaving the old
-    // empty grid up would make the whole exercise look like it failed.
     val verifyLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) {
@@ -594,11 +459,6 @@ fun CatalogScreen(
     // never drift apart (and so the reasoning below is written once).
     val openVerify: () -> Unit = {
         scope.launch {
-            // Deriving the site loads the extension (its source's baseUrl), so it
-            // cannot run on the UI thread — and an extension that declares no
-            // site has nothing to open, which is a sentence, not a crash.
-            // The chain also tries the install's own URLs, so a provider the
-            // extension loader cannot read still opens its site.
             val site = withContext(Dispatchers.IO) {
                 hikari.providers.byId(providerId)?.let { webUrlChainAsync(it) }
             }
@@ -616,9 +476,6 @@ fun CatalogScreen(
                             putExtra("url", site)
                             putExtra("title", "Verify: " + (host ?: providerName))
                             putExtra("providerId", providerId)
-                            // Closes itself as soon as the clearance is in the
-                            // cookie jar, so the user does not have to know when
-                            // they are "done".
                             putExtra("autoCloseWhenCloudflarePassed", true)
                             if (host != null) putExtra("verifyHost", host)
                         }
@@ -627,33 +484,17 @@ fun CatalogScreen(
         }
     }
 
-    // Grid position held across visits (see ScrollKeeper): tabs and searches
-    // get their own slot, so each catalog/query/tab combination reopens where
-    // it was left. Keys re-find the exact item when row order shifts, and the
-    // waiter pulls more pages while the saved cell is not loaded yet.
     val catalogKeys = remember(items) { items.distinctBy { it.uniqueId }.map { it.uniqueId } }
     val gridState = com.hikari.app.ui.components.keptGridState(
         "catalog:$providerId|$catalogId|$type|$selectedCatalog|$appliedQuery",
         itemKeys = catalogKeys,
         onNeedMore = { if (!done && !loading) vm.loadNext() },
     )
-    // Nuvio's catalogue column count: a FIXED count chosen from the screen
-    // rather than an adaptive minimum (see [catalogColumnsFor]) — three on a
-    // phone, which is the visible difference from the old 84dp adaptive grid
-    // (four cramped columns). On a television the count is still derived from
-    // the living-room cell size instead (see [TvUi.gridColumns]).
     val isTvCatalog = com.hikari.app.tv.TvMode.current()
-    // IPTV shelves always draw cinema 16:9 cards (phone included): channel
-    // logos on tall vertical posters looked broken, and nothing else changes —
-    // every other engine keeps the user's own poster setting.
     val iptvCinema = vm.isIptv
     // Phone cinema cards are 16:9 and need room: two columns, not three.
     val phoneCinema = !isTvCatalog && (iptvCinema || rememberPosterStyle().isCinema(false))
     val columns = if (isTvCatalog) { val w = LocalConfiguration.current.screenWidthDp; if (w >= 1400) 4 else 3 } else if (phoneCinema) 2 else TvUi.gridColumns(catalogColumnsFor(LocalConfiguration.current.screenWidthDp))
-    // Infinite scroll: fetch the next page when the user scrolls close to the
-    // bottom. (A LaunchedEffect keyed on gridState alone never re-fires on
-    // scroll — gridState is a stable object — so this watches the scroll
-    // position via snapshotFlow instead.)
     LaunchedEffect(gridState) {
         snapshotFlow {
             val last = gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
@@ -667,11 +508,6 @@ fun CatalogScreen(
     }
 
     Column(Modifier.fillMaxSize()) {
-        // The catalogue header, in Nuvio's shape: the back control sits on its
-        // own line and the list's own name is then drawn at heading size with
-        // the engine under it — the page's own title block rather than a
-        // toolbar row. It is what makes a catalogue read as a place you are
-        // browsing rather than a dialog you are looking at.
         Row(
             Modifier
                 .fillMaxWidth()
@@ -682,9 +518,6 @@ fun CatalogScreen(
                 Icon(Icons.Filled.ArrowBack, contentDescription = tr("Back"))
             }
             Spacer(Modifier.weight(1f))
-            // The extension's own settings, where the catalogue comes from:
-            // the same schema-driven dialog the Extensions screen opens —
-            // only offered for formats that declare settings of their own.
             val settingsProvider = remember(providerId) { hikari.providers.byId(providerId) }
             val settingsType = settingsProvider?.config?.type
             if (settingsType == ProviderType.NUVIO || settingsType == ProviderType.VEGA ||
@@ -707,13 +540,6 @@ fun CatalogScreen(
                     )
                 }
             }
-            // The Cloudflare-verification WebView. A manga site behind a bot wall
-            // answers every request — including the extension's own — with a
-            // challenge until a browser has passed it, and no extension can open
-            // a browser for itself. Without this button the ONLY way through was
-            // Home's globe, which does not exist for a manga engine's own page.
-            // Offered only when the failure looks like a wall (see verifyWanted):
-            // a dead site must say it is down, not point at a check.
             if (searchable && verifyWanted) {
                 IconButton(onClick = openVerify) {
                     Icon(
@@ -783,16 +609,8 @@ fun CatalogScreen(
             )
         }
         if (items.isEmpty() && loading) {
-            // Nuvio-style skeletons: while the first page is on its way the
-            // grid keeps the shape it is about to have, instead of a lone
-            // spinner that says nothing about what is coming.
             Box(Modifier.fillMaxSize()) {
                 CatalogSkeletonGrid(columns = columns, cinema = iptvCinema || rememberPosterStyle().isCinema(com.hikari.app.tv.TvMode.current()))
-                // The spinner, on its own, cannot say WHY nothing is arriving —
-                // and ten seconds in, the usual answer is a Cloudflare check the
-                // site wants a browser to pass (see [VerificationNudge]). The
-                // chip floats above the skeletons, says so once, and is itself
-                // the tap that opens the verification view.
                 VerificationNudge(
                     waiting = true,
                     onOpenWebView = openVerify,
@@ -803,11 +621,6 @@ fun CatalogScreen(
             }
         } else if (items.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                // A search that matched nothing and a site that answered nothing
-                // are two different problems, and only one of them has a fix
-                // the user can apply (the verification WebView) — so the empty
-                // state says which one it is and offers that button only for a
-                // wall (see verifyWanted). A dead site names itself instead.
                 EmptyState(
                     title = if (appliedQuery.isNotBlank()) tr("No matches")
                     else tr("Nothing here right now"),
@@ -819,30 +632,15 @@ fun CatalogScreen(
                     else tr("The site answered with an error — see below."),
                     actionLabel = if (searchable && verifyWanted) tr("Verify site") else null,
                     action = if (searchable && verifyWanted) openVerify else null,
-                    // What the engine actually said, when it said anything —
-                    // see CatalogViewModel.reason. Without it a source that
-                    // fails to LINK (an OkHttp class it needs missing from the
-                    // app, a source whose own assertions refuse our client) read
-                    // exactly like a site that was merely down.
                     detail = catalogReason,
                 )
             }
         } else {
-            // Extension catalogs repeat themselves (a scraped page can list the
-            // same title twice): keying on the identity WITHOUT dropping repeats
-            // crashes the screen, because Compose throws on a duplicated key.
-            // Deduped and styled once for the whole grid rather than once per
-            // cell — a cell doing its own read opened one DataStore collection
-            // per poster on screen (see MediaRow).
             val uniqueItems = rememberVisibleItems(items)
             val style = rememberPosterStyle().let {
                 if (iptvCinema) it.copy(posterType = PosterTypes.CINEMA) else it
             }
             LazyVerticalGrid(
-                // Nuvio's catalogue grid: a fixed column count chosen from the
-                // screen, sixteen-dp gutters and a real vertical gap so every
-                // tile is its own card instead of one continuous sheet of
-                // artwork.
                 columns = GridCells.Fixed(columns),
                 state = gridState,
                 modifier = Modifier.fillMaxSize(),
@@ -877,12 +675,6 @@ fun CatalogScreen(
                         item,
                         style,
                         onClick = {
-                            // A manga engine's "catalog" is its Popular/Latest list
-                            // and its items are manga, not video: those open the
-                            // manga detail page (the provider tags its catalogs with
-                            // rawType "manga" — see MangaProvider.catalogs), unless
-                            // they came from a tracker shelf — those are searched
-                            // across the installed manga engines instead.
                             Routes.safeNavigate(
                                 nav,
                                 if (rawType == "manga") {
@@ -934,11 +726,6 @@ fun CatalogScreen(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         } else if (!done && items.isNotEmpty() && catalogReason != null) {
-                            // A page that FAILED (never answered) holds the
-                            // cursor and the list open — this is the way back.
-                            // Without it the scroll trigger (fired on position
-                            // change) never re-fires and the list sat stuck
-                            // until the page was left and re-entered.
                             TextButton(onClick = { vm.loadNext() }) {
                                 Text(
                                     tr("Couldn't load more — retry"),
@@ -953,14 +740,6 @@ fun CatalogScreen(
     }
 }
 
-/**
- * One of an engine's two own lists, as a tab (see [CatalogViewModel.catalog]).
- *
- * A tab rather than a pair of buttons: the two lists are the same page with a
- * different question asked of the site, and a tab is what that relationship
- * looks like. Tapping the one already selected does nothing (the view model
- * ignores it), so a double tap cannot reload the list under the reader.
- */
 @Composable
 private fun CatalogTab(label: String, selected: Boolean, onClick: () -> Unit) {
     Box(
@@ -983,16 +762,6 @@ private fun CatalogTab(label: String, selected: Boolean, onClick: () -> Unit) {
     }
 }
 
-/**
- * One catalogue tile, in Nuvio's shape: a rounded poster card with the title
- * drawn UNDER it at label size and a second, quieter line under that (the year
- * and the first genre — Nuvio prints the release date there). The score badge
- * stays where Hikari has always drawn it, in the poster's top-right corner.
- *
- * [PosterStyle] still has the last word on the two things the user controls:
- * the corner rounding and whether titles are drawn at all (Settings → App
- * Layout), so a user who asked for label-free artwork keeps it.
- */
 @Composable
 private fun CatalogCard(
     item: MediaItem,
@@ -1001,10 +770,6 @@ private fun CatalogCard(
     /** Hold-menu play action (detail autoplay for video); plain open when null. */
     onQuickPlay: ((MediaItem) -> Unit)? = null,
 ) {
-    // The score badge, when Settings → App Layout has it on: warm the ratings
-    // cache for this title and print whatever is known (see
-    // rememberPosterScore). Null when the switch is off, so an old device that
-    // never wanted badges pays nothing.
     val badge = rememberPosterScore(item, style)
     val shape = RoundedCornerShape(style.corner.dp)
     val cinema = style.isCinema(com.hikari.app.tv.TvMode.current())
@@ -1016,9 +781,6 @@ private fun CatalogCard(
     val latestItem by rememberUpdatedState(item)
     // Hold-menu Library pick: the title the sheet files (null = no sheet).
     var quickLibraryItem by remember { mutableStateOf<MediaItem?>(null) }
-    // No clip on the outer Column: the artwork's own rounding used to extend
-    // over the title/year lines and cut their edges. Only the image Box below
-    // is rounded.
     Column(
         Modifier
             .clickable(onClick = onClick)
@@ -1045,9 +807,6 @@ private fun CatalogCard(
                 },
             contentAlignment = Alignment.Center,
         ) {
-            // Behind the artwork: a poster that 403s/404s (or an item with no
-            // poster at all) keeps a deliberate-looking slot instead of a
-            // blank dark rectangle.
             Icon(
                 Icons.Filled.Movie,
                 contentDescription = null,
@@ -1055,10 +814,6 @@ private fun CatalogCard(
                 modifier = Modifier.size(26.dp),
             )
             if (cinema && hero != null && !hero.second) {
-                // Portrait art in a cinema frame: a full-bleed 16:9 crop
-                // anchored exactly like every other cinema frame (see
-                // Artwork.CINEMA_ALIGNMENT). Never a letterboxed Fit with
-                // blank sides.
                 AsyncImage(
                     model = hero.first,
                     contentDescription = item.title,
@@ -1072,9 +827,6 @@ private fun CatalogCard(
                     contentDescription = item.title,
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop,
-                    // Wide art in a cinema frame crops exactly like the home
-                    // rail does — a centred crop here is what beheaded the
-                    // same poster Show All shows after the rail showed it fine.
                     alignment = if (cinema) com.hikari.app.ui.Artwork.CINEMA_ALIGNMENT else Alignment.Center
                 )
             }
@@ -1101,9 +853,6 @@ private fun CatalogCard(
                 color = MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.padding(top = 8.dp, start = 2.dp, end = 2.dp)
             )
-            // The second line: what the item is and when it is from, the way
-            // Nuvio puts the release date under the name. A space keeps the
-            // tile's height honest when neither is known.
             val detail = buildList {
                 item.year?.let { add(it.toString()) }
                 if (item.genres.isNotEmpty()) add(item.genres.first())
@@ -1116,10 +865,6 @@ private fun CatalogCard(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.padding(top = 2.dp, start = 2.dp, end = 2.dp)
             )
-            // Reading/Completed mark on manga + novel tiles (the detail page
-            // marks chapters the same way): the key scheme is the reader's
-            // own (provider + url), so a title opened once already carries
-            // its mark here without loading any chapter list.
             if (item.rawType == "manga" || item.rawType == "novel") {
                 val mangaRev = remember { mutableIntStateOf(0) }
                 DisposableEffect(item.providerId, item.id) {
@@ -1148,13 +893,6 @@ private fun CatalogCard(
     }
 }
 
-/**
- * Placeholder tiles shown while a catalogue's first page loads — the same
- * column count, gutters and corner rounding as the real grid, so the page
- * settles into place instead of jumping when the items arrive. The pulse is a
- * plain alpha animation (no shimmer dependency, and it costs one animated
- * float for the whole grid).
- */
 @Composable
 private fun CatalogSkeletonGrid(columns: Int, modifier: Modifier = Modifier, cinema: Boolean = com.hikari.app.tv.TvMode.current()) {
     val transition = rememberInfiniteTransition(label = "catalog-skeleton")
@@ -1206,12 +944,6 @@ private fun CatalogSkeletonGrid(columns: Int, modifier: Modifier = Modifier, cin
     }
 }
 
-/**
- * Nuvio's catalogue breakpoints: three columns on a phone, then one more per
- * width band. This is the phone/laptop answer only — [TvUi.gridColumns] turns
- * it into the living-room count on a television, where the cell size rather
- * than the column count is what matters.
- */
 private fun catalogColumnsFor(widthDp: Int): Int = when {
     widthDp >= 1400 -> 7
     widthDp >= 1200 -> 6

@@ -29,25 +29,6 @@ import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import java.util.zip.GZIPInputStream
 
-/**
- * One display name per source: the source's own name, with a ` (n)` suffix on
- * every name that more than one source of the same extension carries.
- *
- * An Aniyomi extension is not one site — it can bundle a whole family of them
- * (`Jellyfin (1)…(3)` in the official index), and nothing stops two of them
- * from declaring the same `name`. Listed raw, those rows are indistinguishable:
- * nine sources called "AnimeWorld India" looked like the same extension
- * installed nine times. Suffixing only the colliding names (never a name that
- * is already unique) keeps every row honest and changes nothing for the
- * single-source extensions that make up most of the ecosystem.
- *
- * The suffix is the source's LANGUAGE whenever that tells the colliding sources
- * apart ("AnimeWorld India · Hindi" / "· English"), because that is what those
- * packs actually are — the same site published several times, once per audio
- * track — and a bare number says nothing about which one the user wants. A
- * language it already names in its own title is not repeated; when language does
- * not separate them, the site's host is used instead, and only then ` (n)`.
- */
 private fun disambiguateSources(sources: List<AnimeSource>, fallback: String): List<String> {
     val base = sources.map { s ->
         runCatching { s.name }.getOrNull()?.trim()?.takeIf { it.isNotBlank() } ?: fallback
@@ -68,11 +49,6 @@ private fun disambiguateSources(sources: List<AnimeSource>, fallback: String): L
             details.distinct().size == details.size &&
                 details.count { it.isNullOrBlank() } <= 1
         }
-        // A row this kind cannot describe keeps the PLAIN name rather than a
-        // number: it is the group's own name (the generic, multi-audio source in
-        // a language pack), the plain name is unique here once the others are
-        // suffixed, and "(1)" told the user nothing. Numbers are left for the
-        // case where no kind could separate the rows at all.
         idxs.forEachIndexed { k, i ->
             val detail = picked?.invoke(sources[i])
             out[i] = when {
@@ -99,24 +75,10 @@ private fun languageLabel(s: AnimeSource): String? {
     // the language; the region is not what separates two feeds of one site.
     val code = raw.substringBefore('-').substringBefore('_')
     LANGUAGE_NAMES[code]?.let { return it }
-    // "all"/"multi" mean the source itself carries several audio tracks: a real
-    // answer, but a poor tiebreaker — better to fall through to the site, and
-    // only then to a number.
     if (code == "all" || code == "multi") return null
-    // ANY other code is still a code. The AnimeWorld India pack (a generic
-    // source plus Bengali/English/Hindi/Japanese/Malayalam/Marathi/Tamil/Telugu)
-    // used to fall all the way through to "(1)…(9)" because one of its codes
-    // ("mr") was missing from the table — and a kind is only usable when it
-    // separates EVERY row of the group. Reading an unmapped code back to the
-    // user is honest, and it keeps the whole group's labels.
     return code.uppercase()
 }
 
-/**
- * The languages Hikari can name. Not exhaustive by design: anything not here
- * still labels the row (as its own code — see [languageLabel]), so a new or
- * exotic language tag degrades to "MR" rather than to a number.
- */
 private val LANGUAGE_NAMES: Map<String, String> = mapOf(
     "en" to "English", "eng" to "English", "english" to "English",
     "hi" to "Hindi", "hin" to "Hindi", "hindi" to "Hindi",
@@ -198,14 +160,6 @@ private fun siteLabel(s: AnimeSource): String? {
 /** Name comparison for the "don't repeat the language twice" check. */
 private fun squashName(s: String): String =
     s.lowercase().replace(Regex("[^a-z0-9]+"), "")
-/**
- * What makes two entries of one extension's source list the SAME source:
- * everything Aniyomi itself would use to tell them apart (its id, name, lang
- * and site). A list that repeats a source — a factory appending to a shared
- * list, a class named twice in the extension's metadata — collapses to the one
- * source it really is, while genuinely different sources always differ on at
- * least one of these and all survive.
- */
 private fun sourceKey(s: AnimeSource): String {
     val id = runCatching { s.id }.getOrNull()
     val name = runCatching { s.name }.getOrNull()
@@ -214,32 +168,6 @@ private fun sourceKey(s: AnimeSource): String {
     return "$id|$name|$lang|$base"
 }
 
-/**
- * Installs and loads **Aniyomi** anime extensions (`aniyomix` `*.apk` files).
- *
- * An Aniyomi extension is a signed APK that declares the feature
- * `tachiyomi.animeextension` and names its `AnimeSource` subclasses in
- * `tachiyomi.animeextension.class` (`;`-separated, a leading `.` meaning
- * "relative to my package"). Loading one is NOT an Android package install: the
- * APK is copied to `filesDir/aniyomi/exts/<pkg>.ext`, made read-only (Android
- * 14+ refuses to load a writable dex), inspected with
- * `PackageManager.getPackageArchiveInfo`, and finally its classes are
- * instantiated through a [ChildFirstPathClassLoader] whose parent is Hikari's
- * own class loader — so the extension links against the vendored
- * `eu.kanade.tachiyomi.*` API layer that ships in this app
- * (`app/src/main/java/eu/kanade/tachiyomi/`), exactly the way the real Aniyomi
- * app does it.
- *
- * Each source of an extension becomes its own [ProviderType.ANIYOMI] provider
- * row (`aniyomi|<packageName>|<index>`), so one APK that bundles twelve sites
- * shows up as twelve sources, like it does in Aniyomi.
- *
- * Extensions are third-party code: every call into them can throw anything
- * (including `LinkageError`/`AbstractMethodError` from a source built against a
- * different extensions-lib), so loading is serialised per APK through
- * [LoadGate] and every failure becomes a short, human-readable [lastError] the
- * Extensions UI can show instead of an unexplained empty list.
- */
 object AniyomiExtensionManager {
 
     /** Aniyomi extensions are a few hundred KB; this is a sanity bound only. */
@@ -260,29 +188,12 @@ object AniyomiExtensionManager {
     private const val META_CONTENT_WARNING = "aniyomix.contentWarning"
     private const val META_IS_TORRENT = "aniyomix.torrent"
 
-    /**
-     * The extensions-lib MAJOR versions Hikari can host. 14 and 16 are the older
-     * APK layouts (still the bulk of the ecosystem), 17 is current, and 18 is
-     * accepted ahead of time.
-     *
-     * Compared by MAJOR, never as a whole number. The metadata
-     * (`aniyomix.extensionLib`) is an integer major, but the fallback is the
-     * APK's `versionName`, which is a full version — "16.1", "14.4" — so an
-     * exact compare rejected every extension built against a point release,
-     * which is most of them. A 16.1 extension speaks the same lib as a 16.0 one.
-     */
     private val MIN_LIB_MAJOR = 14
     private val MAX_LIB_MAJOR = 18
 
     /** A failed load is negative-cached for this long (see [extensionOf]). */
     private const val FAIL_RETRY_MS = 60_000L
 
-    /**
-     * The built-in Aniyomi extension repositories (Aniyomi's `index.min.json`
-     * format). Only the official one is seeded — community Aniyomi repos are
-     * add-it-yourself territory (Extensions → Add repo), and silently
-     * bulk-installing a whole repo would be hostile.
-     */
     val DEFAULT_REPOS = listOf(
         Triple(
             "https://raw.githubusercontent.com/aniyomiorg/aniyomi-extensions/repo/index.min.json",
@@ -293,20 +204,6 @@ object AniyomiExtensionManager {
 
     // ---- Index files (which file a repo's extension list actually lives in) ----
 
-    /**
-     * Every file name a Mihon/Aniyomi repo publishes its extension list under,
-     * best-first. A repo normally ships ONE of these, and which one differs
-     * per repo:
-     *
-     *  * `index.json` — the full index, the one Mihon 0.20.1+ reads;
-     *  * `index.min.json` — the same list minified. Careful: keiyoushi turned
-     *    this file into a **2-entry stub** ("Outdated App" / "Update to Mihon
-     *    0.20.1+") that old apps are expected to show as-is, so it must never
-     *    be preferred over a real index;
-     *  * `repo.json` — metadata only for a Mihon repo (`{"meta":{…}}`), the
-     *    plugin list for a CloudStream repo, so it parses as neither here
-     *    unless it really does carry an array (some small mirrors use it).
-     */
     val INDEX_FILE_NAMES = listOf(
         "index.json",
         "index.min.json",
@@ -315,17 +212,6 @@ object AniyomiExtensionManager {
         "plugins.min.json",
     )
 
-    /**
-     * Binary (protobuf) indexes — `index.pb`, `index.min.pb`, `repo.pb`.
-     *
-     * Mihon 0.20.1+ reads this form, the ecosystem's main repo (keiyoushi)
-     * publishes one, and several repos publish ONLY this one (their `index.pb`
-     * has no JSON sibling at all). Hikari decodes it (see [pbIndex]) — the bytes
-     * are gzip-compressed and the schema is Mihon's own `NetworkExtensionStore` —
-     * so a `.pb`-only repo lists and installs like any other. Where both forms
-     * exist the JSON one is still tried first: it is human-readable, and the
-     * binary form is the same list.
-     */
     val PB_INDEX_FILE_NAMES = listOf("index.pb", "index.min.pb", "repo.pb")
 
     val ALL_INDEX_FILE_NAMES = INDEX_FILE_NAMES + PB_INDEX_FILE_NAMES
@@ -341,18 +227,6 @@ object AniyomiExtensionManager {
             last.endsWith(".pb", ignoreCase = true)
     }
 
-    /**
-     * The repo ROOT of an index URL — the folder the `apk/` and `icon/`
-     * subfolders hang off.
-     *
-     * This is the difference between an install that works and one that ends in
-     * "Download timed out": an index entry's `apk` is a bare FILE NAME, so it
-     * has to be appended to the repo root as `<root>/apk/<name>`. Stripping only
-     * `index.min.json` (as this once did) left `<root>/index.json/apk/<name>`
-     * for every repo whose index is served as `index.json`, and that URL 404s —
-     * while the listing itself kept working, so every extension in the repo
-     * looked installable and none of them installed.
-     */
     fun indexDirFor(indexUrl: String): String {
         var url = indexUrl.trim().trimEnd('/')
         for (name in ALL_INDEX_FILE_NAMES) {
@@ -374,17 +248,6 @@ object AniyomiExtensionManager {
         return url
     }
 
-    /**
-     * The index URLs worth trying for a repo URL, best-first. A repo folder gets
-     * the common file names appended — JSON names first, then the protobuf ones;
-     * a direct index URL keeps that file first — except a `.min.json`/`.pb` one,
-     * where the full `index.json` is tried first (that is the one that actually
-     * lists the extensions today) and the given file stays as the fallback.
-     *
-     * The `.pb` candidates are real fallbacks, not decoration: a repo that
-     * publishes its list ONLY in the binary form has nothing else to offer, and
-     * it is tried last precisely because the JSON form is the readable one.
-     */
     fun indexCandidatesFor(url: String): List<String> {
         val clean = url.trim().trimEnd('/')
         if (clean.isEmpty()) return emptyList()
@@ -419,15 +282,6 @@ object AniyomiExtensionManager {
         return order.map { "$dir/$it" }
     }
 
-    /**
-     * True for an index that is really the "your app is too old" placeholder
-     * keiyoushi (and Mihon's own repo) serves at `index.min.json`: the whole
-     * list is the couple of stub entries that tell the user to update the app.
-     * Treating that as a repo is why the Keiyoushi folder said "Outdated App"
-     * and "Update to Mihon 0.20.1+" with nothing installable in it — the real
-     * catalogue is in the same folder's `index.json`, so a stub has to be
-     * recognised and skipped rather than shown.
-     */
     fun looksLikeStub(entries: JSONArray): Boolean {
         if (entries.length() == 0) return true
         for (i in 0 until entries.length()) {
@@ -467,11 +321,6 @@ object AniyomiExtensionManager {
 
     // ---- Install / uninstall ----
 
-    /**
-     * Writes [bytes] as a private extension, validates it by loading it, and
-     * registers one provider per source it publishes. Returns how many
-     * providers were added, or a failure whose message is shown verbatim.
-     */
     suspend fun install(
         context: Context,
         bytes: ByteArray,
@@ -483,9 +332,6 @@ object AniyomiExtensionManager {
             return@withContext fail("File too large (max ${MAX_BYTES / 1024 / 1024}MB)")
         }
         val dir = extensionDir(context)
-        // The package name is only known AFTER the archive is parsed, so the
-        // bytes land in a temp file inside the same directory first (which also
-        // keeps the final rename a same-filesystem move).
         val temp = File(dir, "incoming-${System.nanoTime()}.apk")
         try {
             runCatching {
@@ -558,16 +404,6 @@ object AniyomiExtensionManager {
                     extra = sourceUrl ?: pkgName,
                 )
             }
-            // ONE write that REPLACES every row this package already had. Adding
-            // the new rows one at a time used to leave the old rows behind when a
-            // version published fewer sources (or when the same extension was
-            // installed again), so the provider list grew a second copy of names
-            // the user had already installed — the reported "I installed Anime
-            // World again and now it lists six of the same provider".
-            // Locked read-modify-write (see [AppStore.updateProviders]): the old
-            // rows this replaces are looked up in the store at the moment of the
-            // write, so a provider added while the extension was being unpacked
-            // survives it.
             store.updateProviders { list ->
                 list.filterNot { it.type == ProviderType.ANIYOMI && it.id.startsWith(prefix) } +
                     fresh
@@ -581,11 +417,6 @@ object AniyomiExtensionManager {
         }
     }
 
-    /** Removes every ANIYOMI provider that came from [sourceUrl], plus the
-     *  `.ext` file once no provider references it any more. Returns how many
-     *  installed providers were actually removed — 0 when the source was not
-     *  installed — so the caller never reports a success for an uninstall that
-     *  removed nothing. */
     suspend fun uninstall(context: Context, sourceUrl: String): Int {
         val store = HikariApp.instance.store
         val all = store.providers()
@@ -712,25 +543,6 @@ object AniyomiExtensionManager {
         )
     }
 
-    /**
-     * What an index entry serves — `"manga"`, `"anime"`, or `""` when the
-     * listing genuinely does not say.
-     *
-     * The index format IS the signal, and it is a real one rather than a guess:
-     * Mihon/keiyoushi (the MANGA half of the ecosystem) publishes the modern
-     * shape — `resources.apkUrl`, a string `versionCode`, `extensionLib`,
-     * `sources[].language`/`homeUrl` — because that is the shape Mihon 0.20.1+
-     * reads, while Aniyomi (the ANIME half) still publishes the legacy one: a
-     * bare `apk` FILE NAME, an integer `code`, `sources[].lang`/`baseUrl`. Not
-     * one of those fields differs by accident, and no repo publishes the other
-     * branch's shape.
-     *
-     * It is only a DEFAULT all the same, because one repo CAN hold both kinds —
-     * an extension list is just a list. The Extensions screen therefore overlays
-     * what the app has already INSTALLED on top of it: an entry whose package is
-     * installed as a manga engine is manga whatever its listing looked like, and
-     * that answer needs no heuristic at all.
-     */
     fun contentKindOf(o: JSONObject): String {
         val modern = o.optJSONObject("resources") != null ||
             o.optString("extensionLib").isNotBlank() ||
@@ -738,33 +550,11 @@ object AniyomiExtensionManager {
         return if (modern) "manga" else "anime"
     }
 
-    /**
-     * The entries of a Mihon/Aniyomi extension index, however the repo serves
-     * them.
-     *
-     *  * Aniyomi's own repo serves a BARE ARRAY.
-     *  * **keiyoushi's `index.json` — the one Mihon 0.20.1+ reads — nests them
-     *    under `extensionList.extensions`** (`{"name":"Keiyoushi",
-     *    "signingKey":"…","extensionList":{"extensions":[…]}}`). Missing that key
-     *    is why the Keiyoushi repo listed nothing at all once the real index was
-     *    fetched: the array was there, one level down.
-     *  * Community repos (and mirrors) wrap the same entries in an object —
-     *    `{"extensions":[…]}` or `{"plugins":[…]}` — or key them by package
-     *    name. Demanding an array threw "Invalid index.min.json: Value {…} of
-     *    type JSONObject cannot be converted to JSONArray" at the user, which is
-     *    the error people hit adding an Aniyomi repo whose index is perfectly
-     *    valid.
-     *
-     * Returns null when the text really is not an index.
-     */
     fun indexEntries(text: String): JSONArray? {
         val trimmed = text.trim().removePrefix("\uFEFF").trim()
         if (trimmed.isEmpty()) return null
         runCatching { JSONArray(trimmed) }.getOrNull()?.let { return it }
         val root = runCatching { JSONObject(trimmed) }.getOrNull() ?: return null
-        // The modern shape: `extensionList` is an OBJECT with `extensions`
-        // inside it. (A couple of mirrors ship it as an array directly, so both
-        // are accepted.)
         root.optJSONArray("extensionList")?.let { if (it.length() > 0) return it }
         root.optJSONObject("extensionList")?.let { list ->
             for (inner in listOf("extensions", "plugins", "items", "list")) {
@@ -800,39 +590,8 @@ object AniyomiExtensionManager {
         return null
     }
 
-    /**
-     * A protobuf (`index.pb`) extension index, decoded: the store's own [name]
-     * (keiyoushi's says "Keiyoushi", used for the repo row exactly as a JSON
-     * index's top-level `name` is) and its [entries].
-     */
     class PbIndex(val name: String, val entries: JSONArray)
 
-    /**
-     * Reads a protobuf extension index — the form Mihon 0.20.1+ reads, which the
-     * ecosystem's main repo (keiyoushi) publishes and several repos publish
-     * ALONE, with no JSON sibling at all. A `.pb` link used to be rewritten to a
-     * `.json` the repo never served, so those repos could not be added.
-     *
-     * The schema is Mihon's own `NetworkExtensionStore`
-     * (`data/src/main/java/mihon/data/extension/model/NetworkExtensionStore.kt`
-     * in mihonapp/mihon) and its bytes arrive GZIP-compressed — the file starts
-     * `1f 8b`, and Mihon's `ExtensionStoreService` decompresses before decoding.
-     * Both facts, and every field number below, were checked against a real
-     * keiyoushi index.pb (1377 extensions, every field populated) rather than
-     * assumed.
-     *
-     * The wire format is read here by hand instead of through a serialization
-     * library: it is a handful of field numbers on a fixed schema, so a
-     * hand-written reader has no version-specific behaviour to surprise us with.
-     *
-     * The result is handed back as the MODERN JSON shape the rest of this manager
-     * already reads (`resources.apkUrl`, a string `versionCode`, `extensionLib`,
-     * `contentWarning`, `sources[].language`/`homeUrl`), so installing, icons, the
-     * 18+ flag and the manga/anime split are unchanged: one index format, one
-     * code path.
-     *
-     * Null when the bytes are not a decodable store or carry no extensions.
-     */
     fun pbIndex(bytes: ByteArray): PbIndex? {
         val raw = gunzipIfNeeded(bytes) ?: return null
         val top = pbFields(raw) ?: return null
@@ -907,16 +666,6 @@ object AniyomiExtensionManager {
      *  of a length-delimited field — a string or a nested message). */
     private class PbField(val wireType: Int, val varint: Long, val bytes: ByteArray?)
 
-    /**
-     * Every field of a protobuf message, keyed by field number, in order. Null
-     * when the bytes are not a well-formed message.
-     *
-     * Length-delimited fields keep their raw bytes because the same wire type
-     * carries both strings and nested messages, and only the caller knows which
-     * it is asking for. A field this schema does not declare (the
-     * `Resources.jarUrl = 501` every real entry carries) is parsed and then
-     * simply never looked up.
-     */
     private fun pbFields(msg: ByteArray): Map<Int, List<PbField>>? {
         val out = HashMap<Int, MutableList<PbField>>()
         var i = 0
@@ -1010,13 +759,6 @@ object AniyomiExtensionManager {
         return ""
     }
 
-    /**
-     * Turns whatever the user typed into "Add Aniyomi repo" into a URL. The
-     * index file is `index.min.json`, so a bare repo directory is normalised to
-     * `<dir>/index.min.json` (Aniyomi's repos publish it in a `repo` folder,
-     * e.g. `…/aniyomi-extensions/repo/index.min.json`). Returns null when
-     * nothing sensible could be built.
-     */
     fun resolveRepoUrl(raw: String): String? {
         val text = raw.trim()
         if (text.isBlank()) return null
@@ -1035,10 +777,6 @@ object AniyomiExtensionManager {
             }
         }
         val trimmed = withScheme.trimEnd('/')
-        // A link that already names an index FILE is used as-is — `.json` AND
-        // `.pb`: several repos publish their list only in the binary form, and
-        // appending `/index.min.json` to `…/repo/index.pb` produced a path that
-        // exists nowhere.
         if (trimmed.endsWith(".json", ignoreCase = true) ||
             trimmed.endsWith(".pb", ignoreCase = true)
         ) return trimmed
@@ -1060,30 +798,12 @@ object AniyomiExtensionManager {
         val lang: String,
         val sources: List<AnimeSource>,
     ) {
-        /**
-         * The display name of each source, in [sources] order.
-         *
-         * One Aniyomi extension can bundle several sources (a "multipack"), and
-         * some of them publish several sources under the SAME name. Read
-         * straight from `source.name` those rows were indistinguishable — nine
-         * identical "AnimeWorld India" rows read as the one extension installed
-         * nine times, which is exactly what a user reported. A name more than
-         * one source carries therefore gets Aniyomi's own ` (n)` suffix
-         * (the same shape Aniyomi's index uses for "Jellyfin (1)…(3)"), so every
-         * row in the list says which source it actually is.
-         */
         val labels: List<String> = disambiguateSources(sources, name)
     }
 
     private val cache = ConcurrentHashMap<String, Extension>()
     private val lastFail = ConcurrentHashMap<String, Long>()
 
-    /**
-     * Drops the cached extension for [path] (see [ExtensionRecovery]): the
-     * next call reloads it fresh instead of reusing a wedged object. The
-     * failure backoff goes with it — a stall is not a failed load, and the
-     * very next lookup must be allowed to try the fresh object immediately.
-     */
     fun evict(path: String) {
         cache.remove(path)
         lastFail.remove(path)
@@ -1097,16 +817,6 @@ object AniyomiExtensionManager {
     var lastError: String? = null
         private set
 
-    /**
-     * Why THIS extension could not be loaded, keyed by its APK path.
-     *
-     * [lastError] is one global slot that whichever load finishes last
-     * overwrites, and several extensions load concurrently (Home asks every
-     * installed row at once). It therefore cannot answer "why is this one
-     * blank?", which is exactly the question the Home empty state asks when
-     * every Aniyomi row is missing. The per-extension reason is what turned
-     * "check the WebView, it may be a Cloudflare check" into a real cause.
-     */
     private val loadFailures = ConcurrentHashMap<String, String>()
 
     /** The load failure recorded for this extension's own APK, or null when it
@@ -1131,25 +841,11 @@ object AniyomiExtensionManager {
 
     fun takeErrorDetails(): String = errorDetails.get().toString().trim()
 
-    /**
-     * Records a failed call INTO an extension (a hoster/video fetch that threw)
-     * so the reason can be shown where the empty result is — [lastError] is the
-     * one-line summary, [takeErrorDetails] the full trace. Used by
-     * [AniyomiProvider], which composes many such calls per stream lookup.
-     */
     fun recordError(what: String, e: Throwable? = null) {
         record(what, e)
         lastError = what
     }
 
-    /**
-     * The loaded extension for [file], or null (with [lastError] set). Loads
-     * lazily and caches; a failed load is negative-cached for [FAIL_RETRY_MS]
-     * so a broken extension can't stall every Home refresh.
-     *
-     * BLOCKING (it instantiates extension classes) — never call it on the UI
-     * thread; a call there returns null immediately rather than risking an ANR.
-     */
     fun extensionOf(context: Context, file: File, force: Boolean = false): Extension? {
         val path = file.absolutePath
         if (!force) cache[path]?.let { return it }
@@ -1165,9 +861,6 @@ object AniyomiExtensionManager {
                 return null
             }
         }
-        // One lock PER APK: several providers of the same extension (and the
-        // Extensions screen) can ask for it at once, and each load is a fresh
-        // class-loader commit that must not race another.
         val lock = LoadGate.lockFor(path)
         if (!LoadGate.acquire(lock)) {
             lastError = "The extension loader is busy — try again"
@@ -1187,13 +880,6 @@ object AniyomiExtensionManager {
                 loadFailures.remove(path)
             } else {
                 lastFail[path] = System.currentTimeMillis()
-                // The reason THIS extension failed, captured on the thread that
-                // ran the load (see [loadFailures]) — WITH the full recorded
-                // detail, so the UI can show the unwrapped cause and its frames
-                // ("caused by java.lang.NoClassDefFoundError: …") instead of
-                // only the one-line summary. That summary is all the row used to
-                // carry, which is why a load failure read as
-                // "none of its sources could be loaded" with nothing to act on.
                 val why = loadError.get()
                     ?: lastError
                     ?: "The extension could not be loaded"
@@ -1210,13 +896,6 @@ object AniyomiExtensionManager {
     fun sourceOf(context: Context, file: File, index: Int): AnimeSource? =
         extensionOf(context, file)?.sources?.getOrNull(index)
 
-    /**
-     * The website an extension actually reads — its first source's `baseUrl`
-     * (the Home screen's globe button needs a target). Deriving it means
-     * loading the extension, so this caches aggressively and returns null on
-     * the UI thread (loading a dex there would ANR — the same trade-off CS3
-     * makes). [AniyomiProvider] warms the cache from its IO paths.
-     */
     fun siteUrlOf(config: ProviderConfig): String? {
         siteCache[config.id]?.let { return it }
         if (Looper.myLooper() == Looper.getMainLooper()) return null
@@ -1252,14 +931,6 @@ object AniyomiExtensionManager {
     /** Icons already resolved per provider id (see [iconFallback]). */
     private val iconCache = ConcurrentHashMap<String, String>()
 
-    /**
-     * The favicon of the site an installed extension reads, for a provider row
-     * that has no icon of its own. An Aniyomi extension carries no artwork at
-     * all — its only identity is the site it scrapes — so the favicon is the
-     * honest answer, exactly the trick the CloudStream repos themselves use.
-     * BLOCKING (deriving the host loads the extension), so call it from IO; the
-     * result is cached per provider.
-     */
     fun iconFallback(config: ProviderConfig): String? {
         iconCache[config.id]?.let { return it }
         // ConcurrentHashMap forbids null values — only cache hits.
@@ -1271,12 +942,6 @@ object AniyomiExtensionManager {
     // ---- The actual load ----
 
     private fun load(context: Context, file: File): Extension? {
-        // The DI container an extension resolves its own dependencies out of
-        // (`Injekt.get<Application>()` in its constructor, which is why a
-        // failure here shows up as an `InvocationTargetException: null`). Cheap
-        // when the scope has not changed — an identity compare — and the only
-        // thing that repairs an extension loader whose Injekt scope was
-        // replaced after startup.
         runCatching { HikariApp.instance.ensureAniyomiInjekt() }
         errorDetails.get().setLength(0)
         loadError.set(null)
@@ -1337,11 +1002,6 @@ object AniyomiExtensionManager {
         if (sources.isEmpty()) {
             return failReason("$name: none of its sources could be loaded")
         }
-        // Deduplicate BEFORE anything counts the sources: a list that names the
-        // same source twice (a factory appending to a shared list, a class
-        // repeated in the extension's metadata) is one source, and keeping the
-        // copies is how a single-source extension produced a stack of identical
-        // provider rows.
         val unique = sources.distinctBy { sourceKey(it) }
 
         val langs = unique.map { it.lang }.filter { it.isNotBlank() }.toSet()
@@ -1363,19 +1023,6 @@ object AniyomiExtensionManager {
         )
     }
 
-    /**
-     * Instantiates one class name, mirroring Aniyomi's loader: an `AnimeSource`
-     * is used directly, an `AnimeSourceFactory` is asked for its sources. A
-     * `LinkageError` is retried with a plain [PathClassLoader] (parent-first),
-     * because a child-first loader can shadow a class the extension itself
-     * ships — the retry is exactly what the real app does.
-     *
-     * NOTE: a class whose superclass declares an abstract method its
-     * extensions-lib didn't have (a 14-lib source missing, say,
-     * `hosterListSelector`) still instantiates — ART only fails when that
-     * method is actually called, which surfaces as an `AbstractMethodError`
-     * from [AniyomiProvider] instead of an unintelligible install failure.
-     */
     private fun instantiate(
         context: Context,
         className: String,
@@ -1426,11 +1073,6 @@ object AniyomiExtensionManager {
     private fun isExtension(info: PackageInfo): Boolean =
         info.reqFeatures.orEmpty().any { it.name == EXTENSION_FEATURE }
 
-    /**
-     * On Android 13+ the `ApplicationInfo` from `getPackageArchiveInfo` has no
-     * `sourceDir`, which breaks everything that reads the APK by path (the
-     * class loader, `loadIcon`). Same fix-up as Aniyomi's loader.
-     */
     private fun ApplicationInfo.fixBasePaths(apkPath: String) {
         if (sourceDir == null) sourceDir = apkPath
         if (publicSourceDir == null) publicSourceDir = apkPath
@@ -1441,10 +1083,6 @@ object AniyomiExtensionManager {
     private fun libVersionOf(info: PackageInfo): Double? {
         metaInt(info, META_EXT_LIB).takeIf { it != 0 }?.let { return it.toDouble() }
         val name = info.versionName ?: return null
-        // The first segment is the major. `substringBeforeLast('.')` read
-        // "16.1.2" as 16.1 and "1.4.36" as 1.4 — the second is not a lib
-        // version at all, and only the major is ever compared (see
-        // [MIN_LIB_MAJOR]).
         return name.substringBefore('.').toDoubleOrNull()
     }
 
@@ -1494,14 +1132,6 @@ object AniyomiExtensionManager {
     }
 
     private fun record(what: String, e: Throwable? = null) {
-        // The CAUSE, not the wrapper. An extension's constructor that throws is
-        // reported by the JVM as an `InvocationTargetException` whose message is
-        // null — the useful line ("NetworkHelper could not be created",
-        // "NoClassDefFoundError: …", "InjektionException: …") is one level
-        // deeper. Printing only the wrapper is what made "ChineseAnime could not
-        // be instantiated: java.lang.reflect.InvocationTargetException: null"
-        // the whole story, with nothing to act on. The unwrapped cause is
-        // printed with its own frames, so the next report names the real fault.
         val line = buildString {
             append(what)
             if (e != null) {

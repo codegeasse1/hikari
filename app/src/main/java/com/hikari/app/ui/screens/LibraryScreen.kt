@@ -74,24 +74,12 @@ import com.hikari.app.ui.shape
 import com.hikari.app.ui.rememberVisibleItems
 import kotlinx.coroutines.launch
 
-/**
- * The Library: every title saved with the player's heart, filed into the user's
- * own categories.
- *
- * The category chips above the grid are a FILTER, not folders — a title can be
- * both a Series and an Action, so it appears under both chips. "Move to" on a
- * card (and the Library button on a detail page) opens the same picker, and the
- * picker can invent a new category on the spot.
- */
 @Composable
 fun LibraryScreen(nav: NavHostController, embedded: Boolean = false) {
     val context = LocalContext.current
     val app = context.applicationContext as HikariApp
     val scope = rememberCoroutineScope()
 
-    // Remembered Flow instances — an inline `store.favoritesFlow()` is a NEW Flow
-    // on every recomposition, so collectAsState would re-subscribe from scratch
-    // and reset to `initial` (empty) each time.
     val favoritesFlow = remember { app.store.favoritesFlow() }
     val favorites by favoritesFlow.collectAsState(initial = emptyList())
     // The store appends a newly-saved title at the END of the list, so the
@@ -104,9 +92,6 @@ fun LibraryScreen(nav: NavHostController, embedded: Boolean = false) {
     val filed by filedFlow.collectAsState(initial = emptyMap())
 
     var activeCategory by remember { mutableStateOf<String?>(null) }
-    // Type sections: Anime / Movies / Series / Manga (null = everything).
-    // Horizontally scrollable pills above the grid, like the Library |
-    // History | Downloads strip — the shelf is one page per type.
     var activeType by remember { mutableStateOf<String?>(null) }
     var moving by remember { mutableStateOf<MediaItem?>(null) }
     var managing by remember { mutableStateOf(false) }
@@ -150,9 +135,6 @@ fun LibraryScreen(nav: NavHostController, embedded: Boolean = false) {
             else -> base
         }
     }
-    // The saved items the adult-content switch allows (see [NsfwGate]): the grid
-    // AND its empty state read this, so hiding an adult title cannot leave a blank
-    // grid under a heading that says otherwise.
     val trackerSource by app.store.trackerLibrarySourceFlow().collectAsState(initial = "nuvio")
     var remoteShelves by remember { mutableStateOf<List<TrackerLibraryRepository.Shelf>>(emptyList()) }
     var remoteError by remember { mutableStateOf<String?>(null) }
@@ -205,9 +187,6 @@ fun LibraryScreen(nav: NavHostController, embedded: Boolean = false) {
             Column(Modifier.padding(bottom = 2.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
-                        // [embedded] = drawn inside the merged My Stuff tab,
-                        // whose strip already names the section. The big title
-                        // would be a second heading over the same word.
                         if (!embedded) {
                             Text(
                                 tr("Library"),
@@ -232,9 +211,6 @@ fun LibraryScreen(nav: NavHostController, embedded: Boolean = false) {
                 }
             }
         }
-        // Type sections row — All / Anime / Movies / Series / Manga — always
-        // visible when there is anything to filter (saved, tracker or manga),
-        // and above the shelves so the filter is found without scrolling.
         if (saved.isNotEmpty() || hasManga || remoteShelves.isNotEmpty()) {
             item(key = "library-type", span = { GridItemSpan(maxLineSpan) }) {
                 LazyRow(
@@ -312,9 +288,6 @@ fun LibraryScreen(nav: NavHostController, embedded: Boolean = false) {
                             modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                             horizontalArrangement = Arrangement.spacedBy(12.dp),
                         ) {
-                            // One horizontal line: the first 12 posters, then a
-                            // Show-all tile when the shelf holds more — the full
-                            // shelf opens as a 3-per-line catalogue grid.
                             items(shelf.items.take(12), key = { it.uniqueId }) { item ->
                                 TrackerLibraryCard(item = item, onClick = { openTrackerItem(nav, item) })
                             }
@@ -338,10 +311,6 @@ fun LibraryScreen(nav: NavHostController, embedded: Boolean = false) {
         }
 
         if (hasManga && (activeType == null || activeType == "manga")) {
-            // Followed manga, beside the video library: "My Stuff" is where the
-            // things that are yours live, and a manga is one of them. Only added
-            // when there is something to show, so an install with no manga keeps
-            // the video library exactly as it was.
             item(key = "library-manga", span = { GridItemSpan(maxLineSpan) }) {
                 MangaLibraryShelf(nav)
             }
@@ -411,9 +380,6 @@ fun LibraryScreen(nav: NavHostController, embedded: Boolean = false) {
                 }
             }
         } else {
-            // Saved titles can repeat (the same film filed twice, or stored
-            // twice by an older build): a duplicated Lazy key is a crash, so the
-            // grid is built from the distinct set.
             items(visibleSaved, key = { it.uniqueId }) { item ->
                 LibraryCard(
                     item = item,
@@ -519,9 +485,6 @@ private fun LibraryCard(
     val badge = rememberPosterScore(item, style)
     Column(
         Modifier
-            // Not clipped to the poster rounding: at high corner values the
-            // curve cut into the title's first and last letters. The artwork
-            // rounds itself.
             .clickable(onClick = onClick)
     ) {
         PosterArt(
@@ -620,9 +583,6 @@ private fun TrackerLibraryCard(item: MediaItem, onClick: () -> Unit) {
 
 /** One tracker row's door: manga rows search the manga engines, everything else opens the video detail. */
 private fun openTrackerItem(nav: NavHostController, item: MediaItem) {
-    // Manga rows (AniList / MAL / Kitsu / Shikimori / Simkl manga shelves)
-    // open in the manga section: the title is searched across every
-    // installed manga engine, and the match opens from there.
     if (item.rawType == "manga") {
         Routes.safeNavigate(nav, Routes.mangaSearch(item.title))
     } else {
@@ -677,12 +637,6 @@ private fun ShowAllTile(remaining: Int, onClick: () -> Unit) {
     }
 }
 
-/**
- * One tracker shelf as a full catalogue grid (3 posters per line, like the
- * extension catalogue): every shelf row's "Show all" lands here, so a shelf
- * of 80 manga is browsable without sideways scrolling. Back returns to the
- * Library row it came from.
- */
 @Composable
 fun TrackerShelfScreen(nav: NavHostController, source: String, shelfKey: String, title: String, filter: String = "") {
     val context = LocalContext.current

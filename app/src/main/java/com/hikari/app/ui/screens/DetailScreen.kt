@@ -335,9 +335,6 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 ?: servers[0]
             if (src.url.isBlank()) continue
             val label = if (ep.season > 1) "S" + ep.season + " E" + ep.number else "E" + ep.number
-            // The task id is per episode: a blank provider episode id used to
-            // collapse the whole batch onto ONE id, so every enqueue replaced
-            // the last and only a single download survived.
             val epKey = ep.id.ifBlank { "s" + ep.season + "e" + ep.number }
             val task = com.hikari.app.download.DownloadTask(
                 id = com.hikari.app.download.DownloadTask.idFor(item.providerId.ifBlank { "detail" }, item.id, epKey, com.hikari.app.download.DownloadKind.OFFLINE),
@@ -383,47 +380,20 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
     private val _episodesLoaded = MutableStateFlow(false)
     val episodesLoaded: StateFlow<Boolean> = _episodesLoaded.asStateFlow()
 
-    /** True when the episode lookup came back empty even after every retry —
-     *  i.e. the extension could not answer, rather than "this show has no
-     *  episodes". The page shows a real, tappable "couldn't load" line for that
-     *  instead of the flat "No episode list available.", which is what made a
-     *  cold plugin look like an empty series (see [loadEpisodesFor]). */
     private val _episodesFailed = MutableStateFlow(false)
     val episodesFailed: StateFlow<Boolean> = _episodesFailed.asStateFlow()
 
-    /**
-     * A Vega title's packs (audio variants, seasons, quality rows) in provider
-     * order, for the picker's dropdown. The real Vega app shows exactly this
-     * list and only ever opens the picked entry (`activeSeason`); the episodes
-     * below are that entry's answer, so switching packs actually switches the
-     * list instead of re-filtering one merged blob.
-     */
     private val _vegaPacks =
         MutableStateFlow<List<com.hikari.app.providers.vega.VegaPack>>(emptyList())
     val vegaPacks: StateFlow<List<com.hikari.app.providers.vega.VegaPack>> = _vegaPacks.asStateFlow()
     private val _vegaPackIndex = MutableStateFlow(0)
     val vegaPackIndex: StateFlow<Int> = _vegaPackIndex.asStateFlow()
 
-    /**
-     * What each generic-titled pack holds (seasons + episode count), keyed by
-     * pack index. The picker turns these into "Season 3 • 12 episodes"-style
-     * labels for the mirror rows whose own titles say nothing ("Source 1") —
-     * the Vega app's entries name their season, so these stand in where the
-     * provider did not. Empty until the pack answers arrive, and real titles
-     * always win over a summary.
-     */
     private val _vegaPackSummaries =
         MutableStateFlow<Map<Int, com.hikari.app.providers.vega.VegaPackSummary>>(emptyMap())
     val vegaPackSummaries: StateFlow<Map<Int, com.hikari.app.providers.vega.VegaPackSummary>> =
         _vegaPackSummaries.asStateFlow()
 
-    /**
-     * A Vega movie's playable quality rows in provider order, for the quality
-     * picker under the Play row. Picking one resolves Play through THAT row's
-     * link (see `selectedLink` in the provider) instead of always the first
-     * row — which is why a title whose first row is dead played nowhere while
-     * the Vega app played its other rows fine.
-     */
     private val _vegaMovieOptions =
         MutableStateFlow<List<com.hikari.app.providers.vega.VegaMovieOption>>(emptyList())
     val vegaMovieOptions: StateFlow<List<com.hikari.app.providers.vega.VegaMovieOption>> =
@@ -434,20 +404,6 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
     /** The page's own "retry the episode list" tap (see [retryEpisodes]). */
     private var episodeRetryJob: Job? = null
 
-    /**
-     * The page's own stream prefetch (see [prefetchFirstStreams]).
-     *
-     * Held so that a REAL Play/episode tap can cancel it. The prefetch is a
-     * full stream pass — inside one Aniyomi extension that is a walk over up to
-     * eight hosters, up to half a minute — and it runs against the SAME
-     * extension the tap needs. Letting it run put the tap's own lookup behind
-     * work the user had just superseded: the reported "it takes almost 15
-     * seconds" on Aniyomi/SkyStream, where the tap's search waited for the
-     * prefetch's search to finish first. Cancelling costs nothing — the
-     * servers the prefetch had already found are on the live feed, which
-     * [openStreams] resets anyway — and the tap's own lookup then runs
-     * immediately.
-     */
     private var prefetchJob: Job? = null
 
     /** Starts the page's stream prefetch, superseding any earlier one. Held
@@ -468,17 +424,6 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
         prefetchJob = null
     }
 
-    /**
-     * Which episode load is the live one.
-     *
-     * Every load that can touch the episode state takes a ticket: `load()` for
-     * its initial pass, `retryEpisodes()` for the page's own retry, and the
-     * partial updates a streaming lookup publishes while it runs. Writes are
-     * only applied when the ticket is still current. Without this, a
-     * superseded pass could land its empty result on a NEWER pass's page — the
-     * "Episodes (0) — No episode list available." that sat over a series whose
-     * episodes were being fetched right then, and then filled in seconds later.
-     */
     @Volatile
     private var episodeGeneration = 0
 
@@ -505,21 +450,6 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
     private val _activeProviderId = MutableStateFlow("")
     val activeProviderId: StateFlow<String> = _activeProviderId.asStateFlow()
 
-    /**
-     * Finds an installed provider that carries one of [titles], for a page whose
-     * origin provider id no longer exists. Local History is checked first
-     * (instant, no network), then the installed providers of the same engine (a
-     * renamed plugin usually re-registers the same sources), then the rest —
-     * bounded to a handful of searches so this can never become a long stall.
-     * Returns null when nothing matches, which keeps the old "Provider not
-     * found" state.
-     *
-     * A LIST of names, because a TMDB row is displayed under a name its
-     * extensions do not know (the app's TMDB language renamed it): every name
-     * the item is known by is tried, and any of them counts as a match. Trying
-     * only the display name is exactly what dead-ended a Spanish-language
-     * install on a title every other language finds.
-     */
     private suspend fun remapMissingProvider(missingId: String, titles: List<String>): String? {
         val names = titles.map { it.trim() }.filter { it.isNotBlank() }.distinct()
         if (names.isEmpty()) return null
@@ -612,30 +542,9 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
     private val _extras = MutableStateFlow<TitleExtras?>(null)
     val extras: StateFlow<TitleExtras?> = _extras.asStateFlow()
 
-    /** The coloured rating badges (IMDb / Rotten Tomatoes / Metacritic /
-     *  Letterboxd / TMDB) for the current title. Filled in two steps: the TMDB
-     *  badge the details lookup already produced first, then whatever the
-     *  review-site lookup found (see [Ratings]). Empty until then — the row
-     *  simply isn't there. */
     private val _ratings = MutableStateFlow<List<TitleRating>>(emptyList())
     val ratings: StateFlow<List<TitleRating>> = _ratings.asStateFlow()
 
-    /** Streams resolved ahead of time (first episode / movie) so tapping Play
-     *  or the first episode starts instantly instead of waiting 20-30s for
-     *  extraction. Keyed by the target id.
-     *
-     *  The storage is [StreamCache] — a PROCESS-WIDE object, not a field here.
-     *  This screen is thrown away and recreated every time the user leaves it
-     *  (back out of the player, reopen the same title), and a cache that died
-     *  with it meant every return re-ran the whole extraction: the "tap Play,
-     *  watch Finding the best server… for a minute" report. The list is
-     *  TIMESTAMPED because the links providers hand out expire —
-     *  4KHDHub/hubcloud's direct links are signed workers.dev URLs whose
-     *  `<token>::<sig>` part rotates per mirror. Reusing a list extracted
-     *  minutes ago (or during a previous play) handed the player dead links, so
-     *  every server 403'd and the app reported "Playback failed" / "No playable
-     *  sources found" for a title that plays fine — the classic "it worked the
-     *  first time, now it errors" report. */
 
     private val _streamsReady = MutableStateFlow(false)
     val streamsReady: StateFlow<Boolean> = _streamsReady.asStateFlow()
@@ -646,20 +555,6 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
     private val _liveStreams = MutableStateFlow<List<StreamSource>>(emptyList())
     val liveStreams: StateFlow<List<StreamSource>> = _liveStreams.asStateFlow()
 
-    /**
-     * Straight-to-the-player hand-off for servers that arrive LATE, set by the
-     * play flow for the session it is playing.
-     *
-     * The screen's own live collector is cancelled the moment its pass ends, so
-     * it can never forward a server found afterwards — and servers ARE still
-     * being found afterwards: a pass that ran out of budget hands the
-     * extensions it never reached to a background sweep that keeps searching
-     * while the video plays (see
-     * [com.hikari.app.data.ContentRepository.startSweepIfNeeded]). The feed
-     * every provider response flows through calls this sink, so a late find
-     * reaches the player's "Select server" list exactly like one that arrived
-     * in time.
-     */
     @Volatile
     var liveSink: (suspend (List<StreamSource>) -> Unit)? = null
 
@@ -680,12 +575,6 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             it.config.enabled &&
                 (it.config.type == ProviderType.STREMIO ||
                     it.config.id == item.providerId ||
-                    // SkyStream plugins carry their own search, so every
-                    // installed one is asked by title through the cross pass
-                    // (see ContentRepository.crossExtensionTargets).
-                    // SkyStream plugins and Aniyomi extensions carry their own
-                    // search, so every one installed is asked by title through
-                    // the cross pass (see ContentRepository.crossExtensionTargets).
                     it.config.type == ProviderType.SKYSTREAM ||
                     it.config.type == ProviderType.ANIYOMI ||
                     (it.config.type == ProviderType.NUVIO &&
@@ -694,18 +583,10 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun recordOutcome(result: List<StreamSource>, item: MediaItem) {
         _searchedProviders.value = streamTargets(item).size
-        // The servers' own names are the only real quality data this app ever
-        // sees ("HdHub 4K", "NetMirror 720p"), so the completed search files the
-        // best of them for this title — the poster's optional quality badge
-        // reads it back (see [com.hikari.app.data.TitleQuality]).
         if (result.isNotEmpty()) {
             runCatching { com.hikari.app.data.TitleQuality.remember(item, result) }
         }
         if (result.isEmpty()) {
-            // Attribute the failure to the ORIGIN provider only — a global
-            // "last error" from a different video (e.g. iStreamFlare on the
-            // hstream title) used to leak into every other extension's "no
-            // sources" message and made the whole app look broken.
             val origin = manager.byId(item.providerId)
             val originMessage = when (origin?.config?.type) {
                 ProviderType.STREMIO ->
@@ -738,10 +619,6 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                     com.hikari.app.providers.IptvProvider.iptvErrors[item.providerId]
                 else -> null
             }
-            // A Cloudflare wall is never surfaced here: the Home screen reports
-            // it in Hikari's own words (see CloudflareVerifier) and the raw
-            // extension wording ("Cloudflare blocked. Go to Settings…") must
-            // not leak into the server list or the player's diagnostics.
             _streamError.value = originMessage?.takeIf {
                 it.isNotBlank() && !com.hikari.app.net.CloudflareVerifier.isVerificationMessage(it)
             }
@@ -751,12 +628,6 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun load(providerId: String, type: MediaType, mediaId: String, title: String, posterUrl: String?, rawType: String) {
-        // Keeps the page's meta/episode/source work alive if the user leaves the
-        // app (see [com.hikari.app.work.BackgroundWork]) — the process would
-        // otherwise be frozen mid-fetch. The token also carries the way to STOP
-        // this page's work: when the user closes the app every registered task is
-        // cancelled directly rather than left running for minutes under a
-        // "Hikari keeps running…" notification (see BackgroundWork.cancelAll).
         var loadJob: kotlinx.coroutines.Job? = null
         val work = com.hikari.app.work.BackgroundWork.begin(
             "Opening \"${title.take(60)}\"",
@@ -771,38 +642,10 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             _related.value = emptyList()
             _similar.value = emptyList()
             _extras.value = null
-            // The provider this page was opened from may no longer exist: an
-            // extension can be renamed or removed, and a CloudStream plugin
-            // re-registering its providers REINDEXES them (its stored ids are
-            // `cs3|<file name>|<index>`), which invalidates ids saved in
-            // History, Library and share links. Dead-ending the page on
-            // "Provider not found" punished the user for that, so find the same
-            // title in the installed providers and carry on from there.
-            // A TMDB-sourced row arrives carrying only its DISPLAY name, which
-            // the app's TMDB language may have localized ("Vengadores:
-            // Endgame"). No extension indexes that name — they all index the
-            // original one — so both names are resolved from TMDB up front: the
-            // page keeps showing the localized one, and every provider lookup
-            // (the remap below, and the whole source search the page is about to
-            // start) searches the ORIGINAL one. This is the fix for "I switched
-            // the TMDB language and now there is no extension for this movie",
-            // which was the search asking 250 repos for a name none of them has.
-            // ONLY for a genuine TMDB row. A dead extension id is remapped by
-            // name alone — probing TMDB with an extension's own numeric id would
-            // invent an unrelated "original title" and then search 250 repos for
-            // it, which is far worse than the problem being fixed.
             val isTmdbRow = providerId == "tmdb" || rawType.equals("tmdb", ignoreCase = true)
             val isTrackerRow = providerId.lowercase() in setOf(
                 "anilist", "simkl", "mal", "kitsu", "shikimori", "trakt"
             )
-            // Tracker library rows are virtual: their provider id identifies the
-            // tracker account, not an installed playback extension. Keep the
-            // detail page alive and let ContentRepository resolve the title
-            // through the installed playback providers.
-            // A live TV channel's NAME is not a title any database knows: the
-            // English-name lookup below searched TMDB with "Sony TV HD" and
-            // "Pardesi TV" for nothing. IPTV items keep their own name as the
-            // name every provider lookup uses (see IptvMark).
             val isIptv = com.hikari.app.data.IptvMark.isIptvProvider(providerId)
             val tmdbNames = if (isTmdbRow) {
                 withTimeoutOrNull(6_000) {
@@ -813,12 +656,6 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 ?: if (isIptv) null else englishSearchName(title, isTmdbRow)
             val lookupNames = listOfNotNull(title.takeIf { it.isNotBlank() }, originalName)
                 .distinctBy { it.lowercase() }
-            // Tracker rows are virtual catalogue entries (AniList/Simkl/MAL/…): their
-            // id is the TRACKER's numeric id, which no installed extension can
-            // interpret. Remapping one onto an extension kept that numeric id and
-            // the extension answered with an unrelated title's details/episodes
-            // (wrong show, wrong seasons) — so tracker rows always stay virtual
-            // and resolve by title through the installed providers instead.
             val activeProvider = if (manager.byId(providerId) != null || isTrackerRow) {
                 providerId
             } else {
@@ -826,9 +663,6 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             }
             _activeProviderId.value = activeProvider
             if (manager.byId(activeProvider) == null && !isTmdbRow && !isTrackerRow) {
-                // Only reached when the remap above could not find the title in
-                // any installed provider either — i.e. the extension really is
-                // gone. Say what to do about it instead of a bare "not found".
                 _error.value =
                     "The extension this title came from is no longer installed. " +
                         "Install it again from Sources & Extensions, or open the " +
@@ -837,24 +671,6 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 _episodesLoaded.value = true
                 return@launch
             }
-            // A TMDB row with no matching extension keeps its page. It was NEVER
-            // from an extension — it is an imported list, a TMDB catalog, a
-            // franchise or a Similar cell — so "the extension this title came
-            // from is no longer installed" is not just unhelpful, it is untrue,
-            // and it dead-ended the page on top of a record the app already has
-            // in full: poster, overview, details, ratings, cast, trailers, the
-            // franchise and Related/Similar all come from TMDB and none of them
-            // needs a provider. The source search below is not affected either:
-            // a lookup for an item whose provider is not installed still asks
-            // EVERY other installed extension by title (see ContentRepository's
-            // cross pass), so a server is still found whenever one of them
-            // carries the title — and when none does, the page reports the
-            // ordinary "no playable server found" rather than a claim about an
-            // extension that never existed.
-            // The catalog row already carries the poster — render the page
-            // immediately instead of waiting on the origin's /meta (which may
-            // be slow or minimal). rawType keeps the addon's own type string
-            // for meta/episode/stream URLs.
             val base = MediaItem(
                 activeProvider, mediaId, title, type,
                 posterUrl = posterUrl,
@@ -875,10 +691,6 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             if (!com.hikari.app.data.IptvMark.of(base)) {
                 launch { loadShelves(base, sgFast) }
             }
-            // A fresh page starts on Vega pack 0 / quality row 0 — the provider
-            // default — and it is set SYNCHRONOUSLY here so the episode lookup
-            // starting below can never read a previous visit's pick for the
-            // same title.
             _vegaPacks.value = emptyList()
             _vegaMovieOptions.value = emptyList()
             _vegaPackSummaries.value = emptyMap()
@@ -890,25 +702,10 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                     p.setSelectedLink(mediaId, null)
                 }
             }
-            // Movies: start the multi-provider source search NOW — before the
-            // origin's /meta and episode fetches — so the first server is
-            // already resolving while the page renders. Previously the search
-            // only began after meta+episodes landed, which is why tapping Play
-            // sat on a spinner while the (slow) providers were still warming up.
             if (type != MediaType.SERIES) {
                 startPrefetch(base)
             }
-            // The origin's own /meta and the shelf lookups (TMDB extras, cast,
-            // trailers, ratings, Related/Similar) are INDEPENDENT of the episode
-            // list, so all of them start together: a page used to show its score
-            // strip and its Related row only after the episodes had finished
-            // (the shelves were launched after the episode await), which is the
-            // reported "it shows no IMDb/TMDB rating and no similar titles on
-            // some titles". Now the page fills in from three directions at once.
             val metaDeferred = async { runCatching { repo.metaFor(base) }.getOrDefault(base) }
-            // Ticket for this load: stale async work (episodes, shelves) can
-            // never repaint a newer page. Defined up here so the shelves
-            // upgrade pass below can share it.
             val gen = newEpisodeGeneration()
             // IPTV: a live channel gets NO TMDB shelves — no ratings strip, no
             // Cast/Trailers, and above all no Related/Similar row, which for a
@@ -925,14 +722,6 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                     loadShelves(fullMeta, newShelvesGeneration())
                 }
             }
-            // The 3-second rule: the header and the episode list are on screen
-            // within 3 seconds — TMDB-enriched when TMDB answered in time, the
-            // extension's own data otherwise. The origin's /meta is usually the
-            // slow part (a cold runtime, a Stremio race, an anime enrichment),
-            // so the page never waits on it: whatever is ready at 3s is what
-            // the episodes are asked for, and the full meta repaints the header
-            // when it lands. Guarded by the episode generation, so a stale load
-            // can never repaint a newer page.
             val fastMeta = withTimeoutOrNull(3_000L) { metaDeferred.await() }
             launch {
                 val full = runCatching { metaDeferred.await() }.getOrNull() ?: return@launch
@@ -990,26 +779,9 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                         val list = loadEpisodesFor(meta, gen)
                         if (gen == episodeGeneration) {
                             _episodes.value = list
-                            // The catalog row never knew the type (UNKNOWN) and
-                            // the origin's meta did not say either — but two or
-                            // more episodes ARE a series. Correct the item so
-                            // the Play button, the Library filing and History
-                            // all treat it as one (see [detailIsSeries], which
-                            // already rendered it as a series from the list
-                            // alone). A single row proves nothing (films are
-                            // listed as one entry by some providers), so those
-                            // keep whatever type they arrived with.
-                            //
-                            // And the reverse (see [screenTypeFor]): a
-                            // site-scraper "series" with exactly ONE episode is
-                            // a film wearing the wrong tag (Series chip, "Ep 1"
-                            // pill, Episodes (1) page with Play E1) — it plays
-                            // and files as a movie. Nuvio/Stremio/TMDB rows are
-                            // exempt inside the helper: their namespaces type
-                            // correctly.
                             val cur = _meta.value
                             if (cur != null) {
-                                val fixed = screenTypeFor(cur, list.size)
+                                val fixed = if (list.isEmpty() && com.hikari.app.data.SingleVideoEvidence.isSingle(cur.uniqueId)) MediaType.MOVIE else screenTypeFor(cur, list.size)
                                 if (fixed != cur.type) _meta.value = cur.copy(type = fixed)
                                 else if (list.size >= 2 && cur.type != MediaType.SERIES) {
                                     _meta.value = cur.copy(type = MediaType.SERIES)
@@ -1039,72 +811,46 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 // No servers: a genuinely broken series, which keeps the
                 // retry UI it already had.
                 if (gen == episodeGeneration) {
-                    val settled = _meta.value
-                    if (settled != null &&
-                        settled.type != MediaType.MOVIE &&
-                        _episodes.value.isNullOrEmpty() &&
-                        _episodesFailed.value &&
-                        isSiteScraperProviderId(settled.providerId)
-                    ) {
-                        val probe = runCatching {
-                            withTimeoutOrNull(MOVIE_PROBE_MS) {
-                                resolveStreams(settled.copy(type = MediaType.MOVIE), null)
-                            }?.servers
-                        }.getOrNull().orEmpty()
-                        if (probe.isNotEmpty() &&
-                            (settled.type == MediaType.UNKNOWN ||
-                                probe.any { it.providerId == settled.providerId }) &&
-                            gen == episodeGeneration
-                        ) {
-                            _meta.value = settled.copy(type = MediaType.MOVIE)
-                            _episodesFailed.value = false
-                            com.hikari.app.data.Logs.log(
-                                "Episodes",
-                                "\"${settled.title}\" plays movie-style " +
-                                    "(${probe.size} server(s)) — corrected to movie",
-                            )
-                        }
-                    }
+                    runMovieProbeIfSingle(gen)
                 }
             }
-            // Close the IO scope before continuing with the page-level work.
-            // Without this brace all following ViewModel methods became local
-            // functions, which cascaded into hundreds of misleading unresolved
-            // references and caused the build failures from 889 onward.
             val item = _meta.value ?: base
             // The Vega picker rows (packs / quality rows) arrive on their own —
             // the page never waits for them, and pack 0 is already showing.
             viewModelScope.launch { loadVegaPacks(item) }
-            // (The shelves — ratings, cast, trailers, Related/Similar — were
-            // started above, in parallel with the episode list: they are a bonus
-            // that must never gate the page, but they must also never wait for
-            // the episodes to finish before they begin.)
             startPrefetch(item)
         }
         loadJob?.invokeOnCompletion { com.hikari.app.work.BackgroundWork.end(work) }
     }
 
-    /**
-     * The episode list for [item], asked again when it comes back empty.
-     *
-     * An empty answer used to be FINAL for the whole screen: one cold plugin
-     * runtime (an Aniyomi extension pays an APK class load before its first
-     * answer; a .hiki/.cs3 plugin spins its runtime and its site session up) or
-     * one dropped request put "Episodes (0) — No episode list available." on a
-     * series that plainly has episodes — and only closing and reopening the app
-     * cleared it, which is precisely the reported "sometimes I click a series and
-     * it shows no episode, and it is fine after I restart the app": the retry the
-     * user performed by hand was really the FIRST attempt against a warm runtime.
-     *
-     * So the lookup is retried here instead, with a pause long enough for a cold
-     * runtime to finish coming up. When even the retries come back empty,
-     * [episodesFailed] is set and the page offers a tappable retry rather than a
-     * sentence that reads like the show has no episodes at all.
-     *
-     * Cancellation is NEVER swallowed. `runCatching` around this call used to do
-     * exactly that: a screen left mid-load wrote an empty list, i.e. a
-     * "no episodes" verdict for a lookup that had simply been cancelled.
-     */
+    private suspend fun runMovieProbeIfSingle(gen: Int) {
+        val settled = _meta.value
+        if (settled == null ||
+            settled.type == MediaType.MOVIE ||
+            !_episodes.value.isNullOrEmpty() ||
+            !_episodesFailed.value ||
+            !isSiteScraperProviderId(settled.providerId)
+        ) return
+        val probe = runCatching {
+            withTimeoutOrNull(MOVIE_PROBE_MS) {
+                resolveStreams(settled.copy(type = MediaType.MOVIE), null)
+            }?.servers
+        }.getOrNull().orEmpty()
+        if (probe.isNotEmpty() &&
+            (settled.type == MediaType.UNKNOWN ||
+                probe.any { it.providerId == settled.providerId }) &&
+            gen == episodeGeneration
+        ) {
+            _meta.value = settled.copy(type = MediaType.MOVIE)
+            _episodesFailed.value = false
+            com.hikari.app.data.Logs.log(
+                "Episodes",
+                "\"${settled.title}\" plays movie-style " +
+                    "(${probe.size} server(s)) — corrected to movie",
+            )
+        }
+    }
+
     private suspend fun loadEpisodesFor(item: MediaItem, gen: Int): List<Episode> {
         // A movie (or an item whose type is still unknown) has no episode list
         // to retry — one ask, and its answer stands.
@@ -1117,12 +863,6 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             val at = System.currentTimeMillis()
             got = try {
                 repo.episodesFor(item) { partial ->
-                    // A list exists NOW (the extension answered, or a borrowed
-                    // one landed mid-sweep): paint it immediately and keep the
-                    // spinner running for the finishing touches. This is what
-                    // makes the episodes appear in about a second instead of
-                    // after the whole lookup — including the TMDB name pass —
-                    // had finished.
                     if (partial.isNotEmpty() && gen == episodeGeneration) {
                         _episodes.value = partial
                     }
@@ -1154,9 +894,6 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 "\"${item.title}\": no episode list on attempt $attempt of $tries " +
                     "(${System.currentTimeMillis() - at}ms, type ${item.type})",
             )
-            // Nothing on this attempt: the page keeps its spinner (an empty
-            // verdict here is what read as "this show has 0 episodes" over a
-            // series that was still being resolved).
             if (gen != episodeGeneration) return got
             if (attempt < tries) delay(EPISODE_LOAD_PAUSE_MS * attempt)
         }
@@ -1193,12 +930,13 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                     // (see [screenTypeFor]; Nuvio/Stremio/TMDB exempt).
                     val cur = _meta.value
                     if (cur != null) {
-                        val fixed = screenTypeFor(cur, list.size)
+                        val fixed = if (list.isEmpty() && com.hikari.app.data.SingleVideoEvidence.isSingle(cur.uniqueId)) MediaType.MOVIE else screenTypeFor(cur, list.size)
                         if (fixed != cur.type) _meta.value = cur.copy(type = fixed)
                         else if (list.size >= 2 && cur.type != MediaType.SERIES) {
                             _meta.value = cur.copy(type = MediaType.SERIES)
                         }
                     }
+                    if (gen == episodeGeneration) runMovieProbeIfSingle(gen)
                 }
             } finally {
                 if (gen == episodeGeneration) {
@@ -1209,12 +947,6 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /**
-     * The Vega packs (and movie quality rows) of the page's title, loaded once
-     * its meta has answered. A fresh page starts on pack 0 / row 0 — the Vega
-     * app's own default (`LinkList[0]`) — so the default view plays exactly
-     * what it always did.
-     */
     private suspend fun loadVegaPacks(item: MediaItem) {
         if (!item.providerId.startsWith("vega|")) return
         _vegaPacks.value = runCatching { repo.vegaPacksFor(item) }.getOrDefault(emptyList())
@@ -1261,15 +993,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private suspend fun loadShelves(item: MediaItem, shelvesGen: Int) {
-        // Everything here is blocking network + file IO, so it runs off the main
-        // thread. Without this the TMDB lookups below were killed by Android's
-        // NetworkOnMainThreadException (viewModelScope is the main dispatcher) and
-        // silently swallowed by the runCatching calls — which is exactly why the
-        // Details block and the Cast/Trailers/Related/Similar rows never showed up.
         withContext(Dispatchers.IO) {
-            // Extension-own rows and rows whose kind has TMDB off keep the
-            // page to provider data (+ MDBList ratings below, separate
-            // toggle): no extras/cast/trailers, no Related/Similar.
             val tmdbOk = tmdbSectionsAllowed(item)
             if (shelvesGen == shelvesGeneration) _tmdbSectionsOk.value = tmdbOk
             // Extras first: they are ONE TMDB call (credits+videos+certifications)
@@ -1277,10 +1001,6 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             val ex = if (tmdbOk) runCatching { TmdbMeta.extras(item) }.getOrNull() else null
             if (shelvesGen != shelvesGeneration) return@withContext
             _extras.value = ex
-            // Ratings next: a handful of review sites (Wikidata, Rotten Tomatoes,
-            // Metacritic, Letterboxd) asked in parallel and each independently
-            // optional. TMDB's own score is part of the strip and comes from the
-            // call above, so the row has something to show immediately.
             runCatching {
                 Ratings.load(
                     item,
@@ -1300,14 +1020,6 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /**
-     * Extracts streams for one item, sharing the work with every other caller
-     * through [StreamCache]: a Play tap made while the page is still prefetching
-     * joins the SAME extraction instead of launching a second one — two
-     * concurrent loadLinks runs on the same CS3 plugin instance can corrupt its
-     * state and make it return "no sources" for a movie that plays fine on its
-     * own (and the same applies across a re-created screen).
-     */
     private suspend fun resolveStreams(
         item: MediaItem,
         ep: Episode?,
@@ -1315,31 +1027,13 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
         /** Ignore the prefetch cache and run the providers again. Set by the
          *  player when every server it was given turned out to be dead. */
         force: Boolean = false,
-        /** Fires when the title's OWN provider has answered (see
-         *  ContentRepository.streamsForInner). It no longer releases any hold —
-         *  playback starts on the first server, whatever the origin is doing —
-         *  but the signal is still passed through and logged, so the log says
-         *  whether and when the origin answered. */
         onOriginSettled: (() -> Unit)? = null,
     ): StreamLookup {
         val key = cacheKey(item, ep)
         val cached = StreamCache.get(key)
         if (cached != null) {
-            // Fresh enough to trust: serve it with no network at all (this is
-            // what makes a Play tap instant right after the detail page opened).
-            // A fresh list is safe to mirror onto the live feed, because those
-            // signed links still work.
             val fresh = System.currentTimeMillis() - cached.at < STREAM_CACHE_TTL_MS
-            // Only a FRESH, NON-EMPTY list is trusted without asking anyone. An
-            // empty entry can no longer exist (StreamCache.put refuses to store
-            // one), but the guard stays explicit: serving emptiness back as a
-            // "hit" is exactly the bug that made the next taps of the same title
-            // fail instantly instead of searching.
             if (!force && fresh && cached.list.isNotEmpty()) {
-                // Scoped to the current Server-search switches: the cache is
-                // keyed by title, not by scope, so a wider earlier lookup's
-                // sibling-engine servers must not serve a scope that says
-                // "only this extension" (see ContentRepository.filterToScope).
                 val scoped = repo.filterToScope(item, cached.list)
                 if (scoped.isEmpty()) {
                     com.hikari.app.data.Logs.log(
@@ -1356,18 +1050,6 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                     return StreamLookup(scoped, complete = true)
                 }
             }
-            // Stale or forced: the signed links in there are very likely dead.
-            // They are deliberately NOT put on the live feed — whatever lands
-            // on the feed first is what an instant-play tap starts on, so
-            // seeding the feed with expired links is exactly the "server
-            // failed, trying next … every server failed, tap Play again and it
-            // works" bug. The fresh extraction below streams the new servers to
-            // the feed instead, and the player's title card covers the wait.
-            // Callers that track their own "ready" state are still told what we
-            // are holding, so the Play button never stalls on a stale entry.
-            // (The one thing allowed onto the feed before the search starts is
-            // the list that really worked here a few minutes ago — see the block
-            // below. That one is backed by an actual play, not by a timestamp.)
             com.hikari.app.data.Logs.log(
                 "Search",
                 "cache " + (if (force) "forced" else if (cached.list.isEmpty()) "empty" else "stale") +
@@ -1375,13 +1057,6 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             )
             if (cached.list.isNotEmpty()) onProgress?.invoke(cached.list)
         }
-        // The server that worked for this exact title+episode minutes ago goes
-        // onto the feed BEFORE the search below starts, so a Play tap begins
-        // playing instead of waiting out a fresh sweep — the servers the
-        // extraction finds replace them the moment it answers. Skipped when the
-        // caller FORCED the lookup (the player asking for fresh sources because
-        // every server it had is dead): putting those same links back would be a
-        // failover loop. See [ContentRepository.recentlyFoundStreams].
         if (!force) {
             val recent = repo.recentlyFoundStreams(item, ep)
             if (recent.isNotEmpty()) {
@@ -1394,29 +1069,10 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 onProgress?.invoke(recent)
             }
         }
-        // Every provider response is mirrored into the live feed so the UI can
-        // start playback with the first server found, regardless of which caller
-        // kicked off the search (prefetch or Play tap) — and it is also what a
-        // BACKGROUND SWEEP's late finds travel through to a player that is
-        // already open, so it is built here, before the two join paths below,
-        // rather than inside the extraction.
         val feed: (suspend (List<StreamSource>) -> Unit) = { partial ->
             _liveStreams.value = partial
             onProgress?.invoke(partial)
-            // …and straight to the player when the play flow has a session up
-            // (see [liveSink]): this is the only route a BACKGROUND SWEEP's late
-            // finds have to a player that is already playing, because the
-            // screen's own collector is stopped as soon as its pass ends.
             liveSink?.invoke(partial)
-            // Turn an addon's LINK rows (a YouTube id, a "watch it here" page)
-            // into the servers they point at, as they arrive — see
-            // [com.hikari.app.cs3.PlayableResolver.warmLinks]. Without this, a
-            // link-only addon showed its rows in the source sheet while
-            // `DetailScreen.playableEvery` dropped every one of them, which is
-            // exactly "the same addon plays in Stremio and says no playable
-            // server here". The resolved servers are pushed back through this
-            // same feed, so they join the list and reach an already-open player
-            // exactly like a provider's own links.
             com.hikari.app.cs3.PlayableResolver.warmLinks(partial) { resolved ->
                 if (resolved.isEmpty()) return@warmLinks
                 val have = _liveStreams.value
@@ -1429,31 +1085,6 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 liveSink?.invoke(grown)
             }
         }
-        // Someone (another instance of this screen for the same title, or a
-        // prefetch that is still running) already owns this extraction: join it
-        // instead of running the providers a second time. BOUNDED: an owner that
-        // was cancelled without ever completing its shared deferred would
-        // otherwise park every later lookup of this title on `await()` for good,
-        // which is the difference between "one slow search" and "this title
-        // never searches again".
-        //
-        // A BACKGROUND SWEEP for this video counts as an owner too. It is
-        // already asking every repo the last pass did not finish, on the
-        // application scope, with the plugins warm — and every server it finds
-        // is streamed to the player through the live session. Starting a whole
-        // new pass on top of it is exactly the reported "it says 5 servers and
-        // search finished, then on the second tap it searches everything again
-        // and shows all of them": the second tap re-ran 250 extensions from
-        // scratch while the first tap's own continuation was still running. So
-        // when there is already something to play (the ledger the sweep keeps
-        // up to date, or the live feed), the caller gets it marked "not a
-        // verdict" and the sweep keeps adding servers to it.
-        //
-        // Joining also means REGISTERING [feed] as a sink of that sweep — the
-        // sweep's other sinks belong to the pass that started it, and that pass's
-        // live session is not this caller's. Without this the joined list would
-        // be a snapshot that never grows, and a tap made while a sweep was
-        // running would look like a search that stopped the moment it returned.
         if (!force) {
             val joined = _liveStreams.value.takeIf { it.isNotEmpty() }
                 ?: repo.recentlyFoundStreams(item, ep)
@@ -1468,14 +1099,6 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
         }
-        // Another lookup (usually the detail-page prefetch) may already own
-        // this extraction. Do not merely wait on its completion: that owner is
-        // publishing partial servers through _liveStreams while it works. A Play
-        // tap that joined the pending extraction used to sit on the player's
-        // "Searching…" card until the entire owner finished, even though a server
-        // had already arrived in the shared live feed. Forward that feed to THIS
-        // lookup's onProgress callback so the player can start immediately, while
-        // still sharing the single extraction and avoiding duplicate provider work.
         suspend fun awaitShared(pending: CompletableDeferred<StreamLookup>): StreamLookup {
             val seed = _liveStreams.value
             if (seed.isNotEmpty()) onProgress?.invoke(seed)
@@ -1517,11 +1140,6 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             }
             val result = lookup.servers
             if (result.isEmpty() && !lookup.complete) {
-                // The pass was CUT SHORT — it never reached an answer, so it must
-                // not be handed out (or remembered) as one. Give whoever is
-                // waiting whatever the live feed already produced, explicitly
-                // marked "not a verdict", so a joiner/retry asks again instead of
-                // being told this title has no servers.
                 val partial = cached?.list?.takeIf { it.isNotEmpty() }?.let { repo.filterToScope(item, it) }?.takeIf { it.isNotEmpty() }
                     ?: _liveStreams.value.takeIf { it.isNotEmpty() }
                     ?: emptyList()
@@ -1530,27 +1148,9 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 return early
             }
             if (result.isEmpty()) {
-                // Never downgrade. A re-extraction can legitimately come back
-                // empty — every provider failing or timing out on the retry —
-                // even though the progressive feed, which the player is
-                // ALREADY being handed servers through, got a full list
-                // moments earlier. Handing back (and caching) an empty list
-                // here made the player's source sheet look like it had stopped
-                // loading halfway, and made the next Play tap report "no
-                // servers" for the whole cache window even though the servers
-                // were still good. Prefer whatever we already have: the cached
-                // list first, else the live feed. The cache is deliberately NOT
-                // rewritten, so its old timestamp stands and the next lookup
-                // tries the providers again instead of trusting a dead list.
                 val fallback = cached?.list?.takeIf { it.isNotEmpty() }?.let { repo.filterToScope(item, it) }?.takeIf { it.isNotEmpty() }
                     ?: _liveStreams.value.takeIf { it.isNotEmpty() }
                 if (fallback != null) {
-                    // This list IS this title's server list as far as the user
-                    // is concerned (it is what the player is playing), so the
-                    // quality it carries has to be filed like any other answer:
-                    // returning here without recording it is why a title that
-                    // was played yesterday showed no quality badge on its poster
-                    // even with the badge switched on.
                     recordOutcome(fallback, item)
                     val answered = StreamLookup(fallback, complete = true)
                     deferred.complete(answered)
@@ -1558,20 +1158,12 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
             StreamCache.put(key, result)
-            // An empty result is not put on the live feed: the feed is what the
-            // player starts on, and blanking a list it is already playing from
-            // is the one thing that can stop playback dead here.
             if (result.isNotEmpty()) _liveStreams.value = result
             recordOutcome(result, item)
             val done = StreamLookup(result, complete = true)
             deferred.complete(done)
             return done
         } catch (e: Throwable) {
-            // Same never-downgrade rule for a cancelled or failed extraction:
-            // complete the shared deferred with whatever the live feed already
-            // found, flagged as NOT a verdict, so a joiner — the player's own
-            // follow-up read, or a second Play tap sharing this extraction — is
-            // never wiped back to empty and never told the search came up empty.
             val partial = _liveStreams.value
             deferred.complete(StreamLookup(partial, complete = false))
             throw e
@@ -1599,17 +1191,10 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
         // links ready.
         if (cached != null && cached.list.isNotEmpty() &&
             System.currentTimeMillis() - cached.at < STREAM_CACHE_TTL_MS) {
-            // A cached answer is still an answer: file the quality it carries, so
-            // opening a title that was searched a minute ago (the common case —
-            // every re-entry into a detail page) keeps the poster's badge alive
-            // instead of only ever recording the FIRST, uncached search.
             recordOutcome(cached.list, item)
             _streamsReady.value = true
             return
         }
-        // Set "ready" as soon as the FIRST source arrives (not only after every
-        // provider has been searched), so the Play button lights up early while
-        // the slower providers keep adding servers in the background.
         resolveStreams(item, ep, onProgress = { partial ->
             if (partial.isNotEmpty()) _streamsReady.value = true
         })
@@ -1637,14 +1222,6 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
     private fun cacheKey(item: MediaItem, ep: Episode?): String =
         item.providerId + "|" + item.id + "|" + (ep?.id ?: "")
 
-    /** Is a BACKGROUND continuation sweep still asking the repos this video's
-     *  last source pass never reached? The pass hands every repo it ran out of
-     *  time for to a sweep that keeps searching on the application scope while
-     *  the video plays (see ContentRepository.startSweepIfNeeded), so while one
-     *  is alive the search is NOT over and the screen must never announce "no
-     *  playable server found after searching N extensions" — that verdict is
-     *  exactly what made a search that was still running look like it had
-     *  stopped at the 5th or 13th extension. */
     fun backgroundSweepBusy(episode: Episode?): Boolean {
         val m = _meta.value ?: return false
         return ContentRepository.sweepBusyFor(m, episode)
@@ -1659,13 +1236,6 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
         force: Boolean = false,
     ): List<StreamSource> = getStreamsLookup(episode, onProgress, force).servers
 
-    /**
-     * [getStreams] plus whether the lookup actually FINISHED — see
-     * [StreamLookup]. The play flow uses this to tell "the search ran and found
-     * nothing" (a real answer, report it) apart from "the search was cut short"
-     * (knows nothing about the title, so retry instead of telling the user there
-     * are no servers).
-     */
     suspend fun getStreamsLookup(
         episode: Episode?,
         onProgress: (suspend (List<StreamSource>) -> Unit)? = null,
@@ -1729,13 +1299,6 @@ private fun providerOutcomeLine(p: ContentProvider): String? {
         ?.let { "$name: $it" }
 }
 
-/** Every INSTALLED nuvio engine's verdict for this search, one line each —
- *  including the ones that never got an engine slot, which is the whole point:
- *  "in nuvio every plugin shows servers, in hikari only 2-3" is only
- *  diagnosable if the engines that produced nothing are visible. [NuvioScraper]
- *  records an outcome for every provider it actually ran (sources, no sources,
- *  error), and its maps are cleared at the start of a search, so a provider
- *  with no entry was never asked. */
 private fun nuvioReportLines(providers: List<ContentProvider>): List<String> {
     val nuvio = providers.filter { it.config.type == ProviderType.NUVIO && it.config.enabled }
     if (nuvio.isEmpty()) return emptyList()
@@ -1753,16 +1316,6 @@ private fun nuvioReportLines(providers: List<ContentProvider>): List<String> {
     }
 }
 
-/**
- * REMOVED: how long a replay waited for the server it was last played with to
- * appear before falling back to the first server found.
- *
- * The wait is gone (see the note where the source list is ordered): a
- * remembered server is still preferred — it is placed directly
- * after the origin's own rows and the player's own start-index rule picks it —
- * but it can no longer delay playback. "Play as soon as ONE server is found"
- * means exactly that.
- */
 
 /** How long a lookup will join an extraction someone else already owns before
  *  giving up on it (see [resolveStreams]). A shared extraction that was
@@ -1770,83 +1323,18 @@ private fun nuvioReportLines(providers: List<ContentProvider>): List<String> {
  *  the same title here, forever. */
 private const val JOIN_WAIT_MS = 90_000L
 
-/** Hard ceiling on the final sources read of a play tap. The cross-extension
- *  pass has its own budget, but this is the outer guarantee: when it expires the
- *  play flow stops asking (the `finally` below reports the outcome — an
- *  unfinished pass is reported as unfinished, never as "no servers found") so the
- *  player's cover does not sit on "still searching" while an unbounded provider
- *  combination works on it. */
 private const val STREAMS_FINAL_CAP_MS = 80_000L
 
-/** How many extra times the final sources read may ask again when a pass comes
- *  back without a verdict (see [StreamLookup]). Each retry either JOINS the pass
- *  that is still running for this title via [StreamCache] or, when that pass
- *  really died, starts it once more — so this is a bounded "try again", not a
- *  way to re-run every extension in a loop.
- *
- *  Eight, because a cold origin burns whole passes in milliseconds (see the
- *  warm pause in [ContentRepository.fetchStreams]): three retries were spent
- *  before the runtime had come up, and the 4th–9th manual taps were what found
- *  the servers. The 80s cap above still binds the total. */
 private const val STREAMS_FINAL_RETRIES = 8
 
 /** Breather between those retries, so a pass that keeps dying does not spin. */
 private const val SEARCH_RETRY_PAUSE_MS = 1_500L
 
-/** How long the play flow keeps a session open waiting for a BACKGROUND SWEEP
- *  to finish before it declares the search over regardless. Mirrors
- *  ContentRepository's own sweep ceiling (two 2-minute rounds) plus a minute of
- *  slack, so the watcher never gives up on a sweep that is still legitimately
- *  working — and, just as important, never keeps "still searching" on screen
- *  after the whole background re-ask has run out of time. The old 11 minutes
- *  meant the Sources panel could honestly read "still searching" for the better
- *  part of an hour while the film played, which reads as a stuck search. */
 private const val SWEEP_WATCH_CAP_MS = 5 * 60 * 1000L
 
-/** How long the list of servers has to stay UNCHANGED before a lookup that never
- *  reached a verdict is declared over.
- *
- *  A lookup can come back with servers but no verdict — it was cut short, or it
- *  joined a pass that is still running (the detail screen's own prefetch pass,
- *  another screen's lookup) and gave up waiting for it. That other pass is still
- *  pushing its servers into this very session, which is why the count on the
- *  cover used to say "5 servers — search finished" and then be 43 a minute
- *  later. So instead of announcing a verdict the flow does not have, the cover
- *  keeps saying the search is still going and simply watches the list: n servers
- *  arriving keeps it alive, and this much silence ends it. Long enough that a
- *  slow extension's answer is never mistaken for the end (several minutes of
- *  nothing IS the end, at that point), and short enough that a genuinely dead
- *  tail does not leave the player waiting out its own safety timeout. */
 private const val STREAMS_QUIET_MS = 12_000L
 
-/**
- * REMOVED: the "wait for the extension this title was opened from" window.
- *
- * Playback used to hold its first start until the provider the title was opened
- * FROM had answered (`ORIGIN_PLAY_GRACE_MS` = 45s in "wait for more servers
- * first" mode, a 20s backstop and a 3s head start in "play as soon as the first
- * server is found"), on the theory that tapping a movie inside an extension
- * should play THAT extension's link. It bought a marginal ordering preference
- * and cost the one thing the user reported over and over: *"N servers found and
- * it is still not playing"* — most recently with 56 servers on the list and the
- * cover still reading "still searching". The ordering it was protecting is kept
- * WITHOUT the wait: the pass asks the origin first, its servers are placed at
- * the top of the list (see [healthyStartIndex] in the player and the ordering in
- * [launchPlayer]), and the remembered server of a replay is preferred the same
- * way. What is gone is only the waiting.
- *
- * The player is still told 0 for both extras (see [launchPlayer]); a player
- * build that predates this change therefore also sees "no hold" and starts on
- * the first server.
- */
 
-/**
- * How long a prefetched source list may be reused before it must be resolved
- * again. 4KHDHub/hubcloud hand out SIGNED, time-limited workers.dev links, and
- * a detail page left open for a few minutes used to replay those dead links on
- * a Play tap (every server 403s → "No playable sources found"). Five minutes
- * is comfortably under the rotation window while still making an immediate
- * Play tap instant. */
 private const val STREAM_CACHE_TTL_MS = 300_000L
 
 /** How long a Play tap made while episodes are still loading waits for the
@@ -1855,53 +1343,14 @@ private const val STREAM_CACHE_TTL_MS = 300_000L
  *  instant — this only decides which episode the source search runs for. */
 private const val EPISODE_WAIT_MS = 25_000L
 
-/**
- * How many times the episode list is asked for before the page accepts that the
- * extension could not answer (see DetailViewModel.loadEpisodesFor).
- *
- * Three, because the failure this exists for is a COLD runtime: the first ask
- * pays an APK class load or a plugin runtime boot and can come back empty simply
- * because nothing was ready, and the second ask — against what the first one
- * warmed — is the one that works. That is exactly the user's own workaround
- * ("it fixed after I closed the app and opened it again"), done here instead of
- * making them do it.
- */
 private const val EPISODE_LOAD_TRIES = 3
 
 /** Pause between those attempts. Long enough for a cold runtime to come up,
  *  short enough that a genuinely empty series does not sit on a spinner. */
 private const val EPISODE_LOAD_PAUSE_MS = 1_500L
 
-/**
- * How long the movie probe may run (see DetailViewModel.load): a
- * site-scraper title whose episode list came back empty gets one bounded
- * movie-style server lookup before the page settles on "broken series".
- * Shares its work with the page prefetch through StreamCache, so when the
- * prefetch already answered this is a cache hit, not a second search.
- */
 private const val MOVIE_PROBE_MS = 30_000L
 
-/**
- * Titles an automatic resume has ALREADY been started for, and when.
- *
- * The detail page auto-plays when it is opened FROM WATCH HISTORY with a saved
- * position (see the resume effect), which is what makes "Continue watching" feel
- * like it works. The guard that makes it fire once — `resumeHandled` — lives in
- * the composition, so it only ever covered ONE instance of the screen: the page
- * is re-created constantly in practice (back out of the player, rotate, the
- * process being rebuilt, a fresh navigation from the same History row seconds
- * later), and every one of those creations saw `resumeHandled = false` again,
- * with the episode id and position restored from the same navigation arguments.
- * The result was the reported "I press back and it starts loading the screen all
- * over again with the server search": the player was re-opened, from scratch —
- * and on a title where that happened twice, two player instances deep.
- *
- * So the claim is kept out here, process-wide, and is HONOURED for
- * [TTL_MS]: within that window a re-created page shows the title card and its
- * Play/Resume button instead of starting a search by itself — which is what a
- * user who has just backed out of the player wants. A deliberate tap still
- * plays, of course; this only suppresses the AUTOMATIC resume.
- */
 private object AutoResumeGuard {
     /** Long enough to cover a burst of re-creations, short enough that coming
      *  back to the title later still resumes it. */
@@ -1938,17 +1387,8 @@ fun DetailScreen(
     val meta by vm.meta.collectAsState()
     val episodes by vm.episodes.collectAsState()
     val episodesLoading by vm.episodesLoading.collectAsState()
-    // True once the episode lookup has FINISHED (success or failure). The page
-    // keeps its spinner until then, so a lookup that is still running can never
-    // be painted as "this series has no episodes".
     val episodesLoaded by vm.episodesLoaded.collectAsState()
-    // True when the episode lookup failed outright (every retry came back
-    // empty) — the page then says "couldn't load" and offers a retry instead of
-    // claiming the series has no episodes (see DetailViewModel.loadEpisodesFor).
     val episodesFailed by vm.episodesFailed.collectAsState()
-    // A Vega title's packs / movie quality rows for the pickers below (empty
-    // for every other engine). The episodes above are already the picked
-    // pack's answer — the picker only switches which pack that is.
     val vegaPacks by vm.vegaPacks.collectAsState()
     val vegaPackIndex by vm.vegaPackIndex.collectAsState()
     val vegaPackSummaries by vm.vegaPackSummaries.collectAsState()
@@ -1965,17 +1405,10 @@ fun DetailScreen(
     val ratings by vm.ratings.collectAsState()
     val tmdbSectionsOk by vm.tmdbSectionsOk.collectAsState()
     val m = meta
-    // When the origin provider no longer exists, the ViewModel remaps this page
-    // onto a live provider (see remapMissingProvider). Everything that RECORDS
-    // or LOOKS UP state by provider must use that live id — the id this page was
-    // opened with is precisely the dead one.
     val activeProviderId by vm.activeProviderId.collectAsState()
     val livePid = activeProviderId.ifBlank { providerId }
     val isVegaPage = livePid.startsWith("vega|")
     val isIptvPage = remember(livePid) { com.hikari.app.data.IptvMark.isIptvProvider(livePid) }
-    // Siblings from the same playlist (the reference app's channel grid under
-    // its player): same group first, the open channel excluded, capped at 24.
-    // Loaded once per channel — a playlist parse is cached by the provider.
     var iptvSiblings by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
     LaunchedEffect(livePid, mediaId, isIptvPage) {
         iptvSiblings = emptyList()
@@ -1999,81 +1432,33 @@ fun DetailScreen(
         }
     }
 
-    /**
-     * The name the PLAYER's artwork card prints (and the detail page's own
-     * full-screen cover).
-     *
-     * It is the item's own title — which, for a title that came from an
-     * EXTENSION, is the site's (usually English) name and therefore the one
-     * place the app's TMDB language never reached: the page was translated, the
-     * loading card was not. TMDB's localized name for the same title is used
-     * whenever it differs, so the card follows the chosen language like
-     * everything else.
-     */
     val artTitle = extras?.localizedTitle
         ?.takeIf { it.isNotBlank() && it != (m?.title ?: title) }
         ?: (m?.title ?: title)
 
-    /**
-     * The description the page shows.
-     *
-     * TMDB's own summary — asked for in the app's chosen TMDB language, in the
-     * same response as the localized title — wins whenever it exists; an
-     * extension's own blurb only ever fills a blank. Before this, a page whose
-     * title was translated kept the provider's English description underneath it
-     * (the reported "the description turns English even though the language is
-     * French"), because for anything that did not come from TMDB the only
-     * description the app had WAS the provider's English one.
-     */
     val displayOverview = extras?.overview?.takeIf { it.isNotBlank() } ?: m?.overview
 
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
-    // Television: the remote's focus starts on this page's BACK button (top of
-    // the hero), so opening a title and pressing Enter can never scroll the
-    // page — focusing the bottom-anchored Play row pulled the whole page down
-    // on open via bring-into-view, parking the metadata at the top (see the
-    // heroBlock request below). Down from Back reaches Play. Without any focus
-    // the D-pad sat on the nav rail and OK went Home instead of into this page.
     val playFocus = remember { androidx.compose.ui.focus.FocusRequester() }
-    // Initial focus target on TV (see heroBlock): Back, the topmost item —
-    // taking focus there is a no-op for scrolling, while Play sits at the
-    // hero's bottom edge and focusing it scrolled the metadata into view.
     val backFocus = remember { androidx.compose.ui.focus.FocusRequester() }
-    // The score strip (IMDb / RT / …) on the details block is drawn unless the
-    // user switched it off in Settings → App Layout: it is on by default,
-    // because a title's score is part of what the page is for.
     val detailApp = context.applicationContext as HikariApp
     val detailRatingFlow = remember { detailApp.store.showDetailRatingFlow() }
     val showDetailRating by detailRatingFlow.collectAsState(initial = true)
-    // Settings → App Layout → Details header: which shape the page's header art
-    // takes (wide banner, poster beside the art, tall cinematic art, poster on a
-    // blurred backdrop, or no art at all).
     val detailHeroFlow = remember { detailApp.store.detailHeroStyleFlow() }
     val detailHeroStyle by detailHeroFlow.collectAsState(initial = DetailHeroStyles.WIDE)
     val isTvLayout = com.hikari.app.tv.TvMode.current()
     val tvDetailBigFlow = remember { detailApp.store.tvDetailBigFlow() }
     val tvDetailBig by tvDetailBigFlow.collectAsState(initial = isTvLayout)
-    // Full-bleed detail art (Settings → TV & Remote, off by default): the
-    // art fills the frame edge to edge — portrait, square and wide alike —
-    // instead of a fit strip with blurred bars down both sides.
     val tvBlurFlow = remember { detailApp.store.tvBlurDetailFlow() }
     val tvBlurDetail by tvBlurFlow.collectAsState(initial = false)
     val tvEpisodeSizeFlow = remember { detailApp.store.tvEpisodeSizeFlow() }
     val tvEpisodeSize by tvEpisodeSizeFlow.collectAsState(initial = 100)
-    // The viewport scale rides along (see TvUi.scale): a 4K panel gets bigger
-    // episode cards AND bigger card text (EpisodeBigCard/EpisodePosterCard read
-    // this as their sizeScale), a dense stick screen smaller ones. 1.0 on
-    // phones (TvUi.scale answers 1 there), so the phone layout never moves.
     val tvEpisodeScale =
         ((tvEpisodeSize / 100f) * com.hikari.app.tv.TvUi.scale()).coerceIn(0.8f, 1.6f)
     // The hero/detail type scale (see TvUi.scale): 1.0 on phones, so every
     // use below is a phone no-op and the phone layout never moves.
     val tvTypeScale = com.hikari.app.tv.TvUi.scale()
-    // The user's TV text size (Settings → TV & Remote → Text size, 50–150%,
-    // 100 = the shipped small/medium sizes below): multiplies the viewport
-    // scale, so a 4K panel still draws bigger than a stick at any setting.
-    // 1.0 on phones, so the phone layout never moves either.
     val tvText = tvTypeScale * com.hikari.app.tv.TvUi.textScale()
     val heroStyle =
         // Big TV detail: SIDE puts poster left + info/episodes right (matches
@@ -2084,15 +1469,6 @@ fun DetailScreen(
     // Title logo size), in percent of the size it has always been drawn at.
     val detailLogoFlow = remember { detailApp.store.detailLogoSizeFlow() }
     val detailLogoPercent by detailLogoFlow.collectAsState(initial = 100)
-    // The multi-provider source search must OUTLIVE this screen. Playback now
-    // opens the player the instant Play is tapped, and on a memory-tight device
-    // (the reported Infinix) the activity behind the player can be torn down
-    // while the player is in the foreground — which cancelled a
-    // composition-scoped search mid-flight and left the player with nothing.
-    // That is the "it just keeps saying loading server and then fails / the
-    // search stopped early (LeftCompositionCancellationException)" report. The
-    // search therefore runs on the APPLICATION scope (HikariApp.appScope, never
-    // cancelled) and only touches this screen's state while it is still alive.
     val screenAlive = remember { java.util.concurrent.atomic.AtomicBoolean(true) }
     DisposableEffect(Unit) { onDispose { screenAlive.set(false) } }
     val onUi: suspend (() -> Unit) -> Unit = { block ->
@@ -2106,17 +1482,11 @@ fun DetailScreen(
     // The rating the user tapped in the score strip, or null when no
     // explanation dialog is up. Set by DetailsBlock, cleared by the dialog.
     var ratingInfo by remember { mutableStateOf<TitleRating?>(null) }
-    // The full-screen title-card cover shown from the moment the user taps Play
-    // until the player activity takes over (Nuvio/Stremio style). It is the
-    // instant feedback for a tap, replacing the old bare source sheet.
     var showLoadingBanner by remember { mutableStateOf(false) }
     var selectedEp by remember { mutableStateOf<Episode?>(null) }
     // Resume position for the current play session — applied when the user
     // picks a server from the sheet too, not just on the auto-launched one.
     var pendingStartPos by remember { mutableStateOf(0L) }
-    // Saved progress (position, duration) for the video being launched, handed
-    // to the player so it can show ITS OWN "continue from where you left off?"
-    // prompt in-video. [pendingStartPos] stays for explicit, no-ask seeks.
     var resumeHint by remember { mutableStateOf<Pair<Long, Long>?>(null) }
     var streams by remember { mutableStateOf<List<StreamSource>>(emptyList()) }
     var loadingStreams by remember { mutableStateOf(false) }
@@ -2126,21 +1496,7 @@ fun DetailScreen(
     var selectedSeason by rememberSaveable { mutableStateOf<Int?>(null) }
     var seasonExpanded by remember { mutableStateOf(false) }
     var rangeExpanded by remember { mutableStateOf(false) }
-    /**
-     * Which way round the episode list runs. Off = oldest first (episode 1 at
-     * the top), which is how every provider hands the list over and what most
-     * shows want; on = newest first, for the long-running shows where the
-     * episode you actually came for is the last one. Toggled by the arrow
-     * beside the episode count, and remembered across a rotation.
-     */
     var epsNewestFirst by rememberSaveable { mutableStateOf(false) }
-    /**
-     * Anti-spoiler for the episode lists, the reference TV client's toggle:
-     * while on, episodes with no finished watch entry draw a blurred thumb
-     * and "Hidden to avoid spoilers" instead of their overview. Finished
-     * episodes (the Continue Watching shelf's own finished condition) always
-     * show — the point is hiding what has not been seen, never what has.
-     */
     var antiSpoiler by rememberSaveable { mutableStateOf(false) }
     // Episode presentation can be switched without leaving the detail page.
     // List mode keeps the compact existing rows; poster mode uses the episode
@@ -2152,9 +1508,6 @@ fun DetailScreen(
     // and writes back, so the choice sticks across titles.
     val episodeViewPrefFlow = remember { detailApp.store.episodeViewModeFlow() }
     val episodeViewPref by episodeViewPrefFlow.collectAsState(initial = -1)
-    // TV keeps its OWN layout (-1 = Auto = cinema grid): a List choice made on
-    // the phone (or in Settings) must never drag the television back to rows.
-    // The first cycle on TV writes the TV pref, so a later change sticks.
     val tvEpPrefFlow = remember { detailApp.store.tvEpisodeViewModeFlow() }
     val tvEpPref by tvEpPrefFlow.collectAsState(initial = -1)
     var episodeViewMode by rememberSaveable(isTvLayout) { mutableStateOf(if (isTvLayout) 1 else 0) }
@@ -2169,9 +1522,6 @@ fun DetailScreen(
     }
     val episodePosterStyle = episodeViewMode != 0
     val episodeBigStyle = episodeViewMode == 2
-    // CloudStream-style frosted-glass episode cards (Settings → App Layout →
-    // Episode UI). One switch for all three layouts — read once here and
-    // passed down, so the rows do not each open their own store collection.
     val episodeGlassFlow = remember { detailApp.store.episodeGlassFlow() }
     val episodeGlass by episodeGlassFlow.collectAsState(initial = false)
     fun cycleEpisodeView() {
@@ -2230,28 +1580,15 @@ fun DetailScreen(
         episodes.orEmpty().sortedWith(compareBy({ it.season }, { it.number }))
     }
     val seasons = remember(sortedEps) { sortedEps.map { it.season }.distinct().sorted() }
-    // The season the list is currently showing. Defaults to the first season —
-    // a multi-season show must never dump every episode of every season into
-    // one flat list. When the show has a single season the picker is hidden.
     val activeSeason = selectedSeason?.takeIf { it in seasons } ?: seasons.firstOrNull() ?: 1
     // Only one season → show everything; more than one → show just the picked
     // season, so a 5-season show no longer floods the list with 100+ rows.
     val shownEps = remember(sortedEps, seasons, activeSeason) {
         if (seasons.size <= 1) sortedEps else sortedEps.filter { it.season == activeSeason }
     }
-    // The arrow's order, applied to the SEASON's list before it is paged: on a
-    // 600-episode donghua "newest first" has to mean the newest 30 make up the
-    // FIRST page, not that the reader scrolls to the bottom to find them.
     val orderedEps = remember(shownEps, epsNewestFirst) {
         if (epsNewestFirst) shownEps.asReversed() else shownEps
     }
-    // Episode pagination: a long-running donghua can have 600+ episodes in a
-    // single season, which used to force one enormous scroll. Split the current
-    // season into 30-episode pages and expose a page picker (just like the
-    // season picker) right next to the episode count. `remember(activeSeason,
-    // epsNewestFirst)` snaps back to page 1 whenever the user switches season or
-    // flips the order — page 3 of the oldest-first list is a different set of
-    // episodes from page 3 of the newest-first one.
     val epPageSize = 30
     var rangeStart by remember(activeSeason, epsNewestFirst) { mutableStateOf(0) }
     val ranges = remember(orderedEps) {
@@ -2267,86 +1604,39 @@ fun DetailScreen(
         vm.load(providerId, type, mediaId, title, posterUrl, rawType)
     }
 
-    // Watch-history for this title (every episode), so a tapped video can offer
-    // "continue from where you left off?" no matter how the user got here
-    // (History tab, Home, Continue Watching, or a catalog).
     val app = context.applicationContext as HikariApp
-    // Settings that shape the Play tap: whether playback starts on the first
-    // server found or waits for a chosen number of them, and whether the
-    // full-screen title card covers the player until video is ready.
     val playWaitFlow = remember { app.store.playWaitServersFlow() }
     val playWaitServers by playWaitFlow.collectAsState(initial = false)
     val playMinFlow = remember { app.store.playMinServersFlow() }
     val playMinServers by playMinFlow.collectAsState(initial = 2)
     val bannerFlow = remember { app.store.showLoadingBannerFlow() }
     val showLoadingCoverSetting by bannerFlow.collectAsState(initial = true)
-    // Look of the "finding your server" card — the same choice the player's own
-    // cover wears, handed over as an intent extra so the two screens cannot
-    // disagree (see [LoadingStyles] and PlayerActivity.showLoadingBanner).
     val loadingStyleFlow = remember { app.store.loadingStyleFlow() }
     val loadingStyleSetting by loadingStyleFlow.collectAsState(initial = LoadingStyles.CINEMATIC)
-    // The treatment drawn over that card — handed over the same way, so the
-    // detail page's cover and the player's cover stay identical through the
-    // hand-off (see [com.hikari.app.ui.LoadingEffects]).
     val loadingEffectsFlow = remember { app.store.loadingEffectsFlow() }
-    // Empty until the store answers: the default is NONE (see
-    // AppStore.DEFAULT_LOADING_EFFECTS), so no treatment is ever drawn for the
-    // frame before the real value arrives.
     val loadingEffectsSetting by loadingEffectsFlow
         .collectAsState(initial = emptySet<String>())
-    // The colour the loading cover's aura ring is drawn in, resolved HERE and
-    // handed to the player as an ARGB int — the ring is the one part of the
-    // cover with its own colour setting, and the two screens showing it
-    // (this page and the player) must resolve it to the same pixels or the
-    // hand-off from one to the other looks like a second loading screen.
     val loadingAuraColorSetting by remember { app.store.loadingAuraColorFlow() }
         .collectAsState(initial = com.hikari.app.ui.AuraColors.THEME)
-    // The ring's colour as the ARGB the player is handed. Resolved HERE, in
-    // composition, rather than inside the launch lambda below: reading
-    // MaterialTheme is a composable call, and that lambda is not composable.
     val loadingAuraArgb = com.hikari.app.ui.AuraColors
         .color(loadingAuraColorSetting, MaterialTheme.colorScheme.primary)
         .toArgb()
-    // The title wordmark on the loading cover (Settings → App Layout → Loading
-    // screen → Title logo). The cover draws the title as ART here — the same
-    // TMDB wordmark the header above draws — with the plain text title as the
-    // fallback for a title that has none (and for a user who turned it off).
-    // Both the switch and the size ride to the player as intent extras, so the
-    // hand-off into the player never changes the picture.
     val loadingLogoOn by remember { app.store.loadingLogoFlow() }
         .collectAsState(initial = true)
     val loadingLogoPercent by remember { app.store.loadingLogoSizeFlow() }
         .collectAsState(initial = 100)
-    // The wordmark itself. Declared HERE rather than beside the header art far
-    // below, because the Play intent needs it: it is fetched on a background
-    // request per title and read by both the header and the loading cover.
     var heroLogo by remember { mutableStateOf<String?>(null) }
-    // "Don't play directly — show all servers to choose": when on, the player
-    // opens on its server list (grouped by engine) and never starts a server by
-    // itself, so this screen must not hold playback back for a remembered
-    // server either — the chooser should come up the moment servers exist.
     val askServerFlow = remember { app.store.askServerOnPlayFlow() }
     val askServerOnPlay by askServerFlow.collectAsState(initial = false)
     val playScopeAskOn by remember { app.store.playScopeAskFlow() }.collectAsState(initial = false)
     var scopeAskShow by remember { mutableStateOf(false) }
     var scopeAskPending by remember { mutableStateOf<Triple<Episode?, Long, Boolean>?>(null) }
     var scopeAskArmed by remember { mutableStateOf(false) }
-    // The last finished search ran narrowed ("this extension only"): when it
-    // ends with nothing playable, the empty sheet offers widening it instead
-    // of leaving that dead end.
     var lastSearchNarrowed by remember { mutableStateOf(false) }
     var pendingNarrowTo by remember { mutableStateOf<String?>(null) }
     // Servers the player must know about before it starts. 1 = "as soon as the
     // first server is found" (the default).
     val startAfterServers = if (playWaitServers) playMinServers else 1
-    // Collected reactively (not a one-shot read) so that returning here after a
-    // play immediately sees the progress the player just wrote — otherwise the
-    // "Continue from where you left off?" prompt never appeared on the second
-    // open of a title, because this screen's keys hadn't changed.
-    // The Flow is `remember`ed: an inline `app.store.historyFlow()` would be a
-    // brand-new Flow on every recomposition, so collectAsState kept re-attaching
-    // and resetting to `initial` (empty) — which left the resume hint empty and
-    // the in-video "continue?" prompt never fired.
     val historyFlow = remember { app.store.historyFlow() }
     val allHistory by historyFlow.collectAsState(initial = emptyList())
     // Match by provider+id first; if the same title/episode was watched on a
@@ -2364,14 +1654,8 @@ fun DetailScreen(
         }
     }
 
-    // Library state for this page's heart button. Collecting the Flow (rather
-    // than reading `favorites()` once) means the icon also flips if the same
-    // title is (un)saved from the player or another screen while this is open.
     val favoritesFlow = remember { app.store.favoritesFlow() }
     val favorites by favoritesFlow.collectAsState(initial = emptyList())
-    // The Library's categories themselves, and which ones this title is filed
-    // under. Both are flows, so a category invented from inside the sheet — or
-    // a filing changed on the Library screen — is reflected here at once.
     val categoriesFlow = remember { app.store.libraryCategoriesFlow() }
     val categories by categoriesFlow.collectAsState(initial = LibraryCategory.DEFAULTS)
     val filingsFlow = remember { app.store.favoriteCategoriesFlow() }
@@ -2380,16 +1664,9 @@ fun DetailScreen(
     // The mark sheet (the check button beside Play) — see the block below the
     // library picker.
     var markSheet by remember { mutableStateOf(false) }
-    // The full cast roster dialog on TV (the cast header's "View All"): the
-    // reference client's "View All Cast & Crew" opens the whole roster, and
-    // Hikari has no person page — a dialog grid over the detail page instead.
     var showFullCast by remember { mutableStateOf(false) }
 
     var playerLaunched by remember { mutableStateOf(false) }
-    // Resets the once-only launch guard the moment the player activity returns
-    // to this screen — without this, the FIRST play set the flag and every
-    // later tap (episode 2..N, another server) was silently swallowed, so a
-    // 10-episode melon list only ever played its first video.
     val playerLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) {
@@ -2403,29 +1680,12 @@ fun DetailScreen(
         playerLaunched = false
         showLoadingBanner = false
     }
-    // [wantsDownload] rides along as the `openDownload` intent extra: the player
-    // then puts its download chooser up as soon as a server is ready instead of
-    // just watching. Same intent, same player, same chooser as the in-player
-    // Download button — the download buttons outside the player are only a
-    // different way IN, never a second download implementation.
     val launchPlayer: (List<StreamSource>, Episode?, String, Long, Boolean) -> Boolean = launchPlayer@{ playable, ep, liveId, startPos, wantsDownload ->
         if (playerLaunched) return@launchPlayer false
-        // Build the payload BEFORE flipping the once-only guard. It used to be
-        // the other way round: one malformed source list set `playerLaunched`
-        // and then bailed out, so the player never opened AND every later tap
-        // was swallowed by the guard — the Play button looked completely dead.
         val payload = playerPayload(playable)
         if (payload == null) return@launchPlayer false
         playerLaunched = true
-        // Keep the background extension sweep off the loading cover: it is held
-        // from here and released the moment the player has a frame on screen
-        // (see StreamsLive.releaseSweep). The servers it looks for are only ever
-        // ADDED to a list that is already playing, so nothing is lost by
-        // waiting, and "searching extensions…" no longer races the video.
         m?.let { StreamsLive.holdSweep(liveId, it, ep) }
-        // History context rides along so the player can record resume position
-        // and remember which server this video was last played with (so a
-        // replay continues on that server and starts instantly).
         val intent = Intent(context, PlayerActivity::class.java).apply {
                 // The artwork card prints this, so it follows the TMDB language
                 // (see artTitle); History keeps recording the item's own title.
@@ -2436,20 +1696,10 @@ fun DetailScreen(
                 // provider; the player appends them to its "Select server" list.
                 putExtra("streamsLiveId", liveId)
                 putExtra("histTitle", m?.title ?: title)
-                // The provider that the page actually resolved to — NOT the id
-                // the page was opened with, which may be a stale one that no
-                // longer exists (see DetailViewModel.load's remap). Without
-                // this, History would re-record a dead id every play.
                 putExtra("histProviderId", m?.providerId ?: providerId)
                 putExtra("histMediaId", mediaId)
                 putExtra("histType", (m?.type ?: type).name)
                 putExtra("histPoster", PosterLoader.tokenize((m?.posterUrl ?: posterUrl).orEmpty()).orEmpty())
-                // Backdrop (poster fallback) for the player's own title card —
-                // passed as a disk-cache token so the intent never carries a
-                // multi-MB base64 string. The plural TMDB (/images) art the
-                // header settled on first (via its cache — the intent cannot
-                // suspend), then the single backdrop_path, then the provider
-                // art, which is frequently a low-res thumb.
                 putExtra(
                     "bannerBackdrop",
                     PosterLoader.tokenize(
@@ -2459,9 +1709,6 @@ fun DetailScreen(
                             ?: posterUrl.orEmpty()
                     ).orEmpty()
                 )
-                // The same art as a plain URL for the player's server screen,
-                // which paints it full-bleed behind its glass rows (the
-                // desktop client's look). Coil loads it there directly.
                 putExtra(
                     "serverArt",
                     (if (m != null) TmdbScreenshots.firstCached(m.uniqueId) else null)?.takeIf { it.isNotBlank() }
@@ -2469,18 +1716,12 @@ fun DetailScreen(
                         ?: m?.backdropUrl?.takeIf { it.isNotBlank() }
                         ?: posterUrl.orEmpty()
                 )
-                // The plural header art behind "serverArt": the player rotates
-                // the server screen through these every 2.5s (the detail
-                // header rotates every 2s). Capped — the intent stays small.
                 putStringArrayListExtra(
                     "serverArts",
                     ArrayList(
                         (if (m != null) TmdbScreenshots.allCached(m.uniqueId) else emptyList()).take(8)
                     )
                 )
-                // The plural PORTRAIT art for the vertical server page: the
-                // player rotates these the same way, so the portrait column
-                // turns over instead of sitting on one frame. Same cap.
                 putStringArrayListExtra(
                     "serverPosters",
                     ArrayList(
@@ -2490,22 +1731,10 @@ fun DetailScreen(
                 putExtra("showLoadingBanner", showLoadingCoverSetting)
                 putExtra("loadingStyle", loadingStyleSetting)
                 putExtra("loadingEffect", com.hikari.app.ui.LoadingEffects.encode(loadingEffectsSetting))
-                // The title's own wordmark, for the cover's title block (see
-                // loadingLogoOn above) — tokenized like the artwork, so the
-                // intent never carries a URL that has to be re-fetched on the
-                // main thread when the player opens.
                 putExtra("titleLogo", if (loadingLogoOn) PosterLoader.tokenize(heroLogo.orEmpty()).orEmpty() else "")
                 putExtra("titleLogoSize", loadingLogoPercent)
-                // The aura ring's colour, resolved to the same ARGB this page
-                // draws it in, so the player's cover continues the exact picture
-                // the detail page put up (see loadingAuraArgb above).
                 putExtra("loadingAuraColor", loadingAuraArgb)
                 putExtra("startAfterServers", startAfterServers)
-                // Ask before playing: the player shows every server it found,
-                // grouped by engine, instead of starting one by itself. The
-                // television always asks: on the big screen a tap shows the
-                // server list (over the title's art, like the desktop client)
-                // instead of playing directly.
                 putExtra("askServer", askServerOnPlay || isTvLayout)
                 // NO origin hold, in either playback mode. These two extras used
                 // to carry the window in which the player waited for the
@@ -2534,27 +1763,13 @@ fun DetailScreen(
                 putExtra("histResumeDuration", resumeHint?.second ?: 0L)
                 putExtra("histAskResume", true)
         }
-        // Never leave the guard stuck ON if the launch itself fails (e.g. the
-        // player activity can't be resolved): report failure so the caller can
-        // fall back to the source sheet instead of a dead tap.
         return@launchPlayer runCatching { playerLauncher.launch(intent) }
             .fold(onSuccess = { true }, onFailure = { playerLaunched = false; false })
     }
 
-    // The episode a bare Play tap should search for: the tapped episode, or —
-    // when the origin addon is still listing episodes — episode 1 as soon as it
-    // lands (bounded, so a genuine movie is never held up for long). The player
-    // is already open on its title card for the whole wait, so tapping Play
-    // always gives immediate feedback and playback starts the instant episode 1
-    // resolves, instead of searching for a series with no episode and finding
-    // nothing.
     val firstEpisodeOrNull: suspend () -> Episode? = {
         val t = (vm.meta.value ?: m)?.type
         val eps = vm.episodes.value
-        // UNKNOWN included: a catalog row that honestly does not know its
-        // kind yet (see the site-scraper providers) waits for episode 1
-        // exactly like a series — otherwise Play on a genuine series would
-        // fire a movie-style search before its list had landed.
         val mightBeSeries = t == MediaType.SERIES || t == MediaType.UNKNOWN ||
             (eps?.isNotEmpty() == true)
         if (mightBeSeries && eps == null && !vm.episodesLoaded.value) {
@@ -2576,31 +1791,12 @@ fun DetailScreen(
         val narrowTo = pendingNarrowTo
         pendingNarrowTo = null
         lastSearchNarrowed = (narrowTo != null)
-        // A fresh tap starts over with the user's scope untouched: no
-        // automatic widening runs on any pass (see the verdict block).
-        // Open the PLAYER on the very first frame of the tap (Nuvio/Stremio
-        // style). The player has its own title-card screen, so instead of the
-        // detail page sitting on a spinner for several seconds while the first
-        // server is found, the player comes up instantly and starts playback the
-        // moment a server lands on the live session. Source resolution keeps
-        // running here in the background.
-        // Keep an already-running detail-page prefetch alive. DetailViewModel
-        // shares the extraction through StreamCache, so cancelling it here throws
-        // away the fastest path to a server and starts the same provider walk again.
-        // The player can open immediately and consume the prefetch's first result.
         selectedEp = ep
         pendingStartPos = startPos
         streams = emptyList()
         loadingStreams = true
-        // Full-screen title card from the very first frame of the tap (the
-        // source sheet only appears if nothing playable can be found at all).
-        // Skipped entirely when the user turned the loading banner off.
         showLoadingBanner = showLoadingCoverSetting
         showSheet = false
-        // A fresh tap must always be allowed to open the player. If an earlier
-        // launch never reported back (activity result lost, process reshuffle),
-        // the once-only guard could stay stuck ON and silently swallow every
-        // later play — the Play button then looked completely dead.
         playerLaunched = false
         // One live-update session per play tap: the player subscribes to it and
         // keeps receiving servers as slower providers answer, so its "Select
@@ -2635,18 +1831,9 @@ fun DetailScreen(
         // player's are deliberately identical, so it reads as the same page
         // loading two or three times), every time, for every title.
         val launched = java.util.concurrent.atomic.AtomicBoolean(false)
-        // Launch the player NOW with an empty source list — it shows its own
-        // title card and waits for the first servers on [sessionId]. If the
-        // launch itself fails (the activity can't be resolved), the coroutine
-        // below falls back to the old "resolve here, then open the player" path
-        // and the source sheet.
         if (launchPlayer(emptyList<StreamSource>(), ep, sid, startPos, wantsDownload)) {
             launched.set(true)
         }
-        // Warm-start from the persisted last successful server. This removes the
-        // blank "Searching your extension..." wait on repeat plays while the normal
-        // provider search continues in parallel. The player already has failover,
-        // so a stale remembered URL is simply skipped when it cannot prepare.
         app.appScope.launch {
             // "This extension only" is a demand for a FRESH search of that
             // extension: warming the new session with the last successful URL
@@ -2675,17 +1862,7 @@ fun DetailScreen(
                 }
             }
         }
-        // The coroutine's own copy of everything found so far. Deliberately NOT
-        // the Compose state: the search outlives this screen, so it keeps its
-        // own list and only mirrors it into [streams] (for the source sheet)
-        // while the screen is alive.
         var found: List<StreamSource> = emptyList()
-        // Did the final lookup reach a real conclusion? Only then may the user be
-        // told the search "found nothing" — a pass that was cut short (cancelled,
-        // a provider blow-up, the device starving the threads) knows nothing
-        // about this title, and reporting it as "no playable server found after
-        // searching 254 extensions" is exactly what ended playback seconds into
-        // a search that was still running. See [StreamLookup].
         var lookupComplete = false
         // Set when the search threw: shown instead of a false "found nothing".
         var problemNote: String? = null
@@ -2694,19 +1871,6 @@ fun DetailScreen(
                 s.ytId == null && !s.externalUrl && (s.url.isNotBlank() || s.isTorrent) &&
                     (narrowTo == null || s.providerId.isBlank() || s.providerId == narrowTo)
             }
-                // Every server the providers returned is offered, in full. A
-                // "needs a browser check" record is NOT used to hold anything
-                // back: a title that played once must not come back with a
-                // shorter list (or none) because a host got flagged in the
-                // meantime — the user asked for the servers, so the servers are
-                // shown and the player can try them.
-                //
-                // Archive links (.zip/.rar/.7z …) are not videos: providers
-                // (4KHDHub's isDirectVideo only checks the hostname, so its
-                // ".mkv.zip" hubcloud links leak through) sometimes hand them
-                // out, and they cost a full prepare+error cycle before the
-                // player falls through. A stable sort keeps arrival order but
-                // pushes archives to the back, so they are never server #1.
                 basic.sortedBy { if (!it.isTorrent && StreamProbe.isArchive(it.url)) 1 else 0 }
         }
         // Late-server hand-off to the player (see [liveSink]).
@@ -2716,25 +1880,10 @@ fun DetailScreen(
                 if (playable.isNotEmpty()) StreamsLive.append(sid, playable)
             }
         }
-        // NOTE: application scope, NOT the composition's. See [screenAlive].
-        // The episode the search actually runs for, hoisted OUT of the `try`
-        // below because a local declared inside it is not visible from the
-        // `finally` block — and that block is where the end-of-search verdict is
-        // written (and where a background sweep has to be recognised).
         var searchedEpisode: Episode? = ep
         app.appScope.launch {
             try {
-                // Live progress for the player's loading cover. The player
-                // opened the instant Play was tapped, so this line is the
-                // only thing on screen saying that anything is happening at
-                // all (and, in the log, the only record of it).
                 val searchable = providers.count { it.config.enabled }
-                // "Search all installed extensions" off (Settings → Playback
-                // & Servers → Server search) means exactly ONE extension is
-                // being asked, and saying "Searching 257 extensions…" over a
-                // single-repo lookup would be a plain lie on the only line
-                // the user can see. With exception extensions in force more than
-                // one repo IS asked, so the line counts them honestly.
                 val exceptionN = if (com.hikari.app.data.SearchScope.allExtensions) 0
                 else com.hikari.app.data.SearchScope.exceptions.count { id ->
                     providers.any { it.config.id == id && it.config.enabled }
@@ -2742,10 +1891,6 @@ fun DetailScreen(
                 StreamsLive.setStatus(
                     sid,
                     when {
-                        // An IPTV channel is looked up in its own playlist and
-                        // nowhere else (see ContentRepository.streamsForInner),
-                        // so the line must not promise a sweep of every
-                        // installed extension.
                         com.hikari.app.data.IptvMark.isIptvProvider(
                             activeProviderId.ifBlank { providerId }
                         ) ->
@@ -2753,10 +1898,6 @@ fun DetailScreen(
                         exceptionN > 0 ->
                             "Searching your extension + $exceptionN more…"
                         !com.hikari.app.data.SearchScope.allExtensions -> {
-                            // Name the extension being searched the moment the
-                            // search starts, so a "this extension only" tap
-                            // never sits on a nameless line while its 15
-                            // servers resolve one by one.
                             val originName = providers.firstOrNull { it.config.id == (m?.providerId ?: providerId) }
                                 ?.config?.name?.ifBlank { null }
                             if (originName != null) "Searching $originName for servers…"
@@ -2766,35 +1907,16 @@ fun DetailScreen(
                             "Searching $searchable extension" + (if (searchable == 1) "" else "s") + "…"
                     },
                 )
-                // Which episode the search runs for: the tapped one, or episode 1
-                // when the origin addon was still listing episodes. The player is
-                // already open on its title card during this wait, so it opens and
-                // starts playing the instant episode 1 resolves.
                 val epForSearch: Episode? = ep ?: firstEpisodeOrNull()
                 searchedEpisode = epForSearch
                 if (ep == null && epForSearch != null) {
                     onUi { selectedEp = epForSearch }
-                    // Hand the already-open player the episode it ended up on, so
-                    // its title card, resume key and watch history are per-episode
-                    // rather than the movie-level entry.
                     StreamsLive.setEpisode(sid, epForSearch)
                 }
-                // The server this video was last played with, remembered by the
-                // player under the same key as the watch-history entry. It is
-                // PREFERRED, never waited for — see the note below.
                 val historyKey = "${livePid}|${(vm.meta.value ?: m)?.type?.name ?: type.name}|$mediaId|${epForSearch?.id.orEmpty()}"
                 val last = runCatching { app.store.lastSource(historyKey) }.getOrNull()
                 val prefUrl = last?.url.orEmpty()
                 val prefName = last?.name.orEmpty()
-                // NOT a hold any more. A remembered server used to suppress the
-                // first-server start (for up to ten seconds) so a replay
-                // continued on the link that worked last time — which is exactly
-                // the kind of "there are servers and it is not playing" wait this
-                // app has been reported for. The REMEMBERED server keeps its
-                // advantage without the wait: it is placed directly after the
-                // origin's own rows (see the ordering below), and the player's
-                // own [preferredStartIndex] picks it when it is in the list. If
-                // it has not arrived yet, the first server that has starts.
                 val preferredIndex = { list: List<StreamSource> ->
                     if (prefUrl.isBlank() && prefName.isBlank()) -1
                     else list.indexOfFirst { s ->
@@ -2834,27 +1956,12 @@ fun DetailScreen(
                     list.forEachIndexed { i, s -> if (placed.add(i)) out += s }
                     out
                 }
-                // Live re-extraction. A play session can have all of its servers
-                // die at once: 4KHDHub/hubcloud's signed workers.dev links expire,
-                // and the mirror that served them can go away. The player (still
-                // attached via [sid]) then requests fresh sources by bumping
-                // the session's refresh counter instead of replaying a dead link
-                // forever — we re-run the providers ignoring the cache and stream
-                // the new servers straight to the player, which retries with them.
                 var lastRefresh = StreamsLive.refreshFlow(sid).value
                 launch {
                     StreamsLive.refreshFlow(sid).collect { n ->
                         if (n == lastRefresh) return@collect
                         lastRefresh = n
                         StreamsLive.setStatus(sid, "Re-extracting expired links…")
-                        // Targeted first: the dead links almost always came
-                        // from the title's OWN provider, so re-ask it ALONE on
-                        // a short budget and hand the player fresh links in
-                        // seconds. The old code ran the whole cross-extension
-                        // pass first, which is what kept "Re-extracting
-                        // expired links…" on screen for a minute while the one
-                        // provider that mattered had answered long ago. The
-                        // full pass still runs below for everyone else.
                         val mm = m
                         if (mm != null) {
                             val originFirst = vm.originStreamsFast(mm, epForSearch)
@@ -2886,10 +1993,6 @@ fun DetailScreen(
                         }
                     }
                 }
-                // Starts playback on the servers found so far. Runs on the main
-                // thread: [launchPlayer] uses this composition's
-                // ActivityResultLauncher, so it may only be called while the
-                // screen is alive.
                 val startNow: suspend () -> Unit = startNow@{
                     if (launched.get() || playerLaunched) return@startNow
                     val playable = playableEvery(found)
@@ -2906,19 +2009,12 @@ fun DetailScreen(
                             loadingStreams = false
                         }
                     } else if (screenAlive.get()) {
-                        // Player could not be opened (bad payload / launch
-                        // failure) — leave the source sheet up with its
-                        // per-extension diagnostics so the user can still pick a
-                        // server.
                         onUi {
                             loadingStreams = false
                             showLoadingBanner = false
                             showSheet = true
                         }
                     } else {
-                        // The screen is gone and the player never opened: keep the
-                        // servers on the live session instead, so a player that
-                        // opens later still finds them.
                         StreamsLive.append(sid, playableEvery(found))
                     }
                 }
@@ -2990,15 +2086,6 @@ fun DetailScreen(
                     delay(SEARCH_RETRY_PAUSE_MS)
                 }
                 feed.cancel()
-                // Never downgrade. The live feed above may already have handed
-                // the player a full list from the first providers that
-                // answered, and a late or cached re-read can come back empty
-                // (every provider having failed or timed out on the retry).
-                // Blindly overwriting [found] with that would blank the
-                // servers already in the player's "Select server" list. Only
-                // accept the batch when it actually carries servers, or when
-                // nothing was found at all — so a genuinely empty result is
-                // still reported.
                 if (final.isNotEmpty() || found.isEmpty()) found = final
                 onUi {
                     loadingStreams = false
@@ -3037,45 +2124,14 @@ fun DetailScreen(
                         showSheet = true
                     }
                 }
-                // The whole source search is over. [StreamsLive.markDone] is sent
-                // below ONLY when there is something to play or the pass reached a
-                // real verdict — see the note there.
             } catch (t: Throwable) {
-                // A throw here (a provider blowing up, a cancelled child
-                // collector) used to skip markDone entirely, so the player
-                // kept spinning on an empty session until its 90s safety
-                // timeout. Say what happened instead — and say it as a
-                // PROBLEM, never as "no servers were found", which is what
-                // made a search that died mid-flight read like a verdict.
                 problemNote = "The search hit a problem (" + t.javaClass.simpleName + ")."
                 StreamsLive.setStatus(sid, problemNote!!)
             } finally {
-                // ALWAYS declare the search over. The player only leaves its
-                // "Finding the best server…" cover when a server arrives or
-                // the search is declared finished, so this is what turns an
-                // empty result into a clear message within a second instead
-                // of a minute and a half of nothing.
                 val foundCount0 = playableEvery(found).size
                 // Reassigned when the dead-end widen below finds servers, so
                 // every status branch under this reads the widened count.
                 var foundCount = foundCount0
-                // Is a background sweep still asking repos this lookup did not
-                // really finish — the ones the pass never reached, or the ones it
-                // answered out of the session's "no such title" record after
-                // coming back thin (see ContentRepository.CROSS_THIN_RESULT)?
-                // Then the search is NOT over, and every server the sweep finds is
-                // pushed into the live session the player is already listening on.
-                // Announcing a verdict here is exactly what made a search that was
-                // still working look like it had stopped at the 5th or 13th
-                // extension (and made the player quit early on "no playable
-                // sources" while the sweep was still finding them).
-                //
-                // This is deliberately NOT gated on "found nothing": the report
-                // that matters most is the one with servers already on the list —
-                // "it says 2 servers and search finished, then on the fourth tap
-                // it finds 36". Saying "search finished" while the sweep that
-                // exists precisely to find the other 34 is still running is what
-                // made the count look like it came out of nowhere.
                 val sweepBusy = vm.backgroundSweepBusy(searchedEpisode)
                 // No automatic widening, ever: a scoped dead end used to fire
                 // ONE all-extensions wave by itself ("dead-end rescue"), which
@@ -3094,25 +2150,11 @@ fun DetailScreen(
                     // exception repos are being searched (see [SearchScope]).
                     val scoped = !com.hikari.app.data.SearchScope.allExtensions &&
                         com.hikari.app.data.SearchScope.exceptions.isEmpty()
-                    // …and "only this extension" only MEANS anything when the
-                    // title really came from an extension. A title opened from
-                    // Home / Search / Collections carries `providerId = "tmdb"`,
-                    // which names no installed provider — so there is no "the
-                    // extension this title came from" to search or to blame, and
-                    // the lookup asks the id-resolving addons instead (see
-                    // ContentRepository.streamsForInner).
                     val originId = m?.providerId ?: providerId
                     val originless = providers.none { it.config.id == originId }
                     val enabledN = providers.count { it.config.enabled }
                     val installedN = providers.size
                     val reason = vm.streamError.value?.takeIf { it.isNotBlank() }
-                    // Rows WERE found, but not one of them is a video this app can
-                    // hand to the player: an addon's LINK rows (a YouTube id, an
-                    // external "watch it here" page) whose resolution came back
-                    // empty. Reporting that as "no playable server found after
-                    // searching N extensions" is false, and it is the report this
-                    // note keeps producing — the source sheet is showing the user
-                    // those very rows while this text denies they exist.
                     val links = found.filter { it.ytId != null || it.externalUrl }
                     val linksOnly = links.isNotEmpty() && playableEvery(found).isEmpty()
                     val note = buildString {
@@ -3127,9 +2169,6 @@ fun DetailScreen(
                                         "a page rather than a file (open that page to watch it)."
                                 )
                             }
-                            // Scopes stay as the user set them: no automatic
-                            // widening wave runs any more, so there is no
-                            // "even after widening" verdict to report here.
                             originless && enabledN == 0 -> {
                                 append("No playback extension is switched on, so there was ")
                                 append("nothing to play this title from.")
@@ -3151,10 +2190,6 @@ fun DetailScreen(
                                 append(if (enabledN == 1) "extension" else "extensions")
                             }
                         }
-                        // Only worth saying when a real number of extensions is
-                        // switched off — "only 256 of your 257" is noise, and it
-                        // made a normal empty result read like a configuration
-                        // problem.
                         if (!scoped && !linksOnly && installedN - enabledN >= 5) {
                             append(" — ${installedN - enabledN} of your installed extensions are turned off")
                         }
@@ -3169,10 +2204,6 @@ fun DetailScreen(
                             )
                         }
                         if (originless && !linksOnly) {
-                            // Say what WAS asked, because this title has no
-                            // extension of its own: the addons that resolve an item
-                            // by its id — which is exactly what Stremio asks for a
-                            // catalogue id (see ContentRepository.streamsForInner).
                             val addons = providers.count {
                                 it.config.enabled && (
                                     it.config.type == ProviderType.STREMIO ||
@@ -3184,13 +2215,6 @@ fun DetailScreen(
                                 append("$addons playback addon(s) that resolve it by id were asked.")
                             }
                         }
-                        // Across the whole pass: how many extensions were asked,
-                        // how many answered with servers, and why the rest came
-                        // back empty. This is what separates "no extension has
-                        // this title" from "most of them could not load".
-                        // Extensions behind a verification wall are left out of
-                        // the pass (and of this count) entirely, so no host name
-                        // and no Cloudflare wording ever appears here.
                         if (!scoped && !linksOnly) {
                             com.hikari.app.data.ContentRepository
                                 .crossSummary(title = m?.title)?.let {
@@ -3202,11 +2226,6 @@ fun DetailScreen(
                     note
                 }
                 if (sweepBusy) {
-                    // The background sweep is still working, so the search is
-                    // still going — on purpose, while the video plays. Say the
-                    // count so far AND that more is coming, so the number on
-                    // screen is a running total rather than a result that later
-                    // "jumps" to 36.
                     StreamsLive.setStatus(
                         sid,
                         if (foundCount > 0) {
@@ -3234,11 +2253,6 @@ fun DetailScreen(
                             " — still searching…",
                     )
                 } else if (foundCount > 0) {
-                    // Servers WERE found and nothing more is coming — say that
-                    // the search is over, so the cover/hint never keeps reading
-                    // "still searching…" after the search has actually finished
-                    // (which looks exactly like a stuck search even though a full
-                    // server list is in hand).
                     StreamsLive.setStatus(
                         sid,
                         "Found $foundCount server" + (if (foundCount == 1) "" else "s") +
@@ -3251,30 +2265,12 @@ fun DetailScreen(
                     // collector that died later could have overwritten it.
                     StreamsLive.setStatus(sid, problemNote!!)
                 } else {
-                    // Nothing found AND no verdict: the pass was cut short or the
-                    // budget ran out while it was still working. This is the case
-                    // that must never be dressed up as "no playable server found
-                    // after searching N extensions" — the search may still be
-                    // running and may still hand the player servers. The player
-                    // is told the truth and left to its own timeout instead of
-                    // being failed fast on a lie.
                     StreamsLive.setStatus(
                         sid,
                         "The search took longer than expected — it may still be running.",
                     )
                 }
-                // The search is only declared OVER when there is something to
-                // play or a real answer: marking it done on an unfinished pass is
-                // what let the player quit seconds into a search that was still
-                // finding servers — and, with a sweep still running, it is what
-                // made "search finished" appear over a list that was about to
-                // grow from 2 servers to 36.
                 if (sweepBusy) {
-                    // The background sweep is still working: wait for it and THEN
-                    // declare the search over (with the honest verdict when it came
-                    // back empty), so the cover leaves "still searching" at the
-                    // right moment — and with the FINAL count, so the number the
-                    // user reads is the list they actually have.
                     app.appScope.launch {
                         val watchDeadline = System.currentTimeMillis() + SWEEP_WATCH_CAP_MS
                         while (System.currentTimeMillis() < watchDeadline &&
@@ -3295,17 +2291,6 @@ fun DetailScreen(
                         StreamsLive.markDone(sid)
                     }
                 } else if (foundCount > 0 && !lookupComplete) {
-                    // Servers are on the list and the lookup never reached a
-                    // verdict — the same "still searching…" case as the status
-                    // above. Declaring the search over here (as `foundCount > 0`
-                    // used to do) is what let a live list be described as a
-                    // finished one, so the search is followed to its real end
-                    // instead: every server that arrives keeps it alive, and it
-                    // ends after [STREAMS_QUIET_MS] with nothing new — or when
-                    // the sweep watch cap is reached, for a list that keeps
-                    // trickling servers for hours. The count is re-stated on
-                    // every change, so the cover is a running total the whole
-                    // time and never has to "jump" from 5 to 43.
                     app.appScope.launch {
                         var lastSeen = StreamsLive.flow(sid).value.size
                         var quietSince = System.currentTimeMillis()
@@ -3324,10 +2309,6 @@ fun DetailScreen(
                                 )
                                 continue
                             }
-                            // A sweep that started while this list was already
-                            // growing is doing the same work on the same repos:
-                            // while one is alive the search is not over, however
-                            // quiet the list looks this second.
                             if (vm.backgroundSweepBusy(searchedEpisode)) {
                                 quietSince = System.currentTimeMillis()
                                 continue
@@ -3353,9 +2334,6 @@ fun DetailScreen(
         }
     }
 
-    // Saved progress for the given video (movie = null episode), or null when
-    // there is nothing worth resuming (never really started, or already
-    // watched through to the credits window — see WatchProgress).
     val savedProgressFor: (Episode?) -> Pair<Long, Long>? = { ep ->
         val eid = ep?.id.orEmpty()
         val h = historyForTitle.firstOrNull { it.episodeId == eid }
@@ -3410,11 +2388,6 @@ fun DetailScreen(
             }
         }
     }
-    // Unaired episodes never reach the player: the source lists them, but
-    // there is nothing to resolve yet — tapping one used to report "no
-    // playable source", which reads as broken. They wear a badge (see the
-    // cards) and tapping one says it is not out yet instead.
-    // Hoisted: `tr` is @Composable and this gate is a plain function.
     val notReleasedYet = tr("Not released yet")
     fun playBlocked(ep: Episode?): Boolean {
         if (!isEpisodeUnaired(ep?.released)) return false
@@ -3440,11 +2413,6 @@ fun DetailScreen(
         }
     }
 
-    // The download buttons (the play row and every episode row). Identical to
-    // [tryPlay] apart from the flag the player needs: it resolves servers and
-    // opens the player the same way, and the player shows its own download
-    // chooser the moment a server is ready — so "download episode 7" reaches
-    // exactly the same code path as "play episode 7, then tap Download".
     val tryDownload: (Episode?) -> Unit = { ep ->
         if (!playBlocked(ep)) {
             if (scraperImageMode) openScraperReader(ep)
@@ -3455,41 +2423,20 @@ fun DetailScreen(
         }
     }
 
-    // What the primary action button plays: the first episode with progress
-    // worth continuing (the visible page first, then the rest of the season),
-    // so a returning viewer gets a "Resume S1 E3" button instead of having to
-    // remember where they stopped. Null = nothing to resume.
     val resumeEp = remember(shownEps, sortedEps, historyForTitle, episodeId) {
         shownEps.firstOrNull { savedProgressFor(it) != null }
             ?: sortedEps.firstOrNull { savedProgressFor(it) != null }
     }
 
-    // The primary TV detail action is computed before the hero is built so the
-    // living-room layout can put Play directly over the artwork. Phone layout keeps
-    // the existing action row below the header.
     val detailUnknownVegaKind = m?.type == MediaType.UNKNOWN &&
         m?.providerId?.startsWith("vega|") == true &&
         !episodesLoaded
     val detailIsSeries = m?.type == MediaType.SERIES ||
         detailUnknownVegaKind ||
-        // An UNKNOWN site-scraper row whose episodes are still resolving is
-        // a series-in-waiting (the spinner section, Play holding for episode
-        // 1): hiding the section until the lookup settles is what made every
-        // freshly-opened series flash "movie with no episodes". Once the
-        // lookup settles the truth below takes over — movies (including
-        // movie-probe corrections) drop the section, series keep it.
         (m?.type == MediaType.UNKNOWN && !episodesLoaded) ||
-        // A failed lookup is not a verdict either way: the section stays so
-        // the page says so and offers its retry, instead of silently
-        // dropping to a Play button whose search just came back empty.
-        // (A probe-corrected movie clears episodesFailed, so movies never
-        // land here.)
         (episodesFailed && (m?.type == MediaType.SERIES || m?.type == MediaType.UNKNOWN)) ||
         (episodes?.isNotEmpty() == true)
     val detailCanPlay = !detailIsSeries || episodes.isNullOrEmpty()
-    // The Play button prefers an episode that is actually out: a season whose
-    // first listed episode has not aired yet used to open straight into "no
-    // playable source". Progress always wins first (a watched episode aired).
     val detailBtnEp = if (detailCanPlay) null else (resumeEp
         ?: sortedEps.firstOrNull { !isEpisodeUnaired(it.released) }
         ?: sortedEps.firstOrNull())
@@ -3514,11 +2461,6 @@ fun DetailScreen(
         autoplayFired = true
         if (!playBlocked(detailBtnEp)) tryPlay(detailBtnEp)
     }
-    // A returning viewer lands here to continue, not to start over: once the
-    // episodes are known, warm the CONTINUE episode's servers in the
-    // background (the page prefetch only warms the first), so the Resume tap
-    // is a cache hit and starts instantly. Skipped for hold-play arrivals —
-    // autoplay is already playing the target directly.
     LaunchedEffect(episodesLoaded, resumeEp?.id) {
         if (!episodesLoaded || autoplay) return@LaunchedEffect
         val target = resumeEp ?: return@LaunchedEffect
@@ -3534,9 +2476,6 @@ fun DetailScreen(
         detailBtnEp.season > 1 -> I18n.t("Play") + " S"+detailBtnEp.season+" E"+detailBtnEp.number
         else -> I18n.t("Play") + " E"+detailBtnEp.number
     }
-    // What the heart saves into the Library — built from the (type-corrected)
-    // meta when it has arrived, and from the nav args before that, so the
-    // button works even while the origin's /meta is still in flight.
     val savedItem = remember(m, livePid, mediaId, title, posterUrl, rawType, type) {
         MediaItem(
             providerId = livePid,
@@ -3551,20 +2490,8 @@ fun DetailScreen(
             rawType = rawType.ifBlank { m?.rawType.orEmpty() },
         )
     }
-    // Television wears TMDB art on every hero/backdrop surface (see
-    // Artwork.tvHeroModel): kick that lookup off the moment the title opens,
-    // from nav args alone, instead of waiting for the provider's own detail
-    // response — so the high-quality backdrop is already in flight (usually
-    // already cached) when the page paints. The phone does the same for its
-    // own header art (see Hero): a donghua the matcher knows gets its
-    // TMDB/AniList/Bangumi art even when the provider shipped nothing.
     LaunchedEffect(savedItem) { Artwork.prefetch(savedItem); Artwork.retryMiss(savedItem) }
     val isSaved = favorites.any { it.uniqueId == savedItem.uniqueId }
-    // A title joins the Library THROUGH a category, so the button opens the
-    // picker rather than saving blind: "Add to library" asks which categories
-    // (the type-appropriate one is pre-ticked, so the common case is one tap),
-    // and an already-saved title re-files from the same sheet — the "Move to"
-    // of the Library screen, in the place the user actually is.
     val savedCategories: Set<String> = filings[savedItem.uniqueId].orEmpty()
     val defaultCategories: Set<String> = when (savedItem.type) {
         MediaType.MOVIE -> setOf(LibraryCategory.MOVIES)
@@ -3584,48 +2511,23 @@ fun DetailScreen(
     var showDlQuality by remember { mutableStateOf(false) }
     var dlQualityOpts by remember { mutableStateOf(listOf<Pair<Int, Long>>()) }
     var dlPendingKind by remember { mutableStateOf(com.hikari.app.download.DownloadKind.OFFLINE) }
-    // Audio asked once per batch after the quality (see askBatchAudio): the
-    // picked server's own rendition names, with the chosen height/bandwidth
-    // stashed alongside while open.
     var showDlAudio by remember { mutableStateOf(false) }
     var dlAudioOpts by remember { mutableStateOf(listOf<String>()) }
     var dlPendingH by remember { mutableStateOf(0) }
     var dlPendingBw by remember { mutableStateOf(0L) }
     var dlAudioClaimed by remember { mutableStateOf(false) }
-    // ChoiceDialog fires onDismiss() and THEN onPick() on every tap — so a tap
-    // on a quality would queue the batch twice (Highest from the dismiss,
-    // then the pick). The dismiss path therefore only queues when no pick
-    // claimed the dialog, checked after the tap's own pick has run.
     var dlQualityClaimed by remember { mutableStateOf(false) }
     var dlChecked by remember { mutableStateOf(setOf<String>()) }
    var dlTargets by remember { mutableStateOf(listOf<Episode>()) }
     var dlServers by remember { mutableStateOf(listOf<StreamSource>()) }
-    // Per-episode downloadable cache: the picker sweep's own answers, keyed by
-    // episode. The queue reuses these instead of re-searching from scratch, so a
-    // picked server can never miss at queue time just because the second search
-    // timed out or the origin died between the two passes.
     val dlCache = remember { mutableStateMapOf<String, List<StreamSource>>() }
     fun dlEpKey(ep: Episode): String = ep.id.ifBlank { "s" + ep.season + "e" + ep.number }
-    // Normalized server name: case-insensitive, without the quality/audio tail
-    // ("PlayIMDb | 1080p FHD | Original-Audio" vs "PlayIMDb | 1080p FHD") and
-    // without dedup counts (" (2)"), so the same mirror matches across passes.
     fun normDlName(n: String): String = n.lowercase().trim().substringBefore("|").trim().replace(Regex("\\s*\\(\\d+\\)\\s*$"), "").trim()
     var dlBusy by remember { mutableStateOf(false) }
-    // True while the batch union is still growing. Rows stay clickable the
-    // whole time: the list opens on the first server instead of after the
-    // whole sweep, and late servers append without disturbing a tap.
     var dlSearching by remember { mutableStateOf(false) }
     var dlLookupJob by remember { mutableStateOf<Job?>(null) }
-    // Lookup generation: the server search runs in the background while the
-    // episode picker stays open with its progress line. Tapping Cancel bumps
-    // this, so a stale lookup can never pop the server picker (or its toast)
-    // after the user has already backed out.
     var dlGen by remember { mutableStateOf(0) }
     var dlMsg by remember { mutableStateOf<String?>(null) }
-    // The scope the batch search runs in (see the scope question below):
-    // false searches every installed extension like playback does, true
-    // confines the batch to the title's own extension. Set when the search
-    // starts and threaded through every re-lookup of the chain.
     var dlOriginOnly by remember { mutableStateOf(false) }
     // Smart batch picker state. [dlSwept] = episodes whose server lookup has
     // finished (so "no server" can be told apart from "not checked yet"),
@@ -3642,20 +2544,8 @@ fun DetailScreen(
     var dlScopePending by remember { mutableStateOf(listOf<Episode>()) }
     var showDlScope by remember { mutableStateOf(false) }
     val batchItem = m ?: savedItem
-    // Television episode stills, straight from TMDB (see TmdbStills): the
-    // TMDB still wins (desktop parity), the provider's own thumbnail is the
-    // fallback, keyed by (season, episode) with a position fallback for
-    // absolute-numbered donghua seasons. The shelf keeps its old art when
-    // TMDB has nothing. Loaded once the episode list for the shown
-    // season is known, so switching seasons re-asks for the new range.
     val tvEpStills = remember { mutableStateMapOf<Pair<Int, Int>, String>() }
-    // TMDB episode titles/overviews keyed the same way, so a card whose
-    // provider shipped no name or synopsis still prints something true (see
-    // TvCs3EpisodeCard) instead of "Episode 12" + "No description available".
     val tvEpMeta = remember { mutableStateMapOf<Pair<Int, Int>, Pair<String?, String?>>() }
-    // Television screenshots strip, straight from TMDB (see TmdbScreenshots):
-    // the reference client's own Screenshots section. Backdrops only, capped
-    // at 8 — a title with no backdrops simply shows no section.
     val tvScreenshots = remember { mutableStateListOf<String>() }
     // Television banner owns the desktop rule: the title's own TMDB
     // backdrops (plural) rotate behind the page; provider art only when
@@ -3676,10 +2566,6 @@ fun DetailScreen(
                     }
                 }
             }
-            // Absolute-numbered seasons (a 300-episode donghua "season 1"
-            // that TMDB splits into seasons of ~100) run past TMDB's
-            // per-season count: fall back to the episode's POSITION in the
-            // season, like the desktop client.
             val bySeason = sortedEps.groupBy { it.season }
             for ((season, eps) in bySeason) {
                 val ordered = data[season]?.ordered ?: continue
@@ -3695,11 +2581,6 @@ fun DetailScreen(
                 }
             }
         }
-        // The banner resolves with the title, not the episode list: a movie
-        // has no seasons but still gets its rotating backdrop. w1280, not
-        // original: a full-res TMDB file is multi-MB, and decoding one of
-        // those every rotation is what stalled TV scrolling — 1280px is
-        // already more than the panel it is drawn under.
         LaunchedEffect(m?.uniqueId) {
             tvBgUrls.clear()
             tvBgIndex = 0
@@ -3728,16 +2609,6 @@ fun DetailScreen(
         val nm = e.name?.trim().orEmpty()
         return if (nm.isBlank()) base else base + " - " + nm.take(60)
     }
-    // The batch's server search: EVERY selected episode is asked (not just
-    // the first), and the picker opens on the UNION — the same servers the
-    // single download lists — so the server page appears whenever ANY picked
-    // episode has a downloadable server. The episode picker stays open
-    // underneath with a live "(i/N)…" progress line, and Cancel there bumps
-    // [dlGen] so a stale search can never pop the picker after backing out.
-    // Cancels an in-flight batch server search (the "Finding servers…"
-    // phase) and drops the stuck state with it: the progress line clears
-    // and every button gated on the search lights up again. Backing out of
-    // either dialog, or its own Cancel button, lands here.
     fun cancelDlLookup() {
         dlLookupJob?.cancel()
         dlLookupJob = null
@@ -3826,10 +2697,6 @@ fun DetailScreen(
                 sweep(eps, originOnly)
                 if (gen != dlGen) return@launch
                 if (union.isEmpty() && originOnly) {
-                    // "This extension" has nothing for this title (the origin
-                    // itself answered empty): fall back to the all-extensions
-                    // sweep before giving up, so a dead origin never sinks
-                    // the batch picker.
                     dlOriginOnly = false
                     dlMsg = "This extension has nothing \u2014 searching all extensions\u2026"
                     dlSwept = emptySet()
@@ -3856,9 +2723,6 @@ fun DetailScreen(
                 }
             } finally {
                 if (dlLookupJob === job) dlLookupJob = null
-                // A cancelled/superseded search must never touch the state its
-                // replacement owns: backing out or picking already cleared or
-                // replaced these. Only the live generation settles them.
                 if (gen == dlGen) {
                     dlSearching = false
                     dlBusy = false
@@ -3868,22 +2732,12 @@ fun DetailScreen(
         }
         dlLookupJob = job
     }
-    // Server picked for a batch: stash it and ask the destination ONCE — the
-    // same two the player's own Download button offers (in-app or phone) —
-    // and every episode queues there. The queueing itself then runs in the
-    // background with no modal: each episode lands in the Downloads section
-    // the moment it is queued, where it can be paused, resumed or deleted,
-    // and the app stays usable throughout.
     fun confirmDlServer(srv: StreamSource, auto: Boolean = false) {
         if (dlBusy) return
         // Auto = an episode the picked server lacks may come from ANY other
         // server. With an audio filter active the language is locked instead,
         // so a Hindi batch never silently turns English.
         dlAutoFill = auto && dlPickAudio.isBlank()
-        // The tap wins over the tail: stop appending the moment a server is
-        // picked, so the finished union can never pop the picker back over the
-        // destination/quality questions. The queue pass re-resolves every
-        // episode itself (see startBatchDownload).
         dlLookupJob?.cancel()
         dlLookupJob = null
         dlGen++
@@ -3895,17 +2749,7 @@ fun DetailScreen(
         dlPendingSrv = srv
         showDlDest = true
     }
-    // The batch's per-episode match for the picked server: same name on the
-    // same provider first, then either half, then whatever resolved — the
-    // same preference the single-download queue uses.
-    // Only servers with a real URL can win (a blank match used to queue
-    // an unplayable task), and an empty list returns null instead of
-    // crashing on [0].
    fun matchDlServer(servers: List<StreamSource>, srv: StreamSource): StreamSource? {
-        // Only servers that can actually download can win: same downloadable
-        // rule the sweep filters by (no torrents, no external opens, no blank
-        // urls). The normalized-name step lets the same mirror match across
-        // passes even when its quality/audio tail differs.
         val usable = servers.filter { s -> !s.isTorrent && !s.externalUrl && s.ytId.isNullOrBlank() && s.url.startsWith("http", ignoreCase = true) }
         if (usable.isEmpty()) return null
         return usable.firstOrNull { it.name == srv.name && it.providerId == srv.providerId }
@@ -3976,10 +2820,6 @@ fun DetailScreen(
                     }
                     if (!BatchServerPlanner.sameServer(src, srv)) swappedEps.add(ep.season to ep.number)
                     val label = epTag(ep)
-                    // The task id is per episode (see enqueueBatch above): a
-                    // blank provider episode id collapsed the whole batch onto
-                    // ONE id, so every enqueue replaced the last and only a
-                    // single download survived.
                     val epKey = ep.id.ifBlank { "s" + ep.season + "e" + ep.number }
                     val task = com.hikari.app.download.DownloadTask(
                         id = com.hikari.app.download.DownloadTask.idFor(batchItem.providerId.ifBlank { "detail" }, batchItem.id, epKey, kind),
@@ -4008,9 +2848,6 @@ fun DetailScreen(
                     else failedEps.add(ep.season to ep.number)
                 }
             } finally {
-                // The queueing pass must never strand the busy flag (a throw
-                // or a cancelled screen had the same freezing effect as the
-                // lookup's stuck state above).
                 dlBusy = false
             }
             val failedTxt = BatchServerPlanner.compactEpisodes(failedEps)
@@ -4035,16 +2872,8 @@ fun DetailScreen(
             }
         }
     }
-    // The second once-per-batch question (destination was the first): read
-    // the picked server's own qualities off the first episode — the same
-    // "Choose quality" the single download asks — and queue the whole batch
-    // at the answer. A single-variant source skips the question and goes
-    // straight in at Highest.
     fun askBatchQuality(srv: StreamSource, kind: com.hikari.app.download.DownloadKind) {
         showDlDest = false
-        // The picked server is already in hand from the live list: probe ITS
-        // own playlist directly instead of re-running the whole search, so a
-        // tap on an instantly shown server starts the flow instantly.
         if (srv.url.isBlank() || dlTargets.isEmpty()) {
             runCatching { android.widget.Toast.makeText(context, "No downloadable server found.", android.widget.Toast.LENGTH_SHORT).show() }
             return
@@ -4118,10 +2947,6 @@ fun DetailScreen(
                         Spacer(Modifier.height(6.dp))
                         androidx.compose.material3.Text(msg, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
                         Spacer(Modifier.height(2.dp))
-                        // The finding phase used to have no way out: a tap that
-                        // only meant to peek at the episode list left the
-                        // dialog counting with every button greyed. This ends
-                        // the search and leaves the dialog open to re-tap.
                         androidx.compose.material3.TextButton(onClick = { cancelDlLookup() }) {
                             androidx.compose.material3.Text("Cancel search")
                         }
@@ -4494,9 +3319,6 @@ fun DetailScreen(
             },
             selectedKey = "best",
             onPick = { key ->
-                // Backing out picks Highest: the batch still runs rather than
-                // dying on a dismissed sheet. The quality answer chains into
-                // the audio question (see askBatchAudio).
                 showDlQuality = false
                 dlQualityClaimed = true
                 if (pending != null) {
@@ -4506,10 +3328,6 @@ fun DetailScreen(
             },
             onDismiss = {
                 showDlQuality = false
-                // A tap runs this BEFORE onPick (see dlQualityClaimed): queue
-                // Highest only when no pick claimed the dialog — deferred past
-                // the tap so the pick's own queue wins. The dismiss answer
-                // chains into the audio question like a Highest pick.
                 if (pending != null && !dlQualityClaimed) {
                     scope.launch {
                         delay(150)
@@ -4556,9 +3374,6 @@ fun DetailScreen(
             },
             onDismiss = {
                 showDlAudio = false
-                // A tap runs this BEFORE onPick (see dlAudioClaimed): queue
-                // at the default track only when no pick claimed the dialog,
-                // deferred past the tap so the pick's own queue wins.
                 if (pending != null && !dlAudioClaimed) {
                     scope.launch {
                         delay(150)
@@ -4571,11 +3386,6 @@ fun DetailScreen(
             },
         )
     }
-    // NOTE: no "Preparing downloads" modal any more. It used to sit here with
-    // no way to dismiss while the batch queued, making the app unusable until
-    // every episode resolved — the queue now runs in the background (see
-    // startBatchDownload) with a toast at the start and the end, and the
-    // Downloads section owns everything in between.
 
     if (librarySheet) {
         CategoryPickerSheet(
@@ -4603,35 +3413,11 @@ fun DetailScreen(
         )
     }
 
-    // ---- The mark sheet: watched / watching / for later ----------------------
-    //
-    // The reference client puts a check button beside Play that files the title
-    // itself — watched, currently watching, or for later — and this is that button
-    // over THIS app's own records. Nothing here is a second kind of state:
-    //
-    //  * "watched" and "watching" are watch-history entries (the watched test is
-    //    the same one the Continue Watching shelf uses — nearly at the end of a
-    //    known length — so a mark and a real play cannot disagree), and
-    //  * "for later" is a LIBRARY FILING into a `Watch later` category, so the
-    //    title shows up in the Library screen, in My Stuff and in a backup, and
-    //    can be re-filed or removed there like any other saved title.
-    //
-    // Which episode a mark applies to is the episode the Play button is pointing
-    // at (the one being resumed, or the first) — the same target the button names,
-    // so the sheet never marks something other than what Play would open. A series
-    // additionally gets "all episodes", which is the reference client's
-    // "mark season as watched".
     val watchLaterName = tr("Watch later")
-    // Found by NAME: "Watch later" is an ordinary, editable Library category
-    // (created by the sheet's first use), so a user who renames it has renamed
-    // their own shelf — no hidden id is holding a filing they cannot see.
     val watchLaterCat = categories.firstOrNull { it.name.equals(watchLaterName, ignoreCase = true) }
     val markIsSeries = m?.type == MediaType.SERIES || episodes?.isNotEmpty() == true
     val markTargetEp: Episode? = if (markIsSeries) (resumeEp ?: sortedEps.firstOrNull()) else null
     val markTargetHistory = historyForTitle.firstOrNull { it.episodeId == markTargetEp?.id.orEmpty() }
-    // "Watched" is exactly the condition the Continue Watching shelf treats as
-    // finished (see HomeScreen and WatchProgress): reached the credits window
-    // of a known length, so a mark and a real play cannot disagree.
     val markWatched = markTargetHistory?.let {
         WatchProgress.isWatched(it.positionMs, it.durationMs)
     } ?: false
@@ -4664,12 +3450,6 @@ fun DetailScreen(
         }
     }
 
-    /** Records one mark as a history entry. `position`/`duration` are what the
-     *  shelf reads, so "watched" is written as a FINISHED entry (the title's own
-     *  runtime when TMDB knows it, otherwise an equal pair that simply reads as
-     *  finished) and "watching" as a just-started one — which is what makes it
-     *  appear under Continue watching without inventing a position the viewer
-     *  has not reached. */
     fun writeMark(ep: Episode?, watched: Boolean) {
         val runtimeMs = extras?.details?.runtimeMinutes
             ?.takeIf { it > 0 }?.toLong()?.times(60_000L) ?: 0L
@@ -4700,11 +3480,6 @@ fun DetailScreen(
                 watchedAt = System.currentTimeMillis(),
             )
             app.store.addHistory(entry)
-            // The trackers (Settings → Trackers) hear about this too: "mark as
-            // watched" is exactly the fact the player reports at the end of an
-            // episode. Reporting only from the player meant marking a season
-            // watched here left the user's own list untouched, which reads as
-            // tracking being broken.
             runCatching {
                 TrackerSync.pushWatched(app.store, TrackerSync.mediaOf(entry), entry.uniqueKey)
             }
@@ -4781,9 +3556,6 @@ fun DetailScreen(
                         }
                     }
                     "watching" -> {
-                        // Never resets a position that is already saved: "watching"
-                        // is a STATUS, and clobbering someone's 40th minute with a
-                        // freshly-started entry would be the opposite of helping.
                         if (!markWatching) writeMark(markTargetEp, watched = false)
                     }
                     "later" -> scope.launch {
@@ -4792,10 +3564,6 @@ fun DetailScreen(
                                 savedItem.uniqueId, savedCategories - watchLaterCat.id,
                             )
                         } else {
-                            // Being "for later" means being in the Library, so the
-                            // category is created on its first use and the title is
-                            // saved into it — one tap, and the Library screen, My
-                            // Stuff and a backup all agree about it.
                             val cat = watchLaterCat ?: app.store.addLibraryCategory(watchLaterName)
                             app.store.addFavorite(savedItem)
                             app.store.addFavoriteCategories(savedItem.uniqueId, setOf(cat.id))
@@ -4815,17 +3583,6 @@ fun DetailScreen(
         )
     }
 
-    // Arriving from watch history: once metadata/episodes are loaded, offer to
-    // resume the target episode (or the movie) instead of silently jumping in.
-    //
-    // `resumeHandled` is [rememberSaveable] and the claim is ALSO held
-    // process-wide for a few minutes ([AutoResumeGuard]), so a page that is
-    // re-created — back out of the player, rotate, rebuild, re-open the same
-    // History row — shows its own Play/Resume button instead of starting the
-    // player and a fresh server search again by itself. That re-play is what the
-    // user was watching happen ("clicking back starts loading the screen all
-    // over again with the server search"), and it is also how two and three
-    // player instances ended up stacked on the same episode.
     var resumeHandled by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(meta, episodes, episodeId, startPositionMs, historyForTitle) {
         if (resumeHandled) return@LaunchedEffect
@@ -4868,15 +3625,6 @@ fun DetailScreen(
     // one place that fetches it.
     var headerPx by remember { mutableStateOf(0) }
     var logoSizePx by remember { mutableStateOf(0) }
-    // Detail page position held across visits (see ScrollKeeper): leaving
-    // for an episode and coming back lands where the page was.
-    // TV exception: a re-opened title always starts at the TOP. Restoring a
-    // mid-page position strands the remote: the opening focus grab (see
-    // heroBlock) only fires at the top, and nothing else takes focus down in
-    // the episode area — so up/down/click go dead while Back still works.
-    // Starting at the top keeps the grab, the D-pad, and the expected page.
-    // (Returning from the player without leaving the page keeps its live
-    // position naturally — this only clears a stale saved one on re-entry.)
     if (isTvLayout) {
         val dk = "detail:$providerId|$mediaId"
         val ds = com.hikari.app.ui.components.ScrollKeeper.load(dk)
@@ -4893,11 +3641,6 @@ fun DetailScreen(
         ?: (PosterLoader.model(posterUrl) to false)
 
                     val tvPlayRow: @Composable (androidx.compose.ui.unit.Dp) -> Unit = { topPad ->
-                    // The row is full-width with wrap-sized pills: a cramped
-                    // ancestor (the narrow hero column, a narrow viewport) must
-                    // never squeeze the pills — required* sizes hold the pill
-                    // shape and overflow instead of compressing (the "Play E1 /
-                    // heart / download squash when I scroll" report).
                     Row(
                         Modifier.fillMaxWidth().padding(top = topPad),
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -4923,13 +3666,6 @@ fun DetailScreen(
                         ) {
                             Icon(Icons.Filled.PlayArrow, contentDescription = null)
                             Spacer(Modifier.width(8.dp))
-                            // Single line, always: the label alone shrinks —
-                            // and ADAPTIVELY: a long episode number
-                            // ("Resume E2650") steps down further so it still
-                            // fits instead of cutting off. No weight on the
-                            // label: it used to claim every spare dp of the
-                            // button's width and stretch the white pill
-                            // across the whole hero.
                             Text(
                                 detailActionLabel,
                                 maxLines = 1,
@@ -4940,9 +3676,6 @@ fun DetailScreen(
                                 ),
                             )
                         }
-                        // Save square FIRST, like the reference client's row
-                        // (Play, heart, download): it mirrors the phone row's
-                        // library toggle below.
                         if (isSaved) {
                             FilledTonalButton(
                                 onClick = openLibrary,
@@ -4974,10 +3707,6 @@ fun DetailScreen(
                                 onClick = { openDlChoice() }
                             )
                         ) {
-                            // Material glyph, not the drawable: the drawable's
-                            // own white fill ignored the button's content color
-                            // and vanished on some TV themes (the "button with
-                            // no icon" report).
                             Icon(Icons.Filled.Download, contentDescription = tr("Download"))
                         }
                         // Trailer LAST: the title's own trailer instead of
@@ -5010,12 +3739,6 @@ fun DetailScreen(
                     }
     val heroBlock: @Composable () -> Unit = {
         if (isTvLayout) {
-            // The remote starts on Back, not Play: Back is the topmost item, so
-            // taking focus can never scroll the page (bring-into-view at the
-            // top is a no-op), while Play sits at the hero's bottom edge and
-            // focusing it pulled the whole page down on open — the reported
-            // "auto scroll to metadata". Without any focus the D-pad sat on
-            // the nav rail and OK went Home, so focus must land here.
             LaunchedEffect(Unit) {
                 delay(150L)
                 if (detailList.firstVisibleItemIndex == 0 && detailList.firstVisibleItemScrollOffset < 200) {
@@ -5061,9 +3784,6 @@ fun DetailScreen(
                     previewPass = true, onClick = { nav.popBackStack() })) {
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = tr("Back"), tint = Color.White, modifier = Modifier.size(20.dp))
                 }
-                // In poster mode the episode shelf moves OUT of the hero. This leaves
-                // the whole lower part of the screen for episodes instead of squeezing them
-                // into the narrow right-side panel.
                 if (detailIsSeries && !episodePosterStyle) {
                     Box(
                         Modifier
@@ -5138,9 +3858,6 @@ fun DetailScreen(
                                     )
                                 }
                             }
-                            // Season actions, the reference TV client's header:
-                            // "Mark Season Watched" (the mark sheet's all-episodes
-                            // entry) and the Anti-spoiler toggle beside it.
                             Row(
                                 Modifier.fillMaxWidth().padding(top = 2.dp, bottom = 6.dp),
                                 horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -5317,14 +4034,6 @@ fun DetailScreen(
                 }
                 Column(
                     Modifier
-                        // The reference look (the Qi Refining shot): a narrow
-                        // text column parked low on the left, so the backdrop
-                        // art stays visible on the right instead of sitting
-                        // under full-width text. One-to-one with the reference:
-                        // ~half width, bottom-anchored with the action row just
-                        // off the bottom edge, everything small except the
-                        // wordmark/title. NEVER top-anchored: the whole block
-                        // must open low and stay low until the user scrolls.
                         .align(Alignment.BottomStart)
                         .fillMaxWidth(0.52f)
                         .padding(
@@ -5360,9 +4069,6 @@ fun DetailScreen(
                     }
                     Spacer(Modifier.height(6.dp))
 
-                    // One meta line, like the reference client: year, type,
-                    // cert chip inline, runtime, genres — a single small row
-                    // (no production row, no extra badges).
                     val tvMetaHead = buildList {
                         m?.year?.let { add(it.toString()) }
                         when (m?.type) {
@@ -5429,9 +4135,6 @@ fun DetailScreen(
                         }
                     }
                     if (!displayOverview.isNullOrBlank()) {
-                        // Three small lines like the reference client, with its
-                        // own small More button underneath — tapping text or
-                        // button toggles the full overview.
                         var tvOverviewFull by remember(displayOverview) { mutableStateOf(false) }
                         Text(
                             displayOverview!!,
@@ -5459,10 +4162,6 @@ fun DetailScreen(
                             )
                         }
                     }
-                    // The reference's action row sits below the plot: white
-                    // Play/Resume pill + save and download squares — for
-                    // series as well as movies, so the next episode is one
-                    // tap away without scrolling.
                     tvPlayRow(8.dp)
                 }
             }
@@ -5473,15 +4172,6 @@ fun DetailScreen(
         }
     }
 
-    // ---- What stays on screen while the header art leaves ----
-    //
-    // How far the art has scrolled away: 0 at the top of the page, 1 once it is
-    // gone. The art is the list's first item, so this is its own scroll distance
-    // over its own measured height (which is why the height is read from the
-    // layout rather than assumed from the style). Computed HERE, above the list,
-    // because the page's first content item has to reserve room for the pinned
-    // wordmark (see [pinnedLogoDp]) — the same number the wordmark itself is
-    // positioned and sized with.
     val headerScroll = if (detailList.firstVisibleItemIndex > 0) {
         headerPx.coerceAtLeast(1)
     } else {
@@ -5491,33 +4181,10 @@ fun DetailScreen(
         (headerScroll.toFloat() / headerPx.coerceAtLeast(1)).coerceIn(0f, 1f)
     val density = LocalDensity.current
 
-    // The user's own size for the wordmark (Settings → App Layout → Details
-    // header → Title logo size), as a multiplier over the two widths it is drawn
-    // at: [logoRestFrac] while it sits low in the header art, and
-    // [logoPinnedFrac] once the art has scrolled away and it is acting as the
-    // page's title.
-    //
-    // The PINNED end takes the setting at full strength — the same multiplier is
-    // applied to the pinned width itself — because that end is the one the reader
-    // looks at while reading the page, and it is the end that used to ignore the
-    // setting entirely: the pinned width was a constant, so raising the slider
-    // enlarged the wordmark on the header art and then handed back the same small
-    // title the moment the art scrolled away (the reported "when I scroll, even
-    // though the logo size from the setting changes on the image, on scrolling it
-    // stays the same small size").
-    //
-    // So: "Title logo size: 130%" means 1.3x at BOTH ends — a plain size
-    // multiplier, not a curve that disagrees with the number on the slider. At
-    // the default 100% both ends are exactly what they always were (rest 0.62,
-    // pinned 0.34), so nobody who never touched the slider sees any change.
     val logoScale = (detailLogoPercent / 100f).coerceIn(0.5f, 1.6f)
     val logoRestFrac = (0.62f * logoScale).coerceIn(0.2f, 1f)
     val logoPinnedFrac = (0.34f * logoScale).coerceIn(0.17f, 0.72f)
     val logoFrac = logoRestFrac + (logoPinnedFrac - logoRestFrac) * headerProgress
-    // How much room the pinned wordmark needs at the top of the page, in dp. Its
-    // height is measured from the layout (its aspect ratio is whatever TMDB's art
-    // is) and its height follows its width, so the ratio of the two fractions is
-    // the ratio of the two heights. Zero while there is no wordmark to draw.
     val pinnedLogoDp = if (logoSizePx > 0 && logoFrac > 0.01f && !heroLogo.isNullOrBlank()) {
         with(density) { (logoSizePx * logoPinnedFrac / logoFrac).toDp() }
     } else {
@@ -5526,11 +4193,6 @@ fun DetailScreen(
 
     Box(Modifier.fillMaxSize()) {
         if (isTvLayout) {
-            // ONE image behind the whole page, like the desktop client: the
-            // title's own TMDB backdrops rotate behind every section as the
-            // page scrolls over them. Provider art only when TMDB has
-            // nothing — and it never flashes first: the banner starts on the
-            // background colour and the TMDB art crossfades in.
             if (tvBgUrls.isNotEmpty()) {
                 androidx.compose.animation.Crossfade(
                     targetState = tvBgIndex.coerceIn(tvBgUrls.indices),
@@ -5570,9 +4232,6 @@ fun DetailScreen(
             }
             else -> {
                 LazyColumn(state = detailList, modifier = Modifier.fillMaxSize()) {
-                    // The header art is the page's FIRST item, so it scrolls up
-                    // and away as the page is read — see the header note above
-                    // for what the wordmark drawn over it does while it does.
                     item(key = "hero") { heroBlock() }
                     if (isTvLayout && detailIsSeries && episodePosterStyle) {
                         item(key = "tv-poster-episodes") {
@@ -5788,11 +4447,6 @@ fun DetailScreen(
                             }
                         }
                     }
-                    // The episode shelf used to run straight into the release
-                    // details below with no air between them (reported on a TV
-                    // screenshot): one breathing gap, TV series only — 40dp so
-                    // the shelf and the details read as separate blocks even
-                    // on dense phone-width TV windows.
                     if (isTvLayout && detailIsSeries) {
                         item(key = "tv-episode-details-spacer") {
                             Spacer(Modifier.height(40.dp))
@@ -5800,31 +4454,13 @@ fun DetailScreen(
                     }
                     if (!isTvLayout) {
                     item {
-                    // The first line of the page is spaced off the header art on
-                    // purpose. It used to start flush against the artwork's
-                    // bottom edge (the banner's gradient ends exactly where the
-                    // title begins, so the two read as one block and the title
-                    // looked like it had been pushed up into the header — the
-                    // user circled it on a screenshot). Styles that fade the art
-                    // into the background need the gap most.
                     Column(
                         Modifier.padding(
                             start = 16.dp,
                             end = 16.dp,
-                            // The pinned wordmark is drawn OVER this list (it
-                            // lives in the page's own box, which is what keeps
-                            // it still while the art scrolls), so as the header
-                            // leaves, the first line reserves exactly the height
-                            // the wordmark needs at its pinned size — a big
-                            // setting must not put the year, the genres and the
-                            // Play button underneath the title.
                             top = 16.dp + pinnedLogoDp * headerProgress,
                         )
                     ) {
-                        // The title as TEXT is drawn only when there is no logo to
-                        // draw instead: the reference client never repeats the
-                        // title twice on one page, and the wordmark above is the
-                        // title at that point.
                         if (heroLogo.isNullOrBlank()) {
                             Text(
                                 m?.title ?: title,
@@ -5841,9 +4477,6 @@ fun DetailScreen(
                             )
                         }
                         if (!m?.genres.isNullOrEmpty()) {
-                            // Scrollable, so four long genre names ("Ciencia
-                            // ficción", "Animación"…) can never run off the
-                            // right edge of the screen the way they did.
                             Row(
                                 Modifier
                                     .padding(top = 8.dp)
@@ -5851,13 +4484,6 @@ fun DetailScreen(
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
                                 m!!.genres.take(4).forEach { g ->
-                                    // Tapping a tag asks WHERE to search:
-                                    // "Search" stays inside this title's own
-                                    // extension, "Global search" fans out to
-                                    // every installed provider. Keeping both on
-                                    // the pill means one tap is still enough to
-                                    // discover the choice, without hijacking the
-                                    // tap to a single behaviour.
                                     var tagOpen by remember { mutableStateOf(false) }
                                     Box {
                                         Row(
@@ -5930,36 +4556,11 @@ fun DetailScreen(
                     }
                 }
                     }
-                // Type reporting varies wildly across .cs3 plugins, so only use
-                // it as a hint: show the episode list whenever the item is a
-                // series OR the provider actually returned episodes, and always
-                // give mislabeled/unknown items a Play button so nothing is
-                // ever unplayable.
-                //
-                // The Vega engines are the one case that needs more than that.
-                // Their catalog rows carry no movie/series flag at all (see
-                // VegaProvider.toItems: type UNKNOWN, the provider's own `type`
-                // string kept as rawType), and the thing that DOES know — the
-                // provider's meta.js — is the slow part of opening the page (one
-                // engine boot that runs getMeta and then every season's
-                // getEpisodes). So for those, an unknown kind is "show the
-                // episode area in its LOADING state" rather than "hide it":
-                // opening a series used to show nothing but a Play button for
-                // those seconds, which reads as "this show has no episodes".
-                // Once meta answers — series or movie — this collapses to the
-                // truth, and the loading row is the same one any other engine
-                // shows. Other engines' items are not UNKNOWN, so nothing
-                // changes for them.
                 val isSeries = detailIsSeries
                 val btnEp = detailBtnEp
                 val actionLabel = detailActionLabel
                 if (!isTvLayout) {
                 item {
-                    // The remote lands on Play the moment this row exists: on a
-                    // television the page opens with the D-pad already sitting
-                    // here, so Enter plays the title. (On a phone this is a
-                    // no-op.) The short delay is one layout pass — the requester
-                    // cannot point at the button until it has been placed.
                     LaunchedEffect(Unit) {
                         if (!com.hikari.app.tv.TvMode.isTv) return@LaunchedEffect
                         delay(150L)
@@ -5983,24 +4584,10 @@ fun DetailScreen(
                                 // The remote lands here when the page opens (see
                                 // playFocus above); a no-op on a phone.
                                 .focusRequester(playFocus),
-                            // Tighter inside padding (width is weight-driven,
-                            // so the pill is exactly as big — the label just
-                            // gets more of it, for "Resume E2650" and friends).
                             contentPadding = PaddingValues(horizontal = 8.dp),
                         ) {
                             Icon(Icons.Filled.PlayArrow, contentDescription = null)
                             Spacer(Modifier.width(6.dp))
-                            // Always an action word, never a spinner: the
-                            // source search keeps running in the background
-                            // (prefetch + live feed) and the sheet shows its
-                            // own loader, so the button must never sit on a
-                            // "Preparing…" spinner of its own. And always ONE
-                            // line: "Resume E1" wrapped and the pill came out
-                            // tall beside Download/Library (screenshot-proven).
-                            // The label alone shrinks — and ADAPTIVELY: a long
-                            // episode number ("Resume E2650") steps down
-                            // further so it still fits instead of cutting off.
-                            // The pill itself is untouched.
                             Text(
                                 actionLabel,
                                 maxLines = 1,
@@ -6034,9 +4621,6 @@ fun DetailScreen(
                                 modifier = Modifier.size(18.dp)
                             )
                         }
-                        // Library toggle, mirroring the player's heart: the same
-                        // MediaItem and the same store calls, so the two views
-                        // can never disagree about what is saved.
                         if (isSaved) {
                             FilledTonalButton(onClick = openLibrary) {
                                 Icon(
@@ -6061,11 +4645,6 @@ fun DetailScreen(
                     }
                 }
                 }
-                // A Vega movie's quality rows (the provider's own quality list —
-                // "480p [650MB]", "1080p [9.3GB]" — the way the Vega app lists
-                // the picked entry's rows). Play resolves through the picked
-                // row's link, so a dead first row no longer sinks the title
-                // while its other rows play fine.
                 if (isVegaPage && !isSeries && vegaMovieOptions.size > 1) {
                     item {
                         VegaOptionPicker(
@@ -6075,15 +4654,6 @@ fun DetailScreen(
                         )
                     }
                 }
-                // ---- The mark state, ON the page --------------------------------
-                //
-                // The reference client's mark button hides its own answer: the only
-                // way to learn whether a title is watched, being watched, or filed
-                // for later is to tap the button and read the sheet back. The state
-                // is drawn here instead — every mark the title carries is a chip,
-                // so one glance at the page answers "have I marked this?" — and the
-                // sheet (which owns the actions that are not a plain on/off: mark
-                // every episode, remove from history) opens from the same strip.
                 if (!isTvLayout) {
                 item {
                     Row(
@@ -6093,9 +4663,6 @@ fun DetailScreen(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        // In the order the sheet offers them, and only when they are
-                        // set: the strip IS the answer, so an unset mark is a chip
-                        // that is not there rather than a chip that says "no".
                         if (markWatched) {
                             MarkChip(tr("Watched"), active = true) { markSheet = true }
                         }
@@ -6105,10 +4672,6 @@ fun DetailScreen(
                         if (markLater) {
                             MarkChip(tr("Watch later"), active = true) { markSheet = true }
                         }
-                        // The way into the sheet — and, when nothing is marked, the
-                        // answer that nothing is. An outlined chip reads as "not
-                        // set" as plainly as a filled one reads as "set", so the
-                        // strip is never empty and never ambiguous.
                         MarkChip(
                             if (markAnything) tr("Change") else tr("Mark"),
                             active = false,
@@ -6116,18 +4679,9 @@ fun DetailScreen(
                     }
                 }
                 }
-                // "Show Details" block (Nuvio/Stremio style): the stat line
-                // (year · runtime · certification · rating) plus status/country/
-                // language and the director/writer credits. Renders only once
-                // the background TMDB lookup has landed.
                 extras?.details?.let { det ->
                     item {
                         if (isTvLayout) {
-                            // The reference client's Show Details block: two
-                            // columns of label/value rows plus the studio and
-                            // network logo rows. The hero already carries the
-                            // year/runtime/cert line and the rating badges, so
-                            // they stay out of this block.
                             val detailRows = ArrayList<Pair<String, String>>(8)
                             det.status?.let { detailRows.add(tr("Status") to trStatus(it)) }
                             det.country?.let { detailRows.add(tr("Country") to it) }
@@ -6160,10 +4714,6 @@ fun DetailScreen(
                         } else {
                             DetailsBlock(
                                 d = det,
-                                // TV already shows ratings + year/runtime/cert in
-                                // the hero (reference layout) — the block below
-                                // keeps only status/country/language/votes/
-                                // release/director/writers so nothing shows twice.
                                 ratings = if (showDetailRating && !isTvLayout) ratings else emptyList(),
                                 hideHeadline = isTvLayout,
                                 // The callback stays wired for when the strip
@@ -6198,26 +4748,11 @@ fun DetailScreen(
                         }
                     }
                 }
-                // Cast + Trailers sit ABOVE the episode list — the order the
-                // Nuvio/Stremio detail page uses. Below it they were buried under
-                // a 30-episode season (or below the fold of a long overview) and
-                // read as "the sections are missing". Both come from the same
-                // background TMDB call, and each row is skipped entirely when
-                // that lookup found nothing.
-                // A local read of the delegated property: a `by remember` value
-                // cannot be smart-cast, so the null check happens on a plain val.
                 val extrasNow = extras
                 if (extrasNow != null && extrasNow.cast.isNotEmpty()) {
-                    // For an anime, `cast` holds the characters (with the
-                    // Japanese voice actors as their second line) — see
-                    // AnimeCast. The row says which one it is showing.
                     val cast = extrasNow.cast
                     val characters = extrasNow.castIsCharacters
                     if (isTvLayout) {
-                        // The reference client's cast rail: "Cast & Crew" (or
-                        // "Characters" for anime) with the purple View All
-                        // link, 140dp 2:3 actor cards, and the View All tile
-                        // closing the rail when the roster runs long.
                         item {
                             val showAll = cast.size > 8
                             val visible = if (showAll) cast.take(8) else cast
@@ -6327,9 +4862,6 @@ fun DetailScreen(
                 }
                 extras?.trailers?.takeIf { it.isNotEmpty() }?.let { trailers ->
                     if (isTvLayout) {
-                        // The reference client's trailer rail: count header
-                        // plus 320dp 16:9 cards with OFFICIAL/type badges, the
-                        // center play button and the title below.
                         item {
                             Column(
                                 Modifier
@@ -6364,10 +4896,6 @@ fun DetailScreen(
                     } else {
                         item {
                             TrailerRow(trailers) { trailer ->
-                                // Trailers hand off to the YouTube app instead of
-                                // playing in Hikari's WebView: YouTube redirects to
-                                // m.youtube.com and the WebView's redirect
-                                // protection blocks that, leaving a black page.
                                 openYouTubeVideo(
                                     context,
                                     trailer.youtubeKey,
@@ -6377,15 +4905,8 @@ fun DetailScreen(
                         }
                     }
                 }
-                // Television Screenshots, the reference client's own strip:
-                // TMDB backdrops in a 16:9 rail. Phone untouched — this
-                // section never existed there, and the strip simply doesn't
-                // render when TMDB has no backdrops for the title.
                 if (isTvLayout && tvScreenshots.isNotEmpty()) {
                     item(key = "tv-screenshots") {
-                        // The reference client's Screenshots section: count
-                        // pill plus the mosaic — the featured shot at half
-                        // width, the 2x2 grid beside it, the +N-more cell.
                         Column(
                             Modifier
                                 .fillMaxWidth()
@@ -6401,11 +4922,6 @@ fun DetailScreen(
                     }
                 }
                 if (isSeries && !isTvLayout) {
-                    // A Vega series' pack picker (audio variants, seasons,
-                    // season+quality rows — the provider's own titles, verbatim,
-                    // the way the Vega app's dropdown lists its entries). Only
-                    // the picked pack's episodes are below, so switching packs
-                    // switches the list instead of re-filtering one merged blob.
                     if (isVegaPage && vegaPacks.size > 1) {
                         item {
                             // The picker's position is the LIST position; the
@@ -6437,10 +4953,6 @@ fun DetailScreen(
                                 fontWeight = FontWeight.SemiBold,
                                 modifier = Modifier.weight(1f)
                             )
-                            // Still resolving (a richer list, or the episodes'
-                            // own names, can land a moment after the first list
-                            // painted) — say so beside the count instead of
-                            // leaving the page looking settled.
                             if (episodesLoading) {
                                 CircularProgressIndicator(
                                     modifier = Modifier
@@ -6453,12 +4965,6 @@ fun DetailScreen(
                                 Modifier,
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                // The order arrow. Up = episode 1 first (the way
-                                // the providers hand the list over), down = the
-                                // last episode first for shows whose newest
-                                // episode is the one you came for. The icon
-                                // always shows the order the list is in, so one
-                                // tap flips both.
                                 IconButton(
                                     onClick = { epsNewestFirst = !epsNewestFirst },
                                     modifier = Modifier.size(32.dp),
@@ -6560,13 +5066,6 @@ fun DetailScreen(
                     }
                     if (sortedEps.isEmpty()) {
                         item {
-                            // Loading includes "a lookup is running, or one was
-                            // never reported finished" — never the empty verdict.
-                            // An empty answer used to be painted the instant a
-                            // superseded (or cancelled) load cleared its flag,
-                            // which is exactly how the page came to say
-                            // "No episode list available." over a series whose
-                            // episodes arrived a few seconds later.
                             if (episodesLoading || !episodesLoaded) {
                                 Row(
                                     Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
@@ -6584,14 +5083,6 @@ fun DetailScreen(
                                     )
                                 }
                             } else {
-                                // "Couldn't load" and "there are none" are
-                                // different facts, and the page must not present
-                                // the first as the second: an extension whose
-                                // runtime cold-started (or a request that
-                                // dropped) used to leave "No episode list
-                                // available." over a series with a full episode
-                                // list, with no way out but closing the app. Now
-                                // the failure says so and offers the retry.
                                 Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
                                     Text(
                                         if (episodesFailed) {
@@ -6618,13 +5109,7 @@ fun DetailScreen(
                             }
                         }
                     } else {
-                        // key MUST be unique — plugins (MoviesMod, …) emit
-                        // duplicate ids/numbers per quality group, and a
-                        // duplicate Compose key crashes the whole screen.
                         if (episodeBigStyle) {
-                            // Big cinema cards: one wide card per row — the
-                            // trailer-style look, readable on a phone without
-                            // shrinking three episodes into the width.
                             pageEps.forEachIndexed { index, ep ->
                                 item(key = "ep-big-$index") {
                                     EpisodeBigCard(
@@ -6684,11 +5169,6 @@ fun DetailScreen(
                         }
                     }
                 }
-                // Live channels carry no TMDB shelves — no Related/Similar, no
-                // collection — so the page below the mark strip was empty. The
-                // reference app answers that space with the playlist itself:
-                // more channels from the same list, same group first, so the
-                // next channel is one tap away.
                 if (isIptvPage && iptvSiblings.isNotEmpty()) {
                     item {
                         ShelfRow(
@@ -6705,11 +5185,6 @@ fun DetailScreen(
                         )
                     }
                 }
-                // The franchise this title belongs to — TMDB's own
-                // `belongs_to_collection`, shown the way the reference client
-                // shows it ("Shrek Collection"), with its other parts in release
-                // order. It sits directly above Related/Similar: a collection is
-                // the closest thing to "more of exactly this".
                 extras?.collection?.takeIf { it.items.isNotEmpty() }?.let { coll ->
                     item {
                         ShelfRow(
@@ -6726,10 +5201,6 @@ fun DetailScreen(
                         )
                     }
                 }
-                // Same-title shelves from TMDB — the Nuvio detail page's
-                // Related/Similar tabs, as inline rows. They show up only once
-                // the background lookup lands, and only when it found titles
-                // that actually have artwork, so a miss leaves no empty row.
                 if (related.isNotEmpty()) {
                     item {
                         ShelfRow(
@@ -6768,9 +5239,6 @@ fun DetailScreen(
     }
     }
 
-    // The way OUT of the page is never allowed to scroll off: the header's own
-    // back button is drawn inside the art, so this one takes over from the same
-    // corner, at the same size, as soon as the art is mostly gone.
     if (headerProgress > 0.6f) {
         IconButton(
             onClick = { nav.popBackStack() },
@@ -6784,30 +5252,12 @@ fun DetailScreen(
         }
     }
 
-    // The title as ART: it starts on the lower part of the header art (which is
-    // where the reference client puts it — its bottom edge a little above the
-    // art's gradient) and rises to the top of the screen as the art scrolls
-    // away, shrinking a little on the way so a full-bleed wordmark does not read
-    // as oversized once it is acting as the page's title. It is drawn HERE, in
-    // the page's own box rather than inside the scrolling list, which is what
-    // makes it "not move with the image": the art goes, the title stays.
     val logoArt = heroLogo
     if (!logoArt.isNullOrBlank() && !(isTvLayout && episodePosterStyle)) {
-        // [logoFrac] (above) is the width this frame's wordmark is fitted into:
-        // bigger setting = bigger logo, at BOTH ends of the scroll. Its height
-        // follows the art's aspect ratio, so this is "bigger logo", never
-        // "stretched logo".
-        // The wordmark's own height, read from the LAYOUT (its aspect ratio is
-        // whatever TMDB's art is, and there is no reason to guess it): the width
-        // only decides the height, never the other way round, so this settles on
-        // the first frame the image is laid out on.
         val logoHPx = logoSizePx.toFloat()
         val gapPx = with(density) { 10.dp.toPx() }
         val topInsetPx = with(density) { statusBarTop.toPx() }
         val pinnedTop = topInsetPx + gapPx / 2f
-        // Bottom-aligned inside the art's lower edge — but never above the pinned
-        // position, so a short header (or the no-art style) puts the wordmark
-        // straight at the top instead of somewhere off the screen.
         val restTop = (headerPx - logoHPx - gapPx).coerceAtLeast(pinnedTop)
         val topPx = restTop + (pinnedTop - restTop) * headerProgress
         AsyncImage(
@@ -6824,9 +5274,6 @@ fun DetailScreen(
         )
     }
 
-    // The plural TMDB header art for the loading card: the same image the
-    // header settled on (first /images backdrop), so the hand-off into the
-    // player never swaps the design the user was just looking at.
     val loadingTmdb = rememberHeaderTmdbArts(m).firstOrNull()
     if (showLoadingBanner) {
         PlayLoadingBanner(
@@ -6849,9 +5296,6 @@ fun DetailScreen(
         )
     }
 
-    // A Related/Similar cell opened inside an extension whose own ids we don't
-    // have: the title lookup runs in the background, so cover the page instead
-    // of leaving the tap looking dead.
     val opening = shelfOpening
     if (opening != null) {
         Box(
@@ -6963,15 +5407,7 @@ fun DetailScreen(
                             modifier = Modifier.padding(top = 6.dp)
                         )
                     }
-                    // (the still-searching wait message lives in the
-                    // streams.isEmpty() && loadingStreams branch above — this
-                    // branch is only reached when the search finished empty.)
                     if (lastSearchNarrowed) {
-                        // The narrowed pass ("this extension only") found
-                        // nothing playable — offer the same title across the
-                        // user's selected servers instead of leaving the dead
-                        // end ("Playback failed … only the extension this
-                        // title came from is searched").
                         Button(
                             onClick = {
                                 com.hikari.app.data.SearchScope.oneShotOriginOnly = null
@@ -7060,12 +5496,6 @@ fun DetailScreen(
                     }
                 }
                 else -> Column(Modifier.fillMaxWidth()) {
-                    // Progressive by construction: rows above arrive as each
-                    // provider answers (see the live feed), and while the
-                    // sweep is still running the header says so with a live
-                    // count — never a finished-looking list that silently
-                    // grows, and never 15–20s of spinner followed by
-                    // everything at once.
                     if (loadingStreams) {
                         Text(
                             I18n.t("Found %s — still searching…").replace("%s", streams.size.toString()),
@@ -7112,10 +5542,6 @@ fun DetailScreen(
                                     when {
                                         s.ytId != null -> {
                                             showSheet = false
-                                            // Main-release route: a YouTube link row opens in
-                                            // Hikari's own WebView (the trailer BUTTON above
-                                            // still uses openYouTubeVideo for the YouTube app —
-                                            // this row is somebody else's watch page).
                                             context.startActivity(
                                                 Intent(context, WebViewActivity::class.java).apply {
                                                     putExtra("url", "https://www.youtube.com/watch?v=${s.ytId}")
@@ -7125,9 +5551,6 @@ fun DetailScreen(
                                         }
                                         s.externalUrl -> {
                                             showSheet = false
-                                            // Main-release route: an external watch page opens
-                                            // in Hikari's own WebView (that is what the
-                                            // "Opens in web view" line promises).
                                             context.startActivity(
                                                 Intent(context, WebViewActivity::class.java).apply {
                                                     putExtra("url", s.url)
@@ -7137,10 +5560,6 @@ fun DetailScreen(
                                         }
                                         else -> {
                                             showSheet = false
-                                            // Play the tapped server first, but carry
-                                            // every other found server in the payload so
-                                            // the player's "Select server" dialog lists
-                                            // them all.
                                             val key = s.infoHash ?: s.url
                                             val others = streams.filter { o ->
                                                 (o.infoHash ?: o.url) != key &&
@@ -7201,14 +5620,6 @@ fun DetailScreen(
     }
 }
 
-/**
- * One Vega pack's picker label: the provider's own title, verbatim — unless
- * the provider wrote a bare mirror row ("Source 1") and the pack's answers
- * have since named what it holds, in which case the seasons + episode count
- * stand in ("Season 3 • 12 episodes"), the way the Vega app's entries name
- * their season. The summaries arrive after the packs, so a generic row
- * upgrades in place; order and selection are untouched.
- */
 @Composable
 private fun vegaPackLabel(
     pack: com.hikari.app.providers.vega.VegaPack,
@@ -7217,9 +5628,6 @@ private fun vegaPackLabel(
     val verbatim = pack.title.ifBlank {
         tr("Option %s").replace("%s", (pack.index + 1).toString())
     }
-    // The entry's own quality tag, shown once — most provider titles already
-    // carry it ("… 720p …"), so one that repeats it is skipped. The Vega app's
-    // rows always pair the title with its quality this way.
     val qualityPart = pack.quality.trim().takeIf { it.isNotBlank() }
         ?.takeUnless { verbatim.contains(it, ignoreCase = true) }
     if (summary == null || summary.episodeCount <= 0) {
@@ -7236,11 +5644,6 @@ private fun vegaPackLabel(
     return listOfNotNull(seasonPart, qualityPart, countPart).joinToString(" • ").ifBlank { verbatim }
 }
 
-/**
- * A Vega pack / quality picker: one outlined button opening the provider's own
- * option titles, verbatim. The same OutlinedButton+DropdownMenu shape the
- * season and range pickers use, so the D-pad walks it the same way.
- */
 @Composable
 private fun VegaOptionPicker(
     options: List<String>,
@@ -7279,13 +5682,6 @@ private fun VegaOptionPicker(
     }
 }
 
-/**
- * Full-screen title-card cover shown from the instant the user taps Play until
- * the player activity takes over: the title's backdrop (Ken-Burns drift) under
- * a heavy scrim, the title breathing in/out, the episode line, and a "finding
- * the best server" spinner. Mirrors the in-player card, so the hand-off from
- * the detail screen into the player is seamless.
- */
 @Composable
 private fun PlayLoadingBanner(
     title: String,
@@ -7301,10 +5697,6 @@ private fun PlayLoadingBanner(
 ) {
     val style = rememberLoadingStyle()
     val effects = rememberLoadingEffect()
-    // TV has a wide 16:9 canvas. Never put the phone-oriented poster/minimal
-    // cards inside that canvas: use the same full-bleed cinematic treatment as
-    // the movie reference, with the artwork fitted edge-to-edge and the title
-    // wordmark centered over it.
     if (tvLayout) {
         CinematicLoadingCard(title, episodeLabel, detail, image, logo, logoPercent, effects, tvLayout = true)
         return
@@ -7349,19 +5741,6 @@ private fun rememberLoadingAuraColor(): String {
         .collectAsState(initial = com.hikari.app.ui.AuraColors.THEME).value
 }
 
-/**
- * The cover's own background for every loading style.
- *
- * With artwork to show it is plain black, exactly as it always was — the art
- * and its scrim cover it. With NO artwork it used to be black too, and that is
- * the bug: for a title whose provider simply never sends an image there was
- * nothing coming, so the whole search (which can run for minutes across every
- * installed extension) happened over a black screen that is indistinguishable
- * from a crashed app. Reported as "in some see the loading screen showing
- * black". The card still has the title, the episode line and the status spinner
- * on top; this just gives them something to sit on — a deep vertical wash in
- * the app's own surface tones, so the screen reads as "Hikari is working".
- */
 @Composable
 private fun rememberLoadingCoverBrush(hasArtwork: Boolean): Brush {
     val cs = MaterialTheme.colorScheme
@@ -7374,9 +5753,6 @@ private fun rememberLoadingCoverBrush(hasArtwork: Boolean): Brush {
         if (hasArtwork) {
             SolidColor(Color.Black)
         } else {
-            // A theme where all three stops collapse to the same near-black
-            // would give us the very flatness we are trying to avoid: lift the
-            // top one then.
             val top = if (surfaceVariant == surface && surface == background) {
                 surfaceVariant.copy(alpha = 0.85f)
             } else {
@@ -7387,11 +5763,6 @@ private fun rememberLoadingCoverBrush(hasArtwork: Boolean): Brush {
     }
 }
 
-/** The status line every loading style shares: a spinner plus the live status
- *  text the search keeps updating ("Found 4 servers — still searching the
- *  remaining extensions…", "…isn't responding — looking for another server…").
- *  Never removed by a style: a loading screen with no sign of life is
- *  indistinguishable from a hung app. */
 @Composable
 private fun LoadingStatusLine(
     tint: Color,
@@ -7418,47 +5789,11 @@ private fun LoadingStatusLine(
     }
 }
 
-/**
- * The chosen loading treatment(s), drawn over whichever card the user picked —
- * Settings → App Layout → Loading screen → Effect (see [LoadingEffects]).
- *
- * One implementation for all four styles, so "Minimal + gallery frame" and
- * "Spotlight + sheen" are exactly the same drawing code, and SEVERAL treatments
- * can be on at once (the sheen here, the aura ring around the card, the frame
- * around the cover): each one draws its own layer rather than replacing the
- * others. Every treatment is pure paint on top of the cover the style already
- * draws: no extra image load, no extra network request, and the style's own
- * motion (the breathing title, the drifting backdrop) keeps running underneath.
- *
- * Every one of them covers the whole screen — including the aura ring, which
- * hangs on the phone's own edge (see [LoadingAuraInset]) rather than around the
- * card it is drawn over.
- *
- * The two quiet styles were reported as too plain — "minimal and spotlight is so
- * simple, it just shows the title zooming in and out" — and this is the answer:
- * the same signature details a poster card can wear, on the loading card.
- *
- * [accent] is the colour the CARD is using for its own title and spinner (the
- * brand gold on Cinematic, the theme accent on the rest), so the treatment
- * belongs to the card it is drawn over instead of fighting it.
- */
 @Composable
 private fun LoadingCoverEffect(effects: Set<String>, accent: Color) {
-    // The ring's colour: its own setting (Settings → App Layout → Loading screen
-    // → Effect → Aura ring colour), or the card's accent when that is left on
-    // "Accent" — see [com.hikari.app.ui.AuraColors].
     val auraColor = com.hikari.app.ui.AuraColors.color(rememberLoadingAuraColor(), accent)
     val chosen = com.hikari.app.ui.LoadingEffects.normalizeSet(effects)
     if (com.hikari.app.ui.LoadingEffects.AURA in chosen) {
-        // The aura ring — hung on the SCREEN's own edge, not on the card.
-        //
-        // It used to hug the title card, which put it in the middle of a black
-        // screen: a small rounded rectangle floating around some text, nowhere
-        // near the phone's edges (the "the loading screen aura ring and gallery
-        // frame are too far from the phone border" report). The ring is the
-        // loading screen's frame lit up in the chosen colour, so it belongs at
-        // the edge, wrapping the whole cover — a wide soft band of light under a
-        // crisp hairline, breathing.
         val clock = rememberInfiniteTransition(label = "loading-aura")
         val breathe by clock.animateFloat(
             initialValue = 0.34f,
@@ -7474,9 +5809,6 @@ private fun LoadingCoverEffect(effects: Set<String>, accent: Color) {
                 .fillMaxSize()
                 .graphicsLayer { alpha = breathe },
         ) {
-            // The light the ring stands in. A thick, faint stroke centred on the
-            // same path, so the colour bleeds inwards instead of the ring being
-            // a bare outline.
             Box(
                 Modifier
                     .fillMaxSize()
@@ -7578,23 +5910,6 @@ private fun LoadingCoverEffect(effects: Set<String>, accent: Color) {
     }
 }
 
-/**
- * Where the loading screen's "Aura ring" and "Gallery frame" sit.
- *
- * Both wrap the WHOLE cover, right out at the phone's own edge: the aura ring
- * is the outermost (a lit border around the screen), and the gallery frame is a
- * hairline mount just inside it, so choosing both gives one nested pair of
- * rings instead of two rings competing for the same path. The ring is a ROUNDED
- * rectangle — a circle drawn on a rectangular screen crosses it and reads as a
- * stray outline.
- *
- * These two numbers are shared by every loading style (they are drawn by
- * [LoadingCoverEffect], over whatever card the style put up) and are matched by
- * the player's own cover, which draws the same two rings in
- * activity_player.xml from its own margins — the detail screen's card and the
- * player's are meant to be the same picture, so the hand-off between them never
- * moves anything on screen.
- */
 private val LoadingAuraInset = 8.dp
 private val LoadingFrameInset = 18.dp
 
@@ -7697,17 +6012,6 @@ private fun CinematicLoadingCard(
     }
 }
 
-/**
- * The title / episode / detail block, shared by every style (only the accent
- * colour of the episode line differs).
- *
- * When the title has a WORDMARK ([logo]) it is drawn instead of the text title —
- * the same art the detail page's header draws, at the size the user chose for
- * the loading screen (Settings → App Layout → Loading screen → Title logo size).
- * Everything else about the block is unchanged, including the breathing its
- * caller applies: the wordmark grows and shrinks with the card exactly like the
- * text did.
- */
 @Composable
 private fun LoadingTitleBlock(
     title: String,
@@ -7955,9 +6259,6 @@ private fun MinimalLoadingCard(
         ) {
                 val logoModel = PosterLoader.model(logo?.takeIf { it.isNotBlank() })
                 if (logoModel != null) {
-                    // The wordmark takes its own line and keeps the quiet of this
-                    // style: no breathing (Minimal draws nothing that moves) and
-                    // no scrim behind it, just the art where the name was.
                     AsyncImage(
                         model = logoModel,
                         contentDescription = title,
@@ -8016,10 +6317,6 @@ private fun playerPayload(streams: List<StreamSource>): String? = runCatching {
                     .put("isMpd", s.isMpd)
                     .put("isTorrent", s.isTorrent)
                     .put("provider", s.provider)
-                    // Which PROVIDER (repo plugin) produced this server, as
-                    // opposed to which engine: the player gives the provider the
-                    // user opened this title from its own section at the top of
-                    // "Select server", and starts playback on its server.
                     .put("providerId", s.providerId)
                     .put("providerName", s.providerName)
                     .put("details", s.details)
@@ -8059,18 +6356,6 @@ private fun playerPayload(streams: List<StreamSource>): String? = runCatching {
     }.toString()
 }.getOrNull()
 
-/**
- * The shapes the detail page's header art can take — Settings → App Layout →
- * Details header.
- *
- *  - [WIDE]   the 16:9 banner the page has always opened with.
- *  - [SIDE]   a shorter art band with the poster standing beside it, so both the
- *             wide art and the real poster are visible at once.
- *  - [TALL]   tall cinematic art (3:4) that owns the top of the page.
- *  - [POSTER] just the poster, centred over a blurred copy of itself.
- *  - [PLAIN]  no art at all — the page starts at the title. The lightest header
- *             there is, for a slow connection or a data-saving mood.
- */
 object DetailHeroStyles {
     const val WIDE = "wide"
     const val SIDE = "side"
@@ -8123,13 +6408,6 @@ private fun Hero(
     onBack: () -> Unit,
     style: String = DetailHeroStyles.WIDE,
 ) {
-    // Item's own backdrop → the wide art we looked up → its poster, so a title
-    // an extension left blank still gets a real banner here. The wide/poster
-    // distinction matters: a portrait poster is never centre-cropped into a
-    // 16:9 frame (that is what cut the art off).
-    // A dead extension backdrop (hotlink-guarded CDN, expired signed URL)
-    // falls back to the looked-up art once Coil proves it dead, instead of
-    // sitting black for the whole visit (see [onImageError]).
     var heroBackdropDead by remember(meta?.uniqueId) { mutableStateOf(false) }
     // The plural TMDB backdrops first (what TV's banner shows): a dead
     // override falls back to the normal model below, never black.
@@ -8155,9 +6433,6 @@ private fun Hero(
             ?: (PosterLoader.model(fallbackPoster) to false)
     }
     val posterModel = PosterLoader.model(fallbackPoster)
-    // Adaptive: WIDE with only a portrait poster can never fill 16:9 without
-    // cropping it, so it becomes the SIDE layout on its own — poster intact
-    // on the left, art behind — instead of a beheaded banner.
     val adaptive = if (DetailHeroStyles.normalize(style) == DetailHeroStyles.WIDE && !image.second) {
         DetailHeroStyles.SIDE
     } else {
@@ -8247,11 +6522,6 @@ private fun Hero(
                 .fillMaxWidth()
                 .height(214.dp),
         ) {
-            // The band behind the standing poster ALWAYS fills edge to edge in
-            // 16:9: wide art crops as before, and a portrait poster is cropped
-            // (anchored top, so heads survive) under a dark wash instead of
-            // sitting Fit with blank bars on both sides. The band is backdrop
-            // decor — the standing poster beside it keeps the art intact.
             PosterArt(
                 model = image.first,
                 contentDescription = meta?.title,
@@ -8328,16 +6598,6 @@ private fun Hero(
 }
 
 /**
- * The Production row: the studios and networks behind this title, as tappable
- * logo tiles. Tapping one opens every title that company made (a TMDB entity
- * grid), which is what "clicking production loads all the series and movies from
- * that production" asks for.
- *
- * A company with no logo on TMDB still gets a tile — its initials on the app's
- * own surface — because the NAME is the useful part and a missing logo must not
- * remove a studio from the row.
- */
-/**
  * The studio row for the TV hero: compact white chips (logo plate + name) in
  * one sideways row, instead of the phone's titled logo grid below the page.
  */
@@ -8355,9 +6615,6 @@ private fun TvCompanyRow(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         companies.distinctBy { (if (it.isNetwork) "n" else "c") + "|" + it.id }.forEach { c ->
-            // Logo only, no name text: the tile already falls back to the
-            // company's initials when no logo art exists, so the row never
-            // shows an empty box — and never a redundant wordmark beside one.
             Row(
                 Modifier
                     .clip(RoundedCornerShape(50))
@@ -8435,38 +6692,6 @@ private fun ProductionRow(
     }
 }
 
-/**
- * One production company / network logo, on a plate that suits it.
- *
- * TMDB ships these as transparent PNGs, and it has two kinds: a WHITE wordmark
- * (drawn for a dark backdrop) and a COLOURED or dark one (drawn for a light
- * one). Drawn straight onto the page, one of the two is always wrong — a dark
- * navy Walt Disney script on a near-black card is the "the logo is a solid
- * black box" report, and a white wordmark on a white card is the same problem
- * inverted. So the tile MEASURES its logo: the average luminance of the opaque
- * pixels decides whether the plate behind it is near-black or off-white. That
- * makes every logo readable whatever colour it was drawn in, instead of fixing
- * one brand and breaking the next.
- *
- * The bitmap is fetched through Coil's own loader (the app's shared memory +
- * disk cache, so this costs one decode of an image the row would have loaded
- * anyway), and a logo that cannot be fetched or decoded falls back to the
- * company's initials so the row never shows an empty box.
- */
-/**
- * The production-company logos already decoded this session, keyed by URL.
- *
- * The row they live in is a LazyRow, so a logo scrolled out of view has its
- * cell disposed and its `remember`ed bitmap dropped. Without this cache that
- * meant a visible hole (initials, or a bare plate) for the second or two it took
- * to fetch and decode the same image again every time the user scrolled back —
- * the reported "thumbnail on that provider becomes blank when I scroll, and
- * loads again when I come back".
- *
- * An [android.util.LruCache] of ~96 logos is a bounded few MB (these wordmarks
- * are small transparent PNGs) and is process-wide, so a studio's logo is also
- * instant on the NEXT detail page that lists it.
- */
 private object CompanyLogoCache {
     private val cache = object :
         android.util.LruCache<String, Pair<android.graphics.Bitmap, Boolean>>(96) {}
@@ -8485,14 +6710,6 @@ private fun CompanyLogoTile(
     modifier: Modifier = Modifier,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    // A logo that has been drawn once is kept in memory for the rest of the
-    // session (see [CompanyLogoCache]). This row is a LazyRow: scrolling a logo
-    // off-screen DISPOSES its cell, and re-entering it used to start from
-    // nothing — so the tile flashed its initials (a "blank" thumbnail) until
-    // Coil fetched and decoded the very same bytes again. That is the reported
-    // "the one I just scrolled goes blank, and when I scroll back it loads
-    // again". The cache is keyed by the logo URL alone: the same studio appears
-    // on many detail pages, and the name only matters for the fallback.
     val key = logoUrl.orEmpty().ifBlank { "name|" + name }
     val memory = remember(key) { CompanyLogoCache.get(key) }
     var art by remember(key) { mutableStateOf(memory?.first) }
@@ -8520,9 +6737,6 @@ private fun CompanyLogoTile(
 
     val picture = art
     if (picture == null) {
-        // While the logo loads (or when there is none, or it will not decode):
-        // the company's initials on the plain card, which is honest and never a
-        // blank rectangle.
         Box(
             modifier
                 .clip(RoundedCornerShape(8.dp))
@@ -8559,15 +6773,6 @@ private fun CompanyLogoTile(
     }
 }
 
-/**
- * A Coil-loaded drawable as a [android.graphics.Bitmap], so [logoIsLight] can
- * read its pixels. A [android.graphics.drawable.BitmapDrawable] is already one;
- * anything else (a vector, an animated drawable, an SVG via coil-svg — TMDB
- * serves a few logos as SVG) is rasterised onto a fresh bitmap through a
- * Canvas. Written against `android.graphics` only, deliberately: this runs for
- * every logo on every detail page, and it must not depend on any of the
- * helper extensions a library update could move.
- */
 private fun drawableToBitmap(drawable: android.graphics.drawable.Drawable): android.graphics.Bitmap {
     (drawable as? android.graphics.drawable.BitmapDrawable)?.let { return it.bitmap }
     val w = drawable.intrinsicWidth.takeIf { it > 0 } ?: 128
@@ -8591,17 +6796,6 @@ private fun compinitials(name: String): String {
     }
 }
 
-/**
- * True when a logo's own pixels are bright enough to need a dark plate behind
- * them, false when they are dark enough to need a light one.
- *
- * A transparent PNG's colour channels are zeroed wherever the alpha is zero, so
- * the transparent pixels are skipped rather than averaged in (averaging them
- * would report every logo as black). The sample is a grid of at most ~40x40
- * pixels: a logo that is dark at its edge and light in its middle has to be
- * judged as a whole, and a full-resolution pass would cost more than the
- * download.
- */
 private fun logoIsLight(bitmap: android.graphics.Bitmap): Boolean {
     val w = bitmap.width
     val h = bitmap.height
@@ -8700,15 +6894,6 @@ private fun ShelfRow(
     }
 }
 
-/**
- * One cell of a Related/Similar shelf.
- *
- * It draws through [PosterArt] like every other grid in the app, which is what
- * puts the score badge on it: these two rows used to be the only posters in
- * Hikari that ignored Settings → App Layout → "Show scores", because they
- * hand-rolled their own artwork box. Tapping the poster loads the title itself
- * (no trip through the Search tab).
- */
 @Composable
 private fun ShelfCell(
     item: MediaItem,
@@ -8737,9 +6922,6 @@ private fun ShelfCell(
                 .aspectRatio(2f / 3f)
                 .clickable { onClick() },
         ) {
-            // The kebab in the corner carries the two ways to search instead
-            // of open: this extension only, or every installed extension. Same
-            // pair as the genre pills.
             Box(
                 Modifier
                     .align(Alignment.TopEnd)
@@ -8797,13 +6979,6 @@ private fun ShelfCell(
     }
 }
 
-/** The "Show Details" block: year/runtime plus the age rating, then the
- *  coloured rating badges, then status/country/language, then the director/
- *  writer credits — the metadata Nuvio and Stremio show above their Cast row.
- *  Each line is skipped when the lookup had nothing for it, so a sparse TMDB
- *  record still renders cleanly. Badges are tappable: a tap opens
- *  [RatingDetailDialog], which explains the number the way the source site
- *  does. */
 @Composable
 private fun DetailsBlock(
     d: TitleDetails,
@@ -8840,9 +7015,6 @@ private fun DetailsBlock(
     ) return
 
     Column(Modifier.padding(horizontal = 16.dp, vertical = 2.dp)) {
-        // Year · runtime, with the age rating as its own bordered box next to
-        // them — the way IMDb prints "PG-13". TV hides this whole line: the
-        // hero already prints it (reference layout), and twice is the bug.
         if (!hideHeadline && (stats.isNotEmpty() || cert != null)) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -8862,9 +7034,6 @@ private fun DetailsBlock(
                 }
             }
         }
-        // The review-score strip: one badge per site, in that site's own colour
-        // (see [RatingBadge]). Scrolls sideways so six of them still fit a
-        // phone, and each one opens its own explanation.
         if (ratings.isNotEmpty()) {
             Row(
                 modifier = Modifier
@@ -8884,10 +7053,6 @@ private fun DetailsBlock(
                 modifier = Modifier.padding(top = 4.dp)
             )
         }
-        // The full release date, the way the reference client's "Release Info"
-        // row prints it. The stat line above carries only the year, which is all
-        // a poster strip needs — but a date is what "when did this come out"
-        // actually asks.
         d.releaseDate?.takeIf { it.isNotBlank() }?.let { iso ->
             Text(
                 tr("Release date: %s").replace("%s", formatReleaseDate(iso)),
@@ -8915,13 +7080,6 @@ private fun DetailsBlock(
     }
 }
 
-/**
- * TMDB's `status` is always English — "Released", "Returning Series" — because
- * it is an enum rather than prose, so it is the one metadata field the app can
- * and must translate itself. The dictionary carries every value TMDB uses; a
- * status it invents later passes through untranslated, which is still better
- * than hiding the row.
- */
 @Composable
 private fun trStatus(status: String): String = when (status.trim().lowercase()) {
     "released" -> tr("Released")
@@ -8936,15 +7094,6 @@ private fun trStatus(status: String): String = when (status.trim().lowercase()) 
     else -> status
 }
 
-/**
- * TMDB's ISO release date, printed the way the device's/app's language prints a
- * date — "18 May 2001", "18 مايو 2001". The parsing and the formatting both go
- * through `java.text` (available on every API this app supports) rather than
- * `java.time`, which would need core-library desugaring.
- *
- * Anything unexpected is handed back exactly as TMDB sent it: a date the app
- * cannot format is still a date, and showing "2001-05-18" beats showing nothing.
- */
 private fun formatReleaseDate(iso: String): String {
     val parsed = runCatching {
         java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).parse(iso)
@@ -8958,12 +7107,6 @@ private fun formatReleaseDate(iso: String): String {
     return formatted ?: iso
 }
 
-/** The age rating ("PG-13", "R", "TV-MA") as a pill in the same tinted-glass
- *  style as the review badges next to it, so the two rows read as one family —
- *  but coloured by what the rating MEANS rather than by a site's brand:
- *  green for everyone, amber for guidance/teens, red for adults only, grey when
- *  no rating was published. The colour is the "can my kid watch this" signal at
- *  a glance; the letters are still the authority. */
 @Composable
 private fun AgeChip(label: String) {
     val tint = ageTint(label)
@@ -8985,9 +7128,6 @@ private fun AgeChip(label: String) {
     }
 }
 
-// --------------------------------------------------------------- ratings --
-// The sites' own brand colours, deliberately NOT the app's accent: a rating is
-// recognised by the colour of the site that published it.
 
 private val IMDbYellow = Color(0xFFF5C518)
 private val TmdbCyan = Color(0xFF01B4E4)
@@ -8999,23 +7139,11 @@ private val MetacriticRed = Color(0xFFFF6871)
 private val LetterboxdGreen = Color(0xFF00C030)
 private val AnilistBlue = Color(0xFF02A9FF)
 
-// The age-rating chip's four bands. Not brand colours: the point is that the
-// chip says the same thing on every title, whatever board issued the rating
-// (MPAA "R", BBFC "18", FSK "16", TV-MA …).
 private val AgeGreen = Color(0xFF34C759)
 private val AgeAmber = Color(0xFFFFB020)
 private val AgeRed = Color(0xFFE5484D)
 private val AgeNeutral = Color(0xFF8A94A6)
 
-/** The colour of an age rating: red = adults only, amber = guidance/teens,
- *  green = for everyone, grey = no rating published (NR, "Unrated", "N/A", or a
- *  board whose label this build doesn't know).
- *
- *  The named bands a viewer recognises come first ("R", "TV-MA", "PG-13" …);
- *  anything else falls back to the NUMBER in the label, which is how most
- *  boards outside the US grade — "FSK 16", "MA15+", "R18", "TV-14" — so a rating
- *  from a region this build has never seen still lands in the right band (18+
- *  red, 12–17 amber, 11 and under green) instead of coming out grey. */
 private fun ageTint(label: String): Color {
     val v = label.trim().uppercase(java.util.Locale.US)
     when {
@@ -9047,11 +7175,6 @@ private fun isRotten(r: TitleRating): Boolean = when (r.verdict) {
     else -> percentOf(r.value) in 0..59
 }
 
-/** The colour a badge shows in: the site's brand colour, except for the sites
- *  whose number is itself score-dependent — Metacritic turns green/yellow/red
- *  with the Metascore, and a tomatometer number turns green when the title is
- *  rated "rotten". The tomato mark itself stays red at every score: it is the
- *  site's logo, and a green disc on the badge read as a bug. */
 private fun ratingTint(r: TitleRating): Color = when (r.source) {
     RatingSource.IMDB -> IMDbYellow
     RatingSource.TMDB -> TmdbCyan
@@ -9103,14 +7226,6 @@ private fun RatingBadge(r: TitleRating, onClick: () -> Unit) {
     }
 }
 
-/**
- * The site mark in front of the number, drawn from primitives — no image
- * assets and no network, so a badge can never be the thing that fails to load:
- * coloured wordmarks for IMDb and TMDB, Rotten Tomatoes' tomato, the striped
- * popcorn bucket for the audience score, a white M on the score's colour for
- * the Metascore, and Letterboxd's three dots. The tomato is red at every
- * score and the rotten/fresh split is carried by the number's colour.
- */
 @Composable
 private fun RatingMark(source: RatingSource, tint: Color) {
     when (source) {
@@ -9247,13 +7362,6 @@ private fun ratingVotesLine(source: RatingSource): String = when (source) {
     else -> "Based on %s ratings"
 }
 
-/**
- * The explanation behind a badge, the way a rating site itself explains a score:
- * where the number comes from, how that site's scale works, how many people it
- * is based on, and — for the sites that grade in words — the word for that band
- * ("Rotten", "Certified Fresh", "Acclaim"). It also offers to open the source
- * page, which is where the number's authority lives.
- */
 @Composable
 private fun RatingDetailDialog(r: TitleRating, onDismiss: () -> Unit) {
     val scheme = MaterialTheme.colorScheme
@@ -9395,13 +7503,6 @@ private fun openRatingPage(context: android.content.Context, url: String, title:
     }
 }
 
-/** Circular-headshot Cast row, matching the Nuvio/Stremio detail page. Tapping
- *  an actor runs a global search for their name — there is no person page in
- *  Hikari, and a search is the closest useful action.
- *
- *  [characters] switches the row to an anime's CHARACTER list (the faces the
- *  viewer knows), each cell's second line being the actor who voices them —
- *  see [com.hikari.app.data.AnimeCast]. */
 @Composable
 private fun CastRow(
     cast: List<CastMember>,
@@ -9552,12 +7653,6 @@ private fun TrailerRow(trailers: List<Trailer>, onClick: (Trailer) -> Unit) {
     }
 }
 
-/* The reference client's episode card on TV: a 16:9 still (the provider's
- * own thumbnail, else the TMDB still) with rating badge + watched check,
- * the S/E code, bold title, two-line synopsis and duration — over the dark
- * card with the hairline edge. Every TV episode mode renders through here,
- * so the stills, badges and progress read the same everywhere. A title with
- * no still at all gets the show art BLURRED, never a sharp-cropped poster. */
 @Composable
 private fun TvCs3EpisodeCard(
     ep: Episode,
@@ -9631,9 +7726,6 @@ private fun EpisodePosterCard(
     /** Anti-spoiler: blur the still and mask the title/overview. */
     hideSpoilers: Boolean = false,
 ) {
-    // The card content rides the episode size AND the user's text size (see
-    // TvUi.textScale — 1.0 on phones and until the slider moves, so nothing
-    // changes for anyone who does not touch it).
     val s = (sizeScale * com.hikari.app.tv.TvUi.textScale()).coerceIn(0.5f, 2.4f)
     val tokens = rememberGlassTokens()
     // Television wears the desktop card language (8dp corners,
@@ -9757,9 +7849,6 @@ private fun EpisodePosterCard(
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.padding(start = (2f * s).dp, top = (5f * s).dp, end = (2f * s).dp)
         )
-        // The TV grid never printed descriptions — only titles — so a TV
-        // episode told the user nothing about itself. Gated by the same
-        // Settings → TV switch as the list rows.
         val showDescription = HikariApp.instance.store.episodeDescriptionFlow().collectAsState(initial = true).value
         if (showDescription && (!ep.overview.isNullOrBlank() || hideSpoilers)) {
             Text(
@@ -9777,13 +7866,6 @@ private fun EpisodePosterCard(
     }
 }
 
-/**
- * True when the episode's air date is in the future — an episode the source
- * lists but has not released yet. Only answers true for a date that actually
- * parses (yyyy-MM-dd, "August 16, 2026", dd/MM/yyyy, yyyy/MM/dd,
- * dd.MM.yyyy); anything unparseable or blank reads as released, so a weird
- * provider stamp can never hide a playable episode.
- */
 private fun isEpisodeUnaired(released: String?): Boolean {
     val t = released?.trim().orEmpty()
     if (t.isBlank()) return false
@@ -9815,13 +7897,6 @@ private fun isEpisodeUnaired(released: String?): Boolean {
     return d.after(today.time)
 }
 
-/**
- * Big cinema episode card (episode view mode 2): one wide card per row — a
- * 16:9 still with the season/episode chip, center play and download, then the
- * title, the overview and the meta line underneath. The trailer-row look,
- * sized so a phone shows about one card at a time instead of three small
- * ones across the width.
- */
 @Composable
 private fun EpisodeBigCard(
     ep: Episode,
@@ -9838,9 +7913,6 @@ private fun EpisodeBigCard(
     /** Anti-spoiler: blur the still and mask the title/overview. */
     hideSpoilers: Boolean = false,
 ) {
-    // The card content rides the episode size AND the user's text size (see
-    // TvUi.textScale — 1.0 on phones and until the slider moves, so nothing
-    // changes for anyone who does not touch it).
     val s = (sizeScale * com.hikari.app.tv.TvUi.textScale()).coerceIn(0.5f, 2.4f)
     val unaired = isEpisodeUnaired(ep.released)
     val tokens = rememberGlassTokens()
@@ -10024,9 +8096,6 @@ private fun EpisodeRow(
      *  watching, 2 = watched. Drawn as a small pill under the buttons. */
     watchState: Int = 0,
 ) {
-    // The card content rides the episode size AND the user's text size (see
-    // TvUi.textScale — 1.0 on phones and until the slider moves, so nothing
-    // changes for anyone who does not touch it).
     val s = (sizeScale * com.hikari.app.tv.TvUi.textScale()).coerceIn(0.5f, 2.4f)
     val tokens = rememberGlassTokens()
     // Television rows sit flat on the black page (desktop language) with
@@ -10051,9 +8120,6 @@ private fun EpisodeRow(
             .clickable(onClick = onClick)
             .tvPress(previewPass = false, onClick = onClick)
             .padding(horizontal = (16f * s).dp, vertical = if (glass) 12.dp else (8f * s).dp),
-        // The whole card (thumb, text, buttons) is vertically centred: with Top
-        // the play + download buttons sat visibly higher than the episode text
-        // (screenshot-proven), and the buttons must sit in the middle of the box.
         verticalAlignment = Alignment.CenterVertically
     ) {
         val thumb = PosterLoader.model(ep.image?.takeIf { it.isNotBlank() } ?: fallbackImage)
@@ -10155,11 +8221,6 @@ private fun EpisodeRow(
                 )
             }
         }
-        // Play + download ride one centered row of equal buttons: a bare Icon
-        // against a 44dp IconButton sat the triangle visibly higher than the
-        // download glyph (screenshot-proven on Black Clover S2). The episode's
-        // own watch state rides UNDER them as a small pill, centred under the
-        // pair — equal space on both sides — instead of hugging one end.
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconButton(
@@ -10193,12 +8254,6 @@ private fun EpisodeRow(
     }
 }
 
-/**
- * The episode row's own watch pill: a small readout under the play + download
- * buttons (1 = watching, 2 = watched). Deliberately tiny — an 11sp label in
- * a tight pill — so it fits the row's corner without moving anything else.
- * Untouched episodes draw nothing at all rather than a pill that says "no".
- */
 @Composable
 private fun EpisodeWatchBadge(
     watchState: Int,
@@ -10243,52 +8298,8 @@ private fun EpisodeWatchBadge(
     }
 }
 
-/**
- * The name to SEARCH the extensions with, for a title the app is showing in a
- * language they do not index.
- *
- * The page keeps the name the user tapped — that is the whole point of the
- * title-language setting — but every provider the background lookup asks
- * (~250 of them) indexes the ORIGINAL, English name. A TMDB row carries that
- * name already ([com.hikari.app.data.MediaItem.originalTitle], filled from
- * TMDB's own response). An EXTENSION item does not: it is named whatever its
- * site calls it, so an Arabic repo's "فلم موانا" — a perfectly good display
- * name — was handed to every other repo as the search key, none of them
- * recognised it, and the movie played from the nuvio engines alone, because
- * those resolve by TMDB id and never read the title. In English the same
- * movie had servers everywhere. That is the reported asymmetry.
- *
- * So this translates the item's own name to English once (gtx, cached in
- * memory AND on disk by [com.hikari.app.data.Translator]), and the result rides
- * on the item as its original name — which is what
- * [com.hikari.app.data.MediaItem.searchTitle] prefers, and therefore what the
- * cross pass, the TMDB lookup behind the Cast/Trailers/Details rows and the
- * episode-name lookup all use.
- *
- * Bounded and cheap: a name that is already Latin/English is recognised
- * locally and never leaves the device (the common case, so the ordinary page
- * pays nothing), and a foreign one waits at most [NAME_LOOKUP_MS] — on the
- * first open of that title only, because the translation is cached. Null when
- * there is nothing better to search with, which keeps the display name in
- * place.
- */
 private const val NAME_LOOKUP_MS = 2_500L
 
-/**
- * The words a translator ADDS when it is handed a bare title: "فلم موانا" comes
- * back as "The movie Moana", not "Moana", and "مسلسل لوست" as "The series Lost".
- *
- * They cannot be left in the search key. It is the key every extension is asked
- * for and the name TMDB is asked to resolve, and no index holds "the movie
- * moana" — so the whole point of translating the name would be undone by the one
- * word the translator volunteered. It appends them as readily as it prefixes
- * them ("Breaking Bad" + "مسلسل" → "Breaking Bad series"), so both ends are
- * stripped, repeatedly, until neither matches.
- *
- * A strip is refused when it would leave fewer than three characters or nothing
- * but digits: "Movie 43" must stay "Movie 43", not "43", and a title that really
- * ends in one of these words is protected by that same rule.
- */
 private val TITLE_DECORATION_LEAD = Regex(
     "(?i)^\\s*(?:the\\s+|a\\s+|an\\s+)?" +
         "(?:full\\s+)?(?:movies?|films?|tv\\s+series|tv\\s+shows?|series|shows?|" +
@@ -10329,16 +8340,6 @@ private suspend fun englishSearchName(title: String, isTmdbRow: Boolean): String
     return stripSearchDecorations(english).ifBlank { english }
 }
 
-/**
- * One chip of the detail page's mark strip.
- *
- * A mark that is SET is a filled chip in the accent colour with its tick; the
- * strip's own way into the sheet — which is also what the strip shows when
- * nothing is set — is an outlined, muted chip. Both are tappable and both open
- * the mark sheet, so the strip is a readout first and a control second: the user
- * sees WHICH mark a title carries without having to open anything (the whole
- * point of drawing it), and every action the sheet holds stays one tap away.
- */
 @Composable
 private fun MarkChip(
     label: String,

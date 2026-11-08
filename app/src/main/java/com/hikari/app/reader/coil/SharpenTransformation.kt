@@ -6,21 +6,6 @@ import coil.transform.Transformation
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/**
- * A small unsharp-mask sharpen pass for reader pages.
- *
- * Short webtoon pages are decoded at (or below) the strip's display width and
- * then stretched to fill the screen, so a page served under the device's width
- * (the common ~800px source on a 1080px screen) reads soft even at the Ultra/4K
- * quality tiers — a bigger decode of the same pixels cannot fix that. This runs
- * a bounded 3x3 sharpen kernel over the decoded bitmap on an IO thread before
- * it reaches the memory cache, which restores edge crispness on text and line
- * art without changing the decode size or the cache footprint.
- *
- * Applied only at High quality and above (see the call sites): Low/Medium stay
- * on the fast unsharpened path. The [cacheKey] carries the strength, so a
- * strength change can never collide with older cached pages.
- */
 class SharpenTransformation(
     private val strength: Float = 0.5f,
 ) : Transformation {
@@ -28,9 +13,6 @@ class SharpenTransformation(
     override val cacheKey: String = "hikari_sharpen_$strength"
 
     override suspend fun transform(input: Bitmap, size: Size): Bitmap = withContext(Dispatchers.IO) {
-        // Hardware bitmaps cannot be read back — ask for a software copy first.
-        // (Coil hands software bitmaps to transformations, so this is a no-op
-        // safety net, never a per-page copy.)
         val src = if (input.config == Bitmap.Config.HARDWARE) {
             input.copy(Bitmap.Config.ARGB_8888, false) ?: input
         } else {

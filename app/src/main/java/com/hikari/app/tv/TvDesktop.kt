@@ -18,18 +18,6 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
-/**
- * The desktop client's visual language, translated onto the television layout.
- *
- * Every value here mirrors that client's exact tokens: the Navy triple
- * (Background 0xFF0C0C16 / SurfaceCard 0xFF161624 / SurfaceElevated 0xFF20202E,
- * divider 0xFF2A2A38), white-on-navy text, the hairline border, 8dp corners
- * and the spacing scale. The ACCENT is the reference's own purple
- * (0xFF6C5CE7), hardcoded — one-to-one with the reference means the TV does
- * not follow the phone's Settings accent.
- *
- * TV-only overlay (tv/ package): the phone theme is untouched.
- */
 object TvDesktop {
 
     /** Page background: the reference's exact Navy. */
@@ -73,16 +61,6 @@ object TvDesktop {
         @Composable get() = Purple
 }
 
-/**
- * The reference's hover treatment, translated to the remote: focus IS hover
- * on a television.
- *
- * A focused card grows slightly and gains an accent ring — the same two cues
- * the desktop client's hovered poster gives (its blurred glow + scale). The
- * glow is a crisp ring rather than a blur on purpose: a full-screen blur
- * repaints a bitmap these boxes cannot afford (see TvCinematicHero), while a
- * ring costs one stroked round-rect.
- */
 @Composable
 fun Modifier.tvFocusGlow(corner: Dp = TvDesktop.CornerCard): Modifier {
     var focused by remember { mutableStateOf(false) }
@@ -96,9 +74,6 @@ fun Modifier.tvFocusGlow(corner: Dp = TvDesktop.CornerCard): Modifier {
         label = "tvFocusRing",
     )
     val accent = TvDesktop.accent
-    // No clip on the card itself: the corner curve would reach into the
-    // title/year lines and bite their edges (the cards' own artwork boxes
-    // already round themselves). The ring below carries its own shape.
     return this
         .onFocusChanged { focused = it.isFocused }
         .graphicsLayer {

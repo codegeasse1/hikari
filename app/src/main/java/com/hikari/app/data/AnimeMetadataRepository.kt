@@ -26,15 +26,6 @@ object AnimeMetadataRepository {
         return emptyList()
     }
 
-    /**
-     * Anime metadata with no login: Simkl (tracker login's app ID, else the
-     * free app ID pasted in Settings), keyless AniList GraphQL, TMDB with the
-     * bundled keys — in that fixed priority, first hit wins per field. Each
-     * source runs fenced: one refusing or mistranslating only loses its own
-     * fields, never the record. A TMDB title that cannot score 55+ against
-     * the known spellings never repaints the row (the mistranslation guard);
-     * its overview/art still land, the provider title stands.
-     */
     suspend fun enrich(app: HikariApp, item: MediaItem, type: ProviderType? = null): Metadata? {
         if (!isAnimeItem(item, type)) return null
         val store = app.store
@@ -99,11 +90,6 @@ object AnimeMetadataRepository {
         return Metadata(title, rating, next, from, year, overview, genres, poster, backdrop)
     }
 
-    /** TMDB's anime record for [item]: overview, art and anything the anime
-     *  sources left blank. The title only counts when it scores 55+ against
-     *  the known spellings (AniList aliases when the AniList step ran, else
-     *  the row's own names) — a mistranslation then keeps the provider title
-     *  and still contributes the rest. */
     private suspend fun tmdbAnime(item: MediaItem, aliases: Set<String>): Metadata? {
         val resolved = runCatching { TmdbResolver.resolve(item) }.getOrNull() ?: return null
         if (!resolved.mediaType.equals("tv", true) && !resolved.mediaType.equals("movie", true)) return null
@@ -176,11 +162,6 @@ object AnimeMetadataRepository {
 
     fun includesAnilist(mode: String): Boolean = false
 
-    /** True for anything that should read anime metadata: tracker anime rows,
-     *  rows from anime-native engines (Anymex, Aniyomi) whatever their
-     *  `rawType` says, and extension rows typed as anime. Extension anime used
-     *  to fall through every check, so AniList never ran for exactly the rows
-     *  that needed it most. */
     fun isAnimeItem(item: MediaItem, type: ProviderType? = null): Boolean =
         item.rawType.contains("anime", true) ||
             type == ProviderType.ANYMEX || type == ProviderType.ANIYOMI ||
@@ -188,14 +169,6 @@ object AnimeMetadataRepository {
 
     data class AnimeEp(val number: Int, val title: String?, val image: String?)
 
-    /**
-     * One anime's canonical AniList record: every title spelling AniList knows
-     * (romaji, English, native + synonyms), the description, the score and the
-     * per-episode titles/thumbnails AniList carries. A single GraphQL read,
-     * cached per title — the tracker sync matches against [aliases] so a
-     * slightly different spelling ("a little bit different") still resolves
-     * to the exact entry instead of "no confident match".
-     */
     data class AnimeFull(
         val title: String?,
         val description: String?,
@@ -219,10 +192,6 @@ object AnimeMetadataRepository {
         val key = title.trim().lowercase()
         if (key.isBlank()) return null
         fullCache[key]?.let { if (System.currentTimeMillis() - it.at < FULL_TTL_MS) return it.full }
-        // The fetcher below existed but was never called (this answered null),
-        // so every alias consumer silently had nothing. One cached AniList
-        // search per title per day — the tracker sync's alias queries and
-        // second-chance matching run on it.
         val f = withContext(Dispatchers.IO) { fetchAnimeFull(title) } ?: return null
         fullCache[key] = FullEntry(System.currentTimeMillis(), f)
         return f

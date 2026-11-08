@@ -9,19 +9,6 @@ import com.hikari.app.net.Http
 import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
 
-/**
- * Fallback extension icons. Stremio addons store their manifest `icon` at
- * install time now, but addons installed before that have none — fetch it
- * lazily from the manifest (cached). CS3 plugins without a repo icon fall back
- * to the provider's own mainUrl favicon (the same Google-favicon trick the
- * plugin repos themselves use).
- *
- * The same idea applies to a REPO LISTING, where nothing is installed yet: see
- * [forRepoPlugin], which walks the entry's own icon fields → its addon
- * manifest's logo → the extension site's favicon. A listing that shows no icon
- * at all (which was the norm for SkyStream repos — only 1 of 25 entries
- * declares an `iconUrl`) renders as a monochrome puzzle-piece glyph otherwise.
- */
 object ExtensionIcons {
 
     private val stremioCache = ConcurrentHashMap<String, String?>()
@@ -29,17 +16,6 @@ object ExtensionIcons {
     /** Resolved icons for repo-listing rows, keyed by repo kind + entry URL. */
     private val repoCache = ConcurrentHashMap<String, String>()
 
-    /**
-     * Providers whose icon probe came back with nothing, and when.
-     *
-     * A row's icon is resolved from a `LaunchedEffect` that runs every time the
-     * row enters composition — so a provider with no icon at all was re-probed
-     * every time its row scrolled back into view (a plugin load and a disk stat
-     * for a CS3 one, a blocking site lookup for a manga one). The negative
-     * answer is remembered for [MISS_TTL_MS] instead, which is long enough to
-     * stop the churn and short enough that an icon that becomes resolvable later
-     * (a plugin that failed to load on the first try) is still picked up.
-     */
     private val missAt = ConcurrentHashMap<String, Long>()
     private const val MISS_TTL_MS = 5 * 60_000L
 
@@ -84,31 +60,10 @@ object ExtensionIcons {
             // live domain).
             ProviderType.FORK_VIDEO ->
                 com.hikari.app.manga.MangaExtensionManager.iconFallback(config)
-            // A Vega provider has no repo-level icon to probe: the manifest
-            // entry's own `icon` (a jsDelivr URL) is already stored in
-            // [ProviderConfig.iconUrl] when it has one, and there is no site
-            // domain to fall back to — nothing to fetch here.
             else -> null
         }
     }
 
-    /**
-     * The icon to show for a repo-listing row — nothing is installed yet, so
-     * the only sources are what the repo listing declared:
-     *
-     *  1. the entry's own image field (`iconUrl`, `icon`, `logo` — repos use
-     *     all three spellings; a relative path is resolved against the repo),
-     *  2. [Cs3RepoPlugin.iconManifest] — the entry's first Stremio addon
-     *     manifest, whose `logo` is the REAL icon for a SkyStream `.sky`
-     *     (its plugin.json declares no icon at all),
-     *  3. [Cs3RepoPlugin.iconHost] — the extension site's favicon, via the
-     *     same Google favicon service the CloudStream repos use.
-     *
-     * Returns null when none of those exist, and the row keeps its placeholder
-     * glyph. BLOCKING network I/O on a miss (only step 2 fetches, and its
-     * answer is cached per entry) — call it from Dispatchers.IO, exactly like
-     * [forConfig].
-     */
     suspend fun forRepoPlugin(
         p: Cs3RepoPlugin,
         kind: RepoKind,
@@ -138,14 +93,6 @@ object ExtensionIcons {
         return resolved
     }
 
-    /**
-     * Makes a repo-declared image reference absolute. Plugin listings in the
-     * wild use protocol-relative (`//host/icon.png`), root-relative
-     * (`/static/icon.png`) and bare relative paths, and a stored icon that
-     * Coil cannot turn into a URL is simply skipped — which is another way an
-     * otherwise-fine icon silently degrades to the placeholder glyph. Returns
-     * null for blank input, and for a relative path with no usable [base].
-     */
     fun absolute(url: String?, base: String?): String? {
         val u = url?.trim().orEmpty()
         if (u.isBlank()) return null

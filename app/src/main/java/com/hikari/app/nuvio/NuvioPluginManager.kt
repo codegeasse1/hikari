@@ -16,15 +16,6 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
 
-/**
- * Install/uninstall of Nuvio JS scrapers, plus first-run seeding of the Nuvio
- * provider repos so the feature works out of the box.
- *
- * The app no longer installs any provider FOR the user: the repos are seeded (so
- * the Extensions screen's Nuvio folders are never empty and a working scraper is
- * one tap away), but which scrapers are installed is the user's choice.
- * [removeFormerlySeededProviders] takes back the ones earlier builds put there.
- */
 object NuvioPluginManager {
 
     fun scrapersDir(context: Context): File =
@@ -69,19 +60,6 @@ object NuvioPluginManager {
         ),
     )
 
-    /**
-     * The providers earlier builds installed FOR the user on first run — until
-     * 0.10.48 [seedDefaults] fetched Yoru's manifest and installed the three
-     * named in `SEED_PROVIDERS`. The owner's instruction is that the app must not
-     * put providers in front of the user, so the seeding is gone (the repos are
-     * still seeded) and [removeFormerlySeededProviders] takes back what the old
-     * build left on an install that already has them.
-     *
-     * `dahmermovies.js` is here even though the last build's list named only
-     * three: it is one of Yoru's scrapers and shows up installed in the report
-     * the owner sent, so an earlier build seeded it and it has to go with the
-     * rest.
-     */
     private val FORMERLY_SEEDED = setOf(
         "vixsrc.js",
         "moviebox.js",
@@ -100,24 +78,8 @@ object NuvioPluginManager {
         }
     }
 
-    /**
-     * Removes the Nuvio providers earlier builds pre-installed (see
-     * [FORMERLY_SEEDED]), once per install. Repos are left alone — only the
-     * scrapers go, and only a row that is BOTH from Yoru's repo under one of
-     * the four names AND still sitting on the bare file the old seeder wrote.
-     * A reinstall lands on a per-source stamped file name (see
-     * [installScraper]), so user installs never match the second condition.
-     *
-     * Matched on the source FILE, not the display name: MovieBox (`moviebox.js`)
-     * also ships in the Hindi-Nuvio and All-in-One bundles, and a copy the
-     * user installed from one of those is theirs to keep (different repo, no
-     * match — and a stamped local file, no match either).
-     */
     suspend fun removeFormerlySeededProviders(context: Context) {
         val store = HikariApp.instance.store
-        // `getOrDefault(true)`: if the flag cannot be read, do nothing rather
-        // than run a destructive sweep on a guess — the next launch will ask
-        // again.
         if (runCatching { store.nuvioSeedCleaned() }.getOrDefault(true)) return
         val targets = store.providers().filter { cfg ->
             if (cfg.type != ProviderType.NUVIO) return@filter false
@@ -125,10 +87,6 @@ object NuvioPluginManager {
             if (!key.startsWith("$SEED_REPO/")) return@filter false
             val seededName = key.substringAfterLast('/')
             if (seededName !in FORMERLY_SEEDED) return@filter false
-            // Only the file the old seeder itself wrote (bare name): installs
-            // land on per-source stamped names now, so a user's reinstall is
-            // immune to this sweep by construction — only a leftover of the
-            // old seeding is ever taken back.
             File(cfg.url).name == seededName
         }
         if (targets.isNotEmpty()) {
@@ -153,11 +111,6 @@ object NuvioPluginManager {
         runCatching { store.markNuvioSeedCleaned() }
     }
 
-    /** Writes a scraper JS file and registers it as a NUVIO provider. The
-     *  provider code is validated before anything installed is touched, and
-     *  the file carries a per-source stamp in its name (like the CS3/Hiki
-     *  installers): two repos' providers often share a file name, and without
-     *  the stamp the second install overwrote the first's file. */
     suspend fun installScraper(
         context: Context,
         bytes: ByteArray,
@@ -168,26 +121,14 @@ object NuvioPluginManager {
         if (bytes.size > MAX_BYTES) {
             return@withContext Result.failure(Exception("File too large (max 5MB)"))
         }
-        // Vendored fix: replace known-broken upstream providers with the
-        // patched JS shipped in assets (see PROVIDER_PATCHES). The original
-        // bytes are passed so the patch is content-gated (a same-named but
-        // different build is never clobbered).
         val effective = patchedBytes(sourceUrl, bytes) ?: bytes
         val base = rawName.substringAfterLast('/').ifBlank { "provider" }
             .let { if (it.endsWith(".js", true)) it.dropLast(3) else it }
             .trim().ifBlank { "provider" }
-        // Per-source file identity: two repos publishing `moviebox.js` must
-        // not share one file (the second install overwrote the first, and
-        // uninstalling either deleted the other's code). A stamped name also
-        // never matches the formerly-seeded sweep's bare file names, so a
-        // reinstall is immune to that sweep by construction.
         val clean = if (sourceUrl.isNullOrBlank()) "$base.js"
         else "$base-${shortHash(SourceUrls.canonical(sourceUrl))}.js"
         val dir = scrapersDir(context)
         val file = File(dir, clean)
-        // Validate BEFORE touching the installed file: the old code overwrote
-        // it first and deleted it when the new bytes failed validation, so a
-        // failed update destroyed the working extension.
         val tmp = File(dir, "$clean.tmp")
         tmp.setWritable(true)
         val wrote = runCatching { tmp.writeBytes(effective) }
@@ -234,9 +175,6 @@ object NuvioPluginManager {
             )
         )
         HikariApp.instance.providers.refresh()
-        // One source must never leave two copies behind: an install that
-        // follows a pre-stamp-era file (bare name) drops that old row and its
-        // file once nothing references it — the CS3 path does the same.
         if (!sourceUrl.isNullOrBlank()) {
             val wanted = SourceUrls.matchKeys(sourceUrl).toSet()
             val stale = HikariApp.instance.store.providers().filter {
@@ -300,43 +238,6 @@ object NuvioPluginManager {
         config.type == ProviderType.NUVIO &&
             (config.url.isBlank() || !File(config.url).exists())
 
-    /**
-     * Vendored fixes for upstream nuvio providers that are broken at the
-     * source (their repo owners are unreachable/slow to fix). Each entry maps
-     * a URL fragment of the provider's `sourceUrl` to a patched JS file shipped
-     * in assets/nuvio/patches/. When a provider matching a fragment is
-     * installed (or re-patched on launch), the patched file is used instead of
-     * the upstream bytes.
-     *
-     * vornix.js  — MoviesDrive: hubcloud download links use a newer button
-     *              layout ("Download [Server: 10Gbps]" → pixel.hubcloud.cx)
-     *              that the upstream filter never matched, so no links were
-     *              ever extracted.
-     * streamflix.js — the upstream provider returns only the dead wasabisys
-     *              premium bucket (NoSuchBucket) and requires a WebSocket
-     *              (which hikari's QuickJS runtime does not have) for TV; the
-     *              patched build probes every server, drops dead ones and uses
-     *              deterministic TV paths.
-     * 4khdhub.js — upstream's Chrome/91 desktop User-Agent is rejected by the
-     *              site's Cloudflare firewall ("Access denied"), so every title
-     *              came back with no sources. The patch sends a modern mobile
-     *              browser UA plus browser Accept/Accept-Language/Referer.
-     *              CAREFUL: `4khdhub.js` also exists in All-in-One-Nuvio, but
-     *              that repo ships a completely different (newer, obfuscated)
-     *              provider that already returns the required Referer via
-     *              `behaviorHints.proxyHeaders.request`. The old patch matched
-     *              by filename alone and CLOBBERED that working provider with
-     *              the Yoru build, whose streams carry no headers — which is
-     *              exactly why 4KHDHub "just skipped" without playing. So this
-     *              patch is content-gated to the Yoru/TVVVV upstream (it must
-     *              contain "4khdhub.click") and source-gated to Yoru's repo;
-     *              a provider from any other repo is left untouched, and an
-     *              already-clobbered one is RESTORED from its source URL.
-     * zevran.js  — the VAplayer API only answers when the Referer/Origin is the
-     *              player EMBED page (nextgencloudfabric.com/embed/…), not the
-     *              bare site root upstream sent; the patch also falls back to
-     *              the tmdb id and attaches the play-headers.
-     */
     private data class ProviderPatch(
         val fragment: String,
         val asset: String,
@@ -383,12 +284,6 @@ object NuvioPluginManager {
         return assetBytes(patch.asset)
     }
 
-    /** Applies the vendored patches to ALREADY-INSTALLED providers whose file
-     *  on disk still matches the (broken) upstream bytes — i.e. providers the
-     *  user installed before the patch shipped — AND restores providers whose
-     *  file was clobbered by a patch that never should have matched them (the
-     *  4KHDHub filename collision). Rewrites the file in place and re-validates
-     *  so the fix takes effect without a reinstall. */
     suspend fun applyPatchesToInstalled(context: Context) {
         val store = HikariApp.instance.store
         val targets = store.providers().filter { it.type == ProviderType.NUVIO }
@@ -402,9 +297,6 @@ object NuvioPluginManager {
             val isPatched = sourceText != null && sourceText.contains("Hikari patched build")
             if (isPatched) {
                 if (current.contentEquals(patched)) {
-                    // File is already the vendored build — but is this provider
-                    // even supposed to have it? If its source repo isn't the one
-                    // the patch targets, put the correct upstream back.
                     val expectedSource = patch.sourceMustContain
                     if (expectedSource != null && cfg.extra?.contains(expectedSource) != true) {
                         val restored = withContext(Dispatchers.IO) {
@@ -463,10 +355,6 @@ object NuvioPluginManager {
             // filename as-is when it's already absolute.
             url = if (filename.startsWith("http://") || filename.startsWith("https://")) filename
             else "$baseUrl/$filename",
-            // `logo` is the documented field (usually a Google-favicon URL for
-            // the scraper's site), but manifests in the wild also use
-            // `iconUrl`/`icon` — reading only `logo` left those rows on the
-            // placeholder glyph.
             iconUrl = o.optString("logo")
                 .ifBlank { o.optString("iconUrl") }
                 .ifBlank { o.optString("icon") }

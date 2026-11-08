@@ -17,22 +17,6 @@ import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.extractorApis
 import com.lagradost.cloudstream3.utils.newExtractorLink
 
-/**
- * The real CloudStream-3 runtime ships ~200 battle-tested extractors inside
- * cloudstream3.jar, but CloudStream's `loadExtractor()` only runs an extractor
- * whose `mainUrl` prefix-matches the embed URL. Plugins routinely embed from
- * domains the registry never heard of (luluvids.top, morencius.com,
- * bysezoxexe.com, player.wishhd.net, lowercase hgcloud.to…), so no extractor
- * runs → "no playable sources" even though the same video plays in CloudStream.
- *
- * This registers alias subclasses of the built-in extractors with the real
- * embed domains. They are appended to the jar's mutable registry, which
- * `loadExtractor` iterates newest-first — so aliases are tried FIRST and the
- * ENTIRE built-in machinery (dl-POST, JWPlayer unpacking, AES-GCM, dood
- * pass_md5, M3u8Helper…) runs for every plugin at once, exactly like it does
- * inside CloudStream. Anything the built-ins still can't resolve is picked up
- * by [FallbackResolver] in Cs3MainApiProvider.
- */
 object HikariExtractorRegistry {
 
     private val seen = java.util.Collections.synchronizedSet(mutableSetOf<String>())
@@ -90,12 +74,6 @@ object HikariExtractorRegistry {
     }
 }
 
-/**
- * megaplay family — the `getSources` JSON dance anime CDNs use. Mirrors the
- * resolver Anikoto & friends implement in their plugins (XHR header required,
- * otherwise megaplay answers 403 "AJAX requests only"), so Hikari's player
- * gets the same MegaPlay servers CloudStream shows.
- */
 private class HikariMegaPlayHost(override val mainUrl: String) : ExtractorApi() {
     override val name = "MegaPlay"
     override val requiresReferer = true
@@ -190,11 +168,6 @@ private class HikariVidHideHost(override val mainUrl: String) : VidHidePro()
 private class HikariWishHost(override val mainUrl: String) : StreamWishExtractor()
 private class HikariByseHost(override val mainUrl: String) : ByseSX()
 
-/**
- * hubu.cloud — mirrors upstream CloudStream's HubuCloud (the jar doesn't ship
- * it). The embed page carries a single <video><source src>, so just read the
- * stream URL off the DOM.
- */
 private class HikariHubuHost(override val mainUrl: String) : ExtractorApi() {
     override val name = "Hubu"
     override val requiresReferer = false

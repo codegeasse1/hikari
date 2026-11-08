@@ -14,18 +14,6 @@ import androidx.compose.runtime.rememberUpdatedState
 import com.hikari.app.data.Logs
 import kotlinx.coroutines.delay
 
-/**
- * Universal scroll-position hold: every page-level list, grid and scroll
- * column keeps its place across visits.
- *
- * Anchor-based: the saved slot records the key of the item at the top
- * ([Pos.anchor]) next to its index/offset, and the return lands on that
- * ITEM wherever it sits now — row order shifts (async sources finishing in
- * a different order, NSFW filtering, column-count changes moving cells) can
- * no longer park the page on the wrong content. The index is the fallback
- * when the anchor is gone. A restore never jumps to the end of the list on
- * a miss: a page whose content never comes back stays where it opened.
- */
 object ScrollKeeper {
     data class Pos(val index: Int, val offset: Int, val anchor: String? = null)
 
@@ -50,15 +38,6 @@ object ScrollKeeper {
 
 private const val RESTORE_WAIT_MS = 10_000L
 
-/**
- * How long after landing the restore keeps following its anchor.
- *
- * Shelves stream in AFTER the page opens (history, collections, provider
- * rows each arrive on their own beat and insert above the landing spot):
- * a one-shot restore lands right and is then pushed off by late arrivals.
- * While the user has not touched the list, the restore follows the anchor
- * to its new index instead.
- */
 private const val FOLLOW_MS = 15_000L
 
 private fun scrollLog(msg: String) {
@@ -74,10 +53,6 @@ fun keptListState(
     onNeedMore: (() -> Unit)? = null,
 ): LazyListState {
     val saved = remember(key) { ScrollKeeper.load(key) }
-    // Never seed a high index while an anchor exists: the list is still short
-    // on first composition and Lazy clamps the seed to its end — the user sees
-    // the bottom before the restore effect can run. Start at the top and let
-    // the effect below land on the anchor once it is actually present.
     val startIndex = if (saved?.anchor != null) 0 else (saved?.index ?: 0).coerceAtLeast(0)
     val startOffset = if (saved?.anchor != null) 0 else (saved?.offset ?: 0).coerceAtLeast(0)
     val state = rememberLazyListState(
@@ -95,9 +70,6 @@ fun keptListState(
         if (s.index <= 0 && s.offset <= 0) return@LaunchedEffect
         scrollLog("load key=$key idx=${s.index} off=${s.offset} anchor=${s.anchor}")
         val deadline = System.currentTimeMillis() + RESTORE_WAIT_MS
-        // The feed's keys are still incomplete on return (late shelves stream
-        // in after the page opens): restoring to the stale index now is the
-        // above/below landing. Wait for the anchor itself first.
         if (s.anchor != null) {
             while (System.currentTimeMillis() < deadline) {
                 if (state.isScrollInProgress) {
@@ -130,13 +102,6 @@ fun keptListState(
                     runCatching { state.scrollToItem(target, s.offset) }
                 }
                 scrollLog("restored key=$key target=$target total=${state.layoutInfo.totalItemsCount} anchorFound=" + (s.anchor != null && keysNow.value.indexOf(s.anchor) >= 0))
-                // Follow the anchor while late content streams in above the
-                // landing spot (see FOLLOW_MS): sitting still would leave the
-                // wrong rows on screen. Stands down only when the USER moves
-                // the list — never on feed updates. Telling those apart is the
-                // whole game: an insertion above shifts the viewport AND the
-                // anchor together, while a user scroll moves the viewport away
-                // from a stationary anchor.
                 if (s.anchor == null) return@LaunchedEffect
                 var lastTarget = target
                 var driftTicks = 0
@@ -154,11 +119,6 @@ fun keptListState(
                         lastTarget = ai
                         driftTicks = 0
                     } else if (ai == lastTarget) {
-                        // Anchor stationary but viewport elsewhere: a transient
-                        // layout settle heals by re-anchoring (this was the
-                        // instant "viewport left anchor" stand-down that left
-                        // folder-backs parked above/below the folder). A real
-                        // user scroll persists past ~750ms and stands down.
                         driftTicks++
                         if (driftTicks >= 3) { scrollLog("stand-down key=$key (viewport left anchor)"); return@LaunchedEffect }
                         runCatching { state.scrollToItem(ai, s.offset) }
@@ -255,13 +215,6 @@ fun keptGridState(
                     runCatching { state.scrollToItem(target, s.offset) }
                 }
                 scrollLog("restored key=$key target=$target total=${state.layoutInfo.totalItemsCount} anchorFound=" + (s.anchor != null && keysNow.value.indexOf(s.anchor) >= 0))
-                // Follow the anchor while late content streams in above the
-                // landing spot (see FOLLOW_MS): sitting still would leave the
-                // wrong rows on screen. Stands down only when the USER moves
-                // the list — never on feed updates. Telling those apart is the
-                // whole game: an insertion above shifts the viewport AND the
-                // anchor together, while a user scroll moves the viewport away
-                // from a stationary anchor.
                 if (s.anchor == null) return@LaunchedEffect
                 var lastTarget = target
                 var driftTicks = 0
@@ -279,9 +232,6 @@ fun keptGridState(
                         lastTarget = ai
                         driftTicks = 0
                     } else if (ai == lastTarget) {
-                        // Same transient-settle tolerance as above: re-anchor
-                        // short drifts, stand down only on a persisting
-                        // (~750ms) user move.
                         driftTicks++
                         if (driftTicks >= 3) { scrollLog("stand-down key=$key (viewport left anchor)"); return@LaunchedEffect }
                         runCatching { state.scrollToItem(ai, s.offset) }

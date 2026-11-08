@@ -93,21 +93,6 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-/**
- * One manga: its cover and description, a follow button, and its chapters.
- *
- * The chapters are the point of this screen — they are what the reader navigates
- * by — so they are fetched once and CACHED in [MangaStore]: opening a followed
- * title again shows the list instantly, and only the refresh button re-asks the
- * site. The list is newest-first by default (what every reader expects) with a
- * toggle, and the chapter the reader is currently on is marked, so "where was I"
- * is answered by looking rather than remembering.
- *
- * Every load failure is a line on screen, never a crash: a manga source is
- * third-party code and can throw anything (see
- * [com.hikari.app.manga.MangaProvider], which turns every throw into a short
- * message).
- */
 @Composable
 fun MangaDetailScreen(
     nav: NavHostController,
@@ -118,9 +103,6 @@ fun MangaDetailScreen(
 ) {
     val context = LocalContext.current
     val app = context.applicationContext as HikariApp
-    // The verification launcher below is started from a click, and the site URL
-    // has to be derived off the main thread, so the screen needs a scope of its
-    // own (the same one the refresh path uses).
     val scope = rememberCoroutineScope()
 
     // The store key is provider + the source's own url — the same key the
@@ -136,9 +118,6 @@ fun MangaDetailScreen(
     // Chapters | Comments tab below the characters row — tappable AND
     // swipable (a horizontal drag anywhere on the list flips it).
     var tab by remember { mutableIntStateOf(0) }
-    // Decoration that fills in behind the instantly-painted list: character
-    // portraits, forum threads / reviews, and external chapter subtitles.
-    // All run in parallel with the provider fetch, so they cost no wait.
     var characters by remember { mutableStateOf<List<MangaMetadataRepository.MangaCharacter>>(emptyList()) }
     var threads by remember { mutableStateOf<List<MangaMetadataRepository.MangaThread>>(emptyList()) }
     var reviews by remember { mutableStateOf<List<MangaMetadataRepository.MangaReview>>(emptyList()) }
@@ -155,9 +134,6 @@ fun MangaDetailScreen(
 
     val rev = rememberMangaRevision()
     val progress = remember(rev) { MangaStore.progressFor(key) }
-    // Per-chapter read marks for the rows below + the manga-level badge:
-    // recomputed with the chapters, so marks landed by the reader (which
-    // pings the store and bumps rev) redraw without a reload.
     val readMarks = remember(rev, chapters) {
         chapters.associate { it.url to MangaStore.chapterReadState(key, it.url) }
     }
@@ -166,15 +142,6 @@ fun MangaDetailScreen(
     }
     LaunchedEffect(rev) { followed = MangaStore.isFollowed(key) }
 
-    // ---- Verification, right where the chapters are -------------------------
-    //
-    // The Manga tab's globe is per ENGINE, which is the right place to fix a
-    // blocked catalog — but a site can put its Cloudflare challenge in front of
-    // the CHAPTER LIST, and then the title page is the one that comes back empty
-    // ("some manga site also put verification on chapter loading page, so add
-    // there a webview"). So the page the user is staring at carries its own way
-    // in, and coming back re-asks the source: between opening the view and
-    // closing it, the answer goes from a challenge to the real chapter list.
     val verifyLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) {
@@ -233,10 +200,6 @@ fun MangaDetailScreen(
     LaunchedEffect(providerId, mangaUrl, reload) {
         loading = true
         error = null
-        // Any ContentProvider that can serve manga (Aniyomi APK MangaProvider
-        // OR Anymex/Mangayomi JS AnymexMangaProvider). Casting only to
-        // MangaProvider was the "This manga engine is not installed" bug when
-        // the catalog came from ANYMEX_MANGA.
         val provider = app.providers.byId(providerId)
         if (provider == null) {
             error = I18n.t("This manga engine is not installed.")
@@ -251,10 +214,6 @@ fun MangaDetailScreen(
             posterUrl = posterUrl.takeIf { it.isNotBlank() },
             rawType = "manga",
         )
-        // External metadata (AniList/PornHwaDB) is fetched in parallel with
-        // the provider row so it costs no extra wait, and it WINS: the
-        // provider's text is only the fallback when neither source knows
-        // the title (see MangaMetadataRepository).
         val externalDeferred = async(Dispatchers.IO) {
             runCatching { MangaMetadataRepository.fetchExternal(app, title) }.getOrNull()
         }
@@ -265,10 +224,6 @@ fun MangaDetailScreen(
             fresh,
             runCatching { externalDeferred.await() }.getOrNull(),
         )
-        // Decoration fan-out: one cached external record feeds all four, so
-        // the extra lookups are one AniList search + at most one keyed
-        // PornHwaDB read per title per day — and the chapter list below never
-        // waits for any of them (it paints from the store first, as before).
         val extTitle = title
         scope.launch {
             val charsD = async(Dispatchers.IO) {
@@ -316,9 +271,6 @@ fun MangaDetailScreen(
         }
         var list = MangaStore.chaptersFor(key).orEmpty()
         if (list.isEmpty()) {
-            // One fresh retry on a re-resolved entry before reporting empty:
-            // a stale cached meta (or a first-load miss) used to end here
-            // with "0 chapters" while the engine had them.
             runCatching {
                 val retryMeta = withContext(Dispatchers.IO) {
                     runCatching { provider.getMeta(base) }.getOrDefault(base)
@@ -347,10 +299,6 @@ fun MangaDetailScreen(
 
     val shown = remember(chapters, newestFirst) {
         val ordered = if (newestFirst) chapters.asReversed() else chapters
-        // Belt-and-braces with MangaStore.putChapters (which now collapses
-        // duplicates): lists already persisted to disk by older builds can
-        // still carry the same URL twice, and that crashes the keyed list
-        // below — so collapse again here before it ever reaches items().
         ordered.distinctBy { it.url }
     }
 
@@ -376,10 +324,6 @@ fun MangaDetailScreen(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
-            // The same globe the Manga tab's engine headers carry: this title's
-            // site, in the verification WebView. Kept beside the refresh button
-            // because a chapter list that will not load is either stale (refresh)
-            // or blocked (this).
             IconButton(onClick = openVerify) {
                 Icon(
                     Icons.Filled.Public,
@@ -438,10 +382,6 @@ fun MangaDetailScreen(
                     }
                     Spacer(Modifier.width(14.dp))
                     Column(Modifier.weight(1f)) {
-                        // Reading/Completed FIRST, above the title: from outside
-                        // the reader the user sees at a glance what they were
-                        // reading and what is done (manga and novels share this
-                        // page, so one move covers both).
                         if (mangaRead != com.hikari.app.manga.MangaReadState.NONE) {
                             Surface(
                                 shape = RoundedCornerShape(50),
@@ -548,13 +488,6 @@ fun MangaDetailScreen(
                     ) {
                         items(genres.size, key = { i -> "g-" + genres[i] + "#" + i }) { i ->
                             val g = genres[i]
-                            // A tag is a search, not a decoration. Two scopes are
-                            // offered because both are wanted and only the user
-                            // knows which: the tag belongs to THIS site's
-                            // vocabulary (only this extension knows what it means
-                            // by "Manhwa"), while the same story is usually carried
-                            // by several engines and a reader hunting for more of
-                            // it does not care which one answers.
                             GenreChip(
                                 genre = g,
                                 onSearchHere = {
@@ -650,10 +583,6 @@ fun MangaDetailScreen(
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.error,
                         )
-                        // A tracker link (or an uninstalled engine) lands here
-                        // with no provider to load from — offer the title
-                        // across every installed manga engine instead of a
-                        // dead end (see Routes.mangaRoute).
                         if (app.providers.byId(providerId) == null) {
                             Button(
                                 onClick = {
@@ -715,10 +644,6 @@ fun MangaDetailScreen(
             }
         }
     }
-    // Ten seconds of an empty chapter list is the one moment this page can
-    // explain itself: the site is almost certainly asking for the verification
-    // it asks a browser for (see [VerificationNudge]). It floats under the bar,
-    // says its piece once, and is tappable straight into the WebView.
     VerificationNudge(
         waiting = loading && chapters.isEmpty(),
         onOpenWebView = openVerify,
@@ -729,18 +654,6 @@ fun MangaDetailScreen(
     }
 }
 
-/**
- * One tag of a manga, as a chip that opens the two ways to search for it.
- *
- * A plain `Surface` pair rather than a `FilterChip`: the app's chips are glass
- * pills everywhere else (see the engine chips on the Manga tab), and a tag that
- * looks clickable has to behave clickable — tapping it used to do nothing at
- * all, which is worse than not offering it.
- *
- * The menu is anchored to the chip, so it opens under the tag the user actually
- * pressed, and the two entries say exactly what they search: [onSearchHere] is
- * the engine this title came from, [onSearchEverywhere] every installed engine.
- */
 @Composable
 private fun GenreChip(
     genre: String,
@@ -862,12 +775,6 @@ private fun CharacterCircle(c: MangaMetadataRepository.MangaCharacter) {
     }
 }
 
-/**
- * The Comments tab: AniList forum threads about the title (tap one to read
- * it, "New thread" to write one — posting needs the AniList sign-in), plus
- * PornHwaDB reviews for adult titles. Nothing here blocks the chapter list:
- * it all fills in behind it.
- */
 @Composable
 private fun CommentsTab(
     nav: NavHostController,

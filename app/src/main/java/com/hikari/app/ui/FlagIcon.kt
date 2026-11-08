@@ -14,12 +14,6 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 
-/**
- * The real country flag image for an ISO code from [ProviderFlags.codeOf]
- * ("in" → 🇮🇳): the reference provider list's flags, drawn from a flag CDN
- * with an emoji fallback when offline or when the fetch fails, so a row never
- * shows a blank gap where its flag belongs.
- */
 @Composable
 fun FlagIcon(
     code: String,

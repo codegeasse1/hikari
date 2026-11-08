@@ -28,34 +28,6 @@ import android.widget.TextView
 import com.hikari.app.i18n.I18n
 import com.hikari.app.tv.TvMode
 
-/**
- * A full HSV colour picker drawn on a glass panel, for the subtitle style
- * settings (text colour, outline colour, background colour).
- *
- * It offers all three of the controls a subjective "make my subtitles look
- * right" decision actually needs — a saturation/value square, a hue strip and
- * an alpha strip — plus a row of one-tap presets and a live caption preview
- * painted exactly the way the player will paint the real captions (fill +
- * outline), so a colour choice is judged against the video, not against a
- * colour wheel. The platform's own pickers (`ColorPickerDialog` in the
- * framework) do not exist below API 33 and are not themeable, which is why
- * this is drawn in-app.
- *
- * The panel matches the player's other dialogs (dark glass, accent stroke);
- * it is deliberately self-contained — the player's glass helpers are private
- * to [PlayerActivity], so the pieces this needs are local to this file.
- *
- * EVERY CHANGE IS APPLIED AS IT IS MADE. This picker holds no draft: a drag on
- * the square, a new hue, a preset tap all publish their colour to the caller
- * immediately, so the real captions on the video turn green as the finger moves
- * — the same contract the caption panel itself keeps. The ✕ and Apply simply
- * put the picker away (the colour is already applied), and Cancel hands back
- * the colour the picker was opened with. An earlier version kept the pick in a
- * local draft and only applied it on an Apply button, so choosing a colour and
- * closing with the ✕ discarded it — which is the "I move it to green but when I
- * click the cross it stays white" report, true of the text, the edge and the
- * background colour alike.
- */
 class ColorPickerDialog(
     private val host: Activity,
     private val accent: Int,
@@ -64,11 +36,6 @@ class ColorPickerDialog(
 
     private fun dp(v: Float): Int = (v * density + 0.5f).toInt()
 
-    /**
-     * Shows the picker. [allowAlpha] adds the transparency strip (the captions'
-     * background colour needs it — "remove the background" IS alpha 0 — while a
-     * text/outline colour is always wanted at full opacity).
-     */
     fun show(title: String, initial: Int, allowAlpha: Boolean, onPick: (Int) -> Unit) {
         val dialog = Dialog(host, android.R.style.Theme_Translucent_NoTitleBar)
 
@@ -143,23 +110,6 @@ class ColorPickerDialog(
          *  back" apart from "this was opened and closed again". */
         var touched = false
 
-        /**
-         * Repaints the picker's own preview and read-out, AND publishes the
-         * colour to the caller.
-         *
-         * Every change is published the moment it is made — the same contract
-         * the caption panel itself keeps ("every change is applied to the
-         * player's SubtitleView the moment it is made, so the captions on the
-         * video ARE the preview"). Drag the square to green and the real
-         * subtitles turn green as the finger moves.
-         *
-         * That is also what makes the ✕ honest. This picker used to hold the
-         * colour in a local draft and hand it over only when the user found the
-         * Apply button, so choosing green and closing with the ✕ — the obvious
-         * "I'm done", and on a remote the only way out at all — threw the colour
-         * away and the swatch behind still read white. Reported exactly that way
-         * for the text, the edge and the background colour alike.
-         */
         fun publish() {
             val c = current()
             preview.previewColor = c
@@ -171,11 +121,6 @@ class ColorPickerDialog(
             }
         }
 
-        // ---- colour controls ------------------------------------------------
-        // The views are made first and wired afterwards: the square and the hue
-        // strip each need to repaint the other, so neither can be built inside
-        // the other's initialiser. Both callbacks only ever run once the user
-        // touches them, long after both exist.
         lateinit var sv: SvSquare
         lateinit var huePicker: HueStrip
         var alphaStrip: AlphaStrip? = null
@@ -256,12 +201,6 @@ class ColorPickerDialog(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ))
 
-        // ---- actions --------------------------------------------------------
-        // The colour is ALREADY applied (see [publish]): the ✕ and Apply just
-        // put the picker away, and Cancel is a real undo — it hands back the
-        // colour the picker was opened with. A Cancel that dismissed without
-        // restoring would leave the video wearing a colour the user just told
-        // the app to forget, which is the one thing a live picker must not do.
         panel.addView(LinearLayout(host).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -281,15 +220,6 @@ class ColorPickerDialog(
 
         publish()
 
-        // The picker is a TALL dialog — a preview, the saturation/value square,
-        // two strips, the preset chips and two buttons come to roughly 390dp —
-        // and the landscape player's window is only ~393dp tall (a 1080p phone
-        // in landscape). On a window marginally shorter than that, the dialog's
-        // bottom (the buttons) sat past the screen edge with no way to reach it:
-        // nothing scrolled, and the window cannot be bigger than the screen. The
-        // panel is measured first and its window is capped against the window it
-        // is in, with a scroller around it, so every part of the picker is
-        // reachable however short the screen is.
         val scroller = ScrollView(host).apply {
             isVerticalScrollBarEnabled = true
             isScrollbarFadingEnabled = false
@@ -323,18 +253,6 @@ class ColorPickerDialog(
         }
     }
 
-    /**
-     * Makes every clickable-but-not-focusable view under [root] reachable with a
-     * D-pad, and gives each of them a focus ring.
-     *
-     * The same treatment the player's own panels get (see
-     * `PlayerActivity.View.tvFocusableTree`): `setOnClickListener` makes a view
-     * clickable and leaves it unfocusable, and a D-pad can only land on a
-     * focusable view — so without this the picker's preset chips, its ✕ and its
-     * two buttons could not be reached by a remote at all. The three custom
-     * surfaces (the square, the hue strip, the alpha strip) are not clickable —
-     * a tap on them is a drag — so they are focused explicitly instead.
-     */
     private fun makeTvReachable(root: View) {
         val custom = root is SvSquare || root is HueStrip || root is AlphaStrip
         if ((custom || root.isClickable) && !root.isFocusable && root.visibility == View.VISIBLE) {
@@ -356,9 +274,6 @@ class ColorPickerDialog(
             setColor(Color.TRANSPARENT)
             setStroke(dp(2f).coerceAtLeast(1), accent)
         }
-        // Inset by the stroke's own outer half so all of it lands inside the
-        // control: an un-inset stroke is centred on the edge and its outer half
-        // is painted away by whatever clips the view.
         return StateListDrawable().apply {
             addState(
                 intArrayOf(android.R.attr.state_focused),
@@ -467,25 +382,6 @@ private class Swatch(
     }
 }
 
-/**
- * Keeps a drag that STARTED on a picker surface with that surface for as long
- * as the finger is down.
- *
- * The square and the two strips are not click targets — the drag IS the
- * control: a finger on the square sets the saturation and value directly, and a
- * finger on a strip slides its marker. They sit inside the dialog's own
- * vertical [ScrollView] (the picker is ~390dp tall and a landscape player's
- * window is shorter than that), and each strip additionally sits in a
- * horizontal one. A scrolling ancestor takes a drag over as soon as it passes
- * the touch slop, so a drag on the square scrolled the whole box and moved the
- * colour only as far as the slop, and a drag along a strip scrolled the row
- * instead of sliding the marker.
- *
- * `requestDisallowInterceptTouchEvent` walks UP the ancestor chain, so one call
- * here freezes every scroller above the surface at once; it is given back when
- * the gesture ends (a lifted finger, or a cancelled gesture — a scroller must
- * not stay locked after that).
- */
 private fun View.claimDragFor(event: MotionEvent) {
     when (event.actionMasked) {
         MotionEvent.ACTION_DOWN -> parent?.requestDisallowInterceptTouchEvent(true)
@@ -507,11 +403,6 @@ private class SvSquare(context: android.content.Context) : View(context) {
     private var hue = 0f
 
     init {
-        // ComposeShader with a MULTIPLY blend is the classic way to build this
-        // square, but on a hardware canvas its result has never been reliably
-        // identical across devices — and this view is small, so a software
-        // layer costs nothing and guarantees the square looks the same
-        // everywhere.
         setLayerType(LAYER_TYPE_SOFTWARE, null)
     }
 
@@ -585,13 +476,6 @@ private class SvSquare(context: android.content.Context) : View(context) {
         return true
     }
 
-    /**
-     * The D-pad drives the cursor too: left/right move saturation, up/down move
-     * value. Without this the picker's two custom surfaces were touch-only, so
-     * on a television the only colour a remote could reach was one of the preset
-     * chips — the square, the hue strip and the alpha strip were unreachable
-     * (and invisible, since nothing drew a focus).
-     */
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
         val step = 0.04f
         when (keyCode) {
@@ -765,12 +649,6 @@ private class AlphaStrip(context: android.content.Context) : View(context) {
     }
 }
 
-/**
- * The preview caption: the picked text colour with the picked outline colour
- * drawn as a real outline (stROKE then FILL, the same recipe the caption
- * renderer uses), on the picked background, so the choice is judged the way it
- * will actually look over the video.
- */
 private class CaptionPreview(context: android.content.Context) : View(context) {
     var text: String = ""
     var previewColor: Int = 0xFFFFFFFF.toInt()

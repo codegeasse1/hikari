@@ -16,24 +16,6 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 
-/**
- * Install/uninstall of LNReader novel sources, plus first-run seeding of the
- * official plugin index so the feature works out of the box.
- *
- * An LNReader repo is the published plugin index (`plugins.min.json` — a bare
- * JSON array of `{id, name, site, lang, version, url, iconUrl}`, where `url`
- * is the compiled plugin JS). A `github.com/owner/repo` page resolves to its
- * index through the GitHub API (see [loadRepoPlugins]) — pasting the app repo
- * (`lnreader/lnreader`) lands on the plugins repo, since the app repo itself
- * carries no plugins and that is the URL users actually have.
- *
- * Like every other engine, nothing is pre-installed for the user: the index
- * is seeded so the Extensions screen's LNReader folder is never empty, and
- * which sources are installed is the user's choice. Installed rows are
- * [ProviderType.MANGA] providers with an `lnreader|` id prefix (see
- * [LnReaderProvider]), so the manga tab, the detail screen and the novel
- * reader all work unchanged.
- */
 object LnReaderPluginManager {
 
     const val PREFIX = "lnreader|"
@@ -60,11 +42,6 @@ object LnReaderPluginManager {
         return site?.takeIf { it.startsWith("http://") || it.startsWith("https://") }
     }
 
-    /**
-     * The source's own site, backfilling it from the plugin when an older
-     * install predates the capture. Suspend — runs the plugin once, then the
-     * capture is stored and [siteUrlOf] serves it.
-     */
     suspend fun resolveSite(config: ProviderConfig): String? {
         siteUrlOf(config)?.let { return it }
         if (!LnReaderProvider.isLnReaderId(config.id)) return null
@@ -104,11 +81,6 @@ object LnReaderPluginManager {
         }
     }
 
-    /**
-     * The installable entries of an LNReader plugin index: a bare JSON array
-     * of `{id, name, site, lang, version, url, iconUrl}`. Relative `url`s
-     * resolve against the index file, like the app does.
-     */
     fun repoPlugins(indexText: String, indexUrl: String): List<Cs3RepoPlugin> {
         val arr = runCatching { JSONArray(indexText) }.getOrNull() ?: return emptyList()
         val base = indexUrl.trim().substringBeforeLast('/')
@@ -187,13 +159,6 @@ object LnReaderPluginManager {
 
     private const val GITHUB_API = "https://api.github.com"
 
-    /**
-     * The installable entries of whatever [url] names — the index file
-     * itself, or a `github.com/owner/repo` page — plus the URL to store for
-     * refreshes. The stored URL is the page itself for GitHub repos (their
-     * index is re-discovered on every refresh, so a versioned path never
-     * rots), otherwise the file that served.
-     */
     suspend fun loadRepoPlugins(url: String): Result<Pair<List<Cs3RepoPlugin>, String>> =
         withContext(Dispatchers.IO) {
             val t = url.trim()
@@ -206,9 +171,6 @@ object LnReaderPluginManager {
             }
             val gh = githubRepoOf(t)
                 ?: return@withContext Result.failure(Exception("Could not fetch repo: $t"))
-            // The app repo carries no plugins — its sibling does — and it is
-            // the URL users actually have, so it resolves there (said plainly
-            // in the folder, not silently).
             val (owner, repo) =
                 if (gh.first.equals("lnreader", ignoreCase = true) && gh.second.equals("lnreader", ignoreCase = true)) {
                     "lnreader" to "lnreader-plugins"
@@ -253,12 +215,6 @@ object LnReaderPluginManager {
         return Result.failure(Exception("Could not fetch repo: no LNReader index in $owner/$repo"))
     }
 
-    /**
-     * Downloads a plugin's JS and registers it as an LNReader (MANGA)
-     * provider. The file must validate as an LNReader source first — a web
-     * page or some other engine's script fails with the reason instead of a
-     * broken provider row.
-     */
     suspend fun install(context: Context, plugin: Cs3RepoPlugin): Result<Int> =
         withContext(Dispatchers.IO) {
             val bytes = runCatching {
@@ -289,9 +245,6 @@ object LnReaderPluginManager {
             val wrote = runCatching {
                 val script = File(dir, "plugin.js")
                 script.writeText(source)
-                // The globe/WebView button opens this, so capture it while the
-                // plugin is already at hand (older installs backfill it on
-                // first use — see [resolveSite]).
                 val site = LnReaderRuntime.siteUrl(script, safeId).trim()
                 JSONObject()
                     .put("name", plugin.name)
@@ -316,9 +269,6 @@ object LnReaderPluginManager {
                 )
             )
             HikariApp.instance.providers.refresh()
-            // A new source build may change nothing cached (chapters are
-            // keyed by path), but a reinstall over a changed site deserves a
-            // fresh episode epoch like every other engine gets.
             runCatching { com.hikari.app.data.MetaCache.bumpEpisodesEpoch() }
             Result.success(1)
         }

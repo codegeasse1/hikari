@@ -187,15 +187,6 @@ import kotlinx.coroutines.withTimeoutOrNull
 import com.hikari.app.tv.tvPress
 import com.hikari.app.tv.tvTextFieldKeys
 
-/**
- * A Home pick is stored as one string in the `homeProvider` preference: either
- * an extension's id, or — with this prefix — the id of a saved collection. One
- * preference (and one picker) therefore carries both kinds of choice.
- *
- * Shared with the Search tab ([Routes.COLLECTION_PROVIDER_PREFIX]) so the same
- * key means the same thing in a Home pick, in the Search tab's provider row, and
- * in the scoped-search route.
- */
 private const val COLLECTION_PREFIX = Routes.COLLECTION_PROVIDER_PREFIX
 private const val TRACKER_PREFIX = "tracker:"
 
@@ -210,16 +201,6 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
     private val _loading = MutableStateFlow(true)
     val loading: StateFlow<Boolean> = _loading.asStateFlow()
 
-    /**
-     * The saved Home pick(s), in the order they were picked.
-     *
-     * EMPTY means "All providers" (the default), ONE entry is the ordinary
-     * single pick, and SEVERAL entries are a MULTI pick — made by holding a row
-     * in the picker for 0.5s and ticking others (see [setSelection]). Every
-     * entry is the same string the picker stores a single pick under: an
-     * extension's id, or `collection:<id>` for a personal catalog, so one list
-     * carries both kinds of choice.
-     */
     private val _selection = MutableStateFlow<List<String>>(emptyList())
     val selection: StateFlow<List<String>> = _selection.asStateFlow()
 
@@ -249,48 +230,10 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
      *  rebuilds the feed (see the collectionsFlow watcher). */
     private var watchedCollections: List<Collection> = emptyList()
 
-    // Last successful home feed per selected-provider key ("all" when the user
-    // is on the combined feed). Returning to Home, or re-picking the same
-    // provider, paints this INSTANTLY and refreshes in the background instead
-    // of blanking the screen to a spinner and re-fetching every catalog.
-    //
-    // Remembers EVERY feed the user has viewed (no eviction) so switching back
-    // to any provider is always instant. Each row holds poster-cache tokens
-    // rather than full images ([tokenizePoster] below), so the whole map stays
-    // cheap no matter how many extensions were browsed.
-    //
-    // It lives on [HomeFeedCache] — the WHOLE PROCESS, not this view model —
-    // because returning from the player can recreate the activity and with it
-    // this view model, and a fresh empty map would mean a spinner plus a full
-    // re-fetch of the picked provider every single time the user came back.
     private val homeCache get() = HomeFeedCache.rows
 
-    /**
-     * Every [loadInternal] call takes a ticket, and only the NEWEST ticket may
-     * paint rows or write the cache.
-     *
-     * Cancelling the previous job is not enough on its own: `loadJob` holds the
-     * LAST job ASSIGNED, and a load interrupted between reading the selection and
-     * assigning its job can end up assigned after — and therefore outliving — a
-     * load that started later. That is how an all-providers feed could paint
-     * itself over a picked provider's rows.
-     */
     private var loadToken = 0
 
-    /**
-     * Completes once the saved pick has been read back from the store.
-     *
-     * Everything else in [init] waits on it. A feed must never be loaded — and a
-     * pick must never be judged "gone" — while the selection is still the empty
-     * default. The new HomeViewModel a returning activity creates used to start
-     * its provider watcher before the restore coroutine had read the preference:
-     * the watcher then saw an empty selection, started an ALL-providers load, and
-     * that feed painted itself over the picked provider's rows. That is the
-     * reported "I pick 1Shows, play a movie, load a subtitle from the internet,
-     * close the player and come back — and Home is showing every provider's
-     * catalog again", with the pill still reading "1Shows", because the pick
-     * itself was never lost.
-     */
     private val restored = kotlinx.coroutines.CompletableDeferred<Unit>()
 
     init {
@@ -315,11 +258,6 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
             restored.await()
             manager.providers.collect { ps ->
                 val sel = _selection.value
-                // An EMPTY installed list means the list has not been built yet
-                // (the first seconds of a process, or a refresh in flight). It is
-                // not evidence that the picked extension is gone, so nothing is
-                // dropped and no feed is rebuilt from it — otherwise a pick could
-                // be forgotten in the instant before the extensions load.
                 if (ps.isNotEmpty()) {
                     // Only EXTENSION picks can be invalidated by the installed
                     // list changing; a collection pick is resolved against the
@@ -329,12 +267,6 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
                     val valid = sel.filter { key ->
                         isCollectionKey(key) || ps.any { it.config.enabled && it.config.id == key }
                     }
-                    // Batch 137: only a pick whose extension is GONE
-                    // (uninstalled) is dropped. A DISABLED pick is kept — its
-                    // feed is empty but the empty state names the reason —
-                    // instead of the pick silently reverting to All and Home
-                    // showing every provider's catalog. Tracker picks resolve
-                    // against the tracker stores in loadInternal, never here.
                     val validKept = sel.filter { key ->
                         isCollectionKey(key) || isTrackerKey(key) || ps.any { it.config.id == key }
                     }
@@ -362,20 +294,12 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
                 val picked = sel.filter { isCollectionKey(it) }
                     .mapNotNull { key -> list.firstOrNull { it.id == collectionIdOf(key) } }
                 if (picked != watchedCollections) {
-                    // A collection was picked, unpicked, edited or deleted: a
-                    // personal catalog picked on its own IS its folder tiles, and
-                    // inside a multi pick its shelves are baked into the feed, so
-                    // either way the screen has to be rebuilt from the store.
                     watchedCollections = picked
                     loadInternal()
                 }
             }
         }
         viewModelScope.launch {
-            // The language TMDB metadata is fetched in changed: every row built
-            // under the old one is stale, so the feed is thrown away and built
-            // again. Without this the new language only appeared after a
-            // restart, because this cache is what Home actually draws from.
             val app = getApplication<Application>() as HikariApp
             app.contentLanguageRevision.drop(1).collect {
                 homeCache.clear()
@@ -383,13 +307,6 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
             }
         }
         viewModelScope.launch {
-            // The adult-content switch was turned off (or back on): the rows already
-            // in hand were fetched under the old answer, and a catalogue row cannot
-            // be re-checked afterwards — a /discover answer carries no certificate,
-            // so the ceiling is applied by the REQUEST (see
-            // [com.hikari.app.data.NsfwGate.capDiscoverCertification]). Dropping the
-            // cache and rebuilding is what makes the switch change the feed the user
-            // is looking at, instead of only the next app launch's.
             val app = getApplication<Application>() as HikariApp
             app.store.nsfwEnabledFlow().drop(1).collect {
                 homeCache.clear()
@@ -398,13 +315,6 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
         }
         viewModelScope.launch {
             restored.await()
-            // A profile switch REPLACES the whole store under this screen
-            // (see Profiles.replacePreferences): the pick read once in init
-            // would otherwise keep showing the profile that was just left —
-            // its home catalogue, its rows — on the new profile's screen.
-            // Re-apply whenever the store's own pick changes out from under
-            // us, so a profile only ever shows its own catalogue. Equality-
-            // guarded (like setSelection above), so our own writes never loop.
             store.homeProvidersFlow().collect { multi ->
                 val single = runCatching { store.homeProvider() }.getOrDefault("")
                 val want = if (multi.isNotEmpty()) multi.toList()
@@ -425,28 +335,10 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
 
     fun selectProvider(id: String?) {
         val want = if (id == null) emptyList() else listOf(id)
-        // A re-tap of the CURRENT provider is a refresh request, not a no-op:
-        // without this the feed could sit on stale/blurred rows forever when
-        // the tap that should have reloaded it was swallowed as "no change".
         if (want == _selection.value) refreshFeed()
         else setSelection(want)
     }
 
-    /**
-     * Saves a pick of one or more sources (the picker's Done button), and
-     * rebuilds the feed from it. An EMPTY list is "All providers".
-     *
-     * The selection is what Home draws from, and it survives leaving the screen
-     * (and a restart) through [com.hikari.app.data.AppStore.setHomeProviders].
-     *
-     * Returns true when the pick actually changed (the rebuild is already
-     * launched): callers that also need a rebuild when NOTHING changed (the
-     * feed mixer's catalog switches/reorder write to the store, not the pick)
-     * must call [refreshFeed] themselves — never unconditionally after this,
-     * or the two loads race: the second cancels the first mid-flight and, on
-     * a forced refresh with the screen just cleared, parks it on a blank page
-     * with the spinner suppressed.
-     */
     fun setSelection(ids: List<String>): Boolean {
         val clean = ids.map { it.trim() }.filter { it.isNotBlank() }.distinct()
         if (clean == _selection.value) return false
@@ -457,11 +349,6 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
             "pick=" + (if (clean.isEmpty()) "all" else clean.joinToString(",")),
         )
         applySelection(clean)
-        // Clear the previous pick's shelves SYNCHRONOUSLY: the async load below
-        // first waits for the provider list (up to 20s) and fetches, and until
-        // it paints the old provider's rows sit on screen with no loading
-        // state — which reads as "selecting another provider still shows the
-        // old catalogue". A previously visited pick paints its cache instantly.
         val key = if (clean.isEmpty()) "all" else clean.joinToString(",")
         val cached = homeCache[key]
         if (cached != null) {
@@ -476,32 +363,10 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
         return true
     }
 
-    /**
-     * Rebuilds the feed even when the pick did not change — the feed mixer's
-     * catalog switches and reorder write to the store, not the pick, so saving
-     * the same mix still needs a fresh load for the toggles to show.
-     */
     fun refreshFeed() {
         viewModelScope.launch { loadInternal(forceRefresh = true) }
     }
 
-    /**
-     * The row stream for the current pick(s) — EXTENSION catalogs only.
-     *
-     * Collections are deliberately NOT flattened into shelves here any more.
-     * Home draws each picked (or pinned) collection as its own titled row of
-     * FOLDER TILES (see the collection folder rows in HomeScreen), which is the
-     * shape the reference app uses and the one the user built when they made the
-     * catalogs: "see in home it showing like folder netflix, amazon, and clicking
-     * it show inside the catalog poster and content … but in our hikari it not
-     * creating the folder like that on home". Merging a collection's folders into
-     * one shelf per folder produced exactly the poster rows that read as "it
-     * shows a normal poster catalog instead of folders".
-     *
-     * A pick made ONLY of collections therefore has no extension feed at all:
-     * falling through to `homeRowsStreamingFor(emptySet())` would quietly stack
-     * every installed extension's home page under the user's own catalogs.
-     */
     private fun rowsFlowFor(
         picks: List<String>,
         saved: List<Collection>,
@@ -523,9 +388,6 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
         return when {
             // No pick means "All providers" — keep the normal extension feed.
             picks.isEmpty() -> repo.homeRowsStreaming()
-            // A tracker pick must actually become a Home feed. Previously
-            // trackerRows() existed but this switch never returned it, so
-            // selecting AniList/Simkl produced an empty Home catalog.
             trackerKeys.isNotEmpty() && extensionIds.isNotEmpty() ->
                 kotlinx.coroutines.flow.merge(
                     trackerFlow,
@@ -537,24 +399,9 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
         }
     }
 
-    /**
-     * [forceRefresh] rebuilds the feed even when a cached one exists — used when
-     * something outside the feed invalidates it (the TMDB title language), and
-     * the cached copy is dropped by the caller first. The rows already on screen
-     * stay put until the new ones arrive, so the page never blanks.
-     */
     private suspend fun loadInternal(forceRefresh: Boolean = false) {
         loadJob?.cancel()
-        // Only the newest load may touch the screen or the cache — see
-        // [loadToken]. The check below is repeated after the one suspension
-        // point that precedes the first write, because a load that started
-        // earlier can be resumed after a newer one and would otherwise paint
-        // rows the current pick never asked for.
         val token = ++loadToken
-        // Never judge a pick against a provider list that has not been built
-        // yet: the first seconds of a process (or a refresh in flight) report
-        // an empty list, and loading against it is what painted "produced no
-        // rows" over a perfectly good pick at every boot.
         if (manager.providers.value.isEmpty()) {
             val ready = kotlinx.coroutines.withTimeoutOrNull(20_000L) {
                 manager.providers.first { it.isNotEmpty() }
@@ -570,9 +417,6 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
         // user on an empty screen.
         val known = runCatching { store.collections() }.getOrDefault(emptyList())
         if (token != loadToken) {
-            // A load that started earlier (possibly with an out-of-date, even
-            // empty, selection) must not paint anything. Logged so a report can
-            // tell this apart from "the pick really was dropped".
             com.hikari.app.data.Logs.log(
                 "Home",
                 "load superseded before it started (pick=" +
@@ -612,18 +456,12 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
             _loading.value = false
         } else if (cached == null) {
             if (forceRefresh) {
-                // A rebuild for a reason the user did not ask for from here (the
-                // TMDB title language moved): leave the rows already on screen
-                // until the new feed arrives rather than blanking the page.
                 _loading.value = false
             } else {
                 _loading.value = true
                 _rows.value = emptyList()
             }
         }
-        // Keep the process alive (and awake) for the whole load: pressing Home
-        // mid-load used to freeze the app and stop every catalog dead. See
-        // [com.hikari.app.work.BackgroundWork].
         val work = com.hikari.app.work.BackgroundWork.begin(
             when {
                 key == "all" -> "Loading Home catalogs"
@@ -639,26 +477,9 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
             // disk-cache token ([PosterLoader.model] resolves it back to bytes).
             val tokenCache = HashMap<String, CatalogRow>()
             var latest: List<CatalogRow> = emptyList()
-            // One stream per source of the pick(s): a plain tap gives one
-            // extension's feed, a multi pick gives every chosen extension's feed
-            // plus a personal catalog's shelves — see [rowsFlowFor].
             val rowFlow = rowsFlowFor(kept, known)
             rowFlow.collect { incoming ->
                 if (token != loadToken) return@collect
-                // A pick of exactly ONE extension shows that extension's
-                // catalog rows and NOTHING else. This is the promise the
-                // provider pill makes ("4K HDHUB" over a screen that really is
-                // 4K HDHUB's shelves), and it is enforced here instead of being
-                // trusted from the flow: a provider list that holds the same id
-                // twice (a stale entry an update left behind, one repo
-                // registered through two engines) would otherwise let another
-                // provider's rows through the id filter — which is exactly the
-                // reported "no matter what provider I am selecting, it loads all
-                // providers' catalogs". Matched on the provider ID ONLY: the
-                // display name is not a key (renames, "(repo)" tags and engine
-                // label variants all change it), and requiring it dropped the
-                // whole feed with no error — the "pick an extension, nothing
-                // loads" report.
                 val rows = if (soloPick == null) incoming else incoming.filter {
                     it.providerId == soloPick
                 }
@@ -681,10 +502,6 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
                 }
                 latest = tokenized
                 if (tokenized.isEmpty()) return@collect
-                // First load (nothing cached yet): paint each catalog the moment
-                // it lands, so the first rows show in seconds instead of after
-                // EVERY provider finished (the 20-25s wait). A refresh keeps the
-                // cached feed on screen and swaps it in one go at the end.
                 if (cached == null) {
                     if (token != loadToken) return@collect
                     _rows.value = tokenized
@@ -711,17 +528,8 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
                             .joinToString(","),
                 )
             } else {
-                // Stream returned nothing (all providers slow / offline): fall
-                // back to THIS pick's cached feed if there is one, otherwise
-                // empty — never to whatever happened to be on screen before,
-                // which is how another provider's feed could outlive the pick
-                // that produced it (the pill said one provider, the rows said
-                // another).
                 _rows.value = homeCache[key].orEmpty()
                 _loading.value = false
-                // A tracker pick that yields nothing names WHY (dead login,
-                // empty lists — see TrackerLibraryRepository.errors) instead
-                // of the bare line the last log showed ten times unexplained.
                 val why = if (key.startsWith(TRACKER_PREFIX)) {
                     TrackerLibraryRepository.errors[key]
                 } else null
@@ -767,14 +575,7 @@ fun HomeScreen(nav: NavHostController) {
     // com.hikari.app.data.TmdbBrowse), so it has rows to show like any other
     // extension; if TMDB is unreachable it says so in its own empty state.
     val activeProviders = providers.filter { it.config.enabled }
-    // The feed's scroll state lives next to the feed itself (see feedKeys /
-    // feedState below): its key mirror must be built from the rows.
-    // The picker's engine filter ("All", "CloudStream", "Hikari", "Nuvio",
-    // "Stremio"). Purely a narrowing device: it never changes what Home shows.
     var providerFilter by remember { mutableStateOf<com.hikari.app.data.ProviderType?>(null) }
-    // Shown only if the last crash hasn't been announced yet (see
-    // HikariApp.markCrashNoticeShown): a crash that was already reported never
-    // interrupts the user twice.
     var showCrash by remember {
         mutableStateOf(HikariApp.lastCrash != null && !HikariApp.crashNoticeShown)
     }
@@ -785,15 +586,6 @@ fun HomeScreen(nav: NavHostController) {
     var showTvManageFeed by remember { mutableStateOf(false) }
     var showTvProfileMenu by remember { mutableStateOf(false) }
     var showSearchDialog by remember { mutableStateOf(false) }
-    // The in-place search overlay for a PICKED extension (see [openSearch]).
-    //
-    // SAVEABLE, and deliberately left TRUE while a result is opened: the overlay
-    // is a place the user went to (they typed a query and picked from its
-    // results), so coming back from a title has to land on the search they left,
-    // not on the feed. As a plain `remember` the flag was destroyed with the
-    // composable the moment the detail page was pushed, so Back returned to
-    // Home and the query was gone — and it is not cleared when a result opens,
-    // for the same reason.
     var showHomeSearch by rememberSaveable { mutableStateOf(false) }
     // A genre tap made while extensions are picked: WHERE should it look —
     // those extensions alone, or everything (see the genre strip call site).
@@ -817,9 +609,6 @@ fun HomeScreen(nav: NavHostController) {
     }
 
     val app = context.applicationContext as HikariApp
-    // User-made collections: offered in the same picker as the extensions, and
-    // a collection pick ("collection:<id>") swaps the feed for that
-    // collection's folders.
     val collectionsFlow = remember { app.store.collectionsFlow() }
     val collections by collectionsFlow.collectAsState(initial = emptyList())
     // Television top-right pills: the profile list + active id for the profile
@@ -831,28 +620,12 @@ fun HomeScreen(nav: NavHostController) {
     val favoritesFlow = remember { app.store.favoritesFlow() }
     val favorites by favoritesFlow.collectAsState(initial = emptyList())
     val favoriteIds = remember(favorites) { favorites.map { it.uniqueId }.toSet() }
-    // Which repository each installed extension came from, for the picker's
-    // rows ("Cs3 · CNC Verse"). Built HERE — while Home's feed is loading —
-    // rather than inside the picker sheet: computing it in the sheet charged the
-    // whole 500-provider × repo-list match to the moment the user tapped the
-    // provider pill, which is the ~1s the picker used to take to appear. The
-    // flow instance is remembered for the same reason as historyFlow below.
     val reposFlow = remember { app.store.reposFlow() }
     val repos by reposFlow.collectAsState(initial = emptyList())
     val repoNameByProvider = remember(providers, repos) {
         RepoProvenance.nameMap(providers.map { it.config }, repos)
     }
     val selectedCollection = collections.firstOrNull { selected == "$COLLECTION_PREFIX${it.id}" }
-    // Which collections Home draws as FOLDER rows — a row titled with the
-    // collection's name whose tiles are the folders inside it, so a tap ENTERS
-    // that folder instead of flattening every folder's contents into one shelf
-    // (the reference app's shape, and what the user asked for: "in home it
-    // showing like folder netflix, amazon, and clicking it show inside the
-    // catalog poster and content"). It is:
-    //   • every collection the user picked — one or several (a multi pick used
-    //     to flatten them all into poster shelves), and
-    //   • every PINNED collection while Home is on "All", which is what pinning
-    //     a catalog means: it shows up on Home by itself, without being picked.
     val pickedCollections = selection
         .filter { it.startsWith(COLLECTION_PREFIX) }
         .mapNotNull { key -> collections.firstOrNull { it.id == key.removePrefix(COLLECTION_PREFIX) } }
@@ -874,25 +647,12 @@ fun HomeScreen(nav: NavHostController) {
             ?: selectedCollection?.name
             ?: selected?.takeIf { it.startsWith(TRACKER_PREFIX) }?.let { TrackerKind.of(it.removePrefix(TRACKER_PREFIX))?.label }
     }
-    // The header's per-extension actions (translate, Cloudflare verify) and the
-    // "search inside this extension?" prompt only make sense for an extension,
-    // so a collection pick leaves the header in its plain "All" shape.
     val headerSelection = if (selectedCollection != null || selected?.startsWith(TRACKER_PREFIX) == true) null else selected
-    // Continue Watching: history entries that were meaningfully started and
-    // aren't within a minute of the end (those read as finished), newest first.
-    // IMPORTANT: remember the Flow instances. Building `store.historyFlow()`
-    // inline creates a NEW Flow object on every recomposition, so
-    // collectAsState re-subscribes from scratch each time and resets to its
-    // `initial` value (emptyList) — which is exactly why the Continue Watching
-    // shelf stayed blank no matter how much was watched.
     val historyFlow = remember { app.store.historyFlow() }
     val hideContinueFlow = remember { app.store.hideContinueFlow() }
     val history by historyFlow.collectAsState(initial = emptyList())
     // Settings → "Continue Watching": lets the user hide the shelf entirely.
     val hideContinue by hideContinueFlow.collectAsState(initial = false)
-    // Settings → App Layout → Featured banner: which shape the banner takes and
-    // which of its optional lines are drawn. Read here (not inside the banner)
-    // so the whole feed recomposes to the new shape the moment it is picked.
     val heroStyleFlow = remember { app.store.heroStyleFlow() }
     val heroOverviewFlow = remember { app.store.heroOverviewFlow() }
     val heroRatingFlow = remember { app.store.heroRatingFlow() }
@@ -915,15 +675,9 @@ fun HomeScreen(nav: NavHostController) {
     val continueEntries = remember(history) {
         history.asSequence()
             .filter {
-                // Started (even a second counts) but not watched through to
-                // the credits window — the same rule the player, the detail
-                // page and the tracker push all use (see WatchProgress).
                 it.positionMs >= WatchProgress.STARTED_MS &&
                     !WatchProgress.isWatched(it.positionMs, it.durationMs)
             }
-            // Newest first, one card per video/episode. The store dedupes, but a
-            // legacy/racing write could leave a duplicate — and a duplicate
-            // Compose key in the row would crash the whole Home screen.
             .sortedByDescending { it.watchedAt }
             .distinctBy { it.uniqueKey }
             .take(12)
@@ -960,34 +714,14 @@ fun HomeScreen(nav: NavHostController) {
         tvHero = emptyList()
     }
     val featured = if (TvMode.current()) tvHero.ifEmpty { featuredLive } else featuredLive
-    // Warm the featured titles' TMDB artwork the moment the hero set is known,
-    // so banners (and the showcase backdrop) paint high-quality art instead
-    // of waiting for a scroll to trigger each cell.
     LaunchedEffect(featured) {
         featured.take(8).forEach { Artwork.prefetch(it); Artwork.retryMiss(it) }
     }
     val openGlobalSearch: () -> Unit = {
         Routes.navigateTab(nav, Routes.SEARCH)
     }
-    // Tapping the header search icon asks HOW to search when a specific
-    // extension's catalog is being browsed: globally across every provider, or
-    // scoped to the extension you're looking at. With no extension selected
-    // there's only one sensible answer, so it goes straight to global search.
-    // A COLLECTION counts as a scope too: browsing "abc" and tapping the
-    // magnifier must be able to search inside abc and not only everywhere.
-    // The in-place overlay's scope: the picked extensions' ids, or every enabled
-    // extension when the pick is All. Set on the same tap that opens it.
     var overlayIds by rememberSaveable { mutableStateOf(emptyList<String>()) }
     val openSearch: () -> Unit = {
-        // With ONE extension picked, the magnifier searches that extension IN
-        // PLACE, here on Home: the button sits inside the picked extension's own
-        // header and that pick is what Home is browsing, so sending the user to
-        // the Search tab to pick the same extension again was a detour — and,
-        // with four identically-named "AniKoto" installs, an obscure one.
-        //
-        // A collection still asks HOW to search (across everything, or inside
-        // it), and "All" goes straight to the Search tab, where the provider row
-        // is the only thing that can narrow a search that has no pick.
         when {
             selectedCollection != null -> showSearchDialog = true
             else -> {
@@ -1019,20 +753,9 @@ fun HomeScreen(nav: NavHostController) {
         )
     }
     val openVerify: () -> Unit = {        scope.launch {
-            // The globe sits in the SELECTED extension's header, so it opens the
-            // SELECTED extension's own site. It used to prefer the most recently
-            // challenged host in the whole app, which meant picking one
-            // extension and landing on an unrelated site (and, with a stale
-            // record around, on the same wrong site every time). The challenged
-            // host is the fallback, for the case where the selected extension
-            // declares no site of its own.
             val own = withContext(Dispatchers.IO) {
                 providers.firstOrNull { it.config.id == selected }?.let { webUrlChainAsync(it) }
             }
-            // The WebView button belongs to the selected extension. Never
-            // fall back to the last Cloudflare-blocked host from another
-            // extension: that stale global value was exactly how tapping the
-            // button for extension B could open extension A's page.
             val url = own
             val host = own?.let {
                 runCatching { java.net.URI(it).host?.lowercase() }.getOrNull()
@@ -1067,13 +790,6 @@ fun HomeScreen(nav: NavHostController) {
         null
     }
 
-    // Two rows can carry the same key when an extension offers the same catalog
-    // twice (or two catalogs under one name): a duplicated Lazy key is a crash
-    // in Compose, not a warning, so repeats are dropped before the feed is
-    // built. Done ONCE per change of [rows] rather than inline in the
-    // LazyColumn's scope — that built a fresh list and a fresh key string for
-    // every row on every recomposition of the feed, i.e. during every scroll
-    // step.
     val uniqueRows = remember(rows) {
         rows.distinctBy { it.key.ifBlank { "${it.providerName}|${it.title}" } }
     }
@@ -1116,9 +832,6 @@ fun HomeScreen(nav: NavHostController) {
     }
 
     Box(Modifier.fillMaxSize()) {
-        // Television ambient art behind the whole feed (see TvHomeBackdrop):
-        // the featured title's own backdrop, glass-dimmed — the smaller hero
-        // card keeps its own treatment on top (0.12.0 look).
         if (TvMode.current()) {
             com.hikari.app.tv.TvHomeBackdropLayer(item = tvShown)
         }
@@ -1128,27 +841,7 @@ fun HomeScreen(nav: NavHostController) {
             // (see the GlassDialog after the Box) says what happened and points
             // at Settings → Logs, then stays out of the way.
             item {
-                // The header is its OWN strip above the featured banner, never
-                // painted over it. It used to be an overlay inside the banner's
-                // Box (see the old `overlay = true` branch): the app name, the
-                // tagline and the search/translate/web-view buttons were drawn
-                // directly on the artwork, and with the short "Compact strip"
-                // banner — 148dp tall — the header covered most of it and the
-                // banner's own title/meta lines ended up jammed right under the
-                // tagline. That is the overlap the user reported ("it's
-                // overlapping the Hikari name and the app line and search icon,
-                // web-view and translate button — make the header down so it
-                // won't overlap"), and the fix is to stop layering them at all:
-                // the header keeps its own row of the feed, the banner starts
-                // below it, and no hero style can collide with it again.
                 Column(Modifier.fillMaxWidth()) {
-                    // Television: the CloudStream-desktop-style home header as ONE
-                    // line — title, mouse/search/translate/site buttons and the
-                    // provider + profile pills in a single row (see
-                    // [TvHomeHeaderBar]). The old provider strip and its search
-                    // field below it are gone: the top pill's Manage box
-                    // box (filter + hold-to-multi) is the one place providers
-                    // are picked.
                     if (!tvHome) {
                         HomeHeader(
                             selected = headerSelection,
@@ -1208,13 +901,6 @@ fun HomeScreen(nav: NavHostController) {
                             )
                         }
                     }
-                    // Genre strip: sits UNDER the hero artwork, which is where a
-                    // viewer who has not decided what to watch looks next. A
-                    // genre pick opens everything tagged with it — films AND
-                    // series (see [HomeGenreStrip]) — so nothing has to be
-                    // searched for before something can be watched. With an
-                    // extension picked, the tap first asks WHERE: that
-                    // extension alone, or everything (see [genreScope]).
                     if (!tvHome) {
                         HomeGenreStrip { name, genresText, keywordsText ->
                             val ext = selection.filter { !it.startsWith(COLLECTION_PREFIX) }.toSet()
@@ -1242,9 +928,6 @@ fun HomeScreen(nav: NavHostController) {
                                 )
                             )
                         },
-                        // The ✕ on a card drops just that entry from the shared
-                        // watch-history store, so it leaves the shelf and the
-                        // History tab at the same time.
                         onRemove = { h -> scope.launch { app.store.removeHistory(h.uniqueKey) } },
                         // TV also gets the reference's Clear History action in
                         // the shelf header — same shared store, whole shelf.
@@ -1269,13 +952,6 @@ fun HomeScreen(nav: NavHostController) {
                     )
                 }
             }
-            // A personal catalog shows its OWN FOLDERS — the same tiles its page
-            // draws in Settings ("Your own folders of catalogs, shown on Home").
-            // Tapping a folder enters it, which is the hierarchy the user built:
-            // "in home it show same folder … i can click animation to enter in
-            // that animation box and see all catalog". One row PER collection, so
-            // a multi pick shows each collection's folders under its own name
-            // instead of merging them into poster shelves.
             collectionFolderRows.forEach { c ->
                 item(key = "collection-folders|${c.id}") {
                     CollectionFoldersOnHome(
@@ -1295,23 +971,9 @@ fun HomeScreen(nav: NavHostController) {
             if (loading && collectionFolderRows.isEmpty()) {
                 items(4) { ShimmerRow() }
             }
-            // Two rows can carry the same key when an extension offers the same
-            // catalog twice (or two catalogs under one name): a duplicated Lazy
-            // key is a crash in Compose, not a warning, so repeats are dropped
-            // before the feed is built (see [uniqueRows]).
-            //
-            // No "and only when no collection is picked" guard any more: a pick
-            // made solely of collections yields NO extension rows at all (see
-            // HomeViewModel.rowsFlowFor), while a multi pick that contains both
-            // shows the collections' folder rows AND the extensions' shelves —
-            // which is what picking several sources means.
             uniqueRows.forEach { row ->
                 item(
                     key = row.key.ifBlank { "${row.providerName}|${row.title}" },
-                    // One content type for every shelf, so the LazyColumn can
-                    // REUSE the subtree (and its remembered poster style) between
-                    // rows instead of composing a fresh one when a row scrolls
-                    // off and another on.
                     contentType = "media-row",
                 ) {
                     com.hikari.app.tv.TvExpandingMediaRow(
@@ -1330,9 +992,6 @@ fun HomeScreen(nav: NavHostController) {
                         onClick = { item ->
                             Routes.safeNavigate(
                                 nav,
-                                // Tracker manga shelves open in the manga
-                                // section (searched across every installed
-                                // manga engine), never as video.
                                 if (item.rawType == "manga") {
                                     Routes.mangaRoute(item.providerId, item.id, item.title, item.posterUrl)
                                 } else {
@@ -1340,10 +999,6 @@ fun HomeScreen(nav: NavHostController) {
                                 }
                             )
                         },
-                        // Poster hold-menu play: open the detail page already
-                        // wanting playback, so it starts the instant the first
-                        // server lands (see DetailScreen autoplay). Manga has
-                        // no video to autoplay — it opens in the manga section.
                         onQuickPlay = { item ->
                             Routes.safeNavigate(
                                 nav,
@@ -1355,19 +1010,6 @@ fun HomeScreen(nav: NavHostController) {
                             )
                         },
                         onShowAll = {
-                            // A row of the picked collection's OWN shelves shows
-                            // the WHOLE collection (every folder and every
-                            // catalog in it, as one scrollable grid) — a folder
-                            // row used to open just that folder, which left the
-                            // user unable to see the rest of the collection.
-                            // An EXTENSION row keeps its own catalog, even with
-                            // a collection picked: it used to be sent to the
-                            // collection grid as well, so "Show all" on an
-                            // extension's shelf opened an unrelated page (and,
-                            // for a collection holding nothing, a page that only
-                            // said so). The row's key is what tells them apart —
-                            // the collection's rows are keyed "coll|…" by
-                            // CollectionsRepository.
                             val collectionId = if (row.key.startsWith("coll|")) {
                                 selectedCollection?.id ?: row.key.split('|').getOrNull(1)
                             } else {
@@ -1408,18 +1050,10 @@ fun HomeScreen(nav: NavHostController) {
                             action = { Routes.safeNavigate(nav, Routes.COLLECTIONS) },
                         )
                     } else if (selected != null || selection.any { !it.startsWith(COLLECTION_PREFIX) }) {
-                        // A `by remember` property cannot be smart-cast, so the
-                        // non-null answer is taken once into a local. A multi
-                        // pick has no single id: the first extension stands in.
                         val single = selected != null
                         val selectedKey = selected
                             ?: selection.firstOrNull { !it.startsWith(COLLECTION_PREFIX) } ?: ""
                         val reason = if (single) engineFailureReason(selectedKey) else null
-                        // First paint failed (a cold plugin, DNS, a host that
-                        // woke up late): retry once by itself after a beat
-                        // instead of parking the user on Retry for a transient.
-                        // Once per pick — a genuinely empty extension keeps its
-                        // message after the one extra attempt.
                         var autoRetried by remember(selectedKey, selection.size) { mutableStateOf(false) }
                         LaunchedEffect(selectedKey, selection.size) {
                             if (!autoRetried) {
@@ -1441,9 +1075,6 @@ fun HomeScreen(nav: NavHostController) {
                             r.contains("403") || r.contains("503") || r.contains("429") ||
                                 com.hikari.app.net.CloudflareVerifier.isVerificationMessage(r)
                         } == true
-                        // Null-safe by construction: a multi pick has selected ==
-                        // null, and a ConcurrentHashMap.get(null) throws — the
-                        // old branch could never see null, this one can.
                         val streamOnly = single &&
                             com.hikari.app.providers.StremioAddon.streamOnlyAddons[selectedKey] == true
                         val searchOnlySource = single &&
@@ -1576,25 +1207,10 @@ fun HomeScreen(nav: NavHostController) {
             )
         }
 
-        // Floating source pill (Anikoto-style): shows the current provider and
-        // opens the picker sheet. It has to clear the taskbar, which is drawn
-        // OVER the page rather than in a strip of its own — pinned to the
-        // bottom-right corner as it was, it ended up underneath the bar's own
-        // buttons and could not be tapped at all. [LocalTaskbarInset] is exactly
-        // the room the bar covers, so the pill lifts itself by that and then
-        // keeps its own 14dp of air above the bar.
-        // TV hides this floating pill: the header's provider pill + the
-        // Manage box are the one place providers are picked there, and this
-        // second opener only duplicated them over the hero.
         if (!TvMode.current()) {
         Surface(
             onClick = { showPicker = true },
             shape = RoundedCornerShape(50),
-            // The pill's own frosted panel, not the theme's `surfaceVariant`:
-            // that variant is a nearly-transparent overlay, and raising its
-            // alpha turned it into a bright slab the white label vanished into
-            // (the Dark Glass UI report). The surface is the same panel every
-            // other glass card in the app is cut from.
             color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
             modifier = Modifier
                 .align(Alignment.BottomEnd)
@@ -1625,11 +1241,6 @@ fun HomeScreen(nav: NavHostController) {
         }
         }
 
-        // Crash warning: one glass panel, shown once per crash. It says only what
-        // the user needs (it crashed, the log is saved, share it if it keeps
-        // happening) — the stack trace itself lives in Settings → Logs. It closes
-        // by itself after a few seconds, on a tap anywhere, or on the X, and
-        // either way this crash is never announced again.
         if (showCrash) {
             val dismissCrash: () -> Unit = {
                 showCrash = false
@@ -1660,10 +1271,6 @@ fun HomeScreen(nav: NavHostController) {
             }
         }
 
-        // In-place search for the picked extension — drawn LAST inside the Box so
-        // it covers the feed. Drawn over the feed rather than as a screen of its
-        // own because it answers a question about the feed that is already
-        // loaded: "which of this extension's titles did you mean?".
         if (showHomeSearch) {
             // One name for one extension, the counted label for several, All
             // for everything — the same rule the header pill itself uses.
@@ -1685,10 +1292,6 @@ fun HomeScreen(nav: NavHostController) {
                 onClearGenre = { overlayGenre = "" },
                 onClose = { showHomeSearch = false; overlayGenre = "" },
                 onOpen = { item ->
-                    // The overlay is NOT closed here: it stays open so that Back
-                    // from the title returns to the search the user was reading
-                    // (see the note on `showHomeSearch`). The overlay's own ✕ and
-                    // BackHandler are what close it.
                     Routes.safeNavigate(
                         nav,
                         if (item.rawType == "manga") {
@@ -1738,20 +1341,12 @@ fun HomeScreen(nav: NavHostController) {
             selection = selection,
             onSave = { ids ->
                 showTvManageFeed = false
-                // Rebuild only when the mix itself did not change (catalog
-                // switches/reorder write to the store, not the pick): a pick
-                // change already rebuilds inside setSelection, and a second
-                // forced load would cancel that one mid-flight and park the
-                // just-cleared screen on blank with no spinner.
                 if (!vm.setSelection(ids)) vm.refreshFeed()
             },
             onDismiss = { showTvManageFeed = false },
         )
     }
 
-    // Television: the profile menu — switch, add, manage. A locked target
-    // refuses the switch (see [Profiles.switchTo]) instead of opening: the
-    // password lives in the Profiles screen, so the menu says so.
     if (showTvProfileMenu) {
         TvProfileMenuDialog(
             profiles = profiles,
@@ -1855,12 +1450,6 @@ fun HomeScreen(nav: NavHostController) {
         )
     }
 
-    // Search scope chooser: global (every provider, with the provider chips to
-    // narrow it) or scoped to what is on screen — the extension whose catalog is
-    // being browsed, or the PERSONAL CATALOG being browsed. A collection is a
-    // real scope: "In abc" searches only what abc holds (see
-    // [Routes.searchInCollection]), which is what the user asked for when they
-    // built the catalog and then wondered where its name was.
     if (showSearchDialog) {
         val coll = selectedCollection
         // "collection:<id>" for a catalog, the extension id otherwise — the key
@@ -1898,22 +1487,6 @@ fun HomeScreen(nav: NavHostController) {
     }
 }
 
-/**
- * The folder tiles of one personal catalog, drawn on Home.
- *
- * A personal catalog IS a tree: collections hold folders, folders hold catalogs.
- * Home used to flatten that tree into one shelf per folder (every title the
- * folder holds, all mixed together), so a catalog the user had organised by
- * hand — Animation, Anime, Netflix, Amazon — reached Home as its contents and
- * the folders themselves were nowhere. This draws the folders instead, using the
- * very same tiles the catalog's own page draws (see [FolderTile]), and a tap
- * ENTERS the folder: the same hierarchy, one level at a time, which is what the
- * user asked for ("if i select it in home then show the folder … and i can click
- * animation to enter in that animation box and see all catalog").
- *
- * "Show all" keeps the old flat view one tap away (every folder, every catalog,
- * as one grid — see [CollectionGridScreen]).
- */
 @Composable
 private fun CollectionFoldersOnHome(
     collection: Collection,
@@ -1988,41 +1561,18 @@ internal fun ProviderPickerSheet(
     /** Multi-select's Done button: the keys to save. */
     onDone: (List<String>) -> Unit,
     onDismiss: () -> Unit,
-    /**
-     * Repo provenance for [providers], hoisted by the caller when it already has
-     * the map — Home computes it while idle so tapping a provider pill opens the
-     * sheet with no work on the tap path. Null (Search) means "compute it here"
-     * from the same two inputs. See [RepoProvenance.nameMap].
-     */
     repoNameByProvider: Map<String, String>? = null,
 ) {
     var query by remember { mutableStateOf("") }
-    // Multi-select is OFF until a row is HELD: that is the gesture the user
-    // asked for ("if i press one provider for more than 1.5 second it give me
-    // option to multi select like i can select more provider with it"). While it
-    // is on, a tap ticks a row into [working] instead of leaving the sheet, and
-    // the Done button beside the title saves the lot — dismissing the sheet
-    // saves nothing, so an accidental mode change can never change Home.
     var multi by remember { mutableStateOf(false) }
     var working by remember { mutableStateOf(selection) }
-    // The sources pinned to the top of this list, newest first. Read HERE rather
-    // than passed in by the caller: the sheet is the only thing that cares about
-    // them, and both of its callers (Home and Search) get the pins for free
-    // instead of each having to thread the same two arguments through.
     val app = LocalContext.current.applicationContext as HikariApp
     val scope = rememberCoroutineScope()
     val pinned by remember { app.store.pinnedProvidersFlow() }
         .collectAsState(initial = emptyList<String>())
-    // The user's own provider FOLDERS — a saved multi-pick, one tap to apply
-    // (see AppStore.providerFoldersFlow). Read HERE, like the pins, so both of
-    // the sheet's callers get them without threading two more arguments through.
     val folders by remember { app.store.providerFoldersFlow() }
         .collectAsState(initial = emptyList<ProviderFolder>())
     val connectedTrackers by remember { app.store.trackersFlow() }.collectAsState(initial = emptyList())
-    // The user's own saved websites (Extensions → Webview sites): one
-    // "Websites" pill in the engine chip row below, opening the full saved
-    // list under it — a tap on a site loads it straight from this picker in
-    // the ad-free WebView instead of needing the Extensions detour.
     val sites by remember { app.store.sitesFlow() }
         .collectAsState(initial = emptyList<Site>())
     val ctx = LocalContext.current
@@ -2046,17 +1596,9 @@ internal fun ProviderPickerSheet(
     val saveable = remember(working) {
         working.filter { !it.startsWith(COLLECTION_PREFIX) }
     }
-    // Engine filter: every kind that has at least one installed extension, in a
-    // stable order, so a user with dozens of installs can narrow the list to
-    // just their CloudStream plugins, just their Nuvio providers, and so on.
     val kinds = remember(providers) {
         providers.map { it.config.type }.distinct().sortedBy { it.groupLabel }
     }
-    // Pinned first — in the order they were pinned, so the row just pinned is
-    // the first one in the list — then everything else alphabetically. The pin
-    // is a promise that this source will be the first thing the user sees next
-    // time they open the sheet, and an alphabetical list would break it for
-    // every source whose name sorts low.
     val pinOrder = remember(pinned) { pinned.withIndex().associate { (i, id) -> id to i } }
     // Engine + repository for the plain rows below. The sheet's rows say
     // nothing but the extension's name, and an install list with four "AniKoto"
@@ -2091,18 +1633,11 @@ internal fun ProviderPickerSheet(
     // Which extension rows are opened to show their sources. Keyed by the row's
     // own key, so the state survives the list re-sorting under it.
     var expanded by remember { mutableStateOf(emptySet<String>()) }
-    // The personal catalogues sit under ONE parent row (collapsed by default),
-    // not scattered among the providers: every catalogue the user builds lands
-    // in the same place, and the provider list stays a provider list.
     var cataloguesOpen by remember { mutableStateOf(false) }
     val shownCollections = remember(collections, query) {
         if (query.isBlank()) collections
         else collections.filter { it.name.contains(query, ignoreCase = true) }
     }
-    // ---- Save as folder / delete a folder --------------------------------
-    // Both dialogs sit OUTSIDE the sheet's own content: a folder is a thing the
-    // user keeps, not a mode of the picker. Saving does NOT dismiss the sheet —
-    // the user asked for a folder, not to leave the picker.
     if (showFolderDialog) {
         AlertDialog(
             onDismissRequest = { showFolderDialog = false },
@@ -2191,9 +1726,6 @@ internal fun ProviderPickerSheet(
                 .fillMaxHeight(0.92f)
                 .heightIn(min = 240.dp, max = 780.dp),
         ) {
-            // The action pills float OVER the list (see the overlay below):
-            // the grid runs the full height underneath, so no rows are lost
-            // to a dead strip kept alive only by the Close button.
             Box(Modifier.fillMaxWidth()) {
             Column(
                 Modifier
@@ -2231,10 +1763,6 @@ internal fun ProviderPickerSheet(
                     }
                     Spacer(Modifier.width(8.dp))
                     FilledTonalButton(
-                        // "All Plugins" is an action, not a working-set edit:
-                        // in multi mode it applies All at once (Done), instead
-                        // of just clearing the ticks and stranding the user on
-                        // a sheet whose Close would then save nothing.
                         onClick = { if (multi) onDone(emptyList()) else onPick(null) },
                         shape = RoundedCornerShape(10.dp),
                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
@@ -2274,11 +1802,6 @@ internal fun ProviderPickerSheet(
                         .height(48.dp)
                         .tvTextFieldKeys(query),
                 )
-                // Categories: All first, then one chip per engine that is actually
-                // installed. Picking one only NARROWS the grid below. The user's
-                // saved websites ride the same row as one "Websites" pill: a
-                // tap opens the full saved list under the row, and a tap on a
-                // site loads it at once (the ad-free WebView).
                 val shownSites = remember(sites, query) {
                     if (query.isBlank()) sites
                     else sites.filter {
@@ -2315,9 +1838,6 @@ internal fun ProviderPickerSheet(
                             }
                         }
                     }
-                    // The saved list, under the chip row: every added site as
-                    // its own row (globe + name + address), opening straight
-                    // in the WebView on tap.
                     if (sitesOpen) {
                         Column(
                             Modifier.fillMaxWidth(),
@@ -2372,12 +1892,6 @@ internal fun ProviderPickerSheet(
                         }
                     }
                 }
-                // One flat cell per card: a pack's own card, then — while its
-                // caret is open — one card per source it publishes. Hoisted
-                // here (composable context) because the grid content below is
-                // a plain LazyGridScope lambda: a cell cannot be emitted from
-                // inside another cell's content, and `remember` cannot run in
-                // there either.
                 val packByKey = remember(packs) { packs.associateBy { it.key } }
                 val packCells: List<Pair<String, Int>> = remember(packs, expanded) {
                     packs.flatMap { pack ->
@@ -2476,18 +1990,9 @@ internal fun ProviderPickerSheet(
                             onDelete = { folderToDelete = folder },
                             onClick = {
                                 if (multi) {
-                                    // A folder is a saved pick: tapping it ticks
-                                    // its extensions, so the Done button saves
-                                    // them with anything else that is ticked.
                                     working = if (anyOn) (working - ids.toSet()).distinct()
                                     else (working + ids).distinct()
                                 } else {
-                                    // One tap is the whole point of a folder: Home
-                                    // switches to exactly these extensions, with no
-                                    // multi-select round trip — and Search, the
-                                    // player's server list and everything else that
-                                    // reads the current pick follow, because the
-                                    // pick IS these provider ids.
                                     onDone(ids)
                                 }
                             },
@@ -2514,16 +2019,6 @@ internal fun ProviderPickerSheet(
                     }
                 }
                 item(span = { GridItemSpan(maxLineSpan) }) { PickerSectionLabel(tr("Providers")) }
-                // The gesture, said where the rows are. A user who has never
-                // multi-selected has no way to guess that a HOLD is what does it
-                // (the gesture exists because it was asked for by name), and a
-                // row that looks like every other row does not say it either.
-                //
-                // Deliberately NOT behind the hide-explanations switch: the row
-                // that would be hidden is the only place the gesture is
-                // documented, so hiding it with the other explanations made
-                // multi-select undiscoverable exactly for the user who had
-                // tidied the interface.
                 item(key = "providers-hold-hint", span = { GridItemSpan(maxLineSpan) }) {
                     Text(
                         tr("Hold any provider for half a second to select more than one."),
@@ -2542,9 +2037,6 @@ internal fun ProviderPickerSheet(
                     val pack = packByKey[k] ?: return@items
                     val member = if (i >= 0) pack.members.getOrNull(i) else null
                     if (member != null) {
-                        // Every member names its engine AND the repo it was
-                        // installed from ("CloudStream · Codegeasse Repo"), so
-                        // same-named sources are told apart at a glance.
                         val mkey = member.config.id
                         val mticked = mkey in working
                         TvProviderCard(
@@ -2601,9 +2093,6 @@ internal fun ProviderPickerSheet(
                             },
                         )
                     } else {
-                    // A stream-only addon is named with its engine so the row
-                    // explains itself: it adds servers, its browsing comes from
-                    // TMDB (see TmdbBrowse).
                     val key = pack.key
                     val streamOnly =
                         com.hikari.app.providers.StremioAddon.streamOnlyAddons[key] == true
@@ -2633,10 +2122,6 @@ internal fun ProviderPickerSheet(
                                 .replaceFirst("%s", tickedIds.size.toString())
                                 .replaceFirst("%s", ids.size.toString())
                             else -> {
-                                // A pack card names what it folds: the count, the
-                                // member details — and the repo(s) the members
-                                // were installed from, so five identical names
-                                // still tell which install each one is.
                                 val base = pack.countLabel +
                                     (pack.detailLabel.takeIf { it.isNotBlank() }?.let { " · $it" } ?: "")
                                 val packRepos = pack.members
@@ -2661,24 +2146,9 @@ internal fun ProviderPickerSheet(
                         },
                         onClick = {
                             if (multi) {
-                                // Ticking a COLLAPSED extension card ticks every
-                                // source it publishes — that is what the card is.
-                                // Its sources are one caret away for picking one.
-                                //
-                                // ...and UNticking it takes back every source:
-                                // a tap on a card that has any of its sources on
-                                // turns them all off, and a tap on a card with
-                                // none of them on turns them all on (reported as
-                                // "unselecting a provider ... it not unticking").
                                 working = if (ticked) working - ids.toSet()
                                 else (working + ids).distinct()
                             } else {
-                                // A cross-engine card's tap OPENS it: the card
-                                // stands for two extensions with one name, so
-                                // picking the first sight unseen would be a
-                                // guess. The expanded members name their
-                                // engine each, and picking one of those is
-                                // the actual choice.
                                 if (pack.cross && !open) expanded = expanded + key
                                 else onPick(key)
                             }
@@ -2740,11 +2210,6 @@ internal fun ProviderPickerSheet(
                     }
                 }
                 }
-                // Floating action pills, OVERLAID on the grid's bottom end —
-                // not a bar, so they reserve no space: the grid above runs
-                // full height underneath (its bottom content padding clears
-                // them). Done saves the ticked set, Close dismisses without
-                // saving anything. A soft shadow lifts them off the list.
                 } // Column: the grid's own height ends here
                 Row(
                     Modifier
@@ -2795,14 +2260,6 @@ internal fun ProviderPickerSheet(
     } // Dialog
 }
 
-/**
- * One engine chip in the picker ("All", "CloudStream", "Nuvio", …).
- *
- * The selected chip is SOLID accent with contrast text; the rest are flat and
- * outlined. That is the whole signal — no gradients, no glass: on a row of
- * pills the filled one reads instantly as "this is the filter in force", and
- * the outlined ones read as the alternatives.
- */
 @Composable
 private fun FilterChipLine(label: String, selected: Boolean, onClick: () -> Unit) {
     // Television chips read muted-on-black with a hairline edge (desktop
@@ -2843,14 +2300,6 @@ private fun PickerSectionLabel(text: String) {
     )
 }
 
-/**
- * Television provider strip, CloudStream-style: every enabled extension as a
- * chip in one sideways row above the feed, so a remote reaches providers
- * without opening the phone-shaped picker sheet at all. Tap = watch that
- * extension alone; hold OK half a second = add it to a multi pick (the same
- * hold the picker sheet uses); "All" = everything; the trailing tile opens
- * the full sheet for search, pins and folders.
- */
 @Composable
 private fun TvProviderStrip(
     providers: List<ContentProvider>,
@@ -2929,33 +2378,6 @@ private fun TvProviderChip(
     }
 }
 
-/**
- * One row of the extension picker. Deliberately FLAT: a plain row with a
- * hairline under it, not a floating glass card. The picker is a long list of
- * nearly identical names, and a card per name turned it into a wall of glass —
- * the flat list (with the tinted selected row and its filled accent
- * circle-check) is what makes the current choice readable at a glance.
- *
- * [leadingIcon] is for the one row that does something rather than selects
- * ("Manage collections"); [showDivider] is turned off on the last row of a
- * section so the heading below it is not fenced off by two lines.
- *
- * [onTogglePin] draws the pin button on the right of the row and is what the
- * user taps to float this source to the top of the list; [pinned] is its state
- * (an accent pin on a floatable row, a muted one on the rest). The pin is its
- * own tap target inside the row and consumes its own taps, so tapping it never
- * also picks the row — see the note on the gesture above.
- *
- * In [multi] mode the tick box is drawn on EVERY row (empty ring when it is not
- * picked), so a row says "I can be ticked" rather than only the ticked ones
- * looking different.
- *
- * The row's own tap handling is [holdOrTap] rather than `clickable`, because the
- * multi-select gesture is a deliberate HOLD (0.5s — see [HOLD_MS]) and
- * `clickable`/`combinedClickable` would fire at the platform's own timeout or
- * swallow the press the list needs to scroll. The price
- * is the touch ripple, which a bottom-sheet row can do without.
- */
 @Composable
 private fun PickerRow(
     label: String,
@@ -2981,13 +2403,6 @@ private fun PickerRow(
     onLongClick: (() -> Unit)? = null,
     onClick: () -> Unit,
 ) {
-    // The gesture handler below is a `pointerInput` keyed on (label, multi), so
-    // it does NOT restart when the tick state changes — and the lambdas it was
-    // given would then be the FIRST composition's, closing over a stale
-    // `working` list. Every tap after the first recomposition computed from
-    // that dead snapshot: deselecting removed an already-removed key (a no-op)
-    // and reselecting re-added into the old list (silently lost). These refs
-    // always point at the CURRENT lambdas, so the gesture can never go stale.
     val latestClick by rememberUpdatedState(onClick)
     val latestHold by rememberUpdatedState(onLongClick)
     Column(Modifier.fillMaxWidth()) {
@@ -3066,9 +2481,6 @@ private fun PickerRow(
                         ),
                 )
             }
-            // The caret that opens an extension row's own sources. It is its own
-            // tap target (like the pin), so opening a pack never means picking
-            // it — and a row with one source draws no caret at all.
             if (expandable && onToggleExpand != null) {
                 Spacer(Modifier.width(4.dp))
                 Box(
@@ -3125,10 +2537,6 @@ private fun PickerRow(
                     )
                 }
             }
-            // The pin sits last, after the tick: it is a control on the row, not
-            // part of what the row is telling the user. It keeps a 34dp touch
-            // target on a 13dp-tall row, and being its own clickable is what
-            // makes a tap on it pin the source instead of choosing it.
             if (onTogglePin != null) {
                 Spacer(Modifier.width(4.dp))
                 Box(
@@ -3157,33 +2565,8 @@ private fun PickerRow(
     }
 }
 
-/**
- * How long a picker row must be held before multi-select starts.
- *
- * Half a second, on the user's own instruction ("make it 1.5second to 0.5 second
- * for multi select to enable"): the hold was deliberately long when it was the
- * only thing standing between a tap and a mode change, but half a second is
- * still far longer than a tap and it makes ticking four extensions a gesture
- * instead of a wait. It is worth being explicit about what it is NOT: this is
- * still not the platform's long-press timeout (~500ms, which a slow deliberate
- * tap can trip) — it is OUR measurement of a press, and a drag cancels it.
- */
 internal const val HOLD_MS = 500L
 
-/**
- * "Tap, or HOLD for a moment".
- *
- * Shared: the Manga tab's Browse list uses the same gesture to reveal an
- * engine's pin (see [com.hikari.app.ui.screens.MangaScreen]), so the two holds
- * in the app are the same length and behave the same way around a scroll.
- *
- * `combinedClickable` uses the platform's long-press timeout, which fires on a
- * press that is merely unhurried, and the gesture also has to survive the list
- * being scrolled. So the press is timed here: released before [HOLD_MS] it is a
- * tap, still down after it fires [onHold], and a drag (past the touch slop, or a
- * change the enclosing scroller has already consumed) is left completely alone
- * so the list still scrolls normally.
- */
 internal suspend fun PointerInputScope.holdOrTap(
     onHold: () -> Unit,
     onTap: () -> Unit,
@@ -3299,26 +2682,12 @@ internal fun webUrlRootOf(raw: String?): String? =
         }.getOrNull()
     }
 
-/**
- * The universal site chain for the globe/WebView button: the pages the user is
- * already on first (detail/chapter URLs — a Cloudflare wall can only be
- * passed on the page that raises it), then the site derived from the
- * extension (it knows its mirrors), then any site the install itself carries
- * (a manifest URL in the config, or a site stashed in extra).
- * Every caller passes every URL it has: the first http(s) one wins, so a
- * chapter id or a missing detail link never blocks the ones behind it.
- * The button opens the first answer instead of the "Couldn't determine"
- * toast; the toast stays only when every link in the chain is empty.
- */
 internal fun webUrlChain(p: ContentProvider, vararg itemUrls: String?): String? {
     for (u in itemUrls) {
         u?.trim()?.takeIf { it.startsWith("http://") || it.startsWith("https://") }?.let { return it }
     }
     runCatching { webUrlFor(p) }.getOrNull()?.takeIf { it.isNotBlank() }?.let { return it }
     webUrlRootOf(p.config.url)?.let { return it }
-    // The install URL of a scripted extension is the script itself (a .js file
-    // on the repo raw host) — never the site. Opening it showed the module
-    // source instead of the site ("just like that script").
     webUrlRootOf(p.config.extra)?.takeIf { !isScriptArtifactUrl(it) }?.let { return it }
     return null
 }
@@ -3331,12 +2700,6 @@ private fun isScriptArtifactUrl(url: String): Boolean {
     return false
 }
 
-/**
- * [webUrlChain] plus the lookups that need to run a plugin: an LNReader
- * source's site lives in its own script, so an older install that predates
- * the capture resolves it here (and stores it for the sync path). Suspend —
- * call it from the IO context the globe buttons already use.
- */
 internal suspend fun webUrlChainAsync(p: ContentProvider, vararg itemUrls: String?): String? {
     webUrlChain(p, *itemUrls)?.let { return it }
     if (com.hikari.app.lnreader.LnReaderProvider.isLnReaderId(p.config.id)) {
@@ -3389,9 +2752,6 @@ private fun HomeHeader(
                 modifier = Modifier.padding(horizontal = 8.dp)
             )
         }
-        // Remote mouse: a D-pad-driven cursor over every screen, for the
-        // Cloudflare "I'm not a robot" checkbox and any other target the
-        // focus walk cannot land on. Television only.
         if (TvMode.current()) {
             IconButton(onClick = onMouse) {
                 Icon(
@@ -3447,18 +2807,6 @@ private fun HomeHeader(
         }
     }
 }
-/**
- * The Home feed cache: one entry per pick key ("all" for the combined feed, the
- * joined pick keys otherwise), holding rows whose posters have already been
- * collapsed into disk-cache tokens.
- *
- * It is deliberately a PROCESS-WIDE object rather than a field of
- * [HomeViewModel]. Returning from the player can recreate the activity, and with
- * it the view model; a per-instance map would then be empty on every return and
- * Home would fall back to a spinner and a full re-fetch of the provider the user
- * is already on. Every access happens on the main thread (the loader's own
- * dispatcher), so it needs no locking.
- */
 /** First-run seed rows live in the repository (see HomeFeedCache below) —
  *  scroll position itself is held by ScrollKeeper ("home" key). */
 
@@ -3479,32 +2827,6 @@ private fun MediaItem.shrinkPoster(): MediaItem {
     else copy(posterUrl = p, backdropUrl = b)
 }
 
-/**
- * The engine's own record of why the last call to [providerId] failed, when it
- * failed — the chain Home's empty state reads, and now the in-place search's too.
- *
- * Aniyomi was missing from this chain once, so an Aniyomi catalog that failed
- * fell through to the generic "check the WebView / it may be down" line — which
- * sent users looking for a Cloudflare verification that was never the problem.
- * An Aniyomi extension that failed to load has a real, specific reason ("none of
- * its sources could be loaded", a class-load failure, an unsupported extension
- * library) and it is reported here now. Manga engines were missing for the same
- * reason: a manga source that fails to LINK or load (an OkHttp class it needs
- * absent from the app, a source whose own assertions refuse our client) fell
- * through to the "the site may be down" line. Its own record is
- * `MangaProvider.lastOutcome`, and the SUCCESS lines in that map ("✓ 40 titles")
- * are filtered out so only a real failure shows — an empty result has to be told
- * apart from a failed one.
- *
- * `.hiki` extensions were the last engine missing here, and the omission hurt
- * them most: the bridge answered an empty catalog list for every LOCAL failure
- * it had (the archive has no bundled plugin, the plugin's load() threw, it
- * registered nothing, its home page came back empty), so with no entry in this
- * chain the user was told to open the extension's WEBSITE and check it for a
- * Cloudflare verification page that was never involved. The extension now names
- * its own reason and the adapter records it in
- * [com.hikari.app.providers.HikariProviderAdapter.catalogErrors].
- */
 private fun engineFailureReason(providerId: String): String? =
     com.hikari.app.data.TrackerLibraryRepository.errors[providerId]
         ?: com.hikari.app.providers.HikariProviderAdapter.catalogErrors[providerId]
@@ -3519,21 +2841,6 @@ private fun engineFailureReason(providerId: String): String? =
         ?: com.hikari.app.manga.MangaProvider.lastOutcome[providerId]
             ?.takeIf { !it.startsWith("✓") && !it.startsWith("✔") }
 
-/**
- * The in-place Home search: one picked extension's own search, drawn over the
- * feed.
- *
- * It runs the SAME sweep the Search tab runs —
- * [ContentRepository.searchStreaming], scoped to the one picked provider — so
- * results are paged, deduplicated and STREAMED IN as each page lands, exactly as
- * they are there. The differences are only that this one is already scoped (the
- * pick IS the scope) and that it never leaves Home. A tapped result opens the
- * detail page the way the Search tab's grid does (a manga result opens the manga
- * page).
- *
- * The scan belongs to this composable's own effect, so searching on Home can
- * never disturb what the Search tab is showing.
- */
 /** The kind chips inside the Home search overlay — the same split the Search
  *  tab and the TMDB catalog page offer, over the overlay's own results (and
  *  over the loaded feed when the query is empty). Movies and Series exclude
@@ -3553,10 +2860,6 @@ private val HOME_KIND_CHIPS: List<Pair<String, String>> = listOf(
 )
 
 private fun homeKindKeep(item: MediaItem, kind: String): Boolean = when (kind) {
-    // UNKNOWN passes every non-anime kind: a site-scraper row honestly does
-    // not know its kind until its episode list is asked (see screenTypeFor),
-    // and a kind filter must never hide titles that are merely uncategorized
-    // yet — the detail page resolves each one on open.
     HOME_KIND_MOVIE -> (item.type == MediaType.MOVIE || item.type == MediaType.UNKNOWN) && !item.looksAnime()
     HOME_KIND_SERIES -> (item.type == MediaType.SERIES || item.type == MediaType.UNKNOWN) && !item.looksAnime()
     HOME_KIND_ANIME -> item.looksAnime()
@@ -3574,11 +2877,6 @@ private data class GenreScopePick(
     val extensionIds: Set<String>,
 )
 
-/**
- * One catalogue the overlay's kind browser is paging through: which provider,
- * which catalogue, whether that catalogue reads as anime (see the scan), the
- * next page to ask for, and whether it has answered empty (its end).
- */
 private class BrowseCursor(
     val providerId: String,
     val ref: CatalogRef,
@@ -3591,12 +2889,6 @@ private class BrowseCursor(
  *  they are dry or this many titles are in, whichever comes first. */
 private const val BROWSE_ITEM_CAP = 3000
 
-/** True when [item] belongs to the genre [name]: matched through
- *  [Genres.matches] so accented and translated tags count ("Acción" answers an
- *  "Action" tap, "Ciencia ficción" a "Science Fiction" one). Items with no tags
- *  at all never match: a site scraper that tags nothing cannot answer a genre
- *  question, and saying so (the overlay's empty state) beats a wall of
- *  unfiltered posters. */
 private fun homeGenreKeep(item: MediaItem, name: String): Boolean {
     if (name.trim().isEmpty()) return true
     if (item.genres.any { g -> com.hikari.app.data.Genres.matches(g, name) }) return true
@@ -3652,11 +2944,6 @@ private fun HomeSearchOverlay(
     var kindKey by rememberSaveable { mutableStateOf(HOME_KIND_ALL) }
     var typed by rememberSaveable { mutableStateOf("") }
     var applied by rememberSaveable { mutableStateOf("") }
-    // Results plus scan live in the process-wide HomeSearchSession, NOT here:
-    // the overlay leaves the composition while a title plays, which wipes plain
-    // remember state -- and on return the restored query re-ran the whole scan
-    // from page 1. The session keeps the job plus hits across the visit, so coming
-    // back re-shows everything found and resumes the same scan instead.
     val results by HomeSearchSession.results.collectAsState()
     val searching by HomeSearchSession.searching.collectAsState()
     val focusRequester = remember { FocusRequester() }
@@ -3695,16 +2982,8 @@ private fun HomeSearchOverlay(
         }
     }
 
-    // The keypad is what the user came for: open with the caret already in the
-    // box. (On a television focus has to be given explicitly for the same
-    // reason — a remote has no pointer to tap the field with.)
     LaunchedEffect(Unit) { runCatching { focusRequester.requestFocus() } }
 
-    // One request per typed word. The scan itself lives in [HomeSearchSession]:
-    // a repeat call with the same query + providers is a no-op that keeps the
-    // running job and its partial results — which is what makes returning from
-    // a title resume instead of restarting from page 1. Only a genuinely new
-    // query (or provider set) cancels the in-flight scan.
     LaunchedEffect(applied, providerIds) {
         if (applied.isBlank() || providerIds.isEmpty()) {
             HomeSearchSession.clear()
@@ -3720,13 +2999,6 @@ private fun HomeSearchOverlay(
 
     BackHandler { onClose() }
 
-    // A full-screen overlay has to actually COVER what is behind it, and the
-    // theme cannot be trusted to hand it a colour that does: the Dark Glass
-    // theme's `background` is TRANSPARENT by design (that theme's page colour is
-    // a gradient drawn behind the whole app), so a Surface painting the scheme's
-    // background painted nothing and the feed — hero banner and all — showed
-    // straight through this overlay. [pageBackground] is the scheme's own
-    // background when it has one, and the solid page colour when it does not.
     Surface(Modifier.fillMaxSize(), color = pageBackground()) {
         Column(Modifier.fillMaxSize()) {
             Row(
@@ -3862,11 +3134,6 @@ private fun HomeSearchOverlay(
                 if (extra.isNullOrEmpty()) return item
                 return item.copy(genres = (item.genres + extra).distinct())
             }
-            // A typed query must always surface its real matches: an exact
-            // title hit bypasses the kind chip (searching "jailer" with the
-            // Anime chip picked hid the film and left only loose anime
-            // matches), and exact/starts-with hits sort first so the real
-            // result is never buried under partial ones.
             val shownResults = remember(results, enrichedGenres, kindKey, genre, applied) {
                 results.map { withTags(it) }
                     .filter {
@@ -3896,18 +3163,10 @@ private fun HomeSearchOverlay(
             var browseItems by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
             var browseAnimeIds by remember { mutableStateOf<Set<String>>(emptySet()) }
             var browseLoading by remember { mutableStateOf(false) }
-            // The catalogues the scan below actually read, with the next page
-            // each still owes: scrolled to the end, the grid asks for more
-            // (see [loadMoreBrowse]) until every one answers empty. That is
-            // what turns "Series shows 6, Anime shows nothing" into the whole
-            // catalogue — page 1 alone is only ever its head.
             var browseCursors by remember { mutableStateOf<List<BrowseCursor>>(emptyList()) }
             var browseMoreLoading by remember { mutableStateOf(false) }
             var browseDone by remember { mutableStateOf(false) }
             val browseScope = rememberCoroutineScope()
-            // A genre narrowing ALSO sweeps the catalogues — even with an empty
-            // query and the "All" kind, which used to show only the loaded feed
-            // rows (one screenful) and never asked the catalogues at all.
             LaunchedEffect(kindKey, genre, providerIds) {
                 if ((kindKey == HOME_KIND_ALL && genre.isBlank()) || providerIds.isEmpty()) {
                     browseItems = emptyList()
@@ -3926,9 +3185,6 @@ private fun HomeSearchOverlay(
                             .filter { it.config.enabled && it.config.id in providerIds }
                             .take(8)
                     }
-                    // Every shelf gets a cursor up front, so scroll paging
-                    // (see [loadMoreBrowse]) can ask for page 2 of any shelf
-                    // long before its page 1 has been read.
                     val cursors = withContext(Dispatchers.IO) {
                         val all = ArrayList<BrowseCursor>()
                         for (p in targets) {
@@ -3943,11 +3199,6 @@ private fun HomeSearchOverlay(
                         all.toList()
                     }
                     browseCursors = cursors
-                    // Instant first paint: page 1 of the first two shelves
-                    // only, then the spinner is dropped and the grid shows
-                    // while everything else streams in behind it. Waiting for
-                    // every shelf's page 1 (plus the genre check over all of
-                    // it) is what kept this screen on a spinner for minutes.
                     withContext(Dispatchers.IO) {
                         val acc = ArrayList<MediaItem>()
                         val animeIds = HashSet<String>()
@@ -3974,10 +3225,6 @@ private fun HomeSearchOverlay(
                         browseAnimeIds = animeIds.toSet()
                     }
                     browseLoading = false
-                    // Background fill: page 1 of every remaining shelf,
-                    // appended as it lands — the grid keeps growing, with no
-                    // spinner and no waiting. Deeper pages arrive on scroll
-                    // (see [loadMoreBrowse]), one shelf at a time.
                     withContext(Dispatchers.IO) {
                         for (c in cursors.drop(2)) {
                             if (browseItems.size >= 600) break
@@ -4013,13 +3260,6 @@ private fun HomeSearchOverlay(
                     browseLoading = false
                 }
             }
-            // The genre check itself: every untagged title in the loaded pools
-            // gets its detail read (that is where an extension names genres)
-            // eight at a time, oldest pool first, until the session budget is
-            // spent — in small batches whose matches join the grid as they
-            // land, so the first titles paint in seconds instead of the whole
-            // pool answering at once minutes later. A title whose detail names
-            // nothing is still marked checked, so it is never asked twice.
             LaunchedEffect(feedItems, browseItems, results, genre, providerIds) {
                 if (genre.isBlank() || providerIds.isEmpty()) {
                     checkingCount = 0
@@ -4070,14 +3310,6 @@ private fun HomeSearchOverlay(
                     }
                 }
             }
-            /**
-             * The next pages of the kind browser: a few catalogues per round,
-             * appended under what is already on screen. A catalogue that
-             * answers empty is retired; when every cursor is retired the list
-             * is genuinely finished ([browseDone]) and the grid stops asking.
-             * Guarded, so scroll events cannot stack rounds — and strictly
-             * scroll-driven, so nothing loads until the user reaches the tail.
-             */
             fun loadMoreBrowse() {
                 if (browseMoreLoading || browseDone) return
                 if (kindKey == HOME_KIND_ALL && genre.isBlank() || providerIds.isEmpty()) return
@@ -4143,9 +3375,6 @@ private fun HomeSearchOverlay(
                     kindOk && homeGenreKeep(item, genre)
                 }.distinctBy { it.uniqueId }
             }
-            // Searching from inside the genre narrowing searches the loaded
-            // genre list too: a typed title that is already on this grid shows
-            // up even when the site's own search would not tag it back.
             val poolHits = remember(blankShown, applied) {
                 if (applied.isBlank()) emptyList()
                 else blankShown.filter { it.title.contains(applied, ignoreCase = true) }
@@ -4220,19 +3449,6 @@ private fun HomeSearchOverlay(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
                             )
-                            // Scrolling to the tail pages the catalogues further
-                            // (see [loadMoreBrowse]): the count above keeps its
-                            // "…" until every catalogue has answered empty, so
-                            // "keep scroll and keep loading until all really
-                            // ends" is what the list actually does.
-                            //
-                            // Position held per query+kind+genre (see
-                            // ScrollKeeper) with the item keys as the anchor:
-                            // Back from a title lands on that same cell even
-                            // when late catalogue pages stream in above it. The
-                            // key names the picked extensions (not their
-                            // display label) so a provider list reloading
-                            // mid-visit cannot move the slot.
                             val browseIdsKey = remember(providerIds) { providerIds.sorted().joinToString(",") }
                             val browseGridKey = remember(browseIdsKey, applied, genre, kindKey) { "homeBrowse:$browseIdsKey:$applied:$genre:$kindKey" }
                             val browseKeys = remember(blankShown) { blankShown.map { it.uniqueId } }
@@ -4277,20 +3493,6 @@ private fun HomeSearchOverlay(
                     detail = providerIds.firstOrNull()?.let { engineFailureReason(it) },
                 )
                 else -> {
-                    // The engine can answer the same title twice (and one engine
-                    // can answer once per mirror): a repeated Lazy key is a hard
-                    // crash in Compose, so repeats are dropped before the grid is
-                    // built — the same treatment the feed and the catalog page
-                    // give their own lists.
-                    //
-                    // Position held per query+kind+genre (see ScrollKeeper)
-                    // with the cell keys as the anchor: Back from a title
-                    // lands on that same cell instead of dropping further
-                    // down as late pages stream in. The key names the picked
-                    // extensions (not their display label) so a provider
-                    // list reloading mid-visit cannot move the slot. This
-                    // grid used to keep no state at all, so every return
-                    // from a title lost the spot entirely.
                     val unique = rememberVisibleItems(combinedResults)
                     val searchIdsKey = remember(providerIds) { providerIds.sorted().joinToString(",") }
                     val searchGridKey = remember(searchIdsKey, applied, kindKey, genre) { "homeSearch:$searchIdsKey:$applied:$kindKey:$genre" }
@@ -4356,36 +3558,12 @@ private fun HomeResultCard(item: MediaItem, onClick: () -> Unit) {
 }
 
 
-/**
- * One chip of [HomeGenreStrip]: what it says, and what it asks TMDB for.
- *
- * [genresText] is TMDB's `with_genres` OR-list built from BOTH namespaces (see
- * [com.hikari.app.data.Genres.tmdbGenreFilter]), so the page a chip opens
- * carries films AND series instead of making the viewer choose a shape first.
- * [keywordsText] is the fallback for a genre TMDB has no genre id for at all —
- * the anime vocabulary (Isekai, Harem, School Life, …), which is expressible
- * only as a keyword name; `TmdbSources` resolves it through TMDB's own keyword
- * search and sends `with_keywords`.
- */
 private data class HomeGenre(
     val name: String,
     val genresText: String,
     val keywordsText: String,
 )
 
-/**
- * Home's genre strip — the "no need to search for anything" way in.
- *
- * The list IS [com.hikari.app.data.Genres.ALL], the same vocabulary the Search
- * tab's strip offers, so the two screens can never disagree again: Home used to
- * show only TMDB's FILM genre names, which left out both the television-only
- * names (Reality, Soap, Talk, Sci-Fi & Fantasy, …) and the whole anime
- * vocabulary (Isekai, Harem, School Life, …) that Search offered.
- *
- * Every chip leads somewhere real: a genre TMDB names opens the combined
- * film+series grid for it, and an anime tag with no TMDB genre opens the grid
- * for its TMDB keyword (resolved by name at load — see [TmdbSources]).
- */
 @Composable
 private fun HomeGenreStrip(onPick: (name: String, genresText: String, keywordsText: String) -> Unit) {
     val genres = remember {
@@ -4399,14 +3577,6 @@ private fun HomeGenreStrip(onPick: (name: String, genresText: String, keywordsTe
             )
         }
     }
-    // The strip is the whole genre vocabulary — every TMDB film and television
-    // genre plus all 99 anime tags — which is far more than fits on a screen, so
-    // reaching "isekai" or "comedy" meant scrolling a strip that never ends
-    // ("there are too many genre so user can just search like isekai or comedy,
-    // and can select fastly instead of scrolling and finding it"). The field
-    // beside the heading filters the chips AS THEY ARE TYPED, and it matches
-    // against both the name a chip prints and the name the vocabulary files it
-    // under, so a translated chip is still found by its English word.
     var query by remember { mutableStateOf("") }
     val shown = remember(genres, query) {
         val q = query.trim().lowercase()
@@ -4415,9 +3585,6 @@ private fun HomeGenreStrip(onPick: (name: String, genresText: String, keywordsTe
             g.name.lowercase().contains(q) || I18n.t(g.name).lowercase().contains(q)
         }
     }
-    // A new filter starts at the top of the strip: a match that happens to sort
-    // late would otherwise be filtered in BEHIND the scrolled-away cards and the
-    // strip would look like it had found nothing.
     val listState = com.hikari.app.ui.components.keptListState("homeGenres")
     LaunchedEffect(query) { if (shown.isNotEmpty()) listState.scrollToItem(0) }
     Column(
@@ -4474,9 +3641,6 @@ private fun HomeGenreStrip(onPick: (name: String, genresText: String, keywordsTe
                         label = tr(g.name),
                         selected = false,
                         onClick = {
-                            // The pick leaves the screen (it opens the grid), so
-                            // the field is emptied on the way out and the strip
-                            // is whole again on the way back.
                             query = ""
                             onPick(g.name, g.genresText, g.keywordsText)
                         },

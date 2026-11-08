@@ -36,11 +36,6 @@ data class HikariEpisode(
 
 data class HikariSubtitle(val lang: String, val url: String)
 
-/** A playable source. Exactly one playback mode is set per stream:
- *  - HLS/MP4/MKV: [url] (optionally with [headers] the CDN requires)
- *  - torrent: [infoHash] + [trackers] (played by the built-in TorrServer)
- *  - YouTube: [ytId]
- *  - external: [externalUrl] (opened in the browser) */
 data class HikariStream(
     val name: String,
     val url: String = "",
@@ -56,21 +51,6 @@ data class HikariStream(
     val externalUrl: Boolean = false,
 )
 
-/**
- * A Hikari extension provider.
- *
- * Every method has a safe default, so a minimal extension only implements
- * [search] + [getStreams], or [catalogs] + [getCatalog] for a catalog-only
- * source. All [HikariNet] helpers (HTTP, JSON, WebView m3u8 capture) work
- * inside these methods, and the app's own libraries (org.json, jsoup) are on
- * the classpath too.
- *
- * Distribution: compile against these classes (they ship in the Hikari APK,
- * so the app resolves them at runtime), dex the jar with `d8`, add a
- * `manifest.json` with a `"mainClass"` entry naming a class implementing this
- * interface, and install the `.hiki` file (Extensions → Install .hiki). See
- * docs/HIKARI_EXTENSIONS.md in the repo for the full guide.
- */
 interface HikariProvider {
     /** Stable unique slug, e.g. "yts". */
     val id: String

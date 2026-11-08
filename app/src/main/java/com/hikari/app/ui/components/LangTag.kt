@@ -11,15 +11,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.hikari.app.ui.SourceLangs
 
-/**
- * Short language code chip (EN · HI · BN · CN · JA · KO …) drawn next to an
- * engine's name — Extensions rows, the Select Language dialog, and the Manga
- * tab's engine cards all show the same chip from the same stored language,
- * so the row always agrees with its Source language group.
- *
- * Multi-language packs read `Multi`; rows with no known language draw
- * nothing rather than a wrong guess.
- */
 @Composable
 fun LangTag(code: String?, modifier: Modifier = Modifier) {
     val short = shortLangCode(code) ?: return

@@ -4,14 +4,6 @@ import com.hikari.app.data.AppStore
 import org.json.JSONArray
 import org.json.JSONObject
 
-/**
- * The channels the Telegram tab lists, as the JSON the store keeps:
- * `[{"name":"@netflix","title":"Netflix"}]`.
- *
- * The NAME is the identity (it is what the web preview is fetched by); the title
- * is only what the row prints, so a channel that renames itself does not turn
- * into a second entry.
- */
 object TelegramChannels {
 
     fun decode(json: String): List<Pair<String, String>> {
@@ -53,14 +45,6 @@ object TelegramChannels {
         store.setTelegramChannels(encode(existing.filterNot { it.first.equals(name, true) }))
     }
 
-    /**
-     * Fix a row's printed name once Telegram tells us the real one.
-     *
-     * A chat that has no web preview to read — a public group — was added under
-     * its @handle (the only name its landing page carried), so the row printed
-     * the handle even though Telegram knows the group by name. The account call
-     * answers with that name; this keeps it.
-     */
     suspend fun setTitle(
         store: AppStore,
         existing: List<Pair<String, String>>,

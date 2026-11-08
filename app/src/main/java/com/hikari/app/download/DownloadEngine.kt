@@ -49,40 +49,11 @@ data class DlResult(
     val savedUri: String?,
 )
 
-/**
- * Fetches a stream to local storage.
- *
- * HLS is rebuilt as a *local* bundle rather than fetched piecemeal at playback
- * time: every segment is downloaded (AES-128 segments decrypted with their own
- * key, `EXT-X-BYTERANGE` segments fetched with a Range header, fMP4 init
- * segments via `EXT-X-MAP`), then a VOD media playlist and a master playlist
- * referencing them by local file name are written next to the files. media3
- * then plays `index.m3u8` off local storage — no network, no CDN, no expiry.
- *
- * Single-file sources are streamed straight to disk with a Range-resumed
- * append, so interrupting a big file and resuming never re-downloads the part
- * already on disk.
- *
- * EXPORT additionally produces ONE playable file in the phone's
- * Downloads/Hikari folder via MediaStore. A single self-contained stream (TS,
- * or fMP4 with muxed audio) just concatenates its parts; a stream whose audio
- * arrives as a SEPARATE rendition is remuxed — the video-only parts and the
- * audio-only parts are each assembled into a file, then both tracks are muxed
- * with MediaMuxer into a single `.mp4`.
- */
 object DownloadEngine {
 
     private const val BUFFER = 1 shl 16
     private const val MAX_MEM_SEGMENT = 96L * 1024 * 1024
 
-    /** How many HLS segments a single rendition fetches at once. One TCP
-     *  connection to a streaming origin is usually capped at a few MB/s (CDNs
-     *  throttle per connection), while a browser/Play-Store download opens
-     *  several connections and uses the whole link. This spreads a download
-     *  over that many connections. Kept modest so the video + audio renditions
-     *  together stay within the OkHttp per-host budget (16) in PlayerHttp —
-     *  and low enough that strict CDNs don't answer HTTP 429 (the "Failed -
-     *  HTTP 429" download report). */
     private const val SEGMENT_CONCURRENCY = 4
 
     /** Segment fetches are retried this many times (rate-limit aware backoff,
@@ -142,18 +113,6 @@ object DownloadEngine {
         }
     }
 
-    /**
-     * The video variants an HLS master playlist offers, best first, as
-     * (height, bandwidth) pairs. With height 0 the playlist only published
-     * bandwidths.
-     *
-     * The download flow needs this when nothing has PLAYED yet: the quality
-     * picker otherwise reads the player's parsed tracks, and a download started
-     * straight from the detail page (which is the normal way to download now)
-     * has no player tracks to read. Any failure is an empty list — the caller
-     * then downloads at the engine's own default (highest) quality — so a probe
-     * like this can never be the reason a download doesn't start.
-     */
     suspend fun hlsQualities(url: String, headers: Map<String, String>): List<Pair<Int, Long>> {
         if (url.isBlank()) return emptyList()
         val ua = headers["User-Agent"]?.takeIf { it.isNotBlank() } ?: Http.UA
@@ -167,14 +126,6 @@ object DownloadEngine {
         }.getOrDefault(emptyList())
     }
 
-    /**
-     * The audio rendition NAMES an HLS master playlist offers ("English",
-     * "Hindi", "Original"…), in playlist order, de-duplicated. The download
-     * flows ask this when nothing has PLAYED yet (same reason as
-     * [hlsQualities]): a batch picked from the detail page has no player
-     * tracks to read the audio set from. Empty when the playlist carries no
-     * separate audio — then there is nothing to ask.
-     */
     suspend fun hlsAudios(url: String, headers: Map<String, String>): List<String> {
         if (url.isBlank()) return emptyList()
         val ua = headers["User-Agent"]?.takeIf { it.isNotBlank() } ?: Http.UA
@@ -185,11 +136,6 @@ object DownloadEngine {
         }.getOrDefault(emptyList())
     }
 
-    /** Aggregates the video + (optional) audio rendition into one task-wide
-     *  progress reading. Segments (and both renditions) are fetched in
-     *  parallel, so every mutator is synchronized and the tallies only ever
-     *  move forward — a late/smaller reading from one worker can't make the
-     *  bar regress. */
     private class Reporter(private val onProgress: suspend (DlProgress) -> Unit) {
         private val lock = Any()
         private var vBytes = 0L
@@ -208,11 +154,6 @@ object DownloadEngine {
          *  for a progress bar. */
         private var lastEmit = 0L
 
-        /** Pre-seeds the video/audio rendition's total duration so a task-wide
-         *  progress reading is monotonic. Without it the video-only denominator
-         *  fills to 100%, then the audio rendition (whose duration roughly
-         *  equals the video's) doubles the denominator and progress appears to
-         *  restart at 50% — even though nothing was lost. */
         fun expectVideoDuration(ms: Long) {
             if (ms <= 0L) return
             synchronized(lock) { if (ms > vTotalDurMs) vTotalDurMs = ms }
@@ -307,9 +248,6 @@ object DownloadEngine {
             best.audioGroup
                 ?.let { g -> top.audios.filter { it.group == g } }
                 ?.let { cands ->
-                    // One answer for the whole batch (see preferredAudio): an
-                    // episode whose playlist lacks the named rendition falls
-                    // back to its own first audio instead of failing.
                     if (preferredAudio.isNotBlank()) {
                         cands.firstOrNull { it.name.equals(preferredAudio, ignoreCase = true) }
                             ?: cands.firstOrNull { it.name.contains("multi", ignoreCase = true) }
@@ -330,9 +268,6 @@ object DownloadEngine {
         val expectedAudioDurMs = if (audioUrl != null) peekDurationMs(audioUrl, headers, ua) else 0L
         if (expectedAudioDurMs > 0L) reporter.expectAudioDuration(expectedAudioDurMs)
 
-        // Fetch the video and audio renditions CONCURRENTLY (each itself pulling
-        // its own segments in parallel), so a stream whose audio arrives as a
-        // separate rendition no longer pays video-time + audio-time in full.
         if (isCancelled()) throw DownloadCancelledException()
         val (video, audio) = coroutineScope {
             val vDeferred = async {
@@ -346,9 +281,6 @@ object DownloadEngine {
             vDeferred.await() to aDeferred?.await()
         }
 
-        // Master playlist referencing the local media playlists. Written even
-        // for a single rendition: the local index.m3u8 is the stable entry point
-        // that both the offline copy and any bundle export point at.
         val bandwidth = top.variants.maxByOrNull { it.bandwidth }?.bandwidth ?: 0L
         val sb = StringBuilder()
         sb.append("#EXTM3U\n#EXT-X-VERSION:3\n")
@@ -378,11 +310,6 @@ object DownloadEngine {
         )
     }
 
-    /** Chooses the variant to download from a master playlist. No preference =
-     *  the highest bandwidth (best quality). A preferred height narrows to that
-     *  resolution; the preferred bandwidth breaks ties and covers playlists
-     *  that omit RESOLUTION entirely (ExoPlayer reports a variant's BANDWIDTH
-     *  as its track's average bitrate). */
     private fun pickVariant(
         variants: List<Variant>,
         preferredHeight: Int,
@@ -490,9 +417,6 @@ object DownloadEngine {
                         val seg = segs[i]
                         val f = parts[i]
                         if (!(f.exists() && f.length() > 0)) {
-                            // Bytes credited to this segment so far, so a retry
-                            // can roll its partial credit back and never count a
-                            // fragment twice.
                             val credited = longArrayOf(0L)
                             var attempt = 0
                             while (true) {
@@ -628,17 +552,8 @@ object DownloadEngine {
         isCancelled: () -> Boolean,
     ) {
         val startAt = if (resume && byteRange == null && file.exists()) file.length() else 0L
-        // HTTP 428 (Precondition Required) means the CDN refused our conditional
-        // (Range) request — retry ONCE from scratch without Range instead of
-        // surfacing "Failed - HTTP 428" for an otherwise playable episode.
-        // HTTP 429 (rate-limited) backs off honoring Retry-After instead of
-        // surfacing "Failed - HTTP 429".
         var triedFresh = false
         var rateAttempts = 0
-        // Signed-CDN header walk (mirrors the player's own: full → no Referer
-        // → UA-only → reference-UA). A VidLink-style signed mp4 that 428s/403s
-        // with extractor headers often downloads on the player's 4th attempt
-        // but failed the same URL as a download when the walk stopped at 3.
         var headerStep = 0
         var effHeaders = headers
         var effUa = ua
@@ -744,9 +659,6 @@ object DownloadEngine {
         val base = task.episodeStem()
         val hasSeparateAudio = res.audioParts.isNotEmpty()
 
-        // Single self-contained stream: it is already a complete playable file
-        // once its parts are concatenated — TS into one .ts, fMP4 (init +
-        // fragments) into one .mp4.
         if (!hasSeparateAudio) {
             return if (!res.fmp4) {
                 val out = File(workDir, "export.ts")
@@ -759,9 +671,6 @@ object DownloadEngine {
             }
         }
 
-        // Audio arrives as a SEPARATE rendition. Gluing video-then-audio would
-        // produce a file that plays one track only, so assemble a video-only
-        // file and an audio-only file, then mux both tracks into one .mp4.
         try {
             val vFile = File(workDir, "v_mux" + if (res.fmp4) ".mp4" else ".ts")
             concat(listOfNotNull(res.initPart) + res.videoParts, vFile)
@@ -804,12 +713,6 @@ object DownloadEngine {
         }
     }
 
-    /**
-     * Remuxes [videoFile]'s video track and [audioFile]'s audio track into a
-     * single MP4 at [out] using the platform's MediaExtractor/MediaMuxer — no
-     * re-encode, samples are copied verbatim. Both inputs may be plain MPEG-TS
-     * or fragmented MP4.
-     */
     private fun muxTracks(videoFile: File, audioFile: File, out: File) {
         val vEx = MediaExtractor()
         val aEx = MediaExtractor()
@@ -842,12 +745,6 @@ object DownloadEngine {
             val bufV = ByteBuffer.allocate(maxOf(vFormat.maxInputOr(0), 8 shl 20))
             val bufA = ByteBuffer.allocate(maxOf(aFormat.maxInputOr(0), 1 shl 20))
 
-            // Interleave the two tracks by presentation time. The PTS/flags
-            // MUST be read AFTER `readSampleData` filled the buffer for that
-            // sample: on a freshly-positioned extractor `sampleTime` is -1
-            // until the first read, and the previous merge loop was seeded with
-            // that -1 — so the audio track was never copied and every exported
-            // MP4 played silent. Read first, then write.
             var v = readNextSample(vEx, bufV)
             var a = readNextSample(aEx, bufA)
             while (v != null || a != null) {
@@ -901,11 +798,6 @@ object DownloadEngine {
      *  past it, so the metadata can't be queried later. */
     private class Pending(val size: Int, val timeUs: Long, val flags: Int)
 
-    /** Reads the next sample into [buf] and returns it (or null at end of
-     *  stream), skipping codec-config buffers — MediaMuxer takes the codec
-     *  setup from the track format, not from a sample. [buf] is left holding
-     *  exactly this sample, so [writePending] can hand it straight to the
-     *  muxer after the other track has had its turn. */
     private fun readNextSample(ex: MediaExtractor, buf: ByteBuffer): Pending? {
         while (true) {
             val size = ex.readSampleData(buf, 0)
@@ -1018,12 +910,6 @@ object DownloadEngine {
         val mediaSequence: Int,
     )
 
-    /**
-     * Minimal HLS parser — deliberately our own rather than media3's, so the
-     * download path never depends on internal parser APIs. Handles the tags that
-     * matter for delivering a byte-exact offline copy: variants, audio
-     * renditions, byte ranges, AES-128 keys and fMP4 init maps.
-     */
     private fun parsePlaylist(text: String, baseUrl: String): Playlist {
         val lines = text.split('\n').map { it.trim() }.filter { it.isNotEmpty() }
         val variants = ArrayList<Variant>()
@@ -1045,9 +931,6 @@ object DownloadEngine {
                     sawMasterTag = true
                     pendingStreamInf = parseAttrs(line.substringAfter(':', ""))
                 }
-                // Exact tag name — a bare startsWith("#EXT-X-MEDIA") would also
-                // swallow #EXT-X-MEDIA-SEQUENCE (which must be parsed as its own
-                // tag, or the AES-128 IV default would be wrong).
                 line.startsWith("#EXT-X-MEDIA:") -> {
                     val a = parseAttrs(line.substringAfter(':', ""))
                     val uri = a["URI"]

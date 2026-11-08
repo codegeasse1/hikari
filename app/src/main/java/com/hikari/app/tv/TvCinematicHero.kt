@@ -59,17 +59,6 @@ import com.hikari.app.i18n.tr
 import com.hikari.app.ui.Artwork
 import com.hikari.app.ui.components.PosterImage
 
-/**
- * The television home hero: full-bleed cinematic backdrop with the title,
- * meta line, overview and Play / View Details actions — the streaming-box
- * convention from the reference shots.
- *
- * STATIC by design: no auto-advance carousel, no crossfading pager. A moving
- * hero repaints a full-screen bitmap several times a second, which is exactly
- * the jank a 1GB television box cannot afford; Left/Right on the focused hero
- * steps through the featured titles instead, one decode at a time. It also
- * draws only gradients over the art — no blur, no glass — for the same reason.
- */
 @Composable
 fun TvCinematicHero(
     items: List<MediaItem>,
@@ -86,17 +75,7 @@ fun TvCinematicHero(
     val item = items[index.coerceIn(items.indices)]
     // The overview's [more] expansion resets per title, like the index does.
     var overviewExpanded by remember(item) { mutableStateOf(false) }
-    // The reference hero draws the title's transparent TMDB wordmark when one
-    // exists (see HeroMetadataLayer's logo branch) and the text title only
-    // otherwise. One lookup per hero title, cached for the hero's lifetime —
-    // a miss simply keeps the text title, so this can only ever add.
     val heroLogos = remember(items) { mutableStateMapOf<String, String?>() }
-    // TMDB owns the hero art (desktop parity): the title's own backdrop at full
-    // file resolution, warmed for the whole rotation up front so stepping to
-    // the next title paints high-quality art instead of flashing provider
-    // art first. A title TMDB has nothing for keeps its provider art. A miss
-    // is retried on the next rotation (see Artwork.retryMiss): a null entry
-    // simply stays resolvable.
     val heroTmdb = remember(items) { mutableStateMapOf<String, String>() }
     androidx.compose.runtime.LaunchedEffect(items) {
         items.take(8).map { heroItem ->
@@ -124,9 +103,6 @@ fun TvCinematicHero(
     // never moves.
     val ts = TvUi.scale()
     BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
-        // Television glass-box banner (0.12.0 look): a smaller rounded card
-        // with a glass edge, sized about a third of the viewport so shelves
-        // stay visible under it. The user's own hero-size setting scales it.
         val h = (((maxHeight * 0.24f).value * scale.coerceIn(0.5f, 1.5f)).coerceIn(120f, 300f)).dp
         Box(
             modifier = Modifier
@@ -135,14 +111,7 @@ fun TvCinematicHero(
                 .height(h)
                 .clip(RoundedCornerShape(TvDesktop.CornerLarge))
                 .border(1.dp, TvDesktop.GlassEdge, RoundedCornerShape(TvDesktop.CornerLarge))
-                // Left/Right steps through featured titles. Preview (not the
-                // plain handler) so the focus system never sees the keypress
-                // and the hero keeps focus while browsing.
                 .onPreviewKeyEvent { event ->
-                    // One press, one step: without the type check every press
-                    // stepped TWICE (Down + Up), and a held key machine-gunned
-                    // through the list — each step a full-bleed decode the box
-                    // cannot afford (see tvPress's repeat note).
                     if (event.type != KeyEventType.KeyDown ||
                         event.nativeKeyEvent.repeatCount != 0) return@onPreviewKeyEvent false
                     when (event.key) {
@@ -160,21 +129,10 @@ fun TvCinematicHero(
                 .clickable { onOpen(item) }
                 .tvFocusRing(TvDesktop.CornerLarge),
         ) {
-            // Stepping between titles crossfades the art (the reference's
-            // screen-state crossfade): an instant swap reads as a flicker on a
-            // full-bleed image. Keyed on the title's id with per-key art, so
-            // the outgoing backdrop paints until it has faded out. A title
-            // that left the list falls back to the current art for both
-            // states — a plain swap, never a blank.
             androidx.compose.animation.Crossfade(
                 targetState = item.uniqueId,
                 label = "tvHeroArt",
             ) { id ->
-                // TMDB owns the hero (desktop parity): the title's own
-                // backdrop, full file, painted SHARP — never blurred. The old
-                // blurred fill is what read as low quality on every TV photo.
-                // A title TMDB has nothing for keeps its provider art, sharp
-                // and top-anchored like the desktop banner.
                 val tmdbArt = heroTmdb[id]?.replace("/w1280/", "/original/")
                 val fadeArt = if (tmdbArt != null) {
                     com.hikari.app.ui.PosterLoader.model(tmdbArt) to true
@@ -285,9 +243,6 @@ fun TvCinematicHero(
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    // The reference look: a solid white pill with a dark label,
-                    // not the theme accent — the hero's primary action reads at
-                    // a glance across the room.
                     Button(
                         onClick = { onOpen(item) },
                         modifier = Modifier.tvFocusRing(24.dp),
@@ -390,13 +345,6 @@ private fun TvHeroDots(count: Int, active: Int, modifier: Modifier = Modifier) {
     }
 }
 
-/**
- * The television home's ambient backdrop: the first featured title's own
- * TMDB backdrop, full-bleed behind the whole feed with a glass dim over it,
- * so shelves read over art like the desktop client. ONE image, fetched once
- * per feed — the hero card's own rotation stays the only other art on
- * screen, with its own treatment untouched on top.
- */
 @Composable
 fun TvHomeBackdrop(
     items: List<MediaItem>,

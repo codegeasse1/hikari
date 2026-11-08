@@ -11,31 +11,6 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
 
-/**
- * Coil model helper. MRDS and 51CG encrypt their poster images (pic.xustgq.cn)
- * with a fixed AES key, so their plugins download+decrypt them into base64
- * `data:` URIs. Coil renders `ByteArray`/`File` models natively but a raw
- * data-URI string is opaque to it (and a ~1MB blob in the nav route crashes the
- * NavController). Decode once per URL and persist the bytes on disk (keyed by a
- * hash of the URI — the decryption is deterministic, so the same URI always
- * yields the same bytes), so the home catalog's posters are instant on the next
- * app open. Http(s) posters pass through untouched — Coil's own disk cache (see
- * HikariApp) covers those.
- *
- * Two hard-won invariants, both from posters coming back BLANK:
- *
- * 1. A poster is never thrown away. The item's URL is the only copy of the
- *    artwork — once [tokenize] replaces it with a token, a failed decode or a
- *    deleted file means that cell is blank *forever* (the feed would have to be
- *    re-fetched). So a payload that can't be decoded right now keeps its
- *    original URI, and [model] retries the decode off the main thread.
- * 2. Nothing heavy happens on the main thread. Decoding a full-size poster is a
- *    multi-MB allocation; doing that for a hundred cells inside composition is
- *    what made whole rows flicker out under memory pressure. [model] hands back
- *    null (the cell shows its placeholder icon) and queues the work; the
- *    per-poster state in [pending] then recomposes exactly the cell that asked
- *    for that poster.
- */
 object PosterLoader {
 
     private const val DATA_IMAGE = "data:image/"
@@ -46,20 +21,8 @@ object PosterLoader {
      *  grid still renders them ([model] resolves the token back to bytes). */
     private const val CACHE_TOKEN = "data:cache/"
 
-    /** Total size the on-disk poster store may occupy. Big enough for a full
-     *  multi-provider home feed (hundreds of covers) and for the same covers to
-     *  still be there days later — a poster whose bytes were pruned is one we
-     *  cannot re-create (the provider's data URI is gone), so this is generous
-     *  on purpose. Pruned oldest-first. */
     private const val DISK_BUDGET_BYTES = 400L * 1024 * 1024
 
-    /**
-     * One observable counter per poster whose bytes are still being decoded, so
-     * a cell recomposes when *its* poster lands and not when any other one does.
-     * A single shared revision (the previous design) meant that every finished
-     * decode — and a home feed decodes hundreds — recomposed every cell on
-     * screen: a recomposition storm that ran exactly while the user scrolled.
-     */
     private val pending = ConcurrentHashMap<String, MutableState<Long>>()
 
     /** Upper bound on [pending] entries, so a catalog of undecodable payloads
@@ -81,13 +44,6 @@ object PosterLoader {
 
     private val writesSincePrune = AtomicLong(0L)
 
-    /**
-     * Where the decoded poster bytes live: filesDir, NOT cacheDir. The OS
-     * deletes cacheDir whenever storage runs low, and because the base64 URI is
-     * replaced by a token, a deleted cache file means that row goes blank until
-     * the feed is re-fetched — exactly the "some images just don't load" report.
-     * filesDir is only cleared when the user wipes the app's data.
-     */
     private val storeDir: File? by lazy {
         runCatching { File(HikariApp.instance.filesDir, "poster_store").apply { mkdirs() } }
             .getOrNull()
@@ -99,13 +55,6 @@ object PosterLoader {
         runCatching { File(HikariApp.instance.cacheDir, "hikari_poster_cache") }.getOrNull()
     }
 
-    /**
-     * Coil model for [url]: a plain String for http(s) posters (Coil fetches
-     * those itself), or an [ImageRequest] over the stored bytes for a poster we
-     * had to decrypt ourselves. Null while those bytes are still being decoded —
-     * the caller should render a placeholder and will be recomposed when they
-     * land (see [pending]).
-     */
     fun model(url: String?): Any? {
         val u = normalize(url) ?: return null
         if (!u.startsWith(DATA_IMAGE) && !u.startsWith(CACHE_TOKEN)) return u
@@ -114,10 +63,6 @@ object PosterLoader {
         existingFile(name)?.let { return request(it, name) }
 
         if (u.startsWith(DATA_IMAGE)) {
-            // Deliberately read inside composition: this poster's own state is
-            // what repaints this cell the moment its bytes materialise. Reading
-            // a state shared by all posters here is what used to make one decode
-            // repaint the whole screen.
             awaitingRevision(name)
             schedulePrep(u, name)
         }
@@ -132,22 +77,6 @@ object PosterLoader {
         return pending.getOrPut(name) { mutableStateOf(0L) }.value
     }
 
-    /**
-     * Coil model for a cover that belongs to an installed MANGA EXTENSION.
-     *
-     * Every other cover in the app is a plain URL, and Coil fetches it bare. A
-     * manga cover is not like the others: those CDNs are the hotlink-protected
-     * ones, and the request they accept is the extension's own — its User-Agent,
-     * its Referer, its cookies, and its client's interceptors. This returns
-     * [com.hikari.app.reader.source.ExtensionCoverRef], which Coil passes to that
-     * model's fetcher (registered in HikariApp): the cover is then loaded through
-     * the extension's client exactly as Nekoread loads every cover, and the source
-     * is resolved lazily on Coil's own dispatcher (see the fetcher).
-     *
-     * Falls back to [model] for anything else — a non-extension provider, a
-     * `data:` poster (the provider's own inline base64, which needs no network
-     * request at all), or a phone where the extension is gone.
-     */
     fun coverModel(url: String?, providerId: String?): Any? {
         val single = model(url)
         val pid = providerId?.takeIf { it.isNotBlank() } ?: return single
@@ -163,9 +92,6 @@ object PosterLoader {
     fun model(poster: String?, backdrop: String?): Any? =
         model(poster?.takeIf { it.isNotBlank() } ?: backdrop)
 
-    // ------------------------------------------------------------------
-    //  Animated covers drawn as a STILL
-    // ------------------------------------------------------------------
 
     /** Drop decoded still frames (see relieveHeapPressure in HikariApp): the
      *  cells that drew them re-fetch on next scroll. */
@@ -193,21 +119,6 @@ object PosterLoader {
     private val stillInFlight = ConcurrentHashMap.newKeySet<String>()
     private val stillLastAttempt = ConcurrentHashMap<String, Long>()
 
-    /**
-     * The FIRST FRAME of an animated cover, as a Coil model — what a tile draws
-     * when gif animation is switched off for it (see
-     * [com.hikari.app.data.AppStore.gifAnimFlow]: a catalog's own "always
-     * animate" setting, and the device's own override).
-     *
-     * Null while that frame is still being fetched — the caller is recomposed
-     * when it lands, exactly like a data-URI poster ([pending]). A GIF can only
-     * be held still by decoding it ourselves:
-     * [android.graphics.BitmapFactory.decodeByteArray] returns the first frame
-     * of an animated GIF, while Coil would hand back an animating drawable.
-     *
-     * Failure is rate-limited ([RETRY_COOLDOWN_MS]) so an unreachable cover can
-     * not spin the decode pool on every recomposition.
-     */
     fun stillModel(url: String?): Any? {
         val u = normalize(url) ?: return null
         stills[u]?.let { return it }
@@ -241,18 +152,6 @@ object PosterLoader {
         }
     }
 
-    /**
-     * The first frame of an animated cover, decoded SMALL.
-     *
-     * A still is drawn in the same 116dp cell as every other cover, so a
-     * full-size decode is pure waste — and this path used to do exactly that:
-     * `decodeByteArray` with no options, i.e. a full-width ARGB_8888 bitmap per
-     * animated cover (several MB each) held in [stills] for the session. On a
-     * low-memory device that is the difference between a grid that scrolls and
-     * one that is killed. The bounds pass is free (it reads the header only) and
-     * the sample is computed from it, so a webtoon-strip GIF costs the same as a
-     * thumbnail.
-     */
     private fun decodeStill(bytes: ByteArray): android.graphics.Bitmap? {
         val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
         runCatching { android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds) }
@@ -271,13 +170,6 @@ object PosterLoader {
         }.getOrNull()
     }
 
-    /**
-     * Re-issues a failed request on attempt N (0 = the original model). Coil
-     * does not retry on its own, so a transient 5xx / dropped connection / busy
-     * decoder left the cell blank until the user scrolled it out of view and
-     * back. `setParameter` changes the request's structural equality (which is
-     * what [coil.compose.AsyncImage] restarts on) without changing its data.
-     */
     fun retryModel(model: Any?, attempt: Int): Any? {
         if (model == null || attempt <= 0) return model
         val builder = if (model is ImageRequest) model.newBuilder()
@@ -285,36 +177,11 @@ object PosterLoader {
         return builder.setParameter("hikariRetry", attempt).build()
     }
 
-    /**
-     * A deliberately TINY decode of the same artwork, for the soft coloured halo
-     * drawn behind a poster card (see [com.hikari.app.ui.PosterStyle]).
-     *
-     * The halo used to be the artwork itself under `Modifier.blur` — and that
-     * modifier is a NO-OP below Android 12 (`RenderEffect` does not exist there).
-     * So two people with identical poster settings got two different apps: a
-     * coloured halo on Android 12+, flat artwork on anything older. That is the
-     * reported "he kept the same settings as me but the blur effect doesn't show
-     * for him".
-     *
-     * Asking Coil for a [px]×[px] copy of the same image and scaling it back up
-     * IS a blur (upscaling a twenty-pixel image is exactly what the effect looks
-     * like), and it works on every Android version. [blurDp] drives the size, so
-     * the Settings slider is a real gradient of softness: more blur, smaller
-     * decode, softer halo.
-     *
-     * Cheap by construction — a few hundred bytes of pixels, cached by Coil under
-     * its own memory key (the key MUST differ from the card's own, or the cache
-     * would hand back the full-size bitmap), and for an http(s) poster the bytes
-     * are already in Coil's disk cache from the card's own image.
-     */
     fun haloModel(model: Any?, blurDp: Int): Any? {
         if (model == null || blurDp <= 0) return null
         val px = (34 - blurDp).coerceIn(6, 34)
         val builder = if (model is ImageRequest) model.newBuilder()
         else ImageRequest.Builder(HikariApp.instance).data(model)
-        // A distinct memory key per size: the halo is a DIFFERENT decode of the
-        // same bytes, and without this the card's full-resolution bitmap would
-        // be served straight out of Coil's memory cache and drawn at full size.
         val source = (model as? ImageRequest)?.memoryCacheKey ?: model.toString()
         builder.memoryCacheKey("hikari-halo:$px:$source")
         builder.size(px, px)
@@ -322,19 +189,6 @@ object PosterLoader {
         return builder.build()
     }
 
-    /**
-     * Replaces a base64 `data:` poster with a tiny stable token whose bytes are
-     * persisted in the on-disk store, so a giant catalog can hold thousands of
-     * posters in memory without an OutOfMemoryError while the grid still shows
-     * them ([model] resolves the token back to the bytes). Regular http(s) URLs
-     * pass through unchanged.
-     *
-     * Never returns null for a data URI: when the payload can't be decoded right
-     * now (non-standard base64, or an OutOfMemoryError under the load of a whole
-     * catalog) the URI itself is returned so the item keeps its artwork and
-     * [model] retries the decode later. Dropping it here is how an entire row
-     * used to end up permanently blank.
-     */
     fun tokenize(url: String?): String? {
         val u = normalize(url) ?: return null
         if (!u.startsWith(DATA_IMAGE)) return u
@@ -382,12 +236,6 @@ object PosterLoader {
             .diskCachePolicy(CachePolicy.DISABLED)
             .build()
 
-    /**
-     * Decodes a [DATA_IMAGE] URI on a background thread and persists the bytes,
-     * then bumps its own counter so the cells that are waiting for it repaint. A
-     * no-op while an identical decode is in flight, and rate-limited after a
-     * failure so a broken payload can't spin the pool on every recomposition.
-     */
     private fun schedulePrep(u: String, name: String) {
         val now = System.currentTimeMillis()
         lastAttempt[u]?.let { if (now - it < RETRY_COOLDOWN_MS) return }
@@ -430,19 +278,6 @@ object PosterLoader {
         return u
     }
 
-    /**
-     * Decodes the base64 payload of a `data:` URI (null when nothing decodable
-     * comes out).
-     *
-     * Deliberately stubborn, because a silently-wrong decode is worse than a
-     * failure: Android's decoder with the default flags STOPS at the first
-     * character outside the standard alphabet, so a URL-safe payload (`-`/`_`)
-     * decodes to truncated garbage that Coil then refuses — a whole provider's
-     * rows of blank cells, with no error anywhere. Spaces (which sites wrap
-     * base64 with) are rejected outright. So: strip whitespace, try each
-     * alphabet, and only accept an answer whose magic bytes say it really is an
-     * image.
-     */
     private fun decodeDataUri(url: String): ByteArray? {
         val comma = url.indexOf(',')
         if (comma <= 0) return null
@@ -488,11 +323,6 @@ object PosterLoader {
         return (h.toUInt()).toString(16) + "_" + s.length
     }
 
-    /**
-     * Keeps the store under [DISK_BUDGET_BYTES] by deleting the least recently
-     * written files. Checked every so often rather than on every write (the size
-     * is a directory walk), and never touches anything outside [storeDir].
-     */
     private fun pruneIfNeeded() {
         if (writesSincePrune.incrementAndGet() % 64L != 0L) return
         val dir = storeDir ?: return

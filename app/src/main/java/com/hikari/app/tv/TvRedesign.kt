@@ -135,23 +135,10 @@ fun TvCinemaCard(
   titleColor: Color = TvDesktop.TextPrimary,
   subColor: Color = TvDesktop.TextMuted,
 ) {
-  // A cinema card is ALWAYS a full-bleed 16:9 frame, but only genuinely
-  // wide art paints SHARP in it (the reference's own contract: TMDB
-  // backdrops sharp, posters blurred). A portrait poster sharp-cropped into
-  // 16:9 is what beheaded subjects and cut-off title text on the TV shelves —
-  // so a poster-only title fills BLURRED behind the same hairline, atmosphere
-  // without the crop. No letterbox, no dark side bars.
-  //
-  // The desktop language: 8dp corners, a true-black card that separates from
-  // the page by its hairline (never a grey fill), and the focus glow + scale
-  // while the remote sits on it (see tvFocusGlow — focus IS hover on a TV).
   val hero = Artwork.heroModel(item)
   val art = hero.first
   val artWide = hero.second
   val cardShape = RoundedCornerShape(TvDesktop.CornerCard)
-  // No clip on the outer Column: the corner curve used to reach down into the
-  // title/year lines and bite their edges off. Only the artwork itself is
-  // rounded (see the image Box below).
   Column(
     modifier.width(cardWidth).clickable(onClick = onClick).tvPress(previewPass = true, onClick = onClick).tvFocusGlow(TvDesktop.CornerCard),
   ) {
@@ -160,18 +147,9 @@ fun TvCinemaCard(
       contentAlignment = Alignment.Center,
     ) {
       Icon(Icons.Filled.Movie, contentDescription = null, tint = TvDesktop.TextMuted.copy(alpha = 0.4f), modifier = Modifier.size(28.dp))
-      // PosterImage, not raw AsyncImage: a request that fails once is
-      // re-issued with backoff instead of parking the card on its
-      // placeholder forever (the whole shelf of blank clappers on a
-      // flaky mobile network).
       com.hikari.app.ui.components.PosterImage(model = art, contentDescription = item.title, modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(cardShape).then(if (!artWide) Modifier.blur(16.dp, BlurredEdgeTreatment.Unbounded) else Modifier), contentScale = ContentScale.Crop, alignment = Artwork.CINEMA_ALIGNMENT)
       if (!artWide && art != null) {
         Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(cardShape).background(Color.Black.copy(alpha = 0.32f)))
-        // Batch 137: a poster-only title keeps a RECOGNIZABLE card. The sharp
-        // 2:3 poster sits centered (the frame is Center-aligned) over the
-        // blurred atmosphere fill — instead of a full-bleed blur with nothing
-        // readable, which is the "selecting another provider and all become
-        // blur" report (freshly picked rows have no wide art cached yet).
         com.hikari.app.ui.components.PosterImage(model = Artwork.model(item), contentDescription = item.title, modifier = Modifier.fillMaxHeight().aspectRatio(2f / 3f).clip(RoundedCornerShape(TvDesktop.CornerCard)).border(1.dp, TvDesktop.GlassEdge, RoundedCornerShape(TvDesktop.CornerCard)), contentScale = ContentScale.Crop)
       }
       item.rating?.takeIf { it > 0 }?.let { r ->

@@ -17,21 +17,6 @@ import java.io.File
 import java.io.FileInputStream
 import java.io.RandomAccessFile
 
-/**
- * A Coil 2 decoder ported from chimahon's TachiyomiImageDecoder. It serves two purposes:
- *
- *  1. **Border cropping** — when a request opts in via [ImageRequest.Builder.cropBorders], the
- *     page's blank side borders are detected ([WebtoonBorderDetector]) and the bitmap is
- *     region-decoded to only the content bounds, exactly like yomi's crop-borders option.
- *  2. **Modern image formats** — AVIF / JPEG-XL / HEIF containers that the platform's built-in
- *     decoder doesn't handle are decoded through [BitmapFactory] (which the platform supports via
- *     its own codecs on API 31+ / with the AndroidX image-decoders, depending on device).
- *
- * File-backed sources (webtoon pages on disk) use the efficient file decode paths; any other
- * source (paged requests fed by the extension fetcher) is read into memory once and decoded from
- * bytes. The bitmap is decoded at the request's width, so tall strips never allocate their full
- * source resolution.
- */
 class TachiyomiReaderDecoder(
     private val source: ImageSource,
     private val options: Options,
@@ -59,13 +44,6 @@ class TachiyomiReaderDecoder(
     private fun decodeFileWhole(file: File): Bitmap? {
         val (w, h) = readDims(file)
         val sampleSize = calculateInSampleSize(w, h, targetWidthPx(), targetHeightPx())
-        // Mirror Coil 2.7's own decoder: Options.config is HARDWARE on API 26+ unless the request
-        // disabled hardware (border cropping does — the crop path reads pixels back and must stay
-        // software). Modern-format pages (AVIF/JXL/HEIF) decoded on this path would otherwise be
-        // software bitmaps the render thread re-uploads to the GPU on first draw — the same upload
-        // churn 2.2.5c removed for the built-in decoder. Decode to a HARDWARE bitmap (drawn for
-        // free), falling back to software if the device/codec rejects it (decodeFile returns null,
-        // or the decoder throws).
         if (options.config == Bitmap.Config.HARDWARE && !options.allowRgb565) {
             val hardware = runCatching {
                 BitmapFactory.decodeFile(

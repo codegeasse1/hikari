@@ -15,36 +15,11 @@ import com.hikari.app.data.matchScoreAny
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/**
- * What actually gets sent to the trackers, and when (Settings → Trackers).
- *
- * The rule the whole feature hangs on: **an automatic push must be right, or it
- * must not happen.** A tracker list is something the user has kept for years, and
- * marking the wrong episode watched is worse than reporting nothing at all — so
- * a title is only ever pushed when its match is confident ([bestMatch]), the
- * answer is remembered per title so the same show is matched once and not on
- * every episode ([TrackerStore.matchKey]), and a match that could not be made
- * confidently is REPORTED to the user rather than guessed at ("AniList: no
- * confident match for \"…\""). Nothing here fails silently: every path returns a
- * sentence, and the card shows them.
- *
- * Progress is reported when an episode has been watched far enough to count
- * ([WATCHED_FRACTION]) — the same "you watched it" line the watch history uses —
- * and never twice ([AppStore.markTrackerDone]).
- */
 object TrackerSync {
 
     /** How much of an episode counts as watched (90%, like the history shelf). */
     private const val WATCHED_FRACTION = 0.9
 
-    /**
-     * Reports one watch to every signed-in tracker that can take it, and returns
-     * a sentence per tracker that had something to say.
-     *
-     * [historyKey] is the watch-history identity of this video, which is what
-     * stops the same episode being reported on every 5-second flush while it is
-     * being watched.
-     */
     suspend fun pushWatched(
         store: AppStore,
         media: TrackerMedia,
@@ -72,9 +47,6 @@ object TrackerSync {
                 notes += "${kind.label}: the app id is missing — open Trackers and add it"
                 continue
             }
-            // Only AniList and MAL keep manga lists: the others can never
-            // match a manga title, so say that instead of "no confident
-            // match" (which reads as a bug rather than a scope limit).
             if (media.manga && kind != com.hikari.app.data.TrackerKind.ANILIST &&
                 kind != com.hikari.app.data.TrackerKind.MAL
             ) {
@@ -110,20 +82,10 @@ object TrackerSync {
                 }
                 .onFailure { error ->
                     Logs.log("Tracker", "${kind.label} push FAIL [\"${media.title}\" ep=${media.episode}] id=${match.id}: ${error.message}")
-                    // A refusal can mean the stored match is stale (the service
-                    // re-numbered something, or the account was reset), so it is
-                    // forgotten: the next watch searches again instead of
-                    // re-sending the same wrong id forever.
                     runCatching { store.dropTrackerMatch(TrackerStore.matchKey(kind, media.title)) }
                     notes += error.message ?: "${kind.label}: the update failed"
                 }
         }
-        // Only a run that had something to SAY is written down: the automatic
-        // push runs on every history flush while the last minutes of an episode
-        // play, and "already reported" twenty times over is not news. The same
-        // sentence is not written twice either — a title nothing can match is
-        // still unmatched on the next flush, and that must not mean a DataStore
-        // write every five seconds for the rest of the episode.
         notes = notes.distinct()
         val summary = notes.joinToString("\n")
         if (notes.any { !it.endsWith("already reported") } &&
@@ -182,13 +144,6 @@ object TrackerSync {
         return null
     }
 
-    /**
-     * Second chance for a title the fuzzy score rejected: AniList knows every
-     * spelling of the show (romaji, English, native + synonyms), and an exact
-     * hit on ANY of them is the confident match a slightly-different name
-     * could never score. Each alias re-runs the full [bestMatch] rules, so a
-     * wrong-season or wrong-kind entry still cannot sneak through.
-     */
     private suspend fun aliasBestMatch(
         media: TrackerMedia,
         candidates: List<TrackerMatch>,
@@ -206,20 +161,6 @@ object TrackerSync {
         return null
     }
 
-    /**
-     * The one candidate that may be pushed to without asking, or null.
-     *
-     * Three things have to hold at once:
-     *  * the title matches confidently ([TRACKER_AUTO_THRESHOLD]) — this is the
-     *    rule that keeps "Naruto" from marking "Naruto Shippuden";
-     *  * the KIND agrees: a film is reported to a film entry, an episode to a
-     *    series entry. Without this, "Naruto" playing as a film could land on the
-     *    TV series (or the reverse), which is the same bug wearing a hat;
-     *  * nothing else scores the same. Two different entries at the top of the
-     *    list means the search cannot tell them apart, and a guess here is a
-     *    wrong episode on the user's list — so it is reported as unmatched
-     *    instead.
-     */
     suspend fun bestMatch(
         media: TrackerMedia,
         candidates: List<TrackerMatch>,
@@ -254,15 +195,6 @@ object TrackerSync {
                     .thenByDescending { coversEpisode(media, it) },
             )
             val winner = ranked.first()
-            // A known season picks its entry first off the tracker's own
-            // sequel line (AniList PREQUEL/SEQUEL edges), then by release
-            // order. Donghua sequel entries often carry no number at all
-            // ("Nian Fan" is season 5), so no marker can separate them — but
-            // the franchise graph (and then the release years) say which is
-            // which. Either way the pick must ALSO fit the watched episode
-            // or carry the season's marker: an interleaved side story at the
-            // wanted index is rejected back to an honest no-match instead of
-            // marking the wrong entry watched.
             if (media.season >= 2) {
                 chainPick(media, pool, kind)?.let { return it }
                 orderPick(media, pool)?.let { return it }
@@ -282,12 +214,6 @@ object TrackerSync {
         return top
     }
 
-    /**
-     * The wanted season straight off the service's franchise graph: the tied
-     * pool ordered root-first along PREQUEL/SEQUEL edges, mainline entries
-     * only. Null unless the pick is verifiable — in the pool, confident, AND
-     * fitting the watched episode or carrying the season's marker.
-     */
     private suspend fun chainPick(
         media: TrackerMedia,
         pool: List<TrackerMatch>,
@@ -310,13 +236,6 @@ object TrackerSync {
         return pick
     }
 
-    /**
-     * The wanted season by release order: the Nth-earliest same-show entry is
-     * season N. Same-show is alias-aware (plain sequel-base equality misses
-     * every pinyin-vs-English pair), specials stay out of the line, and a pick
-     * from unknown years is refused — without years the order is id order,
-     * which is meaningless.
-     */
     private fun orderPick(media: TrackerMedia, pool: List<TrackerMatch>): TrackerMatch? {
         val wantedBase = com.hikari.app.data.sequelBase(com.hikari.app.data.normalizeTitle(media.title))
         val sameShow = pool.filter { c ->
@@ -339,25 +258,10 @@ object TrackerSync {
         return pick
     }
 
-    /** True when the candidate's episode total proves it is a DIFFERENT season:
-     *  the watched episode number cannot exist inside it (e.g. episode 697 of
-     *  a 272-episode entry). Reporting that as a match marks the wrong show
-     *  watched, so it is excluded before any scoring.
-     *
-     *  Season-aware: extensions often number a later season's episodes
-     *  ABSOLUTELY (donghua season 5 reading "episode 130"), which no single
-     *  season entry's total can contain — so when the watched season is known
-     *  (> 1) the total comparison is skipped instead of excluding every
-     *  season entry and reporting "no confident match". */
     private fun seasonMismatch(media: TrackerMedia, c: TrackerMatch): Boolean =
         !media.movie && media.episode > 0 && c.total > 0 && media.episode > c.total &&
         media.season <= 1
 
-    /** 1 when the candidate's own title carries the watched season's marker
-     *  ("Season 5", "Part 2", "S3"), else 0 — the tie-break that picks the
-     *  right season entry when every season strips to the same base. A bare
-     *  number that IS the season ("Jade Dynasty 4", "Douluo Dalu 2") counts
-     *  too: sequel entries are often numbered that way. */
     private fun seasonMarkerScore(media: TrackerMedia, c: TrackerMatch): Int {
         val s = media.season
         if (s <= 1) return 0

@@ -16,24 +16,6 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 
-/**
- * Install/uninstall of Zangetsu providers, plus first-run seeding of the
- * official Zangetsu repository.
- *
- * A Zangetsu repository publishes an `index.json` manifest —
- * `{name, description, sources: [{id, name, version, type, lang, file, logo,
- * nsfw}]}` — where `file`/`logo` resolve against the manifest URL. Each
- * source is ONE self-contained `.js` scraper, kept as one folder per
- * provider:
- *
- *   filesDir/zangetsu/providers/<id>/provider.js
- *   filesDir/zangetsu/providers/<id>/meta.json
- *
- * The folder path is stored in the provider's `url` and the source file URL
- * in `extra`, exactly how every other engine records its source, so
- * uninstall and the provenance label work the same way they do for a
- * CloudStream/Hikari/Nuvio/Vega extension.
- */
 object ZangetsuPluginManager {
 
     /** Ceiling for one provider file. The published files are 14–36 KB. */
@@ -79,11 +61,6 @@ object ZangetsuPluginManager {
         return "$base/${r.trimStart('/')}"
     }
 
-    /**
-     * The sources a Zangetsu manifest lists. Entries carry their install URL
-     * (the absolute `.js` file), icon, version/type/lang line and the repo's
-     * own nsfw flag.
-     */
     fun repoPlugins(manifestText: String, manifestUrl: String): List<Cs3RepoPlugin> {
         val root = runCatching { JSONObject(manifestText) }.getOrNull() ?: return emptyList()
         val arr = root.optJSONArray("sources") ?: return emptyList()

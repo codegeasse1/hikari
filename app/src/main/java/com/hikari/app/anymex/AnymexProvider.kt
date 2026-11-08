@@ -75,10 +75,6 @@ class AnymexProvider(override val config: ProviderConfig) : ContentProvider {
         val out = ArrayList<CatalogRef>()
         out += CatalogRef(config.id, MediaType.SERIES, CATALOG_POPULAR, "Popular")
         out += CatalogRef(config.id, MediaType.SERIES, CATALOG_LATEST, "Latest")
-        // The extension's own categories (123AV's Censored/Uncensored/… and
-        // its Recent Update / Most viewed today / … sorts): one catalogue
-        // each, so opening one lists that whole slice. The filter list is
-        // fetched once here and cached — opening a category never refetches it.
         val flt = runCatching { filterSet().parsed }.getOrDefault(emptyList())
         for ((fi, f) in flt.withIndex()) {
             for ((vi, v) in f.values.withIndex()) {
@@ -90,12 +86,6 @@ class AnymexProvider(override val config: ProviderConfig) : ContentProvider {
         done
     }
 
-    /**
-     * The Home rows: Popular, Latest, then the sort slices first ("Most
-     * viewed today", "Recent Update" — the Today/Recent the report asks for),
-     * capped so one filter-heavy extension cannot flood Home with dozens of
-     * rows. Every category stays reachable through the full [catalogs].
-     */
     override suspend fun homeCatalogs(): List<CatalogRef> = withContext(Dispatchers.IO) {
         val all = runCatching { catalogs() }.getOrDefault(emptyList())
         if (all.size <= 2) return@withContext all
@@ -194,17 +184,6 @@ class AnymexProvider(override val config: ProviderConfig) : ContentProvider {
         return vals
     }
 
-    /**
-     * The Mangayomi filter argument for one answered row: the extension's
-     * ORIGINAL getFilterList array verbatim, with the wanted entry answered
-     * in its own shape — a `state` index for SelectFilter-style entries (the
-     * `{type, state, values}` shape `search(query, page, filters)` reads), a
-     * checked box for GroupFilter-style ones (AnimeWorld reads
-     * `filters[i].state[j].state`). Rebuilding a trimmed array instead (only
-     * the parsed entries) shifted every position, so a script indexing its
-     * own array (`filters[5]`) read another filter's answer and threw — every
-     * filter catalogue of such an extension failed.
-     */
     private fun filterStateJsonRaw(raw: JSONArray, fi: Int, vi: Int): String {
         val out = JSONArray()
         for (i in 0 until raw.length()) {
@@ -266,10 +245,6 @@ class AnymexProvider(override val config: ProviderConfig) : ContentProvider {
                 lastOutcome.remove(config.id)
                 return@withContext items
             }
-            // Plenty of scripts only implement ONE of the two catalogue calls
-            // well (the other answers empty or "not implemented") — trying the
-            // sibling before reporting an empty catalogue is what makes those
-            // extensions list titles instead of a blank page.
             val second = when (ref.id) {
                 CATALOG_LATEST -> AnymexRuntime.popular(mod, config.id, page.coerceAtLeast(1))
                 else -> AnymexRuntime.latest(mod, config.id, page.coerceAtLeast(1))
@@ -282,13 +257,6 @@ class AnymexProvider(override val config: ProviderConfig) : ContentProvider {
             }
             markWall(first)
             markWall(second)
-            // The extension's own catalogue paths went stale but the site is
-            // alive (the globe loads it fine): scrape the front page for
-            // title cards instead of reporting "its pages may have moved".
-            // Only when the engine recorded a real failure — a merely empty
-            // catalogue (a search-only source, the end of the pages) is a
-            // legitimate answer and is left alone — and only on page 1, which
-            // is the only page a front page has.
             if (page == 1 && catalogErrors.containsKey(config.id)) {
                 val home = runCatching { AnymexHomepage.titles(config) }.getOrDefault(emptyList())
                 if (home.isNotEmpty()) {
@@ -297,11 +265,6 @@ class AnymexProvider(override val config: ProviderConfig) : ContentProvider {
                     return@withContext home
                 }
             }
-            // Page 2+ coming back empty is just the end of the catalogue, not
-            // a failure — and a specific engine error already recorded (a dead
-            // site, an HTTP status, a script error) must never be overwritten
-            // by the generic line below: that overwrite is what hid every real
-            // cause behind "no titles".
             if (page > 1) return@withContext retry
             if (!catalogErrors.containsKey(config.id)) {
                 if (first.isNullOrBlank() && second.isNullOrBlank()) {
@@ -404,9 +367,6 @@ class AnymexProvider(override val config: ProviderConfig) : ContentProvider {
                     ?.sortedWith(compareBy({ it.season }, { it.number }))
                     ?.firstOrNull()?.id?.takeIf { it.isNotBlank() }
                 ?: item.id
-            // The episode page is fetched by name here (a bare Client.get),
-            // not through the extension's own site-prefixed request — a
-            // site-relative id would fetch nothing, so it is resolved first.
             val epUrl = absUrl(cleanLink(epRel), siteBase()).ifBlank { epRel }
             val raw = AnymexRuntime.videos(mod, config.id, epUrl)
                 ?: return@withContext fail("✗ No playable sources for this title.")
@@ -436,14 +396,6 @@ class AnymexProvider(override val config: ProviderConfig) : ContentProvider {
                 }
             }
             if (answered.isEmpty()) return@withContext fail("✗ No playable sources for this title.")
-            // Playing logic (AnymeX app parity + one step further): an
-            // extension that answers EMBED pages instead of files (watch,
-            // player and embed links the extension itself did not extract)
-            // used to hand those pages straight to the player, where every
-            // one failed. When nothing in the answer looks directly playable,
-            // each link goes through the same universal extraction engine
-            // every other embed in the app goes through — so a video page that
-            // AnymeX plays via its own extractors plays here too.
             val out = resolveEmbeds(answered)
             if (out.isEmpty()) return@withContext fail("✗ No playable sources for this title.")
             streamErrors.remove(config.id)
@@ -490,14 +442,6 @@ private fun recordPosterReferer(url: String?, siteBase: String?) {
             }.getOrNull()
         }
 
-    /**
-     * Tidies a link the extension PRINTED (detail/episode ids go straight back
-     * into the extension, which re-attaches its own site prefix — so they stay
-     * site-relative here). Extensions join paths by hand (`"/" + href`), which
-     * produces a leading `//` that is NOT scheme-relative (no dotted host) —
-     * 123AV's `//en/v/…` links are exactly that — so it collapses to one
-     * slash. A genuine `//host/…` URL gains its scheme instead.
-     */
     private fun cleanLink(raw: String): String {
         val t = raw.trim()
         if (t.isEmpty() || !t.startsWith("//")) return t
@@ -507,12 +451,6 @@ private fun recordPosterReferer(url: String?, siteBase: String?) {
         return "/" + rest.trimStart('/')
     }
 
-    /**
-     * Resolves art and stream URLs — things loaded OUTSIDE the extension, by
-     * Coil and the player — against the site. Extensions routinely print
-     * those relative (`data-src="/cover/1.jpg"`), which loads as nothing.
-     * Absolute, magnet and data: URLs pass through untouched.
-     */
     private fun absUrl(raw: String, base: String?): String {
         val t = raw.trim()
         if (t.isEmpty()) return t
@@ -542,10 +480,6 @@ private fun recordPosterReferer(url: String?, siteBase: String?) {
                     .ifBlank { o.optString("href") }.ifBlank { o.optString("id") }.trim()
             )
             if (link.isBlank()) continue
-            // UNKNOWN until the episode list is known (see AniyomiProvider):
-            // the source gives no movie/series signal at catalog time, and a
-            // SERIES claim here is what painted false "Series" chips on every
-            // single-video row and opened films onto an Episodes page.
             out += MediaItem(
                 providerId = config.id,
                 id = link,
@@ -774,16 +708,6 @@ private fun recordPosterReferer(url: String?, siteBase: String?) {
         return directRe.containsMatchIn(t)
     }
 
-    /**
-     * Embed fan-out for [getStreams]: when the extension's answer holds no
-     * directly playable file, every http(s) link is offered to the universal
-     * extraction engine (fetch the page, unpack its player config, scan for
-     * HLS/MP4, run the host dances, then the jar's extractor registry) with
-     * the answer's own Referer attached. Links that resolve keep the
-     * extension's identity and gain its server label; links that do not stay
-     * on the list untouched, so an unresolvable answer degrades to exactly
-     * what the extension printed instead of an empty failure.
-     */
     private suspend fun resolveEmbeds(found: List<StreamSource>): List<StreamSource> {
         if (found.any { looksDirect(it.url) }) return found
         val cands = found.filter { it.url.startsWith("http", true) }.take(8)

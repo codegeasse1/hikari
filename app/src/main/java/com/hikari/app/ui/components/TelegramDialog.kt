@@ -34,13 +34,6 @@ import com.hikari.app.ui.TELEGRAM_CHANNEL_URL
 import com.hikari.app.ui.openCommunity
 import com.hikari.app.ui.openTelegram
 
-/**
- * Shown once per app version to point the user at the community: Telegram,
- * Reddit and Discord. "Don't show this again" holds for the current version
- * only — after an update it comes back once. Every join hands off to the
- * matching app / the user's browser — never to Hikari's own WebView, where
- * the hand-off to the app dies (see [openTelegram]).
- */
 @Composable
 fun TelegramDialog(
     context: Context,
@@ -48,10 +41,6 @@ fun TelegramDialog(
     onDontShowAgain: () -> Unit,
 ) {
     var dontShow by remember { mutableStateOf(false) }
-    // Television: the D-pad lands on Close the moment the dialog exists, so
-    // Enter dismisses it with the focused ring showing — no hunting with the
-    // remote first. The short delay is one layout pass: the requester cannot
-    // take focus until the button has been placed.
     val closeFocus = remember { FocusRequester() }
     LaunchedEffect(Unit) {
         delay(250L)

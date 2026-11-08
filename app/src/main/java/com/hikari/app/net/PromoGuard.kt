@@ -2,41 +2,8 @@ package com.hikari.app.net
 
 import java.net.URI
 
-/**
- * The promo guard: the "support us / donate / buy me a coffee" layer.
- *
- * Repos, extensions and the pages they host like to bolt a funding pitch onto
- * their content — a "goal achieved, send extra love, watch an ad to support"
- * card, a Patreon/ko-fi button hung on the side of an extension's settings
- * page, a donation link in a plugin description. Whatever the form, it is the
- * extension talking about MONEY, not about a movie, and Hikari is a place to
- * watch things. So it is dropped everywhere an extension can put it:
- *
- *  - **Pages.** A main-frame navigation to a donation host (or to a
- *    donate/sponsor path on any host) is refused in [com.hikari.app.web.WebViewActivity]
- *    before it loads, and a page that DOES load has its promo blocks hidden by
- *    the injected [com.hikari.app.web.WebViewActivity] promo cleaner — so a
- *    funding card cannot appear inside Hikari even when it rides along with a
- *    real extension page.
- *  - **Text.** Extension-supplied strings (repo and plugin descriptions, the
- *    header/info rows an extension pushes into its own settings screen) are run
- *    through [cleanText], which strips markup and blank-fills anything that is
- *    only a donation pitch, and are dropped outright by [isPromoText].
- *
- * All of this is deliberate and unconditional: it is not a user preference,
- * because there is no version of "show me the extensions' donation dialogs"
- * that belongs in a video app. Nothing about PLAYBACK is touched — a stream URL
- * that happens to contain "donate" is not a page, and [isDonationUrl] is only
- * ever asked about navigations, links and metadata.
- */
 object PromoGuard {
 
-    /**
-     * Hosts whose entire purpose is taking money. Opening one inside Hikari is
-     * never part of watching something, so a main-frame navigation to them is
-     * refused. Matched on the registrable-ish suffix, so `www.ko-fi.com` and
-     * `cdn.patreon.com` are covered too.
-     */
     private val DONATION_HOSTS = listOf(
         // Tip jars / memberships
         "ko-fi.com", "kofi.com", "kofiwidget2.com", "buymeacoffee.com", "buymeacoff.ee", "bmc.link",
@@ -52,23 +19,12 @@ object PromoGuard {
         "patreon-payments.com", "sponsor.ajay.app", "githubsponsors.org",
     )
 
-    /**
-     * Path words that name a donation page on ANY host — a repo's own site, a
-     * "support the developer" page, a funding subpage. Kept to unambiguous
-     * words: a stream URL is never a donation, and these are only asked about
-     * navigations and links.
-     */
     private val DONATION_PATH_WORDS = listOf(
         "donate", "donation", "donations", "donar", "spenden", "donate-us", "support-us", "supportus",
         "tipjar", "tip-jar", "buymeacoffee", "buy-me-a-coffee", "become-a-sponsor", "sponsors",
         "fundraiser", "fundraise", "fund-us", "fundus", "kofi", "ko-fi", "patreon", "paypal",
     )
 
-    /**
-     * Text that is only ever a funding pitch. Deliberately phrase-level: a bare
-     * "support" or "fund" would swallow real sentences ("Supports 4K", "funded
-     * by viewers"), which is why every entry here is a whole ask.
-     */
     private val PROMO_TEXT = Regex(
         "buy me a coffee|ko[- ]?fi(?:[.]com)?|buymeacoffee|become a (patron|sponsor)|" +
             "support (?:us|me|this|our) (?:on|via|through)|watch an ad to support|send extra love|" +
@@ -76,12 +32,6 @@ object PromoGuard {
             "supporters made this happen|sponsor (?:this|our) (?:repo|project|channel|extension)|" +
             "fund (?:this|our) (?:repo|project|extension)|help us (?:keep|stay) (?:the )?(?:lights|servers|repo)|" +
             "not affiliated with the cloudstream app|" +
-            // The repo-side funding push: the card a repo (CNCVerse and the like)
-            // hangs over its own pages — "Help keep CNCVerse alive", "Goal
-            // missed = delayed fixes", "No ads, no subscription", "59 supporters
-            // this month", "Can't donate? Watch an ad to support". Phrase-level
-            // again, so "keep the servers running" matches and "Keep watching"
-            // does not.
             "help (?:us )?keep [\\w'\u2019 .-]{1,28}?(?:alive|free|running|online)|" +
             "keep [\\w'\u2019 .-]{1,28}?alive|keep it alive|zero support|extensions? die|" +
             "no ads,? no (?:subscription|ads)|goal missed|monthly (?:goal|target)|" +
@@ -146,22 +96,10 @@ object PromoGuard {
         return PROMO_TEXT.containsMatchIn(text)
     }
 
-    /**
-     * An extension-supplied string, made safe to render: markup stripped (a
-     * description is text, not HTML — Hikari never executes it), donation links
-     * and donation hosts removed, and every kind of whitespace collapsed so a
-     * stripped field cannot leave a wall of blank lines. Returns "" when
-     * nothing worth showing is left — including when the whole string was
-     * nothing but a funding pitch, which is the point.
-     */
     fun cleanText(text: String?): String {
         if (text.isNullOrBlank()) return ""
         var s = TAG_RE.replace(text, " ")
         s = DONATION_URL_RE.replace(s, " ")
-        // A description's tail is often where the ask lives ("… Enjoy! Buy me a
-        // coffee"): drop every segment that is only a funding ask, keep the
-        // rest, THEN collapse whitespace. If nothing but the ask is left, the
-        // field renders empty — which is the point.
         val segments = s.split(Regex("\\s{2,}|[\\n\\r]+")).map { it.trim() }.filter { it.isNotBlank() }
         val kept = segments.filterNot { isPromoText(it) }
         if (kept.isEmpty()) return ""

@@ -1,28 +1,5 @@
 package com.hikari.app.data
 
-/**
- * Dub/sub episode merging: some anime extensions list every episode twice —
- * once for the subtitled release and once for the dub ("I'm Luffy! …" /
- * "I'm Luffy! … (Dub)"). The detail page then shows 2×N rows for an
- * N-episode show, which reads as a broken list.
- *
- * [mergedFor] folds those pairs back into ONE row per (season, number) and
- * remembers the folded variants in [variantsFor], so the stream lookup can
- * still reach both audios: the merged episode plays normally, and the
- * player's Audio sheet offers Sub/Dub as sibling-server rows (see
- * PlayerActivity.audioVariantsFor / switchAudioVariant, which keep the
- * position in the film when switching).
- *
- * Merging is deliberately conservative: a group only folds when every row
- * strips down to the SAME base name once dub/sub/audio markers are removed.
- * Two genuinely different episodes that happen to share a number but are
- * called DIFFERENT things ("Part 1" / "Part 2", a Hindi-audio label versus a
- * Tamil-audio one) keep their own rows — folding those would hide content.
- * Rows that call the episode by the exact SAME name with no marker telling
- * them apart (an extension listing its sub and dub releases as two identical
- * rows) always fold: they are the same episode twice, and the player's Audio
- * sheet offers each audio.
- */
 object EpisodeDubSub {
 
     private val dubRe = Regex(
@@ -45,11 +22,6 @@ object EpisodeDubSub {
         return null
     }
 
-    /**
-     * The episode's display name with its dub/sub/audio markers stripped, so
-     * "Shanks! (Dub)" and "Shanks!" compare equal. Episode-number tags are
-     * kept — they are the identity, not decoration.
-     */
     fun baseNameOf(ep: Episode): String {
         var name = (ep.name ?: "").trim()
         if (name.isEmpty()) name = "episode ${ep.number}"
@@ -65,11 +37,6 @@ object EpisodeDubSub {
         return name.replace(Regex("\\s+"), " ").trim().trim('-', '–', '—', ':', '·', '|').trim()
     }
 
-    /**
-     * Folds dub/sub duplicate rows, registering the folded variants under
-     * [itemKey] for [variantsFor]. Idempotent: running it over an already
-     * merged list changes nothing (a lone row has no partner to fold with).
-     */
     fun mergedFor(itemKey: String, episodes: List<Episode>): List<Episode> {
         if (episodes.size < 2) return episodes
         val out = ArrayList<Episode>(episodes.size)
@@ -151,11 +118,6 @@ object EpisodeDubSub {
         return group.filter { it.id != primary.id || audioKindOf(it) != primaryKind }
     }
 
-    /**
-     * The audio a STREAM's own name or url advertises ("…/dub/…", "… (DUB)").
-     * Used when a folded-away episode row names no audio itself: its servers
-     * usually still say which side they carry.
-     */
     fun kindOfStream(name: String, url: String): String? {
         val text = (name + " " + url).trim()
         if (text.isBlank()) return null
@@ -176,11 +138,6 @@ object EpisodeDubSub {
         return audioKindOf(Episode(number = 0, id = name, name = name)) != null
     }
 
-    /**
-     * Tags a stream name with its audio when the name does not already say it,
-     * in the bracket shape the player's Audio sheet reads as a language
-     * variant ("… (Dub)" / "… (Sub)" — see audioTagOf).
-     */
     fun tagStream(name: String, kind: String?): String {
         if (kind.isNullOrBlank()) return name
         if (audioKindOf(Episode(number = 0, id = name, name = name)) != null) return name

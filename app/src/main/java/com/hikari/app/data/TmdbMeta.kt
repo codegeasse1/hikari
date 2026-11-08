@@ -5,31 +5,9 @@ import com.hikari.app.net.Http
 import com.hikari.app.nuvio.TmdbResolver
 import org.json.JSONObject
 
-/**
- * The parts of TMDB the app needs besides stream resolution: alternative
- * artwork for titles an extension left blank, and the "Similar"/"Related"
- * shelves on a detail page.
- *
- * Artwork lookup is deliberately two-stage, because neither source covers
- * everything:
- *
- *  1. TMDB (the app's existing resolver turns a title/year, a numeric id or an
- *     IMDb `tt` id into a tmdbId, and `/movie/{id}` / `/tv/{id}` carries the
- *     poster and backdrop paths). This is the good art when it exists.
- *  2. IMDb's public suggestion endpoint — no key, keyed by title — which
- *     returns both the `tt` id and a poster image URL. This is what fills in
- *     the titles TMDB has no image for (regional/Indian catalogs especially).
- *
- * A title that neither source has art for is a genuine miss and is cached as
- * such, so a blank cell costs one lookup, not one per recomposition.
- */
 object TmdbMeta {
 
     private const val IMG = "https://image.tmdb.org/t/p/w500"
-    // Backdrops are drawn full-bleed (detail page, TV hero, Continue cards):
-    // w780 stretched over a fullscreen frame read as visibly soft (the "low
-    // quality background" report), so backdrops resolve one step higher.
-    // Grid cells still downsample through Coil, so this costs nothing there.
     private const val IMG_WIDE = "https://image.tmdb.org/t/p/w1280"
     /** Cast headshots: TMDB's small profile size renders well in a circle. */
     private const val IMG_PROFILE = "https://image.tmdb.org/t/p/w185"
@@ -38,11 +16,6 @@ object TmdbMeta {
     private fun segment(mediaType: String): String =
         if (mediaType.equals("movie", true)) "movie" else "tv"
 
-    /** Reads a TMDB image path, treating JSON null / "" / "null" as absent.
-     *  org.json's `optString` returns the literal string "null" for a JSON
-     *  null, which used to be accepted as a path and produced URLs like
-     *  "…/w500null" (HTTP 404 → blank cell) while also short-circuiting the
-     *  IMDb fallback below, since the "path" looked present. */
     private fun JSONObject.tmdbPath(key: String): String? {
         if (!has(key) || isNull(key)) return null
         return optString(key).trim().takeIf { it.isNotBlank() && it != "null" }
@@ -53,22 +26,6 @@ object TmdbMeta {
         return raw.take(4).takeIf { it.length == 4 }?.toIntOrNull()
     }
 
-    /**
-     * (poster, backdrop) for [item] from TMDB, falling back to IMDb when TMDB
-     * has no usable image. Either element of the pair may be null; null as a
-     * whole means neither source knew this title.
-     *
-     * Portrait vs cinema contract: the portrait half is the anime cover
-     * (AniList/Bangumi via [DonghuaDetails], else the TMDB poster); the
-     * landscape half prefers the anime banner, then a TMDB backdrop. A
-     * donghua the anime index knows by cover only used to get NO backdrop at
-     * all (portrait blurred into the cinema frame) even when TMDB carried one
-     * — now the TMDB backdrop fills in, as long as TMDB's own details call
-     * the title Animation (a live-action namesake's art must never overwrite
-     * the anime, the "Big Brother" rule). When the primary `backdrop_path` is
-     * missing, the `/images` backdrops are tried before giving up, so far more
-     * cinema frames get a real 16:9 instead of a blurred portrait.
-     */
     suspend fun artwork(item: MediaItem): Pair<String?, String?>? {
         if (!runCatching { HikariApp.instance.store.tmdbEnabled() }.getOrDefault(true) ||
             !runCatching { HikariApp.instance.store.tmdbModule("artwork") }.getOrDefault(true)) return null
@@ -89,9 +46,6 @@ object TmdbMeta {
             else -> {}
         }
         val resolved = runCatching { TmdbResolver.resolve(item) }.getOrNull()
-            // TVDB bridge (same as TmdbScreenshots.backdropsFor): the title
-            // search misses while TVDB knows the exact TMDB id — details for
-            // the right entry instead of nothing.
             ?: runCatching { TvdbArt.tmdbBridge(item) }.getOrNull()
         var tmdbPoster: String? = null
         var tmdbBackdrop: String? = null
@@ -171,22 +125,6 @@ object TmdbMeta {
             best
         }.getOrNull()
 
-    /**
-     * The title's LOGO: TMDB's own transparent wordmark for a movie or series
-     * (`/{seg}/{id}/images` → `logos`) — the art the detail page draws the title
-     * with, the way the reference client's header does.
-     *
-     * That header is what the user asked Hikari's page to look like: the title
-     * is that wordmark ON the header art, and it stays on screen as the art
-     * scrolls away. A title with no logo — every extension-only row, most
-     * non-English ones, anything TMDB has no art for — answers null, and the
-     * page keeps its text title, so this can only ever ADD to the page.
-     *
-     * One request per title, kept in memory afterwards (a logo never changes);
-     * the pick is the best-voted ENGLISH wordmark, with the language-neutral
-     * ones as the fallback — a text-free mark rather than a localized name,
-     * which is what TMDB's own clients prefer.
-     */
     private val logoCache = java.util.concurrent.ConcurrentHashMap<String, String>()
 
     suspend fun logo(item: MediaItem): String? {
@@ -213,11 +151,6 @@ object TmdbMeta {
         return url
     }
 
-    /** Title shape for matching across sources: lowercase, punctuation dropped,
-     *  word/digit forms unified. IMDb spells a sequel "Ramayana Part 2" while the
-     *  catalog says "Ramayana: Part Two"; without this the suggestion result was
-     *  rejected by the `startsWith` test below and the cell kept its placeholder
-     *  icon forever. */
     private val NUMERALS = mapOf(
         "one" to "1", "two" to "2", "three" to "3", "four" to "4", "five" to "5",
         "six" to "6", "seven" to "7", "eight" to "8", "nine" to "9", "ten" to "10",
@@ -235,14 +168,6 @@ object TmdbMeta {
             .filter { it.isNotBlank() }
             .joinToString(" ") { NUMERALS[it] ?: it }
 
-    /**
-     * How well [candidate] names the same title as [query]: 60 for a match, 40
-     * for one being the other's prefix ("Sword of Coming" / "Sword of Coming
-     * Season 2"), 25 for a containment, 0 otherwise. Both the raw lower-cased
-     * forms and the punctuation/numeral-normalised forms are tried, because
-     * [normalizeTitle] drops CJK entirely — a Chinese title has to be compared
-     * as-is while a decorated Latin one needs normalising.
-     */
     fun titleScore(query: String, candidate: String): Int {
         val q = query.trim().lowercase()
         val n = candidate.trim().lowercase()
@@ -261,11 +186,6 @@ object TmdbMeta {
         else -> 0
     }
 
-    /** The season/part ordinal a site title names ("Sword of Coming Season 2",
-     *  "斗破苍穹 第二季" → 2), or null. Extensions commonly split a donghua's run
-     *  into per-season items, which restart their episode numbering at 1 — the
-     *  episode enricher needs to know so it does not map season 2's first
-     *  episode onto the season-1 title. */
     fun seasonHint(raw: String): Int? {
         SEASON_NUM.find(raw)?.let { m ->
             val digits = m.groupValues[1].ifBlank { m.groupValues[2] }
@@ -333,18 +253,6 @@ object TmdbMeta {
     private val BRACKETED = Regex("\\([^)]*\\)|\\[[^\\]]*\\]|（[^）]*）|【[^】]*】")
     private val SPACES = Regex("\\s+")
 
-    /**
-     * The decorations a SITE title carries that a database title never does: the
-     * episode it is ("… Episode 172", "Ep. 12", "E12", "S01E12") plus the
-     * release noise that habitually rides with it ("English Subtitles", "Hindi
-     * Dubbed", "1080p", "WEB-DL", "x265"). They are what makes TMDB's index
-     * return nothing at all for a title that is otherwise plain — and a title
-     * that does not resolve loses its rating strip, its cast, its trailers and
-     * its Related/Similar rows with it.
-     *
-     * Deliberately only used to build ADDITIONAL query variants; the full title
-     * is always tried first, so an exact hit still wins.
-     */
     private val EPISODE_MARKER = Regex(
         "(?i)\\b(?:episode|epis|ep)\\.?\\s*[-–—]?\\s*\\d{1,4}\\b" +
             "|\\bS\\d{1,2}\\s*[Ee]\\d{1,4}\\b" +
@@ -354,24 +262,6 @@ object TmdbMeta {
             "|\\b(?:web[- ]?dl|blu-?ray|hdtv|dvdrip|webrip|hdrip|hdts|x264|x265|h264|h265|hevc|avc|aac|ac3|dts|10bit|8bit|esubs?)\\b",
     )
 
-    /**
-     * Progressively simpler TMDB search queries for a title that carries
-     * decorations the TMDB index does not match — site metas are full of them:
-     *
-     *   "Sword of Coming Season 2"        → "Sword of Coming"
-     *   "Battle Through The Heavens: Origin" → "Battle Through The Heavens"
-     *   "One Piece (2023)"                → "One Piece"
-     *   "剑来 第二季"                        → "剑来"
-     *
-     * The full title is always first, so an exact hit still wins; the stripped
-     * forms only get used when it returns nothing.
-     *
-     * The minimum length for a stripped form is TWO characters, not three:
-     * Chinese titles are routinely that short, and a threshold of three
-     * silently dropped "剑来" — so a site item called "剑来 第二季" never resolved
-     * to anything at all, losing its cast/related/similar rows along with its
-     * episode titles. A rejected query merely costs one wasted search.
-     */
     fun queryVariants(raw: String): List<String> {
         val t = raw.trim()
         if (t.isBlank()) return emptyList()
@@ -380,10 +270,6 @@ object TmdbMeta {
         val flat = t.replace(BRACKETED, " ").replace(SPACES, " ").trim()
         if (flat.isNotBlank()) out.add(flat)
         for (base in listOf(t, flat)) {
-            // Episode/release decorations go first: "Soul Land 2: The Peerless
-            // Tang Sect Episode 172 English Subtitles" is the shape a search row
-            // for an episode has, and while the long form usually misses TMDB's
-            // index entirely, the plain series name resolves.
             val noEp = base.replace(EPISODE_MARKER, " ").replace(SPACES, " ")
                 .trim().trim('-', '–', '—', ':', '：', '|', '.', ',', '_').trim()
             if (noEp.length >= 2) out.add(noEp)
@@ -402,11 +288,6 @@ object TmdbMeta {
         return out.filter { it.length >= 2 }
     }
 
-    /**
-     * IMDb's suggestion endpoint (`/suggestion/h/<query>.json`) needs no API
-     * key and answers with `d: [{ l: title, y: year, i: { imageUrl } }]`. The
-     * image URLs are on m.media-amazon.com and load like any other poster.
-     */
     private suspend fun imdbArtwork(item: MediaItem): Pair<String?, String?>? {
         val title = item.title.trim()
         if (title.isBlank()) return null
@@ -503,17 +384,6 @@ object TmdbMeta {
     /** A trailer with its sort rank, so the ranking logic stays readable. */
     private data class ScoredTrailer(val score: Int, val trailer: Trailer)
 
-    /**
-     * The detail page's extra sections — the "Show Details" metadata block, the
-     * Cast row and the Trailers row — in ONE TMDB call. `append_to_response`
-     * bundles `credits`, `videos` and the per-region certification list
-     * (`release_dates` for movies, `content_ratings` for series) into the
-     * details response, so opening a page costs one extra request, not three.
-     *
-     * Like [artwork] and [shelf] this is a bonus that runs in the background:
-     * a slow or failed lookup simply leaves the sections out, never blocking
-     * the page or playback. Null when the title can't be resolved to a TMDB id.
-     */
     suspend fun extras(item: MediaItem): TitleExtras? {
         // TMDB master toggle no longer gates modules: each module toggle decides alone.
         val useTrailers = runCatching { HikariApp.instance.store.tmdbModule("trailers") }.getOrDefault(true)
@@ -523,10 +393,6 @@ object TmdbMeta {
         val useProductions = runCatching { HikariApp.instance.store.tmdbModule("productions") }.getOrDefault(true)
         val useNetworks = runCatching { HikariApp.instance.store.tmdbModule("networks") }.getOrDefault(true)
         val useCollections = runCatching { HikariApp.instance.store.tmdbModule("collections") }.getOrDefault(true)
-        // Anime pick with real data: the detail page gets the anime's own overview,
-        // score and title (see displayOverview) instead of the mistranslated TMDB
-        // entry's credits, trailers and collections. A cover-only / scoreless /
-        // blank-overview hit is NOT a win — it falls through to TMDB (the bare case).
         when (val pick = runCatching { DonghuaDetails.pick(item) }.getOrNull()) {
             is DonghuaDetails.Pick.Anime -> {
                 val a = pick.info
@@ -664,20 +530,10 @@ object TmdbMeta {
         // match is trusted; anything else keeps TMDB's list, so the row can
         // be wrong in the direction of "still correct, just the actors".
         var castIsCharacters = false
-        // Anime OR donghua: the anime gate is the confident anime-index hit,
-        // not TMDB's own genre/language tags and not the provider tag alone —
-        // a Chinese entry TMDB files as Drama still gets its characters when
-        // the anime sources are sure, and an untagged donghua from a general
-        // provider is no longer locked out by the tag it never carries. The
-        // pick is resolved once and reused for the first query below.
         val animePick = runCatching { DonghuaDetails.pick(item) }.getOrNull()
             as? DonghuaDetails.Pick.Anime
         val displayCast = if ((isAnimeTitle(d) || DonghuaDetails.isAnimeCandidate(item) || animePick != null) && item.title.isNotBlank()) {
             var characters: List<CastMember> = emptyList()
-            // Zero-doubt path first: the anime index already vetted this
-            // show (its source carries the AniList id), so its characters
-            // need no title match at all — aliases and years cannot veto a
-            // lookup that is the show itself.
             val animeId = animePick?.info?.source
                 ?.takeIf { it.startsWith("anilist:") }
                 ?.substringAfter(":")?.toIntOrNull() ?: 0
@@ -687,10 +543,6 @@ object TmdbMeta {
                     cacheKey = "tmdb:$seg:${resolved.tmdbId}",
                 )
             }
-            // Authoritative names first: the anime index's own title,
-            // TMDB's original, TVDB's. The provider's decorated row title
-            // ("… Season 2", site suffixes) used to burn all 4 tries while
-            // the exact names sat behind it untried.
             val queries = LinkedHashSet<String>()
             animePick?.let { p ->
                 if (p.info.title.isNotBlank()) queries.add(p.info.title)
@@ -703,11 +555,6 @@ object TmdbMeta {
             queries.add(item.title)
             if (item.searchTitle.isNotBlank()) queries.add(item.searchTitle)
             item.allTitles.forEach { if (it.isNotBlank()) queries.add(it) }
-            // A decorated query burns the single SEARCH_MATCH request on
-            // release junk AniList never matches, so every base also fans
-            // out into its stripped variants (season/episode/release forms
-            // removed) — the plain form resolves where the decorated one
-            // never does, on every provider.
             val expanded = ArrayList<String>(16)
             for (q in queries) {
                 if (q.isBlank()) continue
@@ -799,11 +646,6 @@ object TmdbMeta {
         if (useProductions) addCompanies("production_companies", isNetwork = false)
         if (useNetworks) addCompanies("networks", isNetwork = true)
 
-        // ---- The franchise ("Shrek Collection") ----
-        //
-        // `belongs_to_collection` is in the details response too (movies only),
-        // but it names the collection and carries no parts — those are one more
-        // request, made ONLY when a collection actually exists.
         val collection = if (useCollections) run {
             val coll = d.optJSONObject("belongs_to_collection") ?: return@run null
             val collId = coll.optString("id").trim()
@@ -855,9 +697,6 @@ object TmdbMeta {
             castIsCharacters = castIsCharacters,
             companies = companies,
             collection = collection,
-            // The same response that was localized for the page also carries the
-            // original name — so the two names a provider lookup needs arrive
-            // together, for free, in the call the page already makes.
             localizedTitle = d.optString("title").ifBlank { d.optString("name") }
                 .trim().takeIf { it.isNotBlank() && it != "null" },
             originalTitle = d.optString("original_title").ifBlank { d.optString("original_name") }
@@ -869,15 +708,6 @@ object TmdbMeta {
         )
     }
 
-    /**
-     * The (localized, original) pair of names for an item, from TMDB alone.
-     *
-     * Used where the two matter and [extras] is not being fetched — the play
-     * intents (so the player's artwork card can print the title in the chosen
-     * language) and a detail page whose origin provider is gone (so a provider
-     * lookup has the original name to search with). One request, cached per
-     * title, and null whenever TMDB cannot resolve the item at all.
-     */
     suspend fun titles(item: MediaItem): Pair<String, String>? {
         val key = item.originalTitle + "\u0001" + item.title + "\u0001" + item.type.name
         synchronized(titleCache) { titleCache[key] }?.let { return it }
@@ -897,13 +727,6 @@ object TmdbMeta {
     /** Bounded per-session memo for [titles] — a title is opened over and over. */
     private val titleCache = HashMap<String, Pair<String, String>>()
 
-    /**
-     * The (localized, original) pair for a bare TMDB id — the case a detail page
-     * arrives in, where all it has is `providerId = "tmdb"` and a numeric id
-     * (the row's own localized name came through the route, and a stored item
-     * from an older build may carry no `originalTitle` at all). Probes both
-     * namespaces when [type] does not say which one it is.
-     */
     suspend fun titlesForId(id: String, type: MediaType): Pair<String, String>? {
         val numeric = id.trim()
         if (numeric.isBlank() || !numeric.all { it.isDigit() }) return null
@@ -923,14 +746,6 @@ object TmdbMeta {
         return null
     }
 
-    /**
-     * True when TMDB's own detail response describes an ANIME title: an animated
-     * work whose original language is Japanese (or which is from Japan). The
-     * distinction matters because only for those does a character list exist
-     * somewhere that can be paired with the title (see [AnimeCast]); Western
-     * animation's "cast" is already its voice cast, which TMDB lists with the
-     * character each actor plays, so those rows need no substitution.
-     */
     private fun isAnimeTitle(d: JSONObject): Boolean {
         val animated = d.optJSONArray("genres")?.let { arr ->
             (0 until arr.length()).any {
@@ -949,15 +764,6 @@ object TmdbMeta {
         } ?: false
     }
 
-    /**
-     * Wrong-metadata veto (Barbie-for-anime rule): a TMDB details response is
-     * trusted only when its names describe the requested item. Exact/prefix
-     * (40+) always passes; containment (25+) needs a corroborating year;
-     * anything lower must match an alternate title, otherwise a same-year
-     * blockbuster wears the anime's page. Anime candidates additionally require
-     * an Animation/ja-zh/JP-CN signal, so a US/EN live-action namesake can
-     * never overwrite the donghua. Never throws.
-     */
     private suspend fun isTmdbTrusted(item: MediaItem, d: JSONObject, seg: String): Boolean {
         return runCatching {
             val names = listOf(
@@ -1012,11 +818,6 @@ object TmdbMeta {
         return out
     }
 
-    /** Age rating, preferred the way a viewer recognises it: the US rating
-     *  first (R / PG-13 / TV-MA), then the other English-speaking boards, and
-     *  only then whatever region TMDB happens to list first. Every title that
-     *  has *any* rating gets one, which is what puts a certification on nearly
-     *  every detail page instead of only the ones TMDB rated for the US. */
     private fun certificationOf(d: JSONObject, seg: String): String? {
         val arr = d.optJSONObject(if (seg == "movie") "release_dates" else "content_ratings")
             ?.optJSONArray("results") ?: return null

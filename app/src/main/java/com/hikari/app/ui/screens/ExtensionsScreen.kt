@@ -223,31 +223,10 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     val bundleRepos = MutableStateFlow<Set<String>>(emptySet())
     val sites = MutableStateFlow<List<Site>>(emptyList())
 
-    /**
-     * Language groups for the Source language dialog, computed once per
-     * provider change on a background thread (see [SourceLangs.groupsOf]).
-     * It walks every installed source with a regex per known language, which
-     * on a big library is hundreds of milliseconds — far too much for first
-     * composition, where it used to run on the main thread on EVERY landing
-     * visit (the page swap disposes the landing's remembers, so going into a
-     * repo folder and back recomputed it) and made the whole tab feel like it
-     * loads a second late. Collected here, it is computed once and shared by
-     * the landing and the dialog.
-     */
     val langGroups = MutableStateFlow<List<SourceLangs.LangGroup>>(emptyList())
 
-    /**
-     * What the app has installed, by package name (see the repo page's
-     * `kindOf`): computed with the groups above, for the same reason — the
-     * repo page used to derive it on its own first composition.
-     */
     val installedKinds = MutableStateFlow<Map<String, String>>(emptyMap())
 
-    // Install/uninstall/busy status lives in the ViewModel (not the
-    // composition) so it survives tab switches: the old screen-local state was
-    // cancelled the moment the user navigated away, which silently killed
-    // installs mid-download. Now a job keeps running when the screen is left
-    // and the result is shown when the user comes back.
     private val _busy = MutableStateFlow(false)
     val busy: StateFlow<Boolean> = _busy.asStateFlow()
     private val _busyMsg = MutableStateFlow("")
@@ -260,14 +239,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     private var installJob: Job? = null
     private var backgroundGeneration = 0L
 
-    /**
-     * True while an Install all / Update all run is going, and true again from
-     * the moment the user asks it to stop until it has. A bulk run over a
-     * hundred-odd extensions is a long job the user must be able to walk away
-     * from — and the stop is deliberate about WHERE it lands: the extension
-     * being installed right now is finished first (a half-downloaded `.cs3` is
-     * not left in storage and not left half-registered), then the loop ends.
-     */
     private val _installRunning = MutableStateFlow(false)
     val installRunning: StateFlow<Boolean> = _installRunning.asStateFlow()
     private val _installStopping = MutableStateFlow(false)
@@ -299,33 +270,8 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
      *  install-all run rebuilds a few times rather than 249. */
     private val REFRESH_QUIET_MS = 500L
 
-    /**
-     * Rebuilding the provider list, at most once per quiet moment.
-     *
-     * Every install used to end with `manager.refresh(); reloadInstalled()`
-     * directly — and `refresh()` re-instantiates EVERY installed provider while
-     * `reloadInstalled()` re-reads and re-parses the whole stored list. An
-     * "Install all" run over a 249-extension repo therefore did that 249 times,
-     * each pass bigger than the last, which is the jitter reported while
-     * installing ("while installing extension the app also lags, jittery type
-     * lags"). The rebuild's result is identical whether it runs once per install
-     * or once after the burst, so it runs once after the burst: a request that
-     * arrives while the quiet timer is still running just restarts the timer.
-     */
     private val refreshTicks = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
 
-    /**
-     * How long a burst of "the provider/repo lists moved" settles for before the
-     * update check and the 18+ pass run.
-     *
-     * Those two passes are expensive (the update check hashes every installed
-     * extension file, the 18+ pass walks every installed row) and they depend on
-     * BOTH the repo listings and the installed list — and during a fresh load
-     * the listings arrive one repo at a time. Running them per arrival meant
-     * dozens of full passes over a 500-provider library while the screen was
-     * being scrolled, which is the stutter the Extensions tab showed. A pass
-     * that runs once, after the arrivals stop, produces the same answer.
-     */
     private val UPDATE_QUIET_MS = 600L
 
     private val updateTicks = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
@@ -381,13 +327,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
      *  suspends and never blocks: it is called from inside install paths that
      *  are already holding a download open. */
     fun requestRefresh() {
-        // A bulk run owns its own refresh (see [installAllPlugins] /
-        // [updatePlugins]): it rebuilds once when the burst is over. Honouring
-        // these requests during the burst would rebuild the WHOLE provider list
-        // — one extension instantiation per installed extension — after every
-        // single install, so a run over twenty or thirty extensions did
-        // quadratic work on a machine already busy downloading and dex-loading
-        // each one. That is the reported "install all lags and then crashes".
         if (_installRunning.value) return
         refreshTicks.tryEmit(Unit)
     }
@@ -457,11 +396,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         _errorMsg.value = null
     }
 
-    /** Extension installs are hard-capped at 20 seconds (per app spec): a
-     *  download that takes longer is a dead/blocked server, not worth waiting
-     *  on — stop it and tell the user to tap Install again. Runs in the VM
-     *  scope, so going back to another tab mid-install does NOT stop it, and
-     *  tapping Install again cancels the stale attempt and restarts cleanly. */
     fun runInstall(
         what: String,
         success: (Int) -> String = { n -> "Installed ($n provider${if (n == 1) "" else "s"})" },
@@ -523,9 +457,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 cancellableCatching { action() }
                     .onSuccess {
                         setSuccess(successMsg)
-                        // Rebuild + re-read the installed set: without this the
-                        // row kept its Uninstall button after the files were
-                        // already gone (installs did this, uninstalls did not).
                         requestRefresh()
                     }
                     .onFailure { setError(it.message ?: "Failed") }
@@ -535,14 +466,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /**
-     * Uninstall task whose action reports how many installed things it actually
-     * removed. A zero is never dressed up as a success: the reported "I tap
-     * Uninstall and it says Uninstalled while the row still shows Uninstall"
-     * came from an uninstall that matched nothing (a second copy of the same
-     * extension under another URL spelling) and then said it was done. Saying
-     * what really happened is what lets the user tell us which of the two it is.
-     */
     fun runUninstallCounted(what: String, successMsg: (Int) -> String, action: suspend () -> Int) {
         startBackground {
             _busyMsg.value = what
@@ -563,25 +486,12 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    // ------------------------------------------------------------- testing --
-    //
-    // One probe outcome per tested extension, shown on the row that was tested.
-    // Keyed "inst::<provider id>" for an installed provider and "repo::<plugin
-    // url>" for a listing that is not installed yet (the two never collide, so
-    // installing an extension keeps no stale download-check beside its probe).
     val testStatus = MutableStateFlow<Map<String, ProviderTest>>(emptyMap())
     private val testGate = Semaphore(3)
     private fun setTest(key: String, v: ProviderTest) {
         testStatus.value = testStatus.value + (key to v)
     }
 
-    /**
-     * Full end-to-end probe of an INSTALLED provider: its catalogues, then the
-     * first page of the first one. That is the whole installed path — plugin
-     * load, manifest, network, parse — so "Working" means it will open, and the
-     * failure names the stage that broke. Bounded (15s + 20s) so a dead host
-     * cannot hold the button forever.
-     */
     fun testInstalled(providerId: String) {
         val key = "inst::$providerId"
         if (testStatus.value[key]?.testing == true) return
@@ -636,12 +546,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /**
-     * Pre-install check of a repo LISTING: downloads the file and verifies it
-     * (size + the sha256 the listing declares, when it declares one). That is
-     * all a listing CAN prove without installing — the repo host is reachable
-     * and the file is intact — so the row says exactly that and nothing more.
-     */
     fun testDownload(p: Cs3RepoPlugin) {
         val key = "repo::" + p.url
         if (testStatus.value[key]?.testing == true) return
@@ -799,12 +703,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { refreshRepoPlugins(repo) }
     }
 
-    /** Ensures every repo has its plugin list loaded, skipping the ones that
-     *  already have data or are mid-load. Safe to call any number of times from
-     *  any lifecycle point: the old one-shot flag could be consumed by an early
-     *  call made before `repos` had been read from the store, which then left
-     *  every repo permanently unloaded — so the extensions search only ever
-     *  found already-installed providers, never the installable repo entries. */
     fun loadReposIfNeeded() {
         viewModelScope.launch {
             val pending = repos.value.filter { repo ->
@@ -813,13 +711,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                     repo.url !in reposLoading
             }
             if (pending.isEmpty()) return@launch
-            // A few repos at a time, not one after another. The sequential loop
-            // spent the whole of a big (Mega-imported) list waiting on its
-            // slowest hosts one by one — minutes during which the extension
-            // search only knew about the repos already read and sat on
-            // "Searching…", which is the reported "stuck while searching
-            // extensions". [refreshRepoPlugins] bounds each fetch, so a dead
-            // host cannot hold a slot for long.
             val gate = Semaphore(4)
             kotlinx.coroutines.coroutineScope {
                 for (repo in pending) {
@@ -845,12 +736,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             loadReposIfNeeded()
         }
         viewModelScope.launch {
-            // Keep the repo list LIVE instead of a one-shot read: the app seeds
-            // its bundled Hikari + CloudStream repos on first run from a
-            // background coroutine, which can land AFTER this screen has read
-            // the store — so the screen kept showing "No repos yet" even though
-            // the repos existed. Observing the store also means a repo added by
-            // any other path (bundled seeding, Mega-import) shows up at once.
             store.reposFlow().collect { list ->
                 repos.value = list
                 // And load the plugin lists for any repo that arrived this way
@@ -870,15 +755,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         sites.value = store.sites()
     }
 
-    // ---------------------------------------------------------------------
-    //  IPTV
-    //
-    //  A playlist is added as a PROVIDER (not a repo): it has no plugin
-    //  listing to browse, it just IS the channel list. Everything downstream —
-    //  Home rows, the global search, the exception picker, the player's server
-    //  sections — already reads the provider contract, so an IPTV provider
-    //  shows up in all of them without a line of special-casing.
-    // ---------------------------------------------------------------------
 
     /** Bumped whenever a playlist's channel count or failure text changes, so
      *  open screens recompose and show the new count. */
@@ -917,16 +793,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             ?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
     }.getOrNull()
 
-    /**
-     * Adds (or updates) a playlist. [link] is the pasted M3U/M3U8/Xtream URL and
-     * [localPath] the stored copy of a file the user picked — one of the two.
-     *
-     * The playlist is READ before it is saved, so a dead link or a file with no
-     * channels is reported as the error it is instead of becoming an empty
-     * extension the user has to work out for themselves. Adding the same link
-     * again updates the one entry rather than adding a second (the id is derived
-     * from the source), which is the same rule repos follow.
-     */
     suspend fun addIptvPlaylist(
         link: String,
         localPath: String?,
@@ -944,10 +810,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 Exception("Paste an M3U/M3U8 link, or pick a playlist file"),
             )
         }
-        // A single video/stream address is not a playlist (same rule as the IPTV tab's
-        // own add flow): it would download video bytes as playlist text and become a
-        // one-channel IPTV folder that plays as live TV. Those links belong in the
-        // IPTV tab's Network stream mode, which resolves and plays them as files.
         if (localPath.isNullOrBlank() && com.hikari.app.data.NetworkStream.isDirectMediaLink(url)) {
             return@withContext Result.failure(
                 Exception("That looks like a single video link, not a playlist — add it from the IPTV tab with Network stream instead"),
@@ -979,12 +841,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         Result.success(count)
     }
 
-    /**
-     * Reads every installed playlist once so the Extensions rows can say how many
-     * channels each holds (and so a broken link is reported here rather than
-     * discovered later on Home). Bounded to a few at a time; failures are kept in
-     * [com.hikari.app.providers.IptvProvider.iptvErrors] and shown on the row.
-     */
     fun warmIptv() {
         viewModelScope.launch {
             val iptv = manager.providers.value.filter { it.config.type == ProviderType.IPTV }
@@ -1028,9 +884,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         if (clean.length < 10 || !clean.contains(".")) {
             return@withContext Result.failure(Exception("That doesn't look like a URL"))
         }
-        // Accept the URL with or without the /manifest.json suffix (users often
-        // paste the full manifest URL), and fall back to plain http if the
-        // https fetch fails.
         val manifestUrl = if (clean.lowercase().endsWith("/manifest.json")) clean
         else "$clean/manifest.json"
         val text = listOf(manifestUrl, manifestUrl.replaceFirst("https://", "http://"))
@@ -1053,9 +906,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         // already installed by Hikari's first-run seeding — is ONE row rather
         // than three.
         val id = com.hikari.app.providers.StremioAddon.providerIdFor(clean)
-        // The manifest is in hand here, so whether this addon has a
-        // configuration page is known from the moment it is added — the gear
-        // then opens it (or is hidden) without a second fetch.
         com.hikari.app.providers.StremioAddon.noteConfiguration(id, manifest, clean)
         store.addProvider(ProviderConfig(id, name, ProviderType.STREMIO, clean, iconUrl = iconUrl))
         manager.refresh()
@@ -1089,19 +939,9 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         val target = store.providers().firstOrNull { it.id == id }
         store.removeProvider(id)
         manager.refresh()
-        // Everything below DELETES a file once nothing references it — and with
-        // profiles (Settings → Profiles) "nothing" has to mean no PROFILE, not
-        // just this one: the extension files are shared on purpose (a profile
-        // carries the setup, not a second copy of every plugin), so uninstalling
-        // in one profile must not take the file another profile still lists out
-        // from under it. [Profiles.otherProfilesReference] answers exactly that,
-        // by looking for the path in the other profiles' snapshots.
         val sharedElsewhere = { path: String ->
             Profiles.otherProfilesReference(getApplication(), path)
         }
-        // An IPTV playlist that was imported from storage is the app's own copy
-        // of it — removing the provider removes the file too (a playlist the
-        // user pasted as a link has nothing local to clean up).
         if (target != null && target.type == ProviderType.IPTV) {
             val path = target.url
             val base = getApplication<Application>().filesDir.absolutePath + "/iptv/"
@@ -1131,9 +971,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
         }
-        // Aniyomi and manga extensions live in `filesDir/<engine>/exts` and are
-        // shared by every source they publish — only the last referencing
-        // provider takes the `.ext` with it.
         if (target != null &&
             (target.type == ProviderType.ANIYOMI || target.type == ProviderType.MANGA) &&
             target.url.startsWith(getApplication<Application>().filesDir.absolutePath)
@@ -1175,12 +1012,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             .let { if (it.endsWith(".hiki", true)) it.dropLast(5) else it }
             .trim().ifBlank { "extension" }
             .let { it.replace(Regex("[^A-Za-z0-9._ -]"), "_") }
-        // Same rule as installCs3Bytes: the local FILE name decides the provider
-        // ids ("hiki|<name.hashCode>|i"), and .hiki files are almost always
-        // called `extension.hiki`, so two repos' extensions shared one file —
-        // the second install overwrote the first, and uninstalling either one
-        // deleted the file the other was still loaded from. Stamp the source
-        // URL into the name so a file has a per-source identity.
         val clean = if (sourceUrl.isNullOrBlank()) "$base.hiki"
         else "$base-${shortHash(SourceUrls.canonical(sourceUrl))}.hiki"
         val dir = File(getApplication<Application>().filesDir, "hiki").apply { mkdirs() }
@@ -1241,10 +1072,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             added++
         }
         requestRefresh()
-        // One source URL must never leave two copies behind — same as the CS3
-        // path: a re-install that follows a name-only file left by an older
-        // build would otherwise keep that old copy (and its file) as a phantom
-        // second extension that no longer has an Install/Uninstall of its own.
         if (!sourceUrl.isNullOrBlank()) {
             val stale = store.providers().filter {
                 it.type == ProviderType.HIKARI && it.url != file.absolutePath &&
@@ -1300,13 +1127,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             .let { if (it.endsWith(".cs3", true)) it.dropLast(4) else it }
             .trim().ifBlank { "plugin" }
             .let { it.replace(Regex("[^A-Za-z0-9._ -]"), "_") }
-        // The local FILE name decides the provider ids ("cs3|<name.hashCode>|i"),
-        // so two repos publishing different plugins under the same name shared
-        // one file: the second install overwrote the first, and uninstalling
-        // either deleted the file the other was loaded from — which is the
-        // reported "I uninstalled one extension in a repo and the rest of them
-        // showed Install again". The source URL is therefore stamped into the
-        // name, exactly like the id scheme already assumed it was unique.
         val clean = if (sourceUrl.isNullOrBlank()) "$base.cs3"
         else "$base-${shortHash(SourceUrls.canonical(sourceUrl))}.cs3"
         val dir = File(getApplication<Application>().filesDir, "cs3").apply { mkdirs() }
@@ -1370,10 +1190,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 )
             )
         }
-        // The trial load above registered the TEMP path: commit the bytes as
-        // the installed file, then load that path for real (one extra dex load
-        // at install time). The temp instance lingers in memory only — no row
-        // ever points at the temp path, so it can never serve stale code.
         if (!commitTmp()) {
             return Result.failure(Exception("Could not install plugin file"))
         }
@@ -1453,12 +1269,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun reloadInstalled() {
         val next = buildSet {
             store.providers().forEach { p ->
-                // Bundled Kotatsu rows carry no downloadable file (their
-                // parser ships inside the app), so the http-only rule below
-                // would skip them and every installed source would keep
-                // offering Install. Their `kotatsu://` URL is the identity —
-                // and fork rows' `kotatsu://fork…/` + `forkvideo://` URLs too
-                // (same bundled shape, different scheme for video rows).
                 if (p.url.startsWith(com.hikari.app.kotatsu.KotatsuRegistry.PLUGIN_SCHEME) ||
                     com.hikari.app.kotatsu.fork.ForkRegistry.isForkMangaPluginUrl(p.url) ||
                     com.hikari.app.kotatsu.fork.ForkVideoProvider.isForkVideoPluginUrl(p.url)
@@ -1475,17 +1285,9 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                     else -> return@forEach
                 }
                 if (!source.startsWith("http")) return@forEach
-                // Remember every spelling of the source URL, not just the one
-                // the repo served at install time: a repo build can move a file
-                // (a new branch, `refs/heads/x` vs `x`, the jsDelivr mirror),
-                // and a literal comparison used to greet the extension the user
-                // already installed with an Install button again.
                 addAll(SourceUrls.matchKeys(source))
             }
         }
-        // Only a real change is published: this runs after every rebuild, and a
-        // StateFlow assignment emits even when the set is the same, which
-        // re-runs the effects that watch it (the update check and the 18+ pass).
         if (next != installedUrls.value) installedUrls.value = next
     }
 
@@ -1520,10 +1322,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
      *  `uninstallScraper` for why the count matters). */
     suspend fun uninstallNuvioPlugin(pluginUrl: String): Int {
         val app = getApplication<Application>()
-        // The manager removes by exact source URL, so hand it the spelling each
-        // installed provider actually stored (they can differ from the repo's
-        // current listing) — otherwise "Uninstalled" would leave the provider
-        // in place when the repo moved the file.
         val stored = uninstallTargets(store.providers(), pluginUrl) { p, s ->
             p.type == ProviderType.NUVIO && sourceMatches(p, s)
         }
@@ -1538,12 +1336,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         return removed
     }
 
-    /** Registers a Vega provider repository — a bare-array `manifest.json` of
-     *  `{display_name, value, …}` entries, each provider published as a folder
-     *  of CommonJS modules under `dist/<value>` (see
-     *  [com.hikari.app.providers.vega.VegaPluginManager.repoPlugins]). A bare
-     *  short name ("vega") resolves through the alias table like every other
-     *  kind. */
     suspend fun addVegaRepo(rawUrl: String): Result<Cs3Repo> = addRepo(rawUrl, RepoKind.VEGA)
 
     /** Installs one Vega provider: its modules are downloaded into one folder
@@ -1612,14 +1404,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         return removed
     }
 
-    /** Installs one repo entry from a Kotatsu repo card (no download — the
-     *  official kotatsu-parsers extraction code ships inside the app). One
-     *  store write + one provider-list rebuild, never the 1200-row flood
-     *  0.11.69 did. Entries whose parser code is NOT bundled (see
-     *  [com.hikari.app.kotatsu.KotatsuRegistry.UNBUNDLED_PREFIX]) fail
-     *  honestly instead of creating a row that could never run. Fork entries
-     *  (`kotatsu://forksk/…`, `kotatsu://forkhany/…`, `forkvideo://…`) install
-     *  as runnable fork rows. */
     suspend fun installKotatsuPlugin(plugin: Cs3RepoPlugin): Result<Int> {
         com.hikari.app.kotatsu.fork.ForkVideoProvider.ownerEnumOfPluginUrl(plugin.url)?.let { (owner, enum) ->
             return installForkVideoSource(owner, enum, plugin.nsfw, plugin.iconUrl)
@@ -1779,9 +1563,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun installScriptPlugin(plugin: Cs3RepoPlugin, kind: RepoKind): Result<Int> {
         val primary = if (kind == RepoKind.ANYMEX) installAnymexPlugin(plugin) else installSoraPlugin(plugin)
         if (primary.isSuccess) return primary
-        // Only cross-try when the payload could genuinely be the other format.
-        // Anymex JS (…/javascript/…/*.js) or Dart-only failures must not fall
-        // through to Sora's "Module manifest is not JSON".
         val err = primary.exceptionOrNull()?.message.orEmpty()
         if (err.contains("Dart-only", ignoreCase = true) ||
             err.contains("Not a Mangayomi", ignoreCase = true) ||
@@ -1880,14 +1661,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         ).also { requestRefresh() }
     }
 
-    /**
-     * Registers an Aniyomi extension repository. This one CANNOT go through
-     * [addRepoUrl]: an Aniyomi repo publishes a **bare JSON array** (every other
-     * kind nests its entries under a `plugins` key), so `JSONObject(text)` would
-     * throw "Invalid index.min.json" on a perfectly good repo. A bare folder,
-     * host or shortcode is normalised to `<dir>/index.min.json` first, mirroring
-     * Aniyomi's own "add repo" flow.
-     */
     suspend fun addAniyomiRepo(rawUrl: String): Result<Cs3Repo> {
         val resolved = com.hikari.app.aniyomi.AniyomiExtensionManager.resolveRepoUrl(rawUrl)
             ?: return Result.failure(
@@ -1928,18 +1701,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
 
-    /**
-     * Installs an extension package, whichever kind of engine it turns out to be.
-     *
-     * Aniyomi anime extensions and Mihon/keiyoushi MANGA extensions are the same
-     * file type listed by the same index format (`index.min.json`), so the user
-     * pastes either into the same box (and a keiyoushi repo is added as an
-     * "Aniyomi" repo for exactly that reason — see RepoKind.ANIYOMI). The
-     * package's own manifest says which one it is: a manga extension declares a
-     * source class/factory in its metadata. Routing every install through here
-     * is why a manga extension does not need its own folder, its own repo kind
-     * or its own Install button.
-     */
     private suspend fun installExtension(
         bytes: ByteArray,
         sourceUrl: String? = null,
@@ -1963,25 +1724,10 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /**
-     * Downloads an extension package and checks that it really is one.
-     *
-     * The check matters because a wrong URL does not fail loudly: a repo whose
-     * index lists a bare `apk` file name gets that name resolved against the
-     * repo root, and if the root is wrong the host answers a perfectly
-     * well-formed 404 page. Byte-checking the "PK" zip magic before installing
-     * turns "download timed out" (which was never true) into a sentence that
-     * names the real problem.
-     */
     private suspend fun downloadExtension(url: String): Pair<ByteArray?, String> {
         if (!url.startsWith("http://") && !url.startsWith("https://")) {
             return null to "This extension has no download link — remove its repo and add it again"
         }
-        // 60s per read, 5 minutes for the whole call: an extension is ~1MB, but
-        // the phones this app runs on can be on a connection where that takes a
-        // while, and a fixable slow download must not be cut off at 30s. The
-        // cancellable variant means a caller that gives up actually stops the
-        // socket instead of leaving the blocking read holding an IO thread.
         val result = Http.downloadBytesCancellable(url, readTimeoutSec = 60, callTimeoutSec = 300)
         val bytes = result.getOrNull()
             ?: return null to downloadFailureMessage(result.exceptionOrNull())
@@ -2026,9 +1772,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
      *  them will recognise the URL. */
     suspend fun uninstallAniyomiPlugin(pluginUrl: String): Int {
         val app = getApplication<Application>()
-        // The manager removes by exact source URL, so hand it the spelling each
-        // installed provider actually stored — a repo build can move the file
-        // (a new branch, the jsDelivr mirror) between listing and uninstall.
         val targets = uninstallTargets(store.providers(), pluginUrl) { p, s ->
             (p.type == ProviderType.ANIYOMI || p.type == ProviderType.MANGA) && sourceMatches(p, s)
         }
@@ -2073,16 +1816,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     @Volatile
     private var lastGoodRepoUrl: String = ""
 
-    /** Fetches a repo manifest — repo.json for CloudStream/Hikari repos,
-     *  manifest.json for Nuvio repos — trying the pasted URL first and then the
-     *  raw-GitHub variants for `github.com/o/r` links users commonly paste (the
-     *  HTML page would never parse as JSON). Remembers which variant succeeded.
-     *
-     *  [remember] is false for the callers that run SEVERAL fetches at once
-     *  (the repo-list loader, the Mega import's name lookups): they only need
-     *  the body, and writing the shared [lastGoodRepoUrl] from parallel
-     *  coroutines could hand an add-repo the URL some other repo happened to
-     *  resolve to. */
     private fun fetchRepoRaw(
         url: String,
         file: String = "repo.json",
@@ -2090,18 +1823,8 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         remember: Boolean = true,
         readSec: Long = 30,
     ): Result<String> {
-        // Nuvio manifests/scrapers live on Codeberg, which 403s the shared
-        // desktop-Chrome UA but serves the nuvio app's own UA fine — override
-        // for nuvio repos (mirrors the real nuvio app's client).
         val headers = if (ua != null) mapOf("User-Agent" to ua) else emptyMap()
         val variants = repoUrlVariants(url, file).ifEmpty { listOf(url) }
-        // Try every variant, then the jsDelivr CDN mirror of each (a different
-        // host, so it survives an ISP/DNS block on raw.githubusercontent.com),
-        // and finally the pasted URL as-is. A candidate whose body is an HTML
-        // page (an ISP "blocked" notice served with HTTP 200, a GitHub web
-        // page, …) is skipped rather than treated as a repo — that 200-with-HTML
-        // case is what produced the bogus "returned an HTML page instead of a
-        // repo.json" error and made the Mega bundle add 0 repos.
         val candidates = LinkedHashSet<String>()
         for (v in variants) {
             candidates += v
@@ -2150,14 +1873,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     private fun repoUrlVariants(raw: String, file: String = "repo.json"): List<String> {
         val t = raw.trim().trimEnd('/')
         if (!t.startsWith("http://") && !t.startsWith("https://")) return emptyList()
-        // Already a direct raw URL — fetch as-is, no variant guessing. A raw
-        // link pasted with GitHub's web-style "/refs/heads/<branch>/" segment
-        // is normalised to the canonical "/<branch>/" form and tried FIRST:
-        // some repos' build branches answer the web-style path with a 404 HTML
-        // page (phisher98's "builds", several entries in the official
-        // CloudStream repos-db.json), which used to surface as "returned an
-        // HTML page instead of a repo.json". Both forms are tried so either
-        // paste shape works.
         if (t.contains("raw.githubusercontent.com")) {
             val refsHeads = t.replace("/refs/heads/", "/")
             return if (refsHeads != t) listOf(refsHeads, t) else emptyList()
@@ -2173,9 +1888,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 "https://raw.githubusercontent.com/$owner/$repo/builds/$file",
             )
         }
-        // Gitea/Forgejo instances (git.disroot.org, codeberg.org, …) serve raw
-        // files at /owner/repo/raw/branch/<branch>/repo.json — the plain web
-        // page would only come back as HTML.
         val gi = Regex("https?://([^/]+)/([^/]+)/([^/]+)").find(t)
         if (gi != null) {
             val host = gi.groupValues[1]
@@ -2191,12 +1903,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         return emptyList()
     }
 
-    /**
-     * Short names the "Add repository" dialog accepts in place of a full URL —
-     * e.g. "megarepo" (every CloudStream repo), "hikari", or the Nuvio repos
-     * listed on nuvioplugin.com. Each name maps to one or more real repo URLs,
-     * and the alias carries its own kind so the name works from any tab.
-     */
     private data class RepoAlias(val url: String, val kind: RepoKind)
 
     private val REPO_ALIASES: Map<String, List<RepoAlias>> = buildMap<String, List<RepoAlias>> {
@@ -2258,12 +1964,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         val aniyomiOfficial = aniyomiExt(
             "https://raw.githubusercontent.com/aniyomiorg/aniyomi-extensions/repo/index.min.json"
         )
-        // The MANGA side of the same file format (and the same add-repo,
-        // install and update flow): keiyoushi's index is the one every Mihon
-        // app reads, and each of its APKs installs through this screen — the
-        // package's own manifest decides whether the Aniyomi or the Mihon
-        // engine loads it. The `index.json` spelling matters: see
-        // MangaExtensionManager.DEFAULT_REPOS.
         val keiyoushi = aniyomiExt(
             "https://raw.githubusercontent.com/keiyoushi/extensions/repo/index.json"
         )
@@ -2407,17 +2107,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         return REPO_ALIASES[key]
     }
 
-    /**
-     * The short name the user probably meant, or null when nothing is close.
-     *
-     * A swapped pair ("hiakri" for "hikari") is ONE edit by the distance that
-     * counts here, not two — that is what a typo is. Answering with the name
-     * they meant is worth more than a hint that reads like a rejection of a
-     * word they got nearly right.
-     *
-     * [kind] narrows the search where only one kind of repo can be added at
-     * that dialog (a SkyStream shortcode field must not suggest a Nuvio repo).
-     */
     private fun suggestRepoAlias(raw: String, kind: RepoKind? = null): String? {
         val typed = raw.trim().lowercase()
             .removePrefix("@")
@@ -2484,23 +2173,8 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         val kinds: List<RepoKind> = emptyList(),
     )
 
-    /**
-     * Installs a repo link handed in from a browser (see
-     * [com.hikari.app.deeplink.RepoLinkActivity]): fetches the file, sniffs
-     * which engine it belongs to from its own content, and installs it through
-     * the same path as the matching manual box. A file that fits two engines
-     * (a CloudStream vs SkyStream `plugins` list with no telling entries) is
-     * NOT guessed — it comes back ambiguous and the screen asks.
-     */
     suspend fun addRepoLink(rawUrl: String): Result<RepoLinkResult> = withContext(Dispatchers.IO) {
         runCatching {
-            // A Stremio install link comes back as stremio:// (that is what
-            // an addon config page's Install button fires): normalise it to
-            // the https manifest URL first, and the sniff below installs it
-            // as a Stremio addon exactly like a pasted link — same fetch,
-            // same id, same one-row-per-addon rule, so a configured copy
-            // replaces its row. (Same normalisation as
-            // WebViewActivity.addonInstallUrl.)
             var trimmed = rawUrl.trim()
             if (trimmed.startsWith("stremio://", ignoreCase = true)) {
                 var rest = trimmed.substring("stremio://".length)
@@ -2537,10 +2211,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             }
             val body = text?.trim()
                 ?: run {
-                    // A GitHub repo PAGE rather than a file: no repo.json-style
-                    // candidate can ever serve it, but it may still be an
-                    // LNReader plugin repo (the index is re-discovered from the
-                    // page). Anything else keeps the original error.
                     val gh = com.hikari.app.lnreader.LnReaderPluginManager.githubRepoOf(trimmed)
                     if (gh != null) {
                         val loaded = com.hikari.app.lnreader.LnReaderPluginManager
@@ -2912,10 +2582,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                     return@withContext Result.success(saved ?: repo)
                 }
                 if (kind == RepoKind.LNREADER) {
-                    // An LNReader repo is its plugin index (or the GitHub page
-                    // publishing it) — resolved by the manager, which also
-                    // picks the stored URL (the page for GitHub repos, so a
-                    // versioned index path never rots).
                     val loaded = com.hikari.app.lnreader.LnReaderPluginManager
                         .loadRepoPlugins(url).getOrElse { throw it }
                     if (loaded.first.isEmpty()) {
@@ -2937,11 +2603,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                     return@withContext Result.success(saved ?: repo)
                 }
                 if (kind == RepoKind.VEGA) {
-                    // A Vega manifest is a BARE JSON ARRAY, so it never parses
-                    // as a JSONObject — validating it means asking the Vega
-                    // parser whether it lists any provider at all. The repo's
-                    // own name is not in the file either, so the label comes
-                    // from the URL.
                     val plugins = com.hikari.app.providers.vega.VegaPluginManager
                         .repoPlugins(text, lastGoodRepoUrl)
                     if (plugins.isEmpty()) {
@@ -2977,13 +2638,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 val previous = store.repos().firstOrNull { SourceUrls.repoKey(it.url) == key }
                 duplicateRepoAdd = previous != null
                 store.addCs3Repo(repo)
-                // Adding a repo that is already there must leave its extensions
-                // showing the state they have. The stored spelling can be
-                // UPGRADED by the merge (a jsDelivr mirror → the origin URL), and
-                // the fetched plugin list is keyed by the repo's URL: carry it (and
-                // the row's load state) over to the new key, or the repo the user
-                // just re-added reads as a brand-new one with every extension
-                // uninstalled-looking until it re-fetches.
                 val savedUrl = store.repos().firstOrNull { SourceUrls.repoKey(it.url) == key }?.url
                 if (previous != null && savedUrl != null && previous.url != savedUrl) {
                     pluginsByRepo.value[previous.url]?.let { list ->
@@ -2993,11 +2647,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                         repoState.value = repoState.value - previous.url + (savedUrl to st)
                     }
                 }
-                // A "Mega"-style bundle repo isn't a plugin repo — its single
-                // plugin only exists to add every CloudStream repo from the
-                // canonical repos-db.json (and relies on the real CloudStream
-                // RepositoryManager, which Hikari doesn't run). Import the
-                // repos natively instead so they all show up and install.
                 if (obj != null && isMegaBundle(obj)) {
                     markBundle(repo.url)
                     importMegaRepos()
@@ -3019,13 +2668,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun refreshRepoPlugins(repo: Cs3Repo) {
         repoState.value = repoState.value + (repo.url to RepoLoadState(loading = true, error = null))
         try {
-            // A hard ceiling on ONE repo. The fetch itself already bounds every
-            // individual request, but a repo whose manifest lists twenty dead
-            // sub-lists can still spend minutes inside it — and a loader that
-            // never reports back leaves its row (and the extensions search)
-            // saying "loading" forever, which is the "stuck searching
-            // extensions" the user kept seeing. Timing out turns it into the
-            // row's normal error + Retry instead.
             val (plugins, meta) = withTimeoutOrNull(REPO_LOAD_CEILING_MS) {
                 withContext(Dispatchers.IO) { fetchRepoPlugins(repo) }
             } ?: throw Exception("This repo took too long to load — tap refresh to try again")
@@ -3033,9 +2675,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             // its repo.json is actually fetched, replace that with the real
             // name/description so the list shows "owner/repo" instead of a URL.
             val refreshed = meta ?: repo
-            // Re-save only when the repo is still there: the user may have
-            // deleted it while this refresh was in flight, and the seed-aware
-            // path keeps that deletion from being undone here either.
             if (refreshed != repo) store.seedCs3Repo(refreshed)
             pluginsByRepo.value = pluginsByRepo.value + (repo.url to plugins)
             repoState.value = repoState.value + (repo.url to RepoLoadState(loading = false))
@@ -3070,39 +2709,9 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         val name: String,
     )
 
-    /**
-     * Fetches a Mihon/Aniyomi repo's extension list.
-     *
-     * The list is NOT in one fixed file name. keiyoushi — the repo the whole
-     * Mihon ecosystem reads — publishes the real catalogue in `index.json` and
-     * turned `index.min.json` into a two-entry "Outdated App" / "Update to
-     * Mihon 0.20.1+" placeholder that older apps are meant to *display*; the
-     * official Aniyomi repo still publishes `index.min.json`; some mirrors
-     * publish only `repo.json`; and several — including repos that have gone
-     * protobuf-only, which is what Mihon 0.20.1+ reads — publish `index.pb`
-     * and no JSON at all ([AniyomiExtensionManager.pbIndex] decodes it). Reading
-     * only `index.min.json` is exactly why the Keiyoushi folder said "Outdated
-     * App" and listed nothing installable.
-     *
-     * So every candidate name the repo could be using is tried in order
-     * ([AniyomiExtensionManager.indexCandidatesFor]) and the first one that
-     * really lists extensions wins — a placeholder index, an empty one, and a
-     * file that isn't an index at all (an HTML page, a JSON metadata blob) are
-     * all skipped. Each entry's APK/icon URL is built from the repo ROOT of the
-     * candidate that actually served the list, which is what keeps a repo
-     * published as `index.json` installable.
-     *
-     * [knownName] is the repo's current display name: an index that names
-     * itself ("Keiyoushi") only replaces a URL-shaped name, never one the user
-     * already recognises.
-     */
     private suspend fun loadAniyomiIndex(url: String, knownName: String = ""): AniyomiIndex? {
         val mgr = com.hikari.app.aniyomi.AniyomiExtensionManager
         for (candidate in mgr.indexCandidatesFor(url)) {
-            // A protobuf index is BYTES, not text, so it takes its own fetch and
-            // decode path (see AniyomiExtensionManager.pbIndex) and then joins
-            // the SAME entry loop below — the decoder answers in the modern JSON
-            // shape every other index uses, so nothing downstream changes.
             val arr: org.json.JSONArray
             val jsonName: String
             if (candidate.endsWith(".pb", ignoreCase = true)) {
@@ -3176,9 +2785,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             return out.values.toList() to null
         }
         if (repo.kind == RepoKind.ZANGETSU) {
-            // A Zangetsu repo's manifest is its own index.json URL — fetched
-            // as stored (plus the jsDelivr mirror), parsed by
-            // ZangetsuPluginManager.repoPlugins.
             val candidatesZg = listOfNotNull(repo.url, jsDelivrMirror(repo.url))
             var lastErrZg: Throwable? = null
             for (c in candidatesZg) {
@@ -3270,12 +2876,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         )
             .getOrElse { throw Exception("Could not fetch repo: ${it.message}") }
         val root = runCatching { JSONObject(text) }.getOrElse { err ->
-            // A repo stored under the WRONG kind (added before its kind
-            // existed, or pasted as a CS3/Hikari URL): the kegareta Anymex
-            // indexes are bare JSON arrays, which never parse as a JSONObject
-            // — but they ARE valid Anymex (or Vega) indexes. Sniff the
-            // content, migrate the stored kind, and serve the plugins instead
-            // of stranding the folder at "Invalid repo.json" with 0 plugins.
             val axPlugins = runCatching {
                 com.hikari.app.anymex.AnymexPluginManager.repoPlugins(text, repo.url)
             }.getOrDefault(emptyList())
@@ -3396,11 +2996,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
         }
-        // "Mega"-style bundle: the repo's one plugin (MegaProvider) exists only
-        // to add every CloudStream repo from repos-db.json via the real
-        // CloudStream RepositoryManager, which Hikari never runs. Import the
-        // repos natively (they land in the repo list, installable as usual)
-        // and hide the useless bundle plugin instead of offering it.
         if (isMegaBundle(root) || out.values.any { it.name == "MegaProvider" }) {
             markBundle(repo.url)
             importMegaRepos()
@@ -3430,11 +3025,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         return name.contains("mega", true) && name.contains("repo", true)
     }
 
-    /** The repos the "Mega repo" bundles — a mirror of recloudstream's
-     *  repos-db.json, used only when that database can't be fetched at all
-     *  (blocked network, an ISP HTML notice served as HTTP 200, …). Without a
-     *  fallback a blocked fetch left the bundle import at exactly 0 repos,
-     *  which is the other half of the "Mega repo shows nothing" bug. */
     private val MEGA_FALLBACK_REPOS: List<String> = listOf(
         "https://raw.githubusercontent.com/recloudstream/extensions/master/repo.json",
         "https://raw.githubusercontent.com/CranberrySoup/AniyomiCompatExtension/master/repo.json",
@@ -3493,11 +3083,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             (u.contains("mega") && u.contains("repo"))
     }
 
-    /** Imports every repo URL a bundle lists (deduped, bundles skipped), naming
-     *  each folder with its repo.json's own name when it can be fetched
-     *  (bounded + parallel) so the list reads "Phisher", "CNC", "CSX" … instead
-     *  of a raw URL. Falls back to the bundled list above when the canonical
-     *  repos-db.json can't be fetched. Returns the number of repos added. */
     private suspend fun importMegaRepos(): Int {
         val dbText = listOfNotNull(
             Http.fetchStringRobust(MEGA_REPOS_DB).getOrNull(),
@@ -3548,9 +3133,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             name = name,
             description = PromoGuard.cleanText(o.optString("description")),
             url = url,
-            // Repos spell this field three ways depending on who wrote them
-            // (CloudStream → iconUrl, SkyStream/Nuvio → logo, others → icon).
-            // Reading only `iconUrl` left most listings icon-less.
             iconUrl = o.optString("iconUrl")
                 .ifBlank { o.optString("icon") }
                 .ifBlank { o.optString("logo") }
@@ -3559,9 +3141,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             version = o.optInt("version", 1),
             tvTypes = tvTypes,
             fileHash = o.optString("fileHash").ifBlank { null },
-            // The repo's own 18+ tag — a CloudStream plugin declares it in
-            // `tvTypes` (see ExtensionNsfw.repoEntryNsfw). What the
-            // adult-content switch hides from the store lists.
             nsfw = com.hikari.app.data.ExtensionNsfw.repoEntryNsfw(o, tvTypes),
         )
     }
@@ -3588,27 +3167,8 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         return md.digest(bytes).joinToString("") { "%02x".format(it) }
     }
 
-    /**
-     * On-disk digest of a file: `path -> (size, lastModified, sha256)`.
-     *
-     * [checkUpdates] runs on EVERY provider-list change (an install, an update,
-     * a repo refresh, the 18+ pass), and it used to read each installed
-     * extension's whole file into memory and hash it — twenty or thirty
-     * multi-megabyte files, again and again, on the IO threads the installs are
-     * themselves using. The file's size and modification time are enough to
-     * know whether it is still the one that was hashed before, and the digest
-     * is only recomputed when the file really moved on. Concurrent (checkUpdates
-     * can overlap a previous pass) and bounded: it holds one short string per
-     * installed extension.
-     */
     private val fileHashes = java.util.concurrent.ConcurrentHashMap<String, Triple<Long, Long, String>>()
 
-    /**
-     * The SHA-256 of a file's CONTENT, streamed — never the whole file in
-     * memory (`File.readBytes()` on a 4 MB `.cs3`, on a phone that is installing
-     * three more at once, is a GC pause the user feels as a stutter). Null when
-     * the file cannot be read.
-     */
     private fun fileSha256(path: String): String? {
         val f = File(path)
         if (!f.isFile) return null
@@ -3650,35 +3210,12 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         return SourceUrls.matchKeys(extra).any { it in wanted }
     }
 
-    /**
-     * True when [p]'s stored source URL is the same file as [source] — however
-     * either side spells it (refs/heads vs a plain branch, the jsDelivr mirror,
-     * a github.com blob link, %20 vs a space). Install, uninstall and the
-     * update check all key on the source URL, so they all have to agree on what
-     * "the same file" means.
-     */
     private fun sourceMatches(p: ProviderConfig, source: String): Boolean {
         val extra = p.extra ?: return false
         val raw = if (p.type == ProviderType.HIKARI) extra.substringBeforeLast('|') else extra
         return sourceKeyMatches(raw, source)
     }
 
-    /**
-     * The providers an uninstall of [pluginUrl] removes: every installed copy
-     * that came from THAT file, whatever either side's spelling is.
-     *
-     * [SourceUrls.matchKeys] already covers the loose cases deliberately — the
-     * jsDelivr mirror, `refs/heads/x` vs `x`, a `github.com` blob link, and the
-     * same file read from another BRANCH of the same repo (its file key ignores
-     * the branch). All of those are the same extension, so all of them go: an
-     * install made from the other branch used to survive the uninstall, and
-     * because both copies share that file key, every row for the extension kept
-     * reading "installed" — the reported "I tap Uninstall and it still shows
-     * Uninstall". (The old exact-match-first rule existed to stop ONE uninstall
-     * from taking a whole repo with it; that was a different bug — an identity
-     * that folded `github.com/o/r/blob/…` onto the repo root — and it is fixed
-     * in [SourceUrls], not here.)
-     */
     private fun uninstallTargets(
         all: List<ProviderConfig>,
         pluginUrl: String,
@@ -3695,10 +3232,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         if (targets.isEmpty()) return 0
         val ids = targets.map { it.id }.toSet()
         val paths = targets.map { it.url }.toSet()
-        // Locked read-modify-write: see [AppStore.updateProviders]. Removes the
-        // ids resolved above and nothing else — re-running the predicate against
-        // the list at write time could match more than the file the user
-        // uninstalled.
         store.updateProviders { list -> list.filterNot { it.id in ids } }
         requestRefresh()
         withContext(Dispatchers.IO) {
@@ -3731,22 +3264,10 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         installHikiBytes(bytes, "$fileName.hiki", sourceUrl = plugin.url)
     }
 
-    /** Installs every not-yet-installed plugin/extension/provider in [plugins]
-     *  one after another in the background (survives tab switches like the
-     *  single installs), showing progress in the busy message. Reports how many
-     *  succeeded and names any that failed.
-     *
-     *  A hundred-plus extensions take a while, so the run can be stopped
-     *  part-way: [stopBulkInstall] ends it after the extension it is on, and
-     *  the report says where it got to. */
     fun installAllPlugins(plugins: List<Cs3RepoPlugin>, kind: RepoKind, installedUrls: Set<String>) {
         installJob?.cancel()
-        if (kind == RepoKind.KOTATSU) {
-            // A Kotatsu repo holds the whole ~1200-entry parser index:
-            // installing it all at once is the exact flood 0.11.69 did (and
-            // 0.11.70 pruned for lagging the app into crashes). One by one.
-            setError("Install Kotatsu sources one by one — installing all ${plugins.size} at once is what lagged the app")
-            return
+        runCatching {
+            (getApplication() as? com.hikari.app.HikariApp)?.relieveHeapPressure("install-all")
         }
         val unit = when (kind) {
             RepoKind.HIKARI -> "extension"
@@ -3771,23 +3292,34 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         installJob = startBackground {
             installCancelled = false
             _installRunning.value = true
+            // One store transaction for the whole burst (see
+            // [AppStore.beginProviderBurst]): without it every row rewrites
+            // the full provider blob and every manager write lands
+            // separately — that rewrite-per-row storm is what made batch
+            // installs lag. requestRefresh is already suppressed while a
+            // burst runs; the single refreshProvidersNow below rebuilds once.
+            store.beginProviderBurst()
+            var ok = 0
+            val failed = mutableListOf<String>()
             try {
+              try {
                 clearStatus()
-                var ok = 0
-                val failed = mutableListOf<String>()
                 for ((i, p) in pending.withIndex()) {
                     if (installCancelled) break
+                    // Let the UI thread and the GC breathe between rows: a
+                    // 96-row burst with no suspension point is the jank the
+                    // old code produced even before the refresh storm.
+                    kotlinx.coroutines.yield()
                     _busyMsg.value = I18n.t("Installing %s (%s/%s)…")
                         .replaceFirst("%s", p.name)
                         .replaceFirst("%s", (i + 1).toString())
                         .replaceFirst("%s", pending.size.toString())
                     val r = runCatching {
-                        // Five minutes for one entry: the download itself is
-                        // allowed up to that (see Http.downloadBytes — a 1 MB
-                        // extension on a slow phone connection), and a ceiling
-                        // shorter than the download would report a perfectly
-                        // good install as failed.
-                        withTimeoutOrNull(300_000) {
+                        // 60s per row inside a burst: a single install may
+                        // wait 5 minutes on a slow host, but a burst must not
+                        // hang 96 times over. Unresponsive rows fail fast and
+                        // are named in the summary.
+                        withTimeoutOrNull(60_000) {
                             when (effectiveRepoKind(kind, p.url)) {
                                 RepoKind.CS3 -> installCs3Plugin(p)
                                 RepoKind.HIKARI -> installHikiPlugin(p)
@@ -3805,10 +3337,9 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                     }.getOrNull()
                     if (r != null && r.isSuccess) ok++ else failed.add(p.name)
                 }
-                // The burst has settled: rebuild once, here, so the list the user
-                // is looking at is right the moment the run reports done (the
-                // debounced [requestRefresh] only fires after a quiet moment,
-                // which this run never gives it).
+                } finally {
+                    runCatching { store.endProviderBurst() }
+                }
                 refreshProvidersNow()
                 val n = pending.size
                 val plurals = if (n == 1) "" else "s"
@@ -3831,14 +3362,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /**
-     * Repairs every installed extension whose file went missing — the state a
-     * backup restore leaves behind (the registry is restored, the files are
-     * not downloaded until the background fetch finishes, and a dead host
-     * never finishes). Each missing provider is matched back to its repo
-     * entry by source URL and re-installed through the same per-kind path
-     * the repo's own Install button uses, with progress and a named summary.
-     */
     fun repairMissingExtensions() {
         if (_installRunning.value) return
         val gen = ++installGeneration
@@ -3965,10 +3488,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 ProviderType.CS3 -> installCs3Plugin(plugin)
                 ProviderType.SKYSTREAM -> installSkyStreamPlugin(plugin)
                 ProviderType.ANIYOMI, ProviderType.MANGA, ProviderType.ANYMEX_MANGA -> {
-                    // Kotatsu and LNReader sources ride the MANGA engine with
-                    // their own id prefixes (see KotatsuRegistry.isKotatsuId /
-                    // LnReaderProvider.isLnReaderId), so they reinstall through
-                    // their own installers, not the Aniyomi one.
                     val id = p.config.id
                     if (com.hikari.app.lnreader.LnReaderProvider.isLnReaderId(id)) installLnReaderPlugin(plugin)
                     else if (com.hikari.app.kotatsu.KotatsuRegistry.isKotatsuId(id)) installKotatsuPlugin(plugin)
@@ -3983,19 +3502,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         } ?: Result.failure(Exception("Timed out"))
     }
 
-    /**
-     * Writes the 18+ flags the loaded repo listings declare onto the rows that
-     * were installed from them, and rebuilds the provider list if anything
-     * changed.
-     *
-     * The listings already know: a CloudStream/SkyStream/Nuvio entry says
-     * `tvTypes: [..., NSFW]`, a Mihon/Aniyomi one carries `nsfw`/
-     * `contentWarning`. That knowledge is what the switch needs for an ALREADY
-     * installed extension — and adopting it here costs nothing, because the
-     * listings were fetched anyway. Without it the only way to classify an
-     * installed adult extension is to load the extension itself (see
-     * [ProviderManager.learnAdultFlags]), which is the slow path.
-     */
     suspend fun adoptAdultFlags() = withContext(Dispatchers.IO) {
         val items = pluginsByRepo.value.values.flatten().map { it.url to it.nsfw }
         if (items.isEmpty()) return@withContext
@@ -4003,11 +3509,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         if (changed) requestRefresh()
     }
 
-    /**
-     * The same, for ONE listing entry, right after it was installed: the rows it
-     * created get its 18+ tag immediately, so an adult extension is never in the
-     * provider list even for the moment before the next listing pass.
-     */
     suspend fun adoptFlagsOf(plugin: Cs3RepoPlugin) {
         val changed = runCatching {
             store.markProvidersAdult(listOf(plugin.url to plugin.nsfw))
@@ -4015,13 +3516,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         if (changed) requestRefresh()
     }
 
-    /**
-     * Compares the file each installed extension was saved as against the
-     * `fileHash` its repo publishes. A mismatch IS the update signal: it needs
-     * no version bookkeeping of our own, and it also catches a re-released
-     * build that kept the same version number. Repos that publish no `fileHash`
-     * can't be checked this way, and are simply never flagged.
-     */
     suspend fun checkUpdates() = withContext(Dispatchers.IO) {
         // installed source URL -> the .cs3/.hiki/.js file it was stored as
         val onDisk = HashMap<String, String>()
@@ -4032,10 +3526,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
             if (!extra.startsWith("http")) continue
             if (p.url.isBlank()) continue
             val source = if (p.type == ProviderType.HIKARI) extra.substringBeforeLast('|') else extra
-            // A repo build can move a file without changing it (a new branch,
-            // `refs/heads/x` vs `x`, the jsDelivr mirror), so index the
-            // installed file under every spelling of its source URL — else the
-            // update check can't find the file and never offers the Update.
             for (key in SourceUrls.matchKeys(source)) onDisk.putIfAbsent(key, p.url)
             sourceOfPath.putIfAbsent(p.url, source)
         }
@@ -4045,10 +3535,6 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                 for (plugin in plugins) {
                     val hash = plugin.fileHash ?: continue
                     if (!hash.startsWith("sha256-")) continue
-                    // The installed file can be indexed under another spelling
-                    // of this URL (the repo rewrote it, or it was installed
-                    // from the other branch): ask for every key the plugin's
-                    // URL answers to, not just the literal string.
                     val keys = SourceUrls.matchKeys(plugin.url)
                     val path = onDisk[plugin.url]
                         ?: keys.firstOrNull { onDisk.containsKey(it) }?.let { onDisk[it] }
@@ -4066,40 +3552,32 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
         outdatedUrls.value = outdated
     }
 
-    /**
-     * Re-installs already-installed extensions from their repo's current file —
-     * the Update button on a row, and Update all. [items] are run one after
-     * another inside ONE background job (an install cancels the previous job,
-     * so a loop of individual installs would cancel itself).
-     *
-     * Like [installAllPlugins], a run over many extensions can be stopped
-     * part-way with [stopBulkInstall].
-     */
     fun updatePlugins(items: List<Pair<Cs3RepoPlugin, RepoKind>>) {
         if (items.isEmpty()) return
         installJob?.cancel()
+        runCatching {
+            (getApplication() as? com.hikari.app.HikariApp)?.relieveHeapPressure("update-all")
+        }
         val gen = ++installGeneration
         installJob = startBackground {
             installCancelled = false
             _installRunning.value = true
+            store.beginProviderBurst()
+            var ok = 0
+            val failed = mutableListOf<String>()
             try {
+              try {
                 clearStatus()
-                var ok = 0
-                val failed = mutableListOf<String>()
                 for ((i, item) in items.withIndex()) {
                     if (installCancelled) break
+                    kotlinx.coroutines.yield()
                     val (p, kind) = item
                     _busyMsg.value = I18n.t("Updating %s (%s/%s)…")
                         .replaceFirst("%s", p.name)
                         .replaceFirst("%s", (i + 1).toString())
                         .replaceFirst("%s", items.size.toString())
                     val r = runCatching {
-                        // Five minutes for one entry: the download itself is
-                        // allowed up to that (see Http.downloadBytes — a 1 MB
-                        // extension on a slow phone connection), and a ceiling
-                        // shorter than the download would report a perfectly
-                        // good install as failed.
-                        withTimeoutOrNull(300_000) {
+                        withTimeoutOrNull(60_000) {
                             when (effectiveRepoKind(kind, p.url)) {
                                 RepoKind.CS3 -> installCs3Plugin(p)
                                 RepoKind.HIKARI -> installHikiPlugin(p)
@@ -4116,6 +3594,9 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
                         }
                     }.getOrNull()
                     if (r != null && r.isSuccess) ok++ else failed.add(p.name)
+                }
+                } finally {
+                    runCatching { store.endProviderBurst() }
                 }
                 // Re-hash: anything that came back clean loses its Update button.
                 checkUpdates()
@@ -4163,18 +3644,10 @@ class ExtensionsViewModel(app: Application) : AndroidViewModel(app) {
     }
 }
 
-/** A repo's [RepoKind] is only a default: a Hikari repo can also list native
- *  CloudStream `.cs3` plugins (and a CloudStream repo can list `.hiki` ones), so
- *  the file's own extension decides how it is installed. Installing a `.cs3`
- *  through the `.hiki` path fails with "manifest.json has no mainClass", because
- *  a CloudStream plugin's manifest has no `mainClass` entry. */
 private fun effectiveRepoKind(default: RepoKind, url: String): RepoKind = when {
     url.endsWith(".cs3", ignoreCase = true) -> RepoKind.CS3
     url.endsWith(".hiki", ignoreCase = true) -> RepoKind.HIKARI
     url.endsWith(".sky", ignoreCase = true) -> RepoKind.SKYSTREAM
-    // Aniyomi repos serve plain `.apk` files (saved locally with an `.ext`
-    // suffix), so a repo whose own kind was guessed wrong still installs
-    // through the Aniyomi path instead of the CloudStream one.
     url.endsWith(".apk", ignoreCase = true) -> RepoKind.ANIYOMI
     url.endsWith(".ext", ignoreCase = true) -> RepoKind.ANIYOMI
     else -> default
@@ -4183,39 +3656,12 @@ private fun effectiveRepoKind(default: RepoKind, url: String): RepoKind = when {
 /** The file an Aniyomi extension repo publishes (a bare JSON array). */
 private const val ANIYOMI_INDEX = "index.min.json"
 
-/**
- * Repository provenance for the installed-provider rows: provider id → the name
- * of the repository that extension was installed from ("CNC Verse", "Phisher",
- * "PenguPlay", …). Filled in by [ExtensionsScreen] from the stored repos — see
- * [com.hikari.app.data.RepoProvenance] for how the match is made — and read by
- * [ProviderCard], which draws it under the engine. Empty everywhere else, where
- * a row simply shows its engine.
- *
- * It is a CompositionLocal rather than a parameter because the rows are drawn
- * from six different list views (the Installed folder, the Sources overview,
- * search, …) three call levels deep, and none of them has any other use for the
- * repository list.
- */
 private val LocalRepoNameByProvider = compositionLocalOf<Map<String, String>> { emptyMap() }
 
-/**
- * How long ONE repo's manifest (and any sub-list it points at) may take before
- * the row is marked failed instead of loading forever. Generous — a repo with a
- * dozen pluginLists on slow mirrors needs a while — but bounded, because a repo
- * that never answers used to hold its own row on "loading" and keep the
- * Extensions search saying "Searching…" for as long as the screen was open.
- */
 private const val REPO_LOAD_CEILING_MS = 75_000L
 
 @Composable
 fun ExtensionsScreen(nav: NavHostController? = null) {
-    // Activity-scoped: tab switches dispose the tab destination, and a
-    // destination-scoped ViewModel would die with it — every return to this
-    // tab then re-ran manager.refresh() over every installed extension AND
-    // refetched every repo's plugin list over the network (an empty
-    // pluginsByRepo loads everything), which is the ~1s "extension tab
-    // loads late" on every visit. Scoped to the activity, the lists load
-    // once and a return is instant.
     val activity = LocalContext.current as ComponentActivity
     val vm: ExtensionsViewModel = viewModel(activity)
     val providers by vm.providers.collectAsState()
@@ -4252,9 +3698,6 @@ fun ExtensionsScreen(nav: NavHostController? = null) {
     var repoUrl by remember { mutableStateOf("") }
     val busy by vm.busy.collectAsState()
     val busyMsg by vm.busyMsg.collectAsState()
-    // A bulk install/update can be stopped while it runs (see
-    // [ExtensionsViewModel.stopBulkInstall]) — the screens that can start one
-    // show the Stop button in their progress line.
     val installRunning by vm.installRunning.collectAsState()
     val installStopping by vm.installStopping.collectAsState()
     val errorMsg by vm.errorMsg.collectAsState()
@@ -4262,12 +3705,6 @@ fun ExtensionsScreen(nav: NavHostController? = null) {
 
     val repos by vm.repos.collectAsState()
     val everyPlugin by vm.pluginsByRepo.collectAsState()
-    // The adult-content switch (see [NsfwGate]) hides 18+ extensions from every
-    // store list — the installed section reads the provider list, which is
-    // already filtered, and the installable entries are dropped here, at the one
-    // place the whole screen reads them from, so no tab (or its "Install all")
-    // can bypass it. Repos keep their keys, so a repo whose entire listing is
-    // hidden still reports as loaded instead of refetching forever.
     val nsfwOn = rememberNsfwEnabled()
     val pluginsByRepo = remember(everyPlugin, nsfwOn) {
         if (nsfwOn) everyPlugin
@@ -4295,9 +3732,6 @@ fun ExtensionsScreen(nav: NavHostController? = null) {
     val sites by vm.sites.collectAsState()
     val openRepo = repos.firstOrNull { it.url == openRepoUrl || it.url.trimEnd('/') == openRepoUrl?.trimEnd('/') }
     val context = LocalContext.current
-    // An extension-settings WebView result: the config page's Install
-    // button hands back the configured manifest URL, which installs like
-    // any other link (previous-build behavior).
     val addonConfigLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
@@ -4322,11 +3756,6 @@ fun ExtensionsScreen(nav: NavHostController? = null) {
             },
         )
     }
-    // A repo link handed in from a browser ("Open with → Hikari", published as
-    // HikariApp.repoLinkRequest with AppNav already on this tab): install it
-    // into the section its own content says it belongs to, then open that
-    // repo's folder so the user lands inside it. A file that fits two engines
-    // opens the manual add dialog prefilled instead of guessing wrong.
     LaunchedEffect(Unit) {
         val app = context.applicationContext as HikariApp
         val link = app.repoLinkRequest.value
@@ -4356,40 +3785,9 @@ fun ExtensionsScreen(nav: NavHostController? = null) {
     var siteUrl by remember { mutableStateOf("") }
     var settingsProvider by remember { mutableStateOf<ContentProvider?>(null) }
     var addonInfoProvider by remember { mutableStateOf<ContentProvider?>(null) }
-    // A provider whose settings screen is a SCHEMA the extension itself
-    // declares (a nuvio scraper's `onSettings()`, a Vega provider's
-    // settings.js, an Aniyomi/Manga extension's `setupPreferenceScreen`), and
-    // the honest "what this extension is" dialog for a provider whose engine
-    // has no settings screen to open at all.
     var schemaProvider by remember { mutableStateOf<ContentProvider?>(null) }
     var infoProvider by remember { mutableStateOf<ContentProvider?>(null) }
 
-    /**
-     * Opens a provider's settings — whatever the settings for that engine
-     * actually ARE.
-     *
-     * Every engine Hikari supports declares its settings differently, and the
-     * gear used to answer a single generic thing for all of them ("addons have
-     * no settings of their own", a nuvio file dialog over a Stremio addon) —
-     * which was wrong for exactly the extensions that DO have settings. So the
-     * gear now asks the extension, per engine:
-     *
-     *  * a Stremio addon: its manifest says whether it has a config page
-     *    (`behaviorHints.configurationURL` / `configurable`) — OpenSubtitles v3,
-     *    AIOMetadata, the debrid addons. That page IS its settings screen (it is
-     *    the same page the Stremio app opens), and it opens in Hikari's own
-     *    WebView — configuring ends on the addon's Install button, whose
-     *    manifest URL comes back and installs;
-     *  * a CloudStream plugin (.cs3): the plugin's OWN settings screen, through
-     *    the provider contract ([openProviderSettingsSafely]);
-     *  * a nuvio scraper, a Vega provider, an Aniyomi/Manga extension: the
-     *    settings schema the extension itself declares, drawn by the app's
-     *    schema dialog;
-     *  * an IPTV playlist: what the playlist IS (source, channel count, refresh);
-     *  * anything else (a `.hiki` bundle, a universal scraper, a SkyStream
-     *    extension): there is no settings screen to open, so the dialog says
-     *    what the extension is and that it has none — instead of pretending.
-     */
     fun openProviderSettings(p: ContentProvider) {
         when (p.config.type) {
             ProviderType.STREMIO -> {
@@ -4408,12 +3806,6 @@ fun ExtensionsScreen(nav: NavHostController? = null) {
                         addonInfoProvider = p
                         return@launch
                     }
-                    // The config page IS the settings screen (the same page
-                    // the Stremio app opens), and it opens in Hikari's own
-                    // WebView: configuring ends on the addon's Install
-                    // button, whose manifest URL comes back here and
-                    // installs. Google "Sign in" popups on these pages are
-                    // relayed so logins finish (see WebViewActivity).
                     addonConfigLauncher.launch(
                         Intent(context, com.hikari.app.web.WebViewActivity::class.java)
                             .putExtra("url", page)
@@ -4433,10 +3825,6 @@ fun ExtensionsScreen(nav: NavHostController? = null) {
                     infoProvider = p
                 }
             ProviderType.ANIYOMI, ProviderType.MANGA ->
-                // LNReader rows carry no extension preferences screen in
-                // their format — and Kotatsu/fork parsers ship inside the app
-                // with no settings screen of their own — so the gear gets the
-                // honest info dialog for all three.
                 if (p is com.hikari.app.lnreader.LnReaderProvider ||
                     (p is com.hikari.app.manga.MangaProvider &&
                         (com.hikari.app.kotatsu.KotatsuRegistry.isKotatsuId(p.config.id) ||
@@ -4478,18 +3866,7 @@ fun ExtensionsScreen(nav: NavHostController? = null) {
         vm.loadReposIfNeeded()
     }
 
-    // Re-hash installed extensions whenever a plugin list or the installed set
-    // changes: a completed install/update clears its own Update button, and a
-    // refreshed repo reveals a new one. The same moment is used to adopt the 18+
-    // flags the listings declare onto the installed rows (see [adoptAdultFlags])
-    // — so with the adult-content switch off, an installed 18+ extension
-    // disappears from the provider list as soon as its repo's listing is read.
     LaunchedEffect(pluginsByRepo, installed, providers) {
-        // Coalesced in the ViewModel: the repo listings arrive one repo at a
-        // time and the provider list is rebuilt after every install, so running
-        // the (file-hashing) update check and the 18+ pass per arrival was
-        // dozens of full passes over the whole library (see
-        // [ExtensionsViewModel.requestUpdateCheck]).
         vm.requestUpdateCheck()
     }
 
@@ -4518,9 +3895,6 @@ fun ExtensionsScreen(nav: NavHostController? = null) {
             }
         }
 
-    // A playlist is a text file, but plenty of providers serve it as
-    // `application/octet-stream` (or a MIME type Android has never heard of), so
-    // the picker accepts anything and the parser decides what it is.
     val iptvPicker =
         rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
             if (uri != null) {
@@ -4549,9 +3923,6 @@ fun ExtensionsScreen(nav: NavHostController? = null) {
                 RepoKind.ANYMEX -> vm.installScriptPlugin(p, RepoKind.ANYMEX)
                 RepoKind.KOTATSU -> vm.installKotatsuPlugin(p)
             }
-            // The listing's own 18+ tag goes onto the rows that were just
-            // created, so with the adult-content switch off an adult extension
-            // never even appears in the provider list.
             vm.adoptFlagsOf(p)
             result
         }
@@ -4641,17 +4012,6 @@ fun ExtensionsScreen(nav: NavHostController? = null) {
     }
 
     CompositionLocalProvider(LocalRepoNameByProvider provides repoNameByProvider) {
-    // ONE saved-state slot per PAGE this screen can draw — the landing list, a
-    // repo's plugin list, a source folder, All repos, Installed, Sources — so
-    // coming BACK to a page puts it back exactly as it was left: its scroll
-    // position, its search box, its expanded rows. It has to live up here, above
-    // the swap, because the state a page remembers for itself is disposed the
-    // moment another page replaces it — which is what made back land at the top
-    // of the page you returned to (reported as "going to an extension folder and
-    // navigating back, it scrolls up instead of coming at the same position").
-    // This is the same per-page rule SettingsScreen follows for its index /
-    // folder / sub-folder pages, and the key is the page's IDENTITY, so a repo
-    // or folder you open again is also where you left it.
     val pageStates = rememberSaveableStateHolder()
     val pageKey = when {
         openRepo != null -> "repo|" + openRepo.url
@@ -4979,9 +4339,6 @@ fun ExtensionsScreen(nav: NavHostController? = null) {
             },
             text = {
                 Column {
-                    // The kind tile, like the reference picker's header: one
-                    // glance says which engine this box adds a repo to. One
-                    // shared dialog owns every kind, so all of them get it.
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
@@ -5154,9 +4511,6 @@ fun ExtensionsScreen(nav: NavHostController? = null) {
                 }
             },
             confirmButton = {
-                // The reference picker's twin pills: Cancel and Add share one
-                // row at equal weight and one height, each strictly one line,
-                // so neither can outgrow the other whatever the language.
                 Row(
                     Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -5186,10 +4540,6 @@ fun ExtensionsScreen(nav: NavHostController? = null) {
                     Button(
                         enabled = repoUrl.isNotBlank(),
                         onClick = {
-                        // Close at once: the task runs on the ViewModel scope
-                        // and reports on the screen, so nothing here waits for
-                        // a download (the old "disabled while busy" made Add,
-                        // Cancel and back all dead during a mass install).
                         showRepoDialog = false
                         vm.runTask(
                             "Fetching repo…",
@@ -5231,9 +4581,6 @@ fun ExtensionsScreen(nav: NavHostController? = null) {
                         disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
                     ),
                 ) {
-                    // Adaptive like the detail Play label: longer translations
-                    // step the text down instead of cutting off — the pill
-                    // never changes.
                     val addRepoLabel = tr("Add Repository")
                     Text(
                         addRepoLabel,
@@ -5280,10 +4627,6 @@ fun ExtensionsScreen(nav: NavHostController? = null) {
                 Button(
                     enabled = stremioUrl.isNotBlank(),
                     onClick = {
-                        // Close at once: the task runs on the ViewModel scope
-                        // and reports on the screen, so nothing here waits for
-                        // a download (the old "disabled while busy" made Add,
-                        // Cancel and back all dead during a mass install).
                         showStremio = false
                         vm.runTask(
                             "Fetching addon manifest…",
@@ -5376,9 +4719,6 @@ fun ExtensionsScreen(nav: NavHostController? = null) {
                 Button(
                     enabled = iptvUrl.isNotBlank() || iptvLocalPath.isNotBlank(),
                     onClick = {
-                        // Same rule as every other Add dialog: the work runs on
-                        // the ViewModel scope (so Cancel/back stay live) and the
-                        // result is reported on the screen behind the dialog.
                         showIptv = false
                         val link = iptvUrl
                         val local = iptvLocalPath.takeIf { it.isNotBlank() }
@@ -5453,10 +4793,6 @@ fun ExtensionsScreen(nav: NavHostController? = null) {
                 Button(
                     enabled = scraperJson.isNotBlank(),
                     onClick = {
-                        // Close at once: the task runs on the ViewModel scope
-                        // and reports on the screen, so nothing here waits for
-                        // a download (the old "disabled while busy" made Add,
-                        // Cancel and back all dead during a mass install).
                         showScraper = false
                         vm.runTask(
                             "Adding scraper…",
@@ -5505,10 +4841,6 @@ fun ExtensionsScreen(nav: NavHostController? = null) {
                 Button(
                     enabled = cs3Url.isNotBlank(),
                     onClick = {
-                        // Close at once: the task runs on the ViewModel scope
-                        // and reports on the screen, so nothing here waits for
-                        // a download (the old "disabled while busy" made Add,
-                        // Cancel and back all dead during a mass install).
                         showCs3Url = false
                         vm.runInstall(
                             "Downloading and installing…",
@@ -5562,10 +4894,6 @@ fun ExtensionsScreen(nav: NavHostController? = null) {
                 Button(
                     enabled = hikiUrl.isNotBlank(),
                     onClick = {
-                        // Close at once: the task runs on the ViewModel scope
-                        // and reports on the screen, so nothing here waits for
-                        // a download (the old "disabled while busy" made Add,
-                        // Cancel and back all dead during a mass install).
                         showHikiUrl = false
                         vm.runInstall(
                             "Downloading and installing…",
@@ -5619,10 +4947,6 @@ fun ExtensionsScreen(nav: NavHostController? = null) {
                 Button(
                     enabled = skyUrl.isNotBlank(),
                     onClick = {
-                        // Close at once: the task runs on the ViewModel scope
-                        // and reports on the screen, so nothing here waits for
-                        // a download (the old "disabled while busy" made Add,
-                        // Cancel and back all dead during a mass install).
                         showSkyUrl = false
                         vm.runInstall(
                             "Downloading and installing…",
@@ -5807,12 +5131,6 @@ private fun SectionHeader(title: String) {
     )
 }
 
-/**
- * A section header that also offers "Repair all" when extensions with missing
- * files are on screen — the one-tap answer to a restore that left every row
- * saying "reinstall this extension". Hidden entirely when there is nothing
- * missing or no repair action was supplied.
- */
 @Composable
 private fun RepairSectionHeader(
     title: String,
@@ -5972,21 +5290,8 @@ private fun RepoBrowserView(
     /** Repairs every missing-file extension at once. Null hides the button. */
     onRepairAllMissing: (() -> Unit)? = null,
 ) {
-    // Search across EVERYTHING on this screen: installed extensions (with
-    // uninstall/toggle) and every added repo's plugin list (with instant
-    // install/uninstall) — so a user with hundreds of extensions can find and
-    // act on one by typing its name instead of scrolling. Typing also kicks the
-    // repos that haven't loaded yet, so a fresh install still finds the
-    // not-yet-installed entries instead of only the installed ones.
     var query by rememberSaveable { mutableStateOf("") }
-    // Source-language dialog state + its groups (same grouping the old
-    // All-sources section used): a language-grouped view of every installed
-    // source with an enable-all toggle per group.
     var showSourceLang by remember { mutableStateOf(false) }
-    // Grouped in the ViewModel on a background thread and shared from the
-    // screen (see [ExtensionsViewModel.langGroups]): this page is disposed
-    // on every folder visit, so grouping here recomputed the whole library
-    // on the main thread on every return.
     val langOnCount = remember(providers) { providers.count { it.config.enabled } }
     // Static labels captured in composable scope (never call tr() inside
     // lazy content).
@@ -6003,19 +5308,7 @@ private fun RepoBrowserView(
         if (query.isNotBlank()) onEnsureReposLoaded()
     }
 
-    // --- The Update chooser ------------------------------------------------
-    // "Update all" is the right answer when everything is behind and the wrong
-    // one when the user wants exactly one of them re-installed, and until now
-    // the card offered only the first: a row that said N extensions could be
-    // updated, and one button that took all N. The card is still one tap — it
-    // just opens the list now, where each extension that has an update carries
-    // a tick of its own, Select all is a tick too, and Update selected runs
-    // only what was ticked (the same install path a row's own Update uses, see
-    // [ExtensionsViewModel.updatePlugins]).
     var showUpdatePicker by rememberSaveable { mutableStateOf(false) }
-    // One entry per extension: a plugin can be listed by two repos (a bundle
-    // and its source), and two identical rows would be both confusing to tick
-    // and a repeated key to draw.
     val updatable = remember(outdatedItems) { outdatedItems.distinctBy { it.second.url } }
     var picked by remember { mutableStateOf(emptySet<String>()) }
     if (showUpdatePicker) {
@@ -6154,14 +5447,6 @@ private fun RepoBrowserView(
         // repo's published fileHash (see ExtensionsViewModel.checkUpdates).
         if (query.isBlank() && outdatedUrls.isNotEmpty()) {
             item {
-                // The count is the number of EXTENSIONS, not of URL spellings:
-                // one installed file answers to several (branch / jsDelivr /
-                // github.com blob), and the check records every spelling so a
-                // row's Update lights up whichever way it was installed — which
-                // used to make "58 installed extensions can be updated" out of
-                // 20. Until the repos have listed their plugins there is
-                // nothing to pick between, so the card falls back to the raw
-                // count and its one-tap Update all.
                 val updateCount = if (updatable.isNotEmpty()) updatable.size else outdatedUrls.size
                 GlassCard(
                     onClick = if (updatable.isEmpty()) null
@@ -6556,9 +5841,6 @@ private fun RepoBrowserView(
         }
         item { Spacer(Modifier.height(8.dp)) }
     }
-    // Select Language dialog: the language-grouped source list (same groups
-    // the old All-sources section drew) in a Mihon-style shell — title,
-    // All Languages master row, scrollable groups, Cancel/Confirm.
     if (showSourceLang) {
         SourceLanguageDialog(
             groups = langGroups,
@@ -6568,14 +5850,6 @@ private fun RepoBrowserView(
     }
 }
 
-/**
- * Select Language dialog (Extensions tab → Source language): the same
- * language-grouped source list, in a Mihon-style shell — centered title,
- * an All Languages master row, scrollable groups each with an enable-all
- * toggle and per-source checkboxes, Cancel/Confirm to close. Toggles apply
- * immediately through the provider switch, so search, shelves and downloads
- * follow at once; the buttons only dismiss.
- */
 @Composable
 private fun SourceLanguageDialog(
     groups: List<SourceLangs.LangGroup>,
@@ -6615,9 +5889,6 @@ private fun SourceLanguageDialog(
             color = MaterialTheme.colorScheme.surface,
             modifier = Modifier.fillMaxWidth()
         ) {
-            // The action pills float OVER the list (like the Select Provider
-            // sheet's Close): the list runs full height underneath with a
-            // bottom pad clearing them, so no rows are lost to a dead bar.
             Box(Modifier.fillMaxWidth()) {
                 Column(
                     Modifier
@@ -6719,11 +5990,6 @@ private fun SourceLanguageDialog(
     }
 }
 
-/**
- * One language header inside the Select Language dialog: the group name, how
- * many of its sources are on, and the enable-all toggle. Labels are plain
- * strings (SourceLangs), so this is safe inside lazy content.
- */
 @Composable
 private fun SourceLangHeaderRow(
     group: SourceLangs.LangGroup,
@@ -6817,12 +6083,6 @@ private fun SourceLangSourceRow(
     }
 }
 
-/**
- * Search results for the Extensions hub: filters BOTH the installed
- * extensions and every plugin listed by every loaded repo, so a user with
- * hundreds of sources can type a name and act on the match immediately
- * (install / uninstall / toggle / delete) without navigating into each repo.
- */
 private fun LazyListScope.extensionsSearchItems(
     query: String,
     repos: List<Cs3Repo>,
@@ -6859,16 +6119,8 @@ private fun LazyListScope.extensionsSearchItems(
             .filter { it.name.contains(q, ignoreCase = true) || it.url.contains(q, ignoreCase = true) }
             .map { repo to it }
     }
-    // Repos we added but whose plugin list hasn't arrived yet (still loading, or
-    // the fetch failed). Surfaced below so a search never silently hides the
-    // installable entries of a repo that's slow/failing.
     val awaiting = repos.filter { pluginsByRepo[it.url] == null }
     val failedRepos = awaiting.filter { repoState[it.url]?.error != null }
-    // "still loading" counts ONLY repos that have neither data nor an error: a
-    // repo whose fetch already failed was counted as loading too, so a search
-    // with one dead repo in the list sat on "Searching…" forever — the reported
-    // "stuck on searching extensions". A failed repo is reported as failed (its
-    // row with Retry, and the button below) and no longer pretends to be coming.
     val pendingRepos = awaiting.filter { repoState[it.url]?.error == null }
     val stillLoading = pendingRepos.isNotEmpty()
 
@@ -6891,9 +6143,6 @@ private fun LazyListScope.extensionsSearchItems(
     }
 
     if (installedMatches.isNotEmpty()) {
-        // One row per extension (an Aniyomi/manga pack's sources fold into the
-        // extension's own row — see [ProviderPacks]), so the count is of
-        // EXTENSIONS, not of stored sources.
         val installedRecords = ProviderPacks.rows(installedMatches)
         val missingHere = installedRecords.count { rec -> rec.members.any { isMissingFile(it) } }
         item {
@@ -7180,20 +6429,10 @@ private fun RepoPluginsView(
     onTestDownload: (Cs3RepoPlugin) -> Unit = {},
     /** Probes every installed provider from this repo at once. */
     onTestAll: () -> Unit = {},
-    /**
-     * What the app has installed, by package name (see the ViewModel): the
-     * authoritative answer to "is this entry a manga engine or an anime
-     * one?", shared instead of re-derived on every page open.
-     */
     installedKinds: Map<String, String> = emptyMap(),
 ) {
     val retryFocus = remember { FocusRequester() }
     val headerRefreshFocus = remember { FocusRequester() }
-    // Television: park the remote on this page's Back button the moment the
-    // page opens. The focused row that opened it is disposed with the list, so
-    // without this the focus falls back to the nav rail's Home tab — and the
-    // next OK press goes Home instead of into this page (reported as
-    // "clicking a repo also clicks Home").
     val backFocus = remember { FocusRequester() }
     LaunchedEffect(Unit) {
         if (!com.hikari.app.tv.TvMode.isTv) return@LaunchedEffect
@@ -7202,10 +6441,6 @@ private fun RepoPluginsView(
     }
 
     val cs3SettingsIds = rememberCs3SettingsIds(providers)
-    // The repo's own search box. keiyoushi is 1396 entries: finding one by
-    // scrolling is not a thing anyone can do, and this listing is the ONLY place
-    // an extension can be installed from. The TV grid flag rides alongside:
-    // LazyListScope branches below cannot call TvMode themselves.
     val tvRepoPage = com.hikari.app.tv.TvMode.current()
     var filter by rememberSaveable { mutableStateOf("") }
     // Which of the two kinds to show, when this repo holds both. "" = all.
@@ -7214,10 +6449,6 @@ private fun RepoPluginsView(
         installedKinds[p.pkg] ?: p.contentKind
     val mangaCount = plugins.count { kindOf(it) == "manga" }
     val animeCount = plugins.count { kindOf(it) == "anime" }
-    // Only a repo that really holds two kinds gets grouped and filtered: a
-    // header saying "Manga extensions (1396)" over a list that is entirely manga
-    // is one more line of chrome for no information, and the filter chips would
-    // be a control with a single possible answer.
     val mixed = mangaCount > 0 && animeCount > 0
     val matched = remember(plugins, filter, kindFilter, installedKinds) {
         plugins.filter { p ->
@@ -7228,17 +6459,10 @@ private fun RepoPluginsView(
                     p.description.contains(filter, ignoreCase = true))
         }
     }
-    // The listing as it is drawn: section headings interleaved with the rows,
-    // built once per change rather than in the LazyGridScope (where a header
-    // before each group of a lazy list means splitting one list into three and
-    // duplicating every row's arguments).
     val entries: List<RepoListEntry> = remember(matched, mixed, kindFilter, installedKinds) {
         if (!mixed || kindFilter.isNotBlank()) {
             matched.map { RepoListEntry.Row(it) }
         } else {
-            // Anime first: a repo that holds both kinds is an Anime repo with
-            // manga in it (that is how the two ecosystems mix), and the row the
-            // user came for is the one whose kind the repo is named after.
             buildList {
                 listOf(
                     "anime" to I18n.t("Anime extensions"),
@@ -7249,9 +6473,6 @@ private fun RepoPluginsView(
                     add(RepoListEntry.Head(title, group.size))
                     group.forEach { add(RepoListEntry.Row(it)) }
                 }
-                // Anything the listing did not classify still has to be listed —
-                // a heading is a way of sorting the list, never a filter that
-                // can make an entry disappear.
                 val rest = matched.filter { kindOf(it) != "anime" && kindOf(it) != "manga" }
                 if (rest.isNotEmpty()) {
                     add(RepoListEntry.Head(I18n.t("Extensions"), rest.size))
@@ -7359,10 +6580,6 @@ private fun RepoPluginsView(
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
             )
         }
-        // The filter box and the kind chips sit ABOVE the scrolling list so they
-        // stay reachable however far down the user has scrolled: keiyoushi is
-        // 1396 rows, and a search field that scrolls away is one you have to
-        // scroll back to the top to use.
         GlassSearchField(
             value = filter,
             onValueChange = { filter = it },
@@ -7440,9 +6657,6 @@ private fun RepoPluginsView(
                     }
                 }
             }
-            // Hidden while a filter is on: this button installs the WHOLE repo,
-            // and offering it under a narrowed list would install 1396
-            // extensions to a user who typed a name.
             if (plugins.isNotEmpty() && uninstalled > 0 && filter.isBlank() && kindFilter.isBlank()) {
                 item {
                     Button(
@@ -7627,12 +6841,6 @@ private fun RepoPluginsView(
 
 @Composable
 private fun ExtensionIcon(url: String?, modifier: Modifier = Modifier) {
-    // Repo icon URLs are templates in the wild: CloudStream repos serve
-    // `…/icon.png?size=%size%` (and the `%exact_size%` variant), and plenty of
-    // listings use protocol-relative `//host/icon.png`. Neither survives being
-    // handed straight to Coil from an Android app, so normalize first — an
-    // unfetchable URL is exactly how a perfectly good icon degrades into the
-    // placeholder glyph.
     val safe = url
         ?.replace("%exact_size%", "48")
         ?.replace("%size%", "48")
@@ -7646,9 +6854,6 @@ private fun ExtensionIcon(url: String?, modifier: Modifier = Modifier) {
         )
         return
     }
-    // ContentScale.Crop makes real logos fill their box edge-to-edge, so a
-    // Stremio/CS3 addon logo and a glyph-only extension render at the same
-    // visual weight instead of "big round logo vs tiny icon".
     SubcomposeAsyncImage(
         model = safe,
         contentDescription = null,
@@ -7668,13 +6873,6 @@ private fun ExtensionIcon(url: String?, modifier: Modifier = Modifier) {
     }
 }
 
-/**
- * How long a row must stay on screen before its icon is resolved.
- *
- * Only a FEW ROWS at a time are ever resolved — the ones the user actually
- * stopped on — because a row that scrolled past cancels its probe before it
- * runs. See [ProviderIcon].
- */
 private const val ICON_SETTLE_MS = 320L
 
 @Composable
@@ -7684,14 +6882,6 @@ private fun RepoPluginIcon(
     repoUrl: String,
     modifier: Modifier = Modifier,
 ) {
-    // A repo listing is resolved before anything is installed, so the row only
-    // has what the listing declared — and most SkyStream listings declare no
-    // icon at all (1 of 25 entries in the community repo carries an `iconUrl`,
-    // and 20 of 25 carry a placeholder `baseUrl`), which is why every row fell
-    // back to the puzzle-piece glyph. Resolve the rest lazily off the main
-    // thread: the entry's own image fields, else its first addon manifest's
-    // logo, else the site favicon. ExtensionIcons caches per entry, so
-    // scrolling the listing never refetches.
     var icon by remember(p.url, kind) { mutableStateOf(p.iconUrl) }
     LaunchedEffect(p.url, kind) {
         if (icon.isNullOrBlank()) {
@@ -7731,25 +6921,6 @@ private fun ProviderIcon(p: ContentProvider, modifier: Modifier = Modifier) {
     ExtensionIcon(url = icon, modifier = modifier)
 }
 
-/**
- * Provider ids whose CloudStream plugin exposes its own settings screen
- * (`Plugin.openSettings`, e.g. SKTech's sub-provider picker).
- *
- * Two rules keep this off the critical path:
- *
- *  * the question is asked of the CACHE only ([ContentProvider.settingsReady]) —
- *    the old probe ([ContentProvider.settingsAvailable]) instantiated the plugin
- *    to answer, so a list of two hundred installed CS3 plugins DEX-loaded two
- *    hundred plugins every time this ran, on the same IO pool the installs use.
- *    The plugins the app has already warmed (HikariApp warms them at startup)
- *    answer instantly, and one that failed to load has no settings screen to
- *    open anyway. A tap on the gear still loads the plugin on demand
- *    ([openProviderSettingsSafely] → `prepareSettings`), so nothing is lost;
- *  * it is keyed on the SET of ids, not on the provider list instance.
- *    `manager.providers` emits a fresh list on every rebuild (an install, a
- *    toggle, a repo sync), and re-answering for the whole list on each of them
- *    was pure work: the ids are what the answer depends on.
- */
 @Composable
 private fun rememberCs3SettingsIds(providers: List<ContentProvider>): Set<String> {
     val ids = remember(providers) { providers.map { it.config.id } }
@@ -7765,19 +6936,6 @@ private fun rememberCs3SettingsIds(providers: List<ContentProvider>): Set<String
     return answer
 }
 
-/**
- * Opens a provider's own settings screen (the gear on an extension card).
- *
- * A plugin's settings screen is arbitrary third-party code (an Activity, a
- * BottomSheetDialogFragment, …) and it only exists once the plugin has been
- * loaded — but the gear is drawn from the stored provider list, which outlives
- * the in-memory plugin instance. A tap could therefore land before the plugin
- * was loaded (or while a reload was still running) and be reported as "has no
- * settings screen", then work on a second try. Load the plugin first (off the
- * main thread), then invoke the plugin's own screen on the main thread — and
- * surface the real reason when it still cannot open, instead of letting the tap
- * look like a dead no-op.
- */
 private fun openProviderSettingsSafely(
     p: ContentProvider,
     context: Context,
@@ -7798,15 +6956,6 @@ private fun openProviderSettingsSafely(
         var opened = ready && withContext(Dispatchers.Main) {
             runCatching { p.openSettings(HikariApp.mainActivity) }.getOrDefault(false)
         }
-        // A plugin's settings screen is third-party code, and some of them bail
-        // out on a transient condition (an activity that was briefly stopped
-        // while the plugin was being loaded, a sheet that was left behind).
-        // The commonest real cause is a STALE activity: the plugin's
-        // `openSettings` closure captured an activity that has since been
-        // destroyed and then throws "FragmentManager has been destroyed" the
-        // moment it shows its DialogFragment. Retrying the same instance just
-        // re-runs that closure, so the plugin is REBUILT here (dropping the
-        // cached instance) and then retried against a live activity.
         if (!opened) {
             kotlinx.coroutines.delay(250)
             withContext(Dispatchers.IO) {
@@ -7834,11 +6983,6 @@ private fun openProviderSettingsSafely(
             ).show()
             return@launch
         }
-        // The reason a plugin's own screen refused to open is a full exception
-        // description (the plugin class and line now included) — far too long
-        // for a toast, which only ever showed "… threw: Il…". Show it in a
-        // dialog the user can read and copy, so a broken extension settings
-        // screen can actually be reported instead of guessed at.
         showSettingsFailureDialog(context, p.config.name, detail)
     }
 }
@@ -7871,25 +7015,6 @@ private fun showSettingsFailureDialog(context: Context, name: String, detail: St
     }
 }
 
-/**
- * The "open this extension's site to pass its Cloudflare check" click for a
- * provider, or null when it has no site the user could visit.
- *
- * Offered for the two engine kinds whose content lives on a normal website the
- * user can open — [ProviderType.MANGA] and [ProviderType.ANIYOMI] — because
- * those are precisely the sites that answer an app with a bot check the app
- * cannot solve on its own, and an extension has no way to open a browser for
- * itself. Everything else (CloudStream, IPTV, Stremio…) either needs no such
- * step or already has its own way (Home's header globe, a site's own page).
- *
- * The site URL is derived by LOADING the extension (its source's `baseUrl`), so
- * the work is done on IO when the button is tapped rather than here — and a
- * provider whose extension declares no site gets a sentence, not a dead button.
- *
- * Composable because it needs a coroutine scope and the activity's context; the
- * returned lambda is remembered per provider, so a list of a hundred installed
- * engines does not rebuild a hundred closures on every scroll step.
- */
 @Composable
 private fun rememberVerifyAction(p: ContentProvider): (() -> Unit)? {
     val type = p.config.type
@@ -7915,9 +7040,6 @@ private fun rememberVerifyAction(p: ContentProvider): (() -> Unit)? {
                             putExtra("url", site)
                             putExtra("title", "Verify: " + (host ?: p.config.name))
                             putExtra("providerId", p.config.id)
-                            // The WebView closes itself the moment the clearance
-                            // lands in the cookie jar — the user is not expected
-                            // to know when they are "done".
                             putExtra("autoCloseWhenCloudflarePassed", true)
                             if (host != null) putExtra("verifyHost", host)
                         }
@@ -7935,16 +7057,6 @@ private fun ProviderCard(
     onToggle: (Boolean) -> Unit,
     onDelete: () -> Unit,
     onSettings: (() -> Unit)? = null,
-    /**
-     * Opens the provider's own website in the app's browser so the user can
-     * pass a Cloudflare (or similar) check — offered for the engine kinds whose
-     * site is a normal website the user can visit (see [rememberVerifyAction]).
-     * Null for every other kind, which needs no such step.
-     *
-     * This is the same button Home's header carries; an extension's own page in
-     * Extensions had no way to reach it, which left a manga engine behind a bot
-     * wall unfixable from the screen where it was installed.
-     */
     onVerify: (() -> Unit)? = null,
     updateAvailable: Boolean = false,
     onUpdate: (() -> Unit)? = null,
@@ -7981,18 +7093,8 @@ private fun ProviderCard(
         Column(
             Modifier
                 .padding(10.dp)
-                // Whole-row focus target: a remote lands on the ROW (a big,
-                // obvious highlight) instead of only on the switch and the small
-                // icons at its right end, and pressing it flips the switch —
-                // the same thing the switch itself does, just from anywhere on
-                // the line. See [com.hikari.app.tv.tvPress].
                 .tvPress(previewPass = false, onClick = { onToggle(!p.config.enabled) }),
         ) {
-            // Header: icon, names and the switch. The action icons live in
-            // their own row below: five 48dp targets beside the text squeezed
-            // it to about one letter per line on a 360dp phone, blowing each
-            // card up to a third of the screen (the "brick" that fit two
-            // extensions per page). They never share a row with text now.
             Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
                 Modifier
@@ -8158,18 +7260,6 @@ private fun ProviderCard(
     }
 }
 
-/**
- * One row of an installed-provider list: a single provider, or every source one
- * Aniyomi/manga extension publishes, together.
- *
- * The extension case is the reported "I am installing one animeworld and in
- * provider it showing 8 times": one `.apk` publishes nine sources (a generic
- * feed plus eight language feeds), all under one name, and Hikari stores one
- * provider per source. The row for the extension draws ONE card — its sources
- * are a caret away, and each of them keeps its own switch and its own Remove, so
- * turning off a language feed that never answers (which also takes it out of
- * every search) is still possible without losing the extension.
- */
 @Composable
 private fun ProviderRecordRow(
     pack: ProviderPack,
@@ -8185,9 +7275,6 @@ private fun ProviderRecordRow(
     /** Re-installs one missing-file extension (repair). Null hides the button. */
     reinstallFor: ((ContentProvider) -> Unit)? = null,
 ) {
-    // Opened state is remembered per extension, so a list that re-sorts under
-    // the row (a search being typed, a provider being installed) does not fold
-    // it back up.
     var open by remember(pack.key) { mutableStateOf(false) }
     val ids = pack.members.map { it.config.id }
     // Non-null call even when the list offers no updates, so nothing here
@@ -8247,7 +7334,6 @@ private fun ProviderRecordRow(
         }
     }
 }
-
 
 
 @Composable
@@ -8319,9 +7405,6 @@ private fun RepoCard(
                     ),
                 contentAlignment = Alignment.Center
             ) {
-                // The repo's real icon (its repo.json iconUrl, else the GitHub
-                // owner's avatar like the reference app) — the letter is only
-                // the last resort, so folders stop reading as C/C/P/A/A/C.
                 val avatar = remember(repo.url, repo.iconUrl) { repoAvatarUrl(repo) }
                 if (avatar != null) {
                     ExtensionIcon(
@@ -8418,14 +7501,6 @@ private fun RepoCard(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-            // Copy / Refresh / Remove. Compact (40dp) and icon-only: the
-            // default 48dp targets plus the kind chip on the name line used
-            // to squeeze the repo's own name to 2–3 characters on a phone.
-            // The name now has its own full-width line (chip moved to the
-            // subtitle) so it always reads in full.
-            // TV remotes need a larger, always-focusable target — 40.dp icons
-            // on the trailing edge were unreachable past the row's open-click
-            // surface (D-pad landed on the row, never the buttons).
             val actionSize = if (com.hikari.app.tv.TvMode.current()) 56.dp else 44.dp
             IconButton(
                 onClick = {
@@ -8491,12 +7566,6 @@ private fun RepoCard(
     }
 }
 
-/**
- * A repo folder's real icon: the repo file's own `iconUrl` first (CloudStream
- * repo.json carries one — the Phisher avatar and friends), else the GitHub
- * owner's avatar derived from the URL, like the reference app. Null when
- * neither exists — the caller falls back to the letter avatar.
- */
 private fun repoAvatarUrl(repo: Cs3Repo): String? {
     repo.iconUrl.trim().takeIf { it.isNotBlank() }?.let { return it }
     val u = repo.url.trim()
@@ -8509,13 +7578,6 @@ private fun repoAvatarUrl(repo: Cs3Repo): String? {
     return if ("gitlab" in u) "https://gitlab.com/$owner.png" else "https://github.com/$owner.png"
 }
 
-/**
- * Country+language flag for an extension row, read from the repo listing's own
- * name+description ("Movies and Series upto 4K", "Hindi", "English", …): the
- * user knows at a glance which language an extension carries. Null when the
- * listing names none — never guessed. (See [ProviderFlags] — same rule, plus
- * the real flag image in [FlagIcon].)
- */
 private fun langFlagOf(p: Cs3RepoPlugin): String? =
     ProviderFlags.flagOf(p.name, p.description)
 
@@ -8532,17 +7594,6 @@ private fun isDartOnlyPlugin(p: Cs3RepoPlugin): Boolean {    val u = p.url
     return false
 }
 
-/**
- * The reference client's extension box over one repo entry: icon (resolved
- * lazily exactly like [RepoPluginIcon] — most listings declare no icon),
- * name + flag, version • repo line, description, type chips and the
- * Install / Installed / Uninstall action. Built for the TV 2-per-row grid.
- *
- * An entry with an update pending shows the Install button wired to the
- * update (the reference card has no separate update state — the action is
- * what matters). The per-row probe line of [PluginRow] has no slot on the
- * card; bulk testing still lives in the repo header.
- */
 @Composable
 private fun TvPluginCardEntry(
     p: Cs3RepoPlugin,
@@ -8557,9 +7608,6 @@ private fun TvPluginCardEntry(
     cs3SettingsIds: Set<String>,
     modifier: Modifier = Modifier,
 ) {
-    // Absolutize the listing icon against the repo file and substitute
-    // templated sizes: without this every templated URL fails in Coil and
-    // the TV card falls back to the letter glyph.
     var icon by remember(p.url) {
         mutableStateOf(
             com.hikari.app.ui.ExtensionIcons.absolute(
@@ -8619,19 +7667,10 @@ private fun PluginRow(
     testOk: Boolean = false,
     testing: Boolean = false,
     onTest: (() -> Unit)? = null,
-    /** The NAME of the repository this listing came from, drawn as the first
-     *  item of the row's meta line. A repo can list the same extension name
-     *  several times over — four "AniKoto" rows whose only label used to be the
-     *  engine — so the row has to say where it is from even when the group
-     *  heading above it has scrolled away (and the search results, which flatten
-     *  the groups, always show it). */
     repoName: String = "",
 ) {
     val glass = rememberGlassTokens()
     val tileShape = RoundedCornerShape(12.dp)
-    // What a press of the WHOLE row does: the same thing the row's own trailing
-    // button does — install, update, or uninstall — so the big highlight the
-    // remote lands on always belongs to an action written on the row itself.
     val dartOnly = isDartOnlyPlugin(p)
     val rowAction: (() -> Unit)? = when {
         !installed && dartOnly -> null
@@ -8676,11 +7715,6 @@ private fun PluginRow(
                 .focusProperties {
                     down = firstActionFocus
                 }
-                // The card is a focus TARGET, not just a container: `tvPress`
-                // adds the focus node (with the same focus ring every other
-                // control in the app wears) and the centre press runs the
-                // row's own trailing action. The buttons below stay their own
-                // targets, so pressing Right still steps onto them.
                 .tvPress(previewPass = false, onClick = { rowAction?.invoke() }),
         ) {
     Row(
@@ -8879,15 +7913,6 @@ private fun PluginRow(
     } // glass card
 }
 
-/**
- * The installed provider behind a repo listing, when it exposes its own
- * settings screen — any engine's: a CloudStream plugin's own screen, a nuvio
- * scraper's `onSettings()`, a Vega provider's `settings.js`, an Aniyomi/Manga
- * extension's preference tree, a Stremio addon's config page (see
- * [hasSettingsScreen]). CS3/Aniyomi/… are matched by the source URL stored in
- * [ProviderConfig.extra] — the same key uninstall uses — and Hikari extensions
- * append a "|index" suffix to their source URL.
- */
 /** The repo URL an installed provider was installed from — the key both
  *  uninstall and the update check use. Hikari extensions append a "|index"
  *  suffix (one file can hold several providers); a provider installed from a
@@ -8907,10 +7932,6 @@ private fun installedProviderFor(plugin: Cs3RepoPlugin, providers: List<ContentP
                     com.hikari.app.kotatsu.fork.ForkVideoProvider.idOf(oe.first, oe.second))
         }
     }
-    // Bundled Kotatsu rows carry no source file (their parser ships in the
-    // app): match the installed row by its `kotatsu://` URL or provider id.
-    // Fork manga rows ride the same scheme (`kotatsu://forksk/…`) with their
-    // own id prefixes.
     if (plugin.url.startsWith(com.hikari.app.kotatsu.KotatsuRegistry.PLUGIN_SCHEME)) {
         if (com.hikari.app.kotatsu.fork.ForkRegistry.isForkMangaPluginUrl(plugin.url)) {
             val enum = com.hikari.app.kotatsu.fork.ForkRegistry.enumNameOfForkPluginUrl(plugin.url)
@@ -8942,24 +7963,6 @@ private fun providerSource(p: ContentProvider): String? {
     return if (p.config.type == ProviderType.HIKARI) extra.substringBeforeLast('|') else extra
 }
 
-/**
- * Whether an installed provider should show a settings gear — i.e. whether
- * there is something REAL behind it.
- *
- * The answer has to be cheap, because these rows are drawn from stored data and
- * the provider's runtime may not be loaded at all: a CloudStream plugin's
- * settings screen is asked of the CACHE ([ContentProvider.settingsReady], which
- * never dex-loads), a Vega provider's of its own folder (does it publish
- * `settings.js`?), a Stremio addon's of the manifest already read for it (an
- * addon known to declare no config page gets no gear). Aniyomi/Manga extensions
- * always offer it: whether one declares a preference screen is only knowable by
- * loading it, and an extension that HAS settings must not lose its gear to save
- * that lookup.
- *
- * Everything else (a `.hiki` bundle, a universal scraper, a SkyStream
- * extension, an IPTV playlist) has no settings screen in its format, so it gets
- * no gear rather than a button that says it has none.
- */
 private fun hasSettingsScreen(
     p: ContentProvider,
     cs3SettingsIds: Set<String>,
@@ -8970,9 +7973,6 @@ private fun hasSettingsScreen(
     ProviderType.ANIYOMI, ProviderType.MANGA -> true
     ProviderType.FORK_VIDEO -> true
     ProviderType.ANYMEX, ProviderType.ANYMEX_MANGA, ProviderType.SORA -> true
-    // Optimistic: until the manifest has been read for this addon, whether it
-    // has a config page is unknown, and offering the gear is what lets the user
-    // reach it (the tap loads the manifest and opens the page it declares).
     ProviderType.STREMIO -> com.hikari.app.providers.StremioAddon.noConfigPage[p.config.id] != true
     else -> false
 }
@@ -8982,9 +7982,6 @@ private fun repoPluginSettingsTarget(
     providers: List<ContentProvider>,
     cs3SettingsIds: Set<String>,
 ): ContentProvider? {
-    // Same bundled-row rule as [installedProviderFor]: fork-video and
-    // `kotatsu://` entries match their installed rows directly, never through
-    // file-URL keys.
     if (com.hikari.app.kotatsu.fork.ForkVideoProvider.isForkVideoPluginUrl(plugin.url)) {
         val oe = com.hikari.app.kotatsu.fork.ForkVideoProvider.ownerEnumOfPluginUrl(plugin.url)
         return providers.firstOrNull { p ->
@@ -9056,10 +8053,6 @@ private fun pluginStatus(p: ContentProvider, iptvTick: Int = 0): String? {
             return "Extension file missing — reinstall this extension"
         }
         val err = com.hikari.app.skystream.SkyStreamProvider.catalogErrors[p.config.id]
-        // No verification story here: an extension whose site answers with a
-        // browser check is simply left out of searches (see
-        // ContentRepository.crossCfSkip), so naming the wall only adds a scary,
-        // unactionable line about a different site.
         if (err != null &&
             com.hikari.app.net.CloudflareVerifier.isVerificationMessage(err)
         ) return null
@@ -9193,11 +8186,6 @@ private fun SiteRow(
         Row(
             Modifier
                 .padding(12.dp)
-                // Whole-row focus target, so a remote can land on the site
-                // (and its ring shows which one) rather than only on the small
-                // Open/Delete buttons at the end of the line. Pressing it opens
-                // the site — the row's own action. See
-                // [com.hikari.app.tv.tvPress].
                 .tvPress(previewPass = false, onClick = onOpen),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -9280,11 +8268,6 @@ private fun SourceFolderView(
     onOpenFolder: (SourceFolder) -> Unit = {},
     nav: NavHostController? = null,
 ) {
-    // Television: park the remote on this page's Back button the moment the
-    // page opens. The focused row that opened it is disposed with the list, so
-    // without this the focus falls back to the nav rail's Home tab — and the
-    // next OK press goes Home instead of into this page (reported as
-    // "clicking a repo also clicks Home").
     val backFocus = remember { FocusRequester() }
     LaunchedEffect(Unit) {
         if (!com.hikari.app.tv.TvMode.isTv) return@LaunchedEffect
@@ -9486,10 +8469,6 @@ private fun SourceFolderView(
             )
         ) {
             if (folder == SourceFolder.ANYMEX_HOME) {
-                // Two sub-areas so Sora / Anymex indexes stay separate —
-                // user opens the one they want, then adds repos there.
-// (Mangayomi repo adding was removed: its index never serves a catalogue
-                // any installed extension can list.)
                 item {
                     Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
                         Text(
@@ -9516,9 +8495,6 @@ private fun SourceFolderView(
                 }
                 // Repos live inside Sora / Anymex — not listed here.
                 val scriptRepos = emptyList<Cs3Repo>()
-                // Installed Sora/Anymex sources belong under "Installed extensions",
-                // not mixed into this folder's repo list (users were seeing
-                // dessin-anime / KissAsian rows here after install).
                 val scriptProviders = emptyList<ContentProvider>()
                 if (scriptProviders.isNotEmpty() && nav != null) {
                     item {
@@ -9640,9 +8616,6 @@ private fun SourceFolderView(
                     onRefreshRepo = onRefreshRepo,
                     onRemoveRepo = onRemoveRepo,
                 )
-                // Installed extensions live ONLY outside the repo folders (the
-                // global "Installed extensions" page) — a repo folder lists
-                // repos, never installs (like the Nuvio folder already did).
             } else if (folder == SourceFolder.IPTV) {
                 if (iptvProviders.isEmpty()) {
                     item {
@@ -9757,11 +8730,6 @@ private fun SourcesOverviewView(
     nav: NavHostController? = null,
 ) {
     var extFilter by remember { mutableStateOf("") }
-    // Television: park the remote on this page's Back button the moment the
-    // page opens. The focused row that opened it is disposed with the list, so
-    // without this the focus falls back to the nav rail's Home tab — and the
-    // next OK press goes Home instead of into this page (reported as
-    // "clicking a repo also clicks Home").
     val backFocus = remember { FocusRequester() }
     LaunchedEffect(Unit) {
         if (!com.hikari.app.tv.TvMode.isTv) return@LaunchedEffect
@@ -10064,9 +9032,6 @@ private fun SourcesOverviewView(
                     onDeleteProvider = onDeleteProvider,
                     settingsFor = { p ->
                         when {
-                            // A playlist has no settings screen — the gear opens what
-                            // it IS instead: where it was read from, how many channels
-                            // it holds, and a way to read it again.
                             p.config.type == ProviderType.IPTV -> { { onOpenSettings(p) } }
                             hasSettingsScreen(p, cs3SettingsIds) -> { { onOpenSettings(p) } }
                             else -> null
@@ -10079,12 +9044,6 @@ private fun SourcesOverviewView(
     }
 }
 
-/** RepoCards two-per-row for television (the reference repo grid): the same
- *  pairing the search results and the repo page's plugin grid already use.
- *  [tv] is passed in (rather than read here) because a LazyListScope cannot
- *  call TvMode itself. The Row carries no horizontal padding — RepoCard paints
- *  its own 20dp TV margins, so the pair's outer edges line up exactly like the
- *  single column does. */
 private fun LazyListScope.repoPairItems(
     keyPrefix: String,
     tv: Boolean,
@@ -10193,9 +9152,6 @@ private fun LazyListScope.repoGroup(
 
 @Composable
 private fun AddRepoButton(label: String, onClick: () -> Unit) {
-    // The button is pinned under the list, so on a tab that shows the floating
-    // taskbar it would otherwise sit behind it and be untappable. Lift it by the
-    // bar's height (0.dp on screens with no bar).
     Button(
         onClick = onClick,
         modifier = Modifier
@@ -10235,11 +9191,6 @@ private fun AllReposView(
     onRemoveRepo: (String) -> Unit,
     onRefreshRepo: (Cs3Repo) -> Unit,
 ) {
-    // Television: park the remote on this page's Back button the moment the
-    // page opens. The focused row that opened it is disposed with the list, so
-    // without this the focus falls back to the nav rail's Home tab — and the
-    // next OK press goes Home instead of into this page (reported as
-    // "clicking a repo also clicks Home").
     val backFocus = remember { FocusRequester() }
     LaunchedEffect(Unit) {
         if (!com.hikari.app.tv.TvMode.isTv) return@LaunchedEffect
@@ -10393,11 +9344,6 @@ private fun InstalledExtensionsView(
     testStatus: Map<String, ProviderTest> = emptyMap(),
     onTest: (String) -> Unit = {},
 ) {
-    // Television: park the remote on this page's Back button the moment the
-    // page opens. The focused row that opened it is disposed with the list, so
-    // without this the focus falls back to the nav rail's Home tab — and the
-    // next OK press goes Home instead of into this page (reported as
-    // "clicking a repo also clicks Home").
     val backFocus = remember { FocusRequester() }
     LaunchedEffect(Unit) {
         if (!com.hikari.app.tv.TvMode.isTv) return@LaunchedEffect
@@ -10406,11 +9352,6 @@ private fun InstalledExtensionsView(
     }
 
     var extFilter by remember { mutableStateOf("") }
-    // The drawable rows, grouped into one per extension (see [ProviderPacks]).
-    // Built ONCE per filter/provider change rather than inside the LazyColumn's
-    // item list: the lambda there is re-invoked on every recomposition of this
-    // screen, and regrouping the whole installed list on each of them is work
-    // nothing on screen depends on.
     val packs = remember(providers, extFilter) {
         ProviderPacks.rows(
             if (extFilter.isBlank()) providers

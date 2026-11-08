@@ -33,23 +33,12 @@ object TrackerAnimeResolver {
         return item.rawType.contains("anime", true) || item.providerId.equals("anilist", true)
     }
 
-    /**
-     * Any row that came from a tracker library (AniList/Simkl/MAL/Kitsu/Shikimori/Trakt),
-     * whatever its shape: anime series, anime film, live-action film or series. Manga rows
-     * are excluded — they open in the reader, never on the video detail page, so tracker
-     * video enrichment must never touch them.
-     */
     fun isTrackerRow(item: MediaItem): Boolean {
         if (item.rawType.equals("manga", true)) return false
         val p = item.providerId.lowercase()
         return p in trackerProviders || p == "trakt"
     }
 
-    /**
-     * A tracker row whose header is worth filling on the video detail page: tracker anime
-     * series (see [isTrackerAnime]) plus tracker films, which otherwise show no overview
-     * at all because the anime-only detail lookup refuses them.
-     */
     fun needsTrackerDetail(item: MediaItem): Boolean =
         isTrackerAnime(item) || (isTrackerRow(item) && item.type == MediaType.MOVIE)
 
@@ -62,12 +51,6 @@ object TrackerAnimeResolver {
 
     suspend fun trackerEpisodes(item: MediaItem): List<Episode>? = trackerEpisodesStaged(item, null)
 
-    /** Staged tracker list: the numbered base list paints through [onBase]
-     *  the moment the count is known (a second or two), while the TMDB /
-     *  AniList / Jikan enrichment keeps running in the background for up to
-     *  10 seconds total and the enriched list is the return value. When the
-     *  databases never answer, the base list still stands — a series with
-     *  episodes never reads as "Episodes (0)". */
     suspend fun trackerEpisodesStaged(item: MediaItem, onBase: (suspend (List<Episode>) -> Unit)? = null): List<Episode>? = withContext(Dispatchers.IO) {
         if (!isTrackerAnime(item)) return@withContext null
         val start = System.currentTimeMillis()
@@ -93,9 +76,6 @@ object TrackerAnimeResolver {
     }
 
     suspend fun detail(item: MediaItem): Detail? = withContext(Dispatchers.IO) {
-        // Tracker films carry no anime record: their overview/genres/year/rating come
-        // from the TMDB film entry the exact Simkl mapping (or an exact title resolve)
-        // names, so a saved film reads like any other source's film.
         if (item.type == MediaType.MOVIE && isTrackerRow(item)) {
             return@withContext runCatching { tmdbMovieDetail(item) }.getOrNull()
                 ?: runCatching { anilistSearchDetail(item.searchTitle) }.getOrNull()
@@ -218,10 +198,6 @@ object TrackerAnimeResolver {
                 return TmdbMaps(names, details, 0)
             }
         }
-        // Without an AniList record there is no prequel chain to offset by: the list is
-        // read season-local (offset 0), which is exactly right for the common single-season
-        // case. (Requiring the chain used to drop ALL TMDB enrichment whenever the show
-        // lookup missed, leaving bare "Episode N" rows.)
         val offset = if (show == null) 0 else prequelOffset(show) ?: return null
         val abs = want.map { it + offset }.toSet()
         val names = runCatching { EpisodeTitles.lookupForId(tmdbId, abs, null) }.getOrNull()
@@ -264,12 +240,6 @@ object TrackerAnimeResolver {
         return Detail(overview, genres, year, poster, backdrop, rating)
     }
 
-    /**
-     * A film id's one-row enrichment (see [tmdbMaps]): the film's title names the single
-     * "Episode 1" row and its overview/date/rating/runtime/poster fill the row's blanks.
-     * The title is accepted only on a name match (the same 55+ gate as every AniList
-     * lookup), so a wrong-namespace id can never repaint the row.
-     */
     private suspend fun tmdbMovieMaps(item: MediaItem, tmdbId: Int): TmdbMaps? {
         val movie = TmdbResolver.apiGet("/movie/$tmdbId", emptyMap()) ?: return null
         if (!movie.has("id")) return null

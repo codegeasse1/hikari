@@ -44,20 +44,6 @@ data class SearchSuggestion(
     val isTypedText: Boolean = false,
 )
 
-/**
- * Type-ahead suggestions for the Search tab.
- *
- * Uses the SAME TMDB key the rest of the app already uses (the personal key from
- * Settings when one is saved, otherwise the built-in one) through
- * [TmdbResolver.apiGet], so nothing new has to be configured. It only returns
- * titles - it never starts a search by itself.
- *
- * TMDB answers nothing when a typed word is misspelled or cut in the middle
- * ("the fragment flo"), which used to make the list vanish while the user was
- * still typing. When the direct lookup gives fewer than [MIN_DIRECT] titles, the
- * first letters of each typed word are looked up instead, and those titles are
- * kept only if they fuzzy-match everything that was typed.
- */
 object SearchSuggestionsApi {
     private const val MAX_SUGGESTIONS = 8
     private const val MIN_DIRECT = 3
@@ -205,12 +191,6 @@ object SearchSuggestionsApi {
     }
 }
 
-/**
- * The suggestion list shown under the search box while the user is typing.
- *
- * Tapping a row runs that title ([onPick]); the small up-left arrow only copies
- * the title into the search box so it can be edited further ([onFill]).
- */
 @Composable
 fun SearchSuggestionList(
     suggestions: List<SearchSuggestion>,

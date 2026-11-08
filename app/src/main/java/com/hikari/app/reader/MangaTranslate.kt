@@ -58,15 +58,6 @@ import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.min
 
-/**
- * Manga page translation ("Translate / Dub"): detect the text on pages and
- * replace it with a translation, in place over the art.
- *
- * Three engines, best-first: ML Kit (on-device, basic quality, first use
- * downloads the language models), Google Translate (online, good quality,
- * keyless) and Gemini (online, best quality — reads the whole bubble list
- * with context — needs the user's own API key).
- */
 enum class MangaTranslateEngine(val title: String, val subtitle: String) {
     MLKIT("ML Kit", "Offline, basic quality"),
     GOOGLE("Google Translate", "Online, good quality"),
@@ -146,12 +137,6 @@ data class MangaTranslateSettings(
     }
 }
 
-/**
- * What the reader settings sheet edits: values plus the writes, so the
- * chrome (which only forwards one object) stays a dumb pass-through. With
- * the sheet's "apply to this manga only" switch on, the screen routes every
- * write to that manga's own blob instead of the global one.
- */
 data class MangaTranslateUi(
     val enabled: Boolean,
     val onToggle: () -> Unit,
@@ -189,18 +174,7 @@ private suspend fun <T> Task<T>.awaitTask(): T = suspendCancellableCoroutine { c
     addOnFailureListener { e -> if (!c.isCompleted) c.resumeWithException(e ?: Exception("mlkit task failed")) }
 }
 
-/**
- * OCR + translation pipeline with a per-page disk cache. Single-flighted per
- * page+settings so the visible holders asking together decode once; every
- * result (including "no text") is cached, so scrolling back costs nothing.
- */
 object MangaTranslateRuntime {
-    /**
-     * Flipping this (the reader settings sheet writes it on every toggle)
-     * pings every visible page holder so the open page translates instantly
-     * when turned on — and drops its overlay instantly when turned off —
-     * with no scrolling needed.
-     */
     @Volatile
     var settings: MangaTranslateSettings = MangaTranslateSettings.DEFAULTS
         set(v) {
@@ -232,22 +206,10 @@ object MangaTranslateRuntime {
         if (dir == null) {
             dir = File(ctx.applicationContext.filesDir, "manga_translate").apply { mkdirs() }
             scope.launchBlock { prune() }
-            // The OCR/translation models download on first use: without this
-            // the first toggle fails every tile (the download is still
-            // running), the page comes back empty and the open page never
-            // fills in. Warming here — while the user is still opening the
-            // manga — means the engines are usually ready before the toggle.
             scope.launchBlock { warmupEngines() }
         }
     }
 
-    /**
-     * Force the on-device models to download long before the first real
-     * page needs them. A tiny blank bitmap through each recognizer (plus
-     * one language-ID probe) is enough to start the download; failed passes
-     * just mean "still downloading", so wait and try again (bounded, a few
-     * minutes, fire-and-forget — the reader never waits on this).
-     */
     private suspend fun warmupEngines() {
         val blank = try {
             Bitmap.createBitmap(64, 64, Bitmap.Config.ARGB_8888).apply { eraseColor(AndroidColor.WHITE) }
@@ -293,22 +255,11 @@ object MangaTranslateRuntime {
         job.invokeOnCompletion { /* fire and forget */ }
     }
 
-    /**
-     * What a page translation produced — and whether trying again could
-     * help. The holders retry only when a retry could succeed; a page that
-     * is already in the target language (or holds no text) clears its badge
-     * at once instead of spinning "Translating..." through the retry budget.
-     */
     enum class TLStatus { OK, BLANK_PAGE, ALREADY_TARGET, ENGINE_FAILED, OCR_PENDING }
 
     /** One page's translation result (see [TLStatus]). */
     data class TLPage(val boxes: List<TLBox>, val status: TLStatus, val note: String)
 
-    /**
-     * Translated blocks for one page image, in full-image pixels. [onStatus]
-     * reports each stage ("Reading…", "Translating 12…", "No text found")
-     * for the holder badge, so a stuck page says where it is stuck.
-     */
     suspend fun translatePage(
         pageKey: String,
         file: File,
@@ -324,9 +275,6 @@ object MangaTranslateRuntime {
             return TLPage(emptyList(), TLStatus.BLANK_PAGE, "")
         }
         if (st.orig != MangaOrigLang.AUTO && st.orig.code == st.target.code) {
-            // Same-language pair (English page, English target) can never
-            // produce a box: every echo is dropped below. Say so at once
-            // instead of burning the retry budget on a stuck badge.
             val note = "Already " + st.target.label
             Logs.log("Manga", "tl-page already-target")
             onStatus(note)
@@ -388,9 +336,6 @@ object MangaTranslateRuntime {
         // together keeps the sentence whole and renders one clean bubble.
         val grouped = groupBubbles(raw)
         if (grouped.isEmpty()) return@withContext TLPage(emptyList(), TLStatus.BLANK_PAGE, "No text found")
-        // Tiny-text gate: site-credit strips and speck noise (a few px tall)
-        // never become garbled transliterations. Real dialogue ("?!" included)
-        // is far taller, so only physical specks are dropped.
         val kept = if (imgW > 0) {
             grouped.filter { (it.b - it.t) >= imgW * 0.012f }
         } else grouped
@@ -414,10 +359,6 @@ object MangaTranslateRuntime {
         } catch (e: Exception) {
             return@withContext TLPage(emptyList(), TLStatus.ENGINE_FAILED, "")
         }
-        // Second chance for boxes whose translation still leaks source-script
-        // words (e.g. Hindi "मैं GO वापस..."): retry those boxes alone in
-        // sentence case, several at once. Whatever still leaks after the
-        // retry is dropped.
         if (st.engine == MangaTranslateEngine.GOOGLE) {
             val sl = if (st.orig == MangaOrigLang.AUTO) "auto" else st.orig.code
             val gtxSem = Semaphore(4)
@@ -435,21 +376,12 @@ object MangaTranslateRuntime {
                 }.awaitAll()
             }
         }
-        // White room + art/SFX class per box (one shared decoder each): the
-        // two scans are independent, so run them together — each decodes the
-        // page again, and sequential scans were a third of the wait.
         val roomScan = coroutineScope {
             val roomsD = async(Dispatchers.IO) { measureRooms(file, imgW, imgH, kept) }
             val bubblesD = async(Dispatchers.IO) { detectBubbles(file, imgW, imgH, kept) }
             roomsD.await() to bubblesD.await()
         }
-        // Dialogue gets centered in its real white room (any language stays
-        // centered), art lettering skips the white cover and draws stroked
-        // instead.
         val rooms = roomScan.first
-        // Bubble outlines (the ink ovals themselves): the only anchor that is
-        // the bubble on white pages too, where the directional room scan can
-        // leak through thin outlines. A found outline centers + sizes the box.
         val bubbles = roomScan.second
         val done = kept.mapIndexedNotNull { i, b ->
             val raw = translated.getOrNull(i)?.trim().orEmpty()
@@ -457,9 +389,6 @@ object MangaTranslateRuntime {
             if (t.isBlank() || t.equals(texts.getOrNull(i), ignoreCase = true)) null
             else if (!hasTargetScript(t, st.target)) null
             else {
-                // Mixed-script leak (Hindi + leftover Latin like "HER NAME IS"):
-                // strip the Latin words but KEEP the Hindi + the white cover, so
-                // no half-English garbage is ever drawn huge across the bubble.
                 if (hasLeftoverSource(t, texts.getOrNull(i).orEmpty(), st.target)) {
                     val stripped = cleanTrans(stripLatinWords(t))
                     if (stripped.isBlank() || !hasTargetScript(stripped, st.target) ||
@@ -487,10 +416,6 @@ object MangaTranslateRuntime {
             }
         }
         if (done.isEmpty()) {
-            // Text was found but nothing survived: either every engine
-            // reply failed (network/rate-limit — a retry may help) or every
-            // reply echoed the source (page already in the target language —
-            // retrying would spin the badge forever, so the holder clears).
             val anyReply = translated.any { !it.isNullOrBlank() }
             Logs.log("Manga", "tl-page raw=" + raw.size + " kept=" + kept.size + " replies=" + translated.count { !it.isNullOrBlank() } + " final=0")
             return@withContext if (anyReply) {

@@ -13517,6 +13517,12 @@ class PlayerActivity : ComponentActivity() {
             showError(I18n.t("No more servers to try."), false)
             return
         }
+        // Video decode is the heaviest allocation this process ever does and
+        // the crash logs show it landing on an already-full heap (the OOMs
+        // mid-playback at ~500/512MB). A no-op unless pressure is real.
+        runCatching {
+            (applicationContext as com.hikari.app.HikariApp).relieveHeapPressure("play")
+        }
         // A new video server ends any cross-server audio pairing: the sound
         // belonged to the previous picture (see [startDualAudio]).
         stopDualAudio()

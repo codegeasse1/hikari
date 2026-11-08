@@ -99,31 +99,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
-/**
- * The Manga tab.
- *
- * Everything here is one screen deep: the followed titles and what you were
- * reading, one card per installed manga engine to browse (its Popular and
- * Latest lists — the two catalogs every Mihon/keiyoushi source publishes), and a
- * search box that asks every engine at once. Tapping a title opens
- * [MangaDetailScreen]; tapping a "continue reading" card goes straight back into
- * [MangaReaderScreen] at the page you stopped on.
- *
- * The engine list is discovered, not configured: a manga engine is an ordinary
- * provider of [com.hikari.app.data.ProviderType.MANGA], installed through the
- * very same Extensions screen as an Aniyomi extension (the two are the same
- * file format), so this screen shows whatever is installed the moment it is
- * installed. With nothing installed the tab explains how to get one.
- *
- * Like IPTV, the tab's button is OFF by default — see Settings → Taskbar
- * buttons, and [com.hikari.app.data.AppStore.mangaTabFlow].
- */
-/**
- * Whether a search hit belongs in a TAG search: items whose known genre
- * list lacks the tag are title-only matches and are dropped, while items
- * with no genre info at all are kept (unknown is never a reason to hide
- * what the engine returned).
- */
 private fun genreMatches(itemGenres: List<String>, tag: String): Boolean {
     val want = tag.trim().lowercase()
     if (want.isEmpty()) return true
@@ -139,12 +114,6 @@ fun MangaScreen(nav: NavHostController, initialQuery: String = "", initialGenre:
     val context = LocalContext.current
     val app = context.applicationContext as HikariApp
     val all by app.providers.providers.collectAsState()
-    // One provider per SOURCE the engine publishes (an extension usually has
-    // one), which is exactly the granularity a reader wants: each is one site.
-    // Anymex manga (Mangayomi JS) is also a manga engine — same Browse / search.
-    // Manga / Novel pills (like My Stuff's History / Library): the tab only
-    // ever shows one kind — manga engines under Manga, novel engines under
-    // Novel — with its own search scope, Browse and Continue reading.
     var mangaTab by rememberSaveable { mutableStateOf("manga") }
     val wantNovel = mangaTab == "novel"
     fun isNovelEngineId(id: String): Boolean =
@@ -200,16 +169,9 @@ fun MangaScreen(nav: NavHostController, initialQuery: String = "", initialGenre:
     LaunchedEffect(initialEngine) {
         if (initialEngine.isNotBlank() && initialEngine != enginePick) enginePick = initialEngine
     }
-    // The filter over the installed engines under "Browse" — separate from the
-    // search box at the top of the screen (which queries the ENGINES). With a
-    // hundred extensions installed, finding the one to read in is half the work
-    // this screen does, and scrolling a hundred rows is not a way to do it.
     var engineFilter by rememberSaveable { mutableStateOf("") }
     // Shown when "Clear all" is tapped on the reading history.
     var confirmClearReading by remember { mutableStateOf(false) }
-    // Search rows live in the view-model, not in `remember`: opening a title
-    // leaves this composition, and coming back must find the rows still there
-    // (the search effect below skips re-asking when its key is unchanged).
     val searchVm: MangaSearchViewModel = viewModel()
     var results by searchVm::results
     var searching by searchVm::searching
@@ -218,9 +180,6 @@ fun MangaScreen(nav: NavHostController, initialQuery: String = "", initialGenre:
     var enginesLeft by searchVm::enginesLeft
 
     val scope = rememberCoroutineScope()
-    // Re-asks the engines after a verification WebView closes: a wall that
-    // has just been passed turns empty answers into real ones, and the grid
-    // must not sit on the old empties as if the check changed nothing.
     var verifyTick by remember { mutableStateOf(0) }
     // Pending "open this engine's site" question (see SiteOpenDialog): the
     // globe asks first, then opens the WebView or the device browser.
@@ -285,9 +244,6 @@ fun MangaScreen(nav: NavHostController, initialQuery: String = "", initialGenre:
     val searchTargets = remember(engines, enginePick) {
         engines.filter { enginePick.isBlank() || it.config.id == enginePick }
     }
-    // One key per question asked: coming back from a detail page re-enters
-    // this composition, and the same key with rows already in hand means the
-    // answer is still on screen — no re-search.
     val searchKey = typed + "\n" + genreTag + "\n" + enginePick + "\n" + engineKey
 
     // Page 2+ of the same question, per engine, appended under the page-1
@@ -354,10 +310,6 @@ fun MangaScreen(nav: NavHostController, initialQuery: String = "", initialGenre:
         }
     }
 
-    // Debounced cross-engine search. Runs on the text itself rather than on a
-    // keyboard action because the field is a plain BasicTextField (the app's
-    // shared glass search box) with no IME action to hook. verifyTick re-runs
-    // the same question after a verification WebView closes (see above).
     LaunchedEffect(typed, genreTag, enginePick, engineKey, verifyTick) {
         val tag = genreTag
         if (typed.isBlank() && tag.isBlank()) {
@@ -398,15 +350,6 @@ fun MangaScreen(nav: NavHostController, initialQuery: String = "", initialGenre:
             targets.forEach { p ->
                 launch {
                     try {
-                        // A tag tap searches the TAG, not the title: engines whose
-                        // extension declares a genre filter run it (null means no
-                        // such filter — fall back to a keyword search). Either way
-                        // only tag-holders are kept below, so title matches that
-                        // merely contain the word never leak into a tag search.
-                        // A null answer is a FAILURE (timeout/exception), not an
-                        // empty page: it counts a strike, and only the third
-                        // consecutive strike retires the engine — a walled first
-                        // page must not read as "this engine has nothing".
                         val keyword = typed.ifBlank { tag }
                         val found = withTimeoutOrNull(25_000L) {
                             runCatching {
@@ -447,16 +390,8 @@ fun MangaScreen(nav: NavHostController, initialQuery: String = "", initialGenre:
         searching = false
     }
 
-    // The adult-content switch filters these results too (see
-    // [com.hikari.app.data.NsfwGate]). It has to run HERE, above the grid rather
-    // than inside it: a lazy grid's builder is not a composable scope, so the
-    // gate's composable helper cannot be called from within it.
     val visibleResults = rememberVisibleItems(results)
 
-    // Grid item keys in composition order, mirroring the items below: Back
-    // from a reader lands on the tapped cell even when the read just added
-    // whole history/library sections above the saved spot — a bare index
-    // would park one section too low (see ScrollKeeper's anchor + follow).
     val mangaQueryActive = typed.isNotBlank() || genreTag.isNotBlank()
     val mangaGridKeys = buildList {
         add("manga-header")
@@ -480,9 +415,6 @@ fun MangaScreen(nav: NavHostController, initialQuery: String = "", initialGenre:
 
     LazyVerticalGrid(
         columns = GridCells.Adaptive(minSize = TvUi.gridMinFor(104)),
-        // Results position held per query (see ScrollKeeper): Back from a
-        // title lands on the tapped cell — anchor + follow while late rows
-        // stream in, not the stale index.
         state = com.hikari.app.ui.components.keptGridState("manga:$typed|$genreTag|$enginePick|$engineKey", itemKeys = mangaGridKeys),
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(
@@ -670,9 +602,6 @@ fun MangaScreen(nav: NavHostController, initialQuery: String = "", initialGenre:
                         },
                     )
                 }
-                // Answers still landing while results are already on screen:
-                // a slim footer says so, so the list reads as live rather
-                // than complete.
                 if (searching) {
                     item(key = "manga-searching-more", span = { GridItemSpan(maxLineSpan) }) {
                         Row(
@@ -694,13 +623,6 @@ fun MangaScreen(nav: NavHostController, initialQuery: String = "", initialGenre:
                         }
                     }
                 }
-                // Page 2+ lives behind this footer: reaching the end of the
-                // page-1 rows asks every engine with pages left for its next
-                // page, one page per engine per pass — the answers stream in
-                // the same way page 1 did, so paging never ends at page 1.
-                // Deliberately NOT gated on `searching`: page-1 stragglers
-                // must not hold the fast engines' page 2 hostage, and
-                // loadMore only asks engines whose page 1 already landed.
                 val queryActive = typed.isNotBlank() || genreTag.isNotBlank()
                 val moreLeft = searchTargets.any { searchVm.pagesDone[it.config.id] != true }
                 if (queryActive && moreLeft) {
@@ -737,10 +659,6 @@ fun MangaScreen(nav: NavHostController, initialQuery: String = "", initialGenre:
                 MangaSection(
                     title = tr("Continue reading"),
                     count = progress.size,
-                    // The reading history is prunable from here too, not only
-                    // from My Stuff → History: this is the surface a reader
-                    // actually opens, and sending them to another tab to remove
-                    // one entry would be absurd.
                     action = tr("Clear all") to { confirmClearReading = true },
                 ) {
                     LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -750,12 +668,6 @@ fun MangaScreen(nav: NavHostController, initialQuery: String = "", initialGenre:
                                 // The cover resumes reading; the title opens the
                                 // detail page (see ContinueCard).
                                 onCoverClick = {
-                                    // Novels resume in the text reader, manga
-                                    // in the image reader (see
-                                    // Routes.readingRoute) — never the image
-                                    // reader for both, which was the "novel
-                                    // from history says it could not load
-                                    // images" report.
                                     Routes.safeNavigate(
                                         nav,
                                         Routes.readingRoute(
@@ -784,13 +696,6 @@ fun MangaScreen(nav: NavHostController, initialQuery: String = "", initialGenre:
         item(key = "manga-browse", span = { GridItemSpan(maxLineSpan) }) {
             MangaSection(title = tr("Browse"), count = engines.size) {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    // The engine picker's own search box. ALWAYS here, however
-                    // few engines are installed: it was offered only past six
-                    // engines at first, on the theory that a short list needs no
-                    // filter — and the reader with four extensions and a name to
-                    // find was left scrolling a list this box would have answered
-                    // in one word. Below that a plain list reads the same with it
-                    // as without it.
                     GlassSearchField(
                         value = engineFilter,
                         onValueChange = { engineFilter = it },
@@ -800,10 +705,6 @@ fun MangaScreen(nav: NavHostController, initialQuery: String = "", initialGenre:
                     )
                     val listed = if (engineFilter.isBlank()) engines
                     else engines.filter { it.config.name.contains(engineFilter, ignoreCase = true) }
-                    // Pinned engines are drawn first — the long press on a row is
-                    // what pins one (see [EngineRow]), and the order is applied
-                    // here rather than stored, so a pin that outlives its engine
-                    // simply stops matching instead of leaving a hole in the list.
                     val shownEngines = if (pinned.isEmpty()) listed
                     else listed.sortedByDescending { it.config.id in pinned }
                     if (shownEngines.isEmpty()) {
@@ -814,11 +715,6 @@ fun MangaScreen(nav: NavHostController, initialQuery: String = "", initialGenre:
                             modifier = Modifier.padding(vertical = 8.dp),
                         )
                     }
-                    // Multi-source packs (one installed file publishing many
-                    // same-named sources — the "Akuma (8)…(15)" / "100 copies"
-                    // class) collapse into one header row per file with a
-                    // count, expanded to the per-source rows. Single-source
-                    // installs render exactly as before.
                     var expandedPacks by remember { mutableStateOf(setOf<String>()) }
                     val packs = remember(shownEngines) {
                         val order = LinkedHashMap<String, MutableList<ContentProvider>>()
@@ -910,29 +806,6 @@ fun MangaScreen(nav: NavHostController, initialQuery: String = "", initialGenre:
     }
 }
 
-/**
- * One engine's card: its icon and name, plus a shortcut into each of the two
- * lists every manga source publishes.
- *
- * The ROW itself opens the engine too (its Popular list), because tapping the
- * name of an extension and having nothing happen is the thing every user tries
- * first — the Popular/Latest pills are shortcuts for choosing a list, not the
- * only way in.
- *
- * A HOLD on the row (0.5 s — [holdOrTap]) reveals the pin, and the pin puts the
- * engine above every other one for good: with a hundred extensions installed,
- * finding the two a reader actually reads in is the same chore as finding one in
- * the first place, and a re-orderable list is the answer to it. The hold rather
- * than a button on every row because the row is already a tap target with two
- * pills on it — a fourth control on all hundred rows to serve the two that get
- * pinned is the wrong trade.
- *
- * The globe is the Cloudflare-verification WebView: a manga site
- * behind a bot wall answers every request with a challenge until a browser has
- * passed it, and an extension cannot open a browser for itself, so the user
- * needs a button that loads the site's own page, lets them clear the check, and
- * closes itself once the clearance is in the jar.
- */
 @Composable
 private fun EngineRow(
     engine: ContentProvider,
@@ -962,12 +835,6 @@ private fun EngineRow(
         Row(
             Modifier
                 .fillMaxWidth()
-                // Tap opens the engine (its Popular list). A 0.5 s HOLD reveals
-                // the pin instead — the same gesture, timed by the same helper,
-                // as the Home picker's multi-select hold (see [holdOrTap] and
-                // [HOLD_MS]), so a reader learns it once. While the pin control
-                // is showing a tap puts it away rather than opening the engine,
-                // which is what every other context menu does.
                 .pointerInput(providerId, revealPin) {
                     holdOrTap(
                         onHold = onRevealPin,
@@ -979,13 +846,6 @@ private fun EngineRow(
                         },
                     )
                 }
-                // The D-pad half: a `pointerInput` is invisible to the focus
-                // system, so without this a remote could not open a manga engine
-                // at all (the same defect the Home picker's rows had).
-                // `previewPass = false` because the row holds its own controls
-                // (the Popular/Latest chips): a press aimed at one of those is
-                // theirs, and only a press nothing else claimed opens the
-                // engine.
                 .tvPress(previewPass = false, onClick = {
                     if (revealPin) onRevealPin()
                     else openCatalog(
@@ -1024,9 +884,6 @@ private fun EngineRow(
                     }
                 }
             }
-            // Revealed by the hold. Two buttons, because both answers have to be
-            // reachable: the pin itself, and "no thanks" — without the second one
-            // the only way out of the control was to hold another row.
             if (revealPin) {
                 IconButton(onClick = onTogglePin) {
                     Icon(
@@ -1055,9 +912,6 @@ private fun EngineRow(
                         .size(15.dp),
                 )
             }
-            // "Open in…": the in-app WebView (a normal open, keeping the
-            // verification extras below) or the device browser, the same as
-            // tapping any link on the phone.
             var siteAsk by remember { mutableStateOf<SiteAsk?>(null) }
             siteAsk?.let { ask ->
                 SiteOpenDialog(
@@ -1071,9 +925,6 @@ private fun EngineRow(
                                 putExtra("url", a.site)
                                 putExtra("title", "Verify: " + (a.host ?: a.title))
                                 putExtra("providerId", a.providerId)
-                                // Closes itself the moment the clearance is in
-                                // the cookie jar, so the user does not have to
-                                // know when they are "done".
                                 putExtra("autoCloseWhenCloudflarePassed", true)
                                 if (a.host != null) putExtra("verifyHost", a.host)
                             }
@@ -1093,11 +944,6 @@ private fun EngineRow(
             }
             IconButton(
                 onClick = {
-                    // The site is derived by LOADING the extension (its source's
-                    // baseUrl), which is blocking — hence the IO hop, and hence
-                    // the toast when no link in the chain names a site. The
-                    // chain also tries the install's own URLs and needs no
-                    // per-engine branch.
                     scope.launch {
                         val site = withContext(Dispatchers.IO) {
                             runCatching { webUrlChain(engine) }.getOrNull()
@@ -1159,12 +1005,6 @@ internal fun SiteOpenDialog(
     )
 }
 
-/**
- * Header for one installed file publishing many same-named sources (the
- * "Akuma (8)…(15)" class): the file's icon, its bare name, a count pill,
- * and expand/collapse. A tap (or D-pad OK) toggles; the per-source
- * [EngineRow]s underneath open exactly as before.
- */
 @Composable
 private fun EnginePackRow(
     name: String,

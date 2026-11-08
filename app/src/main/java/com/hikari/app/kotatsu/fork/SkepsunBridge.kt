@@ -17,16 +17,6 @@ import org.skepsun.kototoro.parsers.model.ContentTag
 import org.skepsun.kototoro.parsers.model.RATING_UNKNOWN
 import org.skepsun.kototoro.parsers.model.SortOrder
 
-/**
- * A skepsun (kototoro) [ContentParser] speaking the Tachiyomi [CatalogueSource]
- * API — the same bridge [com.hikari.app.kotatsu.KotatsuBridge] is for the
- * official parsers, so [com.hikari.app.manga.MangaProvider] drives fork
- * manga/novel rows unchanged.
- *
- * Video sources ([ContentType.VIDEO]/HENTAI_VIDEO) expose their playback as pages
- * (an M3U8/MP4 url per page); those rows ride [ForkVideoProvider] instead and
- * never reach this bridge.
- */
 class SkepsunBridge(
 	private val parser: ContentParser,
 ) : CatalogueSource {
@@ -205,21 +195,11 @@ class SkepsunBridge(
 	private fun absoluteUrl(url: String): String {
 		val u = url.trim()
 		if (u.startsWith("http://") || u.startsWith("https://")) return u
-		// Parser domains are bare hosts (`91pinse.com`, no scheme) — without
-		// one the request layer rejects the URL ("no scheme was found") and
-		// details/chapters/pages all fail. A scheme-carrying domain (mirror
-		// overrides) is used verbatim.
 		val d = parser.domain.trim().trimEnd('/')
 		val base = if (d.startsWith("http://") || d.startsWith("https://")) d else "https://$d"
 		return base + "/" + u.trimStart('/')
 	}
 
-	/** Direct media urls + per-page request headers for a VIDEO chapter: the
-	 *  parser's playback API answers with the file per page, and each page
-	 *  carries the headers (Referer, cookies, UA) its host demands — the same
-	 *  headers Kotatsu's own reader sends per image. [getPageList] cannot
-	 *  carry them (Tachiyomi pages hold no headers), so video rows read this
-	 *  instead. Urls are absolutized (see [absoluteUrl]). */
 	suspend fun videoPages(chapterUrl: String, chapterName: String?): List<Pair<String, Map<String, String>>> {
 		val src = enumSrc ?: return emptyList()
 		val kc = ContentChapter(

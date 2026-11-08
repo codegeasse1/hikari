@@ -17,16 +17,6 @@ import org.hany18h.parsers.model.MangaTag
 import org.hany18h.parsers.model.RATING_UNKNOWN
 import org.hany18h.parsers.model.SortOrder
 
-/**
- * A vendored hany18h [MangaParser] speaking the Tachiyomi [CatalogueSource] API —
- * the same bridge [com.hikari.app.kotatsu.KotatsuBridge] is for the official
- * parsers, so [com.hikari.app.manga.MangaProvider] drives fork manga/novel rows
- * unchanged (Popular / Latest, search, details, chapters, pages).
- *
- * Id mapping mirrors the official bridge: per-site Long ids collide across sites,
- * so Tachiyomi-facing traffic carries the site-relative url and synthetic numeric
- * ids derive from it.
- */
 class Hany18hBridge(
 	private val parser: MangaParser,
 ) : CatalogueSource {
@@ -177,9 +167,6 @@ class Hany18hBridge(
 	private fun absoluteUrl(url: String): String {
 		val u = url.trim()
 		if (u.startsWith("http://") || u.startsWith("https://")) return u
-		// Parser domains are bare hosts (no scheme) — without one the request
-		// layer rejects the URL ("no scheme was found") and details/chapters
-		// pages all fail. A scheme-carrying domain is used verbatim.
 		val d = parser.domain.trim().trimEnd('/')
 		val base = if (d.startsWith("http://") || d.startsWith("https://")) d else "https://$d"
 		return base + "/" + u.trimStart('/')

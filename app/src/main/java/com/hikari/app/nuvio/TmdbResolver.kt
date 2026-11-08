@@ -14,23 +14,6 @@ import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
-/**
- * Converts whatever identifier Hikari has for a title into the (tmdbId,
- * mediaType) pair that Nuvio providers consume. Strategy, in order:
- *  1. the id is already a numeric TMDB id → use it (probing movie/tv when the
- *     type is unknown);
- *  2. the id is an IMDb id (`tt…`) → TMDB /find with external_source=imdb_id;
- *  3. otherwise search TMDB by title + year.
- *
- * Two special cases: a tmdb:digits id names its TMDB row directly (no
- * search), and a tracker anime row never falls back to a title search —
- * Simkl exact TMDB mapping or nothing, because a fuzzy anime search has
- * repeatedly picked an unrelated show.
- *
- * Public TMDB API keys — nuvio providers embed their own keys, these are used
- * only for Hikari's own resolution lookups and are the same keys those
- * providers ship in their (public) source.
- */
 object TmdbResolver {
 
     data class Resolved(val tmdbId: String, val mediaType: String) // "movie" | "tv"
@@ -45,15 +28,6 @@ object TmdbResolver {
     fun builtinKey(): String = API_KEYS.firstOrNull().orEmpty()
     private const val API_BASE = "https://api.themoviedb.org/3"
 
-    /**
-     * The language TMDB CONTENT requests are answered in ("es-ES", "ja-JP" …).
-     * Blank = TMDB's own default (English). Kept here rather than read from the
-     * preference store on every call, because a fan-out source search makes
-     * dozens of TMDB requests at once; it is mirrored from Settings at launch
-     * and whenever the choice changes. Search/lookup endpoints deliberately
-     * ignore it — a title search must match the ORIGINAL name too, and asking
-     * TMDB to translate the query as well only narrows what it can find.
-     */
     @Volatile
     var contentLanguage: String = ""
 
@@ -65,11 +39,6 @@ object TmdbResolver {
 
     private val memory = ConcurrentHashMap<String, Resolved>()
 
-    /** Single-flight guard: several Nuvio providers resolve the SAME item at
-     *  once when a source search fans out, and without this each one fired its
-     *  own TMDB lookup — duplicate network round-trips (and TMDB rate-limit
-     *  pressure) that delayed the first server by seconds. Now the first
-     *  caller does the lookup and the rest await it. */
     private val inflight = ConcurrentHashMap<String, kotlinx.coroutines.CompletableDeferred<Resolved?>>()
 
     /** Cheap pre-filter: can we plausibly resolve this item to a TMDB id? */
@@ -83,11 +52,6 @@ object TmdbResolver {
     suspend fun resolve(item: MediaItem): Resolved? {
         val key = cacheKey(item)
         memory[key]?.let { return it }
-        // Tracker rows never touch the FILE cache: older builds stored
-        // wrong-show TMDB ids under tracker numeric ids here, and trusting
-        // those rows again would re-list another show's episodes. The
-        // in-memory single-flight still applies, so one session resolves a
-        // title once.
         val trackerRow = isTrackerAnime(item)
         if (!trackerRow) {
             loadCache()[key]?.let {
@@ -121,10 +85,6 @@ object TmdbResolver {
         val id = item.id.trim()
         tmdbPrefixedId(id)?.let { return "id|$it|${typeHint(item)}" }
         return when {
-            // A bare numeric id is a TMDB row id ONLY for TMDB-backed items
-            // (see isTmdbBacked, and the resolveNetwork note): an extension's
-            // own numeric id must key by title, never by id, or one wrong
-            // mapping poisons every later open of that title.
             id.isNotEmpty() && id.all { it.isDigit() } && isTmdbBacked(item) -> "id|$id|${typeHint(item)}"
             id.lowercase().startsWith("tt") -> "imdb|$id|${typeHint(item)}"
             // The ORIGINAL name is the one TMDB indexes; a display name
@@ -140,17 +100,6 @@ object TmdbResolver {
         MediaType.UNKNOWN -> "unknown"
     }
 
-    /**
-     * True when this item's own id namespace IS TMDB's: a TMDB catalogue row,
-     * preset, franchise or Similar cell (`providerId = "tmdb"`,
-     * `rawType = "tmdb"`). Only those may treat a bare numeric id as a TMDB
-     * row id. Every extension (Castle TV, site scrapers, …) carries its OWN
-     * numeric ids, and resolving those as TMDB rows picked an unrelated title
-     * or nothing — which blanked the whole detail page (no hero, no details,
-     * no data) for every title of every such extension. Those fall through
-     * to the title search instead, which is the same route that already
-     * worked for them.
-     */
     private fun isTmdbBacked(item: MediaItem): Boolean {
         if (item.providerId.equals("tmdb", ignoreCase = true)) return true
         if (item.providerId.startsWith("tmdb|")) return true
@@ -160,11 +109,6 @@ object TmdbResolver {
 
     private suspend fun resolveNetwork(item: MediaItem): Resolved? {
         val id = item.id.trim()
-        // Tracker anime rows carry the TRACKER's numeric id (AniList/MAL/Kitsu),
-        // not a TMDB id. Treating it as one resolved every anime title to an
-        // unrelated TMDB entry (wrong details, wrong episodes, servers for the
-        // wrong show). Simkl maps anime to its TMDB id exactly, so that
-        // mapping is the only TMDB route tracker rows get.
         if (isTrackerAnime(item)) {
             runCatching { TrackerAnimeResolver.simklTmdbRef(item) }.getOrNull()?.let { ref ->
                 if (ref.tmdbId.isNotBlank()) return Resolved(ref.tmdbId, ref.mediaType)
@@ -193,23 +137,11 @@ object TmdbResolver {
         return searchByTitle(item)
     }
 
-    /**
-     * Exact-only anime title search for stream/artwork resolution: the
-     * candidate must match by NAME (never best-effort), agree on year, and
-     * look Japanese-origin. Returns null when nothing qualifies rather than
-     * a wrong show — a wrong id here would ask providers about another title.
-     */
     private suspend fun searchByTitleExactAnime(item: MediaItem): Resolved? {
         val title = item.searchTitle
         if (title.isBlank()) return null
         val variants = TmdbMeta.queryVariants(title).take(4)
         if (variants.isEmpty()) return null
-        // A row that names its season ("… Season 3") is a SEQUEL entry: its
-        // year is that season's, while TMDB's first_air_date is the series
-        // premiere (S1) — so the year gate below can never pass for it, and
-        // every sequel-season tracker row resolved to nothing (bare
-        // "Episode N" rows with no names or descriptions). The exact-name plus
-        // Japanese-origin gates stay, so this still never maps a wrong show.
         val sequelRow = TmdbMeta.seasonHint(title) != null
         var best: Resolved? = null
         var bestScore = 0
@@ -294,41 +226,12 @@ object TmdbResolver {
         }
     }
 
-    /**
-     * Resolves an extension/scraper item by name. Site metas decorate titles in
-     * ways TMDB's search index does not match — "Sword of Coming Season 2" and
-     * "Battle Through The Heavens: Origin" both return ZERO results for the
-     * literal query — and a franchise's English name on a site is often a
-     * different translation than TMDB's ("Battle Through The Heavens" is
-     * "Fights Break Sphere" there). Either case used to leave the item
-     * unresolved, which silently removed the Cast, Trailers, Details,
-     * Related and Similar sections on the whole detail page.
-     *
-     * So: search every progressively stripped form of the title
-     * ([TmdbMeta.queryVariants]) and score all candidates together, and when
-     * nothing matches by name, look through the alternate titles of the top
-     * results before giving up. Only names are used to accept a match — the
-     * year merely breaks ties — because a wrong-but-close year must never pick
-     * a different show.
-     */
     private suspend fun searchByTitle(item: MediaItem): Resolved? {
-        // A bare generic word from a site-scraped catalogue ("Today",
-        // "News", "Live") exact-matches an unrelated TMDB entry (the NBC
-        // morning show, …) with a top score — and the detail page then wears
-        // that show's overview, companies, trailers and ratings. A
-        // single-token title that short, with no year to corroborate it and
-        // no TMDB/tracker id behind it, is refused outright: losing the
-        // enrichment on the rare real one-word short title is invisible next
-        // to wearing another show's whole identity.
         if (isGenericShortTitle(item)) return null
         // The original name first: a title the app renamed for display (TMDB
         // language) still has to be looked up by the name TMDB indexes it under.
         val title = item.searchTitle
         if (title.isBlank()) return null
-        // Every name the item is known by: the display title and the original
-        // can each be the one TMDB (or the site) spells differently — a
-        // franchise's English name on a site is often a different translation
-        // than TMDB's — so variants are built from both, display included.
         val variants = item.allTitles.flatMap { TmdbMeta.queryVariants(it) }.distinct()
         if (variants.isEmpty()) return null
         val kinds = when (item.type) {
@@ -351,11 +254,6 @@ object TmdbResolver {
                     if (id.isBlank() || id == "null") continue
                     if (seen.add(id)) found.add(id to kind)
                     var score = candidateScore(o, variants, year)
-                    // Year veto: a containment-only hit (no exact/prefix match)
-                    // against a different year's title is how one show's page
-                    // wears another's details — reject it outright. Exact and
-                    // prefix hits (40+) always survive: a sequel season's year
-                    // is its own while TMDB's date is the premiere.
                     if (score in 1..39 && year != null && year > 0) {
                         val raw = o.optString("release_date").ifBlank { o.optString("first_air_date") }
                         val y = raw.take(4).toIntOrNull()
@@ -374,13 +272,6 @@ object TmdbResolver {
         if (best != null && bestScore > 0) return best
         return alternativeMatch(found, variants)
             ?: best
-            // Still nothing: the title is known to IMDb and to nobody's search
-            // index in the form the site printed it ("… Episode 172 English
-            // Subtitles", a fan-translated name, a romanisation TMDB spells
-            // differently). IMDb's suggestion endpoint needs no key and answers
-            // with the tt-id, which TMDB can then be asked about directly — a
-            // second chance that costs two requests and only runs when every
-            // name search has already come back empty.
             ?: searchViaImdb(item)
     }
 
@@ -433,11 +324,6 @@ object TmdbResolver {
         return runCatching { resolveImdb(tt, item) }.getOrNull()
     }
 
-    /** True when [item] is a site-scraped extension row whose whole title is one
-     *  short word (see [searchByTitle]): nothing a real catalogue title looks
-     *  like, everything a nav-link card looks like. TMDB rows, tracker rows
-     *  and any id that already names a TMDB/IMDb entry never qualify — only a
-     *  blind name search could misfire on those. */
     private fun isGenericShortTitle(item: MediaItem): Boolean {
         if (item.providerId.equals("tmdb", true)) return false
         if (item.providerId.lowercase() in setOf("anilist", "simkl", "mal", "kitsu", "shikimori", "trakt")) return false
@@ -474,12 +360,6 @@ object TmdbResolver {
         return score
     }
 
-    /**
-     * Last resort for a title TMDB indexes under a different translation: check
-     * the alternate titles of the first few search results (TMDB keeps
-     * "Battle Through the Heavens" as an alias of "Fights Break Sphere"). Only
-     * the top results are checked, so a miss costs a couple of requests.
-     */
     private suspend fun alternativeMatch(
         found: List<Pair<String, String>>,
         variants: List<String>,
@@ -496,15 +376,6 @@ object TmdbResolver {
         return null
     }
 
-    /** GETs a TMDB endpoint, rotating the API key on auth/rate errors.
-     *
-     *  ALWAYS hops to [Dispatchers.IO] first: OkHttp's `execute()` is blocking,
-     *  and every caller of this used to inherit ITS thread — the detail screen's
-     *  background shelf/extras lookup ran on `viewModelScope` (the main thread),
-     *  so the call was killed by NetworkOnMainThreadException and swallowed by
-     *  its `runCatching`, leaving the Cast/Trailers/Details/Related/Similar
-     *  sections silently missing on every title. Suspending on IO here makes
-     *  every present and future caller safe by construction. */
     suspend fun apiGet(
         path: String,
         query: Map<String, String>,
@@ -521,17 +392,6 @@ object TmdbResolver {
             for (key in keys) {
                 val params = LinkedHashMap<String, String>(query)
                 if (lang.isNotBlank()) params["language"] = lang
-                // The adult-content switch, enforced AT THE REQUEST for a
-                // catalogue query. A catalogue answer carries no certificate of
-                // its own — a row is a title, a poster and a year — so there is
-                // nothing in it to filter against, and asking TMDB to leave the
-                // films out is the only thing that keeps an R-rated title out of
-                // every row, grid and Production/Network catalogue at once. This
-                // also rewrites the movie LIST endpoints (`/movie/popular`,
-                // `/trending/*`…) into the discover query that CAN be told, which
-                // is why turning the switch off changes those rows too (see
-                // [NsfwGate.restrictRequest]). A no-op for every other endpoint
-                // and for every user with the switch on.
                 val askPath = NsfwGate.restrictRequest(path, params)
                 params["api_key"] = key
                 val qs = params.entries.joinToString("&") { (k, v) ->

@@ -10,29 +10,6 @@ import java.io.File
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 
-/**
- * The CHARACTERS of an anime title, from AniList.
- *
- * TMDB's `credits` for an anime lists the voice actors, whose faces mean
- * nothing to someone who knows the show — the characters are the cast the
- * viewer actually recognises (Luffy, Gojo, Eren), and AniList publishes exactly
- * that pairing: every character with its portrait and, as its second line, the
- * Japanese actor who voices them.
- *
- * Only a CONFIDENT match is used. A search hit is accepted when the requested
- * title and the hit's romaji/english/native title describe the same show (one
- * title's significant words contain the other's) and their years agree (within
- * two, since a season and its show can disagree by one), and when the year is
- * unknown on either side the title test alone must pass. Anything else returns
- * an empty list, which the caller reads as "keep the voice-actor list" — a
- * wrong show's characters would be worse than the cast TMDB already has.
- *
- * Decoration only, exactly like [Ratings]: the lookup runs in the background,
- * contributes nothing when it fails, goes out on the quiet HTTP client (a
- * metadata service must never raise the Home screen's "verification needed"
- * banner) and is cached on disk — characters never change, so a hit is kept for
- * a month and a miss is retried after a few hours.
- */
 object AnimeCast {
 
     private const val ENDPOINT = "https://graphql.anilist.co"
@@ -54,11 +31,6 @@ object AnimeCast {
 
     private val cacheFile: File get() = File(HikariApp.instance.filesDir, "anime-cast-cache.json")
 
-    /**
-     * The characters of [title], or an empty list when none can be established.
-     * [cacheKey] is the caller's stable identity for the title (a TMDB id), so
-     * the same show opened from five different extensions is one lookup.
-     */
     suspend fun characters(title: String, year: Int?, cacheKey: String): List<CastMember> =
         withContext(Dispatchers.IO) {
             if (title.isBlank()) return@withContext emptyList()
@@ -77,11 +49,6 @@ object AnimeCast {
 
     /** One AniList GraphQL round-trip: search, then read the character edges. */
     private fun fetch(title: String, year: Int?): List<CastMember> {
-        // `$search` is escaped because this is a Kotlin raw string: the GraphQL
-        // variable is a literal `$search`, not an interpolation.
-        // No language filter on voiceActors: Japanese for anime, Chinese for
-        // donghua — filtering JAPANESE only left donghua characters with no
-        // actor line (or a bare MAIN/SUPPORTING role).
         val query = """
             query (${'$'}search: String) {
               Media(search: ${'$'}search, type: ANIME, sort: SEARCH_MATCH) {
@@ -115,12 +82,6 @@ object AnimeCast {
         return edgesToCast(edges)
     }
 
-    /**
-     * The characters of one AniList media id, with no title match at all.
-     * The caller already vetted the id (it is the anime index's own pick for
-     * this item), so whatever comes back IS this show's cast — the strongest
-     * universal path: aliases and years cannot veto what needs no matching.
-     */
     suspend fun charactersByMediaId(id: Int, cacheKey: String): List<CastMember> =
         withContext(Dispatchers.IO) {
             if (id <= 0) return@withContext emptyList()
@@ -180,13 +141,6 @@ object AnimeCast {
         return out
     }
 
-    /**
-     * True when [media] really is the title that was asked for: one of its
-     * titles or synonyms has to describe the same show as [title] (exact
-     * equality, token containment or TMDB-grade titleScore 40+) and the
-     * years must not contradict each other (exact equality skips the year —
-     * a season entry and the show entry legitimately disagree by years).
-     */
     private fun confidentMatch(title: String, year: Int?, media: JSONObject): Boolean {
         val t = media.optJSONObject("title")
         val candidates = ArrayList<String>(8)

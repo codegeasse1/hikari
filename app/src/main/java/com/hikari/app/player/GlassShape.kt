@@ -6,55 +6,10 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sqrt
 
-/**
- * The silhouette of the player's glass surfaces. Every dialog panel is cut to
- * THIS outline ([CurvedGlassPanel]) and the neon light is painted along this
- * same edge, so the panel is one single curved shape — there is no rectangle
- * with a hoop drawn behind it.
- *
- * The shape is a curved PANE, not a pillow and not a rounded rectangle. Both
- * vertical edges bow the SAME way (toward +x):
- *
- *  - the RIGHT edge bulges outward, past the box, by [BULGE_X] of the
- *    half-width, and
- *  - the LEFT edge bows inward, into the panel, by [CONCAVE_X] of the
- *    half-width.
- *
- * Each edge is a genuine circular arc of constant curvature spanning the
- * panel's full height — measured off the reference, its right edge traces an
- * arc of radius ~427px over a ~490px-tall panel, reaching ~27% of a half-width
- * further out at mid-height than at its top and bottom ends. The top and bottom
- * are the short straight runs that close the shape and their four corners are
- * the only places the outline is not an arc, so [build] rounds them with a
- * couple of corner-cutting passes.
- *
- * [buildSides] traces ONLY the two arcs. The reference has no light along the
- * flat top and bottom: the glow runs up one bowed side and down the other and
- * fades out at the ends. Stroking the closed outline would draw exactly the two
- * horizontal "box" lines the reference does not have, and an earlier attempt
- * that swept the light around the corners instead left short horizontal stubs
- * pointing at the panel's middle — keeping the light on the bare arcs is what
- * removes both.
- */
 object GlassShape {
 
-    /**
-     * How far the RIGHT edge bulges outward, as a fraction of the panel's
-     * half-width. This is the value that decides whether the panel reads as
-     * curved at all, so it is deliberately large — the reference's side arc
-     * reaches ~27% of a half-width further out at mid-height than at its
-     * corners.
-     */
     const val BULGE_X = 0.27f
 
-    /**
-     * How far the LEFT edge bows inward, as a fraction of the panel's
-     * half-width. Positive means it curves INTO the panel (the middle of the
-     * left edge sits to the right of its ends) — the "curves inside" the
-     * reference shows, and the opposite direction to the right edge. A
-     * symmetric pillow (both sides bulging out) was rejected for exactly this
-     * reason.
-     */
     const val CONCAVE_X = 0.167f
 
     /** Samples along each full-height edge arc. */
@@ -63,11 +18,6 @@ object GlassShape {
     /** Samples along each straight top/bottom run, excluding its ends. */
     private const val FLAT_SAMPLES = 8
 
-    /**
-     * Corner-cutting passes over the finished outline (silk-smoothing only —
-     * at this sampling density it just rounds the four corners where an arc
-     * meets a flat run).
-     */
     private const val SMOOTH_PASSES = 2
 
     /** Outward bulge of the right edge, in px, clamped so its arc stays a
@@ -79,13 +29,6 @@ object GlassShape {
     private fun sagIn(hw: Float, hh: Float, concaveX: Float) =
         min(hw * concaveX, hh * 0.95f).coerceAtLeast(1e-3f)
 
-    /**
-     * The x of the LEFT boundary at [y] (measured from the box's top edge),
-     * relative to the box's left edge. The left edge is a circular arc whose
-     * ends sit on the box's left side and whose middle is pulled in by
-     * [CONCAVE_X] of the half-width, so this is 0 at the very top and bottom and
-     * largest at mid-height.
-     */
     fun leftEdge(
         w: Float,
         h: Float,
@@ -102,12 +45,6 @@ object GlassShape {
         return (sl - rl) + sqrt(max(rl * rl - dy * dy, 0f))
     }
 
-    /**
-     * The x of the RIGHT boundary at [y] (measured from the box's top edge),
-     * relative to the box's left edge. The right edge is a circular arc that
-     * touches the box's right side at mid-height and is pulled back in by
-     * [BULGE_X] of the half-width at the top and bottom.
-     */
     fun rightEdge(
         w: Float,
         h: Float,
@@ -124,11 +61,6 @@ object GlassShape {
         return (w - rr) + sqrt(max(rr * rr - dy * dy, 0f))
     }
 
-    /**
-     * Traces the closed silhouette into [path], fitted to the given box: the
-     * right arc from top to bottom, the bottom run right to left, the left arc
-     * from bottom to top, and the top run left to right.
-     */
     fun build(
         path: Path,
         left: Float,
@@ -179,14 +111,6 @@ object GlassShape {
         path.close()
     }
 
-    /**
-     * Traces ONLY the two bowed sides into [path], as two open subpaths that
-     * each span the panel's full height.
-     *
-     * This is what the neon light follows. There is no glow along the flat top
-     * and bottom runs — no horizontal "box" lines and no short horizontal stubs
-     * at the corners — because the light never leaves the arcs.
-     */
     fun buildSides(
         path: Path,
         left: Float,

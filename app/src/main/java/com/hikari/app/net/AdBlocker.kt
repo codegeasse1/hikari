@@ -3,20 +3,6 @@ package com.hikari.app.net
 import android.content.Context
 import java.io.File
 
-/**
- * Hosts-file ad blocker for the WebView tab (sites opened from the Extensions
- * screen). NEVER applied to the video player — ExoPlayer does its own network
- * I/O and is deliberately untouched by this engine, so blocking a CDN domain
- * can never break playback.
- *
- * Supports any hosts file in the classic format (StevenBlack, AdAway, yoyo):
- *   0.0.0.0 ad.doubleclick.net
- *   127.0.0.1 example.com        # comment
- *   plain-domain.example.com
- * plus plain one-domain-per-line lists. Downloads are cached under
- * filesDir/adblock/ so the blocklist works offline; "Update lists" in
- * Settings refreshes them.
- */
 object AdBlocker {
 
     data class HostList(val name: String, val url: String)
@@ -102,11 +88,6 @@ object AdBlocker {
         return all
     }
 
-    /**
-     * Final blocked set for the WebView: cached list domains + built-ins +
-     * manual blocklist, minus anything on the whitelist. Returns
-     * (blockedDomains, whitelistDomains); check the whitelist FIRST.
-     */
     fun resolve(
         context: Context,
         lists: List<HostList>,
@@ -177,26 +158,6 @@ object AdBlocker {
             .substringBefore('/').substringBefore('?')
             .substringBefore('#').trim().trimEnd('.').lowercase()
 
-    // ------------------------------------------------ URL-pattern blocking
-    //
-    // The uBO-style half a hosts file cannot do. Hosts only match whole
-    // DOMAINS, so everything below sailed straight through even with lists
-    // added and enabled (the user's own report): ads served from the site's
-    // OWN domain (`site.com/ads/banner.js`, `site.com/pop.js`), from ad
-    // subdomains no list names yet (`xyz.ads-network.foo`), and rotating
-    // popunder/popup hosts. These EasyList-subset network rules match the
-    // URL itself, and run in the WebView's request interceptor right after
-    // the hosts check (whitelist and the media exemption both still win —
-    // see the call site).
-    //
-    // Supported syntax (the practical core of EasyList/uBO network rules):
-    //   ||domain^path*   domain-anchored (any subdomain, any scheme)
-    //   |http…|          start/end anchored
-    //   plain substring  (with * wildcards)
-    //   ^               a "separator" (end of host, /, ?, &, =, : …)
-    //   @@…             exception — never block, wins over everything
-    //   $third-party / $~third-party, $domain=a|~b, $script,stylesheet,image,
-    //   font,media,xmlhttprequest,subdocument,other, $match-case
 
     data class PatternRule(
         val raw: String,
@@ -397,11 +358,6 @@ object AdBlocker {
         return true
     }
 
-    /**
-     * True when a URL is blocked by pattern rules (exceptions win). The
-     * caller still checks the whitelist first and never blocks media —
-     * this answers only "does a rule match".
-     */
     fun matchesPatternUrl(url: String, pageHost: String?, type: String = "other"): Boolean {
         val reqHost = runCatching {
             java.net.URI(url).host

@@ -14,12 +14,6 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 
-/**
- * Text-chapter translation for the novel reader: the same engines, source
- * languages and target languages as manga translation, applied to plain
- * paragraphs instead of page images. Results are cached per chapter+settings
- * on disk (like manga), so reopening costs nothing.
- */
 object NovelTranslateRuntime {
     private var dir: File? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -38,11 +32,6 @@ object NovelTranslateRuntime {
         job.invokeOnCompletion { /* fire and forget */ }
     }
 
-    /**
-     * Translated paragraphs, 1:1 with [paras] (untranslated entries keep the
-     * original text). Null when translation is off or every engine failed —
-     * the caller then keeps showing the original chapter.
-     */
     suspend fun translateChapter(
         pageKey: String,
         paras: List<String>,
@@ -73,10 +62,6 @@ object NovelTranslateRuntime {
     ): List<String>? = withContext(Dispatchers.IO) {
         val out = ArrayList<String>(paras.size)
         var anyTranslated = false
-        // Google rides one GET URL per batch: long novel paras blew past the
-        // URL limit, so the whole chapter failed and the reader kept the
-        // original ("Google does nothing"). Small chunks for Google, big for
-        // the rest. Cache key v3 above drops the old all-original results.
         val chunkSize = if (st.engine == MangaTranslateEngine.GOOGLE) 6 else 40
         for (chunk in paras.chunked(chunkSize)) {
             val tr = try {

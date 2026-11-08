@@ -23,13 +23,6 @@ import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
-/**
- * Adapts a Nuvio JS provider to Hikari's ContentProvider contract. Nuvio
- * providers have no catalogs/search of their own — they resolve sources purely
- * from a TMDB id + mediaType (+ season/episode for series), which is exactly
- * how the official NuvioMobile app calls them. Hikari resolves the TMDB id via
- * [TmdbResolver] and plays whatever the provider returns.
- */
 class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
 
     companion object {
@@ -47,12 +40,6 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
         private const val IMG_L = "https://image.tmdb.org/t/p/w1280"
         private const val MAX_SEASONS = 24
 
-        /** What a nuvio site actually hosts, inferred from its scraper file
-         *  name. Nuvio providers export no catalog/search API of their own, so
-         *  Hikari browses TMDB on their behalf — but the catalog must match the
-         *  site's niche (an anime provider showing live-action movies is
-         *  useless), and it must differ between providers so installing three
-         *  extensions doesn't show three identical home screens. */
         private enum class Niche { ANIME, HINDI, KDRAMA, FRENCH, PERSIAN, GENERAL }
 
         private class RowDef(
@@ -75,9 +62,6 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
             RowDef("g8", MediaType.SERIES, "/tv/on_the_air", emptyMap(), "On TV"),
         )
 
-        // TMDB genre 16 = Animation, restricted to Japanese origin so anime
-        // sites actually show anime (not Family Guy). vote_count.gte=100 keeps
-        // "Top Rated" rows free of obscure 1-vote junk.
         private val ANIME_ROWS = listOf(
             RowDef("a0", MediaType.SERIES, "/discover/tv", mapOf("with_genres" to "16", "with_origin_country" to "JP", "sort_by" to "popularity.desc"), "Popular Anime"),
             RowDef("a1", MediaType.SERIES, "/discover/tv", mapOf("with_genres" to "16", "with_origin_country" to "JP", "sort_by" to "vote_average.desc", "vote_count.gte" to "100"), "Top Rated Anime"),
@@ -137,13 +121,6 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
             }
         }
 
-        /** Deterministic slice of [pool] so different providers of the same
-         *  niche still show different rows. Windows are CIRCULAR (they wrap
-         *  past the end of the pool), so every row gets a fair chance of
-         *  appearing and the number of distinct catalogs equals the pool size,
-         *  not pool.size - take + 1. The caller passes an [offset] that is
-         *  unique per provider (see [rows]) — two same-niche providers can then
-         *  never land on the same home screen. */
         private fun window(pool: List<RowDef>, take: Int, offset: Int): List<RowDef> {
             val n = pool.size
             if (n <= 0) return emptyList()
@@ -152,26 +129,9 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
         }
     }
 
-    // Nuvio providers resolve sources purely from a TMDB id, and export no
-    // catalog/search API of their own — so Hikari browses TMDB on their
-    // behalf (same as the official NuvioMobile app). But instead of one shared
-    // catalog for every extension, each provider gets its own niche-matched
-    // catalog: anime sites show anime, Hindi sites show Hindi content, Korean
-    // drama sites show K-dramas, and general sites get the usual rows. Rows are
-    // picked deterministically from the niche's pool — CIRCULAR windows offset
-    // by the provider's ordinal among the installed same-niche nuvio providers
-    // (sorted by name) — so no two extensions ever end up with identical home
-    // screens, even when several of them share a niche (hianime + animepahe +
-    // allanime must show three different catalogs, not one).
     private val rows: List<RowDef> by lazy {
         val h = config.name.hashCode() and 0x7fffffff
         val niche = nicheOf(config.name)
-        // Order of this provider among the currently-installed nuvio providers
-        // of the same niche. Distinct ordinals ⇒ distinct window offsets ⇒
-        // distinct catalogs, guaranteed regardless of name-hash collisions.
-        // (One tiny blocking read of the already-loaded provider list — the
-        // home screen has to list providers anyway, so the DataStore value is
-        // hot by the time any catalog row is rendered.)
         val ordinal = runCatching {
             runBlocking {
                 HikariApp.instance.store.providers()
@@ -293,10 +253,6 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
         }
         if (rows.isEmpty()) return@withContext null
 
-        // TMDB lists the WHOLE planned run, not just what has aired: Renegade
-        // Immortal has 200 rows today with only 158 aired, and tapping one of
-        // the future ones can never play because no site has a video for it
-        // yet. Drop them here instead of offering dead rows.
         val today = isoDay(0)
         var list = rows.filter { it.air == null || it.air <= today }
         if (list.isEmpty()) return@withContext null
@@ -335,23 +291,6 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
         java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
             .format(java.util.Date(System.currentTimeMillis() + offsetDays * 86_400_000L))
 
-    /**
-     * TMDB is complete for most shows, but its donghua coverage stalls on some
-     * long-runners. Bangumi — the Chinese anime database — tracks those week by
-     * week and its numbering concatenates to the same absolute numbers these
-     * providers serve, so the two merge by number alone: TMDB stays the base
-     * (it owns the stills, the air dates the sites agree with, and the English
-     * names the UI is in), and Bangumi only contributes the episodes TMDB is
-     * missing entirely.
-     *
-     * Bangumi deliberately does NOT rename anything: its titles are Chinese, so
-     * letting it overwrite TMDB's generic "Episode 128" would put Chinese rows
-     * in an English list — the caller's promise is an English title if one
-     * exists, and otherwise the source's own name.
-     *
-     * Never throws and never shortens the list: any Bangumi problem (no match,
-     * timeout, offline) just returns TMDB's own episodes.
-     */
     private suspend fun mergeBangumi(
         item: MediaItem,
         tv: JSONObject,
@@ -364,9 +303,6 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
         } ?: return tmdb
         if (bgm.isEmpty()) return tmdb
         val byNumber = bgm.associateBy { it.number }
-        // Bangumi's dates run a day behind TMDB's (it lists the Chinese
-        // broadcast date), so an episode the sites already serve must not be
-        // dropped just because Bangumi still dates it tomorrow.
         val grace = isoDay(1)
         val maxTmdb = tmdb.maxOfOrNull { it.number } ?: 0
         val maxBgm = bgm.filter { it.airDate != null && it.airDate <= grace }
@@ -423,10 +359,6 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
             val startedAt = System.currentTimeMillis()
             val resolved = TmdbResolver.resolve(item)
             if (resolved == null) {
-                // Hikari could not map this title to TMDB — the provider was
-                // never really asked, so this must not be recorded as its answer
-                // (a TMDB hiccup used to hide every nuvio engine for the rest of
-                // the session). "provider failed" gets it re-asked.
                 val msg = "✗ provider failed: couldn't resolve a TMDB id for this title"
                 streamErrors[config.id] = msg
                 lastOutcome[config.id] = msg
@@ -439,13 +371,6 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
                 lastOutcome[config.id] = msg
                 return@withContext emptyList()
             }
-            // Series: nuvio needs the season + episode numbers. The episode's
-            // id/name usually carries them ("S2E5", "2x3", …).
-            //
-            // A series with no episode in hand (autoplay firing before the
-            // list lands) stands in S1E1 — the same stand-in the Stremio
-            // addon uses — instead of handing the engine an undefined season
-            // it cannot query with.
             val season: Int? = if (episode == null) {
                 if (item.type == MediaType.SERIES) 1 else null
             } else seasonOf(episode)
@@ -467,13 +392,6 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
             // which only ever sends "tv"/"movie". Map the hint here, at the one
             // place that hands a media type to a foreign engine.
             val mediaType = if (resolved.mediaType.equals("movie", true)) "movie" else "tv"
-            // Everything the engine is about to be told, plus the HTTP trail it
-            // leaves, in one line per provider that comes back empty — see
-            // [logNuvioOutcome]. "In nuvio this extension shows servers and in
-            // Hikari it says no sources" is only answerable with both halves:
-            // WHAT was asked (a wrong/short TMDB id or the wrong namespace makes
-            // a provider return [] with no request to its own site at all) and
-            // what actually came back from the network.
             val asked = "tmdb=${resolved.tmdbId} $mediaType" +
                 (if (season != null) " S$season" else "") +
                 (if (season != null) "E$epNum" else "")
@@ -489,12 +407,6 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
             )
             val parsed = runCatching { JSONObject(payload) }.getOrNull()
             if (parsed == null) {
-                // "provider failed" is a marker ContentRepository recognises as
-                // "this call did NOT answer" (see its isNoAnswer): the provider
-                // threw, crashed or ran out of budget, so the engine is asked
-                // again in the background rather than being recorded as having
-                // nothing for this title — which is what a bare "✗ …" used to
-                // turn into, hiding a whole tab of working engines.
                 val msg = "✗ provider failed: unreadable result"
                 streamErrors[config.id] = msg
                 lastOutcome[config.id] = msg
@@ -512,9 +424,6 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
             }
             val data = parsed.optJSONArray("data")
             if (data == null || data.length() == 0) {
-                // A REAL answer: the engine ran and this provider's own site has
-                // nothing for this title. No "provider failed" marker, so it is
-                // reported as what it is and is not re-asked in a loop.
                 val msg = "no sources for this title"
                 streamErrors[config.id] = msg
                 lastOutcome[config.id] = "no sources"
@@ -530,45 +439,16 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
                 streamErrors.remove(config.id)
                 lastOutcome[config.id] = "✓ ${out.size} source${if (out.size == 1) "" else "s"} in ${(System.currentTimeMillis() - startedAt) / 1000}s"
             } else {
-                // Rows came back but none of them is something the player can
-                // open. A real answer about this provider's links — recorded on
-                // both maps so the diagnosis says which, instead of keeping a
-                // stale message from an earlier search.
                 val msg = "✗ returned ${data.length()} rows but none playable"
                 streamErrors[config.id] = msg
                 lastOutcome[config.id] = msg
                 logNuvioOutcome(config, asked, msg, fetchMark)
             }
             val distinct = out.distinctBy { it.url }
-            // Warm the probe cache the moment the sources are found, so a
-            // wrapper server (4KHDHub/HubCloud) is already resolved by the time
-            // the user taps Play — no "Preparing stream…" wait.
             com.hikari.app.net.StreamProbe.warmAsync(distinct)
             distinct
         }
 
-    /**
-     * One line per nuvio provider that came back with NOTHING: what it was
-     * asked, what the bridge actually saw on the wire during that call, and the
-     * verdict.
-     *
-     * This is the line that answers "the same extension shows servers in the
-     * nuvio app and none here", because it separates the three cases that all
-     * used to read as one:
-     *
-     *  - **no HTTP request at all** — the provider gave up before touching its
-     *    own site, which means the arguments were wrong for it (a TMDB id that
-     *    resolves to something else, or a namespace it does not serve), not that
-     *    the site is empty;
-     *  - **a request, and what it returned** — a 403/503 is the site refusing
-     *    the device (a Cloudflare challenge), a 404 is a bad id/path, a 200 with
-     *    a body is the provider's own parsing finding nothing;
-     *  - **a failure before the first byte** — a timeout, a DNS error, a dead
-     *    host.
-     *
-     * Only logged when a provider produced nothing: a working engine needs no
-     * explanation, and the pass already prints its "✓ N sources" line.
-     */
     private fun logNuvioOutcome(
         config: ProviderConfig,
         asked: String,
@@ -614,11 +494,6 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
                 if (v.isNotBlank()) h[k] = v
             }
         }
-        // Stremio-style `behaviorHints.proxyHeaders.request` is where nuvio
-        // providers put the headers their CDN demands (4KHDHub's workers.dev /
-        // r2 links are Referer-locked: without it the CDN answers 403, the
-        // probe can't resolve the wrapper page, and the server gets skipped).
-        // Some providers use `behaviorHints.headers` instead — accept both.
         val hints = s.optJSONObject("behaviorHints")
         putHeaders(hints?.optJSONObject("proxyHeaders")?.optJSONObject("request"))
         putHeaders(hints?.optJSONObject("headers"))
@@ -718,12 +593,6 @@ class NuvioScraper(override val config: ProviderConfig) : ContentProvider {
         return host == "w3.org" || host.endsWith(".w3.org")
     }
 
-    /** Season number for the engine. NuvioMobile passes its own episode
-     *  model's season straight in — the curated struct field first, text
-     *  parsing only as fallback. Reading the id/name text first (URLs and
-     *  opaque payloads carry no SxxExx) pinned EVERY such tap to season 1,
-     *  so S2E5 played as S1E5 — or found nothing — while the same episode
-     *  played in NuvioMobile. */
     private fun seasonOf(ep: Episode): Int {
         if (ep.season > 0) return ep.season
         val text = listOfNotNull(ep.id, ep.name).firstOrNull { it.isNotBlank() } ?: return 1

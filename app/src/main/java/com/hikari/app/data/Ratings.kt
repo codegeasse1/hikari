@@ -26,38 +26,6 @@ import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
-/**
- * Aggregate review scores for one title — the row of coloured IMDb /
- * Rotten Tomatoes / Metacritic / Letterboxd / TMDB badges under the Play
- * button, the way the reference clients show them.
- *
- * None of these sources needs an API key, and each one is independently
- * optional: a source that is blocked, slow, renamed or simply has no entry for
- * the title contributes nothing and the row renders the rest. That is the whole
- * design constraint here — a review site is decoration, so it must never be able
- * to delay or break the page it decorates.
- *
- *  1. **IMDb** — tried in order: OMDb (current numbers, one decimal, plus the
- *     vote count), Wikidata (`P444`/`P447` keyed by the IMDb id — the broadest
- *     coverage, but user-maintained and often stale), then the Cinemeta mirror
- *     Stremio uses. imdb.com itself answers a plain HTTP client with an empty
- *     body and IMDb's own GraphQL endpoint is Cloudflare-guarded, so a mirror is
- *     the only way to get a number at all; three of them make it reliable.
- *     When nothing knows the `tt` id, IMDb's own keyless suggestion endpoint
- *     resolves one from the title and year, and Cinemeta's search index is the
- *     fallback for a network where that host is blocked.
- *  2. **Rotten Tomatoes** `/{m|tv}/{slug}` — the page's `media-scorecard-json`
- *     carries the tomatometer AND the popcornmeter, each with its review count,
- *     average and sentiment: two badges from one request.
- *  3. **Metacritic** `/{movie|tv}/{slug}/` — the JSON-LD `aggregateRating`.
- *  4. **Letterboxd** `/imdb/{ttid}/` — `twitter:data2` ("4.46 out of 5").
- *  5. **TMDB** — the score the detail page's own details lookup already
- *     fetched, so the strip always has at least one badge.
- *
- * Results are cached on disk for a day (a review score does not move that
- * fast), which also keeps the request count to the sites at one per title —
- * the slug guesses below are cheap but they are still network round-trips.
- */
 enum class RatingSource { IMDB, TOMATOMETER, POPCORN, METACRITIC, LETTERBOXD, TMDB, ANILIST }
 
 /** The word a site itself uses for a score band. The label is the English UI
@@ -76,15 +44,6 @@ enum class RatingVerdict(val label: String) {
     DISASTER("Dislike"),
 }
 
-/**
- * One badge: which site it came from, the number to show, and everything the
- * tap-through explanation needs. [votes] is the site's own review/rating count
- * when the page published one, [average] is the site's second number (RT's
- * "out of 5" critic average, Metacritic's user score), [verdict] is the band
- * word, and [url] the page the number came from so the dialog can offer to open
- * the source itself. Every field but the source and value is optional, so a
- * source that publishes nothing but a score still renders.
- */
 data class TitleRating(
     val source: RatingSource,
     val value: String,
@@ -125,24 +84,8 @@ object Ratings {
 
     private val memory = ConcurrentHashMap<String, List<TitleRating>>()
 
-    /**
-     * One revision counter per title, for the poster badges.
-     *
-     * A poster's score comes from the cache ([cachedBadge]), and a cache read is
-     * deliberately not observable — so a badge whose warm-up ([ensure]) landed
-     * after the cell was drawn would stay blank until something else recomposed
-     * it. A cell reads [revision] next to [cachedBadge], and a landing warm-up
-     * bumps it, which recomposes exactly the cells showing that title (and
-     * nothing else).
-     */
     private val revisions = ConcurrentHashMap<String, MutableState<Long>>()
 
-    /** The revision state for [key], created once and once only. Spelled with
-     *  `computeIfAbsent` rather than `getOrPut` on purpose: `getOrPut` is a
-     *  read-then-write, so two threads racing on a title's first warm-up could
-     *  each build a state object and keep different ones — the cell would then
-     *  observe a state nobody ever bumps and stay blank until something else
-     *  recomposed it. */
     private fun revisionState(key: String): MutableState<Long> =
         revisions.computeIfAbsent(key) { mutableStateOf(0L) }
 
@@ -175,16 +118,6 @@ object Ratings {
 
     private val cacheFile: File get() = File(HikariApp.instance.filesDir, "ratings-cache.json")
 
-    /**
-     * Every badge known for [item]. [imdbId] comes from TMDB's `external_ids`
-     * when it has one; [tmdbScore]/[tmdbVotes] are the values that lookup
-     * already returned, so the TMDB badge costs no request.
-     *
-     * [onUpdate] (optional) is called with a LONGER list if a source that had
-     * nothing to say at lookup time has since been re-asked and answered — the
-     * strip grows instead of staying frozen on whatever the first attempt found
-     * (see [missingSources]).
-     */
     suspend fun load(
         item: MediaItem,
         imdbId: String?,
@@ -192,11 +125,6 @@ object Ratings {
         tmdbVotes: Int?,
         onUpdate: ((List<TitleRating>) -> Unit)? = null,
     ): List<TitleRating> = withContext(Dispatchers.IO) {
-        // AniList/Bangumi knew this title (see DonghuaDetails): its score is
-        // the ONLY badge. The title-based scrapers below (RT, Metacritic,
-        // Letterboxd, Cinemeta, IMDb's suggestion endpoint) would all chase the
-        // live-action mistranslation TMDB resolves these titles to, and TMDB's
-        // own average belongs to that same wrong title — so none of them run.
         animeBadges(item)?.let { anime ->
             val key = cacheKey(item)
             memory[key] = anime
@@ -249,28 +177,7 @@ object Ratings {
         done
     }
 
-    /**
-     * The score a poster's badge should print for [item], or null when nothing
-     * has been looked up for it yet.
-     *
-     * The IMDb number comes first — it is the one the reference clients print,
-     * and the one the yellow badge is for. When nothing could produce one (IMDb
-     * publishes no `tt` id for the title, or every mirror of it is blocked on
-     * the user's network) the TMDB average is used instead, which the same
-     * lookup already fetched. That fallback is what makes a badge appear on
-     * EVERY poster instead of only the ones the scrapers happened to answer for
-     * — the reported "some posters show a rating, some show nothing".
-     *
-     * Cache-only and synchronous ON PURPOSE: this is what a poster's score badge
-     * reads, and a Home row of sixty posters must never fire sixty lookups just
-     * to draw itself. The detail page — which does the looking up — is what fills
-     * the cache, and [ensure] is what warms it for titles nobody has opened.
-     */
     fun cachedBadge(item: MediaItem): String? {
-        // A live TV channel has no review scores anywhere — and its cache key is
-        // its name, which can collide with a film's ("Obsession", "Premier").
-        // Returning null here is what keeps an IPTV row from borrowing a film's
-        // score badge.
         if (IptvMark.of(item)) return null
         val key = cacheKey(item)
         val list = memory[key] ?: readDisk(key)?.also { memory[key] = it } ?: return null
@@ -285,11 +192,6 @@ object Ratings {
                 ?.average?.substringBefore('/')?.trim()?.takeIf { it.isNotBlank() }
     }
 
-    /** How many quick TMDB resolutions may run at once. Every poster on screen
-     *  asks for one of these, and it is the request that actually prints the
-     *  badge, so the door is wide: a Home feed fills in over seconds rather than
-     *  queueing behind the five-site scan below. Suspend-based, so a title
-     *  waiting for a slot parks its coroutine instead of holding a thread. */
     private val quickSlots = Semaphore(6)
 
     /** How many five-site scans may run at once. Each one fans out to five
@@ -316,68 +218,19 @@ object Ratings {
      *  soon as the badge is up; only the scan behind it is still going. */
     private val deepQueued = ConcurrentHashMap.newKeySet<String>()
 
-    /**
-     * Warms the cache for [item] in the background — what the poster-rating
-     * switch uses so scores start appearing on the rows instead of only on
-     * titles the user has already opened.
-     *
-     * Called again on every redraw, so three cases are cheap and one is not:
-     * a title with a score on file returns immediately; a title whose last
-     * answer was scoreless is re-asked only once its retry window has passed
-     * ([missingSources]) — which is what keeps a warm-up that happened to run
-     * while the network or one of the mirrors was busy from freezing a blank
-     * corner for hours; and a title nobody has looked up yet does one pass.
-     *
-     * Never awaited and deduped per title, so scrolling a row past the same
-     * poster ten times costs one pass. Callers use it as a hint, not a request:
-     * the badge reads [cachedBadge] on the next recomposition after this lands.
-     *
-     * @return true when the title is queued (or already answered, or already in
-     *         flight); false when the queue was full and it was NOT taken, so
-     *         the caller knows to ask again in a moment. A poster grid depends
-     *         on that answer: it calls this once per cell, and a cell that is
-     *         refused and never retried stays blank for as long as it lives.
-     */
     fun ensure(item: MediaItem): Boolean {
-        // IPTV: nothing to look up, and nothing a lookup could find would be
-        // right. Reported as "answered" so the poster cell stops asking (see
-        // [com.hikari.app.data.IptvMark]).
         if (IptvMark.of(item)) return true
         val key = cacheKey(item)
         val cached = memory[key] ?: readDisk(key)?.also { memory[key] = it }
         // A score on file is the whole point of this call.
         if (cached != null && cached.isNotEmpty()) return true
-        // A scoreless answer is retried on the same schedule the detail page's
-        // refresh uses. Titles nobody has a review for stay cheap (the windows
-        // are 15 minutes / 3 hours), but one that was merely unlucky gets its
-        // badge on a later scroll instead of staying bare.
         if (cached != null && missingSources(key, item, cached).isEmpty()) return true
-        // A full queue is reported, not swallowed. A Home feed composes far more
-        // posters than can be looked up at once, and silently dropping the
-        // overflow is what left whole rows of posters bare: the first handful
-        // were served, the rest were forgotten, and nothing asked for them again
-        // until their cells happened to be rebuilt.
         if (ensureQueued.size >= MAX_ENSURE_QUEUE) return false
         if (!ensureQueued.add(key)) return true
         refresher.launch { warmUp(key, item) }
         return true
     }
 
-    /**
-     * One title's lookup, in the two halves a poster badge actually cares about.
-     *
-     * First the quick half: one TMDB request, and the badge is published the
-     * moment it lands. Only then the slow half — the five review sites — which
-     * is handed to [deepen] and which nothing on screen waits for. Binding the
-     * badge to the end of that pass meant the slowest review site decided when
-     * a row's scores appeared, which is how some posters came up badged and
-     * their neighbours did not.
-     *
-     * The queue slot ([ensureQueued]) is released as soon as the quick half is
-     * done, on purpose: that is what makes the queue turn over in a fraction of
-     * a second per title, so a whole Home screen's worth of posters can be taken
-     * instead of only the first [MAX_ENSURE_QUEUE] of them.
-     */
     private suspend fun warmUp(key: String, item: MediaItem) {
         try {
             // Anime first: the quick half below would publish TMDB's average
@@ -421,22 +274,11 @@ object Ratings {
         val found = runSources(item, imdb, want)
         markAttempts(key, want)
         val list = finish(found.values.sortedBy { it.source.ordinal }, side.badge)
-        // Cached even when empty: an empty answer is still an answer, and
-        // remembering it (for [EMPTY_TTL_MS]) is what keeps a title nobody has a
-        // score for from being re-asked on every scroll.
         memory[key] = list
         writeDisk(key, list)
         bumpRevision(key)
     }
 
-    /** The TMDB half of a title: its average (as a badge) and the `tt` id TMDB
-     *  has on file for it, when the caller did not already have one.
-     *
-     *  This is the backstop that makes the badge reliable. The scraper-side
-     *  sources all key off an IMDb id, and when none can be resolved the whole
-     *  strip used to come up empty even for a famous, well-reviewed title; TMDB
-     *  is the app's own resolver, already reachable wherever the rest of the app
-     *  works, and one request answers both halves of the problem. */
     private suspend fun tmdbSide(item: MediaItem, imdbId: String?): TmdbSide {
         if (!TmdbResolver.isLikelyResolvable(item)) return TmdbSide(null, imdbId)
         val resolved = TmdbResolver.resolve(item) ?: return TmdbSide(null, imdbId)
@@ -474,17 +316,6 @@ object Ratings {
         return want
     }
 
-    /**
-     * The cached badges that have not been published yet, but only where the
-     * source has not been asked recently ([RETRY_IMDB_MS] for the IMDb mirrors,
-     * [RETRY_OTHER_MS] for the review sites).
-     *
-     * This is what makes the strip grow instead of freezing. Every source is
-     * independently optional, so a lookup that ran while one of them was
-     * rate-limited, timed out, or simply had no page for a two-day-old release
-     * used to be cached as-is for a whole day — which is why one title showed
-     * IMDb and the next did not, no matter how many times it was re-opened.
-     */
     private fun missingSources(
         key: String,
         item: MediaItem,
@@ -500,15 +331,6 @@ object Ratings {
         }.toSet()
     }
 
-    /**
-     * Re-asks the sources a cached answer is still missing, off the caller's
-     * thread, and hands the longer list to [onUpdate] when it lands.
-     *
-     * Deliberately NOT awaited: the screen already has the badges it had before,
-     * so the extra work must never cost the user a wait — and if it finds
-     * nothing (the usual case for a genuinely unrated or unreleased title) the
-     * cache simply records the attempt and tries again in a few hours.
-     */
     private fun refreshInBackground(
         key: String,
         item: MediaItem,
@@ -527,9 +349,6 @@ object Ratings {
         if (!refreshing.add(key)) return
         refresher.launch {
             try {
-                // Same TMDB backstop as [ensure]: it is what fills a strip whose
-                // every scraper-side answer was empty, and it is the only way a
-                // title with no resolvable `tt` id gets a score at all.
                 val side = if (cached.any { it.source == RatingSource.TMDB }) TmdbSide(null, imdbId)
                 else tmdbSide(item, imdbId)
                 val imdb = resolveImdb(item, side.imdbId)
@@ -566,19 +385,6 @@ object Ratings {
         return imdbSuggestionId(item) ?: cinemetaSearchId(item)
     }
 
-    /**
-     * The `tt` id from Cinemeta's own search index — the last way to get one when
-     * TMDB published no `external_ids` and IMDb's suggestion endpoint is
-     * unreachable (it is a `media-imdb.com` host, which some networks block).
-     *
-     * Without an id there is no IMDb badge at all, which is the other half of why
-     * some titles showed one and others did not: this endpoint answers any title
-     * with a keyless search, so a brand-new release now gets an id — and with it
-     * an IMDb, a Letterboxd and a Wikidata lookup — the moment IMDb has a page.
-     * The same guards as the suggestion endpoint apply (right kind, a close
-     * enough name, the year within one), because a search for a common title
-     * happily returns the wrong film.
-     */
     private fun cinemetaSearchId(item: MediaItem): String? {
         val kind = if (item.type == MediaType.SERIES) "series" else "movie"
         val q = URLEncoder.encode(
@@ -751,13 +557,6 @@ object Ratings {
         return "https://www.themoviedb.org/$kind/$id"
     }
 
-    /**
-     * The badges for a title AniList or Bangumi knew (see [DonghuaDetails]):
-     * the anime score and nothing else. Null for every other title — the
-     * normal lookup runs unchanged. An anime pick with no score still returns
-     * an (empty) list rather than null, so the callers never fall through to
-     * the TMDB path for it.
-     */
     private suspend fun animeBadges(item: MediaItem): List<TitleRating>? {
         val pick = runCatching { DonghuaDetails.pick(item) }.getOrNull() ?: return null
         if (pick !is DonghuaDetails.Pick.Anime) return null
@@ -793,16 +592,6 @@ object Ratings {
 
     // ------------------------------------------------------ IMDb (via id) --
 
-    /**
-     * OMDb: the IMDb rating and its vote count as IMDb itself reports them
-     * (one decimal, e.g. "7.0"), which is what the badge is supposed to look
-     * like. It is tried before Wikidata because Wikidata's `P444` is
-     * user-maintained and frequently missing (or years stale) for new releases.
-     *
-     * The `trilogy` key is OMDb's long-standing public demo key. It is
-     * rate-limited, which is exactly why this source is allowed to fail
-     * silently and is backed by two others.
-     */
     private fun omdb(imdb: String): List<TitleRating> {
         val body = Http.getStringQuiet("https://www.omdbapi.com/?apikey=trilogy&r=json&i=$imdb")
             ?: return emptyList()
@@ -821,12 +610,6 @@ object Ratings {
         )
     }
 
-    /**
-     * Review scores from Wikidata, keyed by the IMDb id. The label service
-     * resolves each score's publisher to an English name ("IMDb", "Rotten
-     * Tomatoes", "Metacritic", "Letterboxd"), which is matched loosely — a
-     * spelling change on Wikidata must not lose the numbers.
-     */
     private fun wikidata(imdb: String): List<TitleRating> {
         val query = "SELECT ?rating ?byLabel WHERE {" +
             " ?item wdt:P345 " + JSONObject.quote(imdb) + " ." +
@@ -895,11 +678,6 @@ object Ratings {
         return out.filter { it.value.isNotBlank() }
     }
 
-    /**
-     * Cinemeta — the meta addon Stremio runs — as the last IMDb word. It has no
-     * key and answers anything with a `tt` id, but it mirrors IMDb lazily, so an
-     * empty `imdbRating` for a new release is normal and means "no badge here".
-     */
     private fun cinemeta(imdb: String, isSeries: Boolean): List<TitleRating> {
         val kind = if (isSeries) "series" else "movie"
         val body = Http.getStringQuiet("https://v3-cinemeta.strem.io/meta/$kind/$imdb.json")
@@ -916,12 +694,6 @@ object Ratings {
         )
     }
 
-    /**
-     * IMDb's own keyless suggestion endpoint, used only when nothing else knows
-     * the title's `tt` id. It returns a compact list of matches with their type
-     * and year, so the same verification the scraped pages get is applied here
-     * (a name score, and the year within a year) before an id is trusted.
-     */
     private fun imdbSuggestionId(item: MediaItem): String? {
         val q = URLEncoder.encode(
             TmdbMeta.queryVariants(item.title).firstOrNull() ?: item.title, "UTF-8"
@@ -972,13 +744,6 @@ object Ratings {
 
     // ------------------------------------------------------ Rotten Tomatoes --
 
-    /**
-     * Tomatometer + popcornmeter from the film/TV page. The slug is a guess —
-     * RT has no keyless search endpoint a plain client may use (its
-     * `napi/search` answers 403) — so the page is verified against the title
-     * and year before its numbers are trusted, and a wrong guess is simply no
-     * badge rather than another film's score.
-     */
     private fun rtScores(item: MediaItem, isSeries: Boolean): List<TitleRating> {
         val kind = if (isSeries) "tv" else "m"
         for (candidate in slugCandidates(item, "_")) {
@@ -1122,9 +887,6 @@ object Ratings {
         )
     }
 
-    // -------------------------------------------------------------- Bands --
-    // The bands the sites themselves publish, so a 33% tomatometer reads
-    // "Rotten" and a 96 Metascore reads "Acclaim" without the UI guessing.
 
     private fun tomatoVerdict(score: Int, certified: Boolean): RatingVerdict = when {
         score >= 75 && certified -> RatingVerdict.CERTIFIED_FRESH
@@ -1177,12 +939,6 @@ object Ratings {
         return runCatching { JSONObject(cleaned) }.getOrNull()
     }
 
-    /**
-     * True when a fetched page really is [item]: its JSON-LD title names the
-     * same film/show, and — when we know it — the year agrees. Without this a
-     * guessed slug such as `/m/crash` would silently show the 1996 film's score
-     * on the 2004 one.
-     */
     private fun matches(html: String, item: MediaItem): Boolean {
         val ld = jsonLd(html) ?: return false
         val name = ld.optString("name").trim()
@@ -1194,11 +950,6 @@ object Ratings {
         return abs(pageYear - year) <= 1
     }
 
-    /**
-     * Slug guesses for a page URL, best first: the plain title, then the
-     * title with the year appended (the form both sites use when two titles
-     * share a name).
-     */
     private fun slugCandidates(item: MediaItem, sep: String): List<String> {
         val slug = slugify(item.title, sep)
         if (slug.isBlank()) return emptyList()
@@ -1224,11 +975,6 @@ object Ratings {
 
     private fun readDisk(key: String): List<TitleRating>? {
         val entry = runCatching { load().optJSONObject(key) }.getOrNull() ?: return null
-        // When each source was last asked, restored alongside the badges so the
-        // re-ask schedule survives a restart. An entry written by an older build
-        // has no "t" block: every source then reads as "asked a long time ago",
-        // which gives each already-cached title exactly one self-heal pass after
-        // the update and then settles onto the normal windows.
         entry.optJSONObject("t")?.let { times ->
             val row = attempts.getOrPut(key) { ConcurrentHashMap() }
             for (i in 0 until times.length()) {

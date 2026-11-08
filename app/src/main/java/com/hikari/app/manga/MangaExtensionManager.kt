@@ -21,40 +21,6 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
-/**
- * Installs and loads **manga** extensions — the Mihon/Tachiyomi-format APKs the
- * whole manga world publishes (keiyoushi and the other mirrors of its repo are
- * the usual source of them).
- *
- * It is a sibling of [com.hikari.app.aniyomi.AniyomiExtensionManager], and for
- * the same reason: an extension is NOT an Android package install. The APK is
- * copied to `filesDir/manga/exts/<pkg>.ext`, made read-only (Android 14+ refuses
- * to load a writable dex), inspected with
- * `PackageManager.getPackageArchiveInfo`, and its classes are instantiated
- * through a [ChildFirstPathClassLoader] whose parent is Hikari's own class
- * loader — so the extension links against the `eu.kanade.tachiyomi.source.*` API
- * that ships in this app (`app/src/main/java/eu/kanade/tachiyomi/source/`),
- * exactly the way Mihon/Aniyomi do it.
- *
- * Two compiler styles are accepted, because both are in the wild:
- *
- *  1. **Mihon / Aniyomi style** — the manifest meta-data key
- *     `tachiyomi.extension.class` lists the entry classes (`;`-separated, a
- *     leading `.` meaning "relative to my package").
- *  2. **keiyoushi / Tadami style** — the extension ships a class literally named
- *     `ExtensionGenerated` in its own package (used when the metadata is absent).
- *
- * Each entry class is either a [MangaSource] itself or a [SourceFactory] whose
- * `createSources()` returns them. Each source becomes its own
- * [ProviderType.MANGA] provider row (`manga|<packageName>|<index>`), so one APK
- * bundling several sites shows up as several sources — the same shape as the
- * anime side.
- *
- * Extensions are third-party code: every call into them can throw anything
- * (including `LinkageError` from a source built against a different
- * extensions-lib), so loading is serialised per APK through [LoadGate] and every
- * failure becomes a short, human-readable message the Extensions UI can show.
- */
 object MangaExtensionManager {
 
     /** Manga extensions are a few hundred KB; this is a sanity bound only. */
@@ -74,25 +40,6 @@ object MangaExtensionManager {
     /** A failed load is negative-cached for this long (see [extensionOf]). */
     private const val FAIL_RETRY_MS = 60_000L
 
-    /**
-     * The built-in manga extension repositories. keiyoushi is the community
-     * index the whole Mihon ecosystem reads; its list is the modern
-     * `index.json` (entries under `extensionList.extensions`, absolute
-     * `resources.apkUrl`/`iconUrl` links) in exactly the shape the Extensions
-     * screen parses for an Aniyomi repo — which is why a manga repo can be
-     * added through the same "Aniyomi repo" flow.
-     *
-     * The URL is deliberately NOT `index.min.json`: keiyoushi turned that file
-     * into a two-entry "Outdated App" / "Update to Mihon 0.20.1+" placeholder
-     * that older apps display verbatim, so seeding it showed the user a folder
-     * telling them to install Mihon instead of 1396 manga extensions. (A repo
-     * that was already seeded as the minified URL is healed at load time — see
-     * AniyomiExtensionManager.indexCandidatesFor, which tries `index.json`
-     * first.)
-     *
-     * Only seeded once (see [seedDefaults]) and never bulk-installed: adding the
-     * repo just makes the catalogue of manga extensions browsable.
-     */
     val DEFAULT_REPOS = listOf(
         Triple(
             "https://raw.githubusercontent.com/keiyoushi/extensions/repo/index.json",
@@ -163,11 +110,6 @@ object MangaExtensionManager {
     private val cache = ConcurrentHashMap<String, Extension>()
     private val failure = ConcurrentHashMap<String, Pair<Long, String>>()
 
-    /**
-     * Drops the cached extension for [path] (see [ExtensionRecovery]): the
-     * next call reloads it fresh instead of reusing a wedged object. The
-     * failure backoff goes with it — a stall is not a failed load.
-     */
     fun evict(path: String) {
         cache.remove(path)
         failure.remove(path)
@@ -194,11 +136,6 @@ object MangaExtensionManager {
         return c
     }
 
-    /**
-     * The loaded extension for an APK file, or null (with [lastError] set).
-     * BLOCKING — it instantiates extension classes, so never call it on the UI
-     * thread.
-     */
     fun extensionOf(context: Context, file: File, force: Boolean = false): Extension? {
         val key = file.absolutePath
         if (!force) {
@@ -317,12 +254,6 @@ object MangaExtensionManager {
         )
     }
 
-    /**
-     * The classes to instantiate, in order: the `;`-separated list in the
-     * manifest, then the single `tachiyomi.extension.factory` class, then
-     * keiyoushi's `ExtensionGenerated` in the extension's own package. A leading
-     * `.` in a metadata entry means "relative to my package".
-     */
     private fun sourceClassNames(info: PackageInfo, pkgName: String): List<String> {
         val absolute = { raw: String -> if (raw.startsWith(".")) pkgName + raw else raw }
         val fromMeta = metaString(info, META_SOURCE_CLASS)
@@ -338,14 +269,6 @@ object MangaExtensionManager {
         return listOf("$pkgName.$GENERATED_CLASS")
     }
 
-    /**
-     * Instantiates one class: a [MangaSource] is used directly, a [SourceFactory]
-     * is asked for its sources (manga AND plain novel ones), and a plain
-     * [Source] with no manga methods is a novel source — registered, not
-     * skipped. A `LinkageError` is retried with a plain
-     * parent-first `PathClassLoader`, exactly like the anime loader — a
-     * child-first loader can shadow a class the extension itself ships.
-     */
     private fun instantiate(
         context: Context,
         className: String,
@@ -459,12 +382,6 @@ object MangaExtensionManager {
     private val siteCache = ConcurrentHashMap<String, String>()
     private val iconCache = ConcurrentHashMap<String, String>()
 
-    /**
-     * The website an installed extension reads, for the Cloudflare-verification
-     * WebView button. A manga provider's `url` is the LOCAL .ext path, so the
-     * site has to come out of the extension's own source (`baseUrl`). BLOCKING
-     * (deriving it loads the extension), and never on the main thread.
-     */
     fun siteUrlOf(config: ProviderConfig): String? {
         siteCache[config.id]?.let { return it }
         if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) return null
@@ -530,12 +447,6 @@ object MangaExtensionManager {
         return "https://www.google.com/s2/favicons?domain=$host&sz=64"
     }
 
-    /**
-     * The favicon of the site an installed extension reads, for a provider row
-     * with no icon of its own — a manga extension carries no artwork either, and
-     * the favicon is the honest answer (the trick the CloudStream repos use).
-     * BLOCKING; cached per provider.
-     */
     fun iconFallback(config: ProviderConfig): String? {
         iconCache[config.id]?.let { return it }
         val icon = runCatching { faviconFor(siteUrlOf(config)) }.getOrNull() ?: return null
@@ -545,11 +456,6 @@ object MangaExtensionManager {
 
     // ---- Install / uninstall ----
 
-    /**
-     * Writes [bytes] as a private manga extension, validates it by loading it,
-     * and registers one provider per source it publishes. Returns how many
-     * providers were added, or a failure whose message is shown verbatim.
-     */
     suspend fun install(
         context: Context,
         bytes: ByteArray,
@@ -574,11 +480,6 @@ object MangaExtensionManager {
             temp.writeBytes(bytes)
             if (target.exists()) target.delete()
             if (!temp.renameTo(target)) {
-                // Streamed rather than `temp.readBytes()`: a rename across the
-                // same directory always succeeds, so this is the rare path — but
-                // when it does run, an extension is tens of megabytes and a
-                // second full copy of it in RAM is exactly the kind of spike that
-                // gets a low-memory device killed mid-install.
                 temp.inputStream().use { input ->
                     target.outputStream().use { out -> input.copyTo(out) }
                 }
@@ -633,13 +534,6 @@ object MangaExtensionManager {
             }
             val fresh = freshManga + freshNovels
             store.updateProviders { list ->
-                // The canonical rows for this file — plus any LEGACY rows
-                // pointing at the same file under a different id scheme (an
-                // older build's naming): without the second half, every
-                // reinstall scheme change orphaned a full set of rows and the
-                // engine list grew "100 copies" of one install that no
-                // uninstall could ever remove (uninstall matches by source,
-                // and the orphans' source no longer matches anything).
                 list.filterNot {
                     it.type == ProviderType.MANGA &&
                         (it.id.startsWith(prefix) || it.url == target.absolutePath)
@@ -652,21 +546,7 @@ object MangaExtensionManager {
         }
     }
 
-    /**
-     * Drops MANGA/ANIYOMI rows whose extension file is gone (uninstalled
-     * outside the app, a cleared folder, a restore that did not carry the
-     * file): they can never play again, they read as "Extension file
-     * missing", and no uninstall matches them once their source is forgotten.
-     * Runs once per launch (see HikariApp); returns how many rows went.
-     */
 
-    /**
-     * One-time language backfill for manga/novel rows installed before the
-     * language was stored (Source language "Other" 410/633): rows whose
-     * [ProviderConfig.lang] is blank get it from the loaded extension's own
-     * per-source language. Only blank rows are touched, files are loaded
-     * once per package, and a file that fails to load is skipped.
-     */
     suspend fun backfillLangs(context: Context, store: com.hikari.app.data.AppStore): Boolean {
         val rows = store.providers().filter {
             it.type == com.hikari.app.data.ProviderType.MANGA && it.lang.isNullOrBlank() && isMangaProviderId(it.id)

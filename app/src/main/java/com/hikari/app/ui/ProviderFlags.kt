@@ -1,22 +1,5 @@
 package com.hikari.app.ui
 
-/**
- * Country flags for provider/extension rows, the CloudStream extension-list
- * look: the user knows at a glance which language an extension serves.
- *
- * Two shapes share one table:
- * - [codeOf]/[flagOf] read the repo listing's own name+description (what the
- *   Extensions screen, collection rows and plugin cards pass) and answer the
- *   ISO code / the "🇮🇳 Hindi" label;
- * - [flagFor]/[flagForPack] answer a bare emoji for picker rows, whose
- *   language is already known (an Aniyomi/manga pack's member details ARE the
- *   language names — "Bengali", "Hindi", …).
- *
- * Null when the texts name no language — never guessed. Short 2-letter codes
- * only count as EXPLICIT tags ("[HI]", "(EN)"): bare "in"/"is"/"it"/"no" are
- * ordinary English words, and matching them would flag half the catalogue
- * British. "Multi"/"all"/"dual" name no single language and stay flagless.
- */
 object ProviderFlags {
 
     private data class Lang(
