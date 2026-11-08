@@ -1,4 +1,27 @@
 ## 0.12.65 (continuous build only)
+ 
+ -server planning.
+ 
+ -ldhe old batch picker listed the UNION of every server any selected episode
+ -then , then — at queue time — matched each episode with a very loose rule
+ * (same provider, then ANY usable server). That caused two problems:
+ *
+ *  1. An episode that none of the extensions had (e.g. a not-yet-released
+ *     E17) only failed AFTER the user had picked a server and queued the
+ *     rest ("Queued 5 of 6 — no server for E17").
+ *  2. An episode that lacked the picked server was silently queued from some
+ *     other server, which could be a different audio (Hindi vs English).
+ *
+ * This object gives the picker the information it needs up front:
+ *  - which servers ("flavours") exist, and for WHICH episodes,
+ *  - which audio languages / resolutions are on offer, so the user can choose
+ *    audio / quality first and see only matching servers + episodes,
+ *  - a strict per-episode matcher that never swaps the audio language
+less the caller explicitly allows it (Auto mode).
+Nothing othing here is invented: audio / resolution are only read from what tserver'srver's own name / details already say.
+
+
+## 0.12.65 (continuous build only)
 
 - Multi/MultiMovies servers play again: extractor URLs are HTML-entity decoded (signed bridge links arrived as ...m3u8&amp;Policy=...&amp;Signature=... and the bridge 502'd the mangled signature while CloudStream played) — URLs, referers, headers and subtitle links are decoded in one place before playback
 - Prmovies rows stop sticking on empty: plugin web responses are no longer HTTP-cached (a cached block/empty page kept "No items in Zee5" while CloudStream showed content), and an empty catalog page gets one fresh retry plus a Cs3Catalog diagnostic log line before reporting empty
