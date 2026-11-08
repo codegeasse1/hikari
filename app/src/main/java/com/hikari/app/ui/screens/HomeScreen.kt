@@ -1082,7 +1082,10 @@ fun HomeScreen(nav: NavHostController) {
     // shelves stream in differently ordered, shimmer placeholders come and go,
     // or Continue Watching changes. The order and conditions must stay the
     // same as the feed itself.
-    val feedKeys = remember(uniqueRows, continueEntries, collectionFolderRows, loading, hideContinue, rows.isEmpty()) {
+    // Television: the genre strip moves to the END of the feed (the Nuvio-style
+    // Home starts straight on the first shelf), so it is one more key here.
+    val tvHome = TvMode.current()
+    val feedKeys = remember(uniqueRows, continueEntries, collectionFolderRows, loading, hideContinue, rows.isEmpty(), tvHome) {
         buildList {
             add("home-header")
             if (!hideContinue && continueEntries.isNotEmpty()) add("continue-watching")
@@ -1090,24 +1093,36 @@ fun HomeScreen(nav: NavHostController) {
             if (loading && collectionFolderRows.isEmpty()) repeat(4) { i -> add("home-shimmer|$i") }
             uniqueRows.forEach { row -> add(row.key.ifBlank { "${row.providerName}|${row.title}" }) }
             if (rows.isEmpty() && !loading && collectionFolderRows.isEmpty()) add("home-empty")
+            if (tvHome) add("tv-genres")
         }
     }
     val feedState = com.hikari.app.ui.components.keptListState("home", itemKeys = feedKeys)
+
+    // ---- Television Home (Nuvio style) ----
+    // The card the remote is on drives the fixed backdrop + info block, and
+    // the shelf it sits in is snapped to the top of the rows area.
+    val tvFocus = remember { com.hikari.app.tv.TvHomeFocus() }
+    LaunchedEffect(selection) { tvFocus.item = null }
+    val tvShown = com.hikari.app.tv.rememberTvSettled(
+        item = tvFocus.item ?: featured.firstOrNull(),
+        resetKey = selection,
+    )
+    val tvOnFocus: (String, MediaItem) -> Unit = { rowKey, picked ->
+        tvFocus.item = picked
+        scope.launch {
+            val at = feedKeys.indexOf(rowKey)
+            if (at >= 0) runCatching { feedState.animateScrollToItem(at) }
+        }
+    }
 
     Box(Modifier.fillMaxSize()) {
         // Television ambient art behind the whole feed (see TvHomeBackdrop):
         // the featured title's own backdrop, glass-dimmed — the smaller hero
         // card keeps its own treatment on top (0.12.0 look).
         if (TvMode.current()) {
-            TvHomeBackdrop(items = featured)
+            com.hikari.app.tv.TvHomeBackdropLayer(item = tvShown)
         }
-        LazyColumn(
-            state = feedState,
-            modifier = Modifier.fillMaxSize(),
-            // The taskbar floats over the feed, so the feed has to end below it
-            // rather than above a reserved strip (see LocalTaskbarInset).
-            contentPadding = PaddingValues(bottom = LocalTaskbarInset.current + 16.dp)
-        ) {
+        val feedContent: androidx.compose.foundation.lazy.LazyListScope.() -> Unit = {
             // Crash report: NOT inline any more. A stack trace dumped into the
             // feed made the feed look broken; the one-shot warning panel below
             // (see the GlassDialog after the Box) says what happened and points
@@ -1134,29 +1149,7 @@ fun HomeScreen(nav: NavHostController) {
                     // field below it are gone: the top pill's Manage box
                     // box (filter + hold-to-multi) is the one place providers
                     // are picked.
-                    if (TvMode.current()) {
-                        val pillProvider =
-                            providers.firstOrNull { it.config.id == selected }
-                        val pillProfileName =
-                            profiles.firstOrNull { it.id == activeProfileId }?.name
-                        TvHomeHeaderBar(
-                            providerName = when {
-                                selection.size > 1 -> selectedName
-                                else -> pillProvider?.config?.name ?: selectedName
-                            },
-                            providerIconUrl = pillProvider?.config?.iconUrl,
-                            profileName = pillProfileName,
-                            onProviderClick = { showTvManageFeed = true },
-                            onProfileClick = { showTvProfileMenu = true },
-                            selected = headerSelection,
-                            onSearch = openSearch,
-                            onTranslate = { showTranslate = true },
-                            onVerify = openVerify,
-                            onMouse = { com.hikari.app.tv.MouseMode.toggle() },
-                            mouseOn = com.hikari.app.tv.MouseMode.enabled,
-                            onSettings = openSettings,
-                        )
-                    } else {
+                    if (!tvHome) {
                         HomeHeader(
                             selected = headerSelection,
                             onSearch = openSearch,
@@ -1168,7 +1161,7 @@ fun HomeScreen(nav: NavHostController) {
                             mouseOn = com.hikari.app.tv.MouseMode.enabled,
                         )
                     }
-                    if (featured.isNotEmpty()) {
+                    if (featured.isNotEmpty() && !tvHome) {
                         Spacer(Modifier.height(2.dp))
                         // Television gets the cinematic hero (static backdrop,
                         // title, meta, Play / View Details — no auto-advance
@@ -1222,12 +1215,14 @@ fun HomeScreen(nav: NavHostController) {
                     // searched for before something can be watched. With an
                     // extension picked, the tap first asks WHERE: that
                     // extension alone, or everything (see [genreScope]).
-                    HomeGenreStrip { name, genresText, keywordsText ->
-                        val ext = selection.filter { !it.startsWith(COLLECTION_PREFIX) }.toSet()
-                        if (ext.isEmpty()) {
-                            openTmdbGenre(name, genresText, keywordsText)
-                        } else {
-                            genreScope = GenreScopePick(name, genresText, keywordsText, ext)
+                    if (!tvHome) {
+                        HomeGenreStrip { name, genresText, keywordsText ->
+                            val ext = selection.filter { !it.startsWith(COLLECTION_PREFIX) }.toSet()
+                            if (ext.isEmpty()) {
+                                openTmdbGenre(name, genresText, keywordsText)
+                            } else {
+                                genreScope = GenreScopePick(name, genresText, keywordsText, ext)
+                            }
                         }
                     }
                 }
@@ -1255,6 +1250,21 @@ fun HomeScreen(nav: NavHostController) {
                         // the shelf header — same shared store, whole shelf.
                         onClearAll = if (TvMode.current()) {
                             { scope.launch { app.store.clearHistory() } }
+                        } else null,
+                        onItemFocus = if (TvMode.current()) {
+                            { h2: com.hikari.app.data.HistoryEntry ->
+                                tvOnFocus(
+                                    "continue-watching",
+                                    MediaItem(
+                                        providerId = h2.providerId,
+                                        id = h2.mediaId,
+                                        title = h2.title,
+                                        type = h2.type,
+                                        posterUrl = h2.posterUrl,
+                                        backdropUrl = backdropByKey["${h2.providerId}|${h2.type}|${h2.mediaId}"],
+                                    ),
+                                )
+                            }
                         } else null,
                     )
                 }
@@ -1309,6 +1319,11 @@ fun HomeScreen(nav: NavHostController) {
                         providerName = row.providerName,
                         items = row.items,
                         keeperKey = "homeRow:" + row.key.ifBlank { "${row.providerName}|${row.title}" },
+                        onItemFocus = if (TvMode.current()) {
+                            { m: MediaItem ->
+                                tvOnFocus(row.key.ifBlank { "${row.providerName}|${row.title}" }, m)
+                            }
+                        } else null,
                         // Every shelf carries Show All into its full catalogue
                         // page, which pages without end as it is scrolled.
                         showViewAll = true,
@@ -1488,6 +1503,77 @@ fun HomeScreen(nav: NavHostController) {
                     }
                 }
             }
+            // Television: the genre strip lives at the end of the feed.
+            if (tvHome) {
+                item(key = "tv-genres") {
+                    HomeGenreStrip { name, genresText, keywordsText ->
+                        val ext = selection.filter { !it.startsWith(COLLECTION_PREFIX) }.toSet()
+                        if (ext.isEmpty()) {
+                            openTmdbGenre(name, genresText, keywordsText)
+                        } else {
+                            genreScope = GenreScopePick(name, genresText, keywordsText, ext)
+                        }
+                    }
+                }
+            }
+        }
+        if (TvMode.current()) {
+            // Nuvio-style layout: header bar (provider pill) on top, the fixed
+            // info block under it, and only the shelves scroll below that.
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .padding(start = com.hikari.app.tv.TvUi.railWidth())
+            ) {
+                val pillProvider = providers.firstOrNull { it.config.id == selected }
+                val pillProfileName = profiles.firstOrNull { it.id == activeProfileId }?.name
+                TvHomeHeaderBar(
+                    providerName = when {
+                        selection.size > 1 -> selectedName
+                        else -> pillProvider?.config?.name ?: selectedName
+                    },
+                    providerIconUrl = pillProvider?.config?.iconUrl,
+                    profileName = pillProfileName,
+                    onProviderClick = { showTvManageFeed = true },
+                    onProfileClick = { showTvProfileMenu = true },
+                    selected = headerSelection,
+                    onSearch = openSearch,
+                    onTranslate = { showTranslate = true },
+                    onVerify = openVerify,
+                    onMouse = { com.hikari.app.tv.MouseMode.toggle() },
+                    mouseOn = com.hikari.app.tv.MouseMode.enabled,
+                    onSettings = openSettings,
+                    compact = true,
+                )
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(com.hikari.app.tv.TvHomeMetrics.infoHeight())
+                ) {
+                    com.hikari.app.tv.TvHomeHeroInfo(
+                        item = tvShown,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
+                LazyColumn(
+                    state = feedState,
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    contentPadding = PaddingValues(bottom = 24.dp),
+                    content = feedContent,
+                )
+            }
+            com.hikari.app.tv.TvHomeBottomFade(Modifier.align(Alignment.BottomCenter))
+        } else {
+            LazyColumn(
+                state = feedState,
+                modifier = Modifier.fillMaxSize(),
+                // The taskbar floats over the feed, so the feed has to end below it
+                // rather than above a reserved strip (see LocalTaskbarInset).
+                contentPadding = PaddingValues(bottom = LocalTaskbarInset.current + 16.dp),
+                content = feedContent,
+            )
         }
 
         // Floating source pill (Anikoto-style): shows the current provider and
@@ -1587,6 +1673,10 @@ fun HomeScreen(nav: NavHostController) {
                 selection.isNotEmpty() -> selectedName
                 else -> tr("All providers")
             }
+            Box(
+                if (TvMode.current()) Modifier.padding(start = com.hikari.app.tv.TvUi.railWidth())
+                else Modifier
+            ) {
             HomeSearchOverlay(
                 providerIds = remember(overlayIds) { overlayIds.toSet() },
                 providerName = overlayName,
@@ -1612,6 +1702,7 @@ fun HomeScreen(nav: NavHostController) {
                     )
                 },
             )
+            }
         }
     }
 
