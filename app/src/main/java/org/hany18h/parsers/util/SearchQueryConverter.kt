@@ -11,15 +11,6 @@ import org.hany18h.parsers.model.search.QueryCriteria.*
 import org.hany18h.parsers.model.search.SearchCapability
 import org.hany18h.parsers.model.search.SearchableField.*
 
-/**
- * Converts a [MangaListFilter] into a [MangaSearchQuery].
- *
- * This function iterates through the filter attributes in [MangaListFilter] and creates corresponding
- * search criteria in a [MangaSearchQuery.Builder].
- *
- * @param filter The [MangaListFilter] to convert.
- * @return A [MangaSearchQuery] constructed based on the given [filter].
- */
 internal fun convertToMangaSearchQuery(offset: Int, sortOrder: SortOrder, filter: MangaListFilter): MangaSearchQuery {
 	return MangaSearchQuery.Builder().apply {
 		offset(offset)
@@ -48,31 +39,6 @@ internal fun convertToMangaSearchQuery(offset: Int, sortOrder: SortOrder, filter
 	}.build()
 }
 
-/**
- * Converts a {@link MangaSearchQuery} into a {@link MangaListFilter}.
- * <p>
- * This method iterates through the search criteria defined in the provided {@code searchQuery}
- * and applies them to a {@link MangaListFilter.Builder}. The criteria are processed based on
- * their types, such as inclusion, exclusion, equality checks, range filtering, and pattern matching.
- * </p>
- * <p>
- * Supported criteria:
- * <ul>
- *     <li>{@link QueryCriteria.Include} - Adds tags, states, content types, content ratings, demographics, and languages.</li>
- *     <li>{@link QueryCriteria.Exclude} - Excludes tags.</li>
- *     <li>{@link QueryCriteria.Equals} - Sets specific values like publication year.</li>
- *     <li>{@link QueryCriteria.Between} - Sets a range of values like publication year range.</li>
- *     <li>{@link QueryCriteria.Match} - Adds a search pattern for the title name.</li>
- * </ul>
- * </p>
- * <p>
- * If an unsupported field is encountered, an {@link UnsupportedOperationException} is thrown.
- * </p>
- *
- * @param searchQuery The {@link MangaSearchQuery} to convert.
- * @return A {@link MangaListFilter} constructed based on the given {@code searchQuery}.
- * @throws UnsupportedOperationException If the search criteria contain unsupported fields.
- */
 internal fun convertToMangaListFilter(searchQuery: MangaSearchQuery): MangaListFilter {
 	return MangaListFilter.Builder().apply {
 		for (criterion in searchQuery.criteria) {
