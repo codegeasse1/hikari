@@ -24,7 +24,6 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -53,11 +52,11 @@ import com.hikari.app.data.MediaType
 import com.hikari.app.i18n.tr
 import com.hikari.app.ui.Artwork
 import com.hikari.app.ui.PosterLoader
+import com.hikari.app.ui.components.MediaRow
 import com.hikari.app.ui.components.PosterImage
 import com.hikari.app.ui.components.keptListState
 import kotlinx.coroutines.delay
 
-/** The card the remote is currently on, for the fixed hero to describe. */
 @Stable
 class TvHomeFocus {
     var item by mutableStateOf<MediaItem?>(null)
@@ -88,11 +87,6 @@ object TvHomeMetrics {
 
 private class TvStageArt(val model: Any?, val wide: Boolean)
 
-/**
- * Nuvio-style full-bleed backdrop: artwork anchored on the top-right with
- * smooth horizontal and vertical dark gradients so the left metadata and
- * bottom rows sit on a rich cinema stage, identical to the reference video.
- */
 @Composable
 fun TvHomeBackdropLayer(item: MediaItem?, modifier: Modifier = Modifier) {
     val bg = Color(0xFF090A0F)
@@ -137,7 +131,6 @@ fun TvHomeBackdropLayer(item: MediaItem?, modifier: Modifier = Modifier) {
                 }
             }
         }
-        // বাম থেকে ডানে স্মুথ ডার্ক গ্রেডিয়েন্ট (ভিডিওর মতো টেক্সট এরিয়া ডার্ক রাখবে)
         Box(
             Modifier
                 .fillMaxSize()
@@ -151,7 +144,6 @@ fun TvHomeBackdropLayer(item: MediaItem?, modifier: Modifier = Modifier) {
                     )
                 )
         )
-        // নিচ থেকে উপরে স্মুথ ডার্ক গ্রেডিয়েন্ট (যাতে নিচের রোগুলো পরিষ্কার ফুটে ওঠে)
         Box(
             Modifier
                 .fillMaxSize()
@@ -168,13 +160,6 @@ fun TvHomeBackdropLayer(item: MediaItem?, modifier: Modifier = Modifier) {
     }
 }
 
-/**
- * Video-identical Hero Info Block:
- * 1. Title / TMDB Logo
- * 2. Type • Genres • Year
- * 3. [TV-MA / R] [ONGOING / RELEASED] [IMDb] 8.0
- * 4. 3-line synopsis
- */
 @Composable
 fun TvHomeHeroInfo(item: MediaItem?, modifier: Modifier = Modifier) {
     val ts = TvUi.scale()
@@ -216,7 +201,6 @@ fun TvHomeHeroInfo(item: MediaItem?, modifier: Modifier = Modifier) {
 
             Spacer(Modifier.height(8.dp))
 
-            // Dot-separated line: "Series  •  Action & Adventure  •  2022"
             val typeLabel = when (item.type) {
                 MediaType.SERIES -> tr("Series")
                 MediaType.MOVIE -> tr("Movie")
@@ -240,7 +224,6 @@ fun TvHomeHeroInfo(item: MediaItem?, modifier: Modifier = Modifier) {
                 Spacer(Modifier.height(7.dp))
             }
 
-            // Badges Row: [TV-MA / R]  [ONGOING / RELEASED]  [IMDb] 8.0
             val ageChip = if (item.type == MediaType.SERIES) "TV-MA" else "R"
             val statusChip = if (item.type == MediaType.SERIES) "ONGOING" else "RELEASED"
             val rating = item.rating?.takeIf { it > 0 }
@@ -316,11 +299,6 @@ private fun TvMetaOutlineBadge(text: String, scale: Float) {
     }
 }
 
-/**
- * Video-style horizontal shelf where the focused card smoothly expands from a
- * 2:3 portrait poster into a wide 16:9 landscape card with backdrop art and
- * bottom-left title/logo.
- */
 @Composable
 fun TvExpandingMediaRow(
     title: String,
@@ -333,6 +311,20 @@ fun TvExpandingMediaRow(
     onQuickPlay: ((MediaItem) -> Unit)? = null,
     onShowAll: (() -> Unit)? = null,
 ) {
+    if (!TvMode.current()) {
+        MediaRow(
+            title = title,
+            providerName = providerName,
+            items = items,
+            keeperKey = keeperKey,
+            onItemFocus = onItemFocus,
+            showViewAll = showViewAll,
+            onClick = onClick,
+            onQuickPlay = onQuickPlay,
+            onShowAll = onShowAll,
+        )
+        return
+    }
     if (items.isEmpty()) return
     val ts = TvUi.scale()
     val uniqueItems = remember(items) { items.distinctBy { it.uniqueId } }
@@ -403,7 +395,6 @@ private fun TvExpandingPosterCard(
 ) {
     var focused by remember { mutableStateOf(false) }
 
-    // ফোকাস করলে কার্ডটি 118.dp পোর্ট্রেট থেকে 268.dp ওয়াইড ল্যান্ডস্কেপে এক্সপ্যান্ড হবে
     val cardWidth by animateDpAsState(
         targetValue = if (focused) (268.dp * scale) else (118.dp * scale),
         animationSpec = tween(durationMillis = 240),
@@ -509,7 +500,6 @@ private fun TvExpandingPosterCard(
     }
 }
 
-/** The soft fade at the bottom edge: the next row peeks in and melts away. */
 @Composable
 fun TvHomeBottomFade(modifier: Modifier = Modifier) {
     val bg = Color(0xFF090A0F)
