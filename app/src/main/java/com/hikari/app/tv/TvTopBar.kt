@@ -298,6 +298,9 @@ fun TvHomeHeaderBar(
     mouseOn: Boolean,
     onSettings: (() -> Unit)?,
     modifier: Modifier = Modifier,
+    /** Nuvio-style Home: no big "Hikari" wordmark on the left (the hero's
+     *  title owns that corner); only the buttons and pills on the right. */
+    compact: Boolean = false,
 ) {
     val accent = Cs3.accent
     Row(
@@ -306,7 +309,8 @@ fun TvHomeHeaderBar(
             .padding(start = 20.dp, end = 20.dp, top = 10.dp, bottom = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Column(Modifier.weight(1f)) {
+        if (compact) Spacer(Modifier.weight(1f))
+        else Column(Modifier.weight(1f)) {
             Text(
                 tr("Hikari"),
                 style = MaterialTheme.typography.headlineLarge,
