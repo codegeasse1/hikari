@@ -261,7 +261,7 @@ class AiDubManager(private val appCtx: Context) {
 
     private fun speakPiperQueued(text: String, L: AiDubLang, gender: Gender = Gender.UNKNOWN) {
         if (text.length > 600) return
-        if (!PiperVoice.isReady(appCtx, L)) { synchronized(dubQueue) { while (dubQueue.size >= 3) dubQueue.removeFirst(); dubQueue.addLast(Triple(text, L, gender)) }; drainSystemQueue(); return }
+        if (!AiDubPiperPack.isReady(appCtx, L)) { synchronized(dubQueue) { while (dubQueue.size >= 3) dubQueue.removeFirst(); dubQueue.addLast(Triple(text, L, gender)) }; drainSystemQueue(); return }
         synthesizePiper(text, L, gender)
     }
 
@@ -419,27 +419,27 @@ class AiDubManager(private val appCtx: Context) {
     // ---- Piper (sherpa-onnx, offline neural voices) ----
 
     fun piperVoiceReady(L: AiDubLang): Boolean =
-        L.piperTarball != null && PiperVoice.isReady(appCtx, L)
+        L.piperTarball != null && AiDubPiperPack.isReady(appCtx, L)
 
     fun piperSummary(): String {
         if (!piperOk) return "Needs a 64-bit phone"
         val L = currentLang()
         if (L.piperTarball == null) return "No Piper voice for ${L.label} — System TTS only"
-        return if (PiperVoice.isReady(appCtx, L)) "Voice ready (${PiperVoice.voiceMB(appCtx, L)} MB)"
+        return if (AiDubPiperPack.isReady(appCtx, L)) "Voice ready (${AiDubPiperPack.voiceMB(appCtx, L)} MB)"
         else "Voice not downloaded (~20 MB)"
     }
 
     fun piperHint(): String {
         val L = currentLang()
         return if (L.piperTarball == null || !piperOk) piperSummary()
-        else if (PiperVoice.isReady(appCtx, L)) "Piper ${L.label} voice ready"
+        else if (AiDubPiperPack.isReady(appCtx, L)) "Piper ${L.label} voice ready"
         else "Piper ${L.label} voice still downloading"
     }
 
-    fun piperMB(): Long = PiperVoice.downloadedMB(appCtx)
+    fun piperMB(): Long = AiDubPiperPack.downloadedMB(appCtx)
 
     fun clearPiper() {
-        PiperVoice.clearAll(appCtx)
+        AiDubPiperPack.clearAll(appCtx)
         try {
             piper?.free()
         } catch (e: Exception) {
@@ -454,7 +454,7 @@ class AiDubManager(private val appCtx: Context) {
             done(false)
             return
         }
-        if (PiperVoice.isReady(appCtx, L)) {
+        if (AiDubPiperPack.isReady(appCtx, L)) {
             done(true)
             return
         }
@@ -467,7 +467,7 @@ class AiDubManager(private val appCtx: Context) {
             return
         }
         scope.launch(Dispatchers.IO) {
-            val ok = PiperVoice.download(appCtx, L, null)
+            val ok = AiDubPiperPack.download(appCtx, L, null)
             withContext(Dispatchers.Main) { done(ok) }
         }
     }
@@ -492,13 +492,13 @@ class AiDubManager(private val appCtx: Context) {
     }
 
     private fun synthesizePiper(text: String, L: AiDubLang, gender: Gender = Gender.UNKNOWN) {
-        if (L.piperTarball == null || !PiperVoice.isReady(appCtx, L)) {
+        if (L.piperTarball == null || !AiDubPiperPack.isReady(appCtx, L)) {
             synchronized(dubQueue) { while (dubQueue.size >= 3) dubQueue.removeFirst(); dubQueue.addLast(Triple(text, L, gender)) }; drainSystemQueue()
             return
         }
         scope.launch(Dispatchers.IO) {
             try {
-                val found = PiperVoice.locate(appCtx, L)
+                val found = AiDubPiperPack.locate(appCtx, L)
                     ?: run {
                         withContext(Dispatchers.Main) { synchronized(dubQueue) { while (dubQueue.size >= 3) dubQueue.removeFirst(); dubQueue.addLast(Triple(text, L, gender)) }; drainSystemQueue() }
                         return@launch

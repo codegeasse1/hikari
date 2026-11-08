@@ -11,11 +11,14 @@ import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream
 
 /**
+ * (Named AiDubPiperPack so it never clashes with the Dub engine's PiperVoice
+ * data class in SherpaModels.kt.)
+ *
  * Piper voice packs: per-language int8 VITS voices from the official
  * sherpa-onnx tts-models release (~20MB each). Downloaded once into the
  * app's own files, extracted, verified (model + tokens), deletable.
  */
-object PiperVoice {
+object AiDubPiperPack {
     private const val BASE =
         "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/"
 

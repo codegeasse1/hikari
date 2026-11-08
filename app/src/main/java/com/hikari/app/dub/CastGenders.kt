@@ -8,7 +8,7 @@ import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
-enum class Gender { MALE, FEMALE, UNKNOWN }
+// Gender lives in SpeakerVoices.kt (MALE, FEMALE, CHILD, NEUTRAL, UNKNOWN).
 
 object CastGenders {
   private const val ANILIST = "https://graphql.anilist.co"
