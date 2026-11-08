@@ -149,7 +149,12 @@ class SoraProvider(override val config: ProviderConfig) : ContentProvider {
         for (i in 0 until minOf(arr.length(), MAX_ITEMS)) {
             val o = arr.optJSONObject(i) ?: continue
             val link = o.optString("href").trim()
-            val title = o.optString("title").trim().ifBlank { o.optString("name").trim() }
+            // Site scrapes ship raw HTML entities ("Kashita … &quot;Revo…&quot;"):
+            // decode once here, or every downstream consumer — TMDB matching,
+            // artwork lookup, row titles — works on the dirty string and misses.
+            // Ids/hrefs/posters are URLs and stay raw.
+            val title = decodeHtmlEntities(o.optString("title").trim())
+                .ifBlank { decodeHtmlEntities(o.optString("name").trim()) }
             if (link.isBlank() || title.isBlank()) continue
             // UNKNOWN until the episode list is known (see AniyomiProvider):
             // the module gives no movie/series signal at catalog time. (The
@@ -178,7 +183,7 @@ class SoraProvider(override val config: ProviderConfig) : ContentProvider {
         val data = dataOf(payload)
         val first = (data as? JSONArray)?.optJSONObject(0) ?: (data as? JSONObject)
         if (first == null) return@withContext item
-        val aliases = first.optString("aliases").trim()
+        val aliases = decodeHtmlEntities(first.optString("aliases").trim())
         val title = aliases.substringBefore(',').trim().ifBlank { item.title }
         MediaItem(
             providerId = item.providerId,
@@ -218,8 +223,8 @@ class SoraProvider(override val config: ProviderConfig) : ContentProvider {
                 out += Episode(
                     number = number,
                     id = link,
-                    name = o.optString("title").trim()
-                        .ifBlank { o.optString("name").trim() }
+                    name = decodeHtmlEntities(o.optString("title").trim())
+                        .ifBlank { decodeHtmlEntities(o.optString("name").trim()) }
                         .ifBlank { null },
                     season = season,
                 )
@@ -409,6 +414,27 @@ class SoraProvider(override val config: ProviderConfig) : ContentProvider {
         streamErrors[config.id] = msg
         lastOutcome[config.id] = msg.take(80)
         return emptyList()
+    }
+
+    /** One left-to-right pass over the raw entity syntax — never rescanned, so
+     *  "&amp;quot;" decodes to "&quot;" (correct) rather than to `"` (double
+     *  decode). Unknown entities are left verbatim. */
+    private fun decodeHtmlEntities(raw: String): String {
+        if (!raw.contains('&') || !raw.contains(';')) return raw
+        val named = mapOf(
+            "quot" to "\"", "amp" to "&", "lt" to "<", "gt" to ">",
+            "apos" to "'", "nbsp" to " ",
+        )
+        return Regex("&(#\\d+|#[xX][0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]*);").replace(raw) { m ->
+            val e = m.groupValues[1]
+            when {
+                e.startsWith("#x", ignoreCase = true) ->
+                    e.substring(2).toIntOrNull(16)?.toChar()?.toString() ?: m.value
+                e.startsWith("#") ->
+                    e.substring(1).toIntOrNull()?.toChar()?.toString() ?: m.value
+                else -> named[e] ?: m.value
+            }
+        }
     }
 
     private fun dataOf(payload: String): Any? {
