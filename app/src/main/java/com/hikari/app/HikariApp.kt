@@ -317,6 +317,8 @@ class HikariApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // The offline-voice helper process (NeuralTtsService, Dub audio) needs none of the app start-up.
+        if (runCatching { java.io.File("/proc/self/cmdline").readText().trim('\u0000').endsWith(":neuraltts") }.getOrDefault(false)) return
         instance = this
         // OkHttp 5's PublicSuffixDatabase reads through the application
         // context, and ours is never set: androidx-startup (which normally
