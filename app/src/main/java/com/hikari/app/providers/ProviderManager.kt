@@ -305,6 +305,14 @@ object ProviderGate {
     /** Same for BACKGROUND callers (their poll loop used to spin forever). */
     private const val BACKGROUND_GATE_MAX_MS = 120_000L
 
+    /** How long a waiter stands behind a busy extension before it stops
+     *  queueing and takes a fresh lane instead: the stuck call keeps its old
+     *  lock and keeps loading in the background, while the waiter proceeds
+     *  immediately on the new lock and its servers paint. A healthy overlap
+     *  (meta + episodes, a prefetch) finishes inside this window, so only a
+     *  genuinely stuck holder is ever bypassed. */
+    private const val STUCK_GRACE_MS = 5_000L
+
     /** How long a background call may have waited before its wait is written to
      *  the log, with the reason. This is the line that answers "where did the
      *  minute before playback go" (see [withProvider]). */
@@ -341,8 +349,15 @@ object ProviderGate {
                 // hold every later tap hostage (see [ProviderStalledException]
                 // and INTERACTIVE_GATE_MAX_MS). Still cancellable — the delays
                 // below yield like the old withLock did.
-                val mutex = lockFor(id)
+                //
+                // And no waiter ever queues behind a stuck holder: once the
+                // wait passes STUCK_GRACE_MS the lane lock is replaced (the
+                // stuck call keeps the old one and keeps loading in the
+                // background) and this caller proceeds on the fresh lock, so
+                // its servers paint instead of standing in single file.
+                var mutex = lockFor(id)
                 val start = System.currentTimeMillis()
+                var contendedSince = -1L
                 while (true) {
                     if (mutex.tryLock()) {
                         try {
@@ -351,8 +366,20 @@ object ProviderGate {
                             mutex.unlock()
                         }
                     }
-                    if (System.currentTimeMillis() - start >= INTERACTIVE_GATE_MAX_MS) {
-                        throw ProviderStalledException(id, System.currentTimeMillis() - start)
+                    val now = System.currentTimeMillis()
+                    if (contendedSince < 0L) contendedSince = now
+                    if (now - contendedSince >= STUCK_GRACE_MS) {
+                        locks[id] = kotlinx.coroutines.sync.Mutex()
+                        mutex = lockFor(id)
+                        contendedSince = now
+                        com.hikari.app.data.Logs.log(
+                            "Provider",
+                            "$id: waiter bypassed a stuck holder after ${STUCK_GRACE_MS / 1000}s — fresh lane taken, stuck call continues in background",
+                        )
+                        continue
+                    }
+                    if (now - start >= INTERACTIVE_GATE_MAX_MS) {
+                        throw ProviderStalledException(id, now - start)
                     }
                     kotlinx.coroutines.delay(25L)
                 }
@@ -368,9 +395,10 @@ object ProviderGate {
         // Polling rather than a fairness queue because the condition is "is the
         // user waiting", which changes while we wait; the poll is 25 ms, which
         // is nothing next to the calls this is protecting.
-        val mutex = lockFor(id)
+        var mutex = lockFor(id)
         val waiters = waitersFor(id)
         val startedAt = System.currentTimeMillis()
+        var contendedSince = -1L
         while (true) {
             val elapsed = System.currentTimeMillis() - startedAt
             // Bounded like the interactive lane: a corpse must not hold the
@@ -381,27 +409,45 @@ object ProviderGate {
             val pageWantsThis = waiters.get() > 0 && elapsed < BACKGROUND_MAX_HOLD_MS
             val somePageLoading = waiters.get() == 0 && interactiveWindows.get() > 0 &&
                 elapsed < BACKGROUND_COURTESY_MS
-            if (!pageWantsThis && !somePageLoading && mutex.tryLock()) {
-                // WHY the call started late, when it did. Without this line a
-                // slow search is one anonymous wait in a log full of them; with
-                // it, a wait is attributed to the page that caused it, to an
-                // earlier call on the same extension that never let go, or to
-                // nothing at all.
-                if (elapsed >= WAIT_LOG_MS) {
+            if (!pageWantsThis && !somePageLoading) {
+                if (mutex.tryLock()) {
+                    // WHY the call started late, when it did. Without this line a
+                    // slow search is one anonymous wait in a log full of them; with
+                    // it, a wait is attributed to the page that caused it, to an
+                    // earlier call on the same extension that never let go, or to
+                    // nothing at all.
+                    if (elapsed >= WAIT_LOG_MS) {
+                        com.hikari.app.data.Logs.log(
+                            "Provider",
+                            "$id: $lane call started after waiting ${elapsed / 1000.0}s — " + when {
+                                waiters.get() > 0 -> "a page is waiting for this extension"
+                                interactiveWindows.get() > 0 -> "a page was loading"
+                                else -> "this extension was still finishing an earlier call"
+                            },
+                        )
+                    }
+                    try {
+                        return block()
+                    } finally {
+                        mutex.unlock()
+                    }
+                }
+                // Same bypass as the interactive lane — but ONLY against this
+                // provider's own lock being held. Courtesy holds (a page
+                // loading elsewhere) still just wait out their window.
+                val now = System.currentTimeMillis()
+                if (contendedSince < 0L) contendedSince = now
+                if (now - contendedSince >= STUCK_GRACE_MS) {
+                    locks[id] = kotlinx.coroutines.sync.Mutex()
+                    mutex = lockFor(id)
+                    contendedSince = now
                     com.hikari.app.data.Logs.log(
                         "Provider",
-                        "$id: $lane call started after waiting ${elapsed / 1000.0}s — " + when {
-                            waiters.get() > 0 -> "a page is waiting for this extension"
-                            interactiveWindows.get() > 0 -> "a page was loading"
-                            else -> "this extension was still finishing an earlier call"
-                        },
+                        "$id: background waiter bypassed a stuck holder after ${STUCK_GRACE_MS / 1000}s — fresh lane taken, stuck call continues in background",
                     )
                 }
-                try {
-                    return block()
-                } finally {
-                    mutex.unlock()
-                }
+            } else {
+                contendedSince = -1L
             }
             kotlinx.coroutines.delay(25L)
         }
