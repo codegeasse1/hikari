@@ -79,6 +79,7 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import coil.compose.AsyncImage
 import com.hikari.app.data.HistoryEntry
 import com.hikari.app.data.MediaItem
@@ -123,10 +124,13 @@ fun MediaRow(
     /** ScrollKeeper slot for this row's horizontal scroll (see ScrollKeeper):
      *  Back from a title lands where the row was. Blank keeps a plain state. */
     keeperKey: String = "",
+    /** TV Home only: called when the remote lands on a card, so the fixed hero
+     *  can describe it. Null everywhere else. */
+    onItemFocus: ((MediaItem) -> Unit)? = null,
 ) {
     val style = rememberPosterStyle()
     if (TvMode.current()) {
-        com.hikari.app.tv.TvCinemaRow(title = title, providerName = providerName, items = items, onOpen = onClick, onShowAll = if (showViewAll) onShowAll else null, vertical = !style.isCinema(true), keeperKey = keeperKey)
+        com.hikari.app.tv.TvCinemaRow(title = title, providerName = providerName, items = items, onOpen = onClick, onShowAll = if (showViewAll) onShowAll else null, vertical = !style.isCinema(true), keeperKey = keeperKey, onItemFocus = onItemFocus)
         return
     }
     if (style.isCinema(false)) {
@@ -1710,6 +1714,8 @@ fun ContinueWatchingRow(
     /** When non-null the TV header shows the reference's "Clear History"
      *  action beside the shelf header (it clears the same shared store). */
     onClearAll: (() -> Unit)? = null,
+    /** TV Home only: called when the remote lands on a card. */
+    onItemFocus: ((HistoryEntry) -> Unit)? = null,
 ) {
     if (entries.isEmpty()) return
     // Defensive dedupe: a duplicate Compose key would crash the whole row.
@@ -1765,6 +1771,7 @@ fun ContinueWatchingRow(
                         removable = onRemove != null,
                         onClick = { onClick(h) },
                         onRemove = { onRemove?.invoke(h) },
+                        onFocus = { onItemFocus?.invoke(h) },
                     )
                 }
             }
@@ -1805,6 +1812,7 @@ private fun ContinueWatchingCard(
     removable: Boolean = false,
     onClick: () -> Unit,
     onRemove: () -> Unit = {},
+    onFocus: () -> Unit = {},
 ) {
     val style = rememberPosterStyle()
     val fraction = if (h.durationMs > 0L) {
@@ -1814,6 +1822,7 @@ private fun ContinueWatchingCard(
     Column(
         Modifier
             .width(230.dp)
+            .onFocusChanged { if (it.hasFocus) onFocus() }
             // Not clipped: the rounding lives on the thumbnail itself, so the
             // title under it cannot be eaten by the corner curve.
             .clickable(onClick = onClick)
