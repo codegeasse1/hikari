@@ -1,3 +1,8 @@
+## 0.12.63 (continuous build only)
+
+- Cinema 16:9 truly lands on phone Home: the phone shelf no longer borrows the TV's focus-expanding cards (which stay portrait without a remote) and instead draws real 16:9 landscape cards with theme-correct titles — the TV shelves keep their new expanding look untouched
+- Stuck extensions stop blocking the lane: a call waiting more than ~5s on a busy extension takes a fresh lane and proceeds while the stuck call keeps loading in the background; its late answer still merges into the list. No tap stands behind a wedged call anymore
+
 ## 0.12.62 (continuous build only)
 
 - Cinema 16:9 sticks on phone Home shelves: switching the poster shape now rebuilds every row instead of reusing the old subtree, so billboard rows redraw as landscape cards on the next frame and no portrait row can survive the switch (or the way back)
