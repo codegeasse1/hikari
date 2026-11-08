@@ -72,18 +72,18 @@ object TmdbMeta {
     suspend fun artwork(item: MediaItem): Pair<String?, String?>? {
         if (!runCatching { HikariApp.instance.store.tmdbEnabled() }.getOrDefault(true) ||
             !runCatching { HikariApp.instance.store.tmdbModule("artwork") }.getOrDefault(true)) return null
-        // An anime AniList/Bangumi knew with real data: its art wins outright,
-        // and TMDB is never consulted for the POSTER — TMDB's mistranslation
-        // (the Hollywood sitcom for a donghua called "Big Brother") must never
-        // overwrite the anime. A cover-only / score-zero / blank-overview hit
-        // is NOT a win (the bare case).
+        // User order: TMDB first, then the anime sources (AniList -> Bangumi),
+        // then provider art (the callers' fallback). The anime pick no longer
+        // wins outright: a cover-only / score-zero / blank-overview hit is NOT
+        // usable (the bare case) and TMDB is consulted regardless.
         var animeCover: String? = null
+        var animeBanner: String? = null
         when (val pick = runCatching { DonghuaDetails.pick(item) }.getOrNull()) {
             is DonghuaDetails.Pick.Anime -> {
                 val a = pick.info
                 if ((a.cover != null || a.banner != null) && DonghuaDetails.isUsable(a)) {
-                    if (a.banner != null) return a.cover to a.banner
                     animeCover = a.cover
+                    animeBanner = a.banner
                 }
             }
             else -> {}
@@ -105,9 +105,10 @@ object TmdbMeta {
                 }
             }
         }
-        // Anime cover kept, landscape filled from TMDB when the banner was missing.
-        if (animeCover != null) return animeCover to tmdbBackdrop
-        if (tmdbPoster != null || tmdbBackdrop != null) return tmdbPoster to tmdbBackdrop
+        // TMDB wins both halves; the anime cover/banner fill what TMDB missed.
+        val poster = tmdbPoster ?: animeCover
+        val backdrop = tmdbBackdrop ?: animeBanner
+        if (poster != null || backdrop != null) return poster to backdrop
         // Universal fallback (TMDB -> AniList -> Bangumi): any title TMDB missed
         // gets one anime-source try, so an untagged donghua/anime still resolves.
         runCatching { DonghuaDetails.load(item) }.getOrNull()?.let { a ->
