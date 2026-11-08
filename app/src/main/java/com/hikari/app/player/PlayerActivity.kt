@@ -12761,8 +12761,25 @@ class PlayerActivity : ComponentActivity() {
     /** Seeks both players together — every user seek keeps the dual-audio
      *  pair aligned instantly instead of drifting until the 1s heartbeat. */
     private fun seekBoth(targetMs: Long) {
+        // A progressive (mp4) timeline reports duration only once the header
+        // lands; seeking before that (or when the server ignored Range and
+        // left the timeline unseekable) jumps to 0 and restarts from the
+        // top — the HubCloud/Pixeldrain "skip restarts" report. Hold the
+        // position instead of manufacturing a restart.
         try {
-            player?.seekTo(targetMs)
+            val p = player
+            if (p != null) {
+                val dur = p.duration
+                val seekable = dur > 0L && runCatching {
+                    val tl = p.currentTimeline
+                    !tl.isEmpty && tl.getWindow(0, androidx.media3.common.Timeline.Window()).isSeekable
+                }.getOrDefault(dur > 0L)
+                if (seekable) p.seekTo(targetMs.coerceIn(0L, dur))
+                else com.hikari.app.data.Logs.log(
+                    "Player",
+                    "seek ignored — timeline not seekable yet target=" + targetMs + " dur=" + dur,
+                )
+            }
         } catch (_: Throwable) { }
         try {
             dualPlayer?.seekTo(targetMs)
@@ -16453,7 +16470,16 @@ class PlayerActivity : ComponentActivity() {
             // for fresh sources the same way a stale 403 does.
             val loopback400Refresh = httpStatus == 400 &&
                 isLoopbackHost(sources.getOrNull(currentIndex)?.url.orEmpty())
-            if ((httpStatus == 403 || loopback400Refresh) &&
+            // A bridge 502/503 is the same class as a stale 403: the bridge's
+            // upstream file link (Filmu's sacdn HLS) expired, and a fresh
+            // extraction hands out a working one. Re-resolve once or twice
+            // before walking the list, exactly like stale signed playlists.
+            val bridge5xxRefresh = (httpStatus == 502 || httpStatus == 503) &&
+                runCatching {
+                    val h = java.net.URI(sources.getOrNull(currentIndex)?.url.orEmpty()).host.orEmpty().lowercase()
+                    h.contains("workers.dev") || h.contains("bridge")
+                }.getOrDefault(false)
+            if ((httpStatus == 403 || loopback400Refresh || bridge5xxRefresh) &&
                 liveSessionId != null &&
                 signedLinkRefreshes < 2 &&
                 !isLiveSource(sources.getOrNull(currentIndex))

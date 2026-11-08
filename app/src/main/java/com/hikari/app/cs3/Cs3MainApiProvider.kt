@@ -572,15 +572,20 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
      * not a hypothetical.
      */
     private fun rowFor(rows: List<HomePageList>, name: String, index: Int): HomePageList? {
-        val wanted = name.trim()
+        val wanted = normRowName(name)
         if (wanted.isNotEmpty()) {
-            val matches = rows.withIndex().filter { it.value.name.trim() == wanted }
+            val matches = rows.withIndex().filter { normRowName(it.value.name) == wanted }
             if (matches.isNotEmpty()) {
                 return matches.minByOrNull { kotlin.math.abs(it.index - index) }?.value
             }
         }
         return rows.getOrNull(index)
     }
+
+    /** Row-name equality ignoring case/extra spaces: mirrors re-emit the
+     *  same tray as "Hollywood (2026)" vs "hollywood  (2026)". */
+    private fun normRowName(s: String): String =
+        s.trim().lowercase().replace(Regex("\\s+"), " ")
 
     /** Fetches one mainPage's HomePageList rows (page 1 is briefly cached). */
     private suspend fun fetchHomeRows(
@@ -604,7 +609,11 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
             a.getMainPage(pageNumber, MainPageRequest(page.name, page.data, false))
         }
         val rows = resp?.items.orEmpty()
-        if (pageNumber == 1) homePageCache[key] = System.currentTimeMillis() to rows
+        // Never let an empty answer evict a good one: mirrors rotate trays
+        // and a blank read would park every row on "No items" until TTL.
+        if (pageNumber == 1 && (rows.isNotEmpty() || homePageCache[key] == null)) {
+            homePageCache[key] = System.currentTimeMillis() to rows
+        }
         return rows
     }
 
@@ -687,10 +696,35 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                     rowItems = row?.list.orEmpty().mapNotNull { it.toMediaItem() }
                 }
                 if (rowItems.isEmpty()) {
+                    // Last resort before reporting empty: ask the plugin for
+                    // this row directly. Some plugins serve a tray lazily and
+                    // only fill it on a targeted getMainPage for its own data.
+                    var direct = emptyList<MediaItem>()
+                    runCatching {
+                        a.getMainPage(page, MainPageRequest(ref.name, ref.id, false))
+                    }.getOrNull()?.let { resp ->
+                        direct = resp.items.orEmpty().flatMap { r ->
+                            r.list.orEmpty().mapNotNull { it.toMediaItem() }
+                        }
+                    }
+                    if (direct.isNotEmpty()) {
+                        catalogErrors.remove(config.id)
+                        return@withContext direct
+                    }
+                    val rawCount = row?.list?.size ?: -1
                     catalogErrors[config.id] = if (row == null) {
                         "\"${ref.name}\" is no longer on its home page — refresh Home"
                     } else {
                         "No items in ${ref.name}"
+                    }
+                    runCatching {
+                        com.hikari.app.data.Logs.log(
+                            "Cs3Catalog",
+                            "empty row provider=" + config.id + " ref=" + ref.name +
+                                " page=" + pageIndex + ":" + rowIndex +
+                                " matched=" + (row?.name ?: "-") +
+                                " raw=" + rawCount + " parsed=" + rowItems.size,
+                        )
                     }
                 } else {
                     catalogErrors.remove(config.id)

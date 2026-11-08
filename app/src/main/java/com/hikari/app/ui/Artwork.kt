@@ -49,13 +49,12 @@ object Artwork {
 
     private const val MISS_TTL_MS = 3L * 24L * 60L * 60L * 1000L
     private const val MAX_ENTRIES = 800
-    /** v6: v5's cache is full of poster-only answers (a title with a real
-     *  poster but no backdrop cached that as its final answer), so titles
-     *  whose backdrop is only resolvable through the detail header's plural
-     *  /images path kept the blurred portrait on rows. v6 drops those stale
-     *  answers plus any wrong-show TMDB mapping so the unified lookup below
-     *  re-resolves them at once (TVDB now fills the gap instantly). */
-    private const val CACHE_FILE = "artwork-cache-v6.json"
+    /** v7: v6 keys split row vs detail by exact title + type ("Dexter:
+     *  Resurrection (Season 2)|2025|UNKNOWN" vs "...|SERIES"), so rows stuck
+     *  on poster-only never saw the wide art the detail header found. v7
+     *  drops those stale answers and keys by season-normalized title + year
+     *  (no type), so every surface shares one entry. */
+    private const val CACHE_FILE = "artwork-cache-v7.json"
 
     private val memory = ConcurrentHashMap<String, Entry>()
     private val inFlight = ConcurrentHashMap.newKeySet<String>()
@@ -170,14 +169,14 @@ object Artwork {
     }
 
     /**
-     * Warms a whole row (cinema + vertical): first 12 items prefetch in the
+     * Warms a whole row (cinema + vertical): first 20 items prefetch in the
      * background and stale misses retry, so switching poster shape paints real
      * 16:9/2:3 instantly instead of blurred portraits that only heal after a
      * detail open. Bounded, single-flighted, never throws.
      */
     fun warmRow(items: List<MediaItem>) {
         runCatching {
-            items.take(12).forEach { prefetch(it); retryMiss(it) }
+            items.take(20).forEach { prefetch(it); retryMiss(it) }
         }
     }
 
@@ -210,9 +209,21 @@ object Artwork {
         loadOnce()
         val e = memory[key]
         if (e != null) {
-            if (!e.poster.isNullOrBlank() || !e.backdrop.isNullOrBlank()) return
-            if (System.currentTimeMillis() - e.at < 60_000L) return
-            enqueue(key, item)
+            val fullMiss = e.poster.isNullOrBlank() && e.backdrop.isNullOrBlank()
+            if (fullMiss) {
+                if (System.currentTimeMillis() - e.at < 60_000L) return
+                enqueue(key, item)
+                return
+            }
+            // Poster-only answers retry for a backdrop once an hour: a title
+            // the matcher could not resolve wide art for keeps its poster,
+            // but a newly indexed banner (or a healed matcher) still heals
+            // the row instead of parking it on blurred portrait forever.
+            if (e.backdrop.isNullOrBlank() &&
+                System.currentTimeMillis() - e.at > 3_600_000L
+            ) {
+                enqueue(key, item)
+            }
             return
         }
         enqueue(key, item)
@@ -236,11 +247,33 @@ object Artwork {
         return null
     }
 
+    /** Cache key shared by every surface: season-normalized title + year.
+     *  Deliberately WITHOUT the media type — catalog rows arrive UNKNOWN
+     *  while the detail page is SERIES/MOVIE, and one entry must serve both,
+     *  or rows keep a poster-only answer while detail holds the backdrop.
+     *  Normalization mirrors TmdbMeta.queryVariants (season/part suffixes
+     *  stripped, spaces collapsed), so "Dexter: Resurrection (Season 2)"
+     *  and "Dexter: Resurrection" resolve to the same key. */
     private fun keyOf(item: MediaItem): String? {
-        val title = item.title.trim().lowercase()
-        if (title.isBlank()) return null
+        val canon = canonicalTitle(item.title) ?: return null
         val year = item.year?.toString().orEmpty()
-        return "$title|$year|${item.type.name}"
+        return "$canon|$year"
+    }
+
+    private val SEASON_BIT = Regex(
+        "(?i)[\\(\\[]?\\b(?:season|series|part|cour|book|volume)\\s*\\d{1,3}\\b[\\)\\]]?" +
+            "|\\b\\d{1,3}\\s*(?:st|nd|rd|th)\\s+season\\b" +
+            "|[\\(\\[]\\s*20\\d{2}\\s*[\\)\\]]"
+    )
+    private val SPACES = Regex("\\s+")
+
+    private fun canonicalTitle(raw: String): String? {
+        var t = raw.trim().lowercase()
+        if (t.isBlank()) return null
+        t = t.replace(SEASON_BIT, " ").replace(SPACES, " ").trim()
+            .trim('-', '–', '—', ':', '：', '|', '.', ',', '_').trim()
+        if (t.length < 2) t = raw.trim().lowercase()
+        return t.takeIf { it.length >= 2 }
     }
 
     private fun enqueue(key: String, item: MediaItem) {
@@ -281,7 +314,15 @@ object Artwork {
                             val shots = TmdbScreenshots.backdropsFor(item)
                             val poster = art?.first
                                 ?: TmdbScreenshots.firstPosterCached(item.uniqueId)
+                                ?: siblingPosterCached(item)
+                            // Detail-header parity, extended: the detail page
+                            // caches wide art under its own SERIES/MOVIE id
+                            // while rows carry UNKNOWN, so a row also reads
+                            // the caches its detail page wrote before falling
+                            // back to poster-only.
                             val backdrop = art?.second ?: shots.firstOrNull()
+                                ?: TmdbScreenshots.firstCached(item.uniqueId)
+                                ?: siblingBackdropCached(item)
                             if (poster == null && backdrop == null) null
                             else poster to backdrop
                         }
@@ -294,6 +335,33 @@ object Artwork {
                 inFlight.remove(key)
             }
         }
+    }
+
+    /** Detail-header art cached under a sibling type's id: row ids carry
+     *  UNKNOWN while detail carries SERIES/MOVIE (uniqueId embeds the type),
+     *  so a row must also read the caches its detail page wrote. Offline,
+     *  bounded, never throws. */
+    private fun siblingIds(item: MediaItem): List<String> {
+        val uid = item.uniqueId
+        val tag = "|${item.type.name}|"
+        if (!uid.contains(tag)) return emptyList()
+        return listOf("MOVIE", "SERIES", "UNKNOWN").filter { it != item.type.name }
+            .map { uid.replace(tag, "|$it|") }
+    }
+
+    private fun siblingBackdropCached(item: MediaItem): String? {
+        for (sid in siblingIds(item)) {
+            TmdbScreenshots.firstCached(sid)?.takeIf { it.isNotBlank() }?.let { return it }
+            TmdbScreenshots.allCached(sid).firstOrNull()?.takeIf { it.isNotBlank() }?.let { return it }
+        }
+        return null
+    }
+
+    private fun siblingPosterCached(item: MediaItem): String? {
+        for (sid in siblingIds(item)) {
+            TmdbScreenshots.firstPosterCached(sid)?.takeIf { it.isNotBlank() }?.let { return it }
+        }
+        return null
     }
 
     // ---- disk cache (survives restarts; bounded) ----
