@@ -1752,6 +1752,14 @@ class PlayerActivity : ComponentActivity() {
      * the other one off.
      */
     private fun stopDubAudio() {
+        // The person stopped the dub on purpose (or switched to AI Dub): it must not come back by
+        // itself, neither after another server nor the next time this video is opened.
+        val stopKey = dubSaveKey()
+        dubStoppedForKey = stopKey
+        runCatching { com.hikari.app.dub.DubStore.clearResume(applicationContext, stopKey) }
+        dubRun = null
+        dubResumeJob?.cancel()
+        dubResumeJob = null
         dubScanJob?.cancel()
         dubScanJob = null
         if (dubEngineLazy.isInitialized()) runCatching { dubEngineLazy.value.stop() }
@@ -1854,6 +1862,9 @@ class PlayerActivity : ComponentActivity() {
                     player?.removeListener(dubCueListener)
                     dubScanJob?.cancel()
                     dubScanJob = null
+                    dubResumeJob?.cancel()
+                    dubResumeJob = null
+                    dubRawText = plan.raw
                     val cues = plan.raw
                         ?.let { com.hikari.app.dub.SubtitleCues.parse(it, multi) }
                         .orEmpty()
@@ -1877,18 +1888,124 @@ class PlayerActivity : ComponentActivity() {
         multi: Boolean,
         live: Boolean,
         scan: com.hikari.app.dub.VoiceScanResult?,
+        quiet: Boolean = false,
     ) {
-        dubEngine.start(cues, lang, mode, duck, multi, live = live, scan = scan)
-        if (dubEngine.active && live) player?.addListener(dubCueListener)
+        val saveKey = dubSaveKey()
+        dubEngine.start(
+            cues, lang, mode, duck, multi,
+            live = live, scan = scan,
+            saveKey = if (live) null else saveKey,
+        )
+        if (dubEngine.active && live) {
+            player?.removeListener(dubCueListener)
+            player?.addListener(dubCueListener)
+        }
         if (dubEngine.active) {
-            android.widget.Toast.makeText(
-                this, I18n.t("Dubbing started"), android.widget.Toast.LENGTH_SHORT,
-            ).show()
+            // Remember what runs: another server (after a failure) keeps the same dub going, and
+            // opening this video again later brings it back without dubbing again.
+            dubRun = DubRun(cues, lang, mode, duck, multi, live, scan)
+            dubStoppedForKey = null
+            val rawForResume = dubRawText
+            if (!live && rawForResume != null) {
+                runCatching {
+                    com.hikari.app.dub.DubStore.saveResume(
+                        applicationContext, saveKey, lang, mode, duck, multi, rawForResume,
+                    )
+                }
+            }
+            if (!quiet) {
+                android.widget.Toast.makeText(
+                    this, I18n.t("Dubbing started"), android.widget.Toast.LENGTH_SHORT,
+                ).show()
+            }
         }
     }
 
     /** The voice scan that runs before a dub starts (null when none is running). */
     private var dubScanJob: Job? = null
+
+    /** What the running dub was started with. Kept so that a rebuilt player (a server failed and
+     *  another one was picked) carries the dub on by itself. Null = no dub wanted right now. */
+    private class DubRun(
+        val cues: List<com.hikari.app.dub.DubCue>,
+        val lang: String,
+        val mode: com.hikari.app.dub.VoiceMode,
+        val duck: Float,
+        val multi: Boolean,
+        val live: Boolean,
+        val scan: com.hikari.app.dub.VoiceScanResult?,
+    )
+    private var dubRun: DubRun? = null
+
+    /** Subtitle text of the dub that is being started; saved so the dub can resume by itself. */
+    private var dubRawText: String? = null
+
+    /** The video whose dub the person stopped on purpose: it must not come back by itself. */
+    private var dubStoppedForKey: String? = null
+    private var dubResumeJob: Job? = null
+
+    /** Key the saved dub of this video is filed under (the same video always gives the same key). */
+    private fun dubSaveKey(): String = historyKey.ifBlank { "title:$playingTitle" }
+
+    /** AI Dub (the other dub system) is switched on right now. */
+    private fun aiDubIsOn(): Boolean = ::aiDub.isInitialized && aiDub.enabled
+
+    /**
+     * Called every time a new player has been built (first play, another server after a failure,
+     * a restart of the picture pipeline). A dub that was running carries on with the new player;
+     * a video that was dubbed before (and not stopped on purpose) gets its dub back.
+     */
+    private fun dubAfterPlayerRebuilt() {
+        val run = dubRun
+        if (run != null) {
+            val eng = dubEngine
+            if (eng.active) {
+                eng.onPlayerReplaced()
+            } else {
+                beginDub(run.cues, run.lang, run.mode, run.duck, run.multi, run.live, run.scan, quiet = true)
+            }
+            if (run.live && dubEngine.active) {
+                player?.removeListener(dubCueListener)
+                player?.addListener(dubCueListener)
+            }
+            return
+        }
+        resumeSavedDubIfAny()
+    }
+
+    /** Opening a video that was dubbed before: its saved dub starts again, nothing is made twice. */
+    private fun resumeSavedDubIfAny() {
+        dubResumeJob?.cancel()
+        dubResumeJob = null
+        val key = dubSaveKey()
+        if (dubStoppedForKey == key || dubEngineRunning() || aiDubIsOn()) return
+        if (dubScanJob?.isActive == true) return
+        val info = runCatching {
+            com.hikari.app.dub.DubStore.loadResume(applicationContext, key)
+        }.getOrNull() ?: return
+        dubResumeJob = lifecycleScope.launch {
+            // wait until the video has been handed to the player (the voice scan needs its address)
+            var waited = 0
+            while (waited < 20 && player?.currentMediaItem == null) {
+                delay(500L)
+                waited++
+            }
+            if (isFinishing || isDestroyed) return@launch
+            if (dubRun != null || dubEngineRunning() || aiDubIsOn() || dubStoppedForKey == key) return@launch
+            if (dubScanJob?.isActive == true) return@launch
+            val cues = runCatching {
+                com.hikari.app.dub.SubtitleCues.parse(info.raw, info.multi)
+            }.getOrNull().orEmpty()
+            if (cues.isEmpty()) return@launch
+            if (!com.hikari.app.dub.DubStore.hasSaved(applicationContext, key, cues)) return@launch
+            dubRawText = info.raw
+            if (info.multi && cues.size >= 3 && com.hikari.app.dub.DubPrefs.scan(this@PlayerActivity)) {
+                startDubWithScan(cues, info.lang, info.mode, info.duck, info.multi, quiet = true)
+            } else {
+                beginDub(cues, info.lang, info.mode, info.duck, info.multi, false, null, quiet = true)
+            }
+        }
+    }
 
     private val dubScanClient: com.hikari.app.dub.VoiceScanClient by lazy {
         com.hikari.app.dub.VoiceScanClient(applicationContext)
@@ -1908,11 +2025,20 @@ class PlayerActivity : ComponentActivity() {
         mode: com.hikari.app.dub.VoiceMode,
         duck: Float,
         multi: Boolean,
+        quiet: Boolean = false,
     ) {
+        // The voices of this video were found at an earlier time: nothing to listen to again.
+        val savedScan = runCatching {
+            com.hikari.app.dub.DubStore.loadScan(applicationContext, dubSaveKey(), cues, subtitleOffsetMs)
+        }.getOrNull()
+        if (savedScan != null) {
+            beginDub(cues, lang, mode, duck, multi, false, savedScan, quiet)
+            return
+        }
         val url = player?.currentMediaItem?.localConfiguration?.uri?.toString()
         val src = sources.getOrNull(currentIndex)
         if (url.isNullOrBlank() || src == null) {
-            beginDub(cues, lang, mode, duck, multi, false, null)
+            beginDub(cues, lang, mode, duck, multi, false, null, quiet)
             return
         }
         val clean = sanitizeHeaders(src.headers)
@@ -1923,6 +2049,7 @@ class PlayerActivity : ComponentActivity() {
             withRef
         }
         val offset = subtitleOffsetMs
+        val scanKey = dubSaveKey()
         showDubToast(
             I18n.t("Dub: listening to the original voices to tell men from women. This takes about 2 minutes; the dub starts after it.")
         )
@@ -1942,7 +2069,12 @@ class PlayerActivity : ComponentActivity() {
                 null
             }
             if (isFinishing || isDestroyed) return@launch
-            beginDub(cues, lang, mode, duck, multi, false, scan)
+            if (scan != null) {
+                runCatching {
+                    com.hikari.app.dub.DubStore.saveScan(applicationContext, scanKey, cues, offset, scan)
+                }
+            }
+            beginDub(cues, lang, mode, duck, multi, false, scan, quiet)
         }
     }
 
@@ -14460,6 +14592,8 @@ class PlayerActivity : ComponentActivity() {
         player.trackSelectionParameters = trackSel.build()
         player.addListener(listener)
         player.addListener(aiDubListener)
+        // A dub that is running (or was running when the app was left) goes on with this player.
+        dubAfterPlayerRebuilt()
         ensureHardSub()
         playerView?.player = player
         // A dual-audio pairing survives an effects-pipeline re-arm (which
@@ -18610,6 +18744,7 @@ class PlayerActivity : ComponentActivity() {
     override fun onDestroy() {
         // Dub audio: free the engine only if it was ever created (it is lazy).
         if (dubEngineLazy.isInitialized()) runCatching { dubEngineLazy.value.release() }
+        dubResumeJob?.cancel()
         dubScanJob?.cancel()
         subtitleGenJob?.cancel()
         stopBannerAnimators()
