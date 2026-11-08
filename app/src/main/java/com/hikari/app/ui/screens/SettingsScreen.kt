@@ -85,6 +85,8 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Extension
+import androidx.compose.material.icons.filled.AutoStories
+import androidx.compose.material.icons.filled.LiveTv
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.FormatSize
@@ -1532,6 +1534,36 @@ fun SettingsScreen(nav: NavHostController) {
                         fontWeight = FontWeight.Bold,
                         color = com.hikari.app.tv.TvDesktop.TextPrimary,
                         modifier = Modifier.padding(start = 4.dp, bottom = 6.dp),
+                    )
+                }
+                // The television rail has only five tabs, so the pages that are
+                // no longer on it are opened from here.
+                item(key = "tv-left-extensions") {
+                    TvLeftRow(
+                        icon = Icons.Filled.Extension,
+                        title = tr("Extensions"),
+                        onClick = { Routes.navigateTab(nav, Routes.EXTENSIONS) },
+                    )
+                }
+                item(key = "tv-left-manga") {
+                    TvLeftRow(
+                        icon = Icons.Filled.AutoStories,
+                        title = tr("Manga"),
+                        onClick = { Routes.navigateTab(nav, Routes.MANGA) },
+                    )
+                }
+                item(key = "tv-left-iptv") {
+                    TvLeftRow(
+                        icon = Icons.Filled.LiveTv,
+                        title = tr("IPTV"),
+                        onClick = { Routes.navigateTab(nav, Routes.IPTV) },
+                    )
+                }
+                item(key = "tv-left-telegram") {
+                    TvLeftRow(
+                        icon = Icons.Filled.Send,
+                        title = tr("Telegram"),
+                        onClick = { Routes.navigateTab(nav, Routes.TELEGRAM) },
                     )
                 }
                 tvTopFolders.forEach { target ->
