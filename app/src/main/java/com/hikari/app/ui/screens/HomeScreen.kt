@@ -1314,7 +1314,7 @@ fun HomeScreen(nav: NavHostController) {
                     // off and another on.
                     contentType = "media-row",
                 ) {
-                    MediaRow(
+                    com.hikari.app.tv.TvExpandingMediaRow(
                         title = row.title,
                         providerName = row.providerName,
                         items = row.items,
