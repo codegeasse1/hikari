@@ -6,6 +6,7 @@ import androidx.media3.common.audio.AudioProcessor
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
+import com.hikari.app.dub.VoiceCutProcessor
 import io.github.anilbeesetti.nextlib.media3ext.ffdecoder.NextRenderersFactory
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -183,7 +184,10 @@ class BoostRenderersFactory(
         return DefaultAudioSink.Builder(context)
             .setEnableFloatOutput(enableFloatOutput)
             .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
-            .setAudioProcessors(arrayOf(boost))
+            // Dub audio: the first stage takes the original dialogue out while the
+            // dub speaks (see [VoiceCutProcessor]); it is a bit-exact passthrough
+            // whenever dubbing is off. The volume booster stays last.
+            .setAudioProcessors(arrayOf<AudioProcessor>(VoiceCutProcessor(), boost))
             .build()
     }
 }
