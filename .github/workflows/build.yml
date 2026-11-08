@@ -133,6 +133,32 @@ jobs:
             exit 1
           fi
 
+      # ---- Dub audio check: the sherpa-onnx AAR must carry the classes the Dub code uses ----
+      # The neural voice (Pocket TTS / Kokoro / Piper) is called directly by the Dub code, so a
+      # sherpa-onnx build that lacks them would fail Gradle after minutes with a long pile of
+      # errors. This fails in a second and says what is missing. The speaker scan and the
+      # subtitle-from-voice classes are reached by name, so for those it is only a warning.
+      - name: Check the sherpa-onnx AAR has the Dub classes
+        run: |
+          set -e
+          unzip -p app/libs/sherpa-onnx.aar classes.jar > /tmp/sherpa-classes.jar
+          LIST=$(unzip -l /tmp/sherpa-classes.jar)
+          bad=0
+          for C in OfflineTts OfflineTtsConfig OfflineTtsModelConfig OfflineTtsVitsModelConfig \
+                   OfflineTtsKokoroModelConfig OfflineTtsPocketModelConfig GenerationConfig; do
+            if ! echo "$LIST" | grep -q "com/k2fsa/sherpa/onnx/$C.class"; then
+              echo "::error::sherpa-onnx AAR has no class '$C' - Dub audio needs sherpa-onnx 1.12.24 or newer (this build uses 1.13.8)."
+              bad=1
+            fi
+          done
+          for C in SpeakerEmbeddingExtractor SpeakerEmbeddingExtractorConfig OfflineRecognizer OfflineStream Vad; do
+            if ! echo "$LIST" | grep -q "com/k2fsa/sherpa/onnx/$C.class"; then
+              echo "::warning::sherpa-onnx AAR has no class '$C' - the voice scan / subtitle-from-voice will not work."
+            fi
+          done
+          if [ "$bad" -ne 0 ]; then exit 1; fi
+          echo "sherpa-onnx AAR has the Dub classes."
+
       - name: Build APKs (debug + release)
         env:
           GIT_SHA: ${{ github.sha }}
