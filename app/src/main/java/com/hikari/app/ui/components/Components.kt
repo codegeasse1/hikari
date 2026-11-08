@@ -25,6 +25,8 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -50,6 +52,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
@@ -2153,6 +2156,46 @@ fun GlassDialog(
     // panels are flat, never glass). Phones keep the glass panel untouched.
     val tv = TvMode.current()
     val shape = if (tv) RoundedCornerShape(com.hikari.app.tv.TvDesktop.CornerLarge) else GlassShape
+
+    // ---- Television SAFE FRAME --------------------------------------------
+    // The reported bug: on a television every picker (Type / Year / Genre,
+    // Mark, ...) came up half cut — its right side and its bottom ran past the
+    // edge of the picture. Three things caused it, and all three are closed
+    // here, for every dialog that goes through GlassDialog:
+    //   1. The panel was a fixed 92% of the DIALOG WINDOW. A dialog is its own
+    //      window and on some boxes that window is not the same size as the
+    //      screen the app itself fits into, so "92% of the window" could be
+    //      wider than the visible picture. The panel is now laid out inside a
+    //      frame that has exactly the size of the activity's own window (the
+    //      area the whole app already fits in), anchored to its top-left.
+    //   2. Pickers asked for a list up to 440dp tall on top of the title, the
+    //      search field and the padding — taller than a 540dp television. The
+    //      panel now has a hard ceiling (frame height minus margins) and the
+    //      list inside it takes whatever is left and scrolls.
+    //   3. Televisions crop the picture's edges. The panel now keeps a margin
+    //      from every edge (at least 32dp, or the user's own TV edge setting
+    //      from Settings -> TV & Remote when that is larger).
+    // Phones are untouched: all of this is skipped when [tv] is false.
+    val hostContext = androidx.compose.ui.platform.LocalContext.current
+    val hostConfig = androidx.compose.ui.platform.LocalConfiguration.current
+    val hostDensity = androidx.compose.ui.platform.LocalDensity.current
+    val tvApp = remember { runCatching { com.hikari.app.HikariApp.instance }.getOrNull() }
+    val tvEdgeSetting by (tvApp?.store?.tvOverscanFlow() ?: kotlinx.coroutines.flow.flowOf(0))
+        .collectAsState(initial = 0)
+    val hostDecor = glassDialogHostActivity(hostContext)?.window?.decorView
+    val decorWpx = hostDecor?.width ?: 0
+    val decorHpx = hostDecor?.height ?: 0
+    val frameWdp: Float =
+        if (decorWpx > 0 && hostDensity.density > 0f) decorWpx / hostDensity.density
+        else hostConfig.screenWidthDp.toFloat()
+    val frameHdp: Float =
+        if (decorHpx > 0 && hostDensity.density > 0f) decorHpx / hostDensity.density
+        else hostConfig.screenHeightDp.toFloat()
+    val edgeXdp = maxOf(tvEdgeSetting, 32).toFloat()
+    val edgeYdp = maxOf(tvEdgeSetting, 28).toFloat()
+    val cardMaxWdp = (frameWdp - 2f * edgeXdp).coerceIn(240f, 720f)
+    val cardMaxHdp = (frameHdp - 2f * edgeYdp).coerceAtLeast(200f)
+
     // A short fade + scale so the panel appears rather than blinks.
     val appear = remember { Animatable(0f) }
     LaunchedEffect(Unit) { appear.animateTo(1f, tween(durationMillis = 170)) }
@@ -2174,6 +2217,82 @@ fun GlassDialog(
             withFrameNanos { }
             if (runCatching { target.requestFocus() }.isSuccess) return@LaunchedEffect
         }
+    }
+
+    // The panel itself. Pulled into a local so a phone can draw it straight
+    // into the centred window (exactly as before) while a television draws it
+    // inside the safe frame below.
+    val card: @Composable () -> Unit = {
+        Column(
+            modifier
+                .then(
+                    if (tv) Modifier
+                        .widthIn(max = cardMaxWdp.dp)
+                        .heightIn(max = cardMaxHdp.dp)
+                        .fillMaxWidth()
+                    else Modifier.fillMaxWidth(0.92f)
+                )
+                .graphicsLayer {
+                    scaleX = 0.94f + 0.06f * a
+                    scaleY = 0.94f + 0.06f * a
+                }
+                // Swallow taps: reaching for a row must not close the dialog.
+                // …and for the same reason as the scrim, it must not be a
+                // focus target on a television: it wraps every row, so the
+                // D-pad used to stop on it and OK did nothing at all (its
+                // handler is empty by design).
+                .then(if (tv) Modifier.focusProperties { canFocus = false } else Modifier)
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                ) {}
+                .then(if (glass.dark && !tv) Modifier else Modifier.shadow(6.dp, shape, clip = false))
+                .clip(shape)
+                .background(
+                    if (tv) com.hikari.app.tv.TvDesktop.SurfaceElevated
+                    else MaterialTheme.colorScheme.surface
+                )
+                .then(
+                    if (tv) Modifier
+                    else Modifier.background(Brush.verticalGradient(listOf(glass.fillTop, glass.fillBottom)))
+                )
+                .border(
+                    1.dp,
+                    if (tv) com.hikari.app.tv.TvDesktop.GlassEdge else glass.border,
+                    shape,
+                )
+                .padding(if (tv) 16.dp else 20.dp),
+            content = {
+                if (title != null || showClose) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (title != null) {
+                            Text(
+                                tr(title),
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = if (tv) com.hikari.app.tv.TvDesktop.TextPrimary
+                                else MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.weight(1f),
+                            )
+                        } else {
+                            Spacer(Modifier.weight(1f))
+                        }
+                        if (showClose) {
+                            IconButton(onClick = onDismiss, modifier = Modifier.size(32.dp)) {
+                                Icon(
+                                    Icons.Filled.Close,
+                                    contentDescription = null,
+                                    tint = if (tv) com.hikari.app.tv.TvDesktop.TextMuted
+                                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(4.dp))
+                }
+                content()
+            },
+        )
     }
 
     // A REAL window, not a Box drawn into whichever subtree happened to open
@@ -2210,74 +2329,34 @@ fun GlassDialog(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null,
                 ) { onDismiss() },
-            contentAlignment = Alignment.Center,
+            // Television: the safe frame below is pinned to the window's
+            // physical top-left (AbsoluteAlignment, so a right-to-left
+            // language does not flip it to the other corner) and centres the
+            // panel inside itself.
+            contentAlignment = if (tv) androidx.compose.ui.AbsoluteAlignment.TopLeft
+            else Alignment.Center,
         ) {
-            Column(
-                modifier
-                    .fillMaxWidth(0.92f)
-                    .graphicsLayer {
-                        scaleX = 0.94f + 0.06f * a
-                        scaleY = 0.94f + 0.06f * a
-                    }
-                    // Swallow taps: reaching for a row must not close the dialog.
-                    // …and for the same reason as the scrim, it must not be a
-                    // focus target on a television: it wraps every row, so the
-                    // D-pad used to stop on it and OK did nothing at all (its
-                    // handler is empty by design).
-                    .then(if (tv) Modifier.focusProperties { canFocus = false } else Modifier)
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                    ) {}
-                    .then(if (glass.dark && !tv) Modifier else Modifier.shadow(6.dp, shape, clip = false))
-                    .clip(shape)
-                    .background(
-                        if (tv) com.hikari.app.tv.TvDesktop.SurfaceElevated
-                        else MaterialTheme.colorScheme.surface
-                    )
-                    .then(
-                        if (tv) Modifier
-                        else Modifier.background(Brush.verticalGradient(listOf(glass.fillTop, glass.fillBottom)))
-                    )
-                    .border(
-                        1.dp,
-                        if (tv) com.hikari.app.tv.TvDesktop.GlassEdge else glass.border,
-                        shape,
-                    )
-                    .padding(20.dp),
-                content = {
-                    if (title != null || showClose) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            if (title != null) {
-                                Text(
-                                    tr(title),
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = if (tv) com.hikari.app.tv.TvDesktop.TextPrimary
-                                    else MaterialTheme.colorScheme.onSurface,
-                                    modifier = Modifier.weight(1f),
-                                )
-                            } else {
-                                Spacer(Modifier.weight(1f))
-                            }
-                            if (showClose) {
-                                IconButton(onClick = onDismiss, modifier = Modifier.size(32.dp)) {
-                                    Icon(
-                                        Icons.Filled.Close,
-                                        contentDescription = null,
-                                        tint = if (tv) com.hikari.app.tv.TvDesktop.TextMuted
-                                        else MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                            }
-                        }
-                        Spacer(Modifier.height(4.dp))
-                    }
-                    content()
-                },
-            )
+            if (tv) {
+                Box(
+                    Modifier.size(frameWdp.dp, frameHdp.dp),
+                    contentAlignment = Alignment.Center,
+                ) { card() }
+            } else {
+                card()
+            }
         }
     }
+}
+
+/** The Activity behind a Compose [context] (which is usually a ContextWrapper
+ *  chain), or null. [GlassDialog] reads its window size on a television. */
+private fun glassDialogHostActivity(context: android.content.Context): android.app.Activity? {
+    var c: android.content.Context? = context
+    while (c is android.content.ContextWrapper) {
+        if (c is android.app.Activity) return c
+        c = c.baseContext
+    }
+    return null
 }
 
 /**
