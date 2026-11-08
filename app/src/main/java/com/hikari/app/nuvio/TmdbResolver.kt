@@ -61,7 +61,7 @@ object TmdbResolver {
         path.startsWith("/search") || path.startsWith("/find") ||
             path.contains("alternative_titles") || path.contains("external_ids")
 
-    private val cacheFile get() = File(HikariApp.instance.filesDir, "nuvio/tmdb-cache-v2.json")
+    private val cacheFile get() = File(HikariApp.instance.filesDir, "nuvio/tmdb-cache-v3.json")
 
     private val memory = ConcurrentHashMap<String, Resolved>()
 
@@ -350,7 +350,17 @@ object TmdbResolver {
                     val id = o.optString("id").trim()
                     if (id.isBlank() || id == "null") continue
                     if (seen.add(id)) found.add(id to kind)
-                    val score = candidateScore(o, variants, year)
+                    var score = candidateScore(o, variants, year)
+                    // Year veto: a containment-only hit (no exact/prefix match)
+                    // against a different year's title is how one show's page
+                    // wears another's details — reject it outright. Exact and
+                    // prefix hits (40+) always survive: a sequel season's year
+                    // is its own while TMDB's date is the premiere.
+                    if (score in 1..39 && year != null && year > 0) {
+                        val raw = o.optString("release_date").ifBlank { o.optString("first_air_date") }
+                        val y = raw.take(4).toIntOrNull()
+                        if (y != null && kotlin.math.abs(y - year) > 2) score = 0
+                    }
                     if (score > bestScore) {
                         bestScore = score
                         best = Resolved(id, kind)
@@ -406,7 +416,14 @@ object TmdbResolver {
                 else -> 0
             }
             if (score == 0) continue
+            val baseScore = score
             if (item.year != null && o.optString("y") == item.year.toString()) score += 25
+            // Same year veto as the name search: a prefix-level IMDb hint for a
+            // different year's title must not resolve the page to it.
+            if (baseScore < 50 && item.year != null && item.year > 0) {
+                val y = o.optString("y").toIntOrNull()
+                if (y != null && kotlin.math.abs(y - item.year) > 2) continue
+            }
             if (score > bestScore) {
                 bestScore = score
                 bestId = id
