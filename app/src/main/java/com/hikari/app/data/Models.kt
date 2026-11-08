@@ -440,6 +440,10 @@ data class TitleDetails(
     /** TMDB's `external_ids.imdb_id` — the key the ratings lookup uses for
      *  Wikidata and Letterboxd. Null when TMDB doesn't know one. */
     val imdbId: String? = null,
+    /** TMDB's own genre names (in the app's TMDB language). Used only as a
+     *  fallback where the provider's own row carried no genres (the TV home
+     *  header); the detail page keeps showing the provider's genres. */
+    val genres: List<String> = emptyList(),
 )
 
 /** Everything the detail page's extra sections need — the details block, the
