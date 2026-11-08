@@ -613,6 +613,11 @@ object TmdbMeta {
             imdbId = d.optJSONObject("external_ids")
                 ?.optString("imdb_id")?.trim()
                 ?.takeIf { it.startsWith("tt") && it.length >= 8 },
+            genres = d.optJSONArray("genres")?.let { arr ->
+                (0 until arr.length()).mapNotNull { gi ->
+                    arr.optJSONObject(gi)?.optString("name")?.trim()?.takeIf { it.isNotBlank() }
+                }
+            } ?: emptyList(),
         )?.takeIf { useDetails || useBasic } else null
 
         val cast = ArrayList<CastMember>(20)
