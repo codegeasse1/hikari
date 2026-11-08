@@ -1,5 +1,6 @@
 package com.hikari.app.data
 
+import com.hikari.app.ui.Artwork
 import com.hikari.app.nuvio.TmdbResolver
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -79,11 +80,15 @@ object TmdbScreenshots {
             // (no art, or cover-only with no overview/score) still falls
             // through instead of going bare.
             val pickFallback: List<String>? = when (val pick = DonghuaDetails.pick(item)) {
-                is DonghuaDetails.Pick.Anime -> {
+            is DonghuaDetails.Pick.Anime -> {
                     val list = listOfNotNull(pick.info.banner, pick.info.cover).distinct()
                     if (list.isNotEmpty()) {
                         firstByKey[item.uniqueId] = list.first()
                         listByKey[item.uniqueId] = list
+                        // The row must paint what the header settles on: publish
+                        // the header art into the row lookup's key (see
+                        // Artwork.noteHeaderArt) the moment the header banks it.
+                        Artwork.noteHeaderArt(item, pick.info.cover, list.first())
                         // The anime's own cover is its portrait art — the
                         // vertical server page rotates through it the same way
                         // the horizontal one rotates backdrops.
@@ -99,7 +104,11 @@ object TmdbScreenshots {
             // Null when TMDB cannot resolve the title at all (mistranslated
             // donghua, provider-only rows): the anime fallback below still
             // gets its chance instead of bailing out here.
+            // TVDB bridge: the title search above misses while TVDB knows the
+            // exact TMDB id (Bigg Boss class) — resolve exactly instead of
+            // going bare, so the /images below run for the right entry.
             val resolved = TmdbResolver.resolve(item)
+                ?: runCatching { TvdbArt.tmdbBridge(item) }.getOrNull()
             // "anime" is TMDB's tv namespace (see TmdbResolver): the images
             // endpoint is the same one. Resolving any other way 404s every
             // anime/donghua title.
@@ -109,6 +118,11 @@ object TmdbScreenshots {
                     if (it.isNotEmpty()) {
                         firstByKey[item.uniqueId] = it.first()
                         listByKey[item.uniqueId] = it
+                        Artwork.noteHeaderArt(
+                            item,
+                            posterMem[seg + "/" + r.tmdbId]?.firstOrNull(),
+                            it.first(),
+                        )
                     } else {
                         firstByKey.remove(item.uniqueId)
                         listByKey.remove(item.uniqueId)
@@ -190,6 +204,7 @@ object TmdbScreenshots {
                 mem[seg + "/" + resolved.tmdbId] = out
                 firstByKey[item.uniqueId] = out.first()
                 listByKey[item.uniqueId] = out
+                Artwork.noteHeaderArt(item, firstPosterByKey[item.uniqueId], out.first())
             } else if (pickFallback == null) {
                 firstByKey.remove(item.uniqueId)
                 listByKey.remove(item.uniqueId)
@@ -203,6 +218,7 @@ object TmdbScreenshots {
                     if (fb.isNotEmpty()) {
                         firstByKey[item.uniqueId] = fb.first()
                         listByKey[item.uniqueId] = fb
+                        Artwork.noteHeaderArt(item, tv.poster, fb.first())
                         listOfNotNull(tv.poster).takeIf { it.isNotEmpty() }?.let {
                             firstPosterByKey[item.uniqueId] = it.first()
                             listPosterByKey[item.uniqueId] = it
@@ -219,6 +235,7 @@ object TmdbScreenshots {
                     if (fb.isNotEmpty()) {
                         firstByKey[item.uniqueId] = fb.first()
                         listByKey[item.uniqueId] = fb
+                        Artwork.noteHeaderArt(item, a.cover, fb.first())
                         listOfNotNull(a.cover).takeIf { it.isNotEmpty() }?.let {
                             firstPosterByKey[item.uniqueId] = it.first()
                             listPosterByKey[item.uniqueId] = it

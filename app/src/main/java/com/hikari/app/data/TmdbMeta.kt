@@ -89,6 +89,10 @@ object TmdbMeta {
             else -> {}
         }
         val resolved = runCatching { TmdbResolver.resolve(item) }.getOrNull()
+            // TVDB bridge (same as TmdbScreenshots.backdropsFor): the title
+            // search misses while TVDB knows the exact TMDB id — details for
+            // the right entry instead of nothing.
+            ?: runCatching { TvdbArt.tmdbBridge(item) }.getOrNull()
         var tmdbPoster: String? = null
         var tmdbBackdrop: String? = null
         if (resolved != null) {
@@ -659,21 +663,30 @@ object TmdbMeta {
         // trusted; anything else keeps TMDB's list, so the row can be wrong in
         // the direction of "still correct, just the actors".
         var castIsCharacters = false
-        val displayCast = if (isAnimeTitle(d) && item.title.isNotBlank()) {
+        // Anime OR donghua: the anime gate is the confident AniList match
+        // below, not TMDB's own genre/language tags — a Chinese entry TMDB
+        // files as Drama still gets its characters when AniList is sure.
+        // Candidates come from provider tags too (not TMDB Animation only),
+        // or anime-tagged rows would keep showing voice actors.
+        val displayCast = if ((isAnimeTitle(d) || DonghuaDetails.isAnimeCandidate(item)) && item.title.isNotBlank()) {
             var characters: List<CastMember> = emptyList()
+            // Authoritative names first: the anime index's own title,
+            // TMDB's original, TVDB's. The provider's decorated row title
+            // ("… Season 2", site suffixes) used to burn all 4 tries while
+            // the exact names sat behind it untried.
             val queries = LinkedHashSet<String>()
-            queries.add(item.title)
-            if (item.searchTitle.isNotBlank()) queries.add(item.searchTitle)
-            item.allTitles.forEach { if (it.isNotBlank()) queries.add(it) }
             runCatching { DonghuaDetails.pick(item) }.getOrNull()?.let { p ->
                 if (p is DonghuaDetails.Pick.Anime && p.info.title.isNotBlank()) queries.add(p.info.title)
             }
+            d.optString("original_title").takeIf { it.isNotBlank() }?.let { queries.add(it) }
+            d.optString("original_name").takeIf { it.isNotBlank() }?.let { queries.add(it) }
             runCatching { TvdbArt.lookup(item) }.getOrNull()?.let { tv ->
                 if (tv.title.isNotBlank()) queries.add(tv.title)
             }
-            d.optString("original_title").takeIf { it.isNotBlank() }?.let { queries.add(it) }
-            d.optString("original_name").takeIf { it.isNotBlank() }?.let { queries.add(it) }
-            for (q in queries.take(4)) {
+            queries.add(item.title)
+            if (item.searchTitle.isNotBlank()) queries.add(item.searchTitle)
+            item.allTitles.forEach { if (it.isNotBlank()) queries.add(it) }
+            for (q in queries.take(6)) {
                 if (q.isBlank()) continue
                 characters = AnimeCast.characters(
                     q,

@@ -609,9 +609,11 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
             a.getMainPage(pageNumber, MainPageRequest(page.name, page.data, false))
         }
         val rows = resp?.items.orEmpty()
-        // Never let an empty answer evict a good one: mirrors rotate trays
-        // and a blank read would park every row on "No items" until TTL.
-        if (pageNumber == 1 && (rows.isNotEmpty() || homePageCache[key] == null)) {
+        // Never cache an empty answer at all — not even the first read:
+        // mirrors rotate trays, a blank read is never data, and a parked
+        // empty row is what read as "No items in <row>" for a full row.
+        // The caller re-reads past the cache (see getCatalog) instead.
+        if (pageNumber == 1 && rows.isNotEmpty()) {
             homePageCache[key] = System.currentTimeMillis() to rows
         }
         return rows
@@ -699,9 +701,12 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                     // Last resort before reporting empty: ask the plugin for
                     // this row directly. Some plugins serve a tray lazily and
                     // only fill it on a targeted getMainPage for its own data.
+                    // The row's REAL url (this MainPageData's data), never the
+                    // row-ref pseudo-id: requesting "row:8:0" as a url asks
+                    // the plugin to fetch garbage, which parses as empty.
                     var direct = emptyList<MediaItem>()
                     runCatching {
-                        a.getMainPage(page, MainPageRequest(ref.name, ref.id, false))
+                        a.getMainPage(page, MainPageRequest(ref.name, mainPage.data, false))
                     }.getOrNull()?.let { resp ->
                         direct = resp.items.orEmpty().flatMap { r ->
                             r.list.orEmpty().mapNotNull { it.toMediaItem() }
@@ -712,10 +717,15 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                         return@withContext direct
                     }
                     val rawCount = row?.list?.size ?: -1
+                    // Answerable error: which plugin file, which mirror, how
+                    // many rows the plugin served — "update/reinstall the
+                    // extension" when the mirror is dead, not a bare empty.
+                    val pluginFile = runCatching { java.io.File(config.url).name }.getOrDefault("?")
+                    val mirror = runCatching { a.mainUrl }.getOrNull().orEmpty()
                     catalogErrors[config.id] = if (row == null) {
                         "\"${ref.name}\" is no longer on its home page — refresh Home"
                     } else {
-                        "No items in ${ref.name}"
+                        "No items in ${ref.name} — ${pluginFile} gave nothing (update the extension)"
                     }
                     runCatching {
                         com.hikari.app.data.Logs.log(
@@ -723,7 +733,10 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                             "empty row provider=" + config.id + " ref=" + ref.name +
                                 " page=" + pageIndex + ":" + rowIndex +
                                 " matched=" + (row?.name ?: "-") +
-                                " raw=" + rawCount + " parsed=" + rowItems.size,
+                                " raw=" + rawCount + " parsed=" + rowItems.size +
+                                " rows=" + rows.size +
+                                " plugin=" + pluginFile +
+                                " mirror=" + mirror.take(120),
                         )
                     }
                 } else {

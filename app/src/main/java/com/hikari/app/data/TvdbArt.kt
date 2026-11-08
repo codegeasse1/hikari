@@ -1,5 +1,6 @@
 package com.hikari.app.data
 
+import com.hikari.app.nuvio.TmdbResolver
 import com.hikari.app.net.Http
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -72,6 +73,26 @@ object TvdbArt {
     fun backdropsFor(info: TvdbInfo?): List<String> {
         if (info == null) return emptyList()
         return listOfNotNull(info.banner).distinct()
+    }
+
+    /** Exact TMDB id for [item] via TVDB's remote ids (no fuzzy title search:
+     *  TVDB's website search already matched the title and hands back the
+     *  TMDB id it lists). Lets TMDB consumers that missed by title still
+     *  resolve exactly (see TmdbMeta.artwork, TmdbScreenshots.backdropsFor).
+     *  The id is verified to exist (tv, then movie) because a stale remote
+     *  id must never mint art for the wrong entry. Cached with lookup's
+     *  own TTLs, never throws. */
+    suspend fun tmdbBridge(item: MediaItem): TmdbResolver.Resolved? {
+        val id = runCatching { lookup(item)?.tmdbId }
+            .getOrNull()?.takeIf { it.isNotBlank() && it.all(Char::isDigit) }
+            ?: return null
+        for (seg in listOf("tv", "movie")) {
+            val exists = runCatching {
+                TmdbResolver.apiGet("/$seg/$id", emptyMap())?.has("id")
+            }.getOrDefault(false)
+            if (exists) return TmdbResolver.Resolved(id, if (seg == "movie") "movie" else "tv")
+        }
+        return null
     }
 
     private fun fetch(item: MediaItem): TvdbInfo? {

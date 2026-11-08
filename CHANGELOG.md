@@ -1,3 +1,12 @@
+## 0.12.67 (continuous build only)
+
+- Rows paint what the detail screen settled on: the header's wide art is published into the row lookup the moment it lands, so Bigg Boss / Dexter-class rows heal to the TMDB/TVDB background instead of sitting on blurred portraits — any title, any source, no detail-open needed first
+- TVDB exact bridge: when TMDB's title search misses, TVDB's remote id resolves the exact TMDB entry, so /images backdrops run for the right show instead of nothing
+- Anime/donghua Characters everywhere: the character list is attempted for provider-tagged anime/donghua too (not only TMDB-Animation Japanese titles), with authoritative names tried first — voice-actor fallback only when AniList cannot confidently match
+- Empty rows fixed at the root: the direct row retry uses the row's real url (never the row-ref id), empty answers are never cached, and an empty row names the plugin file + mirror with an update hint in the log
+- Any-host 5xx refresh: a 502/503/504 re-resolves fresh sources (capped 2x) exactly like a stale 403 — Filmu's bridge class can no longer walk a dead list
+- Seeks never restart: a seek on an unseekable timeline is held and applied once the header lands (logged both ways), instead of jumping to 0 — HubCloud/Pixeldrain progressive links and every server like them
+
 ## 0.12.65 (continuous build only)
  
  -server planning.

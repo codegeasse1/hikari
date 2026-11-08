@@ -229,6 +229,33 @@ object Artwork {
         enqueue(key, item)
     }
 
+    /**
+     * The row paints what the detail screen settled on. The header banks
+     * wide art per title id (see TmdbScreenshots); rows keyed by the same
+     * canonical title+year read that art here the moment the header writes
+     * it, so a cinema card heals to the detail background without a detail
+     * open healing it first. Fill-only for the portrait half (never swaps
+     * a settled poster); the wide half follows the header (what the user
+     * asked the row to paint). Wakes every observing row via [revision].
+     * Never throws.
+     */
+    fun noteHeaderArt(item: MediaItem, poster: String?, backdrop: String?) {
+        val key = runCatching { keyOf(item) }.getOrNull() ?: return
+        runCatching {
+            loadOnce()
+            val cur = memory[key]
+            val p = poster?.takeIf { it.isNotBlank() } ?: cur?.poster
+            // Follow the header's wide art, but never with a portrait the
+            // header banked as a cover fallback: that would un-heal the row.
+            var b = backdrop?.takeIf { it.isNotBlank() } ?: cur?.backdrop
+            if (b != null && (b == p || b == cur?.poster)) b = cur?.backdrop
+            if (p == cur?.poster && b == cur?.backdrop) return
+            memory[key] = Entry(p, b, System.currentTimeMillis())
+            saveCache()
+            revision.value = revisionCounter.incrementAndGet()
+        }
+    }
+
     private fun lookup(item: MediaItem, pick: (Entry) -> String?): String? {
         // Snapshot read: repaints the calling cell when a lookup completes.
         revision.value
@@ -311,18 +338,20 @@ object Artwork {
                             // there. Union them: the anime/TMDB portrait wins
                             // for the vertical poster, and any /images backdrop
                             // fills the landscape the single lookup missed.
-                            val shots = TmdbScreenshots.backdropsFor(item)
-                            val poster = art?.first
-                                ?: TmdbScreenshots.firstPosterCached(item.uniqueId)
-                                ?: siblingPosterCached(item)
-                            // Detail-header parity, extended: the detail page
-                            // caches wide art under its own SERIES/MOVIE id
-                            // while rows carry UNKNOWN, so a row also reads
-                            // the caches its detail page wrote before falling
-                            // back to poster-only.
-                            val backdrop = art?.second ?: shots.firstOrNull()
-                                ?: TmdbScreenshots.firstCached(item.uniqueId)
-                                ?: siblingBackdropCached(item)
+                    val shots = TmdbScreenshots.backdropsFor(item)
+                    val poster = art?.first
+                        ?: TmdbScreenshots.firstPosterCached(item.uniqueId)
+                        ?: TmdbScreenshots.allPostersCached(item.uniqueId).firstOrNull()
+                        ?: siblingPosterCached(item)
+                    // Detail-header parity, extended: the detail page
+                    // caches wide art under its own SERIES/MOVIE id
+                    // while rows carry UNKNOWN, so a row also reads
+                    // the caches its detail page wrote before falling
+                    // back to poster-only.
+                    val backdrop = art?.second ?: shots.firstOrNull()
+                        ?: TmdbScreenshots.firstCached(item.uniqueId)
+                        ?: TmdbScreenshots.allCached(item.uniqueId).firstOrNull()
+                        ?: siblingBackdropCached(item)
                             if (poster == null && backdrop == null) null
                             else poster to backdrop
                         }

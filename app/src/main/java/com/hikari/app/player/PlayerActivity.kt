@@ -13117,13 +13117,68 @@ class PlayerActivity : ComponentActivity() {
 
     /** Seeks both players together — every user seek keeps the dual-audio
      *  pair aligned instantly instead of drifting until the 1s heartbeat. */
+    /** A user seek that arrived while the timeline was not seekable yet
+     *  (progressive header not landed, server ignored Range). Applied once
+     *  the timeline turns seekable — never dropped, never jumped to 0. */
+    @Volatile
+    private var heldSeekMs: Long? = null
+
+    /** True when a seek can land now: a known duration on a seekable
+     *  window. Unknown duration (progressive header still in flight) or an
+     *  unseekable window (server ignored Range) both mean "not yet". */
+    private fun seekableNow(p: Player): Boolean {
+        val dur = runCatching { p.duration }.getOrDefault(C.TIME_UNSET)
+        if (dur == C.TIME_UNSET || dur <= 0L) return false
+        return runCatching {
+            val tl = p.currentTimeline
+            tl.isEmpty || tl.getWindow(0, androidx.media3.common.Timeline.Window()).isSeekable
+        }.getOrDefault(true)
+    }
+
+    /** Seeks both players together — every user seek keeps the dual-audio
+     *  pair aligned instantly instead of drifting until the 1s heartbeat. */
     private fun seekBoth(targetMs: Long) {
+        // Live never holds: the edge is always seekable, and holding would
+        // freeze live skipping entirely.
+        val live = runCatching { isLiveSource(sources.getOrNull(currentIndex)) }.getOrDefault(false)
         try {
-            player?.seekTo(targetMs)
+            val p = player
+            if (p != null && !live && !seekableNow(p)) {
+                // Hold, don't restart: seeking now would jump to 0 and
+                // replay from the top (the HubCloud/Pixeldrain report).
+                heldSeekMs = targetMs.coerceAtLeast(0L)
+                com.hikari.app.data.Logs.log(
+                    "Player",
+                    "seek held — timeline not seekable yet target=" + targetMs,
+                )
+            } else if (p != null) {
+                heldSeekMs = null
+                p.seekTo(if (!live && p.duration > 0L) targetMs.coerceIn(0L, p.duration) else targetMs)
+            }
         } catch (_: Throwable) { }
         try {
-            dualPlayer?.seekTo(targetMs)
+            val d = dualPlayer
+            if (d != null) {
+                if (!live && !seekableNow(d)) {
+                    heldSeekMs = targetMs.coerceAtLeast(0L)
+                } else {
+                    d.seekTo(if (!live && d.duration > 0L) targetMs.coerceIn(0L, d.duration) else targetMs)
+                }
+            }
         } catch (_: Throwable) { }
+    }
+
+    /** Applies a held seek the moment the timeline can take it. Called on
+     *  READY and on timeline changes; true when it consumed one. */
+    private fun applyHeldSeek(): Boolean {
+        val target = heldSeekMs ?: return false
+        val p = player ?: return false
+        if (!seekableNow(p)) return false
+        heldSeekMs = null
+        runCatching { p.seekTo(target) }
+        runCatching { dualPlayer?.let { d -> if (seekableNow(d)) d.seekTo(target) } }
+        com.hikari.app.data.Logs.log("Player", "held seek applied target=" + target)
+        return true
     }
 
     /** Offers the second server's embedded audio languages once per pairing.
@@ -13329,6 +13384,9 @@ class PlayerActivity : ComponentActivity() {
         userRotated = false
         userPickedSubs = false
         currentIndex = index
+        // A new server owns its own timeline: a seek held for the previous
+        // one must never land here.
+        heldSeekMs = null
         // A new attempt: the cover is about to describe THIS server, so the
         // previous line (and whatever the search was saying) is dropped.
         coverPlaybackLine = null
@@ -16542,6 +16600,12 @@ class PlayerActivity : ComponentActivity() {
             }
         }
 
+        override fun onTimelineChanged(timeline: androidx.media3.common.Timeline, reason: Int) {
+            // Progressive header landed mid-gesture: a held seek applies now
+            // instead of dying quietly.
+            if (reason == Player.TIMELINE_CHANGE_REASON_SOURCE_UPDATE) applyHeldSeek()
+        }
+
         override fun onPlayerStateChanged(playWhenReady: Boolean, playbackState: Int) {
             if (playbackState == Player.STATE_ENDED) {
                 onPlaybackEnded()
@@ -16590,6 +16654,8 @@ class PlayerActivity : ComponentActivity() {
                 }
                 // Also offer the in-video resume prompt here (audio-only streams
                 // never fire onRenderedFirstFrame).
+                // A seek held while the timeline was not seekable lands now.
+                applyHeldSeek()
                 maybeOfferResume()
             }
         }
@@ -16843,7 +16909,13 @@ class PlayerActivity : ComponentActivity() {
             // for fresh sources the same way a stale 403 does.
             val loopback400Refresh = httpStatus == 400 &&
                 isLoopbackHost(sources.getOrNull(currentIndex)?.url.orEmpty())
-            if ((httpStatus == 403 || loopback400Refresh) &&
+            // A bridge/CDN 5xx is the same class as a stale 403: the upstream
+            // file link expired (Filmu's sacdn HLS, a signed workers.dev
+            // URL), and a fresh extraction hands out a working one. ANY host
+            // qualifies — pinning this to bridge hosts left every other
+            // server's expired link walking the list instead of refreshing.
+            val stale5xxRefresh = httpStatus == 502 || httpStatus == 503 || httpStatus == 504
+            if ((httpStatus == 403 || loopback400Refresh || stale5xxRefresh) &&
                 liveSessionId != null &&
                 signedLinkRefreshes < 2 &&
                 !isLiveSource(sources.getOrNull(currentIndex))
