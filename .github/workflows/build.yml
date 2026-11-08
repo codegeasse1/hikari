@@ -41,6 +41,12 @@ on:
 permissions:
   contents: write
 
+# Two pushes close together used to run two builds that both `--clobber`ed the
+# same release assets at once, which made uploads fail at random. One at a time.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -215,45 +221,130 @@ jobs:
           if-no-files-found: error
 
       # ---- TEST CHANNELS: updated on every push to main ----
-      - name: Publish test APK to build branch
-        if: github.ref == 'refs/heads/main'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          cp "app/build/outputs/apk/release/$APK_UNIVERSAL" hikari.apk
-          SIZE_MB=$(du -m hikari.apk | cut -f1)
-          if [ "$SIZE_MB" -ge 100 ]; then
-            echo "hikari.apk is ${SIZE_MB}MB - over GitHub's 100MB file limit, skipping build-branch push (the release APK is still in the artifacts)."
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git fetch origin build >/dev/null 2>&1 && git checkout build 2>/dev/null || git checkout --orphan build
-          cp "app/build/outputs/apk/release/$APK_UNIVERSAL" hikari.apk
-          git add hikari.apk
-          git commit -m "build: update test APK $(date -u +%Y%m%d%H%M)" || true
-          git push origin build --force || { echo "build-branch push rejected (APK too large for GitHub's 100MB limit) - not fatal, release APK stays in artifacts."; exit 0; }
-
-      - name: Publish test APK to continuous release
+      #
+      # `build` branch: plain git files. GitHub refuses any single file of
+      # 100 MB or more in a git push, and the universal APK (~109 MB) is over
+      # that, so it can NEVER go here. The two per-processor APKs are far
+      # smaller, so they go here instead of the whole step being skipped.
+      # The branch is rebuilt from scratch each time (one commit, force-pushed)
+      # so old APKs never pile up in its history.
+      - name: Publish test APKs to build branch
         if: github.ref == 'refs/heads/main'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          cp "app/build/outputs/apk/release/$APK_UNIVERSAL" hikari-signed.apk
-          cp "app/build/outputs/apk/release/$APK_ARM64" hikari-arm64-v8a.apk
-          cp "app/build/outputs/apk/release/$APK_ARM32" hikari-armeabi-v7a.apk
-          if gh release view continuous --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            for i in 1 2 3; do
-              gh release upload continuous hikari-signed.apk hikari-arm64-v8a.apk hikari-armeabi-v7a.apk --repo "$GITHUB_REPOSITORY" --clobber && break
-              echo "continuous upload attempt $i failed (often a transient race with a concurrent build), retrying..."
-              sleep 5
-            done
-          else
-            gh release create continuous hikari-signed.apk hikari-arm64-v8a.apk hikari-armeabi-v7a.apk --repo "$GITHUB_REPOSITORY" \
-              --title "Continuous build" \
-              --notes "Signed test APKs, auto-built from main. hikari-signed.apk is the universal build; the arm64-v8a / armeabi-v7a ones are smaller and for that processor type only." || true
+          OUT=app/build/outputs/apk/release
+          STAGE="$RUNNER_TEMP/build-branch"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE"
+          LIMIT=$((95 * 1024 * 1024))
+          count=0
+          for spec in \
+            "$APK_ARM64|hikari-arm64-v8a.apk" \
+            "$APK_ARM32|hikari-armeabi-v7a.apk" \
+            "$APK_UNIVERSAL|hikari.apk"
+          do
+            SRC="${spec%%|*}"
+            DST="${spec#*|}"
+            SIZE=$(stat -c%s "$OUT/$SRC")
+            if [ "$SIZE" -ge "$LIMIT" ]; then
+              echo "$DST is $((SIZE / 1024 / 1024)) MB - over GitHub's 100 MB git file limit, not put on the build branch (it is on the continuous release)."
+              continue
+            fi
+            cp "$OUT/$SRC" "$STAGE/$DST"
+            count=$((count + 1))
+          done
+          if [ "$count" -eq 0 ]; then
+            echo "::warning::No APK is small enough for the build branch."
+            exit 0
           fi
+          cd "$STAGE"
+          git init -q -b build
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- *.apk
+          git commit -q -m "build: update test APKs $(date -u +%Y%m%d%H%M)"
+          git push --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:refs/heads/build
+          ls -la
+
+      # `continuous` release: the live test channel (what the in-app updater
+      # downloads). Release assets can be up to 2 GB, so all three APKs go here.
+      # This step used to be `continue-on-error` with `|| true` after every
+      # command, so a failed upload still showed a green tick and nobody knew the
+      # release was stale. Now every upload is retried, and the step FAILS (red)
+      # unless GitHub confirms all three files are on the release at the right size.
+      - name: Publish test APKs to continuous release
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          OUT=app/build/outputs/apk/release
+          DIST="$RUNNER_TEMP/continuous"
+          rm -rf "$DIST"
+          mkdir -p "$DIST"
+          cp "$OUT/$APK_UNIVERSAL" "$DIST/hikari-signed.apk"
+          cp "$OUT/$APK_ARM64"     "$DIST/hikari-arm64-v8a.apk"
+          cp "$OUT/$APK_ARM32"     "$DIST/hikari-armeabi-v7a.apk"
+          ls -la "$DIST"
+
+          # 1. The release has to exist, as a published pre-release.
+          if gh release view continuous --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit continuous --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false \
+              || echo "::warning::could not refresh the continuous release flags (not fatal)"
+          else
+            gh release create continuous --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" --prerelease --latest=false \
+              --title "Continuous build" \
+              --notes "Signed test APKs, auto-built from main. hikari-signed.apk is the universal build; the arm64-v8a / armeabi-v7a ones are smaller and for that processor type only."
+          fi
+
+          # 2. Upload one file at a time, retrying each, failing loudly.
+          for f in "$DIST"/*.apk; do
+            name=$(basename "$f")
+            ok=0
+            for i in 1 2 3 4; do
+              if gh release upload continuous "$f" --repo "$GITHUB_REPOSITORY" --clobber; then
+                ok=1
+                break
+              fi
+              echo "upload of $name failed (attempt $i/4), retrying..."
+              sleep $((i * 10))
+            done
+            if [ "$ok" != 1 ]; then
+              echo "::error::Could not upload $name to the continuous release after 4 attempts."
+              exit 1
+            fi
+          done
+
+          # 3. Ask GitHub what is really on the release now, and check it.
+          gh release view continuous --repo "$GITHUB_REPOSITORY" \
+            --json assets --jq '.assets[] | [.name, .size, .state] | @tsv' > "$RUNNER_TEMP/assets.tsv"
+          echo "==== assets on the continuous release ===="
+          cat "$RUNNER_TEMP/assets.tsv"
+          bad=0
+          for f in "$DIST"/*.apk; do
+            name=$(basename "$f")
+            want=$(stat -c%s "$f")
+            got=$(awk -F'\t' -v n="$name" '$1 == n { print $2 }' "$RUNNER_TEMP/assets.tsv")
+            if [ "$got" != "$want" ]; then
+              echo "::error::$name is not on the continuous release at the right size (want $want bytes, GitHub has '${got:-nothing}')."
+              bad=1
+            fi
+          done
+          [ "$bad" = 0 ] || exit 1
+
+          BASE="https://github.com/$GITHUB_REPOSITORY/releases/download/continuous"
+          {
+            echo "### Test APKs are live"
+            echo ""
+            echo "- Universal: $BASE/hikari-signed.apk"
+            echo "- 64-bit (arm64-v8a, most phones): $BASE/hikari-arm64-v8a.apk"
+            echo "- 32-bit (armeabi-v7a, older phones): $BASE/hikari-armeabi-v7a.apk"
+            echo ""
+            echo "Release page: https://github.com/$GITHUB_REPOSITORY/releases/tag/continuous"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # ---- MAIN RELEASE: manual only, and only with the typed confirmation ----
       # A main release is the build every user gets offered, so it never happens
