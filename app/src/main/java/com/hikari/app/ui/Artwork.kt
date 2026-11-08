@@ -49,12 +49,13 @@ object Artwork {
 
     private const val MISS_TTL_MS = 3L * 24L * 60L * 60L * 1000L
     private const val MAX_ENTRIES = 800
-    /** v5: v4's cache is full of poster-only answers (a title with a real
+    /** v6: v5's cache is full of poster-only answers (a title with a real
      *  poster but no backdrop cached that as its final answer), so titles
      *  whose backdrop is only resolvable through the detail header's plural
-     *  /images path kept the blurred portrait on rows. v5 drops those stale
-     *  answers so the unified lookup below re-resolves them at once. */
-    private const val CACHE_FILE = "artwork-cache-v5.json"
+     *  /images path kept the blurred portrait on rows. v6 drops those stale
+     *  answers plus any wrong-show TMDB mapping so the unified lookup below
+     *  re-resolves them at once (TVDB now fills the gap instantly). */
+    private const val CACHE_FILE = "artwork-cache-v6.json"
 
     private val memory = ConcurrentHashMap<String, Entry>()
     private val inFlight = ConcurrentHashMap.newKeySet<String>()
@@ -166,6 +167,18 @@ object Artwork {
             return
         }
         enqueue(key, item)
+    }
+
+    /**
+     * Warms a whole row (cinema + vertical): first 12 items prefetch in the
+     * background and stale misses retry, so switching poster shape paints real
+     * 16:9/2:3 instantly instead of blurred portraits that only heal after a
+     * detail open. Bounded, single-flighted, never throws.
+     */
+    fun warmRow(items: List<MediaItem>) {
+        runCatching {
+            items.take(12).forEach { prefetch(it); retryMiss(it) }
+        }
     }
 
     /**

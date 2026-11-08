@@ -61,7 +61,7 @@ object TmdbResolver {
         path.startsWith("/search") || path.startsWith("/find") ||
             path.contains("alternative_titles") || path.contains("external_ids")
 
-    private val cacheFile get() = File(HikariApp.instance.filesDir, "nuvio/tmdb-cache-v3.json")
+    private val cacheFile get() = File(HikariApp.instance.filesDir, "nuvio/tmdb-cache-v4.json")
 
     private val memory = ConcurrentHashMap<String, Resolved>()
 

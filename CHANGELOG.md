@@ -1,3 +1,10 @@
+## 0.12.64 (continuous build only)
+
+- Instant posters both ways: cinema and vertical rows warm their first 12 cards on appear (TMDB /images + anime banner + TVDB), stale misses retry in background, artwork cache v6 drops old poster-only misses — 16:9 paints sharp immediately, no blurred-portrait wait, no detail-open needed
+- TVDB joins the chain keyless: TMDB -> TVDB (website search API, no key) -> AniList/Bangumi -> IMDb for posters, banners, overviews and companies; donghua/anime missing on TMDB now resolve via TVDB aliases + TMDB remote ids
+- Wrong metadata vetoed: TMDB details must match names (exact 40+ or containment + year, else alt-titles 40+), anime candidates require Animation/ja-zh/JP-CN, TMDB cache v4 drops poisoned Barbie-style mappings — wrong show never paints the page, TVDB/anime fallback wins instead
+- Anime/donghua Characters: AniList characters for JA + ZH/CN (Swallowed Star, Xian Ni/Wang Lin), multi-query (title + original + Donghua + TVDB + TMDB original), titleScore 40+ match, unfiltered voice actors so donghua shows Chinese actors — voice-actor list only when no confident character match
+
 ## 0.12.63 (continuous build only)
 
 - Cinema 16:9 truly lands on phone Home: the phone shelf no longer borrows the TV's focus-expanding cards (which stay portrait without a remote) and instead draws real 16:9 landscape cards with theme-correct titles — the TV shelves keep their new expanding look untouched

@@ -220,6 +220,14 @@ private fun MediaRowVertical(
         // read as "Back jumps". Keys re-find the exact poster when the row
         // reloads in a different order (see ScrollKeeper).
         val rowKeys = remember(uniqueItems) { uniqueItems.map { it.uniqueId } }
+        // Instant vertical: warm portrait art with the row, symmetric to cinema.
+        LaunchedEffect(uniqueItems) {
+            runCatching {
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    com.hikari.app.ui.Artwork.warmRow(uniqueItems)
+                }
+            }
+        }
         // The adult-content gate is applied where the row is DRAWN (see
         // [NsfwGate] and [rememberVisibleItems]): every shelf in the app funnels
         // through this composable — Home, collections, the detail page's
@@ -259,6 +267,16 @@ private fun MediaRowCinema(
 ) {
     val uniqueItems = rememberVisibleItems(items)
     val rowKeys = remember(uniqueItems) { uniqueItems.map { it.uniqueId } }
+    // Instant cinema: warm wide art for the visible cards the moment the row
+    // appears, so 16:9 paints sharp instead of blurred portraits that only
+    // healed after a detail open. Single-flighted, bounded, never throws.
+    LaunchedEffect(uniqueItems) {
+        runCatching {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                com.hikari.app.ui.Artwork.warmRow(uniqueItems)
+            }
+        }
+    }
     Column(Modifier.padding(top = 20.dp)) {
         Row(
             Modifier

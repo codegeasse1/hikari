@@ -79,6 +79,9 @@ object AnimeCast {
     private fun fetch(title: String, year: Int?): List<CastMember> {
         // `$search` is escaped because this is a Kotlin raw string: the GraphQL
         // variable is a literal `$search`, not an interpolation.
+        // No language filter on voiceActors: Japanese for anime, Chinese for
+        // donghua — filtering JAPANESE only left donghua characters with no
+        // actor line (or a bare MAIN/SUPPORTING role).
         val query = """
             query (${'$'}search: String) {
               Media(search: ${'$'}search, type: ANIME, sort: SEARCH_MATCH) {
@@ -88,7 +91,7 @@ object AnimeCast {
                   edges {
                     role
                     node { name { full } image { medium } }
-                    voiceActors(language: JAPANESE) { name { full } }
+                    voiceActors { name { full } }
                   }
                 }
               }
@@ -136,14 +139,16 @@ object AnimeCast {
 
     /**
      * True when [media] really is the title that was asked for: one of its
-     * titles has to describe the same show as [title] (see [sameShow]) and the
-     * years must not contradict each other.
+     * titles has to describe the same show as [title] (token containment or
+     * TMDB-grade titleScore 40+) and the years must not contradict each other.
      */
     private fun confidentMatch(title: String, year: Int?, media: JSONObject): Boolean {
         val t = media.optJSONObject("title")
         val candidates = listOf("romaji", "english", "native")
             .mapNotNull { t?.optString(it)?.trim()?.takeIf { s -> s.isNotBlank() } }
-        if (candidates.none { sameShow(title, it) }) return false
+        if (candidates.isEmpty()) return false
+        val ok = candidates.any { sameShow(title, it) || com.hikari.app.data.TmdbMeta.titleScore(title, it) >= 40 }
+        if (!ok) return false
         val found = media.optJSONObject("startDate")?.optInt("year")?.takeIf { it > 0 }
         if (year != null && year > 0 && found != null) {
             // A season and its show can legitimately disagree by one year, and

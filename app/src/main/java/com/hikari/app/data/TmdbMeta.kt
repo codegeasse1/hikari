@@ -94,7 +94,7 @@ object TmdbMeta {
         if (resolved != null) {
             val seg = segment(resolved.mediaType)
             val d = TmdbResolver.apiGet("/$seg/${resolved.tmdbId}", emptyMap())
-            if (d != null) {
+            if (d != null && isTmdbTrusted(item, d, seg)) {
                 tmdbPoster = d.tmdbPath("poster_path")?.let { IMG + it }
                 // Animation-gated (see above): only an Animation-genre TMDB
                 // entry may supply the landscape for an anime-picked title.
@@ -105,9 +105,17 @@ object TmdbMeta {
                 }
             }
         }
-        // TMDB wins both halves; the anime cover/banner fill what TMDB missed.
-        val poster = tmdbPoster ?: animeCover
-        val backdrop = tmdbBackdrop ?: animeBanner
+        // User order: TMDB -> TVDB -> AniList/Bangumi. TVDB fills what TMDB
+        // missed (or mistrusted) with its own poster + wide banner, keyless.
+        var tvdbPoster: String? = null
+        var tvdbBanner: String? = null
+        runCatching { TvdbArt.lookup(item) }.getOrNull()?.let { tv ->
+            tvdbPoster = tv.poster
+            tvdbBanner = tv.banner
+        }
+        // TMDB wins both halves; TVDB fills the gaps; anime cover/banner fill the rest.
+        val poster = tmdbPoster ?: tvdbPoster ?: animeCover
+        val backdrop = tmdbBackdrop ?: tvdbBanner ?: animeBanner
         if (poster != null || backdrop != null) return poster to backdrop
         // Universal fallback (TMDB -> AniList -> Bangumi): any title TMDB missed
         // gets one anime-source try, so an untagged donghua/anime still resolves.
@@ -532,9 +540,22 @@ object TmdbMeta {
             }
             else -> {}
         }
-        // Universal fallback builder (TMDB -> AniList -> Bangumi): a title TMDB
-        // cannot resolve gets the anime sources' own overview/score/title.
+        // Universal fallback builder (TMDB -> TVDB -> AniList -> Bangumi): a title TMDB
+        // cannot resolve (or mistrusts) gets TVDB first, then the anime sources.
         suspend fun animeFallback(): TitleExtras? {
+            runCatching { TvdbArt.lookup(item) }.getOrNull()?.let { tv ->
+                if (tv.overviewEng.isNotBlank() || tv.poster != null || tv.banner != null) {
+                    return TitleExtras(
+                        details = TitleDetails(
+                            year = tv.year ?: item.year,
+                            rating = null,
+                            voteCount = null,
+                        ),
+                        localizedTitle = tv.title,
+                        overview = tv.overviewEng.takeIf { it.isNotBlank() },
+                    )
+                }
+            }
             val a = runCatching { DonghuaDetails.load(item) }.getOrNull() ?: return null
             if (a.overview.isBlank() && a.score10 <= 0.0) return null
             return TitleExtras(
@@ -573,6 +594,7 @@ object TmdbMeta {
             query["include_video_language"] = "$videoLang,en,null"
         }
         val d = TmdbResolver.apiGet("/$seg/${resolved.tmdbId}", query) ?: return animeFallback()
+        if (!isTmdbTrusted(item, d, seg)) return animeFallback()
 
         val isMovie = seg == "movie"
         // Movie runtime is one number; a series carries a per-episode list and,
@@ -613,11 +635,6 @@ object TmdbMeta {
             imdbId = d.optJSONObject("external_ids")
                 ?.optString("imdb_id")?.trim()
                 ?.takeIf { it.startsWith("tt") && it.length >= 8 },
-            genres = d.optJSONArray("genres")?.let { arr ->
-                (0 until arr.length()).mapNotNull { gi ->
-                    arr.optJSONObject(gi)?.optString("name")?.trim()?.takeIf { it.isNotBlank() }
-                }
-            } ?: emptyList(),
         )?.takeIf { useDetails || useBasic } else null
 
         val cast = ArrayList<CastMember>(20)
@@ -643,11 +660,28 @@ object TmdbMeta {
         // the direction of "still correct, just the actors".
         var castIsCharacters = false
         val displayCast = if (isAnimeTitle(d) && item.title.isNotBlank()) {
-            val characters = AnimeCast.characters(
-                item.title,
-                yearOf(d),
-                cacheKey = "tmdb:$seg:${resolved.tmdbId}",
-            )
+            var characters: List<CastMember> = emptyList()
+            val queries = LinkedHashSet<String>()
+            queries.add(item.title)
+            if (item.searchTitle.isNotBlank()) queries.add(item.searchTitle)
+            item.allTitles.forEach { if (it.isNotBlank()) queries.add(it) }
+            runCatching { DonghuaDetails.pick(item) }.getOrNull()?.let { p ->
+                if (p is DonghuaDetails.Pick.Anime && p.info.title.isNotBlank()) queries.add(p.info.title)
+            }
+            runCatching { TvdbArt.lookup(item) }.getOrNull()?.let { tv ->
+                if (tv.title.isNotBlank()) queries.add(tv.title)
+            }
+            d.optString("original_title").takeIf { it.isNotBlank() }?.let { queries.add(it) }
+            d.optString("original_name").takeIf { it.isNotBlank() }?.let { queries.add(it) }
+            for (q in queries.take(4)) {
+                if (q.isBlank()) continue
+                characters = AnimeCast.characters(
+                    q,
+                    yearOf(d),
+                    cacheKey = "tmdb:$seg:${resolved.tmdbId}",
+                )
+                if (characters.isNotEmpty()) break
+            }
             if (characters.isNotEmpty()) {
                 castIsCharacters = true
                 characters
@@ -856,14 +890,68 @@ object TmdbMeta {
     private fun isAnimeTitle(d: JSONObject): Boolean {
         val animated = d.optJSONArray("genres")?.let { arr ->
             (0 until arr.length()).any {
-                arr.optJSONObject(it)?.optString("name")?.equals("Animation", true) == true
+                arr.optJSONObject(it)?.optString("name")?.equals("Animation", true) == true ||
+                    arr.optJSONObject(it)?.optInt("id") == 16
             }
         } ?: false
         if (!animated) return false
-        if (d.optString("original_language").trim().equals("ja", true)) return true
+        val lang = d.optString("original_language").trim().lowercase()
+        if (lang == "ja" || lang == "zh") return true
         return d.optJSONArray("origin_country")?.let { arr ->
-            (0 until arr.length()).any { arr.optString(it).equals("JP", true) }
+            (0 until arr.length()).any {
+                val c = arr.optString(it).uppercase()
+                c == "JP" || c == "CN"
+            }
         } ?: false
+    }
+
+    /**
+     * Wrong-metadata veto (Barbie-for-anime rule): a TMDB details response is
+     * trusted only when its names describe the requested item. Exact/prefix
+     * (40+) always passes; containment (25+) needs a corroborating year;
+     * anything lower must match an alternate title, otherwise a same-year
+     * blockbuster wears the anime's page. Anime candidates additionally require
+     * an Animation/ja-zh/JP-CN signal, so a US/EN live-action namesake can
+     * never overwrite the donghua. Never throws.
+     */
+    private suspend fun isTmdbTrusted(item: MediaItem, d: JSONObject, seg: String): Boolean {
+        return runCatching {
+            val names = listOf(
+                d.optString("title"), d.optString("name"),
+                d.optString("original_title"), d.optString("original_name"),
+            ).filter { it.isNotBlank() && it != "null" }
+            if (names.isEmpty()) return false
+            val known = (item.allTitles + queryVariants(item.searchTitle)).distinct().filter { it.isNotBlank() }
+            if (known.isEmpty()) return false
+            var best = 0
+            for (v in known) for (n in names) best = maxOf(best, titleScore(v, n))
+            if (best >= 40) {
+                if (DonghuaDetails.isAnimeCandidate(item) && !isAnimationGenres(d)) {
+                    val lang = d.optString("original_language").lowercase()
+                    val countries = (0 until (d.optJSONArray("origin_country")?.length() ?: 0)).map { d.optJSONArray("origin_country")?.optString(it).orEmpty().uppercase() }
+                    val east = lang == "ja" || lang == "zh" || countries.any { it == "JP" || it == "CN" }
+                    if (!east) return false
+                }
+                return true
+            }
+            if (best in 25..39) {
+                val raw = d.optString("release_date").ifBlank { d.optString("first_air_date") }
+                val y = raw.take(4).toIntOrNull()
+                if (item.year != null && item.year > 0 && y != null && kotlin.math.abs(y - item.year) > 2) return false
+                if (DonghuaDetails.isAnimeCandidate(item) && !isAnimationGenres(d)) return false
+                return true
+            }
+            val alt = runCatching {
+                TmdbResolver.apiGet("/$seg/${d.optString("id")}/alternative_titles", emptyMap())
+            }.getOrNull()
+            val arr = alt?.optJSONArray("results") ?: alt?.optJSONArray("titles")
+            if (arr != null) for (i in 0 until arr.length()) {
+                val t = arr.optJSONObject(i)?.optString("title").orEmpty()
+                if (t.isBlank()) continue
+                for (v in known) if (titleScore(v, t) >= 40) return true
+            }
+            return false
+        }.getOrDefault(false)
     }
 
     /** Names of the crew members whose `job` is in [jobs], in listing order. */

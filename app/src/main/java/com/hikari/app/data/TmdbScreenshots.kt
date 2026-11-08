@@ -195,6 +195,21 @@ object TmdbScreenshots {
                 listByKey.remove(item.uniqueId)
             }
             if (combined.isEmpty()) {
+                // User order: TVDB before anime sources. TVDB banner is real
+                // 16:9 (keyless website search API), so cinema rows stop
+                // sitting on blurred portraits when TMDB misses.
+                runCatching { TvdbArt.lookup(item) }.getOrNull()?.let { tv ->
+                    val fb = listOfNotNull(tv.banner, tv.poster).distinct()
+                    if (fb.isNotEmpty()) {
+                        firstByKey[item.uniqueId] = fb.first()
+                        listByKey[item.uniqueId] = fb
+                        listOfNotNull(tv.poster).takeIf { it.isNotEmpty() }?.let {
+                            firstPosterByKey[item.uniqueId] = it.first()
+                            listPosterByKey[item.uniqueId] = it
+                        }
+                        return fb
+                    }
+                }
                 // Universal fallback (parity with TmdbMeta.artwork): a title
                 // TMDB missed still gets the anime sources' own banner/cover
                 // sharp instead of a blurred provider poster. This is the
