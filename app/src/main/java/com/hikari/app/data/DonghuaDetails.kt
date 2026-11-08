@@ -95,14 +95,27 @@ object DonghuaDetails {
      * own details are not Animation and the probe is exact-level confident,
      * the anime wins outright. Namespaced providers (TMDB rows, tracker rows)
      * already resolve correctly and are never second-guessed.
-     */
+     *
+     * The exact probe alone used to be the WHOLE second chance: a decorated
+     * provider title burned the one search while the clean names sat behind
+     * it untried, and Bangumi was never asked at all — untagged donghua
+     * stayed TMDB-only forever. The probe still runs first (cheap, exact),
+     * but a miss now falls through to the full multi-query AniList + Bangumi
+     * lookup, kept at the same exactness bar (60) so a mistranslated
+     * live-action entry still cannot flip onto an anime namesake. */
     private suspend fun secondChancePick(item: MediaItem): Pick {
         val p = item.providerId.lowercase()
         if (p == "tmdb" || p.startsWith("tmdb|") ||
             p in setOf("anilist", "simkl", "mal", "kitsu", "shikimori", "trakt")
         ) return Pick.Tmdb
         if (isTmdbAnimation(item)) return Pick.Tmdb
-        val info = secondChanceAnime(item) ?: return Pick.None
+        val info = secondChanceAnime(item)
+            ?: runCatching { load(item) }.getOrNull()?.takeIf { li ->
+                val qs = (item.allTitles + TmdbMeta.queryVariants(item.searchTitle))
+                    .filter { it.isNotBlank() }
+                qs.any { q -> TmdbMeta.titleScore(q, li.title) >= 60 }
+            }
+            ?: return Pick.None
         return if (isUsable(info)) Pick.Anime(info) else Pick.None
     }
 

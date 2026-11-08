@@ -2335,12 +2335,6 @@ fun DetailScreen(
     // ends with nothing playable, the empty sheet offers widening it instead
     // of leaving that dead end.
     var lastSearchNarrowed by remember { mutableStateOf(false) }
-    // The dead-end widen already fired for the current tap chain (see the
-    // verdict block in [openStreams]): one automatic widened wave per tap, so
-    // a widened pass that also ends empty can never re-trigger itself.
-    // Atomic: the verdict runs on the app scope while taps land on the main
-    // thread.
-    val autoWidenFired = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
     var pendingNarrowTo by remember { mutableStateOf<String?>(null) }
     // Servers the player must know about before it starts. 1 = "as soon as the
     // first server is found" (the default).
@@ -2582,10 +2576,8 @@ fun DetailScreen(
         val narrowTo = pendingNarrowTo
         pendingNarrowTo = null
         lastSearchNarrowed = (narrowTo != null)
-        // A fresh tap earns its own automatic widened wave (see the verdict
-        // block below): a widened pass that also ends empty must not widen
-        // again, but the NEXT tap starts over.
-        autoWidenFired.set(false)
+        // A fresh tap starts over with the user's scope untouched: no
+        // automatic widening runs on any pass (see the verdict block).
         // Open the PLAYER on the very first frame of the tap (Nuvio/Stremio
         // style). The player has its own title-card screen, so instead of the
         // detail page sitting on a spinner for several seconds while the first
@@ -3085,76 +3077,15 @@ fun DetailScreen(
                 // exists precisely to find the other 34 is still running is what
                 // made the count look like it came out of nowhere.
                 val sweepBusy = vm.backgroundSweepBusy(searchedEpisode)
-                // Dead-end rescue: a pass that reached a REAL verdict (not cut
-                // short), with nothing still running behind it, and zero
-                // playable servers — while the scope was narrowed (an explicit
-                // "this extension only" tap, or the "only this extension"
-                // setting with the origin engine's family switch off) — fires
-                // ONE widened wave automatically instead of sitting on the dead
-                // end. The wave feeds the same live session the player is
-                // already listening on (and the sheet's list), so an open
-                // "still searching" cover resolves into servers instead of
-                // hanging. Structural narrowness is never lifted: IPTV
-                // playlists, exception-repo collapses, tracker and originless
-                // lookups keep their scope — only the user's preference gates
-                // (all-extensions + the origin engine's family) are widened,
-                // for this one pass, then restored.
-                var widenedRan = false
-                if (foundCount == 0 && lookupComplete && !sweepBusy &&
-                    autoWidenFired.compareAndSet(false, true)
-                ) {
-                    val originId = m?.providerId ?: providerId
-                    val origin = providers.firstOrNull { it.config.id == originId }
-                    val settingsNarrow = narrowTo == null &&
-                        !com.hikari.app.data.SearchScope.allExtensions &&
-                        origin != null && origin.config.enabled &&
-                        !com.hikari.app.data.IptvMark.isIptvProvider(originId) &&
-                        !com.hikari.app.data.SearchScope.isException(originId)
-                    if (narrowTo != null || settingsNarrow) {
-                        var savedAll = true
-                        var savedFamilies: Set<String> = emptySet()
-                        if (settingsNarrow) {
-                            savedAll = com.hikari.app.data.SearchScope.allExtensions
-                            savedFamilies = com.hikari.app.data.SearchScope.engineFamilies
-                            com.hikari.app.data.SearchScope.allExtensions = true
-                            val engineName = origin?.config?.type?.name
-                            if (engineName != null) {
-                                com.hikari.app.data.SearchScope.engineFamilies =
-                                    savedFamilies + engineName
-                            }
-                            com.hikari.app.data.Logs.log(
-                                "Search",
-                                "dead end with narrowed scope — widening to all servers for one pass " +
-                                    "\"${m?.title.orEmpty().take(60)}\"",
-                            )
-                        }
-                        try {
-                            StreamsLive.setStatus(sid, "Nothing in scope — widening to all servers…")
-                            val re = runCatching {
-                                vm.getStreamsLookup(episode = searchedEpisode, force = true)
-                            }.getOrNull()
-                            val playable = if (re == null) emptyList() else playableEvery(re.servers)
-                            if (playable.isNotEmpty()) {
-                                found = re!!.servers
-                                onUi { streams = re.servers }
-                                StreamProbe.warmAsync(playable)
-                                StreamsLive.append(sid, playable)
-                                StreamsLive.setStatus(
-                                    sid,
-                                    "Widened search found " + playable.size + " server" +
-                                        (if (playable.size == 1) "" else "s") + ".",
-                                )
-                                foundCount = playable.size
-                            }
-                        } finally {
-                            if (settingsNarrow) {
-                                com.hikari.app.data.SearchScope.allExtensions = savedAll
-                                com.hikari.app.data.SearchScope.engineFamilies = savedFamilies
-                            }
-                        }
-                        widenedRan = true
-                    }
-                }
+                // No automatic widening, ever: a scoped dead end used to fire
+                // ONE all-extensions wave by itself ("dead-end rescue"), which
+                // is exactly the leak a family-scoped search must not have —
+                // a Nuvio-only pass came back with ~485 providers asked. A
+                // narrowed scope stays narrowed; the verdict below says so
+                // and tells where to widen it by hand (Settings → Playback &
+                // Servers → Server search), then retry. Structural narrowness
+                // was already exempt (IPTV, exception repos, tracker,
+                // originless); now preference narrowness is respected too.
                 // The "nothing playable, and that is a real answer" note, built as
                 // a lambda so the sweep's own watcher below can use the very same
                 // wording if the sweep comes back empty a minute later.
@@ -3196,23 +3127,24 @@ fun DetailScreen(
                                         "a page rather than a file (open that page to watch it)."
                                 )
                             }
-                            // The widened wave above ran and still found
-                            // nothing: say that, or the "extension this title
-                            // came from" line below would deny a search that
-                            // already covered every server.
-                            widenedRan && foundCount == 0 -> {
-                                append("No playable server found, even after widening to all servers")
-                            }
+                            // Scopes stay as the user set them: no automatic
+                            // widening wave runs any more, so there is no
+                            // "even after widening" verdict to report here.
                             originless && enabledN == 0 -> {
                                 append("No playback extension is switched on, so there was ")
                                 append("nothing to play this title from.")
                             }
                             scoped -> {
-                                // "Only this extension" is on, so the lookup's verdict
-                                // is about ONE repo — say that, and say why it might
-                                // be empty when the user knows other extensions have
-                                // the title.
-                                append("No playable server found in the extension this title came from")
+                                // Narrowed by an explicit "this extension only" tap
+                                // (narrowTo), the verdict is about ONE repo; narrowed
+                                // by the scope settings, it is about the selected
+                                // providers. Say which, so a family-scoped dead end
+                                // no longer reads like a single-repo verdict.
+                                if (narrowTo != null) {
+                                    append("No playable server found in the extension this title came from")
+                                } else {
+                                    append("No playable server found in your selected providers")
+                                }
                             }
                             else -> {
                                 append("No playable server found after searching $enabledN ")
@@ -3228,8 +3160,12 @@ fun DetailScreen(
                         }
                         if (scoped && !originless) {
                             append(
-                                "\nOnly the extension this title came from is searched " +
+                                if (narrowTo != null)
+                                    "\nOnly the extension this title came from is searched " +
                                     "(Settings → Playback & Servers → Server search)."
+                                else
+                                    "\nOnly your selected providers are searched — widen the scope " +
+                                    "under Settings → Playback & Servers → Server search, then retry."
                             )
                         }
                         if (originless && !linksOnly) {

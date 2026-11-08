@@ -93,6 +93,14 @@ object StreamProbe {
      *  probe for the same URL share a single network walk instead of racing. */
     private val inflight = ConcurrentHashMap<String, CompletableDeferred<Resolved?>>()
 
+    /** Process-wide ceiling on concurrent probe walks: distinct URLs do not
+     *  share a walk, so a ~500-target widened pass used to fire hundreds of
+     *  simultaneous resolves — socket/thread churn that filled the heap and
+     *  kept the phone laggy long after playback started (see the Resident
+     *  Evil log: 298 starts, 100 finishes). Ten at a time still warms the
+     *  cache in seconds; the rest queue here instead of on the radio. */
+    private val resolveGate = Semaphore(10)
+
     /** url -> resolved form. Shared across the whole app (and read first by the
      *  player, so ANY earlier resolution — source search, a previous play, a
      *  previous session — makes this play start instantly). */
@@ -221,8 +229,10 @@ object StreamProbe {
             }
             try {
                 val deadline = System.currentTimeMillis() + RESOLVE_TIMEOUT_MS
-                val resolved = withTimeoutOrNull(RESOLVE_TIMEOUT_MS + 8_000L) {
-                    follow(url, headers, 0, deadline)
+                val resolved = resolveGate.withPermit {
+                    withTimeoutOrNull(RESOLVE_TIMEOUT_MS + 8_000L) {
+                        follow(url, headers, 0, deadline)
+                    }
                 }
                 if (resolved != null) {
                     cache[url] = resolved

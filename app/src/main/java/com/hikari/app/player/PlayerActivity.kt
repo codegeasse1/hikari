@@ -9251,12 +9251,13 @@ class PlayerActivity : ComponentActivity() {
             startChooserShown = true
             // The start chooser is a landscape screen like the reference: the
             // server rows read full-bleed over the title art on phones too.
-            // Vertical (phone-only) instead opens portrait, so the whole
-            // sheet is a portrait page like the 0.11.33 reference; the
-            // dismiss below frees the lock again (see verticalPortrait).
+            // The in-player sheet is ALWAYS the horizontal page now (the
+            // vertical setting only shapes the outside server page), so no
+            // portrait lock is taken here — the sheet is measured for the
+            // current window, landscape or portrait, edge to edge.
             if (!playerTvRemote()) {
                 runCatching {
-                    requestedOrientation = if (com.hikari.app.player.ServerLayouts.isVertical() && !com.hikari.app.tv.TvMode.isTv) SCREEN_ORIENTATION_PORTRAIT else SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                    requestedOrientation = SCREEN_ORIENTATION_SENSOR_LANDSCAPE
                 }
             }
             // Backing out of a download chooser must NOT fall back to playing
@@ -9338,14 +9339,13 @@ class PlayerActivity : ComponentActivity() {
         // No engine chips and no section headings: the reference Sources sheet
         // is one flat origin-first list, so the list holds rows only.
         val list = optionList()
-        // Horizontal phone sheet (in-player or the Horizontal setting): the
-        // rows run edge to edge like the reference page — the container's
-        // own side inset is dropped (row internals keep their padding, so
-        // nothing reads squeezed). Vertical keeps its box padding; TV keeps
-        // its remote-friendly inset.
-        if (!com.hikari.app.tv.TvMode.isTv &&
-            (forceHorizontal || !com.hikari.app.player.ServerLayouts.isVertical())
-        ) {
+        // Horizontal phone sheet, always in-player: the rows run edge to edge
+        // like the reference page — the container's own side inset is dropped
+        // (row internals keep their padding, so nothing reads squeezed).
+        // The vertical setting only shapes the OUTSIDE server page; the
+        // in-player chooser no longer consults it. TV keeps its
+        // remote-friendly inset.
+        if (!com.hikari.app.tv.TvMode.isTv) {
             list.setPadding(0, list.paddingTop, 0, list.paddingBottom)
         }
 
@@ -9586,10 +9586,9 @@ class PlayerActivity : ComponentActivity() {
                     val topMargin = if (first) (2 * density).toInt() else (7 * density).toInt()
                     // Flush with the rows on the horizontal phone sheet (see
                     // the list padding above) — otherwise the header floats
-                    // inside margins the rows no longer have.
-                    val sideMargin = if (!com.hikari.app.tv.TvMode.isTv &&
-                        (forceHorizontal || !com.hikari.app.player.ServerLayouts.isVertical())
-                    ) 0 else (4 * density).toInt()
+                    // inside margins the rows no longer have. In-player the
+                    // sheet is always full-bleed, so no side margin on phones.
+                    val sideMargin = if (!com.hikari.app.tv.TvMode.isTv) 0 else (4 * density).toInt()
                     setMargins(sideMargin, topMargin, sideMargin, (4 * density).toInt())
                 }
                 return hv
@@ -9608,7 +9607,11 @@ class PlayerActivity : ComponentActivity() {
                     val src = sources[i]
                     val v = serverRow(
                         src = src,
-                        horizontal = forceHorizontal,
+                        // In-player rows are always the horizontal reference
+                        // rows (the vertical setting only shapes the outside
+                        // server page) — the full-bleed sheet the report asked
+                        // for, in any orientation.
+                        horizontal = true,
                         selected = playbackCommitted && i == currentIndex,
                         onPlay = {
                             startChoicePending = false
@@ -10107,12 +10110,9 @@ class PlayerActivity : ComponentActivity() {
             chooserScrollListener?.let { runCatching { verticalScrollerOf(list)?.viewTreeObserver?.removeOnScrollChangedListener(it) } }
             chooserScrollListener = null
             if (serverChooserDialog === dialog) serverChooserDialog = null
-            // A vertical sheet opened portrait (see the startMode lock above):
-            // free the lock so playback follows the video again instead of
-            // staying portrait. Phone-only, like the lock itself.
-            if (!forceHorizontal && com.hikari.app.player.ServerLayouts.isVertical() && !com.hikari.app.tv.TvMode.isTv && !playerTvRemote()) {
-                runCatching { requestedOrientation = SCREEN_ORIENTATION_UNSPECIFIED }
-            }
+            // No portrait lock is taken on open any more (the in-player
+            // sheet is always the horizontal page), so there is nothing to
+            // free here — playback keeps following the video.
             // Closed without a pick (the back button, the ✕, a tap outside):
             // abandon the play entirely — do NOT fall back to auto-playing
             // (the report: backing out of the server list started playback
@@ -10286,12 +10286,13 @@ class PlayerActivity : ComponentActivity() {
         // the panel builds (the intent's plural header art, first = opening
         // frame). The loop starts after the show, further below.
         var artLoopUrls: List<String> = emptyList()
-       // Vertical (phone-only, Settings → Playback & Servers): the whole
-        // sheet goes narrow portrait like the 0.11.33 reference (capped at
-        // 560dp, centered) over the portrait poster — but with the same
-        // glass look as horizontal: the rows float directly over the art,
-        // no dark box behind them. TV always keeps horizontal.
-        val verticalSheet = !forceHorizontal && com.hikari.app.player.ServerLayouts.isVertical() && !com.hikari.app.tv.TvMode.isTv
+       // The in-player sheet is always the horizontal full-bleed page now
+        // (the vertical setting only shapes the OUTSIDE server page): the
+        // rows float directly over the art, no dark box behind them, edge
+        // to edge in any orientation. TV keeps horizontal as before.
+        // `verticalSheet` stays only as the switch name the presentGlass
+        // call below reads — it is always false in-player.
+        val verticalSheet = false
         // Vertical opens portrait (see the startMode lock above): the rotation
         // lands asynchronously AFTER this point, so measuring the window now
         // would size a landscape-wide box that then hangs off the portrait
@@ -13254,6 +13255,16 @@ class PlayerActivity : ComponentActivity() {
      *  the timeline turns seekable — never dropped, never jumped to 0. */
     @Volatile
     private var heldSeekMs: Long? = null
+    /** When the current hold began (elapsedRealtime): a hold that never lands
+     *  means the LINK is unseekable (no duration/Range from the server), and
+     *  after a grace period the user is told so instead of seeking silently
+     *  into the void. Reset with the hold itself. */
+    @Volatile
+    private var holdSinceMs: Long = 0L
+    /** Server index already warned as unseekable: the toast fires once per
+     *  server, not on every held seek. */
+    @Volatile
+    private var seekWarnedFor: Int = -1
 
     /** True when a seek can land now: a known duration on a seekable
      *  window. Unknown duration (progressive header still in flight) or an
@@ -13279,12 +13290,14 @@ class PlayerActivity : ComponentActivity() {
                 // Hold, don't restart: seeking now would jump to 0 and
                 // replay from the top (the HubCloud/Pixeldrain report).
                 heldSeekMs = targetMs.coerceAtLeast(0L)
+                if (holdSinceMs == 0L) holdSinceMs = android.os.SystemClock.elapsedRealtime()
                 com.hikari.app.data.Logs.log(
                     "Player",
                     "seek held — timeline not seekable yet target=" + targetMs,
                 )
             } else if (p != null) {
                 heldSeekMs = null
+                holdSinceMs = 0L
                 p.seekTo(if (!live && p.duration > 0L) targetMs.coerceIn(0L, p.duration) else targetMs)
             }
         } catch (_: Throwable) { }
@@ -13293,6 +13306,7 @@ class PlayerActivity : ComponentActivity() {
             if (d != null) {
                 if (!live && !seekableNow(d)) {
                     heldSeekMs = targetMs.coerceAtLeast(0L)
+                    if (holdSinceMs == 0L) holdSinceMs = android.os.SystemClock.elapsedRealtime()
                 } else {
                     d.seekTo(if (!live && d.duration > 0L) targetMs.coerceIn(0L, d.duration) else targetMs)
                 }
@@ -13307,6 +13321,7 @@ class PlayerActivity : ComponentActivity() {
         val p = player ?: return false
         if (!seekableNow(p)) return false
         heldSeekMs = null
+        holdSinceMs = 0L
         runCatching { p.seekTo(target) }
         runCatching { dualPlayer?.let { d -> if (seekableNow(d)) d.seekTo(target) } }
         com.hikari.app.data.Logs.log("Player", "held seek applied target=" + target)
@@ -13519,6 +13534,8 @@ class PlayerActivity : ComponentActivity() {
         // A new server owns its own timeline: a seek held for the previous
         // one must never land here.
         heldSeekMs = null
+        holdSinceMs = 0L
+        seekWarnedFor = -1
         // A new attempt: the cover is about to describe THIS server, so the
         // previous line (and whatever the search was saying) is dropped.
         coverPlaybackLine = null
@@ -16790,6 +16807,31 @@ class PlayerActivity : ComponentActivity() {
                 // never fire onRenderedFirstFrame).
                 // A seek held while the timeline was not seekable lands now.
                 applyHeldSeek()
+                // A hold that is STILL pending while the video plays means the
+                // LINK is unseekable (no duration/Range from the server — the
+                // HubCloud report, where holds piled up forever): say so once
+                // per server instead of swallowing seeks silently. The hold
+                // itself stays, so a late duration still lands it.
+                if (heldSeekMs != null && holdSinceMs != 0L && seekWarnedFor != currentIndex) {
+                    val pp = player
+                    if (pp != null && pp.playbackState == Player.STATE_READY && !seekableNow(pp) &&
+                        android.os.SystemClock.elapsedRealtime() - holdSinceMs > 20_000L &&
+                        !runCatching { isLiveSource(sources.getOrNull(currentIndex)) }.getOrDefault(false)
+                    ) {
+                        seekWarnedFor = currentIndex
+                        com.hikari.app.data.Logs.log(
+                            "Player",
+                            "seek unsupported by this link — holds kept, timeline never seekable; try another server",
+                        )
+                        runCatching {
+                            Toast.makeText(
+                                this@PlayerActivity,
+                                I18n.t("This link doesn't support seeking — try another server"),
+                                Toast.LENGTH_LONG,
+                            ).show()
+                        }
+                    }
+                }
                 maybeOfferResume()
             }
         }

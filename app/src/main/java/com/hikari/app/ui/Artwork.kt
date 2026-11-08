@@ -250,7 +250,13 @@ object Artwork {
             var b = backdrop?.takeIf { it.isNotBlank() } ?: cur?.backdrop
             if (b != null && (b == p || b == cur?.poster)) b = cur?.backdrop
             if (p == cur?.poster && b == cur?.backdrop) return
-            memory[key] = Entry(p, b, System.currentTimeMillis())
+            val e = Entry(p, b, System.currentTimeMillis())
+            memory[key] = e
+            // The detail banks title|year while a provider row for the same
+            // title usually carries no year: file the same art under the
+            // yearless companion too, or the row never finds what the detail
+            // settled (cinema cards stuck on blurred portrait).
+            companionKeyOf(item)?.let { memory[it] = e }
             saveCache()
             revision.value = revisionCounter.incrementAndGet()
         }
@@ -262,9 +268,21 @@ object Artwork {
         val key = keyOf(item) ?: return null
         loadOnce()
         val e = memory[key]
+        // Exact key first: a yearful bank always beats a yearless one, so a
+        // remake never wears another year's art.
+        e?.let { pick(it)?.takeIf { s -> s.isNotBlank() }?.let { return it } }
+        // Then the companion half: the detail files title|year while a
+        // provider row asks title| (and vice versa) — read the other half
+        // the header/lookup also files (see noteHeaderArt, enqueue) before
+        // declaring a miss, or cinema cards never see the detail background.
+        companionKeyOf(item)?.let { ck ->
+            if (ck != key) {
+                memory[ck]?.let { ce ->
+                    pick(ce)?.takeIf { s -> s.isNotBlank() }?.let { return it }
+                }
+            }
+        }
         if (e != null) {
-            val v = pick(e)?.takeIf { it.isNotBlank() }
-            if (v != null) return v
             if (System.currentTimeMillis() - e.at < MISS_TTL_MS) return null
             // A stale miss: this title may have gained art since. Re-ask once.
             enqueue(key, item)
@@ -285,6 +303,17 @@ object Artwork {
         val canon = canonicalTitle(item.title) ?: return null
         val year = item.year?.toString().orEmpty()
         return "$canon|$year"
+    }
+
+    /** The yearless twin of [keyOf]: provider rows usually carry no year
+     *  while the detail banks title|year. Both halves are filed together
+     *  (see noteHeaderArt, enqueue) and both are read (see lookup), so a
+     *  cinema card finds the background its detail screen settled on. Null
+     *  when the item already is yearless (twin == key). */
+    private fun companionKeyOf(item: MediaItem): String? {
+        val canon = canonicalTitle(item.title) ?: return null
+        if (item.year == null || item.year <= 0) return null
+        return "$canon|"
     }
 
     private val SEASON_BIT = Regex(
@@ -358,6 +387,23 @@ object Artwork {
                     }.getOrNull()
                 }
                 memory[key] = Entry(res?.first, res?.second, System.currentTimeMillis())
+                // File the yearless twin together with a yearful answer (and
+                // vice versa the twin lookup reads it): a row asking title|
+                // must see what a title|year lookup resolved, or cinema
+                // cards keep the blurred portrait after the detail healed.
+                runCatching { companionKeyOf(item) }.getOrNull()?.let { ck ->
+                    if (ck != key) {
+                        val cur = memory[ck]
+                        val e = Entry(
+                            res?.first ?: cur?.poster,
+                            res?.second ?: cur?.backdrop,
+                            System.currentTimeMillis(),
+                        )
+                        // Never let a thin re-read un-heal the twin: only
+                        // fill blanks, never overwrite settled art with nulls.
+                        if (e.poster != null || e.backdrop != null) memory[ck] = e
+                    }
+                }
                 saveCache()
                 revision.value = revisionCounter.incrementAndGet()
             } finally {

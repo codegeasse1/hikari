@@ -13,6 +13,7 @@ import android.widget.ArrayAdapter
 import android.widget.CheckBox
 import android.widget.LinearLayout
 import android.widget.ProgressBar
+import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
@@ -222,7 +223,15 @@ object DubDialog {
 
         val builder = AlertDialog.Builder(activity, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setTitle(I18n.t("Dub audio"))
-            .setView(root)
+            // The panel is taller than a small (landscape) dialog: without a
+            // scroller the lower half (voice options, ducking, buttons' top
+            // part) is cut off with no way to reach it. The dialog scrolls now.
+            .setView(ScrollView(activity).apply {
+                addView(root, android.view.ViewGroup.LayoutParams(
+                    android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                    android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
+                ))
+            })
             .setNegativeButton(I18n.t("Close"), null)
             .setNeutralButton(I18n.t("Upload subtitle…")) { _, _ -> onUpload() }
 

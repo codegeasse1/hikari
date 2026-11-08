@@ -663,20 +663,23 @@ object TmdbMeta {
         // trusted; anything else keeps TMDB's list, so the row can be wrong in
         // the direction of "still correct, just the actors".
         var castIsCharacters = false
-        // Anime OR donghua: the anime gate is the confident AniList match
-        // below, not TMDB's own genre/language tags — a Chinese entry TMDB
-        // files as Drama still gets its characters when AniList is sure.
-        // Candidates come from provider tags too (not TMDB Animation only),
-        // or anime-tagged rows would keep showing voice actors.
-        val displayCast = if ((isAnimeTitle(d) || DonghuaDetails.isAnimeCandidate(item)) && item.title.isNotBlank()) {
+        // Anime OR donghua: the anime gate is the confident anime-index hit,
+        // not TMDB's own genre/language tags and not the provider tag alone —
+        // a Chinese entry TMDB files as Drama still gets its characters when
+        // the anime sources are sure, and an untagged donghua from a general
+        // provider is no longer locked out by the tag it never carries. The
+        // pick is resolved once and reused for the first query below.
+        val animePick = runCatching { DonghuaDetails.pick(item) }.getOrNull()
+            as? DonghuaDetails.Pick.Anime
+        val displayCast = if ((isAnimeTitle(d) || DonghuaDetails.isAnimeCandidate(item) || animePick != null) && item.title.isNotBlank()) {
             var characters: List<CastMember> = emptyList()
             // Authoritative names first: the anime index's own title,
             // TMDB's original, TVDB's. The provider's decorated row title
             // ("… Season 2", site suffixes) used to burn all 4 tries while
             // the exact names sat behind it untried.
             val queries = LinkedHashSet<String>()
-            runCatching { DonghuaDetails.pick(item) }.getOrNull()?.let { p ->
-                if (p is DonghuaDetails.Pick.Anime && p.info.title.isNotBlank()) queries.add(p.info.title)
+            animePick?.let { p ->
+                if (p.info.title.isNotBlank()) queries.add(p.info.title)
             }
             d.optString("original_title").takeIf { it.isNotBlank() }?.let { queries.add(it) }
             d.optString("original_name").takeIf { it.isNotBlank() }?.let { queries.add(it) }

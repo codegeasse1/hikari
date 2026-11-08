@@ -1,3 +1,14 @@
+## 0.12.68 (continuous build only)
+
+- Cinema rows read the detail background through a yearless twin key: rows that carry no year now find the wide art the detail banked under title|year (MobLand / VisionQuest / Make Me Tingle class) instead of sitting on blurred portraits
+- Untagged anime/donghua get the full anime-source path: the second chance falls through to multi-query AniList + Bangumi at the same exactness bar, and the character-cast gate opens on a confident anime-index hit — not just provider tags or TMDB's genre
+- Catalogue rows serve the exact fetch CloudStream shows: getCatalog reads the catalogs() snapshot when fresh (no re-fetch/re-match against rotated trays), one dead tray no longer brands a healthy provider, and empty rows name the mirror host + mirror-setting hint
+- No more automatic scope widening: a narrowed dead end stays narrowed and says where to widen by hand; the leak that turned a Nuvio-only pass into ~485 providers is gone
+- Probe storm capped: process-wide ceiling of 10 concurrent resolves, so a giant pass queues instead of filling the heap (the Resident Evil lag)
+- Unseekable links speak up: a hold that never lands gets one "this link doesn't support seeking — try another server" instead of silent dead seeks (holds themselves still never restart from 0)
+- In-player server sheet is always the full-bleed horizontal page in any orientation (the vertical setting now shapes only the outside server page)
+- Dub audio panel scrolls: the tall panel no longer cuts off voice/ducking options in small dialogs
+
 ## 0.12.67 (continuous build only)
 
 - Rows paint what the detail screen settled on: the header's wide art is published into the row lookup the moment it lands, so Bigg Boss / Dexter-class rows heal to the TMDB/TVDB background instead of sitting on blurred portraits — any title, any source, no detail-open needed first

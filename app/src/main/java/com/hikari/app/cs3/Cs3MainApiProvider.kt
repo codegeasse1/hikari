@@ -482,6 +482,23 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
     private val homePageCache = ConcurrentHashMap<String, Pair<Long, List<HomePageList>>>()
 
     /**
+     * The exact rows [catalogs()] just saw, per provider: CloudStream shows
+     * the home fetch as-is, while getCatalog() used to re-fetch the whole
+     * home page again per row and re-match the tray by name/index — and these
+     * mirrors rotate/fill trays between requests, so the re-read could miss
+     * a tray the first read had full ("No items in <row>" for a row that is
+     * full in CloudStream). A row whose snapshot is fresh is served straight
+     * from it; the network path below stays for stale snapshots and pages.
+     */
+    private val catalogSnapshot = ConcurrentHashMap<String, Pair<Long, List<List<HomePageList>>>>()
+    private val SNAPSHOT_TTL_MS = 5L * 60L * 1000L
+    /** A provider that served at least one full row this pass: one dead tray
+     *  must never brand the whole healthy provider (the screen-level
+     *  "Couldn't load <provider>" over rows that actually loaded). Reset on
+     *  every [catalogs()] pass. */
+    private val catalogHealthy = ConcurrentHashMap<String, Boolean>()
+
+    /**
      * Hikari's Home renders one row per CatalogRef, so a plugin whose
      * getMainPage() returns several HomePageLists (SKTech: Kids / Music /
      * Entertainment / Sports / …) must expose one CatalogRef PER LIST.
@@ -515,6 +532,8 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                 }
             }.awaitAll()
         }
+        catalogSnapshot[config.id] = System.currentTimeMillis() to rowsPerPage
+        catalogHealthy.remove(config.id)
         pages.forEachIndexed { pageIndex, page ->
             val rows = rowsPerPage.getOrElse(pageIndex) { emptyList() }
             if (rows.isEmpty()) {
@@ -664,6 +683,23 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
             val rowRef = decodeRowRef(ref.id)
             if (rowRef != null) {
                 val (pageIndex, rowIndex) = rowRef
+                // CloudStream-faithful first: serve the exact rows catalogs()
+                // just fetched instead of re-fetching the home page and
+                // re-matching the tray (a rotated tray list between the two
+                // reads is what emptied full rows). Page 1 only — later
+                // pages have no snapshot and use the network path below.
+                if (page == 1) {
+                    val snap = catalogSnapshot[config.id]
+                    if (snap != null && System.currentTimeMillis() - snap.first < SNAPSHOT_TTL_MS) {
+                        val snapRow = rowFor(snap.second.getOrNull(pageIndex).orEmpty(), ref.name, rowIndex)
+                        val snapItems = snapRow?.list.orEmpty().mapNotNull { it.toMediaItem() }
+                        if (snapItems.isNotEmpty()) {
+                            catalogErrors.remove(config.id)
+                            catalogHealthy[config.id] = true
+                            return@withContext snapItems
+                        }
+                    }
+                }
                 val mainPage = a.mainPage.getOrNull(pageIndex)
                 if (mainPage == null) {
                     catalogErrors[config.id] = "Home page ${ref.name} is no longer available — refresh Home"
@@ -714,6 +750,7 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                     }
                     if (direct.isNotEmpty()) {
                         catalogErrors.remove(config.id)
+                        catalogHealthy[config.id] = true
                         return@withContext direct
                     }
                     val rawCount = row?.list?.size ?: -1
@@ -722,10 +759,16 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                     // extension" when the mirror is dead, not a bare empty.
                     val pluginFile = runCatching { java.io.File(config.url).name }.getOrDefault("?")
                     val mirror = runCatching { a.mainUrl }.getOrNull().orEmpty()
+                    // One dead tray must not brand a provider whose other rows
+                    // loaded: the screen-level error is only recorded while no
+                    // row has succeeded this pass (see catalogHealthy).
+                    if (catalogHealthy[config.id] != true) {
+                    val mirrorHost = runCatching { java.net.URI(mirror).host }.getOrDefault("")?.takeIf { it.isNotBlank() } ?: mirror.take(60)
                     catalogErrors[config.id] = if (row == null) {
                         "\"${ref.name}\" is no longer on its home page — refresh Home"
                     } else {
-                        "No items in ${ref.name} — ${pluginFile} gave nothing (update the extension)"
+                        "No items in ${ref.name} — ${pluginFile} gave nothing on ${mirrorHost} (check the extension's mirror setting, or update it)"
+                    }
                     }
                     runCatching {
                         com.hikari.app.data.Logs.log(
@@ -741,6 +784,7 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                     }
                 } else {
                     catalogErrors.remove(config.id)
+                    catalogHealthy[config.id] = true
                 }
                 return@withContext rowItems
             }
