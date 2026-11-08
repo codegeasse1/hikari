@@ -659,9 +659,10 @@ object TmdbMeta {
 
         // Anime: the credits list voice actors, whose faces mean nothing to
         // someone who knows the show — the characters do. AniList is asked for
-        // them (see [AnimeCast]), and only a confident title+year match is
-        // trusted; anything else keeps TMDB's list, so the row can be wrong in
-        // the direction of "still correct, just the actors".
+        // them (see [AnimeCast]): the anime index's own id wins outright with
+        // no title match at all, otherwise only a confident title+synonym+year
+        // match is trusted; anything else keeps TMDB's list, so the row can
+        // be wrong in the direction of "still correct, just the actors".
         var castIsCharacters = false
         // Anime OR donghua: the anime gate is the confident anime-index hit,
         // not TMDB's own genre/language tags and not the provider tag alone —
@@ -673,6 +674,19 @@ object TmdbMeta {
             as? DonghuaDetails.Pick.Anime
         val displayCast = if ((isAnimeTitle(d) || DonghuaDetails.isAnimeCandidate(item) || animePick != null) && item.title.isNotBlank()) {
             var characters: List<CastMember> = emptyList()
+            // Zero-doubt path first: the anime index already vetted this
+            // show (its source carries the AniList id), so its characters
+            // need no title match at all — aliases and years cannot veto a
+            // lookup that is the show itself.
+            val animeId = animePick?.info?.source
+                ?.takeIf { it.startsWith("anilist:") }
+                ?.substringAfter(":")?.toIntOrNull() ?: 0
+            if (animeId > 0) {
+                characters = AnimeCast.charactersByMediaId(
+                    animeId,
+                    cacheKey = "tmdb:$seg:${resolved.tmdbId}",
+                )
+            }
             // Authoritative names first: the anime index's own title,
             // TMDB's original, TVDB's. The provider's decorated row title
             // ("… Season 2", site suffixes) used to burn all 4 tries while
@@ -689,7 +703,21 @@ object TmdbMeta {
             queries.add(item.title)
             if (item.searchTitle.isNotBlank()) queries.add(item.searchTitle)
             item.allTitles.forEach { if (it.isNotBlank()) queries.add(it) }
-            for (q in queries.take(6)) {
+            // A decorated query burns the single SEARCH_MATCH request on
+            // release junk AniList never matches, so every base also fans
+            // out into its stripped variants (season/episode/release forms
+            // removed) — the plain form resolves where the decorated one
+            // never does, on every provider.
+            val expanded = ArrayList<String>(16)
+            for (q in queries) {
+                if (q.isBlank()) continue
+                expanded.add(q)
+                for (v in queryVariants(q)) {
+                    if (v.isBlank() || v == q || expanded.contains(v)) continue
+                    expanded.add(v)
+                }
+            }
+            for (q in if (characters.isNotEmpty()) emptyList<String>() else expanded.take(8)) {
                 if (q.isBlank()) continue
                 characters = AnimeCast.characters(
                     q,

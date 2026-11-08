@@ -10,8 +10,11 @@ import okhttp3.Response
  * cannot do this for itself.
  *
  * Placed on [eu.kanade.tachiyomi.network.NetworkHelper]'s client, i.e. below
- * every Aniyomi/Mihon extension, because that client is the one they build on:
- * `AnimeHttpSource.network.client` and any `network.client.newBuilder()`
+ * every Aniyomi/Mihon extension, AND on the CloudStream jar's `app` client
+ * that every CS3 extension builds on (see HikariApp's CloudStream wiring):
+ * the jar has no killer of its own, so a walled host parsed as an empty
+ * catalogue there while CloudStream solved it in its WebView. On the
+ * NetworkHelper client, `AnimeHttpSource.network.client` and any `network.client.newBuilder()`
  * wrapper an extension adds (AnimeOnline.Ninja wraps it with its own
  * `VrfInterceptor`) all sit on top of this. The steps are the ones every
  * Mihon-family app takes, minus the dialog:
@@ -103,10 +106,11 @@ open class ExtensionCloudflareInterceptor(
      * True when a response is a bot wall rather than the page the extension
      * asked for.
      *
-     * The cheap, header-only signals come first, and the body is only read for
-     * the statuses a wall actually uses: an extension streams real media through
-     * this client (video manifests and segments), and peeking a 64 KiB window
-     * out of every response would be pure cost on the healthy ones.
+     * The cheap, header-only signals come first. The body is only ever read
+     * for document types (html/text/javascript) on wall-plausible statuses —
+     * an extension streams real media through this client (video manifests
+     * and segments), and peeking a 64 KiB window out of every response would
+     * be pure cost on the healthy ones.
      */
     private fun isChallenge(response: Response): Boolean {
         // Cloudflare's own signature — a 403/503 whose `Server` says cloudflare,
@@ -134,7 +138,22 @@ open class ExtensionCloudflareInterceptor(
             // every extension request).
             if (server.contains("cloudflare")) return true
         } else if (code != 429) {
-            return false
+            // A managed challenge USUALLY answers 403/503, but some modes
+            // answer 200 carrying the challenge HTML — which the plugin then
+            // parses as an empty page (the "gave nothing" empty row on a
+            // walled host). Peek those document bodies for the interstitial
+            // markers; media stays untouched (its type is never textual) and
+            // non-document types are never read.
+            if (code !in 200..299) return false
+            val type = response.header("Content-Type")?.lowercase().orEmpty()
+            if (type.isNotBlank() &&
+                !type.contains("html") && !type.contains("text") && !type.contains("javascript")
+            ) {
+                return false
+            }
+            val body = peekText(response)
+            if (body.isBlank()) return false
+            return HARD_MARKERS.any { body.contains(it, ignoreCase = true) }
         }
         // Not a Cloudflare-served 403/503 (or a 429): the site's own refusal is
         // only a wall when the body really is an interstitial. A wall answers
@@ -153,6 +172,16 @@ open class ExtensionCloudflareInterceptor(
         // script has run; the rest are Cloudflare's challenge markers.
         return HARD_MARKERS.any { body.contains(it, ignoreCase = true) }
     }
+
+    /** First 64 KiB of the body as text, gunzipped when needed (peek only —
+     *  the caller still reads the response normally). */
+    private fun peekText(response: Response): String = runCatching {
+        val bytes = response.peekBody(64L * 1024).bytes()
+        val raw = if (bytes.size >= 2 && bytes[0] == 0x1f.toByte() && bytes[1] == 0x8b.toByte()) {
+            java.util.zip.GZIPInputStream(bytes.inputStream().buffered()).readBytes()
+        } else bytes
+        String(raw, 0, minOf(raw.size, 64 * 1024), Charsets.UTF_8)
+    }.getOrNull().orEmpty()
 
     private fun isImageRequest(request: Request): Boolean {
         val last = request.url.pathSegments.lastOrNull() ?: return false

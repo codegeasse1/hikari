@@ -9241,6 +9241,14 @@ class PlayerActivity : ComponentActivity() {
         // loading cover, which is the point, but it must never be invisible in
         // the one place the user is actually looking for servers.
         if (!startMode) liveSessionId?.let { StreamsLive.releaseSweep(it) }
+        // The START chooser (and the download chooser, which is the same
+        // screen) follows the Server page layout setting: vertical keeps
+        // the portrait box, horizontal the full-bleed page. Only the
+        // in-player mid-playback reopen (the Source pill) is always the
+        // horizontal page — it never consults the setting.
+        val startVerticalSheet = startMode && !forceHorizontal &&
+            com.hikari.app.player.ServerLayouts.isVertical() &&
+            !com.hikari.app.tv.TvMode.isTv && !playerTvRemote()
         if (startMode) {
             // Present the start chooser at most once per Activity: the live
             // search keeps growing the list, and re-opening the chooser after
@@ -9249,15 +9257,15 @@ class PlayerActivity : ComponentActivity() {
             // fastest server instead of the one that was chosen.
             if (startChooserShown) return
             startChooserShown = true
-            // The start chooser is a landscape screen like the reference: the
-            // server rows read full-bleed over the title art on phones too.
-            // The in-player sheet is ALWAYS the horizontal page now (the
-            // vertical setting only shapes the outside server page), so no
-            // portrait lock is taken here — the sheet is measured for the
-            // current window, landscape or portrait, edge to edge.
+            // The start chooser follows the Server page layout setting like
+            // the reference: vertical opens portrait for the narrow box,
+            // horizontal stays landscape for the full-bleed rows. Only the
+            // in-player reopen is always the landscape page.
             if (!playerTvRemote()) {
                 runCatching {
-                    requestedOrientation = SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                    requestedOrientation = if (startVerticalSheet)
+                        android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                    else SCREEN_ORIENTATION_SENSOR_LANDSCAPE
                 }
             }
             // Backing out of a download chooser must NOT fall back to playing
@@ -9339,13 +9347,12 @@ class PlayerActivity : ComponentActivity() {
         // No engine chips and no section headings: the reference Sources sheet
         // is one flat origin-first list, so the list holds rows only.
         val list = optionList()
-        // Horizontal phone sheet, always in-player: the rows run edge to edge
-        // like the reference page — the container's own side inset is dropped
-        // (row internals keep their padding, so nothing reads squeezed).
-        // The vertical setting only shapes the OUTSIDE server page; the
-        // in-player chooser no longer consults it. TV keeps its
-        // remote-friendly inset.
-        if (!com.hikari.app.tv.TvMode.isTv) {
+        // Horizontal sheet: the rows run edge to edge like the reference
+        // page — the container's own side inset is dropped (row internals
+        // keep their padding, so nothing reads squeezed). The vertical
+        // start chooser keeps the default inset so the box reads centered.
+        // TV keeps its remote-friendly inset.
+        if (!com.hikari.app.tv.TvMode.isTv && !startVerticalSheet) {
             list.setPadding(0, list.paddingTop, 0, list.paddingBottom)
         }
 
@@ -9584,11 +9591,11 @@ class PlayerActivity : ComponentActivity() {
                     LinearLayout.LayoutParams.WRAP_CONTENT
                 ).apply {
                     val topMargin = if (first) (2 * density).toInt() else (7 * density).toInt()
-                    // Flush with the rows on the horizontal phone sheet (see
-                    // the list padding above) — otherwise the header floats
-                    // inside margins the rows no longer have. In-player the
-                    // sheet is always full-bleed, so no side margin on phones.
-                    val sideMargin = if (!com.hikari.app.tv.TvMode.isTv) 0 else (4 * density).toInt()
+                    // Flush with the rows on the horizontal sheet (see the
+                    // list padding above) — otherwise the header floats
+                    // inside margins the rows no longer have. The vertical
+                    // start chooser keeps the inset like its rows.
+                    val sideMargin = if (com.hikari.app.tv.TvMode.isTv || startVerticalSheet) (4 * density).toInt() else 0
                     setMargins(sideMargin, topMargin, sideMargin, (4 * density).toInt())
                 }
                 return hv
@@ -9607,11 +9614,10 @@ class PlayerActivity : ComponentActivity() {
                     val src = sources[i]
                     val v = serverRow(
                         src = src,
-                        // In-player rows are always the horizontal reference
-                        // rows (the vertical setting only shapes the outside
-                        // server page) — the full-bleed sheet the report asked
-                        // for, in any orientation.
-                        horizontal = true,
+                        // Only the in-player reopen is always the horizontal
+                        // reference rows; the vertical start chooser reads
+                        // the compact rows the setting asks for.
+                        horizontal = !startVerticalSheet,
                         selected = playbackCommitted && i == currentIndex,
                         onPlay = {
                             startChoicePending = false
@@ -10110,9 +10116,11 @@ class PlayerActivity : ComponentActivity() {
             chooserScrollListener?.let { runCatching { verticalScrollerOf(list)?.viewTreeObserver?.removeOnScrollChangedListener(it) } }
             chooserScrollListener = null
             if (serverChooserDialog === dialog) serverChooserDialog = null
-            // No portrait lock is taken on open any more (the in-player
-            // sheet is always the horizontal page), so there is nothing to
-            // free here — playback keeps following the video.
+            // A start chooser that took an orientation lock frees it here —
+            // playback keeps following the video afterwards.
+            if (startMode && !playerTvRemote()) {
+                runCatching { requestedOrientation = SCREEN_ORIENTATION_UNSPECIFIED }
+            }
             // Closed without a pick (the back button, the ✕, a tap outside):
             // abandon the play entirely — do NOT fall back to auto-playing
             // (the report: backing out of the server list started playback
@@ -10286,13 +10294,12 @@ class PlayerActivity : ComponentActivity() {
         // the panel builds (the intent's plural header art, first = opening
         // frame). The loop starts after the show, further below.
         var artLoopUrls: List<String> = emptyList()
-       // The in-player sheet is always the horizontal full-bleed page now
-        // (the vertical setting only shapes the OUTSIDE server page): the
-        // rows float directly over the art, no dark box behind them, edge
-        // to edge in any orientation. TV keeps horizontal as before.
-        // `verticalSheet` stays only as the switch name the presentGlass
-        // call below reads — it is always false in-player.
-        val verticalSheet = false
+       // The in-player reopen is always the horizontal full-bleed page:
+        // the rows float directly over the art, no dark box behind them,
+        // edge to edge in any orientation. TV keeps horizontal as before.
+        // The start chooser follows the Server page layout setting instead
+        // (see startVerticalSheet above).
+        val verticalSheet = startVerticalSheet
         // Vertical opens portrait (see the startMode lock above): the rotation
         // lands asynchronously AFTER this point, so measuring the window now
         // would size a landscape-wide box that then hangs off the portrait

@@ -86,6 +86,7 @@ object AnimeCast {
             query (${'$'}search: String) {
               Media(search: ${'$'}search, type: ANIME, sort: SEARCH_MATCH) {
                 title { romaji english native }
+                synonyms
                 startDate { year }
                 characters(sort: [ROLE, RELEVANCE], perPage: $MAX) {
                   edges {
@@ -111,6 +112,48 @@ object AnimeCast {
         if (!confidentMatch(title, year, media)) return emptyList()
 
         val edges = media.optJSONObject("characters")?.optJSONArray("edges") ?: return emptyList()
+        return edgesToCast(edges)
+    }
+
+    /**
+     * The characters of one AniList media id, with no title match at all.
+     * The caller already vetted the id (it is the anime index's own pick for
+     * this item), so whatever comes back IS this show's cast — the strongest
+     * universal path: aliases and years cannot veto what needs no matching.
+     */
+    suspend fun charactersByMediaId(id: Int, cacheKey: String): List<CastMember> =
+        withContext(Dispatchers.IO) {
+            if (id <= 0) return@withContext emptyList()
+            val key = cacheKey.takeIf { it.isNotBlank() } ?: return@withContext emptyList()
+            memory[key]?.let { return@withContext it }
+            readDisk(key)?.let {
+                memory[key] = it
+                return@withContext it
+            }
+            val found = runCatching { fetchById(id) }.getOrDefault(emptyList())
+            memory[key] = found
+            writeDisk(key, found)
+            found
+        }
+
+    private fun fetchById(id: Int): List<CastMember> {
+        val idQuery = "query (" + "$" + "id: Int) { Media(id: " + "$" + "id, type: ANIME) { characters(sort: [ROLE, RELEVANCE], perPage: " + MAX + ") { edges { role node { name { full } image { medium } } voiceActors { name { full } } } } } }"
+        val body = JSONObject()
+            .put("query", idQuery)
+            .put("variables", JSONObject().put("id", id))
+            .toString()
+        val text = Http.postStringQuiet(
+            ENDPOINT,
+            body,
+            headers = mapOf("Accept" to "application/json"),
+        ) ?: return emptyList()
+        val idMedia = JSONObject(text).optJSONObject("data")?.optJSONObject("Media")
+            ?: return emptyList()
+        val idEdges = idMedia.optJSONObject("characters")?.optJSONArray("edges") ?: return emptyList()
+        return edgesToCast(idEdges)
+    }
+
+    private fun edgesToCast(edges: JSONArray): List<CastMember> {
         val out = ArrayList<CastMember>(MAX)
         for (i in 0 until edges.length()) {
             if (out.size >= MAX) break
@@ -139,14 +182,31 @@ object AnimeCast {
 
     /**
      * True when [media] really is the title that was asked for: one of its
-     * titles has to describe the same show as [title] (token containment or
-     * TMDB-grade titleScore 40+) and the years must not contradict each other.
+     * titles or synonyms has to describe the same show as [title] (exact
+     * equality, token containment or TMDB-grade titleScore 40+) and the
+     * years must not contradict each other (exact equality skips the year —
+     * a season entry and the show entry legitimately disagree by years).
      */
     private fun confidentMatch(title: String, year: Int?, media: JSONObject): Boolean {
         val t = media.optJSONObject("title")
-        val candidates = listOf("romaji", "english", "native")
-            .mapNotNull { t?.optString(it)?.trim()?.takeIf { s -> s.isNotBlank() } }
+        val candidates = ArrayList<String>(8)
+        if (t != null) {
+            for (k in listOf("romaji", "english", "native")) {
+                t.optString(k)?.trim()?.takeIf { s -> s.isNotBlank() }?.let { candidates += it }
+            }
+        }
+        // Aliases live in synonyms ("Renegade Immortal" for the "Xian Ni"
+        // entry): titles alone left every such pair unmatched.
+        media.optJSONArray("synonyms")?.let { arr ->
+            for (i in 0 until arr.length()) {
+                arr.optString(i)?.trim()?.takeIf { it.isNotBlank() }?.let { candidates += it }
+            }
+        }
         if (candidates.isEmpty()) return false
+        // Exact title equality IS the show — the year never vetoes it (a
+        // season entry and the show entry legitimately disagree by years).
+        val qn = title.trim()
+        if (qn.isNotEmpty() && candidates.any { it.trim().equals(qn, ignoreCase = true) }) return true
         val ok = candidates.any { sameShow(title, it) || com.hikari.app.data.TmdbMeta.titleScore(title, it) >= 40 }
         if (!ok) return false
         val found = media.optJSONObject("startDate")?.optInt("year")?.takeIf { it > 0 }
@@ -159,9 +219,9 @@ object AnimeCast {
     }
 
     /** True when [a] and [b] name the same show: every significant word of one
-     *  is present in the other. Shared words are what "Renegade Immortal" and
-     *  "Xian Ni" have in common — none — which is why an unmatched title falls
-     *  back to TMDB's voice-actor cast instead of guessing. */
+     *  is present in the other. Pure alias pairs with no shared words
+     *  ("Renegade Immortal" / "Xian Ni") match through the synonyms list
+     *  instead — see [confidentMatch]. */
     private fun sameShow(a: String, b: String): Boolean {
         val left = tokens(a)
         val right = tokens(b)

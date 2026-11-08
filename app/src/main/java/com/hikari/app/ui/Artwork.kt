@@ -48,7 +48,7 @@ object Artwork {
     private class Entry(val poster: String?, val backdrop: String?, val at: Long)
 
     private const val MISS_TTL_MS = 3L * 24L * 60L * 60L * 1000L
-    private const val MAX_ENTRIES = 800
+    private const val MAX_ENTRIES = 1500
     /** v7: v6 keys split row vs detail by exact title + type ("Dexter:
      *  Resurrection (Season 2)|2025|UNKNOWN" vs "...|SERIES"), so rows stuck
      *  on poster-only never saw the wide art the detail header found. v7
@@ -252,11 +252,13 @@ object Artwork {
             if (p == cur?.poster && b == cur?.backdrop) return
             val e = Entry(p, b, System.currentTimeMillis())
             memory[key] = e
-            // The detail banks title|year while a provider row for the same
-            // title usually carries no year: file the same art under the
-            // yearless companion too, or the row never finds what the detail
-            // settled (cinema cards stuck on blurred portrait).
-            companionKeyOf(item)?.let { memory[it] = e }
+            // File every variant together: rows name the same title with
+            // years, seasons, dubs and site suffixes the detail never
+            // carries (and vice versa) — any of those must find what the
+            // header settled, or cinema cards stay blurred portrait.
+            runCatching { keysFor(item) }.getOrNull()?.forEach { k ->
+                if (k != key) memory[k] = e
+            }
             saveCache()
             revision.value = revisionCounter.incrementAndGet()
         }
@@ -265,23 +267,20 @@ object Artwork {
     private fun lookup(item: MediaItem, pick: (Entry) -> String?): String? {
         // Snapshot read: repaints the calling cell when a lookup completes.
         revision.value
-        val key = keyOf(item) ?: return null
         loadOnce()
-        val e = memory[key]
-        // Exact key first: a yearful bank always beats a yearless one, so a
-        // remake never wears another year's art.
-        e?.let { pick(it)?.takeIf { s -> s.isNotBlank() }?.let { return it } }
-        // Then the companion half: the detail files title|year while a
-        // provider row asks title| (and vice versa) — read the other half
-        // the header/lookup also files (see noteHeaderArt, enqueue) before
-        // declaring a miss, or cinema cards never see the detail background.
-        companionKeyOf(item)?.let { ck ->
-            if (ck != key) {
-                memory[ck]?.let { ce ->
-                    pick(ce)?.takeIf { s -> s.isNotBlank() }?.let { return it }
-                }
+        val keys = runCatching { keysFor(item) }.getOrNull().orEmpty()
+        if (keys.isEmpty()) return null
+        // Every variant in order: the exact title+year first, so a remake
+        // never wears another year's art, then every other name the title
+        // is known under. A miss on one key must not stop the rest — that
+        // early return is what left rows blurred while a twin key held art.
+        for (key in keys) {
+            memory[key]?.let { e ->
+                pick(e)?.takeIf { s -> s.isNotBlank() }?.let { return it }
             }
         }
+        val key = keys.first()
+        val e = memory[key]
         if (e != null) {
             if (System.currentTimeMillis() - e.at < MISS_TTL_MS) return null
             // A stale miss: this title may have gained art since. Re-ask once.
@@ -305,17 +304,6 @@ object Artwork {
         return "$canon|$year"
     }
 
-    /** The yearless twin of [keyOf]: provider rows usually carry no year
-     *  while the detail banks title|year. Both halves are filed together
-     *  (see noteHeaderArt, enqueue) and both are read (see lookup), so a
-     *  cinema card finds the background its detail screen settled on. Null
-     *  when the item already is yearless (twin == key). */
-    private fun companionKeyOf(item: MediaItem): String? {
-        val canon = canonicalTitle(item.title) ?: return null
-        if (item.year == null || item.year <= 0) return null
-        return "$canon|"
-    }
-
     private val SEASON_BIT = Regex(
         "(?i)[\\(\\[]?\\b(?:season|series|part|cour|book|volume)\\s*\\d{1,3}\\b[\\)\\]]?" +
             "|\\b\\d{1,3}\\s*(?:st|nd|rd|th)\\s+season\\b" +
@@ -324,12 +312,54 @@ object Artwork {
     private val SPACES = Regex("\\s+")
 
     private fun canonicalTitle(raw: String): String? {
-        var t = raw.trim().lowercase()
+        // The PLAIN form of the title: provider rows decorate ("… Season 2",
+        // "Hindi Dubbed", "1080p", site suffixes) while the detail banks the
+        // bare name — keying the decorated form kept the two apart forever.
+        // queryVariants already computes every stripped form with the plainest
+        // last, so both sides land on it no matter who decorated what.
+        val plain = runCatching {
+            com.hikari.app.data.TmdbMeta.queryVariants(raw).lastOrNull()
+        }.getOrNull()?.takeIf { it.isNotBlank() } ?: raw
+        var t = plain.trim().lowercase()
         if (t.isBlank()) return null
         t = t.replace(SEASON_BIT, " ").replace(SPACES, " ").trim()
             .trim('-', '–', '—', ':', '：', '|', '.', ',', '_').trim()
         if (t.length < 2) t = raw.trim().lowercase()
         return t.takeIf { it.length >= 2 }
+    }
+
+    /** Every title this item is known under: the row title, the search title,
+     *  the original and every alternate. Two surfaces that spell the same
+     *  title differently must still share one entry, or the row never sees
+     *  what the detail banked. */
+    private fun titlesFor(item: MediaItem): List<String> {
+        val out = LinkedHashSet<String>()
+        out.add(item.title)
+        if (item.searchTitle.isNotBlank()) out.add(item.searchTitle)
+        if (item.originalTitle.isNotBlank()) out.add(item.originalTitle)
+        item.allTitles.forEach { if (it.isNotBlank()) out.add(it) }
+        return out.filter { it.isNotBlank() }.take(6)
+    }
+
+    /** Every cache key this item answers to: each known title in its plain
+     *  form, yearful and yearless. Lookup tries them all in order (exact
+     *  title+year first, so a remake never wears another year's art);
+     *  banking files them all, so whichever name a surface asks under, the
+     *  art is there. Bounded: at most a dozen keys per item. */
+    private fun keysFor(item: MediaItem): List<String> {
+        val out = ArrayList<String>(12)
+        val year = item.year?.takeIf { it > 0 }?.toString().orEmpty()
+        for (t in titlesFor(item)) {
+            val canon = runCatching { canonicalTitle(t) }.getOrNull() ?: continue
+            val yearful = "$canon|$year"
+            if (!out.contains(yearful)) out.add(yearful)
+            if (year.isNotEmpty()) {
+                val yearless = "$canon|"
+                if (!out.contains(yearless)) out.add(yearless)
+            }
+            if (out.size >= 12) break
+        }
+        return out
     }
 
     private fun enqueue(key: String, item: MediaItem) {
@@ -387,22 +417,20 @@ object Artwork {
                     }.getOrNull()
                 }
                 memory[key] = Entry(res?.first, res?.second, System.currentTimeMillis())
-                // File the yearless twin together with a yearful answer (and
-                // vice versa the twin lookup reads it): a row asking title|
-                // must see what a title|year lookup resolved, or cinema
-                // cards keep the blurred portrait after the detail healed.
-                runCatching { companionKeyOf(item) }.getOrNull()?.let { ck ->
-                    if (ck != key) {
-                        val cur = memory[ck]
-                        val e = Entry(
-                            res?.first ?: cur?.poster,
-                            res?.second ?: cur?.backdrop,
-                            System.currentTimeMillis(),
-                        )
-                        // Never let a thin re-read un-heal the twin: only
-                        // fill blanks, never overwrite settled art with nulls.
-                        if (e.poster != null || e.backdrop != null) memory[ck] = e
-                    }
+                // File EVERY variant together (fill-only): whichever name a
+                // surface asks under must see what this lookup resolved, or
+                // rows keep the blurred portrait after the detail healed.
+                // Never overwrite settled art with nulls: a thin re-read
+                // must not un-heal a twin.
+                runCatching { keysFor(item) }.getOrNull()?.forEach { k ->
+                    if (k == key) return@forEach
+                    val cur = memory[k]
+                    val merged = Entry(
+                        res?.first ?: cur?.poster,
+                        res?.second ?: cur?.backdrop,
+                        System.currentTimeMillis(),
+                    )
+                    if (merged.poster != null || merged.backdrop != null) memory[k] = merged
                 }
                 saveCache()
                 revision.value = revisionCounter.incrementAndGet()

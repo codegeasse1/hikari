@@ -1664,7 +1664,13 @@ class HikariApp : Application() {
                 // No HTTP response cache on the plugin client: plugin HTML/API responses are
             // dynamic, and a cached block/empty page poisoned catalog rows (persistent
             // "No items" while CloudStream, which sets no cache, shows content).
-                .addInterceptor { chain -> com.hikari.app.net.CloudflareVerifier.intercept(chain) }
+                // CloudStream parity on bot walls: the solving interceptor earns
+                // the clearance in a hidden WebView and retries with it — the
+                // same solve CloudStream's own killer runs — instead of only
+                // replaying a clearance the user earned by hand (all the
+                // reuse-only verifier did, which left every challenged
+                // catalogue row empty until a manual globe verify).
+                .addInterceptor(com.hikari.app.net.ExtensionCloudflareInterceptor { com.hikari.app.net.Http.UA })
                 .build()
 
             val kt = Class.forName("com.lagradost.cloudstream3.MainActivityKt")

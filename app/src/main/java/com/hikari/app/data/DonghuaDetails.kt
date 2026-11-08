@@ -307,7 +307,7 @@ object DonghuaDetails {
     private fun anilistSearch(query: String): org.json.JSONArray? {
         // Quiet client: a metadata service must never raise the Home screen's
         // "verification needed" banner (see AnimeCast — same rule).
-        val gql = "{\"query\":\"query (\$search: String) { Page(perPage: 8) { media(search: \$search, type: ANIME) { id title { romaji english native } description coverImage { extraLarge large } bannerImage averageScore episodes seasonYear studios { nodes { name } } } } }\",\"variables\":{\"search\":" + JSONObject.quote(query) + "}}"
+        val gql = "{\"query\":\"query (\$search: String) { Page(perPage: 8) { media(search: \$search, type: ANIME) { id title { romaji english native } synonyms description coverImage { extraLarge large } bannerImage averageScore episodes seasonYear studios { nodes { name } } } } }\",\"variables\":{\"search\":" + JSONObject.quote(query) + "}}"
         val text = Http.postStringQuiet("https://graphql.anilist.co", gql) ?: return null
         return runCatching {
             JSONObject(text).optJSONObject("data")
@@ -317,9 +317,23 @@ object DonghuaDetails {
     }
 
     private fun anilistNames(m: JSONObject): List<String> {
-        val t = m.optJSONObject("title") ?: return emptyList()
-        return listOf(t.optString("romaji"), t.optString("english"), t.optString("native"))
-            .filter { it.isNotBlank() && it != "null" }
+        // Every name AniList knows the show under: the three titles AND the
+        // synonyms. Alias pairs ("Renegade Immortal" / "Xian Ni", "A Mortal's
+        // Journey to Immortality" / "Fanren Xiu Xian Chuan") live in synonyms,
+        // and scoring titles alone left every such title unmatched.
+        val out = ArrayList<String>(8)
+        val t = m.optJSONObject("title")
+        if (t != null) {
+            for (k in listOf("romaji", "english", "native")) {
+                t.optString(k).takeIf { it.isNotBlank() && it != "null" }?.let { out += it }
+            }
+        }
+        m.optJSONArray("synonyms")?.let { arr ->
+            for (i in 0 until arr.length()) {
+                arr.optString(i)?.takeIf { it.isNotBlank() }?.let { out += it }
+            }
+        }
+        return out.distinct()
     }
 
     // ── Bangumi ──────────────────────────────────────────────────────────

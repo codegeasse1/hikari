@@ -1,3 +1,10 @@
+## 0.12.69 (continuous build only)
+
+- Server page layout split fixed: the start/download chooser follows the Vertical/Horizontal setting again (portrait box vs full-bleed rows with orientation lock/unlock) — only the in-player Source-pill reopen is always horizontal
+- Donghua/anime Characters universally: AniList synonyms are matched everywhere (alias pairs like Renegade Immortal / Xian Ni), the anime index's own id resolves characters with no title match at all, exact title equality skips the year veto, and decorated queries fan out into stripped variants
+- Cloudflare solved in background like CloudStream: the CS3 client now earns the clearance in a hidden WebView and retries with it (plus 200-status challenge pages detected), with an offscreen warm + re-read as last resort for empty rows — no manual globe verify needed
+- Cinema artwork keys universal: every known title spelling banks and reads under all year/yearless variants in plain form (decorations stripped on both sides), so rows find the banked landscape on first paint — not only after a detail open
+
 ## 0.12.68 (continuous build only)
 
 - Cinema rows read the detail background through a yearless twin key: rows that carry no year now find the wide art the detail banked under title|year (MobLand / VisionQuest / Make Me Tingle class) instead of sitting on blurred portraits

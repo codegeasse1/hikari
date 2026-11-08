@@ -753,6 +753,34 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                         catalogHealthy[config.id] = true
                         return@withContext direct
                     }
+                    // The page may have been a bot wall the client did not
+                    // recognise as one (no retry happened, so no clearance
+                    // was earned and the plugin parsed zero rows): be the
+                    // browser once, offscreen, then re-read the row past the
+                    // cache on the earned cookies. Cooldown-guarded per host,
+                    // so a genuinely empty tray costs one background load per
+                    // 90 seconds at most — CloudStream parity for the trays
+                    // a wall would otherwise keep empty.
+                    val warmUrl = mainPage.data.takeIf { it.startsWith("http") }
+                        ?: runCatching { a.mainUrl }.getOrNull()
+                    if (warmUrl != null && com.hikari.app.net.CloudflareSolver.warm(
+                            warmUrl, com.hikari.app.net.Http.UA, timeoutMs = 20_000L
+                        )
+                    ) {
+                        rows = try {
+                            fetchHomeRows(a, mainPage, page, force = true)
+                        } catch (e: Throwable) {
+                            if (e is CancellationException) throw e
+                            rows
+                        }
+                        row = rowFor(rows, ref.name, rowIndex)
+                        rowItems = row?.list.orEmpty().mapNotNull { it.toMediaItem() }
+                        if (rowItems.isNotEmpty()) {
+                            catalogErrors.remove(config.id)
+                            catalogHealthy[config.id] = true
+                            return@withContext rowItems
+                        }
+                    }
                     val rawCount = row?.list?.size ?: -1
                     // Answerable error: which plugin file, which mirror, how
                     // many rows the plugin served — "update/reinstall the
