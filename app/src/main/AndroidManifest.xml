@@ -77,6 +77,14 @@
         android:name="android.software.leanback"
         android:required="false" />
 
+    <!-- Dub audio: lets the "Phone voice" find the text-to-speech engines
+         installed on the phone (Android 11+ hides other apps unless declared). -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>
+
     <application
         android:name=".HikariApp"
         android:allowBackup="true"
@@ -432,6 +440,16 @@ android:name=".player.PlayerActivity"
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths" />
         </provider>
+
+        <!-- Dub audio: the offline neural voice (sherpa-onnx) runs in its own
+             helper process, so a crash or out-of-memory in the voice can never
+             close the player. HikariApp.onCreate skips the normal start-up in
+             this process (it is only a voice). -->
+        <service
+            android:name="com.hikari.app.dub.NeuralTtsService"
+            android:process=":neuraltts"
+            android:exported="false" />
+
     </application>
 
 </manifest>
