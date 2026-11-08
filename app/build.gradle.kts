@@ -20,12 +20,16 @@ android {
         applicationId = "com.hikari.app"
         minSdk = 24
        targetSdk = 34
-        versionCode = 455
-        versionName = "0.12.66"
+        versionCode = 454
+        versionName = "0.12.65"
         // CI injects the exact commit SHA the APK was built from, so the
         // in-app update checker can compare it against main's HEAD.
         val gitSha = System.getenv("GIT_SHA") ?: "unknown"
         buildConfigField("String", "GIT_SHA", "\"$gitSha\"")
+        // The repository the build runs in (owner/name). The cloned-voice model for Dub audio is
+        // kept in the "clone-model" release of that repository (.github/workflows/clone-model.yml).
+        val buildRepo = System.getenv("GITHUB_REPOSITORY") ?: ""
+        buildConfigField("String", "BUILD_REPO", "\"$buildRepo\"")
         // ---- Processors this app is built for ----
         // armeabi-v7a is the 32-bit arm build (older/cheaper phones) and
         // arm64-v8a is the 64-bit one (every modern phone). x86 and x86_64 are
