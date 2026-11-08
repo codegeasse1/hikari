@@ -51,6 +51,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -129,86 +130,91 @@ fun MediaRow(
     onItemFocus: ((MediaItem) -> Unit)? = null,
 ) {
     val style = rememberPosterStyle()
-    if (TvMode.current()) {
-        com.hikari.app.tv.TvCinemaRow(title = title, providerName = providerName, items = items, onOpen = onClick, onShowAll = if (showViewAll) onShowAll else null, vertical = !style.isCinema(true), keeperKey = keeperKey, onItemFocus = onItemFocus)
-        return
-    }
-    if (style.isCinema(false)) {
-        com.hikari.app.tv.TvCinemaRow(title = title, providerName = providerName, items = items, onOpen = onClick, onShowAll = if (showViewAll) onShowAll else null, keeperKey = keeperKey)
-        return
-    }
-    Column(Modifier.padding(top = 20.dp)) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    // Catalog/row names come from the extensions, so they are
-                    // English strings from outside the app: tr() translates the
-                    // ones the i18n files know and leaves the rest untouched.
-                    tr(title),
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                // Blank means "the row does not need to say where it came from":
-                // a folder's own page already says which folder this is (its
-                // header), so repeating the folder's name above every row was
-                // noise the user asked to lose — "we created netflix folder we
-                // know we are on it". Rows that DO mix several folders (the
-                // tab view's "All") still pass a name and still draw it.
-                if (providerName.isNotBlank()) {
-                    Text(
-                        providerName.uppercase(),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                }
-            }
-            if (onShowAll != null && showViewAll) {
-                TextButton(onClick = onShowAll) {
-                    Text(tr("Show All"), fontWeight = FontWeight.SemiBold)
-                }
-            }
+    // Rebuilt (never reused) whenever the poster shape changes: a Cinema
+    // 16:9 pick redraws every shelf as landscape on the next frame, and no
+    // portrait row can survive the switch (or the way back).
+    key(style.posterType) {
+        if (TvMode.current()) {
+            com.hikari.app.tv.TvCinemaRow(title = title, providerName = providerName, items = items, onOpen = onClick, onShowAll = if (showViewAll) onShowAll else null, vertical = !style.isCinema(true), keeperKey = keeperKey, onItemFocus = onItemFocus)
+            return@key
         }
-        // The style is read ONCE for the row and handed to every cell. Read per
-        // cell it opened one DataStore collection per poster on screen, so a
-        // Home feed with three rows of twelve visible cards had ~36 live
-        // subscriptions to the same preferences, all re-mapping on every
-        // settings write and all allocating inside the scroll path. One read per
-        // row is the same look with a fraction of the work.
-        // (Read once at the top of MediaRow and shared by every card below.)
-        // A row's items come from an extension, and an extension is free to
-        // list the same title twice (or to hand back two entries that share an
-        // id). Compose does not warn about a duplicated key — it throws, taking
-        // the whole screen with it — so the key is the item's own identity, with
-        // literal repeats dropped before they are drawn. Deduped ONCE per row
-        // rather than on every recomposition of it (a row recomposes on every
-        // scroll step): this is a fresh list otherwise.
-        val uniqueItems = rememberVisibleItems(items)
-        // A row's horizontal scroll dies with the page unless it is kept: in
-        // a one-row folder the row IS the browsing position, and losing it
-        // read as "Back jumps". Keys re-find the exact poster when the row
-        // reloads in a different order (see ScrollKeeper).
-        val rowKeys = remember(uniqueItems) { uniqueItems.map { it.uniqueId } }
-        // The adult-content gate is applied where the row is DRAWN (see
-        // [NsfwGate] and [rememberVisibleItems]): every shelf in the app funnels
-        // through this composable — Home, collections, the detail page's
-        // shelves — and applying it here rather than in the stores is what makes
-        // the Settings switch take effect on the next frame, with no re-fetch and
-        // no stale cached row to trip over.
-        LazyRow(
-            state = if (keeperKey.isBlank()) androidx.compose.foundation.lazy.rememberLazyListState()
-            else keptListState(keeperKey, itemKeys = rowKeys),
-            contentPadding = PaddingValues(horizontal = 16.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            items(uniqueItems, key = { it.uniqueId }) { item ->
-                PosterCard(item, style, onClick = { onClick(item) }, onQuickPlay = onQuickPlay)
+        if (style.isCinema(false)) {
+            com.hikari.app.tv.TvCinemaRow(title = title, providerName = providerName, items = items, onOpen = onClick, onShowAll = if (showViewAll) onShowAll else null, keeperKey = keeperKey)
+            return@key
+        }
+        Column(Modifier.padding(top = 20.dp)) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        // Catalog/row names come from the extensions, so they are
+                        // English strings from outside the app: tr() translates the
+                        // ones the i18n files know and leaves the rest untouched.
+                        tr(title),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    // Blank means "the row does not need to say where it came from":
+                    // a folder's own page already says which folder this is (its
+                    // header), so repeating the folder's name above every row was
+                    // noise the user asked to lose — "we created netflix folder we
+                    // know we are on it". Rows that DO mix several folders (the
+                    // tab view's "All") still pass a name and still draw it.
+                    if (providerName.isNotBlank()) {
+                        Text(
+                            providerName.uppercase(),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+                if (onShowAll != null && showViewAll) {
+                    TextButton(onClick = onShowAll) {
+                        Text(tr("Show All"), fontWeight = FontWeight.SemiBold)
+                    }
+                }
+            }
+            // The style is read ONCE for the row and handed to every cell. Read per
+            // cell it opened one DataStore collection per poster on screen, so a
+            // Home feed with three rows of twelve visible cards had ~36 live
+            // subscriptions to the same preferences, all re-mapping on every
+            // settings write and all allocating inside the scroll path. One read per
+            // row is the same look with a fraction of the work.
+            // (Read once at the top of MediaRow and shared by every card below.)
+            // A row's items come from an extension, and an extension is free to
+            // list the same title twice (or to hand back two entries that share an
+            // id). Compose does not warn about a duplicated key — it throws, taking
+            // the whole screen with it — so the key is the item's own identity, with
+            // literal repeats dropped before they are drawn. Deduped ONCE per row
+            // rather than on every recomposition of it (a row recomposes on every
+            // scroll step): this is a fresh list otherwise.
+            val uniqueItems = rememberVisibleItems(items)
+            // A row's horizontal scroll dies with the page unless it is kept: in
+            // a one-row folder the row IS the browsing position, and losing it
+            // read as "Back jumps". Keys re-find the exact poster when the row
+            // reloads in a different order (see ScrollKeeper).
+            val rowKeys = remember(uniqueItems) { uniqueItems.map { it.uniqueId } }
+            // The adult-content gate is applied where the row is DRAWN (see
+            // [NsfwGate] and [rememberVisibleItems]): every shelf in the app funnels
+            // through this composable — Home, collections, the detail page's
+            // shelves — and applying it here rather than in the stores is what makes
+            // the Settings switch take effect on the next frame, with no re-fetch and
+            // no stale cached row to trip over.
+            LazyRow(
+                state = if (keeperKey.isBlank()) androidx.compose.foundation.lazy.rememberLazyListState()
+                else keptListState(keeperKey, itemKeys = rowKeys),
+                contentPadding = PaddingValues(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                items(uniqueItems, key = { it.uniqueId }) { item ->
+                    PosterCard(item, style, onClick = { onClick(item) }, onQuickPlay = onQuickPlay)
+                }
             }
         }
     }
