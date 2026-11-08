@@ -158,6 +158,7 @@ import com.hikari.app.data.RatingVerdict
 import com.hikari.app.data.Ratings
 import com.hikari.app.data.StreamCache
 import com.hikari.app.data.StreamSource
+import com.hikari.app.download.BatchServerPlanner
 import com.hikari.app.data.TitleDetails
 import com.hikari.app.data.TitleExtras
 import com.hikari.app.data.TitleRating
@@ -3690,6 +3691,17 @@ fun DetailScreen(
     // confines the batch to the title's own extension. Set when the search
     // starts and threaded through every re-lookup of the chain.
     var dlOriginOnly by remember { mutableStateOf(false) }
+    // Smart batch picker state. [dlSwept] = episodes whose server lookup has
+    // finished (so "no server" can be told apart from "not checked yet"),
+    // [dlPickAudio]/[dlPickHeight] = the audio / resolution the user filtered
+    // the picker by ("" / 0 = any), [dlOnlyFull] = hide servers that are
+    // missing some of the selected episodes, [dlAutoFill] = Auto mode: an
+    // episode the picked server lacks may come from any other server.
+    var dlSwept by remember { mutableStateOf(setOf<String>()) }
+    var dlPickAudio by remember { mutableStateOf("") }
+    var dlPickHeight by remember { mutableStateOf(0) }
+    var dlOnlyFull by remember { mutableStateOf(true) }
+    var dlAutoFill by remember { mutableStateOf(false) }
     // Episodes waiting on the scope question (see showDlScope below).
     var dlScopePending by remember { mutableStateOf(listOf<Episode>()) }
     var showDlScope by remember { mutableStateOf(false) }
@@ -3798,38 +3810,42 @@ fun DetailScreen(
         dlBusy = false
         dlMsg = null
     }
-   fun resolveFirstServer(eps: List<Episode>, originOnly: Boolean) {
+    fun resolveFirstServer(eps: List<Episode>, originOnly: Boolean) {
         if (eps.isEmpty() || dlBusy) return
         dlLookupJob?.cancel()
         dlTargets = eps
         dlCache.clear()
+        dlSwept = emptySet()
+        dlPickAudio = ""
+        dlPickHeight = 0
+        dlOnlyFull = true
+        dlAutoFill = false
         dlOriginOnly = originOnly
         val gen = dlGen + 1
         dlGen = gen
         // Same downloadable rule the sweep filters by (see serversForBatch).
-        fun dlOk(s: StreamSource) =
-            !s.isTorrent && !s.externalUrl && s.ytId.isNullOrBlank() && s.url.startsWith("http", ignoreCase = true)
+        fun dlOk(s: StreamSource) = BatchServerPlanner.isDownloadable(s)
         val seen = LinkedHashSet<String>()
         val union = ArrayList<StreamSource>()
         dlServers = emptyList()
-        dlMsg = "Finding servers (1/" + eps.size + ")…"
+        dlMsg = "Finding servers (1/" + eps.size + ")\u2026"
         dlBusy = false
         dlSearching = true
         showDlChoice = false
         showDlSelect = false
         showDlServer = true
-    fun publishLive(servers: List<StreamSource>) {
-        if (gen != dlGen) return
-        var changed = false
-        for (s in servers) {
-            // The picker lists only what can actually download (same rule
-            // the sweep filters by): a torrent, external or blank-URL row
-            // used to sit in the picker and then toast "No downloadable
-            // server found" the moment it was picked.
-            if (!dlOk(s)) continue
-            // One row per server, not one row per episode carrying it:
-            // the same mirror repeats across episodes with a different
-            // URL, and printing it N times is what made a small sweep
+        fun publishLive(servers: List<StreamSource>) {
+            if (gen != dlGen) return
+            var changed = false
+            for (s in servers) {
+                // The picker lists only what can actually download (same rule
+                // the sweep filters by): a torrent, external or blank-URL row
+                // used to sit in the picker and then toast "No downloadable
+                // server found" the moment it was picked.
+                if (!dlOk(s)) continue
+                // One row per server, not one row per episode carrying it:
+                // the same mirror repeats across episodes with a different
+                // URL, and printing it N times is what made a small sweep
                 // look like dozens of rows.
                 if (seen.add(s.providerId + "|" + s.name)) {
                     union.add(s)
@@ -3838,34 +3854,40 @@ fun DetailScreen(
             }
             if (changed) {
                 dlServers = ArrayList(union)
-                dlMsg = "Found " + union.size + " server" + (if (union.size == 1) "" else "s") + " — still searching…"
+                dlMsg = "Found " + union.size + " server" + (if (union.size == 1) "" else "s") + " \u2014 still searching\u2026"
             }
         }
         var job: Job? = null
         job = scope.launch {
             try {
-                // Bounded per episode (see serversForBatch), and live:
-                // every server the running lookup finds is published
-                // through [publishLive] while slower providers — and later
-                // episodes — keep searching behind it.
-               suspend fun sweep(useOrigin: Boolean) {
-                    for ((i, ep) in eps.withIndex()) {
+                // Bounded per episode (see serversForBatch), and live: every
+                // server the running lookup finds is published through
+                // [publishLive] while slower providers - and later episodes -
+                // keep searching behind it. Every finished episode is marked
+                // in [dlSwept] so the picker can tell "no server for this
+                // episode" (searched, nothing) from "not checked yet".
+                suspend fun sweep(list: List<Episode>, useOrigin: Boolean) {
+                    for (ep in list) {
                         if (gen != dlGen) return
-                        if (union.isEmpty()) {
-                            dlMsg = "Finding servers (" + (i + 1) + "/" + eps.size + ")…"
-                        }
                         val epKey = dlEpKey(ep)
+                        if (union.isEmpty()) {
+                            dlMsg = "Finding servers (" + (dlSwept.size + 1) + "/" + eps.size + ")\u2026"
+                        }
                         val servers = runCatching {
                             vm.serversForBatch(batchItem, ep, useOrigin, onServers = { prog ->
-                                dlCache[epKey] = prog
+                                if (gen == dlGen) dlCache[epKey] = prog
                                 withContext(Dispatchers.Main) { publishLive(prog) }
                             })
                         }.getOrDefault(emptyList())
+                        // A cancelled / superseded search must not write into
+                        // the cache its replacement now owns.
+                        if (gen != dlGen) return
                         if (servers.isNotEmpty()) dlCache[epKey] = servers
                         publishLive(servers)
+                        dlSwept = dlSwept + epKey
                     }
                 }
-                sweep(originOnly)
+                sweep(eps, originOnly)
                 if (gen != dlGen) return@launch
                 if (union.isEmpty() && originOnly) {
                     // "This extension" has nothing for this title (the origin
@@ -3873,8 +3895,19 @@ fun DetailScreen(
                     // sweep before giving up, so a dead origin never sinks
                     // the batch picker.
                     dlOriginOnly = false
-                    dlMsg = "This extension has nothing — searching all extensions…"
-                    sweep(false)
+                    dlMsg = "This extension has nothing \u2014 searching all extensions\u2026"
+                    dlSwept = emptySet()
+                    sweep(eps, false)
+                } else if (originOnly) {
+                    // The origin answered for SOME episodes but not all (the
+                    // "E17 has no server" case): look for just the gaps on
+                    // every other extension, so a missing episode is filled
+                    // from wherever it exists instead of failing at queue time.
+                    val gaps = eps.filter { dlCache[dlEpKey(it)].isNullOrEmpty() }
+                    if (gaps.isNotEmpty()) {
+                        dlMsg = "Looking for " + gaps.size + " missing episode" + (if (gaps.size == 1) "" else "s") + " on other extensions\u2026"
+                        sweep(gaps, false)
+                    }
                 }
                 if (gen != dlGen) return@launch
                 if (union.isEmpty()) {
@@ -3905,8 +3938,12 @@ fun DetailScreen(
     // background with no modal: each episode lands in the Downloads section
     // the moment it is queued, where it can be paused, resumed or deleted,
     // and the app stays usable throughout.
-    fun confirmDlServer(srv: StreamSource) {
+    fun confirmDlServer(srv: StreamSource, auto: Boolean = false) {
         if (dlBusy) return
+        // Auto = an episode the picked server lacks may come from ANY other
+        // server. With an audio filter active the language is locked instead,
+        // so a Hindi batch never silently turns English.
+        dlAutoFill = auto && dlPickAudio.isBlank()
         // The tap wins over the tail: stop appending the moment a server is
         // picked, so the finished union can never pop the picker back over the
         // destination/quality questions. The queue pass re-resolves every
@@ -3946,45 +3983,62 @@ fun DetailScreen(
         showDlAudio = false
         val eps = dlTargets
         if (eps.isEmpty()) return
+        // Auto mode may swap the audio language for an episode the picked
+        // server lacks; otherwise the language is locked (see bestForEpisode).
+        val strictAudio = !dlAutoFill
         fun epTag(ep: Episode): String =
             if (ep.season > 1) "S" + ep.season + " E" + ep.number else "E" + ep.number
-        runCatching { android.widget.Toast.makeText(context, "Queueing " + eps.size + " episodes… see Downloads to manage them.", android.widget.Toast.LENGTH_SHORT).show() }
+        runCatching { android.widget.Toast.makeText(context, "Queueing " + eps.size + " episodes\u2026 see Downloads to manage them.", android.widget.Toast.LENGTH_SHORT).show() }
+        // Episodes whose servers are already known go first, so one episode
+        // with no server can never hold up the ones that have one. (Stable
+        // sort: the original order is kept inside each group.)
+        val ordered = eps.sortedBy { if (dlCache[dlEpKey(it)].isNullOrEmpty()) 1 else 0 }
         scope.launch {
             dlBusy = true
             var done = 0
-            val failed = ArrayList<String>()
+            val failedEps = ArrayList<Pair<Int, Int>>()
+            val swappedEps = ArrayList<Pair<Int, Int>>()
             try {
-               for (ep in eps) {
+                for (ep in ordered) {
                     // The picker's own answers first: reuse the cached per-episode
                     // servers so a picked entry can never miss just because the
-                   // second search timed out. Only episodes with no cache hit
-                    // pay for a fresh lookup, with the same origin-only fallback.
+                    // second search timed out.
                     val epCacheKey = dlEpKey(ep)
-                    var servers = dlCache[epCacheKey]?.filter { s -> !s.isTorrent && !s.externalUrl && s.ytId.isNullOrBlank() && s.url.startsWith("http", ignoreCase = true) }.orEmpty()
-                    if (servers.isEmpty()) {
+                    var servers = dlCache[epCacheKey]?.filter { s -> BatchServerPlanner.isDownloadable(s) }.orEmpty()
+                    // An episode the picker already searched (and found nothing
+                    // for) is not searched again: the picker told the user it
+                    // is unavailable, and a second 100 s sweep per missing
+                    // episode is what used to stall the whole queue. Only an
+                    // episode the picker never reached (search stopped early)
+                    // pays for a fresh lookup, with the same fallbacks.
+                    if (servers.isEmpty() && epCacheKey !in dlSwept) {
                         servers = runCatching { vm.serversForBatch(batchItem, ep, dlOriginOnly) }.getOrDefault(emptyList())
+                        if (servers.isEmpty()) {
+                            runCatching { delay(1500L) }
+                            servers = runCatching { vm.serversForBatch(batchItem, ep, dlOriginOnly) }.getOrDefault(emptyList())
+                        }
+                        if (servers.isEmpty() && dlOriginOnly) {
+                            // Origin-only scope found nothing for this episode: fall
+                            // back to the all-extensions sweep before giving up, so
+                            // one missing title doesn't sink the batch.
+                            runCatching { com.hikari.app.data.Logs.log("Download", "batch origin-only empty \u2014 sweeping all extensions") }
+                            servers = runCatching { vm.serversForBatch(batchItem, ep, false) }.getOrDefault(emptyList())
+                        }
+                        if (servers.isNotEmpty()) dlCache[epCacheKey] = servers
                     }
                     if (servers.isEmpty()) {
-                        runCatching { delay(1500L) }
-                        servers = runCatching { vm.serversForBatch(batchItem, ep, dlOriginOnly) }.getOrDefault(emptyList())
-                    }
-                    if (servers.isEmpty() && dlOriginOnly) {
-                        // Origin-only scope found nothing for this episode: fall
-                        // back to the all-extensions sweep before giving up, so
-                        // one missing title doesn't sink the batch.
-                        runCatching { com.hikari.app.data.Logs.log("Download", "batch origin-only empty — sweeping all extensions") }
-                        servers = runCatching { vm.serversForBatch(batchItem, ep, false) }.getOrDefault(emptyList())
-                    }
-                    if (servers.isNotEmpty()) dlCache[epCacheKey] = servers
-                    if (servers.isEmpty()) {
-                        failed.add(epTag(ep))
+                        failedEps.add(ep.season to ep.number)
                         continue
                     }
-                    val src = matchDlServer(servers, srv)
+                    // Strict per-episode match: same server, then same-named
+                    // mirror, then another server with the SAME audio. Never a
+                    // random server (that was the silent Hindi -> English swap).
+                    val src = BatchServerPlanner.bestForEpisode(servers, srv, strictAudio)
                     if (src == null) {
-                        failed.add(epTag(ep))
+                        failedEps.add(ep.season to ep.number)
                         continue
                     }
+                    if (!BatchServerPlanner.sameServer(src, srv)) swappedEps.add(ep.season to ep.number)
                     val label = epTag(ep)
                     // The task id is per episode (see enqueueBatch above): a
                     // blank provider episode id collapsed the whole batch onto
@@ -4012,10 +4066,10 @@ fun DetailScreen(
                         createdAt = System.currentTimeMillis()
                     )
                     // enqueue() posts to its own scope and never throws
-                    // synchronously, so the count is gated on the handover —
+                    // synchronously, so the count is gated on the handover -
                     // and every skip is named, never silent.
                     if (runCatching { com.hikari.app.download.DownloadsRepository.enqueue(context, task) }.isSuccess) done++
-                    else failed.add(label)
+                    else failedEps.add(ep.season to ep.number)
                 }
             } finally {
                 // The queueing pass must never strand the busy flag (a throw
@@ -4023,16 +4077,22 @@ fun DetailScreen(
                 // lookup's stuck state above).
                 dlBusy = false
             }
+            val failedTxt = BatchServerPlanner.compactEpisodes(failedEps)
+            val swappedTxt = BatchServerPlanner.compactEpisodes(swappedEps)
             runCatching {
                 android.widget.Toast.makeText(
                     context,
                     when {
-                        done > 0 && failed.isEmpty() ->
-                            "Queued " + done + " download" + (if (done == 1) "" else "s") + " from " + srv.name + " — see Downloads."
-                        done > 0 ->
-                            "Queued " + done + " of " + eps.size + " — no server for " + failed.take(4).joinToString(", ") + (if (failed.size > 4) "…" else "") + "."
-                        else ->
-                            "No episodes could be queued" + (if (failed.isNotEmpty()) " — no server for " + failed.take(3).joinToString(", ") + (if (failed.size > 3) "…" else "") + "." else ".")
+                        done == 0 ->
+                            "No episodes could be queued" + (if (failedEps.isNotEmpty()) " \u2014 no matching server for " + failedTxt + "." else ".")
+                        failedEps.isEmpty() && swappedEps.isEmpty() ->
+                            "Queued " + done + " download" + (if (done == 1) "" else "s") + " from " + srv.name + " \u2014 see Downloads."
+                        else -> {
+                            var m = "Queued " + done + " of " + eps.size
+                            if (swappedEps.isNotEmpty()) m += " (" + swappedTxt + " from another server)"
+                            if (failedEps.isNotEmpty()) m += " \u2014 not available: " + failedTxt
+                            "$m."
+                        }
                     },
                     android.widget.Toast.LENGTH_LONG
                 ).show()
@@ -4242,30 +4302,168 @@ fun DetailScreen(
             else androidx.compose.material3.AlertDialogDefaults.containerColor,
             title = {
                 androidx.compose.material3.Text(
-                    "Pick server (" + dlTargets.size + " episodes)",
+                    "Pick audio & server (" + dlTargets.size + " episodes)",
                     color = if (tvDl) com.hikari.app.tv.TvDesktop.TextPrimary
                     else androidx.compose.material3.AlertDialogDefaults.titleContentColor,
                 )
             },
             text = {
-                Column(Modifier.heightIn(max = 420.dp).fillMaxWidth()) {
+                // Everything below is derived from the per-episode cache the
+                // sweep fills, so it updates live while the search runs: which
+                // servers exist, for WHICH of the selected episodes, and which
+                // audio / resolution choices are on offer.
+                val epKeys = dlTargets.map { dlEpKey(it) }
+                val allFl = BatchServerPlanner.buildFlavours(epKeys, dlCache)
+                val audioOpts = allFl.map { it.audio }.filter { it.isNotBlank() }.distinct()
+                val heightOpts = allFl.map { it.height }.filter { it > 0 }.distinct().sortedDescending()
+                val scoped = BatchServerPlanner.filter(allFl, dlPickAudio, dlPickHeight)
+                val fullFl = scoped.filter { it.covered.size == epKeys.size }
+                val shown = if (dlOnlyFull && fullFl.isNotEmpty()) fullFl else scoped
+                val availKeys = BatchServerPlanner.availableEpisodes(scoped)
+                val availEps = dlTargets.filter { dlEpKey(it) in availKeys }
+                val missingEps = dlTargets.filter { dlEpKey(it) in dlSwept && dlEpKey(it) !in availKeys }
+                val uncheckedEps = dlTargets.filter { dlEpKey(it) !in dlSwept }
+                val mutedColor = if (tvDl) com.hikari.app.tv.TvDesktop.TextMuted
+                else MaterialTheme.colorScheme.onSurfaceVariant
+                val primaryColor = if (tvDl) com.hikari.app.tv.TvDesktop.TextPrimary
+                else MaterialTheme.colorScheme.primary
+                fun pairs(l: List<Episode>) = l.map { it.season to it.number }
+                Column(Modifier.heightIn(max = 460.dp).fillMaxWidth()) {
                     if (dlSearching) {
+                        val dm = dlMsg
                         androidx.compose.material3.Text(
-                            if (dlServers.isEmpty()) "Finding servers…"
-                            else "Found " + dlServers.size + " server" + (if (dlServers.size == 1) "" else "s") + " — still searching…",
+                            if (dm != null && (dm.startsWith("Looking") || dm.startsWith("This extension"))) dm
+                            else "Checking episodes " + dlSwept.size + "/" + epKeys.size + " \u2014 " +
+                                allFl.size + " server" + (if (allFl.size == 1) "" else "s") + " so far\u2026",
                             style = MaterialTheme.typography.bodySmall,
-                            color = if (tvDl) com.hikari.app.tv.TvDesktop.TextMuted
-                            else MaterialTheme.colorScheme.primary,
+                            color = primaryColor,
                         )
-                        if (dlServers.isNotEmpty()) {
+                        if (allFl.isNotEmpty()) {
                             androidx.compose.material3.TextButton(onClick = { cancelDlLookup() }) {
                                 androidx.compose.material3.Text("Stop search")
                             }
                         }
                         Spacer(Modifier.height(4.dp))
                     }
+                    // 1) Audio first, then resolution: the list below only
+                    //    shows servers (and episodes) that match.
+                    if (audioOpts.size > 1) {
+                        androidx.compose.material3.Text("Audio", style = MaterialTheme.typography.labelSmall, color = mutedColor)
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            item {
+                                androidx.compose.material3.FilterChip(
+                                    selected = dlPickAudio.isBlank(),
+                                    onClick = { dlPickAudio = "" },
+                                    label = { androidx.compose.material3.Text("Any") },
+                                )
+                            }
+                            items(audioOpts, key = { "a|" + it }) { a ->
+                                androidx.compose.material3.FilterChip(
+                                    selected = dlPickAudio.equals(a, ignoreCase = true),
+                                    onClick = { dlPickAudio = if (dlPickAudio.equals(a, ignoreCase = true)) "" else a },
+                                    label = { androidx.compose.material3.Text(a) },
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(4.dp))
+                    }
+                    if (heightOpts.size > 1) {
+                        androidx.compose.material3.Text("Quality", style = MaterialTheme.typography.labelSmall, color = mutedColor)
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            item {
+                                androidx.compose.material3.FilterChip(
+                                    selected = dlPickHeight <= 0,
+                                    onClick = { dlPickHeight = 0 },
+                                    label = { androidx.compose.material3.Text("Any") },
+                                )
+                            }
+                            items(heightOpts, key = { "h|" + it }) { h ->
+                                androidx.compose.material3.FilterChip(
+                                    selected = dlPickHeight == h,
+                                    onClick = { dlPickHeight = if (dlPickHeight == h) 0 else h },
+                                    label = { androidx.compose.material3.Text(if (h >= 2160) "4K" else h.toString() + "p") },
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(4.dp))
+                    }
+                    // 2) Which episodes this audio / quality can actually
+                    //    deliver - told BEFORE anything is queued.
+                    if (allFl.isNotEmpty()) {
+                        if (availEps.isNotEmpty()) {
+                            androidx.compose.material3.Text(
+                                "Available (" + availEps.size + "): " + BatchServerPlanner.compactEpisodes(pairs(availEps)),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = primaryColor,
+                            )
+                        }
+                        if (missingEps.isNotEmpty()) {
+                            androidx.compose.material3.Text(
+                                "Not available (" + missingEps.size + "): " + BatchServerPlanner.compactEpisodes(pairs(missingEps)),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                        if (!dlSearching && uncheckedEps.isNotEmpty()) {
+                            androidx.compose.material3.Text(
+                                "Not checked (" + uncheckedEps.size + "): " + BatchServerPlanner.compactEpisodes(pairs(uncheckedEps)) + " \u2014 looked up when queueing",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = mutedColor,
+                            )
+                        }
+                        Spacer(Modifier.height(4.dp))
+                    }
+                    if (!dlSearching && allFl.isNotEmpty() && scoped.isEmpty()) {
+                        androidx.compose.material3.Text(
+                            "No server matches this audio / quality \u2014 change the filter above.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = mutedColor,
+                        )
+                    } else if (!dlSearching && scoped.isNotEmpty() && fullFl.isEmpty()) {
+                        androidx.compose.material3.Text(
+                            "No single server has every episode. Auto fills the gaps from other servers.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = mutedColor,
+                        )
+                    } else if (fullFl.isNotEmpty() && scoped.size > fullFl.size) {
+                        androidx.compose.material3.TextButton(onClick = { dlOnlyFull = !dlOnlyFull }) {
+                            androidx.compose.material3.Text(
+                                if (dlOnlyFull) "Show servers missing episodes (" + (scoped.size - fullFl.size) + ")"
+                                else "Only servers with all episodes"
+                            )
+                        }
+                    }
                     LazyColumn(Modifier.heightIn(max = 340.dp).fillMaxWidth()) {
-                        items(dlServers, key = { it.providerId + "|" + it.name }) { srv ->
+                        // 3) Auto: the best-covering server first, and any
+                        //    episode it lacks comes from another available
+                        //    server - one tap, no per-episode failures.
+                        if (shown.isNotEmpty()) {
+                            item(key = "auto") {
+                                val top = shown.first()
+                                Column(
+                                    Modifier.fillMaxWidth()
+                                        .clickable(enabled = !dlBusy) { confirmDlServer(top.sample, auto = true) }
+                                        .padding(vertical = 8.dp)
+                                ) {
+                                    androidx.compose.material3.Text(
+                                        "Auto \u2014 best server for each episode",
+                                        maxLines = 1,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = primaryColor,
+                                    )
+                                    androidx.compose.material3.Text(
+                                        (if (dlPickAudio.isNotBlank()) dlPickAudio + " audio \u00b7 " else "") +
+                                            "starts with " + top.sample.name,
+                                        maxLines = 2,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = mutedColor,
+                                    )
+                                }
+                            }
+                        }
+                        items(shown, key = { it.key }) { f ->
+                            val srv = f.sample
+                            val missing = epKeys.size - f.covered.size
                             Column(Modifier.fillMaxWidth().clickable(enabled = !dlBusy) { confirmDlServer(srv) }.padding(vertical = 8.dp)) {
                                 androidx.compose.material3.Text(
                                     srv.name,
@@ -4277,8 +4475,15 @@ fun DetailScreen(
                                     sub,
                                     maxLines = 1,
                                     style = MaterialTheme.typography.bodySmall,
-                                    color = if (tvDl) com.hikari.app.tv.TvDesktop.TextMuted
-                                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    color = mutedColor,
+                                )
+                                androidx.compose.material3.Text(
+                                    if (missing <= 0) "All " + epKeys.size + " episodes"
+                                    else f.covered.size.toString() + " of " + epKeys.size + " episodes \u2014 missing " +
+                                        BatchServerPlanner.compactEpisodes(pairs(dlTargets.filter { dlEpKey(it) !in f.covered })),
+                                    maxLines = 2,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (missing <= 0) primaryColor else mutedColor,
                                 )
                             }
                         }
