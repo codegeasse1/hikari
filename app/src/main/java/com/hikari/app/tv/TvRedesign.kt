@@ -130,6 +130,10 @@ fun TvCinemaCard(
   onClick: () -> Unit,
   modifier: Modifier = Modifier,
   cardWidth: androidx.compose.ui.unit.Dp = 280.dp,
+  /** Title/subtitle colours. TV white by default; a phone caller on a light
+   *  theme passes its own surface colours instead. */
+  titleColor: Color = TvDesktop.TextPrimary,
+  subColor: Color = TvDesktop.TextMuted,
 ) {
   // A cinema card is ALWAYS a full-bleed 16:9 frame, but only genuinely
   // wide art paints SHARP in it (the reference's own contract: TMDB
@@ -176,12 +180,12 @@ fun TvCinemaCard(
         }
       }
     }
-    Text(item.title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, color = TvDesktop.TextPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 8.dp, start = 2.dp, end = 2.dp))
+    Text(item.title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, color = titleColor, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 8.dp, start = 2.dp, end = 2.dp))
     val sub = buildList {
       item.year?.let { add(it.toString()) }
       if (item.genres.isNotEmpty()) add(item.genres.first())
     }.joinToString(" • ")
-    Text(sub.ifBlank { " " }, style = MaterialTheme.typography.bodySmall, color = TvDesktop.TextMuted, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 2.dp, end = 2.dp))
+    Text(sub.ifBlank { " " }, style = MaterialTheme.typography.bodySmall, color = subColor, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 2.dp, end = 2.dp))
   }
 }
 
