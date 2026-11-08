@@ -89,6 +89,9 @@ class DubEngine(
     private val dir = File(context.cacheDir, "dub").apply { mkdirs() }
 
     private var loop: Job? = null
+    /** Saved work of this video (finished lines, translations), see [DubStore]. Null = nothing is saved. */
+    @Volatile private var store: DubStore.Session? = null
+    private var loopErrors = 0
     /** Translating is network work: several at once. */
     private val translateGate = Semaphore(4)
     /**
@@ -166,6 +169,8 @@ class DubEngine(
         live: Boolean = false,
         /** What listening to the original voices found (who speaks each line, man or woman); null = not scanned. */
         scan: VoiceScanResult? = null,
+        /** Identifies this video, so finished lines are saved on the phone and come back next time (null = nothing is saved). */
+        saveKey: String? = null,
     ) {
         stop()
         if (cues.isEmpty() && !live) {
@@ -203,11 +208,35 @@ class DubEngine(
         doneNoticeShown = false
         runCatching { DubCache.trim(dir, 300L * 1024 * 1024) }
         this.cast = if (smart && !live) CastDirector.assign(cues, scan) else Cast(emptyList())
+        // Work saved the last time this video was dubbed: the finished lines and the translations
+        // come back from the phone, so only what is still missing is made.
+        store = null
+        var savedLines = 0
+        if (!live && saveKey != null) {
+            val st = runCatching { DubStore.openSession(context, saveKey, cues, lang, mode, smart, scan) }.getOrNull()
+            store = st
+            if (st != null) {
+                runCatching {
+                    for ((src, out) in st.translations()) translations[lang + "|" + src] = out
+                    for ((i, f) in st.readyClips()) {
+                        if (i >= 0 && i < cues.size) {
+                            ready[i] = f
+                            savedLines++
+                        }
+                    }
+                }
+            }
+        }
         activeLang = lang
         failureNoticeShown = false
         lastPos = effectivePos()
         spokenIdx = (cueIndexAt(lastPos) - 1).coerceAtLeast(-1)
-        if (neuralLikely && !live) {
+        if (savedLines > 0) {
+            onStatus(
+                "Dub: " + savedLines + " lines are saved from before and play straight away. " +
+                    "Only the lines that are missing are made now."
+            )
+        } else if (neuralLikely && !live) {
             onStatus(
                 "Dub: preparing the voices. The dub starts speaking as soon as the first lines are " +
                     "ready, and the video waits a moment whenever a line is not ready yet."
@@ -216,11 +245,22 @@ class DubEngine(
         loop = scope.launch(Dispatchers.Main) {
             var sincePrefetch = PREFETCH_EVERY_MS   // prefetch on the very first tick
             while (isActive) {
-                tick()
-                sincePrefetch += TICK_MS
-                if (sincePrefetch >= PREFETCH_EVERY_MS) {
-                    sincePrefetch = 0
-                    prefetch()
+                // One bad moment (a player that is being rebuilt, a file that vanished) must
+                // never end the dub: the loop logs it and carries on.
+                try {
+                    tick()
+                    sincePrefetch += TICK_MS
+                    if (sincePrefetch >= PREFETCH_EVERY_MS) {
+                        sincePrefetch = 0
+                        prefetch()
+                    }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    if (loopErrors < 5) {
+                        loopErrors++
+                        Logs.log("Dub", "loop error (dub keeps running): " + e.toString())
+                    }
                 }
                 delay(TICK_MS)
             }
@@ -256,7 +296,29 @@ class DubEngine(
         failed.clear()
         empty.clear()
         attempts.clear()
+        store = null
         activeLang = ""
+    }
+
+    /**
+     * The player was rebuilt while the dub runs (a server failed and another one was picked, or
+     * the picture pipeline was restarted). Everything made so far is kept; only what belonged to
+     * the OLD player (the clip that was speaking, a pause we put on it, a lowered volume) is
+     * dropped, and the playhead is read again from the new player.
+     */
+    fun onPlayerReplaced() {
+        if (!active) return
+        heldByDub = false
+        holdIdx = -1
+        holdTimeouts = 0
+        holdPausedUntil = 0L
+        holdGaveUp.clear()
+        stopClip()
+        ducked = false
+        DubVoiceCut.target = 0f
+        liveHoldUntil = 0L
+        lastPos = effectivePos()
+        spokenIdx = (cueIndexAt(lastPos) - 1).coerceAtLeast(-1)
     }
 
     /** Stops the engine AND frees the text-to-speech engine. */
@@ -612,6 +674,7 @@ class DubEngine(
         val pos = effectivePos()
         var i = cueIndexAt(pos - LATE_START_MS - 6_000L).coerceAtLeast(0)
         var queued = inFlight.size
+        val st = store
         // Lines are taken in playback order, a few at a time, so the work
         // always follows the playhead (also after a seek).
         while (i < cues.size && cues[i].startMs <= pos + lookaheadMs && queued < MAX_QUEUED) {
@@ -628,7 +691,8 @@ class DubEngine(
                     if (file === NOTHING_TO_SAY) {
                         empty.add(idx)
                     } else if (file != null) {
-                        ready[idx] = file
+                        // keep a copy on the phone: it is still there after the app is closed
+                        ready[idx] = st?.saveClip(idx, file) ?: file
                     } else if (wanted(idx)) {
                         failed.add(idx)
                         val n = (attempts[idx] ?: 0) + 1
@@ -692,6 +756,7 @@ class DubEngine(
             }
             translated = t.ifBlank { cue.text }
             translations[tKey] = translated
+            store?.addTranslation(cue.text, translated)
         }
         if (!active || !stillWanted()) return null
         val spoken = SubtitleCues.forSpeech(translated)
