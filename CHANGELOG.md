@@ -1,5 +1,11 @@
 ## 0.12.61 (continuous build only)
 
+- TV UI refresh: Home, detail and settings screens are tidier on TV, with cleaner spacing and sizing that fit a big screen better
+- Smoother remote navigation: focus moves in a predictable order and the highlighted item is easier to see from across the room
+- Phone layouts are unchanged; the new look applies on TV only
+
+## 0.12.61 (continuous build only)
+
 - Sweep scope leak fixed: the unfinished-work ledger is now tagged with the pass's own scope (replaced, not unioned), background sweeps only ask in-scope repos, and a narrower pass no longer attaches to a running wider sweep — a lookup with "only this extension" stays that way even when an earlier wide lookup of the same video is still unfinished; the 177-provider background re-ask from the logs cannot happen anymore
 - Sora dub/sub twins merged in one pass: when every server of a Sora origin speaks one audio, its counterpart module (Anikoto SUB for Anikoto DUB and vice versa) is asked directly for the same episode and its servers join the list tagged, instead of the other audio never appearing
 - Dead servers stop stacking: remembered-vs-fresh dedupe ignores rotating signed-URL params (token/expiry), so a re-extract joins its twin instead of growing "(2)", "(3)" rows, and remembered rows whose own expiry timestamp passed are dropped instead of re-entering the list
