@@ -1,0 +1,142 @@
+# =============================================================================
+#  Build the cloned-voice model (Hindi + other Indic languages) and keep it in
+#  YOUR OWN repository, so the app never depends on someone else's Hugging Face
+#  upload that can disappear (the old one answered 401).
+#
+#  Run it by hand, once:  Actions tab -> "Build clone model" -> Run workflow.
+#  It takes about 15-30 minutes. It:
+#    1. downloads the open model Thanushttk/pocket-tts-multilingual (CC-BY-4.0),
+#    2. converts it to the 7 files sherpa-onnx needs (exporter: lomotron/pocket-tts-onnx-export;
+#       if it fails the real error is shown in the red "Annotations" box on top of the run page),
+#    3. LISTENS to it with the real sherpa-onnx engine (a Hindi line must be spoken,
+#       not silent, not 40 seconds of noise) - if that fails NOTHING is published,
+#    4. uploads the 7 files to the pre-release "clone-model" of this repository.
+#  The app downloads from that release. It never touches the "latest" release or the
+#  continuous APK release.
+# =============================================================================
+name: Build clone model
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Upload to the clone-model release when the self test passes"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  clone-model:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install tools
+        run: |
+          set -e
+          python -m pip install --upgrade pip
+          # torch 2.9.1 (CPU) is the version the exporter is known to work with
+          pip install "torch==2.9.1" --index-url https://download.pytorch.org/whl/cpu || pip install "torch==2.9.1"
+          pip install numpy scipy onnx onnxruntime onnxscript beartype einops pydantic typer requests \
+            typing_extensions sentencepiece safetensors huggingface_hub pyyaml soundfile
+          pip install "sherpa-onnx==1.13.8" || pip install sherpa-onnx
+          python -c "import torch, onnx, onnxruntime; print('torch', torch.__version__, 'onnx', onnx.__version__, 'ort', onnxruntime.__version__)"
+          python -c "import sherpa_onnx; print('sherpa_onnx', getattr(sherpa_onnx, '__version__', '?'))"
+
+      - name: Download the open model (Thanushttk/pocket-tts-multilingual)
+        run: |
+          set -e
+          python - <<'PY'
+          from huggingface_hub import snapshot_download
+          p = snapshot_download(
+              "Thanushttk/pocket-tts-multilingual",
+              local_dir="/tmp/thanush",
+              allow_patterns=["*.yaml", "*.safetensors", "*.model", "*.json", "samples/hindi.wav"],
+          )
+          print("downloaded to", p)
+          PY
+          find /tmp/thanush -type f -printf '%10s  %p\n' | sort -k2
+          test -f /tmp/thanush/samples/hindi.wav
+
+      - name: Get the sherpa-onnx source (tokenizer converter)
+        run: |
+          set -e
+          git clone --depth 1 --branch v1.13.8 https://github.com/k2-fsa/sherpa-onnx.git /tmp/sherpa-src
+          if [ ! -f /tmp/sherpa-src/scripts/pocket-tts/convert_tokenizer.py ]; then
+            echo "v1.13.8 has no convert_tokenizer.py - using master"
+            rm -rf /tmp/sherpa-src
+            git clone --depth 1 https://github.com/k2-fsa/sherpa-onnx.git /tmp/sherpa-src
+          fi
+          ls /tmp/sherpa-src/scripts/pocket-tts || true
+
+      - name: Convert to the sherpa-onnx files
+        run: |
+          python scripts/clone_model/convert.py all --src /tmp/thanush --sherpa /tmp/sherpa-src --out /tmp/out
+
+      - name: Upload the conversion logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clone-model-logs
+          path: /tmp/clone-model-logs
+          if-no-files-found: ignore
+
+      - name: Self test - listen to the model with sherpa-onnx
+        run: |
+          python scripts/clone_model/selftest.py --dir /tmp/out --ref /tmp/thanush/samples/hindi.wav --wavs /tmp/wavs
+
+      - name: Upload the test voices (listen to them!)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clone-model-test-voices
+          path: /tmp/wavs
+          if-no-files-found: ignore
+
+      - name: Upload the model files as a download too
+        uses: actions/upload-artifact@v4
+        with:
+          name: clone-model-files
+          path: |
+            /tmp/out/lm_main.int8.onnx
+            /tmp/out/lm_flow.int8.onnx
+            /tmp/out/encoder.onnx
+            /tmp/out/decoder.int8.onnx
+            /tmp/out/text_conditioner.onnx
+            /tmp/out/vocab.json
+            /tmp/out/token_scores.json
+          if-no-files-found: error
+
+      - name: Publish to the clone-model release
+        if: github.event.inputs.publish != 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          cd /tmp/out
+          FILES="lm_main.int8.onnx lm_flow.int8.onnx encoder.onnx decoder.int8.onnx text_conditioner.onnx vocab.json token_scores.json"
+          for f in $FILES; do test -s "$f" || { echo "::error::$f is missing"; exit 1; }; done
+          if ! gh release view clone-model --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create clone-model --repo "$GITHUB_REPOSITORY" --prerelease --latest=false \
+              --title "Clone voice model (Hindi and other Indic languages)" \
+              --notes "Files for the cloned dub voices. Built by the 'Build clone model' workflow from Thanushttk/pocket-tts-multilingual (CC-BY-4.0). The app downloads these. Do not delete."
+          fi
+          for i in 1 2 3; do
+            gh release upload clone-model $FILES --repo "$GITHUB_REPOSITORY" --clobber && break
+            echo "upload attempt $i failed, retrying..."; sleep 8
+          done
+          echo "---- can a phone (no login) download them? ----"
+          for f in $FILES; do
+            code=$(curl -sIL -o /dev/null -w '%{http_code}' "https://github.com/$GITHUB_REPOSITORY/releases/download/clone-model/$f" || true)
+            echo "$code  $f"
+            if [ "$code" != "200" ]; then
+              echo "::warning::$f answered $code without login. If this repository is PRIVATE the phone cannot download it: make the repository public, or run this workflow in a public repository."
+            fi
+          done
