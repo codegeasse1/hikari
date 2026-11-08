@@ -66,12 +66,19 @@ object TmdbScreenshots {
 
     suspend fun backdropsFor(item: MediaItem): List<String> =
         runCatching {
-            if (item.type != MediaType.SERIES && item.type != MediaType.MOVIE) return emptyList()
-            // Anime pick with real art: the anime's own banner/cover, which are absolute
-            // URLs — never TMDB's mistranslated backdrops. Unprefixed, like
-            // every non-TMDB art source. A bare pick (no art, or cover-only with
-            // no overview/score) falls through to TMDB below instead of going bare.
-            when (val pick = DonghuaDetails.pick(item)) {
+            // Catalog rows carry UNKNOWN until the episode list lands (see
+            // SoraProvider): the lookup is title-based anyway, so they resolve
+            // exactly like typed rows instead of going bare.
+            if (item.type != MediaType.SERIES && item.type != MediaType.MOVIE &&
+                item.type != MediaType.UNKNOWN
+            ) return emptyList()
+            // User order: TMDB first, anime banner second. The anime pick used
+            // to win outright here; now it only fills the gaps TMDB leaves —
+            // computed once and consulted when TMDB resolves to nothing.
+            // Absolute URLs — never TMDB's mistranslated backdrops. A bare pick
+            // (no art, or cover-only with no overview/score) still falls
+            // through instead of going bare.
+            val pickFallback: List<String>? = when (val pick = DonghuaDetails.pick(item)) {
                 is DonghuaDetails.Pick.Anime -> {
                     val list = listOfNotNull(pick.info.banner, pick.info.cover).distinct()
                     if (list.isNotEmpty()) {
@@ -84,11 +91,10 @@ object TmdbScreenshots {
                             firstPosterByKey[item.uniqueId] = it.first()
                             listPosterByKey[item.uniqueId] = it
                         }
-                        return list
-                    }
-                    // else fall through to TMDB — no anime art to show.
+                        list
+                    } else null
                 }
-                else -> {}
+                else -> null
             }
             // Null when TMDB cannot resolve the title at all (mistranslated
             // donghua, provider-only rows): the anime fallback below still
@@ -176,15 +182,19 @@ object TmdbScreenshots {
                     .take(8).map { IMG_BACKDROP + it.second }
             }
             if (mem.size >= 200) mem.clear()
+            // TMDB's answer wins (user order); the anime pick fills only the
+            // gaps. The key writes for the pick already happened above, so a
+            // TMDB miss must not wipe them here.
+            val combined = if (out.isNotEmpty()) out else (pickFallback ?: emptyList())
             if (out.isNotEmpty() && resolved != null) {
                 mem[seg + "/" + resolved.tmdbId] = out
                 firstByKey[item.uniqueId] = out.first()
                 listByKey[item.uniqueId] = out
-            } else {
+            } else if (pickFallback == null) {
                 firstByKey.remove(item.uniqueId)
                 listByKey.remove(item.uniqueId)
             }
-            if (out.isEmpty()) {
+            if (combined.isEmpty()) {
                 // Universal fallback (parity with TmdbMeta.artwork): a title
                 // TMDB missed still gets the anime sources' own banner/cover
                 // sharp instead of a blurred provider poster. This is the
@@ -202,6 +212,6 @@ object TmdbScreenshots {
                     }
                 }
             }
-            out
+            combined
         }.getOrDefault(emptyList())
 }
