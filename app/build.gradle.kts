@@ -30,7 +30,7 @@ android {
         // kept in the "clone-model" release of that repository (.github/workflows/clone-model.yml).
         val buildRepo = System.getenv("GITHUB_REPOSITORY") ?: ""
         buildConfigField("String", "BUILD_REPO", "\"$buildRepo\"")
-        // ---- Processors this app is built for ----
+        // Processors this app is built for
         // armeabi-v7a is the 32-bit arm build (older/cheaper phones) and
         // arm64-v8a is the 64-bit one (every modern phone). x86 and x86_64 are
         // only ever found in Android emulators, so their native libraries ÃÂ¢ÃÂÃÂ
@@ -43,7 +43,7 @@ android {
         }
     }
 
-    // ---- One APK per phone, plus a universal one ----
+    // One APK per phone, plus a universal one
     // With this on, a release build produces `app-armeabi-v7a-release.apk`,
     // `app-arm64-v8a-release.apk` and `app-universal-release.apk` instead of a
     // single file that carries every processor's libraries. A user can then
@@ -64,7 +64,7 @@ android {
 
     buildTypes {
         release {
-            // ---- Shrinking: ON ----
+            // Shrinking: ON
             //
             // The release build was shipping every class of every dependency:
             // ~70 MB of dex, most of it code nothing in this APK can reach
@@ -121,7 +121,7 @@ android {
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
-            // ---- OkHttp 5 ships Java 9 multi-release jars ----
+            // OkHttp 5 ships Java 9 multi-release jars
             //
             // okhttp-brotli, logging-interceptor and okhttp-dnsoverhttps are
             // published as MULTI-RELEASE jars: each one carries the same
@@ -165,7 +165,7 @@ android {
     }
 }
 
-// ---------------------------------------------------------------------------
+//
 // TDLib's C++ runtime has to reach the APK under its SONAME
 //
 // TDLib's native library (libtdjni.so ÃÂ¢ÃÂÃÂ the Telegram client, see
@@ -181,7 +181,7 @@ android {
 // task copies ONLY the renamed runtime into an extra source directory, so no file
 // is ever seen twice by AGP ("More than one file was found with OS independent
 // path" is what a plain rename-in-place would produce).
-// ---------------------------------------------------------------------------
+//
 val tdJniStageDir = layout.buildDirectory.dir("td-jni").get().asFile.apply { mkdirs() }
 val stageTdJniLibs = tasks.register<Sync>("stageTdJniLibs") {
     from(layout.projectDirectory.dir("src/main/jniLibs")) {
@@ -304,7 +304,7 @@ dependencies {
     // run that same download for a local build.
     implementation(files("libs/sherpa-onnx.aar"))
     // Piper voices run on sherpa-onnx 1.13.8 (espeak-ng built into the
-    // AAR, dataDir from the voice pack) — no piper-phonemize needed.
+    // AAR, dataDir from the voice pack) - no piper-phonemize needed.
     // tar.bz2 voice packs from the official sherpa tts-models release.
     implementation("org.apache.commons:commons-compress:1.26.0")
     // TorrServer ÃÂ¢ÃÂÃÂ the Go torrent engine CloudStream's own Torrent object uses.
@@ -390,7 +390,7 @@ dependencies {
     // Animated GIF decoding, for collection/folder covers ("Animated GIF URL"
     // in the cover editor): without it Coil draws only the first frame.
     implementation(libs.coil.gif)
-    // ---- The manga reader (Nekoread's reader, ported whole) ----
+    // The manga reader (Nekoread's reader, ported whole)
     //
     // Three libraries the ported viewer stack is built on, all of them the exact
     // artifacts Nekoread itself uses (a JitPack commit for the Tachiyomi fork of
@@ -514,7 +514,7 @@ dependencies {
     implementation("com.github.skepsun:kototoro-parsers:c416529309d3b26d0ec0afca90f00290500d4b82") {
         exclude(group = "org.json", module = "json")
     }
-    // ---- Device pairing (Settings ÃÂ¢ÃÂÃÂ Backup & Restore ÃÂ¢ÃÂÃÂ Pair & sync) ----
+    // Device pairing (Settings ÃÂ¢ÃÂÃÂ Backup & Restore ÃÂ¢ÃÂÃÂ Pair & sync)
     //
     // The feature itself is a few hundred lines: two `PairHost`/`PairClient`
     // objects and a screen. Its two dependencies are what turn "the code on one
@@ -540,7 +540,7 @@ dependencies {
     implementation(libs.androidx.camera.camera2)
     implementation(libs.androidx.camera.lifecycle)
     implementation(libs.androidx.camera.view)
-    // ---- The in-app lock (Settings ÃÂ¢ÃÂÃÂ Privacy & Browsing ÃÂ¢ÃÂÃÂ App lock) ----
+    // The in-app lock (Settings ÃÂ¢ÃÂÃÂ Privacy & Browsing ÃÂ¢ÃÂÃÂ App lock)
     //
     //  * biometric ÃÂ¢ÃÂÃÂ the fingerprint/face prompt itself. The androidx one, not
     //    the platform's: this app runs from API 24 and the platform
@@ -555,7 +555,7 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.tooling)
 }
 
-// ---------------------------------------------------------------------------
+//
 // org.json must never be on the runtime classpath.
 //
 // Android already provides org.json ÃÂ¢ÃÂÃÂ it lives in
@@ -579,12 +579,12 @@ dependencies {
 // Excluding it here makes compile time, R8's view and the device agree on one
 // org.json: the platform's. Any dependency that declares org.json:json brings
 // this crash back with it, so check for it when adding one.
-// ---------------------------------------------------------------------------
+//
 configurations.configureEach {
     exclude(mapOf("group" to "org.json", "module" to "json"))
 }
 
-// ---------------------------------------------------------------------------
+//
 // NiceHttp drags a second OkHttp version onto the classpath ÃÂ¢ÃÂÃÂ pin it back
 //
 // NiceHttp (com.github.Blatzar:NiceHttp, the client CloudStream plugins link
@@ -610,7 +610,7 @@ configurations.configureEach {
 // pinning it to 5.4.0 puts the whole OkHttp family on ONE version, which is the
 // same rule the rest of this build follows (see the okhttp note in
 // gradle/libs.versions.toml and the org.json block above).
-// ---------------------------------------------------------------------------
+//
 configurations.configureEach {
     resolutionStrategy.force("com.squareup.okhttp3:okhttp-dnsoverhttps:${libs.versions.okhttp.get()}")
 }
