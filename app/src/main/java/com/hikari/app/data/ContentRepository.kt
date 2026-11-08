@@ -720,7 +720,7 @@ class ContentRepository(private val manager: ProviderManager) {
             val now = System.currentTimeMillis()
             val prev = streamsRemembered[key]
                 ?.takeIf { now - it.at < REMEMBERED_STREAMS_TTL_MS }?.list.orEmpty()
-            val merged = (prev + list).distinctBy { it.identityKey() }.takeLast(256)
+            val merged = (list + prev.filterNot { signedExpired(it) }).distinctBy { mergeKey(it) }.takeLast(256)
             if (merged.isEmpty()) return
             streamsRemembered[key] = RememberedStreams(merged, now)
             if (streamsRemembered.size > REMEMBERED_STREAMS_MAX) {
@@ -757,6 +757,59 @@ class ContentRepository(private val manager: ProviderManager) {
          *  there is no TTL — overflow drops arbitrary entries, which simply
          *  recompute on demand. */
         const val SEASON_LAYOUT_MAX = 96
+
+        /** Query params a signed URL rotates every call (megaplay token, CDN
+         *  expiry): two rows differing ONLY here are one file. Everything else
+         *  (host, path, other params) still tells servers apart, so HD-1 vs HD-2
+         *  on different CDNs never merge. */
+        private val VOLATILE_QUERY_KEYS = setOf(
+            "token", "signature", "sig", "sign", "expires", "exp", "expiry",
+        )
+
+        /** Merge identity for remembered-vs-fresh union: the plain [identityKey]
+         *  when no volatile param is present, else the URL with those params
+         *  stripped — so a re-extracted server joins its remembered twin instead
+         *  of stacking beside it as "(2)", "(3)", … */
+        fun mergeKey(s: StreamSource): String {
+            val u = s.url
+            if (s.isTorrent || u.isBlank()) return s.identityKey()
+            val q = u.indexOf('?')
+            if (q < 0) return s.identityKey()
+            val tail = u.substring(q + 1)
+            val fragAt = tail.indexOf('#')
+            val query = if (fragAt < 0) tail else tail.substring(0, fragAt)
+            val frag = if (fragAt < 0) "" else tail.substring(fragAt)
+            var dropped = false
+            val kept = ArrayList<String>()
+            for (part in query.split('&')) {
+                if (part.substringBefore('=').trim().lowercase() in VOLATILE_QUERY_KEYS) {
+                    dropped = true
+                    continue
+                }
+                kept.add(part)
+            }
+            if (!dropped) return s.identityKey()
+            return "u" + u.substring(0, q) +
+                (if (kept.isEmpty()) "" else "?" + kept.joinToString("&")) + frag
+        }
+
+        /** A remembered signed URL whose own expiry timestamp is past is dead,
+         *  not a server — it must not re-enter the list. Reads exp/expires/expiry
+         *  as epoch seconds (10 digits) or millis (13 digits). */
+        fun signedExpired(s: StreamSource): Boolean {
+            val q = s.url.indexOf('?')
+            if (q < 0) return false
+            val now = System.currentTimeMillis()
+            for (part in s.url.substring(q + 1).split('&')) {
+                val name = part.substringBefore('=').trim().lowercase()
+                if (name != "exp" && name != "expires" && name != "expiry") continue
+                val digits = part.substringAfter('=', "").trim().takeWhile { it.isDigit() }
+                val t = digits.toLongOrNull() ?: continue
+                val ms = if (digits.length <= 10) t * 1000L else t
+                if (ms in 1 until now - 60_000L) return true
+            }
+            return false
+        }
 
         /**
          * A whole pass that found fewer than this many servers, while repos were
@@ -827,6 +880,11 @@ class ContentRepository(private val manager: ProviderManager) {
              *  ledger (see [PendingWork]), which is what makes "no work is ever
              *  dropped" true even when the sweep is cancelled or cut short. */
             val answered: MutableSet<String> = ConcurrentHashMap.newKeySet()
+            /** The scope this sweep may ask (see [PendingWork.scopeIds]): a pass
+             *  whose own scope excludes it must not attach its sink to this
+             *  sweep, or out-of-scope servers would stream into its list. */
+            @Volatile
+            var scopeIds: Set<String>? = null
         }
 
         /** One unit of background work: a provider to SEARCH by title (the
@@ -882,6 +940,11 @@ class ContentRepository(private val manager: ProviderManager) {
             /** How many sweeps have already picked this entry up. Automatic
              *  retries stop at [SWEEP_MAX_TRIES]; a fresh pass resets it. */
             @Volatile var tries: Int = 0,
+            /** The scope a pass recorded with its unfinished work (see [SearchScope]
+             *  and [scopeAllowedIds]): a later, narrower pass REPLACES it, so a wide
+             *  lookup's backlog can never leak into a lookup whose own switches
+             *  exclude those repos. Null = unconstrained (legacy entries). */
+            @Volatile var scopeIds: Set<String>? = null,
             @Volatile var at: Long = System.currentTimeMillis(),
         )
 
@@ -1058,6 +1121,11 @@ class ContentRepository(private val manager: ProviderManager) {
              *  clears the retry count, because "the user asked again" is exactly
              *  the case an automatic-retry ceiling must not block. */
             resetTries: Boolean,
+            /** The scope this pass allows (see [scopeAllowedIds]): REPLACED, not
+             *  unioned — a narrower pass shrinks what the ledger may still ask,
+             *  so an old wide backlog can never leak into it. Null keeps the
+             *  recorded scope (automatic re-records). */
+            scopeIds: Set<String>? = null,
         ) {
             if (byTitle.isEmpty() && direct.isEmpty()) return
             val key = streamsRememberedKey(item, episode)
@@ -1068,6 +1136,7 @@ class ContentRepository(private val manager: ProviderManager) {
             entry.direct.addAll(direct)
             if (ignoreEmptyRecord) entry.ignoreEmptyRecord = true
             if (resetTries) entry.tries = 0
+            if (scopeIds != null) entry.scopeIds = scopeIds
             entry.at = now
         }
 
@@ -2515,16 +2584,21 @@ class ContentRepository(private val manager: ProviderManager) {
         budgetMs: Long,
     ): List<StreamSource> {
         if (episode == null || p.config.id != item.providerId) return primary
+        // Cross-module twins first (Sora dub/sub live in separate modules): the
+        // twin's servers join the SAME pass, tagged, instead of never appearing.
+        val base = if (p.config.type == ProviderType.SORA) {
+            runCatching { soraTwinMerged(p, item, episode, primary, budgetMs) }.getOrDefault(primary)
+        } else primary
         val group = EpisodeDubSub.variantsFor(item.uniqueId, episode.season, episode.number)
-        if (group.size < 2) return primary
+        if (group.size < 2) return base
         val siblings = EpisodeDubSub.siblingVariants(item.uniqueId, episode)
-        if (siblings.isEmpty()) return primary
+        if (siblings.isEmpty()) return base
         // The merged row's own name is cleaned of markers, so the audio each
         // ORIGINAL row names is read off the registered group instead.
         val kindOfId = group.associate { it.id to EpisodeDubSub.audioKindOf(it) }
-        val seen = HashSet<String>(primary.size + siblings.size)
-        primary.forEach { seen.add(it.url) }
-        val out = ArrayList(primary)
+        val seen = HashSet<String>(base.size + siblings.size)
+        base.forEach { seen.add(it.url) }
+        val out = ArrayList(base)
         for ((sibIndex, sib) in siblings.withIndex()) {
             val extra = withTimeoutOrNull(minOf(budgetMs, 30_000L)) {
                 cancellableCatching { p.getStreams(item, sib) }.getOrDefault(emptyList())
@@ -2542,14 +2616,88 @@ class ContentRepository(private val manager: ProviderManager) {
                 out += s.copy(name = EpisodeDubSub.tagStream(s.name, kind))
             }
         }
-        if (out.size == primary.size) return primary
-        val primaryKind = kindOfId[episode.id] ?: "Audio 1"
-        for (i in primary.indices) {
+        if (out.size == base.size) return base
+        val primaryKind = kindOfId[episode.id]
+            ?: base.mapNotNull { EpisodeDubSub.kindOfStream(it.name, it.url) }.distinct().singleOrNull()
+            ?: "Audio 1"
+        for (i in base.indices) {
             val s = out[i]
             if (!EpisodeDubSub.isTagged(s.name)) out[i] = s.copy(name = "${s.name} ($primaryKind)")
         }
         return out
     }
+
+    /** Sora dub/sub twin merge: "Anikoto DUB" and "Anikoto SUB" are separate
+     *  modules for the same site, so one pass only ever asks one side. When
+     *  every primary server speaks the SAME audio, the twin module is asked
+     *  directly for this episode and its servers join the list tagged — the
+     *  pass that used to show 2 dub servers shows the sub side too. Same site,
+     *  same episode URL shape, so the twin usually resolves the origin episode
+     *  link itself; matching by season/number is the fallback. Anything unknown
+     *  — no twin, disabled twin, unmarked names, same-sided twin, empty answer
+     *  — returns [primary] untouched. */
+    private suspend fun soraTwinMerged(
+        p: ContentProvider,
+        item: MediaItem,
+        episode: Episode,
+        primary: List<StreamSource>,
+        budgetMs: Long,
+    ): List<StreamSource> {
+        if (primary.isEmpty()) return primary
+        val kinds = primary.mapNotNull { EpisodeDubSub.kindOfStream(it.name, it.url) }.distinct()
+        if (kinds.size != 1) return primary
+        val need = if (kinds[0] == "Dub") "Sub" else if (kinds[0] == "Sub") "Dub" else return primary
+        // The origin itself must wear the opposite marker — unmarked names never
+        // twin-merge, or two unrelated Sora repos would pour into each other.
+        if (EpisodeDubSub.audioKindOf(Episode(number = 0, id = p.config.id, name = p.config.name)) == need) {
+            return primary
+        }
+        if (EpisodeDubSub.audioKindOf(Episode(number = 0, id = p.config.id, name = p.config.name)) == null) {
+            return primary
+        }
+        val twin = manager.providers.value.firstOrNull { o ->
+            o.config.enabled && o.config.type == ProviderType.SORA && o.config.id != p.config.id &&
+                twinStem(o.config.name) == twinStem(p.config.name) &&
+                EpisodeDubSub.audioKindOf(Episode(number = 0, id = o.config.id, name = o.config.name)) == need
+        } ?: return primary
+        val extra = withTimeoutOrNull(minOf(budgetMs, 30_000L)) {
+            cancellableCatching {
+                val direct = twin.getStreams(item, episode)
+                if (direct.isNotEmpty()) direct else {
+                    val eps = twin.getEpisodes(item) ?: return@cancellableCatching emptyList<StreamSource>()
+                    val match = eps.firstOrNull { it.season == episode.season && it.number == episode.number }
+                        ?: return@cancellableCatching emptyList<StreamSource>()
+                    twin.getStreams(item, match)
+                }
+            }.getOrDefault(emptyList())
+        }.orEmpty()
+        if (extra.isEmpty()) return primary
+        // The twin must actually speak the missing side; same-sided answers
+        // merge nothing.
+        val twinKinds = extra.mapNotNull { EpisodeDubSub.kindOfStream(it.name, it.url) }.distinct()
+        val kind = if (twinKinds == listOf(need)) need
+        else twinKinds.singleOrNull()?.takeIf { it != kinds[0] } ?: return primary
+        val seen = HashSet<String>(primary.size + extra.size)
+        primary.forEach { seen.add(it.url) }
+        val out = ArrayList(primary)
+        for (s in extra) {
+            if (!seen.add(s.url)) continue
+            out += s.copy(name = EpisodeDubSub.tagStream(s.name, kind))
+        }
+        if (out.size == primary.size) return primary
+        for (i in primary.indices) {
+            val s = out[i]
+            if (!EpisodeDubSub.isTagged(s.name)) out[i] = s.copy(name = "${s.name} (${kinds[0]})")
+        }
+        return out
+    }
+
+    /** Twin-module name stem: dub/sub/audio markers stripped, so "Anikoto DUB"
+     *  and "Anikoto SUB" compare equal but unrelated repos never do. */
+    private fun twinStem(name: String): String = name.lowercase()
+        .replace(Regex("\\b(english\\s+)?dub(bed)?\\b|\\bsub(s|bed|titles?)?\\b|\\bsoftsub\\b|\\baudio\\b"), " ")
+        .replace(Regex("[^a-z0-9]+"), " ")
+        .trim()
 
     /**
      * Stamps every source with the section of the player's server chooser it
@@ -3256,7 +3404,7 @@ class ContentRepository(private val manager: ProviderManager) {
     fun recentlyFoundStreams(item: MediaItem, episode: Episode?): List<StreamSource> {
         val record = streamsRemembered[streamsRememberedKey(item, episode)] ?: return emptyList()
         if (System.currentTimeMillis() - record.at >= REMEMBERED_STREAMS_TTL_MS) return emptyList()
-        return filterToScope(item, record.list)
+        return filterToScope(item, record.list).filterNot { signedExpired(it) }
     }
 
     /**
@@ -4638,7 +4786,7 @@ class ContentRepository(private val manager: ProviderManager) {
             // which must never become a playable source (it would open a
             // w3.org page in the web view instead of playing).
             var finalResult = result.filterNot { isGarbageUrl(it.url) }
-                .distinctBy { it.identityKey() }
+                .distinctBy { mergeKey(it) }
             // (A bundled yt-dlp engine used to take one last shot at the page
             // here when every provider type came up empty. It was removed in
             // 0.9.1 — see the CHANGELOG. Everything above still applies; the
@@ -4670,13 +4818,17 @@ class ContentRepository(private val manager: ProviderManager) {
             // for an empty pass: what the user sees is the union, so a server
             // that played a minute ago cannot disappear by being unlucky.
             if (remembered != null) {
-                val have = finalResult.mapTo(HashSet<String>()) { it.identityKey() }
+                val have = finalResult.mapTo(HashSet<String>()) { mergeKey(it) }
                 // Scoped: the remembered list may hold sibling-engine servers a
                 // wider earlier lookup gathered — they must not re-enter a pass
                 // whose own switches say "only this extension" (see
                 // [filterToScope]).
+                // Dead signed URLs never re-enter either: a remembered row whose
+                // own expiry already passed would only fail at play time while
+                // looking like one more server on the list.
                 val extra = filterToScope(item, remembered.list)
-                    .filterNot { it.identityKey() in have }
+                    .filterNot { signedExpired(it) }
+                    .filterNot { mergeKey(it) in have }
                 if (extra.isNotEmpty()) {
                     val fresh = finalResult.size
                     finalResult = finalResult + extra
@@ -4794,7 +4946,10 @@ class ContentRepository(private val manager: ProviderManager) {
     ) {
         // RECORDED before a sweep is even attempted: whatever a sweep cannot
         // take right now stays on the ledger instead of evaporating (see
-        // [PendingWork]).
+        // [PendingWork]). The pass's own scope is recorded WITH it (replaced,
+        // not unioned): a narrower pass shrinks what the ledger may still ask,
+        // so an old wide backlog can never leak into it.
+        val scopeIds = scopeAllowedIds(item)
         notePendingWork(
             item,
             episode,
@@ -4802,8 +4957,9 @@ class ContentRepository(private val manager: ProviderManager) {
             directTargets.map { it.config.id },
             ignoreEmptyRecord = ignoreEmptyRecord,
             resetTries = true,
+            scopeIds = scopeIds,
         )
-        launchSweepFor(item, episode, snapshot, sink)
+        launchSweepFor(item, episode, snapshot, sink, passScope = scopeIds)
     }
 
     /** Starts — or joins — the sweep for whatever is recorded as unfinished for
@@ -4820,6 +4976,11 @@ class ContentRepository(private val manager: ProviderManager) {
          *  real lookup instead of being retried in a loop. A pass the user
          *  started always allows a retry (it resets the count). */
         allowExhausted: Boolean = true,
+        /** The calling pass's own scope (see [scopeAllowedIds]): a running sweep
+         *  whose scope this pass excludes must not receive this pass's sink, or
+         *  out-of-scope servers would stream into a list whose switches forbid
+         *  them. Null = no opinion (automatic drains, held releases). */
+        passScope: Set<String>? = null,
     ) {
         val key = streamsRememberedKey(item, episode)
         synchronized(sweeps) {
@@ -4831,9 +4992,15 @@ class ContentRepository(private val manager: ProviderManager) {
             // held sweep must not do when the player finally releases it.
             val joinable = sweeps[key]
             if (joinable != null && joinable.job?.isActive == true) {
-                if (sink != null) joinable.sinks += sink
+                // Scope-closed join: a narrower pass never drinks from a wider
+                // sweep. Falling through to the ledger path instead leaves the
+                // wide sweep running for whoever it belongs to, while this
+                // pass keeps only what its own scope allows.
+                val scopeOk = sink == null || joinable.scopeIds == null || passScope == null ||
+                    passScope.containsAll(joinable.scopeIds!!)
+                if (scopeOk && sink != null) joinable.sinks += sink
                 val have = joinable.current
-                if (sink != null && have.isNotEmpty()) {
+                if (scopeOk && sink != null && have.isNotEmpty()) {
                     HikariApp.instance.appScope.launch {
                         cancellableCatching { sink(have) }
                     }
@@ -4883,9 +5050,14 @@ class ContentRepository(private val manager: ProviderManager) {
             }
             // Resolve the recorded ids back to providers. An id with no provider
             // any more (the extension was uninstalled or disabled meanwhile) is a
-            // real answer and drops out — there is nobody left to ask.
+            // real answer and drops out — there is nobody left to ask. The
+            // recorded scope drops out the same way: a narrower pass replaced
+            // it, and the ledger's wide ids are not this sweep's to ask.
+            val allowed = recorded.scopeIds
             val byTitle = recorded.byTitle.toList().mapNotNull { manager.byId(it) }
+                .filter { allowed == null || it.config.id in allowed }
             val direct = recorded.direct.toList().mapNotNull { manager.byId(it) }
+                .filter { allowed == null || it.config.id in allowed }
             recorded.byTitle.clear()
             recorded.direct.clear()
             recorded.tries++
@@ -4897,6 +5069,7 @@ class ContentRepository(private val manager: ProviderManager) {
                 direct.map { SweepUnit(it, byTitle = false) }
             val sweep = Sweep()
             sweep.ignoreEmptyRecord = recorded.ignoreEmptyRecord
+            sweep.scopeIds = allowed
             if (sink != null) sweep.sinks += sink
             units.forEach { sweepOwned.add(it.provider.config.id) }
             val job = HikariApp.instance.appScope.launch {
@@ -4922,6 +5095,7 @@ class ContentRepository(private val manager: ProviderManager) {
                         unasked.filterNot { it.byTitle }.map { it.provider.config.id },
                         ignoreEmptyRecord = sweep.ignoreEmptyRecord,
                         resetTries = false,
+                        scopeIds = sweep.scopeIds,
                     )
                     synchronized(sweeps) { if (sweeps[key] === sweep) sweeps.remove(key) }
                     bumpCrossStatus()
