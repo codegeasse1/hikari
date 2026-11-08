@@ -89,7 +89,7 @@ object TvdbArt {
         for (seg in listOf("tv", "movie")) {
             val exists = runCatching {
                 TmdbResolver.apiGet("/$seg/$id", emptyMap())?.has("id")
-            }.getOrDefault(false)
+            }.getOrNull() == true
             if (exists) return TmdbResolver.Resolved(id, if (seg == "movie") "movie" else "tv")
         }
         return null
