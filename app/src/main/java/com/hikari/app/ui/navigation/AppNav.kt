@@ -1491,7 +1491,7 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
                         // reported band of empty screen beside the detail page on
                         // a television.
                         .then(
-                            if (isTv && showBar) Modifier.padding(start = TvUi.railWidth()) else Modifier
+                            if (isTv && showBar && tabRoute != Routes.HOME) Modifier.padding(start = TvUi.railWidth()) else Modifier
                         )
                 ) {
             composable(Routes.HOME) { HomeScreen(nav) }
