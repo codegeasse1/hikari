@@ -1722,6 +1722,305 @@ class PlayerActivity : ComponentActivity() {
      *  when the player closes. */
     private val userSubs = mutableListOf<UserSubtitle>()
 
+    // ── Dub audio (translate the subtitle and speak it) ───────────────────
+    // Self-contained feature, see com.hikari.app.dub.* . It reads the subtitle
+    // that is switched on, translates each line when it is about to be needed,
+    // voices it (Google Translate voice online, phone voice offline) with a
+    // different pitch / speed per character, and plays it in time with the
+    // video, lowering the original sound while it speaks.
+    private val dubEngineLazy: Lazy<com.hikari.app.dub.DubEngine> = lazy {
+        com.hikari.app.dub.DubEngine(
+            context = applicationContext,
+            scope = lifecycleScope,
+            positionMs = { player?.currentPosition ?: 0L },
+            isPlaying = { player?.isPlaying == true },
+            offsetMs = { subtitleOffsetMs },
+            setOriginalVolume = { v -> runCatching { player?.volume = v } },
+            onStatus = { msg -> showDubToast(msg) },
+            holdVideo = { runCatching { player?.pause() } },
+            releaseVideo = { runCatching { player?.play() } },
+        )
+    }
+    private val dubEngine: com.hikari.app.dub.DubEngine get() = dubEngineLazy.value
+
+    /** True only when Dub audio was ever created AND is running now (never creates it). */
+    private fun dubEngineRunning(): Boolean = dubEngineLazy.isInitialized() && dubEngineLazy.value.active
+
+    /**
+     * Dub audio and AI Dub are two separate dub systems and must never speak at the same time
+     * (two voices on top of each other, two fights over the video volume). Turning one on turns
+     * the other one off.
+     */
+    private fun stopDubAudio() {
+        dubScanJob?.cancel()
+        dubScanJob = null
+        if (dubEngineLazy.isInitialized()) runCatching { dubEngineLazy.value.stop() }
+        runCatching { player?.removeListener(dubCueListener) }
+    }
+
+    private fun stopAiDub() {
+        if (!::aiDub.isInitialized) return
+        val wasOn = aiDub.enabled
+        if (wasOn) {
+            aiDub.enabled = false
+            aiDub.save()
+        }
+        aiDub.stopSpeech(clearInput = true)
+        hardSubDub?.onPlayingChanged(false)
+        // AI Dub lowers the video volume while it speaks: give it back.
+        if (wasOn) runCatching { player?.volume = aiDubSavedVolume }
+    }
+
+    /** The dub popup that is on screen now. A new one REPLACES it, so a burst of
+     *  dub messages can never queue up and appear one after another. */
+    private var dubToast: android.widget.Toast? = null
+
+    private fun showDubToast(msg: String) {
+        runCatching { dubToast?.cancel() }
+        dubToast = android.widget.Toast.makeText(this, msg, android.widget.Toast.LENGTH_LONG)
+            .also { it.show() }
+    }
+
+    /** LIVE mode: hands the caption that is on screen to the dub engine. Only
+     *  attached while a dub of an in-video subtitle track is running. */
+    private val dubCueListener = object : androidx.media3.common.Player.Listener {
+        override fun onCues(cueGroup: androidx.media3.common.text.CueGroup) {
+            val text = cueGroup.cues
+                .mapNotNull { it.text?.toString()?.trim() }
+                .filter { it.isNotEmpty() }
+                .joinToString("\n")
+            dubEngine.feedLive(text.ifEmpty { null })
+        }
+    }
+
+    /**
+     * Finds the subtitle the person has switched on, so they never have to pick
+     * it again. A track that came from a file / addon / upload has its text in
+     * memory (exact timing); a track that lives inside the video has no file,
+     * so it is read live as the captions are shown. Null = captions are off.
+     */
+    private fun dubPlan(): com.hikari.app.dub.DubPlan? {
+        val p = player ?: return null
+        if (p.trackSelectionParameters.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)) return null
+        var fmt: androidx.media3.common.Format? = null
+        for (g in p.currentTracks.groups) {
+            if (g.type != C.TRACK_TYPE_TEXT) continue
+            for (i in 0 until g.length) {
+                if (g.isTrackSelected(i)) fmt = g.getTrackFormat(i)
+            }
+        }
+        val f = fmt ?: return null
+        val fLabel = f.label.orEmpty()
+        val fLang = f.language.orEmpty()
+        val shown = listOf(fLang, fLabel).filter { it.isNotBlank() }.joinToString(" · ")
+            .ifBlank { "Subtitle" }
+        fun langMatch(a: String, b: String) =
+            a.isBlank() || b.isBlank() || a.equals(b, true) || a.take(2).equals(b.take(2), true)
+
+        // 1) a subtitle the person uploaded
+        if (fLabel.isNotEmpty()) {
+            userSubs.firstOrNull { it.label == fLabel }?.let {
+                return com.hikari.app.dub.DubPlan(shown, it.text, live = false)
+            }
+        }
+        // 2) a provider / addon subtitle whose text was downloaded
+        val all = (sources.getOrNull(currentIndex)?.subtitles.orEmpty() + addonSubs).distinctBy { it.url }
+        val withText = all.filter { subtitleRawCache[it.url] != null }
+        val hit = withText.firstOrNull { fLabel.isNotEmpty() && it.name == fLabel && langMatch(it.lang, fLang) }
+            ?: withText.filter { it.name.isBlank() && langMatch(it.lang, fLang) }.singleOrNull()
+        if (hit != null) {
+            return com.hikari.app.dub.DubPlan(shown, subtitleRawCache[hit.url], live = false)
+        }
+        // 3) a track inside the video: read it as the captions appear
+        val mime = f.sampleMimeType.orEmpty()
+        val picture = mime == "application/pgs" || mime == "application/dvbsubs" ||
+            mime == "application/vobsub"
+        return com.hikari.app.dub.DubPlan(shown, null, live = true, imageBased = picture)
+    }
+
+    private fun showDubDialog() {
+        com.hikari.app.dub.DubDialog.show(
+            activity = this,
+            engine = dubEngine,
+            plan = dubPlan(),
+            onUpload = { externalSubLauncher?.launch(arrayOf("*/*")) },
+            onGenerate = { generateSubtitleFromVoice() },
+            onStop = { stopDubAudio() },
+            onStart = { lang, mode, duck, multi ->
+                val plan = dubPlan()
+                if (plan != null && !plan.imageBased) {
+                    // Dub audio takes over from AI Dub (never both at once).
+                    stopAiDub()
+                    player?.removeListener(dubCueListener)
+                    dubScanJob?.cancel()
+                    dubScanJob = null
+                    val cues = plan.raw
+                        ?.let { com.hikari.app.dub.SubtitleCues.parse(it, multi) }
+                        .orEmpty()
+                    val live = plan.raw == null
+                    if (multi && !live && cues.size >= 3 && com.hikari.app.dub.DubPrefs.scan(this)) {
+                        startDubWithScan(cues, lang, mode, duck, multi)
+                    } else {
+                        beginDub(cues, lang, mode, duck, multi, live, null)
+                    }
+                }
+            },
+        )
+    }
+
+    /** Starts the dub engine (with or without the result of the voice scan). */
+    private fun beginDub(
+        cues: List<com.hikari.app.dub.DubCue>,
+        lang: String,
+        mode: com.hikari.app.dub.VoiceMode,
+        duck: Float,
+        multi: Boolean,
+        live: Boolean,
+        scan: com.hikari.app.dub.VoiceScanResult?,
+    ) {
+        dubEngine.start(cues, lang, mode, duck, multi, live = live, scan = scan)
+        if (dubEngine.active && live) player?.addListener(dubCueListener)
+        if (dubEngine.active) {
+            android.widget.Toast.makeText(
+                this, I18n.t("Dubbing started"), android.widget.Toast.LENGTH_SHORT,
+            ).show()
+        }
+    }
+
+    /** The voice scan that runs before a dub starts (null when none is running). */
+    private var dubScanJob: Job? = null
+
+    private val dubScanClient: com.hikari.app.dub.VoiceScanClient by lazy {
+        com.hikari.app.dub.VoiceScanClient(applicationContext)
+    }
+
+    /**
+     * Listens to the ORIGINAL sound of the video first (about 2 minutes for an
+     * episode, in a helper process, while the video keeps playing) to find
+     * out who speaks every line and whether that is a man or a woman, then
+     * starts the dub with those real voices. Any problem (a link that cannot
+     * be read, no internet, the helper stopping) just starts the dub the old
+     * way, so dubbing never fails because of the scan.
+     */
+    private fun startDubWithScan(
+        cues: List<com.hikari.app.dub.DubCue>,
+        lang: String,
+        mode: com.hikari.app.dub.VoiceMode,
+        duck: Float,
+        multi: Boolean,
+    ) {
+        val url = player?.currentMediaItem?.localConfiguration?.uri?.toString()
+        val src = sources.getOrNull(currentIndex)
+        if (url.isNullOrBlank() || src == null) {
+            beginDub(cues, lang, mode, duck, multi, false, null)
+            return
+        }
+        val clean = sanitizeHeaders(src.headers)
+        val withRef = if (src.providerId.startsWith("cs3|")) clean else withKnownHotlinkReferer(url, clean)
+        val headers = if (!src.providerId.startsWith("cs3|") && isLoopbackHost(url)) {
+            loopbackQueryHeaders(url) + withRef
+        } else {
+            withRef
+        }
+        val offset = subtitleOffsetMs
+        showDubToast(
+            I18n.t("Dub: listening to the original voices to tell men from women. This takes about 2 minutes; the dub starts after it.")
+        )
+        dubScanJob = lifecycleScope.launch {
+            val scan = try {
+                dubScanClient.scan(
+                    cues = cues,
+                    offsetMs = offset,
+                    url = url,
+                    headers = headers,
+                    hls = src.isM3u8,
+                    onStatus = { msg -> showDubToast(msg) },
+                )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                null
+            }
+            if (isFinishing || isDestroyed) return@launch
+            beginDub(cues, lang, mode, duck, multi, false, scan)
+        }
+    }
+
+    // ── Make a subtitle from the voice of the video ───────────────────────
+    // Used when a video has no subtitle at all: the voice is listened to (in the
+    // helper process, see com.hikari.app.dub.VoiceTranscriber), written down as
+    // SRT and then added to the subtitle list like a file the person brought.
+    // Dub audio can read it straight away.
+    private val subtitleGenClient: com.hikari.app.dub.SubtitleGenClient by lazy {
+        com.hikari.app.dub.SubtitleGenClient(applicationContext)
+    }
+
+    /** The subtitle writing that is running (null when none is). */
+    private var subtitleGenJob: Job? = null
+
+    /** Asks for quality + language (and downloads the speech model once), then listens to the video. */
+    private fun generateSubtitleFromVoice() {
+        if (subtitleGenJob?.isActive == true) {
+            showDubToast(I18n.t("A subtitle is already being written. Open the Subtitles list to stop it."))
+            return
+        }
+        val url = player?.currentMediaItem?.localConfiguration?.uri?.toString()
+        val src = sources.getOrNull(currentIndex)
+        if (url.isNullOrBlank() || src == null) {
+            showDubToast(I18n.t("The video is not ready yet. Start it first, then try again."))
+            return
+        }
+        com.hikari.app.dub.SubtitleGenUi.show(this) { size, lang ->
+            startSubtitleGen(url, src, size, lang)
+        }
+    }
+
+    private fun stopSubtitleGen() {
+        subtitleGenJob?.cancel()
+        subtitleGenJob = null
+        showDubToast(I18n.t("Writing the subtitle was stopped."))
+    }
+
+    private fun startSubtitleGen(
+        url: String,
+        src: PlayerSource,
+        size: com.hikari.app.dub.WhisperSize,
+        lang: String,
+    ) {
+        val clean = sanitizeHeaders(src.headers)
+        val withRef = if (src.providerId.startsWith("cs3|")) clean else withKnownHotlinkReferer(url, clean)
+        val headers = if (!src.providerId.startsWith("cs3|") && isLoopbackHost(url)) {
+            loopbackQueryHeaders(url) + withRef
+        } else {
+            withRef
+        }
+        val durationMs = player?.duration?.takeIf { it > 0L } ?: 0L
+        showDubToast(
+            I18n.t("Subtitle: listening to the voice. This takes several minutes; the video keeps playing.")
+        )
+        subtitleGenJob = lifecycleScope.launch {
+            val made = try {
+                subtitleGenClient.generate(
+                    url = url,
+                    headers = headers,
+                    hls = src.isM3u8,
+                    durationMs = durationMs,
+                    language = lang,
+                    size = size,
+                    onStatus = { msg -> showDubToast(msg) },
+                )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                null
+            }
+            if (isFinishing || isDestroyed) return@launch
+            if (made == null) return@launch
+            val name = if (made.lang.isNotBlank()) "Voice subtitle (" + made.lang + ")" else "Voice subtitle"
+            addGeneratedSubtitle(made.srt, name, made.lang, made.partial)
+        }
+    }
+
     /** The system file picker for "Add external subtitle". */
     private var externalSubLauncher: ActivityResultLauncher<Array<String>>? = null
 
@@ -10586,6 +10885,17 @@ class PlayerActivity : ComponentActivity() {
                 marker = RowMarker.ICON,
             )
         )
+        // The answer to "this video has no subtitle and nothing online fits":
+        // listen to the voice and write one.
+        val genSubRow = options.size
+        options.add(
+            GlassOption(
+                if (subtitleGenJob?.isActive == true) I18n.t("Stop writing subtitle") else I18n.t("Make subtitle from voice"),
+                I18n.t("Listen to the video's sound and write the subtitle"),
+                iconRes = R.drawable.ic_subtitles,
+                marker = RowMarker.ICON,
+            )
+        )
         // Offered only when there is something to remove, so the sheet never
         // carries a dead row.
         val removeSubRow = if (userSubs.isNotEmpty()) options.size else -1
@@ -10665,6 +10975,9 @@ class PlayerActivity : ComponentActivity() {
                         // The sheet closes first so the picker is not stacked
                         // behind it (see the dismiss below).
                         externalSubLauncher?.launch(arrayOf("*/*"))
+                    }
+                    genSubRow -> {
+                        if (subtitleGenJob?.isActive == true) stopSubtitleGen() else generateSubtitleFromVoice()
                     }
                     removeSubRow -> removeUserSubs()
                     else -> {
@@ -12237,6 +12550,19 @@ class PlayerActivity : ComponentActivity() {
                 selected = aiDub.enabled,
             )
         )
+        // Dub audio: translate the subtitle and speak it with Google / phone / neural
+        // voices (downloadable voice files), a different voice per character, voice scan
+        // and "make subtitle from voice". Separate from AI Dub above: starting one stops
+        // the other.
+        val dubAudioIndex = options.size
+        options.add(
+            GlassOption(
+                label = I18n.t("Dub audio"),
+                sub = dubAudioStatus(),
+                badge = if (dubEngineRunning()) I18n.t("On") else I18n.t("Off"),
+                selected = dubEngineRunning(),
+            )
+        )
         val dualToggleIndex = options.size
         options.add(
             GlassOption(
@@ -12264,6 +12590,10 @@ class PlayerActivity : ComponentActivity() {
             }
             if (which == aiDubIndex) {
                 showAiDubSheet()
+                return@showGlassMenu
+            }
+            if (which == dubAudioIndex) {
+                showDubDialog()
                 return@showGlassMenu
             }
             if (which == 0) {
@@ -12370,6 +12700,13 @@ class PlayerActivity : ComponentActivity() {
                 )
             )
         } else clearIdx = -1
+        val moreIdx = opts.size
+        opts.add(
+            GlassOption(
+                label = I18n.t("More voices & engines"),
+                sub = I18n.t("Dub audio: Google, phone and neural voices \u2014 download voice files"),
+            )
+        )
         val stopIdx = opts.size
         opts.add(
             GlassOption(
@@ -12386,6 +12723,7 @@ class PlayerActivity : ComponentActivity() {
             aiDubSheet = null
             when {
                 which == 0 -> {
+                    stopDubAudio()
                     aiDub.engine = AiDubManager.ENGINE_SYSTEM
                     aiDub.enabled = true
                     aiDub.save()
@@ -12396,6 +12734,7 @@ class PlayerActivity : ComponentActivity() {
                         Toast.makeText(this, I18n.t("Piper needs a 64-bit phone"), Toast.LENGTH_SHORT).show()
                         return@showGlassMenu
                     }
+                    stopDubAudio()
                     aiDub.engine = AiDubManager.ENGINE_PIPER
                     aiDub.enabled = true
                     aiDub.save()
@@ -12415,6 +12754,7 @@ class PlayerActivity : ComponentActivity() {
                 }
                 which in 2 until hardIdx -> {
                     val L = langs[which - 2]
+                    stopDubAudio()
                     aiDub.lang = L.code
                     aiDub.enabled = true
                     aiDub.save()
@@ -12459,6 +12799,7 @@ class PlayerActivity : ComponentActivity() {
                     aiDub.clearPiper()
                     toastAiDub()
                 }
+                which == moreIdx -> showDubDialog()
                 which == stopIdx -> {
                     aiDub.enabled = false
                     aiDub.save()
@@ -12467,6 +12808,22 @@ class PlayerActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    /** Sub-line of the "Dub audio" row in the Audio panel. */
+    private fun dubAudioStatus(): String {
+        if (!dubEngineRunning()) {
+            return I18n.t("Off \u2014 Google, phone or neural voices (Hindi, English and more)")
+        }
+        val code = dubEngineLazy.value.activeLang
+        val lang = com.hikari.app.data.Translator.LANGUAGES.firstOrNull { it.first == code }?.second ?: code
+        val voice = when (com.hikari.app.dub.DubPrefs.mode(this)) {
+            com.hikari.app.dub.VoiceMode.AUTO -> I18n.t("Automatic")
+            com.hikari.app.dub.VoiceMode.GOOGLE -> I18n.t("Google voice")
+            com.hikari.app.dub.VoiceMode.LOCAL -> I18n.t("Phone voice")
+            com.hikari.app.dub.VoiceMode.NEURAL -> I18n.t("Neural voice")
+        }
+        return voice + " \u00b7 " + lang
     }
 
     private fun aiDubStatus(): String {
@@ -12761,25 +13118,8 @@ class PlayerActivity : ComponentActivity() {
     /** Seeks both players together — every user seek keeps the dual-audio
      *  pair aligned instantly instead of drifting until the 1s heartbeat. */
     private fun seekBoth(targetMs: Long) {
-        // A progressive (mp4) timeline reports duration only once the header
-        // lands; seeking before that (or when the server ignored Range and
-        // left the timeline unseekable) jumps to 0 and restarts from the
-        // top — the HubCloud/Pixeldrain "skip restarts" report. Hold the
-        // position instead of manufacturing a restart.
         try {
-            val p = player
-            if (p != null) {
-                val dur = p.duration
-                val seekable = dur > 0L && runCatching {
-                    val tl = p.currentTimeline
-                    !tl.isEmpty && tl.getWindow(0, androidx.media3.common.Timeline.Window()).isSeekable
-                }.getOrDefault(dur > 0L)
-                if (seekable) p.seekTo(targetMs.coerceIn(0L, dur))
-                else com.hikari.app.data.Logs.log(
-                    "Player",
-                    "seek ignored — timeline not seekable yet target=" + targetMs + " dur=" + dur,
-                )
-            }
+            player?.seekTo(targetMs)
         } catch (_: Throwable) { }
         try {
             dualPlayer?.seekTo(targetMs)
@@ -15824,6 +16164,39 @@ class PlayerActivity : ComponentActivity() {
         reattachSubtitles(label)
     }
 
+    /**
+     * Adds a subtitle that was written from the voice of the video: it joins the
+     * list like a file the person picked (so it survives a server change and
+     * Dub audio can read it) and is switched on at once.
+     */
+    private suspend fun addGeneratedSubtitle(srt: String, name: String, lang: String, partial: Boolean) {
+        val label = USER_SUB_PREFIX + name
+        val mime = subtitleMimeOf(srt, "voice.srt")
+        val written = withContext(Dispatchers.IO) {
+            writeSubtitleFile(
+                shiftSubtitleText(srt, subtitleOffsetMs, "user:" + label), "user:" + label, mime
+            )
+        }
+        if (written == null) {
+            Toast.makeText(this, I18n.t("Couldn't read that file"), Toast.LENGTH_LONG).show()
+            return
+        }
+        userSubs.removeAll { it.label == label }
+        userSubs.add(UserSubtitle(label, name, srt, mime, lang).also {
+            it.uri = written
+            it.forOffset = subtitleOffsetMs
+        })
+        textOff = false
+        noSubsRetry = false
+        val msg = if (partial) {
+            I18n.t("Subtitle added (only the first part of the video was written)")
+        } else {
+            I18n.t("Subtitle added")
+        }
+        Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+        reattachSubtitles(label)
+    }
+
     /** Forgets every subtitle the user added and re-prepares without them. */
     private fun removeUserSubs() {
         if (userSubs.isEmpty()) return
@@ -16470,16 +16843,7 @@ class PlayerActivity : ComponentActivity() {
             // for fresh sources the same way a stale 403 does.
             val loopback400Refresh = httpStatus == 400 &&
                 isLoopbackHost(sources.getOrNull(currentIndex)?.url.orEmpty())
-            // A bridge 502/503 is the same class as a stale 403: the bridge's
-            // upstream file link (Filmu's sacdn HLS) expired, and a fresh
-            // extraction hands out a working one. Re-resolve once or twice
-            // before walking the list, exactly like stale signed playlists.
-            val bridge5xxRefresh = (httpStatus == 502 || httpStatus == 503) &&
-                runCatching {
-                    val h = java.net.URI(sources.getOrNull(currentIndex)?.url.orEmpty()).host.orEmpty().lowercase()
-                    h.contains("workers.dev") || h.contains("bridge")
-                }.getOrDefault(false)
-            if ((httpStatus == 403 || loopback400Refresh || bridge5xxRefresh) &&
+            if ((httpStatus == 403 || loopback400Refresh) &&
                 liveSessionId != null &&
                 signedLinkRefreshes < 2 &&
                 !isLiveSource(sources.getOrNull(currentIndex))
@@ -18172,6 +18536,10 @@ class PlayerActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        // Dub audio: free the engine only if it was ever created (it is lazy).
+        if (dubEngineLazy.isInitialized()) runCatching { dubEngineLazy.value.release() }
+        dubScanJob?.cancel()
+        subtitleGenJob?.cancel()
         stopBannerAnimators()
         recordProgress()
         flushWatchSeconds()
