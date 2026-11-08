@@ -474,3 +474,16 @@
 -keep class org.skepsun.kototoro.parsers.model.ContentListFilter$Companion { *; }
 -dontwarn org.skepsun.kototoro.parsers.**
 -dontwarn org.hany18h.parsers.**
+
+# ---------------------------------------------------------------------------
+# Dub audio / AI Dub (sherpa-onnx offline voices, speaker scan, subtitle from voice)
+# The speaker / speech-to-text classes are reached by NAME (reflection) and the
+# voice classes call into native code, so shrinking must leave them whole.
+# ---------------------------------------------------------------------------
+-keep class com.k2fsa.sherpa.onnx.** { *; }
+-keepclasseswithmembernames class * { native <methods>; }
+-dontwarn org.apache.commons.compress.**
+-dontwarn org.tukaani.**
+-dontwarn com.github.luben.**
+-dontwarn org.brotli.**
+-dontwarn org.objectweb.**
