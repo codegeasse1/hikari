@@ -246,3 +246,4 @@ object TvdbArt {
         }
     }
 }
+// rebuild 0.12.64 attempt 2
