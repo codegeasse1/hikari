@@ -1751,6 +1751,7 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
                 hidden = visibleTabs,
                 onNavigate = { route -> Routes.navigateTab(nav, route) },
                 modifier = Modifier.align(Alignment.CenterStart),
+                isScrolling = !barExpanded,
             )
         }
         // Remote-mouse cursor (Home header toggle): a D-pad-driven pointer
