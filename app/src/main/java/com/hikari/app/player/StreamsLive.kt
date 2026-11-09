@@ -42,10 +42,16 @@ object StreamsLive {
     fun flow(id: String): MutableStateFlow<List<StreamSource>> =
         sessions.computeIfAbsent(id) { MutableStateFlow(emptyList()) }
 
+    // Backpressure cap: a big title's sweep can offer hundreds of servers
+    // across retries; an unbounded session list pins them all (plus their
+    // headers/art) until the player closes. 250 keeps every realistic title
+    // whole (the OOM title had ~104) while bounding the worst case.
+    private const val SESSION_SERVER_CAP = 250
+
     fun append(id: String, sources: List<StreamSource>) {
         if (sources.isEmpty()) return
         val flow = sessions.computeIfAbsent(id) { MutableStateFlow(emptyList()) }
-        flow.update { (it + sources).distinctBy { s -> s.infoHash ?: s.url } }
+        flow.update { (it + sources).distinctBy { s -> s.infoHash ?: s.url }.take(SESSION_SERVER_CAP) }
     }
 
     /** The episode the detail screen settled on for this session. Sent when a

@@ -11,7 +11,9 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -37,7 +39,19 @@ object StreamProbe {
     fun knownBad(url: String): Boolean = url.isNotBlank() && url in badUrls
 
     private const val MAX_DEPTH = 3
-    private const val HEAD_BYTES = 131_072
+    // Fix 4 (don't buffer bodies): 16KB is plenty to sniff #EXTM3U / <MPD /
+    // ftyp + mine wrapper-page URLs. The old 128KB × dozens of parallel
+    // probes is what filled the 512MB heap and OOM'd in okio.Segment.
+    private const val HEAD_BYTES = 16_384
+    private const val RANGE_BYTES = "bytes=0-16383"
+    private const val OCTET_SNIFF_BYTES = 8_192
+    // Fix 2 (lazy probe): warm only the head of the list (origin-first), the
+    // rest resolve on tap/failover. The full list still shows — warm only
+    // affects pre-play verification, never what the sheet lists.
+    private const val WARM_TOP_N = 12
+    // Fix 3 (cap fan-out): top-level candidate race + candidate count.
+    private const val FOLLOW_TOP_FANOUT = 2
+    private const val CANDIDATE_MAX = 5
 
     /** Probe budgets, scaled up while the Settings "Slow connection mode"
      *  toggle is on (see [NetTuning]). */
@@ -54,7 +68,29 @@ object StreamProbe {
      *  probe for the same URL share a single network walk instead of racing. */
     private val inflight = ConcurrentHashMap<String, CompletableDeferred<Resolved?>>()
 
-    private val resolveGate = Semaphore(10)
+    // Fix 3 (cap fan-out): 4 concurrent resolutions max. Probes share the
+    // playback pool; 10 × multi-warm × 4-thread candidate races = 60+ parallel
+    // bodies in the crash log. 4 keeps picks fast without the spike.
+    private val resolveGate = Semaphore(4)
+    // One warm at a time: overlapping warmAsync calls used to run concurrently
+    // (search + player + detail each warming 100 URLs). tryLock coalesces them.
+    private val warmMutex = Mutex()
+    // Fix 5 (cancellable): every in-flight probe Call, so a timeout / low-memory
+    // trim can actually unblock the socket instead of leaving the thread parked.
+    private val activeCalls = ConcurrentHashMap<okhttp3.Call, Boolean>()
+    private val callsByUrl = ConcurrentHashMap<String, MutableSet<okhttp3.Call>>()
+
+    /** Cancel in-flight probe network calls (all, or one URL). Unblocks the
+     *  socket reads that withTimeoutOrNull alone cannot interrupt. */
+    fun cancelInFlight(url: String? = null) {
+        try {
+            if (url != null) {
+                callsByUrl[url]?.toList()?.forEach { runCatching { it.cancel() } }
+            } else {
+                activeCalls.keys.toList().forEach { runCatching { it.cancel() } }
+            }
+        } catch (_: Throwable) { }
+    }
 
     /** url -> resolved form. Shared across the whole app (and read first by the
      *  player, so ANY earlier resolution — source search, a previous play, a
@@ -170,10 +206,20 @@ object StreamProbe {
             }
             try {
                 val deadline = System.currentTimeMillis() + RESOLVE_TIMEOUT_MS
-                val resolved = resolveGate.withPermit {
-                    withTimeoutOrNull(RESOLVE_TIMEOUT_MS + 8_000L) {
-                        follow(url, headers, 0, deadline)
-                    }
+                // Fix 5: follow() does blocking socket reads that
+                // withTimeoutOrNull cannot interrupt on its own. Run it as a
+                // child task and cancel its Calls on timeout so the thread is
+                // actually freed instead of parking forever.
+                val task = bgScope.async {
+                    resolveGate.withPermit { follow(url, headers, 0, deadline) }
+                }
+                var resolved: Resolved? = null
+                try {
+                    resolved = withTimeoutOrNull(RESOLVE_TIMEOUT_MS + 8_000L) { task.await() }
+                } catch (_: Throwable) { resolved = null }
+                if (task.isActive) {
+                    task.cancel()
+                    cancelInFlight(url)
                 }
                 if (resolved != null) {
                     cache[url] = resolved
@@ -198,7 +244,13 @@ object StreamProbe {
      *  they just discovered without waiting on the network. */
     fun warmAsync(sources: List<StreamSource>) {
         if (sources.isEmpty()) return
-        bgScope.launch { runCatching { warm(sources) } }
+        // Fix 3+6: coalesce overlapping warms — if one is already running,
+        // skip instead of piling a second 100-URL storm on top of it.
+        if (!warmMutex.tryLock()) return
+        bgScope.launch {
+            try { runCatching { warm(sources) } }
+            finally { runCatching { warmMutex.unlock() } }
+        }
     }
 
     /** Extension-local proxy URLs are never probed: their ?url= tokens are
@@ -264,13 +316,13 @@ object StreamProbe {
             .filter { it.url.isNotBlank() && needsResolve(it.url, it.isTorrent, it.isM3u8, it.isMpd) }
         if (targets.isEmpty()) return
         ensureLoaded()
-        val pending = targets.filter { cache[it.url] == null }
+        // Fix 2: verify only the head of the list (origin-first); the tail
+        // resolves on tap/failover. Full list still shows — this never filters.
+        val pending = targets.filter { cache[it.url] == null }.take(WARM_TOP_N)
         if (pending.isEmpty()) return
-        // Six at a time (not three): most of a source list's probes finish in
-        // one round-trip, and warming them all before the user picks a server
-        // is what makes the pick instant. The probes share the playback
-        // connection pool, so the extra concurrency costs almost nothing.
-        val sem = Semaphore(6)
+        // Fix 3: four at a time. Six × several concurrent warms × candidate
+        // races is the 60-worker storm in the OOM log.
+        val sem = Semaphore(4)
         coroutineScope {
             pending.map { s ->
                 async(Dispatchers.IO) {
@@ -316,22 +368,39 @@ object StreamProbe {
                 // can skip this URL instead of paying its own prepare + error
                 // timeout to re-discover the same thing. 401/403 are excluded:
                 // they are usually fixed by walking the header set down.
-                if (r.code >= 500 || r.code == 404 || r.code == 410) badUrls.add(url)
+                if (r.code >= 500 || r.code == 404 || r.code == 410) {
+                    badUrls.add(url)
+                    if (badUrls.size > 2000) runCatching { badUrls.clear() }
+                }
                 return null
             }
             val ct = r.headers["Content-Type"]?.lowercase() ?: ""
+            // Fix 4: never buffer a body just to classify it. Playable types
+            // return on headers alone; only wrapper pages pay for a sniff.
+            if (ct.contains("mpegurl") || ct.contains("m3u8")) {
+                return Resolved(url, MimeTypes.APPLICATION_M3U8)
+            }
+            if (ct.contains("dash+xml") || ct.contains("mpd")) {
+                return Resolved(url, MimeTypes.APPLICATION_MPD)
+            }
+            if (ct.startsWith("video/") || ct.startsWith("audio/")) {
+                return Resolved(url, null)
+            }
             val body = r.body ?: return null
+            // octet-stream is usually a file download (R2 dead-ends in the OOM
+            // log): sniff 8KB for ftyp only, never the full head.
+            val sniffLen = if ("octet-stream" in ct) OCTET_SNIFF_BYTES else HEAD_BYTES
             val head: String = try {
-                val buf = ByteArray(HEAD_BYTES)
+                val buf = ByteArray(sniffLen)
                 val input = body.byteStream()
                 var read = 0
                 while (read < buf.size) {
+                    if (System.currentTimeMillis() > deadline) break
                     val n = input.read(buf, read, buf.size - read)
                     if (n < 0) break
                     read += n
                 }
-                // ISO-8859-1 keeps the raw bytes, so the "#EXTM3U"/"ftyp" sniffs
-                // below are never thrown off by charset decoding.
+                // ISO-8859-1 keeps the raw bytes, so the sniff stays exact.
                 String(buf, 0, read, Charsets.ISO_8859_1)
             } catch (t: Throwable) {
                 return null
@@ -366,7 +435,9 @@ object StreamProbe {
                 return null
             }
             if (depth == 0 && candidates.size > 1) {
-                val pool = Executors.newFixedThreadPool(minOf(candidates.size, 4)) { runnable ->
+                // Fix 3: at most a 2-way race. 4-way x 4-6 concurrent probes
+                // was 16-24 threads per warm before deeper hops.
+                val pool = Executors.newFixedThreadPool(minOf(candidates.size, FOLLOW_TOP_FANOUT)) { runnable ->
                     Thread(runnable, "hikari-probe").apply { isDaemon = true }
                 }
                 try {
@@ -395,14 +466,22 @@ object StreamProbe {
      *  opening bytes instead of holding the connection for the whole file, and
      *  closes the body right after reading the head. Returns null — never
      *  throws — on any failure. */
-    private fun get(url: String, headers: Map<String, String>): Response? = try {
+    private fun get(url: String, headers: Map<String, String>): Response? {
         val b = okhttp3.Request.Builder().url(url)
             .header("User-Agent", Http.UA)
-            .header("Range", "bytes=0-262143")
+            .header("Range", RANGE_BYTES)
         headers.forEach { (k, v) -> if (!k.equals("Range", ignoreCase = true)) b.header(k, v) }
-        client.newCall(b.build()).execute()
-    } catch (t: Throwable) {
-        null
+        val call = client.newCall(b.build())
+        activeCalls[call] = true
+        callsByUrl.computeIfAbsent(url) { ConcurrentHashMap.newKeySet() }.add(call)
+        return try {
+            call.execute()
+        } catch (t: Throwable) {
+            null
+        } finally {
+            activeCalls.remove(call)
+            runCatching { callsByUrl[url]?.remove(call) }
+        }
     }
 
     /** Finds the media-looking URLs inside a wrapper page's head and ranks them
@@ -427,6 +506,6 @@ object StreamProbe {
             }
             if (score >= 40) scored.putIfAbsent(u, score)
         }
-        return scored.entries.sortedByDescending { it.value }.take(8).map { it.key }
+        return scored.entries.sortedByDescending { it.value }.take(CANDIDATE_MAX).map { it.key }
     }
 }

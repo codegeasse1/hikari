@@ -53,8 +53,12 @@ object PlayerHttp {
             .connectionPool(ConnectionPool(8, 5, TimeUnit.MINUTES))
             .dispatcher(
                 Dispatcher().apply {
-                    maxRequests = 64
-                    maxRequestsPerHost = 16
+                    // Buttery-smooth cap: probes share this pool with playback +
+                    // extraction. 64/16 let one title's probe storm (60+ parallel
+                    // bodies in the OOM log) fill the heap. 24/6 still leaves headroom
+                    // for playback while bounding the storm.
+                    maxRequests = 24
+                    maxRequestsPerHost = 6
                 }
             )
             .build()

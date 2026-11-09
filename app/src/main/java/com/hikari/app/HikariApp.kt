@@ -674,6 +674,10 @@ class HikariApp : Application() {
         // one this stays a pure log line: the cache there is bounded, the device
         // has the memory, and re-decoding a screenful of posters after every
         // trim would be its own bug.
+        // OOM guard: probes hold the largest transient buffers (okio segments
+        // over HTTP/2). On pressure, unblock their sockets first — withTimeout
+        // alone cannot interrupt a parked read; cancelling the Calls can.
+        runCatching { com.hikari.app.net.StreamProbe.cancelInFlight() }
         val onTv = com.hikari.app.data.PerfMode.tvDevice
         val critical = level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL
         if (onTv || critical || pressured) {
