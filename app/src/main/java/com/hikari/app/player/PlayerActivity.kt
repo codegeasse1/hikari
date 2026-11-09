@@ -1027,6 +1027,11 @@ class PlayerActivity : ComponentActivity() {
         // choosing (see [maybePrefetchTorrent]): by the tap it is instant.
         // Guarded and session-keyed inside; safe from any thread.
         maybePrefetchTorrent()
+        // A server that lands late may be the one that carries the default audio. Posted to the
+        // main looper (this runs on background threads too), and a no-op once it has been used.
+        if (defaultAudio.isNotBlank()) {
+            rebuildHandler.post { if (renderedFirstFrame) applyDefaultAudio(allowServerSwitch = true) }
+        }
         // Servers can be appended (and re-probed) from background threads, and a
         // watcher touches views — always rebuild on the main looper.
         //
@@ -1631,6 +1636,23 @@ class PlayerActivity : ComponentActivity() {
      *  rebuild. */
     private var pickText: TrackPick? = null
     private var pickAudio: TrackPick? = null
+
+    /** Default quality (pixels of height, 0 = Auto) and default audio language codes, read from
+     *  Settings -> Player -> Default quality & audio. A video opens on these by itself. */
+    private var defaultQualityH = 0
+    private var defaultAudio = ""
+    private var defaultAudio2 = ""
+
+    /** The person picked a quality / an audio themselves in this player: the defaults stay out of it.
+     *  The quality pick belongs to one server (see [playSource]); the audio pick is a language and
+     *  stays for the whole session. */
+    private var userPickedQuality = false
+    private var userPickedAudio = false
+
+    /** The default audio already moved playback to another server once (it never loops), and the
+     *  moment after the first picture until which a late-arriving server may still be used. */
+    private var audioServerSwitched = false
+    private var audioSwitchDeadline = 0L
 
     /**
      * Cross-server audio: the video keeps playing from the current server
@@ -3016,6 +3038,17 @@ class PlayerActivity : ComponentActivity() {
                     }
                 }
             }
+        }
+        // Default quality + audio (Settings -> Player -> Default quality & audio). Read like the
+        // preferences above; when the tracks are already known by the time the answer lands, the
+        // defaults go on immediately, otherwise onTracksChanged applies them.
+        lifecycleScope.launch {
+            val st = (applicationContext as HikariApp).store
+            defaultQualityH = runCatching { st.playerDefaultQuality() }.getOrDefault(0)
+            defaultAudio = runCatching { st.playerDefaultAudio() }.getOrDefault("")
+            defaultAudio2 = runCatching { st.playerDefaultAudio2() }.getOrDefault("")
+            applyDefaultQuality()
+            applyDefaultAudio(allowServerSwitch = false)
         }
         // The Stats page's stopwatch: it counts wall-clock seconds of actual
         // playback and hands them to the store every minute (see
@@ -10838,6 +10871,8 @@ class PlayerActivity : ComponentActivity() {
             hint = I18n.t("Higher quality uses more data"),
             iconRes = R.drawable.ic_quality,
         ) { which ->
+            // An explicit pick (Auto included) ends the default quality for this server.
+            userPickedQuality = true
             if (which == 0) {
                 p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
                     .clearOverridesOfType(C.TRACK_TYPE_VIDEO)
@@ -12725,6 +12760,7 @@ class PlayerActivity : ComponentActivity() {
                 return@showGlassMenu
             }
             variantMap[which]?.let {
+                userPickedAudio = true
                 if (dualAudioOn) showDualAudioChoice(it) else switchAudioVariant(it)
                 return@showGlassMenu
             }
@@ -12737,6 +12773,7 @@ class PlayerActivity : ComponentActivity() {
                 return@showGlassMenu
             }
             if (which == 0) {
+                userPickedAudio = true
                 stopDualAudio()
                 pickAudio = null
                 // Fresh player, not the dialog-time snapshot: a re-resolve
@@ -12750,6 +12787,7 @@ class PlayerActivity : ComponentActivity() {
                 }
             } else {
                 val (group, ti) = indexMap[which] ?: return@showGlassMenu
+                userPickedAudio = true
                 // An in-stream track is the video server's own sound: any
                 // cross-server pairing ends with this pick.
                 stopDualAudio()
@@ -13543,6 +13581,8 @@ class PlayerActivity : ComponentActivity() {
         autoRotated = false
         userRotated = false
         userPickedSubs = false
+        // A new server is a new list of renditions: the default quality applies to it again.
+        userPickedQuality = false
         currentIndex = index
         // A new server owns its own timeline: a seek held for the previous
         // one must never land here.
@@ -16690,6 +16730,8 @@ class PlayerActivity : ComponentActivity() {
             // Re-assert the booster gain after a track change (cheap and
             // idempotent — the stage itself survives in the sink).
             applyVolumeBoost()
+            applyDefaultQuality()
+            applyDefaultAudio(allowServerSwitch = false)
             applyStickyPicks(C.TRACK_TYPE_AUDIO)
             applySubtitlePosition(subtitlePosition)
             if (noSubsRetry) return
@@ -16737,6 +16779,12 @@ class PlayerActivity : ComponentActivity() {
                     "in ${(android.os.SystemClock.elapsedRealtime() - serverStartAtMs) / 1000L}s " +
                     "decoder=${videoDecoderName ?: "-"}",
             )
+            // The stream is verified and its tracks are known: if the default audio is not in
+            // it, a server that carries that voice may be used (see [applyDefaultAudio]).
+            if (audioSwitchDeadline == 0L) {
+                audioSwitchDeadline = android.os.SystemClock.elapsedRealtime() + 30_000L
+            }
+            applyDefaultAudio(allowServerSwitch = true)
             maybeOfferResume()
         }
 
@@ -18446,6 +18494,110 @@ class PlayerActivity : ComponentActivity() {
             handler.postDelayed({ tick() }, 500L)
         }
         handler.postDelayed({ tick() }, 400L)
+    }
+
+    /**
+     * Opens the video on the default quality (Settings -> Player -> Default quality & audio), so it
+     * never has to be picked from the Quality sheet again. The best rendition at or below the wanted
+     * height is used; when every rendition is taller than that, the lowest one (the next one up).
+     * Stays out of the way once the person picks a quality themselves, and never fights the
+     * compatibility downshift. Idempotent: safe to call on every track change.
+     */
+    private fun applyDefaultQuality() {
+        val p = player ?: return
+        val wanted = defaultQualityH
+        if (wanted <= 0 || userPickedQuality || compatDownshift) return
+        val rows = ArrayList<Pair<Tracks.Group, Int>>()
+        val heights = ArrayList<Int>()
+        for (group in p.currentTracks.groups) {
+            if (group.type != C.TRACK_TYPE_VIDEO) continue
+            val mediaGroup = group.mediaTrackGroup
+            for (i in 0 until mediaGroup.length) {
+                if (!group.isTrackSupported(i)) continue
+                val f = mediaGroup.getFormat(i)
+                rows.add(group to i)
+                heights.add(DefaultPlayback.effectiveHeight(f.width, f.height))
+            }
+        }
+        // One rendition is not a choice.
+        if (rows.size < 2) return
+        val at = DefaultPlayback.pickQuality(heights, wanted)
+        if (at < 0) return
+        val group = rows[at].first
+        val ti = rows[at].second
+        val params = p.trackSelectionParameters
+        if (params.overrides[group.mediaTrackGroup]?.trackIndices?.contains(ti) == true) return
+        p.trackSelectionParameters = params.buildUpon()
+            .clearOverridesOfType(C.TRACK_TYPE_VIDEO)
+            .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, ImmutableList.of(ti)))
+            .build()
+    }
+
+    /**
+     * Plays the video with the default audio language (Settings -> Player -> Default quality &
+     * audio). In order, for the first language and then the "if not found" one: an audio track of
+     * the stream itself; the current server when its name says it carries that voice; another
+     * server that carries it (only until a little after the first picture, and only once). When
+     * none of it is found the stream's own default audio simply stays. Never touches an audio the
+     * person picked themselves, nor a cross-server audio pairing.
+     */
+    private fun applyDefaultAudio(allowServerSwitch: Boolean) {
+        val p = player ?: return
+        if (userPickedAudio || dualPlayer != null) return
+        val wanted = listOf(defaultAudio, defaultAudio2).filter { it.isNotBlank() }.distinct()
+        if (wanted.isEmpty()) return
+        val groups = p.currentTracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
+        for (code in wanted) {
+            for (group in groups) {
+                val mediaGroup = group.mediaTrackGroup
+                for (i in 0 until mediaGroup.length) {
+                    if (!group.isTrackSupported(i)) continue
+                    val f = mediaGroup.getFormat(i)
+                    if (!DefaultPlayback.trackMatches(code, f.language, f.label)) continue
+                    // Kept as the sticky pick, so a rebuilt track list (provider subtitles being
+                    // attached, Sync) lands on the same voice again.
+                    if (pickAudio?.matches(f, i) != true) {
+                        pickAudio = TrackPick(C.TRACK_TYPE_AUDIO, f.language, f.label, i)
+                    }
+                    applyStickyPicks(C.TRACK_TYPE_AUDIO)
+                    return
+                }
+            }
+            if (serverHasVoice(currentIndex, code)) return
+            if (allowServerSwitch && !audioServerSwitched &&
+                android.os.SystemClock.elapsedRealtime() <= audioSwitchDeadline
+            ) {
+                val at = serverWithVoice(code)
+                if (at >= 0) {
+                    audioServerSwitched = true
+                    switchAudioVariant(at)
+                    return
+                }
+            }
+        }
+    }
+
+    /** True when the server at [index] names itself as carrying the audio language [code]. */
+    private fun serverHasVoice(index: Int, code: String): Boolean {
+        val tag = sources.getOrNull(index)?.let { audioTagOf(it.name) }
+        return DefaultPlayback.tagMatches(code, tag)
+    }
+
+    /** A server (other than the current one) that carries the audio language [code], or -1.
+     *  Servers of this very title that differ only by audio come first; then any live server whose
+     *  name says it carries that voice. Torrents and hosts known to be dead are left out. */
+    private fun serverWithVoice(code: String): Int {
+        audioVariantsFor(currentIndex)
+            .firstOrNull { it.second != currentIndex && DefaultPlayback.tagMatches(code, it.first) }
+            ?.let { return it.second }
+        for (i in sources.indices) {
+            if (i == currentIndex) continue
+            val s = sources[i]
+            if (s.isTorrent || s.url.isBlank()) continue
+            if (mirrorHostOf(s.url) in deadHosts || StreamProbe.knownBad(s.url)) continue
+            if (DefaultPlayback.tagMatches(code, audioTagOf(s.name))) return i
+        }
+        return -1
     }
 
     /** Re-applies the user's remembered subtitle / audio pick to the CURRENT
