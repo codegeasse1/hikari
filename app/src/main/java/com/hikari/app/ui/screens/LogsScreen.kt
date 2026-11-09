@@ -77,6 +77,7 @@ fun LogsPage(app: HikariApp, onBack: () -> Unit) {
     BackHandler { onBack() }
 
     val files = remember(refreshTick) { Logs.logFiles(context) }
+    val heapFiles = remember(refreshTick) { Logs.heapFiles(context) }
 
     fun toast(msg: String) = Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
 
@@ -160,7 +161,6 @@ fun LogsPage(app: HikariApp, onBack: () -> Unit) {
             HeapSnapshotCard(onChanged = { refreshTick++ })
         }
 
-        val heapFiles = remember(refreshTick) { Logs.heapFiles(context) }
         for (heap in heapFiles) {
             item(key = "heap:" + heap.name) {
                 val heapMb = heap.length() / (1024 * 1024)

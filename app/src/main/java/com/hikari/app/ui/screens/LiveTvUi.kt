@@ -15,9 +15,16 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.DateRange
+import androidx.compose.material.icons.filled.FiberManualRecord
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -347,7 +354,7 @@ fun LiveTvShortcutBar(nav: androidx.navigation.NavHostController) {
     ) {
         item {
             LiveTvShortcut(
-                icon = androidx.compose.material.icons.Icons.Filled.CalendarMonth,
+                icon = Icons.Filled.CalendarMonth,
                 label = tr("Guide"),
             ) {
                 com.hikari.app.ui.navigation.Routes.safeNavigate(
@@ -358,7 +365,7 @@ fun LiveTvShortcutBar(nav: androidx.navigation.NavHostController) {
         }
         item {
             LiveTvShortcut(
-                icon = androidx.compose.material.icons.Icons.Filled.VideoLibrary,
+                icon = Icons.Filled.VideoLibrary,
                 label = tr("On Demand"),
             ) {
                 com.hikari.app.ui.navigation.Routes.safeNavigate(
@@ -369,7 +376,7 @@ fun LiveTvShortcutBar(nav: androidx.navigation.NavHostController) {
         }
         item {
             LiveTvShortcut(
-                icon = androidx.compose.material.icons.Icons.Filled.FiberManualRecord,
+                icon = Icons.Filled.FiberManualRecord,
                 label = tr("Record"),
             ) {
                 com.hikari.app.ui.navigation.Routes.safeNavigate(
@@ -380,7 +387,7 @@ fun LiveTvShortcutBar(nav: androidx.navigation.NavHostController) {
         }
         item {
             LiveTvShortcut(
-                icon = androidx.compose.material.icons.Icons.Filled.Star,
+                icon = Icons.Filled.Star,
                 label = tr("Sports"),
             ) {
                 com.hikari.app.ui.navigation.Routes.safeNavigate(
@@ -391,7 +398,7 @@ fun LiveTvShortcutBar(nav: androidx.navigation.NavHostController) {
         }
         item {
             LiveTvShortcut(
-                icon = androidx.compose.material.icons.Icons.Filled.DateRange,
+                icon = Icons.Filled.DateRange,
                 label = tr("Calendar"),
             ) {
                 com.hikari.app.ui.navigation.Routes.safeNavigate(
@@ -402,7 +409,7 @@ fun LiveTvShortcutBar(nav: androidx.navigation.NavHostController) {
         }
         item {
             LiveTvShortcut(
-                icon = androidx.compose.material.icons.Icons.Filled.Add,
+                icon = Icons.Filled.Add,
                 label = tr("Xtream"),
             ) { showXtream = true }
         }
@@ -411,7 +418,7 @@ fun LiveTvShortcutBar(nav: androidx.navigation.NavHostController) {
                 CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
             } else {
                 LiveTvShortcut(
-                    icon = androidx.compose.material.icons.Icons.Filled.Refresh,
+                    icon = Icons.Filled.Refresh,
                     label = tr("Update"),
                 ) {
                     updating = true
@@ -434,7 +441,7 @@ fun LiveTvShortcutBar(nav: androidx.navigation.NavHostController) {
         }
         item {
             LiveTvShortcut(
-                icon = androidx.compose.material.icons.Icons.Filled.Settings,
+                icon = Icons.Filled.Settings,
                 label = tr("Settings"),
             ) {
                 com.hikari.app.ui.navigation.Routes.safeNavigate(
