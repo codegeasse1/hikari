@@ -346,6 +346,10 @@ fun IptvScreen(nav: NavHostController) {
     }
 
     Column(Modifier.fillMaxSize()) {
+        // Live TV engine shortcuts (guide, On Demand, recordings, Sports,
+        // calendar, Xtream/EPG add, Update, settings) + the one-time import of
+        // this tab's own playlists into the engine.
+        LiveTvShortcutBar(nav)
         IptvSectionStrip(
             sections = listOf(IptvSection.PLAYLIST, IptvSection.TORRENT, IptvSection.STREAM),
             current = section,

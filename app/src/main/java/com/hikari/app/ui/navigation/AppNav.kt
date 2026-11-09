@@ -120,6 +120,13 @@ import com.hikari.app.ui.screens.HomeScreen
 import com.hikari.app.ui.screens.IptvPlaylistScreen
 import com.hikari.app.ui.screens.IptvScreen
 import com.hikari.app.ui.screens.LibraryScreen
+import com.hikari.app.ui.screens.LiveTvCalendarScreen
+import com.hikari.app.ui.screens.LiveTvGuideScreen
+import com.hikari.app.ui.screens.LiveTvManageScreen
+import com.hikari.app.ui.screens.LiveTvOnDemandScreen
+import com.hikari.app.ui.screens.LiveTvRecordingsScreen
+import com.hikari.app.ui.screens.LiveTvSettingsScreen
+import com.hikari.app.ui.screens.LiveTvSportsScreen
 import com.hikari.app.ui.screens.MangaDetailScreen
 import com.hikari.app.ui.screens.MangaReaderScreen
 import com.hikari.app.ui.screens.NovelReaderScreen
@@ -160,6 +167,14 @@ object Routes {
     const val IPTV = "iptv"
     /** One playlist's own page: its groups, each opening a paged channel grid. */
     const val IPTV_PLAYLIST = "iptv-playlist?pid={pid}"
+    /** Live TV engine pages (guide, settings, manage, on-demand, recordings, sports, calendar). */
+    const val LIVETV_SETTINGS = "livetv-settings"
+    const val LIVETV_GUIDE = "livetv-guide"
+    const val LIVETV_MANAGE = "livetv-manage"
+    const val LIVETV_ONDEMAND = "livetv-ondemand"
+    const val LIVETV_RECORDINGS = "livetv-recordings"
+    const val LIVETV_SPORTS = "livetv-sports"
+    const val LIVETV_CALENDAR = "livetv-calendar"
 
     const val MANGA = "manga"
     /** One manga: cover, description, follow button, chapter list. */
@@ -1133,6 +1148,13 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
             composable(Routes.HISTORY) { MyStuffScreen(nav, MyStuff.HISTORY) }
             composable(Routes.DOWNLOADS) { MyStuffScreen(nav, MyStuff.DOWNLOADS) }
             composable(Routes.IPTV) { IptvScreen(nav) }
+            composable(Routes.LIVETV_SETTINGS) { LiveTvSettingsScreen(nav) }
+            composable(Routes.LIVETV_GUIDE) { LiveTvGuideScreen(nav) }
+            composable(Routes.LIVETV_MANAGE) { LiveTvManageScreen(nav) }
+            composable(Routes.LIVETV_ONDEMAND) { LiveTvOnDemandScreen(nav) }
+            composable(Routes.LIVETV_RECORDINGS) { LiveTvRecordingsScreen(nav) }
+            composable(Routes.LIVETV_SPORTS) { LiveTvSportsScreen(nav) }
+            composable(Routes.LIVETV_CALENDAR) { LiveTvCalendarScreen(nav) }
             composable(
                 route = Routes.IPTV_PLAYLIST,
                 arguments = listOf(

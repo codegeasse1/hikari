@@ -28,9 +28,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -39,6 +41,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -59,6 +62,9 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 fun LogsPage(app: HikariApp, onBack: () -> Unit) {
@@ -141,6 +147,66 @@ fun LogsPage(app: HikariApp, onBack: () -> Unit) {
                                             DownloadsSaver.pathOf("")
                                     } else {
                                         "Could not save: " + failureReason(results)
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        item {
+            HeapSnapshotCard(onChanged = { refreshTick++ })
+        }
+
+        val heapFiles = remember(refreshTick) { Logs.heapFiles(context) }
+        for (heap in heapFiles) {
+            item(key = "heap:" + heap.name) {
+                val heapMb = heap.length() / (1024 * 1024)
+                GlassCard(Modifier.fillMaxWidth().padding(top = 8.dp)) {
+                    Column(Modifier.padding(14.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Filled.Memory,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(20.dp),
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    heap.name,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold,
+                                )
+                                Text(
+                                    tr("Heap snapshot") + " · $heapMb MB",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(10.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            ActionPill(
+                                icon = Icons.Filled.Share,
+                                label = tr("Share"),
+                                primary = true,
+                            ) {
+                                shareFiles(context, listOf(heap), "Hikari ${heap.name}")
+                            }
+                            ActionPill(
+                                icon = Icons.Filled.Save,
+                                label = tr("Save"),
+                                primary = false,
+                            ) {
+                                val result = saveLog(context, heap)
+                                toast(
+                                    if (result.isSuccess) {
+                                        "Saved to " + DownloadsSaver.pathOf("")
+                                    } else {
+                                        "Could not save: " + failureReason(listOf(result))
                                     }
                                 )
                             }
@@ -313,6 +379,74 @@ private fun ActionPill(
             color = if (primary) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
             fontWeight = FontWeight.Bold,
         )
+    }
+}
+
+/** Captures a full heap dump next to the logs (Settings → Logs &
+ *  diagnostics). A dump is hundreds of MB — the card says so — and the app
+ *  freezes for a few seconds while `dumpHprofData` writes, so it runs on IO
+ *  and toasts the path + size when done. No permission needed: app-private dir,
+ *  shared through the logs FileProvider path. */
+@Composable
+private fun HeapSnapshotCard(onChanged: () -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var busy by remember { mutableStateOf(false) }
+
+    fun toast(msg: String) = Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+
+    GlassCard(Modifier.fillMaxWidth().padding(top = 12.dp)) {
+        Column(Modifier.padding(14.dp)) {
+            Text(
+                tr("Heap snapshot"),
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                tr("Captures the app's full memory heap (hundreds of MB) next to the logs — send it when the app runs out of memory or slows down. The app freezes for a few seconds while it writes."),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(10.dp))
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                ActionPill(
+                    icon = Icons.Filled.Memory,
+                    label = tr("Capture heap"),
+                    primary = true,
+                ) {
+                    if (busy) return@ActionPill
+                    busy = true
+                    scope.launch {
+                        val file = withContext(Dispatchers.IO) {
+                            runCatching {
+                                val f = Logs.heapDumpFile(context)
+                                android.os.Debug.dumpHprofData(f.absolutePath)
+                                f.takeIf { it.exists() && it.length() > 0L }
+                            }.getOrNull()
+                        }
+                        busy = false
+                        if (file != null) {
+                            toast(file.name + " · " + (file.length() / (1024 * 1024)) + " MB")
+                            onChanged()
+                        } else {
+                            toast("Heap capture failed")
+                        }
+                    }
+                }
+                if (busy) {
+                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                    Text(
+                        tr("Writing…"),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
     }
 }
 

@@ -41,6 +41,12 @@ import java.util.concurrent.ConcurrentHashMap
  */
 class IptvProvider(override val config: ProviderConfig) : ContentProvider {
 
+    /** Non-null for the Live TV engine's provider rows (`livetv://` urls):
+     *  every override below delegates to the bridge, so a Live TV source
+     *  behaves like any playlist — Home rows, search, detail, the player. */
+    private val liveTvBridge: com.hikari.app.iptv.LiveTvBridge? =
+        com.hikari.app.iptv.LiveTvBridge.forConfig(config)
+
     companion object {
         /** Per-provider failure text, shown in the row/notification that
          *  explains an empty result — same contract as the other engines. */
@@ -231,11 +237,13 @@ class IptvProvider(override val config: ProviderConfig) : ContentProvider {
 
     /** The name the user gave the playlist, else the host it came from. */
     val displayName: String
-        get() = config.name.ifBlank {
+        get() = liveTvBridge?.displayName() ?: config.name.ifBlank {
             config.url.substringAfter("://").substringBefore('/').ifBlank { "IPTV" }
         }
 
     suspend fun channels(force: Boolean = false): List<IptvChannel> = loadLock.withLock {
+        val bridge = liveTvBridge
+        if (bridge != null) return@withLock bridge.tabChannels()
         val cached = channelsCache
         if (!force && cached != null && System.currentTimeMillis() - (loadedAt[config.id] ?: 0L) < TTL_MS) {
             return@withLock cached
@@ -343,6 +351,7 @@ class IptvProvider(override val config: ProviderConfig) : ContentProvider {
     }
 
     override suspend fun catalogs(): List<CatalogRef> {
+        liveTvBridge?.let { return it.catalogs() }
         val all = channels()
         if (all.isEmpty()) return emptyList()
         val out = ArrayList<CatalogRef>()
@@ -374,6 +383,7 @@ class IptvProvider(override val config: ProviderConfig) : ContentProvider {
         all.filter { IptvPlaylist.groupOf(it) == group }
 
     override suspend fun getCatalog(ref: CatalogRef, page: Int): List<MediaItem> {
+        liveTvBridge?.let { return it.getCatalog(ref, page) }
         val all = channels()
         val list = channelsInCatalog(all, ref.id)
         if (list.isEmpty()) return emptyList()
@@ -383,6 +393,7 @@ class IptvProvider(override val config: ProviderConfig) : ContentProvider {
     }
 
     override suspend fun search(query: String, page: Int): List<MediaItem> {
+        liveTvBridge?.let { return it.search(query, page) }
         val q = query.trim()
         if (q.isBlank()) return emptyList()
         val all = channels()
@@ -394,6 +405,7 @@ class IptvProvider(override val config: ProviderConfig) : ContentProvider {
     }
 
     suspend fun searchInCatalog(refId: String, query: String, page: Int): List<MediaItem> {
+        liveTvBridge?.let { return it.searchInCatalog(refId, query, page) }
         val q = query.trim()
         if (q.isBlank()) return emptyList()
         val scoped = channelsInCatalog(channels(), refId)
@@ -405,6 +417,7 @@ class IptvProvider(override val config: ProviderConfig) : ContentProvider {
     }
 
     override suspend fun getStreams(item: MediaItem, episode: Episode?): List<StreamSource> {
+        liveTvBridge?.let { return it.getStreams(item, episode) }
         val all = channels()
         val channel = all.firstOrNull { it.url == item.id }
             ?: all.firstOrNull { it.name.equals(item.title, ignoreCase = true) }
@@ -535,10 +548,16 @@ class IptvProvider(override val config: ProviderConfig) : ContentProvider {
         return out
     }
 
-    override suspend fun getMeta(item: MediaItem): MediaItem = item
+    override suspend fun getMeta(item: MediaItem): MediaItem {
+        liveTvBridge?.let { return it.getMeta(item) }
+        return item
+    }
 
     /** A channel has no episodes — it is one stream, playing continuously. */
-    override suspend fun getEpisodes(item: MediaItem): List<Episode>? = null
+    override suspend fun getEpisodes(item: MediaItem): List<Episode>? {
+        liveTvBridge?.let { return it.getEpisodes(item) }
+        return null
+    }
 
     private fun toItem(c: IptvChannel): MediaItem = MediaItem(
         providerId = config.id,

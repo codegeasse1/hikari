@@ -1,3 +1,9 @@
+## 0.12.76 (continuous build only)
+
+- Full Live TV section in the IPTV tab: M3U playlists, Xtream logins (server/user/password, guide comes with the login) and XMLTV guide sources, with update-everything-now, per-source refresh intervals, stream format Auto/MPEG-TS/HLS, backup-channel switching, Continue Watching row, guide grid with now-line, catch-up replays, On Demand movies/series import, recordings (schedule + series rules + foreground record service), Sports hub (ESPN scoreboards, follow teams, channel matching, game alerts), reminders, calendar, parental PIN with adult locks, hide/reorder/rename/custom groups, EPG assignment, and export/import backup
+- Settings → Logs can capture a heap snapshot next to the logs (share/save like a log file) for out-of-memory reports
+- Picking a manga provider on Home now shows its catalogue instead of an empty "Couldn't load" — taps open the manga detail and chapters open in the reader
+
 ## 0.12.70 (continuous build only)
 
 - Dub is much faster: the neural voice helper now makes lines of different voices at the same time (3 lanes instead of 1), keeps every voice loaded on phones with enough memory (no more unload/reload between two voices), and the dub queues new lines 3x more often with a deeper queue. The cause of the slow dub was one single voice lane plus the slow cloned women (Myira, Kyra), which held every line behind them

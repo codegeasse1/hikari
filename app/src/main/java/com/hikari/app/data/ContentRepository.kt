@@ -1727,7 +1727,7 @@ class ContentRepository(private val manager: ProviderManager) {
         }
     }
 
-    suspend fun homeRows(providerId: String? = null): List<CatalogRow> = withContext(Dispatchers.IO) {
+    suspend fun homeRows(providerId: String? = null, allowManga: Boolean = false): List<CatalogRow> = withContext(Dispatchers.IO) {
         val providerCatalogsEnabled = runCatching { HikariApp.instance.store.providerCatalogsEnabled() }.getOrDefault(true)
         if (!providerCatalogsEnabled) {
             runCatching { HikariApp.instance.store.ensureCinemetaAddon() }
@@ -1740,7 +1740,7 @@ class ContentRepository(private val manager: ProviderManager) {
             manager.providers.value
                 .filter {
                     it.config.enabled &&
-                        it.config.type != ProviderType.MANGA &&
+                        (allowManga || it.config.type != ProviderType.MANGA) &&
                         (providerId == null || it.config.id == providerId) &&
                         (providerCatalogsEnabled ||
                             (providerId != null && isTmdbHomeFallbackProvider(it)) ||
@@ -1773,7 +1773,7 @@ class ContentRepository(private val manager: ProviderManager) {
         translateRows(HomeDedupe.apply(rows, typeIndex(active)))
     }
 
-    fun homeRowsStreaming(providerId: String? = null): Flow<List<CatalogRow>> = flow {
+    fun homeRowsStreaming(providerId: String? = null, allowManga: Boolean = false): Flow<List<CatalogRow>> = flow {
         val providerCatalogsEnabled = runCatching { HikariApp.instance.store.providerCatalogsEnabled() }.getOrDefault(true)
         val animeFallback = if (!providerCatalogsEnabled && providerId == null) {
             runCatching { AnimeCatalogRepository.homeRows() }.getOrDefault(emptyList())
@@ -1781,18 +1781,21 @@ class ContentRepository(private val manager: ProviderManager) {
         homeRowsStreamingWhere(
             match = { providerId == null || it.config.id == providerId },
             allowDisabledProviderFallback = providerId != null,
+            allowManga = allowManga,
         ).collect { rows -> emit(if (animeFallback.isEmpty()) rows else animeFallback + rows) }
     }
 
-    fun homeRowsStreamingFor(ids: Set<String>): Flow<List<CatalogRow>> =
+    fun homeRowsStreamingFor(ids: Set<String>, allowManga: Boolean = false): Flow<List<CatalogRow>> =
         homeRowsStreamingWhere(
             match = { it.config.id in ids },
             allowDisabledProviderFallback = true,
+            allowManga = allowManga,
         )
 
     private fun homeRowsStreamingWhere(
         match: (ContentProvider) -> Boolean,
         allowDisabledProviderFallback: Boolean = false,
+        allowManga: Boolean = false,
     ): Flow<List<CatalogRow>> = flow {
         val providerCatalogsEnabled = runCatching { HikariApp.instance.store.providerCatalogsEnabled() }.getOrDefault(true)
         if (!providerCatalogsEnabled) {
@@ -1804,7 +1807,7 @@ class ContentRepository(private val manager: ProviderManager) {
             // feed (see the note in [homeRows]).
             manager.providers.value.filter {
                 it.config.enabled &&
-                    it.config.type != ProviderType.MANGA && match(it) &&
+                    (allowManga || it.config.type != ProviderType.MANGA) && match(it) &&
                     (providerCatalogsEnabled ||
                         (allowDisabledProviderFallback && isTmdbHomeFallbackProvider(it)) ||
                         (it.config.type != ProviderType.NUVIO && it.config.type != ProviderType.STREMIO) ||

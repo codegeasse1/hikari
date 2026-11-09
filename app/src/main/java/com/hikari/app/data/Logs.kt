@@ -149,6 +149,29 @@ object Logs {
 
     fun isReady(): Boolean = enabled
 
+    /** The app's private `logs/` folder (heap dumps live next to the logs). */
+    fun logDir(context: Context): File {
+        val d = dir ?: File(context.filesDir, "logs")
+        runCatching { if (!d.isDirectory) d.mkdirs() }
+        return d
+    }
+
+    /** A fresh heap-dump destination: `hikari-heap-<timestamp>.hprof`. The
+     *  logs FileProvider path already covers it, so it shares like a log. */
+    fun heapDumpFile(context: Context): File {
+        val name = "hikari-heap-" + heapStamp() + ".hprof"
+        return File(logDir(context), name)
+    }
+
+    /** Heap dumps already on disk, newest first (for the share/save list). */
+    fun heapFiles(context: Context): List<File> =
+        logDir(context).listFiles { f ->
+            f.isFile && f.name.startsWith("hikari-heap-") && f.name.endsWith(".hprof")
+        }?.sortedByDescending { it.lastModified() }.orEmpty()
+
+    private val heapStampFmt = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US)
+    private fun heapStamp(): String = synchronized(lock) { heapStampFmt.format(Date()) }
+
     /** Append one line to the in-memory ring and (when ready) to `app.log`. */
     fun log(tag: String, message: String) {
         val line = "${stampOf(stamp)} [${Thread.currentThread().name}] $tag: $message"

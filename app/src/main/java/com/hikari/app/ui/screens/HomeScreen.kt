@@ -385,16 +385,21 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
             }
         }
         val trackerFlow = kotlinx.coroutines.flow.flow { emit(trackerRows()) }
+        // A manga pick shows that engine's own catalogue (its Popular/Latest
+        // rows) instead of an empty "Couldn't load" — see [homeRowsStreamingFor].
+        val allowManga = manager.providers.value.any {
+            it.config.id in extensionIds && it.config.type == ProviderType.MANGA
+        }
         return when {
             // No pick means "All providers" — keep the normal extension feed.
             picks.isEmpty() -> repo.homeRowsStreaming()
             trackerKeys.isNotEmpty() && extensionIds.isNotEmpty() ->
                 kotlinx.coroutines.flow.merge(
                     trackerFlow,
-                    repo.homeRowsStreamingFor(extensionIds),
+                    repo.homeRowsStreamingFor(extensionIds, allowManga),
                 )
             trackerKeys.isNotEmpty() -> trackerFlow
-            extensionIds.isNotEmpty() -> repo.homeRowsStreamingFor(extensionIds)
+            extensionIds.isNotEmpty() -> repo.homeRowsStreamingFor(extensionIds, allowManga)
             else -> kotlinx.coroutines.flow.flowOf(emptyList())
         }
     }

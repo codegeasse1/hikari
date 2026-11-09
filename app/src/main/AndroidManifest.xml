@@ -23,6 +23,10 @@
     <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
+    <!-- Live TV recordings: exact alarms for scheduled recordings (falls back
+         to inexact when the user denies it) + rescheduling after a reboot. -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <!-- ==================================================================
          DEVICE PAIRING (Settings → Backup & Restore → Pair & sync)
@@ -430,6 +434,33 @@ android:name=".player.PlayerActivity"
             android:exported="false"
             android:foregroundServiceType="dataSync"
             android:stopWithTask="false" />
+
+        <!-- Live TV recording: copies the live stream (or a catch-up replay)
+             into app-private storage while the schedule runs. dataSync keeps
+             it alive with the screen off; WAKE_LOCK is already declared above.
+             The two receivers fire a schedule's alarm and rebuild the alarms
+             after a reboot. -->
+        <service
+            android:name="com.hikari.app.iptv.LiveTvRecordService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync"
+            android:stopWithTask="false" />
+
+        <receiver
+            android:name="com.hikari.app.iptv.LiveTvRecordScheduler$RecordAlarmReceiver"
+            android:exported="false" />
+
+        <receiver
+            android:name="com.hikari.app.iptv.LiveTvRecordScheduler$BootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name="com.hikari.app.iptv.LiveTvReminders$ReminderReceiver"
+            android:exported="false" />
 
         <provider
             android:name="androidx.core.content.FileProvider"
