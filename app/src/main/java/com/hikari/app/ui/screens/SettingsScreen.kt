@@ -193,6 +193,7 @@ import com.hikari.app.net.Updater
 import com.hikari.app.player.EnhancePreset
 import com.hikari.app.player.CustomEnhancePreset
 import com.hikari.app.player.PlayerSkins
+import com.hikari.app.player.DefaultPlayback
 import com.hikari.app.ui.AppIconManager
 import com.hikari.app.ui.AppIconVariants
 import com.hikari.app.ui.AppFonts
@@ -592,6 +593,7 @@ private fun searchSettings(rawQuery: String): List<SettingsSearchEntry> {
     }
     section("sec-player-style", "Player UI style", "Customize", "customize", null, null, "player ui style buttons icons size bigger colour color shape round square circle position move opacity customize")
     section("sec-player-gestures", "Player gestures & decoder", "Customize", "customize", null, null, "player gestures decoder brightness volume swipe slide seek pinch zoom hardware software video")
+    section("sec-default-playback", "Default quality & audio", "Player", "player", null, null, "default quality audio language voice dub hindi english 1080p 720p 480p resolution auto")
     val servers = "Playback & Servers"
     section("sec-play-start", "Playback start", servers, "servers", null, "player.start", "playback start play first server wait")
     section("sec-ask-where", "Ask where to play", servers, "servers", null, "player.start", "ask where play extension selected scope choice")
@@ -797,6 +799,7 @@ fun SettingsScreen(nav: NavHostController) {
                 SettingsFolder.PLAYER -> {
                     item { SettingsCard(top = 2.dp) { VideoEnhanceCard(app) } }
                     item { SettingsCard { PlayerUiCard(app) } }
+                    item { SettingsCard { DefaultPlaybackCard(app) } }
                     item { SettingsCard { HoldToFastForwardCard(app) } }
                     item { SettingsCard { PlayerIconLabelsCard(app) } }
 
@@ -3401,6 +3404,87 @@ private fun PlayerUiCard(app: HikariApp) {
                 scope.launch { runCatching { app.store.setPlayerSkin(pick) } }
             },
             onDismiss = { pickerOpen = false },
+        )
+    }
+}
+
+/**
+ * Default video quality and audio language. A video opens on these by itself, so nothing has to be
+ * picked from the player's Quality / Audio sheets each time. When the quality (or the audio) is
+ * not offered, the player moves to the next closest one.
+ */
+@Composable
+private fun DefaultPlaybackCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    val qualityFlow = remember { app.store.playerDefaultQualityFlow() }
+    val quality by qualityFlow.collectAsState(initial = 0)
+    val audioFlow = remember { app.store.playerDefaultAudioFlow() }
+    val audio by audioFlow.collectAsState(initial = "")
+    val audio2Flow = remember { app.store.playerDefaultAudio2Flow() }
+    val audio2 by audio2Flow.collectAsState(initial = "")
+    // 0 = no picker open, 1 = quality, 2 = audio, 3 = audio if not found
+    var picker by remember { mutableStateOf(0) }
+
+    Column(Modifier.padding(16.dp)) {
+        SettingsCardHeading(Icons.Filled.Tune, tr("Default quality & audio"))
+        ChoiceRow(
+            value = tr("Quality") + ": " + tr(DefaultPlayback.qualityLabel(quality)),
+            supporting = tr("Every video starts on this quality. If it is not offered, the next closest one is used."),
+            leadingIcon = Icons.Filled.Tune,
+            onClick = { picker = 1 },
+        )
+        Spacer(Modifier.height(8.dp))
+        ChoiceRow(
+            value = tr("Audio") + ": " + tr(DefaultPlayback.audioLabel(audio)),
+            supporting = tr("Every video starts with this voice. If the stream does not have it, a server that carries it is used."),
+            leadingIcon = Icons.Filled.Language,
+            onClick = { picker = 2 },
+        )
+        Spacer(Modifier.height(8.dp))
+        ChoiceRow(
+            value = tr("If not found") + ": " + tr(DefaultPlayback.audioLabel(audio2)),
+            supporting = tr("The voice to try next when the audio above is not available anywhere."),
+            leadingIcon = Icons.Filled.Translate,
+            onClick = { picker = 3 },
+        )
+    }
+    if (picker == 1) {
+        ChoiceDialog(
+            title = tr("Default quality"),
+            items = DefaultPlayback.QUALITIES.map {
+                ChoiceItem(
+                    it.toString(),
+                    tr(DefaultPlayback.qualityLabel(it)),
+                    if (it == 0) tr("The player picks by itself") else null,
+                )
+            },
+            selectedKey = quality.toString(),
+            onPick = { pick ->
+                picker = 0
+                pick.toIntOrNull()?.let { chosen ->
+                    scope.launch { runCatching { app.store.setPlayerDefaultQuality(chosen) } }
+                }
+            },
+            onDismiss = { picker = 0 },
+        )
+    }
+    if (picker == 2 || picker == 3) {
+        val first = picker == 2
+        ChoiceDialog(
+            title = if (first) tr("Default audio") else tr("If not found"),
+            items = listOf(ChoiceItem("", tr("Stream default"), tr("Use the voice the stream marks as default"))) +
+                DefaultPlayback.AUDIO_LANGS.map { ChoiceItem(it.first, tr(it.second)) },
+            selectedKey = if (first) audio else audio2,
+            onPick = { pick ->
+                picker = 0
+                scope.launch {
+                    runCatching {
+                        if (first) app.store.setPlayerDefaultAudio(pick)
+                        else app.store.setPlayerDefaultAudio2(pick)
+                    }
+                }
+            },
+            onDismiss = { picker = 0 },
         )
     }
 }
