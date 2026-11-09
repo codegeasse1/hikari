@@ -198,57 +198,67 @@ internal object AudioDecode {
             while (!outputDone) {
                 if (stop()) break
                 var progressed = false
-                if (!inputDone) {
-                    val inIdx = dec.dequeueInputBuffer(5_000L)
-                    if (inIdx >= 0) {
-                        val buf = dec.getInputBuffer(inIdx)
-                        val n = if (buf != null) extractor.readSampleData(buf, 0) else -1
-                        if (n < 0) {
-                            dec.queueInputBuffer(inIdx, 0, 0, 0L, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-                            inputDone = true
-                        } else {
-                            dec.queueInputBuffer(inIdx, 0, n, extractor.sampleTime, 0)
-                            extractor.advance()
-                        }
-                        progressed = true
+
+                // Feed every free input buffer right now (no waiting), so the decoder never starves.
+                while (!inputDone) {
+                    val inIdx = dec.dequeueInputBuffer(0L)
+                    if (inIdx < 0) break
+                    val buf = dec.getInputBuffer(inIdx)
+                    val n = if (buf != null) extractor.readSampleData(buf, 0) else -1
+                    if (n < 0) {
+                        dec.queueInputBuffer(inIdx, 0, 0, 0L, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                        inputDone = true
+                    } else {
+                        dec.queueInputBuffer(inIdx, 0, n, extractor.sampleTime, 0)
+                        extractor.advance()
                     }
+                    progressed = true
                 }
-                val outIdx = dec.dequeueOutputBuffer(info, 5_000L)
-                if (outIdx >= 0) {
-                    progressed = true
-                    val ob = dec.getOutputBuffer(outIdx)
-                    if (ob != null && info.size > 0) {
-                        ob.position(info.offset)
-                        ob.limit(info.offset + info.size)
-                        ob.order(ByteOrder.nativeOrder())
-                        val frames = info.size / ((if (floatPcm) 4 else 2) * channels)
-                        if (frames > 0) {
-                            if (mono.size < frames) mono = FloatArray(frames + 4096)
-                            readMono(ob, floatPcm, channels, mono, frames)
-                            val cap = resampler.maxOut(frames)
-                            if (pcm16.size < cap) pcm16 = ShortArray(cap + 4096)
-                            val got = resampler.process(mono, frames, pcm16)
-                            val pts = info.presentationTimeUs
-                            if (firstPts < 0L) firstPts = pts
-                            var at = baseSample + produced
-                            val want = baseSample + (pts - firstPts) * 16L / 1000L
-                            // a hole of more than half a second in the sound: keep the timeline right
-                            if (want - at > 8000L) at = want
-                            if (got > 0) sink.put(at, pcm16, got)
-                            produced = (at - baseSample) + got
+
+                // Take every finished output buffer. We only wait (a few ms) when nothing at all
+                // moved in this round; before, every round waited for exactly one buffer, which
+                // made decoding a whole episode many times slower than it needs to be.
+                while (!outputDone) {
+                    val wait = if (progressed) 0L else 5_000L
+                    val outIdx = dec.dequeueOutputBuffer(info, wait)
+                    if (outIdx >= 0) {
+                        progressed = true
+                        val ob = dec.getOutputBuffer(outIdx)
+                        if (ob != null && info.size > 0) {
+                            ob.position(info.offset)
+                            ob.limit(info.offset + info.size)
+                            ob.order(ByteOrder.nativeOrder())
+                            val frames = info.size / ((if (floatPcm) 4 else 2) * channels)
+                            if (frames > 0) {
+                                if (mono.size < frames) mono = FloatArray(frames + 4096)
+                                readMono(ob, floatPcm, channels, mono, frames)
+                                val cap = resampler.maxOut(frames)
+                                if (pcm16.size < cap) pcm16 = ShortArray(cap + 4096)
+                                val got = resampler.process(mono, frames, pcm16)
+                                val pts = info.presentationTimeUs
+                                if (firstPts < 0L) firstPts = pts
+                                var at = baseSample + produced
+                                val want = baseSample + (pts - firstPts) * 16L / 1000L
+                                // a hole of more than half a second in the sound: keep the timeline right
+                                if (want - at > 8000L) at = want
+                                if (got > 0) sink.put(at, pcm16, got)
+                                produced = (at - baseSample) + got
+                            }
                         }
+                        dec.releaseOutputBuffer(outIdx, false)
+                        if ((info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) outputDone = true
+                    } else if (outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                        progressed = true
+                        val nf = dec.outputFormat
+                        rate = intOf(nf, MediaFormat.KEY_SAMPLE_RATE, rate)
+                        channels = intOf(nf, MediaFormat.KEY_CHANNEL_COUNT, channels)
+                        if (channels < 1) channels = 1
+                        floatPcm = intOf(nf, MediaFormat.KEY_PCM_ENCODING, AudioFormat.ENCODING_PCM_16BIT) ==
+                            AudioFormat.ENCODING_PCM_FLOAT
+                        resampler = Resampler16k(rate)
+                    } else {
+                        break   // INFO_TRY_AGAIN_LATER (or a harmless notice): nothing more right now
                     }
-                    dec.releaseOutputBuffer(outIdx, false)
-                    if ((info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) outputDone = true
-                } else if (outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                    progressed = true
-                    val nf = dec.outputFormat
-                    rate = intOf(nf, MediaFormat.KEY_SAMPLE_RATE, rate)
-                    channels = intOf(nf, MediaFormat.KEY_CHANNEL_COUNT, channels)
-                    if (channels < 1) channels = 1
-                    floatPcm = intOf(nf, MediaFormat.KEY_PCM_ENCODING, AudioFormat.ENCODING_PCM_16BIT) ==
-                        AudioFormat.ENCODING_PCM_FLOAT
-                    resampler = Resampler16k(rate)
                 }
                 if (progressed) {
                     idle = 0
@@ -430,9 +440,25 @@ internal object Hls {
         return null
     }
 
+    /** The decoded sound of one piece, kept in memory (a few seconds only) until its turn comes. */
+    private class Collector : PcmSink {
+        val ats = ArrayList<Long>()
+        val blocks = ArrayList<ShortArray>()
+
+        override fun put(at: Long, pcm: ShortArray, n: Int) {
+            if (n <= 0) return
+            ats.add(at)
+            blocks.add(pcm.copyOf(n))
+        }
+    }
+
     /**
      * Downloads and decodes the pieces for which [needed] (start second, end
      * second) says yes. True when at least one piece gave sound.
+     *
+     * Several pieces are downloaded AND decoded at the same time (each on its own thread);
+     * their sound is then handed to [sink] strictly in the order of the video, so the rest of
+     * the scan sees exactly what it saw before, just much sooner.
      */
     fun run(
         plan: HlsPlan,
@@ -445,33 +471,49 @@ internal object Hls {
         val segs = plan.segments.filter { needed(it.startSec, it.startSec + it.durSec) }
         if (segs.isEmpty()) return false
         tmpDir.mkdirs()
-        val pool = Executors.newFixedThreadPool(4)
+        val workers = (Runtime.getRuntime().availableProcessors() - 1).coerceIn(3, 6)
+        val pool = Executors.newFixedThreadPool(workers)
         val initCache = ConcurrentHashMap<String, ByteArray>()
-        val futures = ArrayList<Future<File?>>()
+        val futures = ArrayList<Future<Collector?>>()
         var ok = 0
         try {
             var submitted = 0
             for (i in segs.indices) {
                 if (stop()) break
-                while (submitted < segs.size && submitted < i + 6) {
+                // keep a few pieces ahead of the one we are waiting for
+                while (submitted < segs.size && submitted < i + workers * 2) {
                     val idx = submitted
                     val s = segs[idx]
-                    futures.add(pool.submit(Callable<File?> { fetch(s, idx, headers, tmpDir, initCache, stop) }))
+                    futures.add(
+                        pool.submit(Callable<Collector?> {
+                            val file = fetch(s, idx, headers, tmpDir, initCache, stop)
+                            if (file == null) {
+                                null
+                            } else {
+                                try {
+                                    val c = Collector()
+                                    val base = (s.startSec * 16000.0).toLong()
+                                    val got = AudioDecode.run({ ex -> ex.setDataSource(file.absolutePath) }, base, c, stop)
+                                    if (got) c else null
+                                } finally {
+                                    file.delete()
+                                }
+                            }
+                        })
+                    )
                     submitted++
                 }
-                val file: File? = try {
+                val piece: Collector? = try {
                     futures[i].get(120, TimeUnit.SECONDS)
                 } catch (e: Exception) {
                     null
                 }
-                if (file == null) continue
-                try {
-                    val base = (segs[i].startSec * 16000.0).toLong()
-                    val got = AudioDecode.run({ ex -> ex.setDataSource(file.absolutePath) }, base, sink, stop)
-                    if (got) ok++
-                } finally {
-                    file.delete()
+                if (piece == null) continue
+                for (k in piece.blocks.indices) {
+                    val block = piece.blocks[k]
+                    sink.put(piece.ats[k], block, block.size)
                 }
+                ok++
             }
         } finally {
             pool.shutdownNow()

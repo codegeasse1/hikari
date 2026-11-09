@@ -205,7 +205,8 @@ object DubStore {
             val scanTag = if (scan == null) "n" else sha(scan.serialize(), 8)
             val clips = File(
                 top,
-                "clips_" + safe(lang) + "_" + mode.name + "_" + (if (smart) "s" else "p") + "_" + scanTag,
+                "clips_" + safe(lang) + "_" + mode.name + "_" + (if (smart) "s" else "p") +
+                    (if (DubPrefs.fast(context)) "f" else "") + "_" + scanTag,
             )
             clips.mkdirs()
             if (!clips.isDirectory) return null

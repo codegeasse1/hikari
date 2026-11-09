@@ -3,6 +3,9 @@ package com.hikari.app.dub
 import android.content.Context
 import android.net.Uri
 import java.io.File
+import java.util.concurrent.Executors
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sqrt
@@ -20,12 +23,16 @@ internal class ScanOutcome(val result: VoiceScanResult?, val note: String)
  * soon as all of its sound is there (pitch, and the voice fingerprint when a
  * model is loaded). Sound that no line needs any more is thrown away, so a
  * whole film never sits in memory.
+ *
+ * The measuring itself (pitch + voice fingerprint, the slow part) runs on a small group of
+ * worker threads, each with a voice-fingerprint model of its own, while the sound keeps being
+ * decoded. Before, one thread did the decoding and then stopped to measure every line in turn.
  */
 internal class CueWindow(
     startsMs: LongArray,
     endsMs: LongArray,
     offsetMs: Long,
-    private val embedder: Embedder?,
+    private val embedders: List<Embedder>,
     private val onStep: (done: Int, total: Int) -> Unit,
 ) : PcmSink {
 
@@ -44,8 +51,27 @@ internal class CueWindow(
     val weight = IntArray(total)
     val emb: Array<FloatArray?> = arrayOfNulls<FloatArray>(total)
 
-    var done = 0
-        private set
+    private val doneCount = AtomicInteger(0)
+    private val inFlight = AtomicInteger(0)
+    private val stepLock = Any()
+
+    val done: Int get() = doneCount.get()
+
+    /** Voice-fingerprint models that are free right now (one per worker thread). */
+    private val free = LinkedBlockingQueue<Embedder>()
+
+    private val pool = Executors.newFixedThreadPool(
+        if (embedders.isEmpty()) 2 else embedders.size.coerceIn(1, 6),
+        java.util.concurrent.ThreadFactory { r ->
+            val t = Thread(r, "voice-scan-measure")
+            t.isDaemon = true
+            t
+        },
+    )
+
+    init {
+        for (e in embedders) free.offer(e)
+    }
 
     private var buf = ShortArray(16000 * 20)
     private var bufStart = 0L
@@ -84,9 +110,28 @@ internal class CueWindow(
         trim()
     }
 
-    /** Called once when all sound has been delivered. */
-    fun finish() {
+    /**
+     * Called once when all sound has been delivered. Waits until every line is measured
+     * (or until [giveUp] says so), then frees the worker threads.
+     */
+    fun finish(giveUp: () -> Boolean = { false }) {
         drain(Long.MAX_VALUE)
+        var waited = 0
+        while (inFlight.get() > 0 && waited < 60_000) {
+            if (giveUp()) break
+            try {
+                Thread.sleep(10L)
+            } catch (e: InterruptedException) {
+                break
+            }
+            waited++
+        }
+        pool.shutdownNow()
+    }
+
+    /** Frees the worker threads without waiting (used when the scan ends early). */
+    fun close() {
+        pool.shutdownNow()
     }
 
     private fun ensure(cap: Int) {
@@ -97,10 +142,8 @@ internal class CueWindow(
         while (next < total) {
             val i = order[next]
             if (endS[i] > upTo) break
-            analyze(i)
+            submit(i)
             next++
-            done++
-            onStep(done, total)
         }
     }
 
@@ -121,19 +164,61 @@ internal class CueWindow(
         }
     }
 
-    private fun analyze(i: Int) {
+    private fun step() {
+        val d = doneCount.incrementAndGet()
+        synchronized(stepLock) { onStep(d, total) }
+    }
+
+    /** Hands the sound of line [i] to a worker thread (a copy, so the buffer can move on). */
+    private fun submit(i: Int) {
         val from = max(startS[i], bufStart)
         val to = min(endS[i], bufStart + bufLen)
         val len = (to - from).toInt()
-        if (len < MIN_SAMPLES) return
+        if (len < MIN_SAMPLES) {
+            step()
+            return
+        }
         val off = (from - bufStart).toInt()
+        val x = java.util.Arrays.copyOfRange(buf, off, off + len)
+
+        // do not let the decoder run far ahead of the workers (the copies would pile up)
+        var spins = 0
+        while (inFlight.get() >= MAX_BACKLOG && spins < 4000) {
+            try {
+                Thread.sleep(5L)
+            } catch (e: InterruptedException) {
+                break
+            }
+            spins++
+        }
+        inFlight.incrementAndGet()
+        try {
+            pool.execute {
+                try {
+                    measure(i, x)
+                } catch (t: Throwable) {
+                    // one line that cannot be measured is simply left unknown
+                } finally {
+                    inFlight.decrementAndGet()
+                    step()
+                }
+            }
+        } catch (t: Throwable) {
+            // the pool was shut down (scan ended): nothing more to measure
+            inFlight.decrementAndGet()
+        }
+    }
+
+    /** Pitch and voice fingerprint of one line ([x] is exactly the sound of that line). */
+    private fun measure(i: Int, x: ShortArray) {
+        val len = x.size
 
         // only music / silence under this line: nothing to measure
         var sum = 0.0
         var cnt = 0
         var k = 0
         while (k < len) {
-            val v = buf[off + k].toDouble()
+            val v = x[k].toDouble()
             sum += v * v
             cnt++
             k += 4
@@ -141,22 +226,30 @@ internal class CueWindow(
         val rms = sqrt(sum / max(1, cnt)) / 32768.0
         if (rms < 0.003) return
 
-        val p = PitchTrack.analyze(buf, off, len)
+        val p = PitchTrack.analyze(x, 0, len)
         if (p.hz > 0f) {
             f0[i] = p.hz
             weight[i] = p.voiced
         }
-        val e = embedder
-        if (e != null && len >= MIN_EMBED_SAMPLES) {
+        if (embedders.isNotEmpty() && len >= MIN_EMBED_SAMPLES) {
             val m = min(len, MAX_EMBED_SAMPLES)
-            val x = FloatArray(m)
-            for (q in 0 until m) x[q] = buf[off + q] / 32768f
-            val v = try {
-                e.embed(x)
-            } catch (t: Throwable) {
-                null
+            val fl = FloatArray(m)
+            for (q in 0 until m) fl[q] = x[q] / 32768f
+            val e = try {
+                free.take()
+            } catch (ie: InterruptedException) {
+                return
             }
-            if (v != null) emb[i] = normalised(v)
+            try {
+                val v = try {
+                    e.embed(fl)
+                } catch (t: Throwable) {
+                    null
+                }
+                if (v != null) emb[i] = normalised(v)
+            } finally {
+                free.offer(e)
+            }
         }
     }
 
@@ -171,8 +264,9 @@ internal class CueWindow(
     private companion object {
         const val MIN_SAMPLES = 8000            // 0.5 s: less than that cannot be measured
         const val MIN_EMBED_SAMPLES = 12800     // 0.8 s
-        const val MAX_EMBED_SAMPLES = 128000    // 8 s
+        const val MAX_EMBED_SAMPLES = 96000     // 6 s is plenty to recognise a voice (was 8 s)
         const val MAX_LINE_SAMPLES = 192000L    // 12 s
+        const val MAX_BACKLOG = 24              // lines waiting for a worker at most
     }
 }
 
@@ -194,7 +288,7 @@ internal object VoiceScanner {
         startsMs: LongArray,
         endsMs: LongArray,
         offsetMs: Long,
-        embedder: Embedder?,
+        embedders: List<Embedder>,
         cancelled: () -> Boolean,
         progress: (Int, String) -> Unit,
     ): ScanOutcome {
@@ -205,7 +299,7 @@ internal object VoiceScanner {
         val stop: () -> Boolean = { cancelled() || System.nanoTime() > deadline }
 
         var lastReport = 0L
-        val window = CueWindow(startsMs, endsMs, offsetMs, embedder) { done, all ->
+        val window = CueWindow(startsMs, endsMs, offsetMs, embedders) { done, all ->
             val now = System.nanoTime()
             if (now - lastReport > 2_000_000_000L) {
                 lastReport = now
@@ -213,58 +307,63 @@ internal object VoiceScanner {
             }
         }
 
-        val lower = url.lowercase()
-        val isFile = lower.startsWith("file:") || url.startsWith("/")
-        val isHttp = lower.startsWith("http://") || lower.startsWith("https://")
-        if (!isFile && !isHttp) return ScanOutcome(null, "this kind of video link cannot be read")
+        try {
+            val lower = url.lowercase()
+            val isFile = lower.startsWith("file:") || url.startsWith("/")
+            val isHttp = lower.startsWith("http://") || lower.startsWith("https://")
+            if (!isFile && !isHttp) return ScanOutcome(null, "this kind of video link cannot be read")
 
-        var gotSound: Boolean
-        if (isFile) {
-            val path = if (lower.startsWith("file:")) (Uri.parse(url).path ?: "") else url
-            gotSound = AudioDecode.run({ ex -> ex.setDataSource(path) }, 0L, window, stop)
-        } else {
-            val cover = coverage(startsMs, endsMs, offsetMs)
-            val needed: (Double, Double) -> Boolean = { a, b ->
-                val from = max(0, a.toInt())
-                val to = min(cover.size - 1, b.toInt() + 1)
-                var hit = false
-                var s = from
-                while (s <= to) {
-                    if (cover[s]) {
-                        hit = true
-                        break
-                    }
-                    s++
-                }
-                hit
-            }
-            val tmp = File(ctx.cacheDir, "dub/scan_tmp")
-
-            fun viaHls(): Boolean {
-                val plan = Hls.plan(url, headers) ?: return false
-                return Hls.run(plan, headers, needed, window, tmp, stop)
-            }
-
-            fun viaFile(): Boolean =
-                AudioDecode.run({ ex -> ex.setDataSource(url, headers) }, 0L, window, stop)
-
-            val looksHls = hlsHint || lower.contains(".m3u8")
-            if (looksHls) {
-                gotSound = viaHls()
-                if (!gotSound && !stop()) gotSound = viaFile()
+            var gotSound: Boolean
+            if (isFile) {
+                val path = if (lower.startsWith("file:")) (Uri.parse(url).path ?: "") else url
+                gotSound = AudioDecode.run({ ex -> ex.setDataSource(path) }, 0L, window, stop)
             } else {
-                gotSound = viaFile()
-                if (!gotSound && !stop()) gotSound = viaHls()
+                val cover = coverage(startsMs, endsMs, offsetMs)
+                val needed: (Double, Double) -> Boolean = { a, b ->
+                    val from = max(0, a.toInt())
+                    val to = min(cover.size - 1, b.toInt() + 1)
+                    var hit = false
+                    var s = from
+                    while (s <= to) {
+                        if (cover[s]) {
+                            hit = true
+                            break
+                        }
+                        s++
+                    }
+                    hit
+                }
+                val tmp = File(ctx.cacheDir, "dub/scan_tmp")
+
+                fun viaHls(): Boolean {
+                    val plan = Hls.plan(url, headers) ?: return false
+                    return Hls.run(plan, headers, needed, window, tmp, stop)
+                }
+
+                fun viaFile(): Boolean =
+                    AudioDecode.run({ ex -> ex.setDataSource(url, headers) }, 0L, window, stop)
+
+                val looksHls = hlsHint || lower.contains(".m3u8")
+                if (looksHls) {
+                    gotSound = viaHls()
+                    if (!gotSound && !stop()) gotSound = viaFile()
+                } else {
+                    gotSound = viaFile()
+                    if (!gotSound && !stop()) gotSound = viaHls()
+                }
             }
+
+            window.finish { cancelled() }
+            if (cancelled()) return ScanOutcome(null, "cancelled")
+            if (!gotSound) return ScanOutcome(null, "the sound of this video could not be read")
+
+            val result = SpeakerGrouping.group(window.emb, window.f0, window.weight)
+            if (result.known() == 0) return ScanOutcome(null, "no clear voice was heard in this video")
+            return ScanOutcome(result, "")
+
+        } finally {
+            window.close()
         }
-
-        window.finish()
-        if (cancelled()) return ScanOutcome(null, "cancelled")
-        if (!gotSound) return ScanOutcome(null, "the sound of this video could not be read")
-
-        val result = SpeakerGrouping.group(window.emb, window.f0, window.weight)
-        if (result.known() == 0) return ScanOutcome(null, "no clear voice was heard in this video")
-        return ScanOutcome(result, "")
     }
 
     /** One flag per second of the video: true when a subtitle line is (nearly) there. */

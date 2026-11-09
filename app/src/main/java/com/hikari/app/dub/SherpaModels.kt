@@ -300,6 +300,20 @@ object SherpaModels {
         }
     }
 
+    /**
+     * True when everything the FAST dub needs is on the phone: Hindi = the Piper voices (the big
+     * cloning model is not needed), English = the Kokoro pack. Lets "Fast dub" start without the
+     * ~200 MB cloning download.
+     */
+    fun isFastReadyFor(c: Context, lang: String): Boolean {
+        val b = lang.substringBefore('-').lowercase()
+        return when {
+            b == "hi" -> isInstalled(c) && VOICES.all { isVoiceReady(c, it) }
+            b == "en" -> isKokoroReady(c)
+            else -> false
+        }
+    }
+
     private fun root(c: Context): File = File(File(c.filesDir, "dub_models"), "piper-hi")
 
     /** Folder with the espeak-ng data (shared by every voice). */

@@ -41,6 +41,12 @@ object DubPrefs {
     /** Listen to the ORIGINAL voices first, to tell men from women and to find the characters (on by default). */
     fun scan(c: Context): Boolean = p(c).getBoolean("scan", true)
     fun saveScan(c: Context, v: Boolean) { p(c).edit().putBoolean("scan", v).apply() }
+    /**
+     * Fast dub (on by default): every character is spoken by the quick Piper voices. Off = the two
+     * slower cloned women's voices (Myira, Kyra) are used as well when the phone can keep up.
+     */
+    fun fast(c: Context): Boolean = p(c).getBoolean("fast", true)
+    fun saveFast(c: Context, v: Boolean) { p(c).edit().putBoolean("fast", v).apply() }
     fun save(c: Context, lang: String, mode: VoiceMode, duck: Float) {
         p(c).edit().putString("lang", lang).putString("mode", mode.name).putFloat("duck2", duck).apply()
     }
@@ -213,9 +219,17 @@ object DubDialog {
         }
         root.addView(smartBox)
 
+        // 5b) fast dub: only the quick voices (the cloned women are slow)
+        val fastBox = CheckBox(activity).apply {
+            text = I18n.t("Fast dub (recommended): use the quick voices for every character. Turn off to also use the 2 slower cloned women's voices.")
+            isChecked = DubPrefs.fast(activity)
+            setPadding(0, pad(8), 0, 0)
+        }
+        root.addView(fastBox)
+
         // 6) listen to the original voices (man / woman and who is who)
         val scanBox = CheckBox(activity).apply {
-            text = I18n.t("Listen to the original voices first (tells men from women; takes about 2 minutes, downloads a ~40 MB model once)")
+            text = I18n.t("Listen to the original voices first (tells men from women; downloads a ~40 MB model once)")
             isChecked = DubPrefs.scan(activity)
             setPadding(0, pad(8), 0, 0)
         }
@@ -246,6 +260,7 @@ object DubDialog {
                 DubPrefs.save(activity, lang, mode, duck)
                 DubPrefs.saveSmart(activity, multi)
                 DubPrefs.saveScan(activity, scanBox.isChecked)
+                DubPrefs.saveFast(activity, fastBox.isChecked)
                 when {
                     mode != VoiceMode.NEURAL -> onStart(lang, mode, duck, multi)
                     !SherpaModels.supportsNeural(lang) -> {
@@ -258,6 +273,8 @@ object DubDialog {
                         onStart(lang, VoiceMode.AUTO, duck, multi)
                     }
                     SherpaModels.isFullyInstalledFor(activity, lang) -> onStart(lang, mode, duck, multi)
+                    // Fast dub does not use the cloned women, so their big model need not be downloaded
+                    fastBox.isChecked && SherpaModels.isFastReadyFor(activity, lang) -> onStart(lang, mode, duck, multi)
                     else -> NeuralDownload.show(activity, lang) { ok ->
                         if (ok) onStart(lang, mode, duck, multi)
                     }

@@ -8,6 +8,7 @@ import com.hikari.app.data.Translator
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -93,13 +94,15 @@ class DubEngine(
     @Volatile private var store: DubStore.Session? = null
     private var loopErrors = 0
     /** Translating is network work: several at once. */
-    private val translateGate = Semaphore(4)
+    private val translateGate = Semaphore(6)
     /**
      * Making the voice: the neural helper has two lanes (the slow cloned voice, and the fast
      * Piper / Kokoro voices), so more than two requests may be out at once. Four keeps both
      * lanes busy without the slow lane hogging every permit.
      */
-    private val synthGate = Semaphore(4)
+    private val synthGate = Semaphore(6)
+    /** The slow cloned voices get their own small gate, so they can never hold every permit of [synthGate]. */
+    private val cloneGate = Semaphore(2)
     private val ready = ConcurrentHashMap<Int, File>()
     private val inFlight = ConcurrentHashMap.newKeySet<Int>()
     private val failed = ConcurrentHashMap.newKeySet<Int>()
@@ -279,6 +282,42 @@ class DubEngine(
         }
     }
 
+    private var pretransJob: Job? = null
+    private var pretransKey = ""
+
+    /**
+     * Translates every line of [cues] into [lang] in the background, several at a time, and keeps
+     * the results for the dub. It is called while the voice scan is still listening to the video,
+     * so the translating (network work) is already finished when the voices start. Calling it
+     * again for the same subtitle does nothing. Main thread.
+     */
+    fun pretranslate(cues: List<DubCue>, lang: String) {
+        if (cues.isEmpty()) return
+        val key = lang + "|" + cues.size + "|" + cues.first().startMs + "|" + cues.last().endMs
+        if (pretransJob?.isActive == true && pretransKey == key) return
+        pretransJob?.cancel()
+        pretransKey = key
+        val texts = cues.map { it.text }.filter { it.isNotBlank() }.distinct()
+        pretransJob = scope.launch(Dispatchers.IO) {
+            val gate = Semaphore(PRETRANSLATE_PARALLEL)
+            coroutineScope {
+                for (t in texts) {
+                    launch {
+                        gate.withPermit {
+                            val k = lang + "|" + t
+                            if (!translations.containsKey(k)) {
+                                val out = Translator.translateTo(t, lang)
+                                if (out.isNotBlank() && !looksUntranslated(t, out, lang)) {
+                                    translations[k] = out
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     fun stop() {
         releaseHold()
         holdEnabled = false
@@ -324,6 +363,8 @@ class DubEngine(
     /** Stops the engine AND frees the text-to-speech engine. */
     fun release() {
         heldByDub = false          // the player is going away: do not start it again
+        pretransJob?.cancel()
+        pretransJob = null
         stop()
         local.release()
         neural.release()
@@ -783,7 +824,9 @@ class DubEngine(
                     onStatus("Dub: loading the neural voices (the first time takes a little while)...")
                 }
             }
-            val made = synthGate.withPermit {
+            // a line of a slow cloned actor waits at its own small gate, so it cannot block the fast ones
+            val gate = if (v === neural && neural.usesClone(profile, lang)) cloneGate else synthGate
+            val made = gate.withPermit {
                 if (!active || !stillWanted()) null else v.synthesize(spoken, lang, profile)
             }
             if (made == null && !stillWanted()) return null       // too late, not a failure
@@ -836,8 +879,10 @@ class DubEngine(
     }
 
     /** The translator gives the text back unchanged when it fails. */
-    private fun looksUntranslated(src: String, out: String): Boolean {
-        if (lang.substringBefore('-').equals("en", ignoreCase = true)) return false
+    private fun looksUntranslated(src: String, out: String): Boolean = looksUntranslated(src, out, lang)
+
+    private fun looksUntranslated(src: String, out: String, forLang: String): Boolean {
+        if (forLang.substringBefore('-').equals("en", ignoreCase = true)) return false
         val a = src.trim()
         if (a != out.trim()) return false
         val letters = a.count { it.isLetter() }
@@ -870,12 +915,15 @@ class DubEngine(
 
     companion object {
         private const val TICK_MS = 100L
-        private const val PREFETCH_EVERY_MS = 700L
+        /** How often new lines are queued (was 700 ms: the voices sat idle between two rounds). */
+        private const val PREFETCH_EVERY_MS = 200L
+        /** Lines translated at the same time while the voice scan is still running. */
+        private const val PRETRANSLATE_PARALLEL = 6
         private const val LOOKAHEAD_MS = 40_000L
         /** The neural voice is faster than speech: voice 20 minutes ahead. */
         private const val NEURAL_LOOKAHEAD_MS = 20L * 60_000L
         /** Lines being made at the same moment (keeps the work in playback order). */
-        private const val MAX_QUEUED = 8
+        private const val MAX_QUEUED = 14
         private const val MAX_ATTEMPTS = 10
         private const val LIVE_STALE_MS = 15_000L
         private const val RETRY_AFTER_MS = 15_000L

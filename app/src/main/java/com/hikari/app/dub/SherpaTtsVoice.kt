@@ -236,7 +236,9 @@ class SherpaTtsVoice(context: Context) : DubVoice {
         // a new dub gets a fresh chance
         crashes = 0
         broken = false
-        cloneOff = false
+        // "Fast dub" (on by default): every character uses the quick Piper voices and the slow
+        // cloned women are left out from the start (see DubPrefs.fast).
+        cloneOff = DubPrefs.fast(app)
         synchronized(cloneTimes) { cloneTimes.clear() }
         notice = null
     }
@@ -288,6 +290,19 @@ class SherpaTtsVoice(context: Context) : DubVoice {
 
     override suspend fun synthesize(text: String, lang: String): File? =
         synthesize(text, lang, CastDirector.NARRATOR)
+
+    /**
+     * True when the character of [profile] would be spoken by a slow CLONED voice in this dub.
+     * The dub engine uses it to keep those lines on their own small queue.
+     */
+    fun usesClone(profile: VoiceProfile, lang: String): Boolean {
+        voiceLang = lang
+        return try {
+            actorFor(profile).voice.clone
+        } catch (t: Throwable) {
+            false
+        }
+    }
 
     override fun fxFor(profile: VoiceProfile): VoiceProfile {
         val a = try { actorFor(profile) } catch (t: Throwable) { return profile }

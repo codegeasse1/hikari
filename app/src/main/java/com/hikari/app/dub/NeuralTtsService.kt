@@ -1,7 +1,9 @@
 package com.hikari.app.dub
 
+import android.app.ActivityManager
 import android.app.Service
 import android.content.ComponentCallbacks2
+import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.os.Handler
@@ -133,8 +135,10 @@ class NeuralTtsService : Service() {
         }
         handler = h
         messenger = Messenger(h)
-        pocketLane = newLane("neural-pocket")
-        voiceLane = newLane("neural-voice")
+        pocketLane = newLane("neural-pocket", 1)
+        // The fast Piper / Kokoro voices run on several threads: lines of DIFFERENT voices are
+        // made at the same time (lines of one voice still wait for each other, see synth()).
+        voiceLane = newLane("neural-voice", VOICE_LANE_THREADS)
     }
 
     /**
@@ -142,7 +146,7 @@ class NeuralTtsService : Service() {
      * the thread on the slow cores with a small share of the CPU, which is what made the
      * neural voice crawl while the video was playing.
      */
-    private fun newLane(laneName: String): java.util.concurrent.ExecutorService {
+    private fun newLane(laneName: String, threads: Int): java.util.concurrent.ExecutorService {
         val factory = java.util.concurrent.ThreadFactory { r ->
             val t = Thread({
                 try {
@@ -154,7 +158,7 @@ class NeuralTtsService : Service() {
             t.isDaemon = true
             t
         }
-        return java.util.concurrent.Executors.newSingleThreadExecutor(factory)
+        return java.util.concurrent.Executors.newFixedThreadPool(threads.coerceAtLeast(1), factory)
     }
 
     override fun onBind(intent: Intent?): IBinder? = messenger?.binder
@@ -231,7 +235,7 @@ class NeuralTtsService : Service() {
             }
             val answer = Bundle()
             answer.putInt(NeuralIpc.K_ID, id)
-            var embedder: SpeakerEmbedder? = null
+            val embedders = ArrayList<SpeakerEmbedder>()
             try {
                 val flat: Array<String> = d.getStringArray(NeuralIpc.K_HEADERS) ?: arrayOf<String>()
                 val headers = LinkedHashMap<String, String>()
@@ -247,8 +251,16 @@ class NeuralTtsService : Service() {
                 val model = d.getString(NeuralIpc.K_MODEL).orEmpty()
                 if (model.isNotEmpty()) {
                     trace("scan: loading the voice-fingerprint model")
-                    embedder = SpeakerEmbedder.create(model, 2)
-                    trace(if (embedder != null) "scan: model loaded" else "scan: model could not be loaded, pitch only")
+                    // One copy of the model per worker thread: the lines are measured side by side.
+                    val copies = (Runtime.getRuntime().availableProcessors() / 2).coerceIn(2, 4)
+                    for (c in 0 until copies) {
+                        val e = SpeakerEmbedder.create(model, 1) ?: break
+                        embedders.add(e)
+                    }
+                    trace(
+                        if (embedders.isNotEmpty()) "scan: model loaded x" + embedders.size
+                        else "scan: model could not be loaded, pitch only"
+                    )
                 }
                 val progress: (Int, String) -> Unit = { pct, note ->
                     val m = Message.obtain(null, NeuralIpc.MSG_SCAN_PROGRESS)
@@ -271,7 +283,7 @@ class NeuralTtsService : Service() {
                     startsMs = starts,
                     endsMs = ends,
                     offsetMs = d.getLong(NeuralIpc.K_OFFSET),
-                    embedder = embedder,
+                    embedders = embedders,
                     cancelled = { cancelled.get() },
                     progress = progress,
                 )
@@ -296,9 +308,11 @@ class NeuralTtsService : Service() {
                 answer.putString(NeuralIpc.K_ERR, t.javaClass.simpleName + ": " + (t.message ?: ""))
             } finally {
                 scans.remove(id)
-                try {
-                    embedder?.close()
-                } catch (t: Throwable) {
+                for (e in embedders) {
+                    try {
+                        e.close()
+                    } catch (t: Throwable) {
+                    }
                 }
             }
             val done = Message.obtain(null, NeuralIpc.MSG_SCAN_RESULT)
@@ -475,9 +489,10 @@ class NeuralTtsService : Service() {
                     referenceSampleRate = ref.rate,
                     numSteps = b.getInt(NeuralIpc.K_STEPS, 2).coerceIn(1, 8),
                 )
-                engine.generateWithConfig(text, cfg)
+                synchronized(engine) { engine.generateWithConfig(text, cfg) }
             } else {
-                engine.generate(text = text, sid = sid, speed = speed)
+                // lines of the same voice wait for each other; other voices run at the same time
+                synchronized(engine) { engine.generate(text = text, sid = sid, speed = speed) }
             }
         } finally {
             releaseEngine(lease)
@@ -586,7 +601,7 @@ class NeuralTtsService : Service() {
                     return Lease(key, e)
                 }
                 // make room (a loaded voice costs about 100-150 MB)
-                val cap = when (variant) { 0 -> 3; 1 -> 2; else -> 1 }
+                val cap = when (variant) { 0 -> maxLoadedVoices(); 1 -> 2; else -> 1 }
                 trimEngines(cap - 1)
             }
             val created = createEngine(dir, data, variant, kind)
@@ -602,6 +617,27 @@ class NeuralTtsService : Service() {
         synchronized(engines) { busy.remove(lease.key) }
     }
 
+    /**
+     * How many voices may stay loaded at once in the normal way (variant 0). Three Piper men /
+     * women plus the cloning model are four; a phone with plenty of memory keeps all four, so
+     * the dub never has to unload one voice just to load another (that reload was slow).
+     */
+    private fun maxLoadedVoices(): Int {
+        return try {
+            val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+            val mi = ActivityManager.MemoryInfo()
+            am.getMemoryInfo(mi)
+            if (mi.totalMem >= 5_500_000_000L) 4 else 3
+        } catch (t: Throwable) {
+            3
+        }
+    }
+
+    private companion object {
+        /** Lines of different fast voices that may be made at the same moment. */
+        const val VOICE_LANE_THREADS = 3
+    }
+
     private fun createEngine(dir: File, data: File, variant: Int, kind: String): OfflineTts {
         val kokoro = kind == "kokoro"
         val pocket = kind == "pocket"
@@ -614,7 +650,9 @@ class NeuralTtsService : Service() {
             else -> File(dir, "model.onnx")
         }
         val threads = when (variant) {
-            0 -> (Runtime.getRuntime().availableProcessors() - 1).coerceIn(2, 3)
+            // the cloning model runs alone on its lane: give it more; the fast voices run side by
+            // side (up to VOICE_LANE_THREADS at once), so each of them gets two
+            0 -> if (pocket) (Runtime.getRuntime().availableProcessors() - 1).coerceIn(2, 3) else 2
             1 -> 2
             else -> 1
         }
