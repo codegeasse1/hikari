@@ -367,7 +367,7 @@ object MangaMetadataRepository {
             .mapNotNull { i -> data.optJSONArray("genreTags")?.optString(i)?.trim()?.takeIf { it.isNotBlank() } }
         val cover = data.optString("coverImage").trim().takeIf { it.startsWith("http") } ?: bestCover
         val rating = data.optDouble("averageRating", 0.0).takeIf { it > 0 }
-        return MangaMeta(desc, tags, cover, rating, "PornHwaDB", true, 0, bestSlug)
+        return MangaMeta(desc, tags, cover, rating, "PornHwaDB", true, 0, 0, bestSlug)
     }
 
     suspend fun fetchCharacters(app: HikariApp, fallbackTitle: String): List<MangaCharacter> =
