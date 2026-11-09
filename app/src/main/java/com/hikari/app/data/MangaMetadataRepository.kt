@@ -96,19 +96,24 @@ object MangaMetadataRepository {
         val jikan = if (anilist == null) {
             runCatching { withContext(Dispatchers.IO) { fetchJikanManga(title) } }.getOrNull()
         } else null
-        val dex = if (anilist == null && jikan == null) {
+        // Kitsu (keyless, Fastly CDN — reachable where Jikan stalls): metadata
+        // only, no characters endpoint worth trusting.
+        val kitsu = if (anilist == null && jikan == null) {
+            runCatching { withContext(Dispatchers.IO) { fetchKitsuManga(title) } }.getOrNull()
+        } else null
+        val dex = if (anilist == null && jikan == null && kitsu == null) {
             runCatching { withContext(Dispatchers.IO) { fetchDexManga(title) } }.getOrNull()
         } else null
         val pwdb = if (pwdbKey.isNotEmpty() && (anilist == null || anilist.isAdult)) {
             runCatching { withContext(Dispatchers.IO) { fetchPwdb(title, pwdbKey) } }.getOrNull()
         } else null
-        val merged = if (anilist == null && jikan == null && dex == null && pwdb == null) null else MangaMeta(
-            description = pwdb?.description ?: anilist?.description ?: jikan?.description ?: dex?.description,
+        val merged = if (anilist == null && jikan == null && kitsu == null && dex == null && pwdb == null) null else MangaMeta(
+            description = pwdb?.description ?: anilist?.description ?: jikan?.description ?: kitsu?.description ?: dex?.description,
             genres = if (!pwdb?.genres.isNullOrEmpty()) pwdb.genres else (anilist?.genres?.takeIf { it.isNotEmpty() }
-                ?: jikan?.genres?.takeIf { it.isNotEmpty() } ?: dex?.genres.orEmpty()),
-            coverUrl = pwdb?.coverUrl ?: anilist?.coverUrl ?: jikan?.coverUrl ?: dex?.coverUrl,
-            rating = pwdb?.rating ?: anilist?.rating ?: jikan?.rating ?: dex?.rating,
-            source = if (pwdb != null) "PornHwaDB" else if (anilist != null) "AniList" else if (jikan != null) "Jikan" else "MangaDex",
+                ?: jikan?.genres?.takeIf { it.isNotEmpty() } ?: kitsu?.genres?.takeIf { it.isNotEmpty() } ?: dex?.genres.orEmpty()),
+            coverUrl = pwdb?.coverUrl ?: anilist?.coverUrl ?: jikan?.coverUrl ?: kitsu?.coverUrl ?: dex?.coverUrl,
+            rating = pwdb?.rating ?: anilist?.rating ?: jikan?.rating ?: kitsu?.rating ?: dex?.rating,
+            source = if (pwdb != null) "PornHwaDB" else if (anilist != null) "AniList" else if (jikan != null) "Jikan" else if (kitsu != null) "Kitsu" else "MangaDex",
             isAdult = (anilist?.isAdult == true) || pwdb != null,
             anilistId = anilist?.anilistId ?: 0,
             malId = jikan?.malId ?: 0,
@@ -120,7 +125,7 @@ object MangaMetadataRepository {
         Logs.log(
             "MangaMeta",
             "manga metadata for \"" + title.take(80) + "\" from " + (merged?.source ?: "none") +
-                " (anilist=" + (anilist != null) + " jikan=" + (jikan != null) + " dex=" + (dex != null) + " pwdb=" + (pwdb != null) + ")",
+                " (anilist=" + (anilist != null) + " jikan=" + (jikan != null) + " kitsu=" + (kitsu != null) + " dex=" + (dex != null) + " pwdb=" + (pwdb != null) + ")",
         )
         return merged
     }
@@ -143,35 +148,50 @@ object MangaMetadataRepository {
         )
     }
 
+    /** AniList search as a Page (top 8, best-by-gate): the top-1 Media query
+     *  404s outright for titles AniList ranks oddly, which read as "no record".
+     *  Only runs when metadata is wanted; characters still need a matched id. */
     private fun fetchAnilistManga(wanted: String): MangaMeta? {
-        val query = "query{Media(search:" + JSONObject.quote(wanted) +
+        val query = "query{Page(perPage:8){media(search:" + JSONObject.quote(wanted) +
             ",type:MANGA){id title{userPreferred english romaji native} synonyms " +
             "description(asHtml:false) averageScore genres isAdult countryOfOrigin " +
-            "coverImage{large} startDate{year}}}"
+            "coverImage{large} startDate{year}}}}"
         val raw = Http.postStringQuiet(
             "https://graphql.anilist.co",
             JSONObject().put("query", query).toString(),
         ) ?: return null
-        val media = runCatching {
-            JSONObject(raw).optJSONObject("data")?.optJSONObject("Media")
+        val arr = runCatching {
+            JSONObject(raw).optJSONObject("data")?.optJSONObject("Page")?.optJSONArray("media")
         }.getOrNull() ?: return null
-        val titles = media.optJSONObject("title")
-        val aliases = buildSet {
-            listOf(
-                titles?.optString("userPreferred"),
-                titles?.optString("english"),
-                titles?.optString("romaji"),
-                titles?.optString("native"),
-            ).forEach { t ->
-                if (!t.isNullOrBlank() && !isNullWord(t)) add(t.trim())
+        var best: JSONObject? = null
+        var bestScore = 0
+        for (i in 0 until arr.length()) {
+            val media = arr.optJSONObject(i) ?: continue
+            val titles = media.optJSONObject("title")
+            val aliases = buildSet {
+                listOf(
+                    titles?.optString("userPreferred"),
+                    titles?.optString("english"),
+                    titles?.optString("romaji"),
+                    titles?.optString("native"),
+                ).forEach { t ->
+                    if (!t.isNullOrBlank() && !isNullWord(t)) add(t.trim())
+                }
+                val syns = media.optJSONArray("synonyms")
+                for (k in 0 until (syns?.length() ?: 0)) {
+                    syns?.optString(k)?.trim()?.takeIf { it.isNotBlank() && !isNullWord(it) }?.let { add(it) }
+                }
             }
-            val syns = media.optJSONArray("synonyms")
-            for (i in 0 until (syns?.length() ?: 0)) {
-                syns?.optString(i)?.trim()?.takeIf { it.isNotBlank() && !isNullWord(it) }?.let { add(it) }
+            if (aliases.isEmpty()) continue
+            val s = AnimeMetadataRepository.matchAliases(wanted, aliases)
+            if (s > bestScore) {
+                bestScore = s
+                best = media
             }
         }
         // Same 55+ gate as the anime chain: a mistranslation never repaints.
-        if (aliases.isEmpty() || AnimeMetadataRepository.matchAliases(wanted, aliases) < 55) return null
+        val media = best ?: return null
+        if (bestScore < 55) return null
         val desc = media.optString("description").trim().takeIf { it.isNotBlank() }
         val genres = (0 until (media.optJSONArray("genres")?.length() ?: 0))
             .mapNotNull { i -> media.optJSONArray("genres")?.optString(i)?.trim()?.takeIf { it.isNotBlank() } }
@@ -256,6 +276,71 @@ object MangaMetadataRepository {
 
     /** MangaDex (keyless) metadata fallback: description, genres and cover.
      *  No characters — MangaDex's character data is too thin to trust. */
+    /** Kitsu (keyless): description, genres and cover. No characters — its
+     *  castings are too thin to trust, so characters still come from
+     *  AniList/Jikan. Fires only when both missed. */
+    private fun fetchKitsuManga(wanted: String): MangaMeta? {
+        val q = URLEncoder.encode(wanted, "UTF-8")
+        val raw = Http.getStringQuiet(
+            "https://kitsu.io/api/edge/manga?filter[text]=$q&page[limit]=8&include=genres",
+        ) ?: return null
+        val root = runCatching { JSONObject(raw) }.getOrNull() ?: return null
+        val arr = root.optJSONArray("data") ?: return null
+        val genreNames = HashMap<String, String>()
+        val inc = root.optJSONArray("included")
+        for (i in 0 until (inc?.length() ?: 0)) {
+            val g = inc?.optJSONObject(i) ?: continue
+            if (g.optString("type") != "genres") continue
+            val name = g.optJSONObject("attributes")?.optString("name")?.trim()
+            if (!name.isNullOrBlank()) genreNames[g.optString("id")] = name
+        }
+        var best: JSONObject? = null
+        var bestScore = 0
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            if (o.optString("type") != "manga") continue
+            val a = o.optJSONObject("attributes") ?: continue
+            val aliases = buildSet {
+                a.optString("canonicalTitle").trim().takeIf { it.isNotBlank() }?.let { add(it) }
+                val tt = a.optJSONObject("titles")
+                if (tt != null) {
+                    val ks = tt.keys()
+                    while (ks.hasNext()) {
+                        tt.optString(ks.next()).trim().takeIf { it.isNotBlank() }?.let { add(it) }
+                    }
+                }
+                val ab = a.optJSONArray("abbreviatedTitles")
+                for (k in 0 until (ab?.length() ?: 0)) {
+                    ab?.optString(k)?.trim()?.takeIf { it.isNotBlank() }?.let { add(it) }
+                }
+                a.optString("slug").trim().takeIf { it.isNotBlank() }?.let { slug ->
+                    slug.split("-").joinToString(" ") { w ->
+                        w.replaceFirstChar { c -> c.uppercase() }
+                    }.takeIf { it.isNotBlank() }?.let { add(it) }
+                }
+            }
+            if (aliases.isEmpty()) continue
+            val s = AnimeMetadataRepository.matchAliases(wanted, aliases)
+            if (s > bestScore) {
+                bestScore = s
+                best = o
+            }
+        }
+        if (best == null || bestScore < 55) return null
+        val a = best.optJSONObject("attributes") ?: return null
+        var desc: String? = a.optString("synopsis").trim().takeIf { it.isNotBlank() }
+        val genres = (0 until (a.optJSONObject("relationships")?.optJSONObject("genres")
+            ?.optJSONArray("data")?.length() ?: 0)).mapNotNull { i ->
+            val id = a.optJSONObject("relationships")?.optJSONObject("genres")
+                ?.optJSONArray("data")?.optJSONObject(i)?.optString("id")
+            genreNames[id]
+        }.take(6)
+        val cover = a.optJSONObject("posterImage")?.optString("large")?.trim()?.takeIf { it.startsWith("http") }
+            ?: a.optJSONObject("posterImage")?.optString("original")?.trim()?.takeIf { it.startsWith("http") }
+        val score = a.optDouble("averageRating", 0.0).takeIf { it > 0 }?.let { if (it > 10) it / 10 else it }
+        return MangaMeta(desc, genres, cover, score, "Kitsu", false, 0, 0)
+    }
+
     private fun fetchDexManga(wanted: String): MangaMeta? {
         val q = URLEncoder.encode(wanted, "UTF-8")
         val raw = Http.getStringQuiet(
