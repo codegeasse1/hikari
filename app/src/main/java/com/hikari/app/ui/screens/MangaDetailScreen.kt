@@ -214,16 +214,29 @@ fun MangaDetailScreen(
             posterUrl = posterUrl.takeIf { it.isNotBlank() },
             rawType = "manga",
         )
+        // Extension metadata paints FIRST: the header and chapter list never
+        // wait on the tracker chain (AniList/Jikan/Kitsu/MangaDex), which
+        // enriches the header in the background and repaints when it lands.
+        // A tracker miss simply leaves the extension's own metadata in place.
+        var baseMeta = withContext(Dispatchers.IO) {
+            runCatching { provider.getMeta(base) }.getOrDefault(base)
+        }
+        meta = baseMeta
         val externalDeferred = async(Dispatchers.IO) {
             runCatching { MangaMetadataRepository.fetchExternal(app, title) }.getOrNull()
         }
-        val fresh = withContext(Dispatchers.IO) {
-            runCatching { provider.getMeta(base) }.getOrDefault(base)
+        scope.launch {
+            val ext = runCatching { externalDeferred.await() }.getOrNull()
+            if (ext != null) {
+                // Merge onto the CURRENT header: the chapter retry below may
+                // have refreshed the extension meta while this was in flight.
+                val cur = meta
+                if (cur != null) {
+                    meta = MangaMetadataRepository.mergeExternalFirst(cur, ext)
+                    extAnilistId = ext.anilistId
+                }
+            }
         }
-        meta = MangaMetadataRepository.mergeExternalFirst(
-            fresh,
-            runCatching { externalDeferred.await() }.getOrNull(),
-        )
         val extTitle = title
         scope.launch {
             val charsD = async(Dispatchers.IO) {
@@ -242,16 +255,15 @@ fun MangaDetailScreen(
             threads = runCatching { threadsD.await() }.getOrDefault(emptyList())
             reviews = runCatching { reviewsD.await() }.getOrDefault(emptyList())
             chapterHints = runCatching { hintsD.await() }.getOrDefault(emptyMap())
-            extAnilistId = runCatching {
-                MangaMetadataRepository.fetchExternal(app, extTitle)
-            }.getOrNull()?.anilistId ?: 0
+            // extAnilistId already came from the shared enrichment above —
+            // no second tracker chain here.
             commentsLoading = false
         }
         val cached = MangaStore.chaptersFor(key)
         if (cached.isNullOrEmpty()) {
             withContext(Dispatchers.IO) {
                 runCatching {
-                    val eps = provider.getEpisodes(fresh)
+                    val eps = provider.getEpisodes(baseMeta)
                     // AnymexMangaProvider returns Episode list; bridge into MangaStore
                     // so the chapter UI (which only reads MangaStore) fills.
                     if (!eps.isNullOrEmpty() && MangaStore.chaptersFor(key).isNullOrEmpty()) {
@@ -275,7 +287,15 @@ fun MangaDetailScreen(
                 val retryMeta = withContext(Dispatchers.IO) {
                     runCatching { provider.getMeta(base) }.getOrDefault(base)
                 }
-                meta = retryMeta
+                // Keep any tracker enrichment that already landed: the
+                // retry must never wipe the header back to extension-only.
+                baseMeta = retryMeta
+                meta = MangaMetadataRepository.mergeExternalFirst(
+                    retryMeta,
+                    if (externalDeferred.isCompleted) {
+                        runCatching { externalDeferred.getCompleted() }.getOrNull()
+                    } else null,
+                )
                 withContext(Dispatchers.IO) { runCatching { provider.getEpisodes(retryMeta) } }
             }
             list = MangaStore.chaptersFor(key).orEmpty()

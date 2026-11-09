@@ -4,6 +4,7 @@ import com.hikari.app.HikariApp
 import com.hikari.app.net.Http
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import java.net.URLEncoder
 import java.util.concurrent.ConcurrentHashMap
@@ -12,6 +13,9 @@ object MangaMetadataRepository {
     /** Where the user fetches their own free key (opened from Settings). */
     const val GET_KEY_URL = "https://pornhwadb.com/profile?tab=settings&section=developer"
     private const val BASE_URL = "https://pornhwadb.com/api/v1"
+    /** One tracker step may never hang the chain: enrichment runs behind the
+     *  page, but a stuck socket must still fail fast into the next source. */
+    private const val SOURCE_TIMEOUT_MS = 12_000L
 
     data class MangaMeta(
         val description: String? = null,
@@ -83,29 +87,36 @@ object MangaMetadataRepository {
         val ck = (if (pwdbKey.isNotEmpty()) "P:" else "A:") + title.lowercase()
         cache[ck]?.let { if (System.currentTimeMillis() - it.at < TTL_MS) return it.meta }
         val anilist = if (wantAnilist) {
-            // One immediate retry: a single dropped request must not become a
-            // cached 24h miss (the "sometimes no metadata" report).
-            runCatching { withContext(Dispatchers.IO) { fetchAnilistManga(title) } }.getOrNull()
-                ?: runCatching {
-                    kotlinx.coroutines.delay(800)
-                    withContext(Dispatchers.IO) { fetchAnilistManga(title) }
-                }.getOrNull()
+            // Bounded: one dropped/hung request fails fast into Jikan/Kitsu/
+            // MangaDex instead of stalling the chain (their retries on the
+            // next open cover blips — failures are never cached, see below).
+            withTimeoutOrNull(SOURCE_TIMEOUT_MS) {
+                runCatching { withContext(Dispatchers.IO) { fetchAnilistManga(title) } }.getOrNull()
+            }
         } else null
-        // Jikan (MyAnimeList) fallback, then MangaDex: only when AniList drew a
-        // blank, so normal loads pay nothing extra.
+        // Jikan (MyAnimeList) fallback, then Kitsu, then MangaDex: only when
+        // AniList drew a blank, so normal loads pay nothing extra.
         val jikan = if (anilist == null) {
-            runCatching { withContext(Dispatchers.IO) { fetchJikanManga(title) } }.getOrNull()
+            withTimeoutOrNull(SOURCE_TIMEOUT_MS) {
+                runCatching { withContext(Dispatchers.IO) { fetchJikanManga(title) } }.getOrNull()
+            }
         } else null
         // Kitsu (keyless, Fastly CDN — reachable where Jikan stalls): metadata
         // only, no characters endpoint worth trusting.
         val kitsu = if (anilist == null && jikan == null) {
-            runCatching { withContext(Dispatchers.IO) { fetchKitsuManga(title) } }.getOrNull()
+            withTimeoutOrNull(SOURCE_TIMEOUT_MS) {
+                runCatching { withContext(Dispatchers.IO) { fetchKitsuManga(title) } }.getOrNull()
+            }
         } else null
         val dex = if (anilist == null && jikan == null && kitsu == null) {
-            runCatching { withContext(Dispatchers.IO) { fetchDexManga(title) } }.getOrNull()
+            withTimeoutOrNull(SOURCE_TIMEOUT_MS) {
+                runCatching { withContext(Dispatchers.IO) { fetchDexManga(title) } }.getOrNull()
+            }
         } else null
         val pwdb = if (pwdbKey.isNotEmpty() && (anilist == null || anilist.isAdult)) {
-            runCatching { withContext(Dispatchers.IO) { fetchPwdb(title, pwdbKey) } }.getOrNull()
+            withTimeoutOrNull(SOURCE_TIMEOUT_MS) {
+                runCatching { withContext(Dispatchers.IO) { fetchPwdb(title, pwdbKey) } }.getOrNull()
+            }
         } else null
         val merged = if (anilist == null && jikan == null && kitsu == null && dex == null && pwdb == null) null else MangaMeta(
             description = pwdb?.description ?: anilist?.description ?: jikan?.description ?: kitsu?.description ?: dex?.description,
