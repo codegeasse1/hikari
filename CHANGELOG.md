@@ -1,3 +1,10 @@
+## 0.12.70 (continuous build only)
+
+- Dub is much faster: the neural voice helper now makes lines of different voices at the same time (3 lanes instead of 1), keeps every voice loaded on phones with enough memory (no more unload/reload between two voices), and the dub queues new lines 3x more often with a deeper queue. The cause of the slow dub was one single voice lane plus the slow cloned women (Myira, Kyra), which held every line behind them
+- New "Fast dub" switch in the Dub audio panel (on by default): every character uses the quick Piper voices; the 2 slower cloned women are used only when it is turned off. Fast dub also skips the ~200 MB cloning download. Saved lines of fast and normal dubs are kept apart
+- The whole subtitle is translated in the background right away (6 lines at a time), and while the voice scan is still listening, so the voices never wait for a translation
+- Voice scan is much faster: the sound decoder no longer waits for one buffer at a time, HLS pieces are downloaded AND decoded side by side (still handed over in video order), and the pitch / voice-fingerprint work of every line runs on several threads (each with its own model copy) while decoding goes on. A voice fingerprint now uses at most 6 s of a line instead of 8 s
+
 ## 0.12.69 (continuous build only)
 
 - added a option to Select default audio and quality.
