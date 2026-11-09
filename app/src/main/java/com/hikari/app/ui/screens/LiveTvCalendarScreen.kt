@@ -36,7 +36,7 @@ import com.hikari.app.iptv.EpgProgram
 import com.hikari.app.iptv.LiveChannel
 import com.hikari.app.iptv.LiveTvEngine
 import com.hikari.app.iptv.LiveTvPlayback
-import com.hikari.app.iptv.LiveTvReminder
+import com.hikari.app.iptv.LiveReminder
 import com.hikari.app.ui.components.GlassCard
 import com.hikari.app.ui.components.SettingsPageHeader
 import com.hikari.app.ui.navigation.LocalTaskbarInset
@@ -63,37 +63,39 @@ fun LiveTvCalendarScreen(nav: NavHostController) {
     LaunchedEffect(tick) {
         loading = true
         val data = withContext(Dispatchers.IO) {
-            runCatching { LiveTvEngine.init(context) }
-            val now = System.currentTimeMillis()
-            val out = ArrayList<CalEntry>()
-            // reminders
-            com.hikari.app.iptv.LiveTvReminders.all().filter { it.startMs + 10 * 60_000L > now }.forEach { r ->
-                out += CalEntry(r.startMs, CalKind.REMINDER, r.title, r.channelName, reminder = r)
-            }
-            // scheduled recordings
-            com.hikari.app.iptv.LiveTvRecordings.schedules().filter { it.stopMs > now }.forEach { s ->
-                out += CalEntry(s.startMs, CalKind.RECORD, s.title, s.channelName)
-            }
-            // followed-team games (already-loaded windows)
-            val followed = LiveTvEngine.sports.followedTeams()
-            if (followed.isNotEmpty() && LiveTvEngine.store.settings().calendarSports) {
-                val leagues = LiveTvEngine.sports.leagues()
-                leagues.take(8).forEach { league ->
-                    runCatching { LiveTvEngine.sports.refreshLeague(league, 0, 3) }
+            runCatching {
+                runCatching { LiveTvEngine.init(context) }
+                val now = System.currentTimeMillis()
+                val out = ArrayList<CalEntry>()
+                // reminders
+                com.hikari.app.iptv.LiveTvReminders.all().filter { it.startMs + 10 * 60_000L > now }.forEach { r ->
+                    out += CalEntry(r.startMs, CalKind.REMINDER, r.title, r.channelName, reminder = r)
                 }
-                leagues.forEach { league ->
-                    LiveTvEngine.sports.eventsOf(league.id).filter { it.startMs > now - 3 * 3_600_000L }.forEach { e ->
-                        val mine = followed.any { uid ->
-                            val parts = uid.split('|')
-                            parts.size == 2 && parts[0] == e.leagueId &&
-                                (parts[1] == e.homeAbbr || parts[1] == e.awayAbbr)
+                // scheduled recordings
+                com.hikari.app.iptv.LiveTvRecordings.schedules().filter { it.stopMs > now }.forEach { s ->
+                    out += CalEntry(s.startMs, CalKind.RECORD, s.title, s.channelName)
+                }
+                // followed-team games (already-loaded windows)
+                val followed = LiveTvEngine.sports.followedTeams()
+                if (followed.isNotEmpty() && LiveTvEngine.store.settings().calendarSports) {
+                    val leagues = LiveTvEngine.sports.leagues()
+                    leagues.take(8).forEach { league ->
+                        runCatching { LiveTvEngine.sports.refreshLeague(league, 0, 3) }
+                    }
+                    leagues.forEach { league ->
+                        LiveTvEngine.sports.eventsOf(league.id).filter { it.startMs > now - 3 * 3_600_000L }.forEach { e ->
+                            val mine = followed.any { uid ->
+                                val parts = uid.split('|')
+                                parts.size == 2 && parts[0] == e.leagueId &&
+                                    (parts[1] == e.homeAbbr || parts[1] == e.awayAbbr)
+                            }
+                            if (mine) out += CalEntry(e.startMs, CalKind.GAME, e.title, e.leagueName, gameId = e.id)
                         }
-                        if (mine) out += CalEntry(e.startMs, CalKind.GAME, e.title, e.leagueName, gameId = e.id)
                     }
                 }
-            }
-            out.sortedBy { it.at } to LiveTvEngine.store.settings()
-        }.getOrDefault(emptyList<CalEntry>() to null)
+                out.sortedBy { it.at } to LiveTvEngine.store.settings()
+            }.getOrDefault(emptyList<CalEntry>() to null)
+        }
         entries = data.first
         settings = data.second
         loading = false
@@ -167,7 +169,7 @@ private data class CalEntry(
     val kind: CalKind,
     val title: String,
     val sub: String,
-    val reminder: LiveTvReminder? = null,
+    val reminder: LiveReminder? = null,
     val gameId: String? = null,
 )
 

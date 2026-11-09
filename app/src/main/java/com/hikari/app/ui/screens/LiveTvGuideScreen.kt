@@ -42,6 +42,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavHostController
 import coil.compose.AsyncImage
+import com.hikari.app.i18n.I18n
 import com.hikari.app.i18n.tr
 import com.hikari.app.iptv.EpgProgram
 import com.hikari.app.iptv.LiveChannel
@@ -81,16 +82,18 @@ fun LiveTvGuideScreen(nav: NavHostController) {
     LaunchedEffect(tick) {
         loading = true
         val data = withContext(Dispatchers.IO) {
-            runCatching { LiveTvEngine.init(context) }
-            val s = LiveTvEngine.store.settings()
-            val g = LiveTvEngine.groupsOf(null)
-            val gid = groupId?.takeIf { id -> g.any { it.id == id } }
-                ?: g.firstOrNull { it.id == LiveChannelGroup.ALL }?.id
-                ?: g.firstOrNull()?.id
-            val chans = if (gid == null) emptyList()
-            else LiveTvEngine.channelsInGroup(g.first { it.id == gid }, null)
-            Triple(s, g, chans to gid)
-        }.getOrDefault(Triple(LiveTvSettings(), emptyList(), emptyList<LiveChannel>() to null))
+            runCatching {
+                runCatching { LiveTvEngine.init(context) }
+                val s = LiveTvEngine.store.settings()
+                val g = LiveTvEngine.groupsOf(null)
+                val gid = groupId?.takeIf { id -> g.any { it.id == id } }
+                    ?: g.firstOrNull { it.id == LiveChannelGroup.ALL }?.id
+                    ?: g.firstOrNull()?.id
+                val chans = if (gid == null) emptyList()
+                else LiveTvEngine.channelsInGroup(g.first { it.id == gid }, null)
+                Triple(s, g, chans to gid)
+            }.getOrDefault(Triple(LiveTvSettings(), emptyList(), emptyList<LiveChannel>() to null))
+        }
         settings = data.first
         groups = data.second
         channels = data.third.first
@@ -208,7 +211,7 @@ fun LiveTvGuideScreen(nav: NavHostController) {
                 settings = settings,
                 onPlay = {
                     if (LiveTvEngine.isLockedGroup(channel.groupId, channel.group)) {
-                        toast(tr("That group is locked."))
+                        toast(I18n.t("That group is locked."))
                         return@GuideChannelRow
                     }
                     scope.launch {
@@ -490,7 +493,7 @@ fun GuideProgramSheet(
                                 withContext(Dispatchers.IO) {
                                     com.hikari.app.iptv.LiveTvReminders.add(channel, program)
                                 }
-                                toast(tr("Reminder set"))
+                                toast(I18n.t("Reminder set"))
                                 onChanged()
                             }
                         }
@@ -512,7 +515,7 @@ fun GuideProgramSheet(
                                         null
                                     }.getOrElse { it.message }
                                 }
-                                toast(err ?: tr("Recording scheduled"))
+                                toast(err ?: I18n.t("Recording scheduled"))
                                 onChanged()
                             }
                         }

@@ -45,6 +45,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavHostController
+import com.hikari.app.i18n.I18n
 import com.hikari.app.i18n.tr
 import com.hikari.app.iptv.LiveTvEngine
 import com.hikari.app.iptv.LiveTvEpgSource
@@ -88,13 +89,15 @@ fun LiveTvSettingsScreen(nav: NavHostController) {
     LaunchedEffect(tick) {
         loading = true
         val triple = withContext(Dispatchers.IO) {
-            runCatching { LiveTvEngine.init(context) }
-            Triple(LiveTvEngine.store.settings(), LiveTvEngine.sources(), LiveTvEngine.epgSources())
-        }.getOrDefault(Triple(LiveTvSettings(), emptyList(), emptyList()))
+            runCatching {
+                runCatching { LiveTvEngine.init(context) }
+                Triple(LiveTvEngine.store.settings(), LiveTvEngine.sources(), LiveTvEngine.epgSources())
+            }.getOrDefault(Triple(LiveTvSettings(), emptyList(), emptyList()))
+        }
         settings = triple.first
         sources = triple.second
         epgs = triple.third
-        lockAdult = runCatching { LiveTvEngine.store.userState().lockAdultContent }.getOrDefault(true)
+        lockAdult = runCatching { LiveTvEngine.store.userState().lockAdultContent }.getOrElse { true }
         loading = false
     }
 
@@ -117,7 +120,7 @@ fun LiveTvSettingsScreen(nav: NavHostController) {
             }
             updating = false
             if (err == null) {
-                toast(tr("Everything is up to date"))
+                toast(I18n.t("Everything is up to date"))
                 tick++
             } else {
                 toast(err)
@@ -139,7 +142,7 @@ fun LiveTvSettingsScreen(nav: NavHostController) {
                 }.getOrElse { it.message ?: "Import failed." }
             }
             if (err == null) {
-                toast(tr("Backup imported"))
+                toast(I18n.t("Backup imported"))
                 tick++
             } else {
                 toast(err)
@@ -245,7 +248,7 @@ fun LiveTvSettingsScreen(nav: NavHostController) {
                         TextButton(
                             onClick = {
                                 scope.launch {
-                                    toast(tr("Updating…"))
+                                    toast(I18n.t("Updating…"))
                                     withContext(Dispatchers.IO) { LiveTvEngine.refreshSource(src.id) }
                                     tick++
                                 }
@@ -512,7 +515,7 @@ fun LiveTvSettingsScreen(nav: NavHostController) {
                         TextButton(
                             onClick = {
                                 if (pinDraft.trim().length < 4) {
-                                    toast(tr("Use at least 4 digits."))
+                                    toast(I18n.t("Use at least 4 digits."))
                                     return@TextButton
                                 }
                                 scope.launch {
@@ -520,7 +523,7 @@ fun LiveTvSettingsScreen(nav: NavHostController) {
                                         com.hikari.app.iptv.LiveTvParental.setPin(pinDraft.trim())
                                     }
                                     pinDraft = ""
-                                    toast(tr("PIN set"))
+                                    toast(I18n.t("PIN set"))
                                 }
                             }
                         ) { Text(tr("Set PIN")) }
@@ -529,7 +532,7 @@ fun LiveTvSettingsScreen(nav: NavHostController) {
                                 scope.launch {
                                     withContext(Dispatchers.IO) { com.hikari.app.iptv.LiveTvParental.setPin("") }
                                     pinDraft = ""
-                                    toast(tr("PIN removed"))
+                                    toast(I18n.t("PIN removed"))
                                 }
                             }
                         ) { Text(tr("Remove")) }
@@ -574,7 +577,7 @@ fun LiveTvSettingsScreen(nav: NavHostController) {
                                     shareFiles(context, listOf(ok), "Live TV backup")
                                     tick++
                                 } else {
-                                    toast(tr("Export failed"))
+                                    toast(I18n.t("Export failed"))
                                 }
                             }
                         }

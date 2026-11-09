@@ -80,14 +80,16 @@ fun LiveTvOnDemandScreen(nav: NavHostController) {
     LaunchedEffect(tick) {
         loading = true
         val data = withContext(Dispatchers.IO) {
-            runCatching { LiveTvEngine.init(context) }
-            val srcs = LiveTvEngine.sources().filter { it.isXtream && it.importVod }
-            val sid = sourceId?.takeIf { id -> srcs.any { it.id == id } } ?: srcs.firstOrNull()?.id
-            val cats = if (sid == null) emptyList()
-            else LiveTvEngine.vod.categoriesOf(sid, series)
-            val all = if (sid == null) emptyList() else LiveTvEngine.vod.titles(sid)
-            VodData(srcs, sid, cats, all, LiveTvEngine.store.settings().vodDefaultSort)
-        }.getOrDefault(VodData(emptyList(), null, emptyList(), emptyList(), "DEFAULT"))
+            runCatching {
+                runCatching { LiveTvEngine.init(context) }
+                val srcs = LiveTvEngine.sources().filter { it.isXtream && it.importVod }
+                val sid = sourceId?.takeIf { id -> srcs.any { it.id == id } } ?: srcs.firstOrNull()?.id
+                val cats = if (sid == null) emptyList()
+                else LiveTvEngine.vod.categoriesOf(sid, series)
+                val all = if (sid == null) emptyList() else LiveTvEngine.vod.titles(sid)
+                VodData(srcs, sid, cats, all, LiveTvEngine.store.settings().vodDefaultSort)
+            }.getOrDefault(VodData(emptyList(), null, emptyList(), emptyList(), "DEFAULT"))
+        }
         sources = data.sources
         if (sourceId == null) sourceId = data.sourceId
         categories = data.categories

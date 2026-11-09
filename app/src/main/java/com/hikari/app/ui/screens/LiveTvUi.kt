@@ -43,6 +43,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.hikari.app.HikariApp
+import com.hikari.app.i18n.I18n
 import com.hikari.app.i18n.tr
 import com.hikari.app.iptv.EpgProgram
 import com.hikari.app.iptv.LiveChannel
@@ -227,7 +228,7 @@ fun LiveTvPinGate(
                                 pin = ""
                                 onUnlocked()
                             } else {
-                                Toast.makeText(context, tr("Wrong PIN"), Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, I18n.t("Wrong PIN"), Toast.LENGTH_SHORT).show()
                             }
                         }
                     }
@@ -287,7 +288,7 @@ fun LiveTvLockedTap(
                                 pin = ""
                                 onOk()
                             } else {
-                                Toast.makeText(context, tr("Wrong PIN"), Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, I18n.t("Wrong PIN"), Toast.LENGTH_SHORT).show()
                             }
                         }
                     }
@@ -424,8 +425,8 @@ fun LiveTvShortcutBar(nav: androidx.navigation.NavHostController) {
                         }
                         updating = false
                         toast(
-                            if (n > 0) tr("%s channels").replace("%s", n.toString())
-                            else tr("Nothing to update yet")
+                            if (n > 0) I18n.t("%s channels").replace("%s", n.toString())
+                            else I18n.t("Nothing to update yet")
                         )
                     }
                 }

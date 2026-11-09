@@ -37,6 +37,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavHostController
+import com.hikari.app.i18n.I18n
 import com.hikari.app.i18n.tr
 import com.hikari.app.iptv.LiveTvEngine
 import com.hikari.app.iptv.LiveTvPlayback
@@ -74,9 +75,11 @@ fun LiveTvRecordingsScreen(nav: NavHostController) {
     LaunchedEffect(tick) {
         loading = true
         val data = withContext(Dispatchers.IO) {
-            runCatching { LiveTvEngine.init(context) }
-            Triple(LiveTvRecordings.recordings(), LiveTvRecordings.schedules(), LiveTvRecordings.seriesRules())
-        }.getOrDefault(Triple(emptyList(), emptyList(), emptyList()))
+            runCatching {
+                runCatching { LiveTvEngine.init(context) }
+                Triple(LiveTvRecordings.recordings(), LiveTvRecordings.schedules(), LiveTvRecordings.seriesRules())
+            }.getOrDefault(Triple(emptyList(), emptyList(), emptyList()))
+        }
         recordings = data.first
         schedules = data.second
         rules = data.third
@@ -283,7 +286,7 @@ fun LiveTvRecordingsScreen(nav: NavHostController) {
                         LiveTvRecordings.saveSeriesRules(LiveTvRecordings.seriesRules() + rule)
                         LiveTvRecordings.applySeriesRules()
                     }
-                    toast(tr("Rule added"))
+                    toast(I18n.t("Rule added"))
                     tick++
                 }
             },

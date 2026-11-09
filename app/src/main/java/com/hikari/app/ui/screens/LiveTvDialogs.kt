@@ -26,6 +26,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.hikari.app.i18n.I18n
 import com.hikari.app.i18n.tr
 import com.hikari.app.iptv.LiveTvEngine
 import com.hikari.app.tv.tvTextFieldKeys
@@ -88,7 +89,7 @@ fun AddM3uDialog(onDone: () -> Unit, onDismiss: () -> Unit) {
                 enabled = !busy,
                 onClick = {
                     if (url.trim().isBlank()) {
-                        error = tr("Paste the playlist link first.")
+                        error = I18n.t("Paste the playlist link first.")
                         return@TextButton
                     }
                     busy = true
@@ -102,7 +103,7 @@ fun AddM3uDialog(onDone: () -> Unit, onDismiss: () -> Unit) {
                         }
                         busy = false
                         if (err == null) {
-                            Toast.makeText(context, tr("Playlist added"), Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, I18n.t("Playlist added"), Toast.LENGTH_SHORT).show()
                             onDone()
                         } else {
                             error = err
@@ -214,7 +215,7 @@ fun AddXtreamDialog(onDone: () -> Unit, onDismiss: () -> Unit) {
                         else if (link.contains("?")) srv = link.substringBefore("?")
                     }
                     if (srv.isBlank() || user.isBlank() || pass.isBlank()) {
-                        error = tr("Fill in the server, username and password.")
+                        error = I18n.t("Fill in the server, username and password.")
                         return@TextButton
                     }
                     busy = true
@@ -228,7 +229,7 @@ fun AddXtreamDialog(onDone: () -> Unit, onDismiss: () -> Unit) {
                         }
                         busy = false
                         if (err == null) {
-                            Toast.makeText(context, tr("Xtream login added"), Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, I18n.t("Xtream login added"), Toast.LENGTH_SHORT).show()
                             onDone()
                         } else {
                             error = err
@@ -298,7 +299,7 @@ fun AddEpgDialog(onDone: () -> Unit, onDismiss: () -> Unit) {
                 enabled = !busy,
                 onClick = {
                     if (url.trim().isBlank()) {
-                        error = tr("Paste the guide link first.")
+                        error = I18n.t("Paste the guide link first.")
                         return@TextButton
                     }
                     busy = true
@@ -312,7 +313,7 @@ fun AddEpgDialog(onDone: () -> Unit, onDismiss: () -> Unit) {
                         }
                         busy = false
                         if (err == null) {
-                            Toast.makeText(context, tr("Guide added"), Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, I18n.t("Guide added"), Toast.LENGTH_SHORT).show()
                             onDone()
                         } else {
                             error = err

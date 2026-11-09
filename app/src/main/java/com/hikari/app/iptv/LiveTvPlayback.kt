@@ -156,7 +156,7 @@ object LiveTvPlayback {
                 return@withContext false
             }
             val alts = runCatching { LiveTvEngine.catchupAlternatives(primary, channel) }.getOrDefault(emptyList())
-            val streams = ([primary] + alts).distinct().mapIndexed { i, url ->
+            val streams = (listOf(primary) + alts).distinct().mapIndexed { i, url ->
                 StreamSource(
                     name = (if (i == 0) "Replay" else "Replay ${i + 1}") + " · " + program.title,
                     url = url,

@@ -83,11 +83,13 @@ fun LiveTvSportsScreen(nav: NavHostController) {
     LaunchedEffect(tick) {
         loading = true
         val data = withContext(Dispatchers.IO) {
-            runCatching { LiveTvEngine.init(context) }
-            val ls = LiveTvEngine.sports.leagues()
-            val lid = leagueId?.takeIf { id -> ls.any { it.id == id } } ?: ls.firstOrNull()?.id
-            Triple(ls, lid, LiveTvEngine.sports.followedTeams())
-        }.getOrDefault(Triple(emptyList(), null, emptySet()))
+            runCatching {
+                runCatching { LiveTvEngine.init(context) }
+                val ls = LiveTvEngine.sports.leagues()
+                val lid = leagueId?.takeIf { id -> ls.any { it.id == id } } ?: ls.firstOrNull()?.id
+                Triple(ls, lid, LiveTvEngine.sports.followedTeams())
+            }.getOrDefault(Triple(emptyList(), null, emptySet()))
+        }
         leagues = data.first
         if (leagueId == null) leagueId = data.second
         followed = data.third
@@ -334,7 +336,7 @@ private fun MatchSheet(event: SportsEvent, onDismiss: () -> Unit) {
 
     LaunchedEffect(event.id) {
         matches = withContext(Dispatchers.IO) {
-            runCatching { LiveTvEngine.sports.matchEvent(event) }.getOrDefault(emptyList())
+            runCatching { LiveTvEngine.sports.matchEvent(event) }.getOrElse { emptyList() }
         }
     }
 

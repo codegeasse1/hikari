@@ -577,7 +577,7 @@ object LiveTvEngine {
         var best: XmltvChannel? = null
         var bestScore = 0
         candidates.forEach { c ->
-            c.names.forEach { n ->
+            c.displayNames.forEach { n ->
                 val score = nameScore(norm, normName(n))
                 if (score > bestScore) {
                     bestScore = score

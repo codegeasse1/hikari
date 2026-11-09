@@ -34,6 +34,19 @@ class LiveTvBridge(override val config: ProviderConfig) : ContentProvider {
         const val GROUP_PREFIX = "livetv-group:"
         const val FAV_PREFIX = "livetv-fav"
         const val RECENT_PREFIX = "livetv-recent"
+
+        /** The same channel as the tab's own [IptvChannel]: group tiles, the
+         *  group-by switch and search read this shape (see `readCard`). */
+        fun toIptvChannel(c: LiveChannel): IptvChannel = IptvChannel(
+            name = c.name,
+            url = c.url,
+            logo = c.logo,
+            group = c.group,
+            tvgId = c.tvgId,
+            language = c.language,
+            country = c.country,
+            headers = c.headers,
+        )
     }
 
     private fun src(): LiveTvSource? = LiveTvEngine.sourceOf(sourceId)
@@ -227,7 +240,7 @@ class LiveTvBridge(override val config: ProviderConfig) : ContentProvider {
                 val primary = runCatching { LiveTvEngine.catchupUrl(ch, prog, now) }.getOrNull()
                     ?: return@withContext emptyList()
                 val alts = runCatching { LiveTvEngine.catchupAlternatives(primary, ch) }.getOrDefault(emptyList())
-                return@withContext ([primary] + alts).distinct().mapIndexed { i, url ->
+                return@withContext (listOf(primary) + alts).distinct().mapIndexed { i, url ->
                     StreamSource(
                         name = (if (i == 0) "Replay" else "Replay ${i + 1}") + " · " + prog.title,
                         url = url,
@@ -284,19 +297,4 @@ class LiveTvBridge(override val config: ProviderConfig) : ContentProvider {
         overview = group.ifBlank { c.group }.takeIf { it != "Ungrouped" },
         rawType = "channel",
     )
-
-    companion object {
-        /** The same channel as the tab's own [IptvChannel]: group tiles, the
-         *  group-by switch and search read this shape (see `readCard`). */
-        fun toIptvChannel(c: LiveChannel): IptvChannel = IptvChannel(
-            name = c.name,
-            url = c.url,
-            logo = c.logo,
-            group = c.group,
-            tvgId = c.tvgId,
-            language = c.language,
-            country = c.country,
-            headers = c.headers,
-        )
-    }
 }

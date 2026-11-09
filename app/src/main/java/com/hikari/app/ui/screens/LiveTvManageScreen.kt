@@ -41,6 +41,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavHostController
+import com.hikari.app.i18n.I18n
 import com.hikari.app.i18n.tr
 import com.hikari.app.iptv.LiveChannel
 import com.hikari.app.iptv.LiveChannelGroup
@@ -84,12 +85,14 @@ fun LiveTvManageScreen(nav: NavHostController) {
 
     suspend fun reload() {
         val data = withContext(Dispatchers.IO) {
-            runCatching { LiveTvEngine.init(context) }
-            val g = LiveTvEngine.groupsOf(null).filter { it.id != LiveChannelGroup.FAVORITES && it.id != LiveChannelGroup.RECENT }
-            val gid = groupId?.takeIf { id -> g.any { it.id == id } } ?: g.firstOrNull()?.id
-            val st = LiveTvEngine.store.userState()
-            ManageData(g, gid, st.hiddenChannels, st.hiddenGroups, st.lockedGroups, st.parentalPin.length >= 4)
-        }.getOrDefault(ManageData(emptyList(), null, emptySet(), emptySet(), emptySet(), false))
+            runCatching {
+                runCatching { LiveTvEngine.init(context) }
+                val g = LiveTvEngine.groupsOf(null).filter { it.id != LiveChannelGroup.FAVORITES && it.id != LiveChannelGroup.RECENT }
+                val gid = groupId?.takeIf { id -> g.any { it.id == id } } ?: g.firstOrNull()?.id
+                val st = LiveTvEngine.store.userState()
+                ManageData(g, gid, st.hiddenChannels, st.hiddenGroups, st.lockedGroups, st.parentalPin.length >= 4)
+            }.getOrDefault(ManageData(emptyList(), null, emptySet(), emptySet(), emptySet(), false))
+        }
         groups = data.groups
         if (groupId == null) groupId = data.groupId
         hiddenChannels = data.hiddenChannels
@@ -205,7 +208,7 @@ fun LiveTvManageScreen(nav: NavHostController) {
                 onFav = {
                     scope.launch {
                         withContext(Dispatchers.IO) { LiveTvEngine.toggleFavorite(channel.key) }
-                        toast(tr("Favorite updated"))
+                        toast(I18n.t("Favorite updated"))
                     }
                 },
             )
@@ -446,7 +449,7 @@ fun EpgAssignDialog(channel: LiveChannel, onDone: () -> Unit, onDismiss: () -> U
                                                 st.copy(epgOverrides = st.epgOverrides + (channel.key to c.id))
                                             }
                                         }
-                                        toast(tr("Guide assigned"))
+                                        toast(I18n.t("Guide assigned"))
                                         onDone()
                                     }
                                 }.padding(vertical = 8.dp),
@@ -606,8 +609,9 @@ private fun GroupManagerSheet(
                             }
                             onChanged()
                         }
-                    }
-                ) { Text(tr("Save")) },
+                    },
+                    content = { Text(tr("Save")) },
+                )
             },
             dismissButton = {
                 TextButton(onClick = { renameTarget = null }) { Text(tr("Cancel")) }
@@ -670,7 +674,7 @@ private fun CustomGroupSheet(onChanged: () -> Unit, onDismiss: () -> Unit) {
                     TextButton(
                         onClick = {
                             if (name.trim().isBlank()) {
-                                toast(tr("Name the group first."))
+                                toast(I18n.t("Name the group first."))
                                 return@TextButton
                             }
                             picking = true
