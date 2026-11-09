@@ -39,8 +39,13 @@ object PosterLoader {
         }
     }
     private val inFlight = ConcurrentHashMap.newKeySet<String>()
+    /** Cooldown per poster HASH (never the full URI): [schedulePrep] runs at
+     *  most once per cooldown per poster, and a catalog of undecodable
+     *  payloads can no longer pin hundreds of multi-hundred-KB strings here —
+     *  the strings that used to live in this map were themselves a leak. */
     private val lastAttempt = ConcurrentHashMap<String, Long>()
     private const val RETRY_COOLDOWN_MS = 5_000L
+    private const val LAST_ATTEMPT_MAX = 2048
 
     private val writesSincePrune = AtomicLong(0L)
 
@@ -238,9 +243,11 @@ object PosterLoader {
 
     private fun schedulePrep(u: String, name: String) {
         val now = System.currentTimeMillis()
-        lastAttempt[u]?.let { if (now - it < RETRY_COOLDOWN_MS) return }
-        if (!inFlight.add(u)) return
-        lastAttempt[u] = now
+        // Keyed by hash, never by the full data URI (see [lastAttempt]).
+        lastAttempt[name]?.let { if (now - it < RETRY_COOLDOWN_MS) return }
+        if (!inFlight.add(name)) return
+        if (lastAttempt.size >= LAST_ATTEMPT_MAX) lastAttempt.clear()
+        lastAttempt[name] = now
         prepExecutor.execute {
             try {
                 val bytes = decodeDataUri(u)
@@ -249,13 +256,15 @@ object PosterLoader {
                     runCatching { file.writeBytes(bytes) }
                     if (file.length() > 0) {
                         writesSincePrune.incrementAndGet()
+                        // Decoded: no cooldown needed anymore.
+                        lastAttempt.remove(name)
                         // Repaint exactly the cells that were waiting on THIS
                         // poster (see [pending]).
                         pending.remove(name)?.let { st -> st.value = st.value + 1L }
                     }
                 }
             } finally {
-                inFlight.remove(u)
+                inFlight.remove(name)
             }
         }
     }
@@ -284,10 +293,15 @@ object PosterLoader {
         val payload = url.substring(comma + 1)
             .filterNot { it == '\n' || it == '\r' || it == ' ' || it == '\t' }
         if (payload.isEmpty()) return null
-        val variants = intArrayOf(
-            Base64.DEFAULT,
+        // Pick the alphabet up front: standard (MRDS/51cg emit NO_WRAP) vs
+        // URL-safe. Trying all four variants means up to three wasted
+        // full-size decodes per undecodable poster.
+        val variants = if (payload.any { it == '-' || it == '_' }) intArrayOf(
             Base64.URL_SAFE,
             Base64.URL_SAFE or Base64.NO_PADDING,
+            Base64.DEFAULT,
+        ) else intArrayOf(
+            Base64.DEFAULT,
             Base64.DEFAULT or Base64.NO_WRAP,
         )
         for (flags in variants) {
