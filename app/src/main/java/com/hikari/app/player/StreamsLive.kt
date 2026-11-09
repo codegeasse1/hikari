@@ -98,9 +98,10 @@ object StreamsLive {
     fun remove(id: String, holdSweep: Boolean = false) {
         if (holdSweep) pauseSweep(id) else releaseSweep(id)
         val owner = sweepOwners[id]
-        val live = sessions[id]?.value.orEmpty()
-        if (owner != null && live.isNotEmpty()) {
-            runCatching { ContentRepository.rememberLiveServers(owner.first, owner.second, live) }
+        if (owner != null) {
+            // The server page closed: drop this title's cached list so the
+            // next Play re-searches from zero instead of painting stale rows.
+            runCatching { ContentRepository.forgetLiveServers(owner.first, owner.second) }
         }
         sessions.remove(id)
         episodes.remove(id)

@@ -921,6 +921,12 @@ class PlayerActivity : ComponentActivity() {
      *  caused by the user's own tap must NOT also trigger that abandon. */
     private var startChoicePending = false
 
+    /** Set when the search ends (or gives up) with zero servers while the
+     *  start chooser is still up: the sheet stays open showing this note
+     *  instead of auto-backing to an error panel. Cleared the moment a
+     *  server lands (see the chooser ticker). */
+    private var chooserEmptyNote: String? = null
+
     /** Set the instant a server row is TAPPED in the chooser, before the dismiss
      *  it triggers. The dismiss listener runs on the next loop turn (the
      *  dismissal is posted), so it cannot tell "the user picked a row and moved
@@ -1027,11 +1033,6 @@ class PlayerActivity : ComponentActivity() {
         // choosing (see [maybePrefetchTorrent]): by the tap it is instant.
         // Guarded and session-keyed inside; safe from any thread.
         maybePrefetchTorrent()
-        // A server that lands late may be the one that carries the default audio. Posted to the
-        // main looper (this runs on background threads too), and a no-op once it has been used.
-        if (defaultAudio.isNotBlank()) {
-            rebuildHandler.post { if (renderedFirstFrame) applyDefaultAudio(allowServerSwitch = true) }
-        }
         // Servers can be appended (and re-probed) from background threads, and a
         // watcher touches views — always rebuild on the main looper.
         //
@@ -1636,23 +1637,6 @@ class PlayerActivity : ComponentActivity() {
      *  rebuild. */
     private var pickText: TrackPick? = null
     private var pickAudio: TrackPick? = null
-
-    /** Default quality (pixels of height, 0 = Auto) and default audio language codes, read from
-     *  Settings -> Player -> Default quality & audio. A video opens on these by itself. */
-    private var defaultQualityH = 0
-    private var defaultAudio = ""
-    private var defaultAudio2 = ""
-
-    /** The person picked a quality / an audio themselves in this player: the defaults stay out of it.
-     *  The quality pick belongs to one server (see [playSource]); the audio pick is a language and
-     *  stays for the whole session. */
-    private var userPickedQuality = false
-    private var userPickedAudio = false
-
-    /** The default audio already moved playback to another server once (it never loops), and the
-     *  moment after the first picture until which a late-arriving server may still be used. */
-    private var audioServerSwitched = false
-    private var audioSwitchDeadline = 0L
 
     /**
      * Cross-server audio: the video keeps playing from the current server
@@ -3039,17 +3023,6 @@ class PlayerActivity : ComponentActivity() {
                 }
             }
         }
-        // Default quality + audio (Settings -> Player -> Default quality & audio). Read like the
-        // preferences above; when the tracks are already known by the time the answer lands, the
-        // defaults go on immediately, otherwise onTracksChanged applies them.
-        lifecycleScope.launch {
-            val st = (applicationContext as HikariApp).store
-            defaultQualityH = runCatching { st.playerDefaultQuality() }.getOrDefault(0)
-            defaultAudio = runCatching { st.playerDefaultAudio() }.getOrDefault("")
-            defaultAudio2 = runCatching { st.playerDefaultAudio2() }.getOrDefault("")
-            applyDefaultQuality()
-            applyDefaultAudio(allowServerSwitch = false)
-        }
         // The Stats page's stopwatch: it counts wall-clock seconds of actual
         // playback and hands them to the store every minute (see
         // [flushWatchSeconds]), so a session is never lost to a crash.
@@ -3080,6 +3053,18 @@ class PlayerActivity : ComponentActivity() {
         }
 
         nextBtn?.setOnClickListener {
+            if (sources.isEmpty()) {
+                // The panel over an empty list: there is no index 0 to
+                // replay — that just re-showed "No more servers". Run the
+                // same fresh-search wait the failover uses instead; it
+                // plays the first fresh row when it lands and only reports
+                // failure once the search has genuinely ended.
+                noSubsRetry = false
+                if (!refreshSources(-1)) {
+                    showError(I18n.t("No playable sources received."), false)
+                }
+                return@setOnClickListener
+            }
             if (currentIndex + 1 < sources.size) {
                 noSubsRetry = false
                 playSource(currentIndex + 1)
@@ -3512,10 +3497,17 @@ class PlayerActivity : ComponentActivity() {
                         }
                     }
                     if (sources.isEmpty() && !liveSearchDone) {
-                        // Give up on the search: close a still-empty chooser
-                        // first so the error isn't buried behind it.
-                        runCatching { serverChooserDialog?.dismiss() }
-                        showError(I18n.t("No playable sources received."), false)
+                        // Give up on the search. A still-open chooser stays
+                        // open on an honest "No servers found." note — it
+                        // never auto-backs to an error panel; backing out
+                        // (or the panel's Retry, reached by backing out)
+                        // re-runs the search from Play.
+                        if (serverChooserDialog?.isShowing == true) {
+                            chooserEmptyNote = I18n.t("No servers found.")
+                        } else {
+                            runCatching { serverChooserDialog?.dismiss() }
+                            showError(I18n.t("No playable sources received."), false)
+                        }
                     }
                 } else null
                 // Nothing will call [tryStart] again once the servers stop
@@ -3639,18 +3631,23 @@ class PlayerActivity : ComponentActivity() {
                             // what made a search that was still finding servers
                             // look like an empty catalogue ~9 seconds into a tap.
                             val last = StreamsLive.statusFlow(liveId).value
-                            // The "don't play directly" chooser may already be
-                            // up with nothing in it (it opens the instant the
-                            // player does). Close it before showing the error,
-                            // so the message isn't buried behind an empty sheet.
-                            runCatching { serverChooserDialog?.dismiss() }
-                            if (last != null && isNoResultVerdict(last)) {
-                                showError(I18n.t("No playable sources received."), false)
+                            // A still-open chooser stays open on the honest
+                            // note instead of auto-backing: the sheet is the
+                            // retry surface (back out and Play searches fresh;
+                            // its own auto-retry already fired once per open).
+                            val emptyMsg = if (last != null && isNoResultVerdict(last)) {
+                                I18n.t("No servers found.")
                             } else {
-                                // Honest: the search did not get to answer. The
-                                // panel's "Retry all" button re-runs it.
+                                I18n.t("The search was cut short before it found anything.")
+                            }
+                            if (serverChooserDialog?.isShowing == true) {
+                                chooserEmptyNote = emptyMsg
+                            } else {
+                                runCatching { serverChooserDialog?.dismiss() }
                                 showError(
-                                    I18n.t("The search was cut short before it found anything."),
+                                    if (last != null && isNoResultVerdict(last)) {
+                                        I18n.t("No playable sources received.")
+                                    } else emptyMsg,
                                     false,
                                 )
                             }
@@ -3717,8 +3714,12 @@ class PlayerActivity : ComponentActivity() {
                         s != null && isNoResultVerdict(s)
                     ) {
                         liveSearchDone = true
-                        runCatching { serverChooserDialog?.dismiss() }
-                        showError(I18n.t("No playable sources received."), false)
+                        if (serverChooserDialog?.isShowing == true) {
+                            chooserEmptyNote = I18n.t("No servers found.")
+                        } else {
+                            runCatching { serverChooserDialog?.dismiss() }
+                            showError(I18n.t("No playable sources received."), false)
+                        }
                     }
                 }
             }
@@ -9260,6 +9261,9 @@ class PlayerActivity : ComponentActivity() {
      * a server the user never picked.
      */
     private fun showServerChooser(startMode: Boolean = false, forDownload: Boolean = false, forceHorizontal: Boolean = false) {
+        // Fresh open, fresh verdict: a "No servers found." note left over
+        // from a previous empty search must never greet the new one.
+        chooserEmptyNote = null
         // startMode is the "don't play directly" chooser, which is opened the
         // instant the player does — before the first server has landed — so it
         // may legitimately be empty and fill in live. The Source pill
@@ -10582,6 +10586,7 @@ class PlayerActivity : ComponentActivity() {
                     // Reference header live counts (same 1.5s cadence, only
                     // on change so the header never remeasures for nothing).
                     val n = sources.size
+                    if (n > 0 && chooserEmptyNote != null) chooserEmptyNote = null
                     val tally = ContentRepository.crossTally
                     val searchingNow = tally.running.size + tally.primaryRunning.size > 0 ||
                         ContentRepository.unfinishedSearchCount() > 0
@@ -10591,7 +10596,7 @@ class PlayerActivity : ComponentActivity() {
                     } else if (searchingNow) {
                         "Finding servers…"
                     } else {
-                        baseHint
+                        chooserEmptyNote ?: baseHint
                     }
                     if (foundText != shownFound) {
                         shownFound = foundText
@@ -10871,8 +10876,6 @@ class PlayerActivity : ComponentActivity() {
             hint = I18n.t("Higher quality uses more data"),
             iconRes = R.drawable.ic_quality,
         ) { which ->
-            // An explicit pick (Auto included) ends the default quality for this server.
-            userPickedQuality = true
             if (which == 0) {
                 p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
                     .clearOverridesOfType(C.TRACK_TYPE_VIDEO)
@@ -12760,7 +12763,6 @@ class PlayerActivity : ComponentActivity() {
                 return@showGlassMenu
             }
             variantMap[which]?.let {
-                userPickedAudio = true
                 if (dualAudioOn) showDualAudioChoice(it) else switchAudioVariant(it)
                 return@showGlassMenu
             }
@@ -12773,7 +12775,6 @@ class PlayerActivity : ComponentActivity() {
                 return@showGlassMenu
             }
             if (which == 0) {
-                userPickedAudio = true
                 stopDualAudio()
                 pickAudio = null
                 // Fresh player, not the dialog-time snapshot: a re-resolve
@@ -12787,7 +12788,6 @@ class PlayerActivity : ComponentActivity() {
                 }
             } else {
                 val (group, ti) = indexMap[which] ?: return@showGlassMenu
-                userPickedAudio = true
                 // An in-stream track is the video server's own sound: any
                 // cross-server pairing ends with this pick.
                 stopDualAudio()
@@ -13581,8 +13581,6 @@ class PlayerActivity : ComponentActivity() {
         autoRotated = false
         userRotated = false
         userPickedSubs = false
-        // A new server is a new list of renditions: the default quality applies to it again.
-        userPickedQuality = false
         currentIndex = index
         // A new server owns its own timeline: a seek held for the previous
         // one must never land here.
@@ -14113,6 +14111,18 @@ class PlayerActivity : ComponentActivity() {
                 }
                 return
             }
+            // A row that already died this session (its URL was tried, or
+            // its host failed terminally): replaying the identical URL can
+            // only replay the identical error — the "same server 404s on
+            // every tap" report. Ask for a fresh extraction for THIS
+            // server instead; the refresh plays the same-name fresh link
+            // when it lands. An explicit tap with no session left to ask
+            // still falls through below — the tap remains the user's call.
+            if (!src.torrentStream && !src.local && !downloadPickMode &&
+                (src.url in triedUrls || mirrorHostOf(src.url) in deadHosts)
+            ) {
+                if (refreshSources(index)) return
+            }
             // Extension-less / container-unknown URLs — HLS & DASH manifests
             // served at API paths, and JSON/HTML wrapper pages — get probed
             // once before playback so the real mime/URL is known. Otherwise
@@ -14273,7 +14283,23 @@ class PlayerActivity : ComponentActivity() {
             // see the re-resolve after [playDirectInner].
             val probing = async { StreamProbe.resolve(src.url, headers + mapOf("User-Agent" to ua)) }
             val probeT0 = android.os.SystemClock.elapsedRealtime()
-            val resolved = withTimeoutOrNull(firstProbeWaitMs) { probing.await() }
+            var resolved = withTimeoutOrNull(firstProbeWaitMs) { probing.await() }
+            if (resolved == null && !StreamProbe.knownBad(src.url) && currentIndex == index &&
+                android.os.SystemClock.elapsedRealtime() - probeT0 < 500L
+            ) {
+                // Inconclusive AND no round trip could have completed: a
+                // local race (reset connection, DNS hiccup), not a dead
+                // link. One genuine retry with the full budget before
+                // anything is condemned — a definitive host verdict
+                // (knownBad) never retries.
+                com.hikari.app.data.Logs.log(
+                    "Player",
+                    "probe fast-miss \"${src.name}\" — retrying once before condemning",
+                )
+                resolved = withTimeoutOrNull(firstProbeWaitMs) {
+                    StreamProbe.resolve(src.url, headers + mapOf("User-Agent" to ua))
+                }
+            }
             com.hikari.app.data.Logs.log(
                 "Player",
                 "probe end \"${src.name}\" in ${android.os.SystemClock.elapsedRealtime() - probeT0}ms " +
@@ -16730,8 +16756,6 @@ class PlayerActivity : ComponentActivity() {
             // Re-assert the booster gain after a track change (cheap and
             // idempotent — the stage itself survives in the sink).
             applyVolumeBoost()
-            applyDefaultQuality()
-            applyDefaultAudio(allowServerSwitch = false)
             applyStickyPicks(C.TRACK_TYPE_AUDIO)
             applySubtitlePosition(subtitlePosition)
             if (noSubsRetry) return
@@ -16779,12 +16803,6 @@ class PlayerActivity : ComponentActivity() {
                     "in ${(android.os.SystemClock.elapsedRealtime() - serverStartAtMs) / 1000L}s " +
                     "decoder=${videoDecoderName ?: "-"}",
             )
-            // The stream is verified and its tracks are known: if the default audio is not in
-            // it, a server that carries that voice may be used (see [applyDefaultAudio]).
-            if (audioSwitchDeadline == 0L) {
-                audioSwitchDeadline = android.os.SystemClock.elapsedRealtime() + 30_000L
-            }
-            applyDefaultAudio(allowServerSwitch = true)
             maybeOfferResume()
         }
 
@@ -17152,7 +17170,14 @@ class PlayerActivity : ComponentActivity() {
             // qualifies — pinning this to bridge hosts left every other
             // server's expired link walking the list instead of refreshing.
             val stale5xxRefresh = httpStatus == 502 || httpStatus == 503 || httpStatus == 504
-            if ((httpStatus == 403 || loopback400Refresh || stale5xxRefresh) &&
+            // A 404/410 on a listed signed path is the same expired-link
+            // class: extractors rotate file paths, and a link that 404s now
+            // can hand out clean minutes later (the VidOut host 404'd twice,
+            // then played the same title clean). Re-run the extraction for
+            // a fresh link before walking the list — exactly like a stale
+            // 403 — instead of grinding sibling rows of the same dead file.
+            val staleGoneRefresh = httpStatus == 404 || httpStatus == 410
+            if ((httpStatus == 403 || loopback400Refresh || stale5xxRefresh || staleGoneRefresh) &&
                 liveSessionId != null &&
                 signedLinkRefreshes < 2 &&
                 !isLiveSource(sources.getOrNull(currentIndex))
@@ -18494,110 +18519,6 @@ class PlayerActivity : ComponentActivity() {
             handler.postDelayed({ tick() }, 500L)
         }
         handler.postDelayed({ tick() }, 400L)
-    }
-
-    /**
-     * Opens the video on the default quality (Settings -> Player -> Default quality & audio), so it
-     * never has to be picked from the Quality sheet again. The best rendition at or below the wanted
-     * height is used; when every rendition is taller than that, the lowest one (the next one up).
-     * Stays out of the way once the person picks a quality themselves, and never fights the
-     * compatibility downshift. Idempotent: safe to call on every track change.
-     */
-    private fun applyDefaultQuality() {
-        val p = player ?: return
-        val wanted = defaultQualityH
-        if (wanted <= 0 || userPickedQuality || compatDownshift) return
-        val rows = ArrayList<Pair<Tracks.Group, Int>>()
-        val heights = ArrayList<Int>()
-        for (group in p.currentTracks.groups) {
-            if (group.type != C.TRACK_TYPE_VIDEO) continue
-            val mediaGroup = group.mediaTrackGroup
-            for (i in 0 until mediaGroup.length) {
-                if (!group.isTrackSupported(i)) continue
-                val f = mediaGroup.getFormat(i)
-                rows.add(group to i)
-                heights.add(DefaultPlayback.effectiveHeight(f.width, f.height))
-            }
-        }
-        // One rendition is not a choice.
-        if (rows.size < 2) return
-        val at = DefaultPlayback.pickQuality(heights, wanted)
-        if (at < 0) return
-        val group = rows[at].first
-        val ti = rows[at].second
-        val params = p.trackSelectionParameters
-        if (params.overrides[group.mediaTrackGroup]?.trackIndices?.contains(ti) == true) return
-        p.trackSelectionParameters = params.buildUpon()
-            .clearOverridesOfType(C.TRACK_TYPE_VIDEO)
-            .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, ImmutableList.of(ti)))
-            .build()
-    }
-
-    /**
-     * Plays the video with the default audio language (Settings -> Player -> Default quality &
-     * audio). In order, for the first language and then the "if not found" one: an audio track of
-     * the stream itself; the current server when its name says it carries that voice; another
-     * server that carries it (only until a little after the first picture, and only once). When
-     * none of it is found the stream's own default audio simply stays. Never touches an audio the
-     * person picked themselves, nor a cross-server audio pairing.
-     */
-    private fun applyDefaultAudio(allowServerSwitch: Boolean) {
-        val p = player ?: return
-        if (userPickedAudio || dualPlayer != null) return
-        val wanted = listOf(defaultAudio, defaultAudio2).filter { it.isNotBlank() }.distinct()
-        if (wanted.isEmpty()) return
-        val groups = p.currentTracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
-        for (code in wanted) {
-            for (group in groups) {
-                val mediaGroup = group.mediaTrackGroup
-                for (i in 0 until mediaGroup.length) {
-                    if (!group.isTrackSupported(i)) continue
-                    val f = mediaGroup.getFormat(i)
-                    if (!DefaultPlayback.trackMatches(code, f.language, f.label)) continue
-                    // Kept as the sticky pick, so a rebuilt track list (provider subtitles being
-                    // attached, Sync) lands on the same voice again.
-                    if (pickAudio?.matches(f, i) != true) {
-                        pickAudio = TrackPick(C.TRACK_TYPE_AUDIO, f.language, f.label, i)
-                    }
-                    applyStickyPicks(C.TRACK_TYPE_AUDIO)
-                    return
-                }
-            }
-            if (serverHasVoice(currentIndex, code)) return
-            if (allowServerSwitch && !audioServerSwitched &&
-                android.os.SystemClock.elapsedRealtime() <= audioSwitchDeadline
-            ) {
-                val at = serverWithVoice(code)
-                if (at >= 0) {
-                    audioServerSwitched = true
-                    switchAudioVariant(at)
-                    return
-                }
-            }
-        }
-    }
-
-    /** True when the server at [index] names itself as carrying the audio language [code]. */
-    private fun serverHasVoice(index: Int, code: String): Boolean {
-        val tag = sources.getOrNull(index)?.let { audioTagOf(it.name) }
-        return DefaultPlayback.tagMatches(code, tag)
-    }
-
-    /** A server (other than the current one) that carries the audio language [code], or -1.
-     *  Servers of this very title that differ only by audio come first; then any live server whose
-     *  name says it carries that voice. Torrents and hosts known to be dead are left out. */
-    private fun serverWithVoice(code: String): Int {
-        audioVariantsFor(currentIndex)
-            .firstOrNull { it.second != currentIndex && DefaultPlayback.tagMatches(code, it.first) }
-            ?.let { return it.second }
-        for (i in sources.indices) {
-            if (i == currentIndex) continue
-            val s = sources[i]
-            if (s.isTorrent || s.url.isBlank()) continue
-            if (mirrorHostOf(s.url) in deadHosts || StreamProbe.knownBad(s.url)) continue
-            if (DefaultPlayback.tagMatches(code, audioTagOf(s.name))) return i
-        }
-        return -1
     }
 
     /** Re-applies the user's remembered subtitle / audio pick to the CURRENT

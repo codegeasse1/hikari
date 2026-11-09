@@ -257,6 +257,16 @@ class ContentRepository(private val manager: ProviderManager) {
             crossHung.remove(providerId)
         }
 
+        /** True while [providerId] sits out its twice-silent session break
+         *  (see [deadSessionUntil]) — expired entries are dropped. Unlike
+         *  [isHung] this says nothing about the short wedge TTL. */
+        fun isSittingOut(providerId: String): Boolean {
+            val until = deadSessionUntil[providerId] ?: return false
+            if (System.currentTimeMillis() < until) return true
+            deadSessionUntil.remove(providerId, until)
+            return false
+        }
+
         class RefundableGate(val limit: Int) {
             private val sem = Semaphore(limit)
             private val held = java.util.concurrent.atomic.AtomicInteger(0)
@@ -373,6 +383,17 @@ class ContentRepository(private val manager: ProviderManager) {
             }
         }
 
+        /** Drops everything this title cached the moment its server page
+         *  closes: every Play re-searches from zero instead of painting a
+         *  stale list first. Remembered rows, unfinished work and held
+         *  snapshots all go — the next lookup rebuilds them. */
+        fun forgetLiveServers(item: MediaItem, episode: Episode?) {
+            val key = streamsRememberedKey(item, episode)
+            streamsRemembered.remove(key)
+            pendingWork.remove(key)
+            heldSweeps.remove(key)
+        }
+
         const val REMEMBERED_STREAMS_TTL_MS = 60 * 60 * 1000L
 
         /** Hard ceiling on [streamsRemembered]: the TTL expiry above only
@@ -430,19 +451,54 @@ class ContentRepository(private val manager: ProviderManager) {
         /** A remembered signed URL whose own expiry timestamp is past is dead,
          *  not a server — it must not re-enter the list. Reads exp/expires/expiry
          *  as epoch seconds (10 digits) or millis (13 digits). */
-        fun signedExpired(s: StreamSource): Boolean {
-            val q = s.url.indexOf('?')
+        fun signedExpired(s: StreamSource): Boolean = signedExpired(s.url)
+
+        /** A remembered signed URL whose own expiry timestamp is past is dead,
+         *  not a server — it must not re-enter the list. Reads exp/expires/expiry
+         *  as epoch seconds (10 digits) or millis (13 digits), plus the AWS-style
+         *  X-Amz-Date + X-Amz-Expires pair that presigned R2/CDN links carry
+         *  (opaque path-token links with no computable expiry are NOT judged
+         *  here — a 404 at playback re-extracts them instead of replaying). */
+        fun signedExpired(url: String): Boolean {
+            val q = url.indexOf('?')
             if (q < 0) return false
             val now = System.currentTimeMillis()
-            for (part in s.url.substring(q + 1).split('&')) {
+            var amzDate: Long? = null
+            var amzExpires: Long? = null
+            for (part in url.substring(q + 1).split('&')) {
                 val name = part.substringBefore('=').trim().lowercase()
+                val value = part.substringAfter('=', "")
+                if (name == "x-amz-date") { amzDate = parseAmzDate(value.trim()); continue }
+                if (name == "x-amz-expires") { amzExpires = value.trim().toLongOrNull(); continue }
                 if (name != "exp" && name != "expires" && name != "expiry") continue
-                val digits = part.substringAfter('=', "").trim().takeWhile { it.isDigit() }
+                val digits = value.trim().takeWhile { it.isDigit() }
                 val t = digits.toLongOrNull() ?: continue
                 val ms = if (digits.length <= 10) t * 1000L else t
                 if (ms in 1 until now - 60_000L) return true
             }
+            if (amzDate != null && amzExpires != null &&
+                amzExpires > 0 && amzDate + amzExpires * 1000L in 1 until now - 60_000L
+            ) return true
             return false
+        }
+
+        /** Parses an X-Amz-Date stamp (yyyyMMdd'T'HHmmss'Z'). Null when the
+         *  value is not in that shape — never throws, never condemns. */
+        private fun parseAmzDate(v: String): Long? {
+            if (v.length != 16 || v[8] != 'T' || v[15] != 'Z') return null
+            return try {
+                val cal = java.util.GregorianCalendar(java.util.TimeZone.getTimeZone("UTC"))
+                cal.isLenient = false
+                cal.set(
+                    v.substring(0, 4).toInt(), v.substring(4, 6).toInt() - 1,
+                    v.substring(6, 8).toInt(), v.substring(9, 11).toInt(),
+                    v.substring(11, 13).toInt(), v.substring(13, 15).toInt(),
+                )
+                cal.set(java.util.Calendar.MILLISECOND, 0)
+                cal.timeInMillis
+            } catch (_: Exception) {
+                null
+            }
         }
 
         const val CROSS_THIN_RESULT = 6
@@ -2290,6 +2346,7 @@ class ContentRepository(private val manager: ProviderManager) {
             "start \"${item.title}\" (${item.type}) v=${com.hikari.app.BuildConfig.VERSION_NAME} " +
                 "origin=" +
                 (origin?.config?.name ?: if (originless) "app-catalogue(no extension)" else "?") + " " +
+                "narrow=" + (oneShotNarrow ?: "-") + " " +
                 "primary=${targets.size} nuvio=${nuvioTargets.size} " +
                 "cross=${crossTargets.size} same=${sameEngine.size} late=${lateTargets.size} " +
                 "families=" + providerCounts(crossTargets) +
@@ -3029,6 +3086,13 @@ class ContentRepository(private val manager: ProviderManager) {
                 pendingWork.remove(key)
                 return
             }
+            if (!allowExhausted && recorded.tries >= SWEEP_MAX_TRIES) {
+                // Automatic drains already had their retries (see
+                // SWEEP_MAX_TRIES): leave the remainder for the next real
+                // lookup instead of re-arming a finished sweep forever.
+                pendingWork.remove(key)
+                return
+            }
             if (key in heldSweepKeys) {
                 val held = heldSweeps.computeIfAbsent(key) {
                     HeldSweep(item, episode, emptyList())
@@ -3202,7 +3266,12 @@ class ContentRepository(private val manager: ProviderManager) {
                         }
                         if (waited > 0) pausedMs.addAndGet(waited)
                         if (isHung(p.config.id)) {
-                            if (deadSessionUntil[p.config.id]?.let { System.currentTimeMillis() < it } == true) {
+                            if (isSittingOut(p.config.id)) {
+                                // 30-minute break: finished for this pass
+                                // chain, NOT unfinished — re-recording it as
+                                // pending here is what re-armed a new sweep
+                                // every few seconds forever after two silences.
+                                sweep.answered.add(p.config.id)
                                 val rn = p.config.name.ifBlank { p.config.id }
                                 crossTally.verdict[p.config.id] = "$rn — sitting out (silent twice in a row)"
                                 bumpCrossStatus()

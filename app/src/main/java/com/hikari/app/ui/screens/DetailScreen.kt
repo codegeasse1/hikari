@@ -1034,12 +1034,18 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
         if (cached != null) {
             val fresh = System.currentTimeMillis() - cached.at < STREAM_CACHE_TTL_MS
             if (!force && fresh && cached.list.isNotEmpty()) {
+                // Expired signed links are not servers: an entry whose
+                // computable-expiry links have all lapsed falls through to
+                // a real extraction. (Opaque path-token links with no
+                // computable expiry are handled at playback — a 404 there
+                // re-extracts instead of replaying.)
                 val scoped = repo.filterToScope(item, cached.list)
+                    .filterNot { com.hikari.app.data.ContentRepository.signedExpired(it) }
                 if (scoped.isEmpty()) {
                     com.hikari.app.data.Logs.log(
                         "Search",
                         "cache hit \"${item.title}\" (fresh) → ${cached.list.size} servers, " +
-                            "none inside the current scope — re-extracting",
+                            "none usable (out of scope or expired signed links) — re-extracting",
                     )
                 } else {
                     com.hikari.app.data.Logs.log(
@@ -1055,7 +1061,12 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 "cache " + (if (force) "forced" else if (cached.list.isEmpty()) "empty" else "stale") +
                     " \"${item.title}\" — re-extracting",
             )
-            if (cached.list.isNotEmpty()) onProgress?.invoke(cached.list)
+            if (cached.list.isNotEmpty()) {
+                // Interim paint while the fresh pass runs: live links only.
+                // Expired signed ones 404 on tap, so they stay out even here.
+                val live = cached.list.filterNot { com.hikari.app.data.ContentRepository.signedExpired(it) }
+                if (live.isNotEmpty()) onProgress?.invoke(live)
+            }
         }
         if (!force) {
             val recent = repo.recentlyFoundStreams(item, ep)
@@ -1190,7 +1201,8 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
         // falls through to a real extraction so the tap that follows has live
         // links ready.
         if (cached != null && cached.list.isNotEmpty() &&
-            System.currentTimeMillis() - cached.at < STREAM_CACHE_TTL_MS) {
+            System.currentTimeMillis() - cached.at < STREAM_CACHE_TTL_MS &&
+            cached.list.any { !com.hikari.app.data.ContentRepository.signedExpired(it) }) {
             recordOutcome(cached.list, item)
             _streamsReady.value = true
             return
@@ -1209,7 +1221,8 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             val key = cacheKey(base, ep)
             val cached = StreamCache.get(key)
             if (cached != null && cached.list.isNotEmpty() &&
-                System.currentTimeMillis() - cached.at < STREAM_CACHE_TTL_MS
+                System.currentTimeMillis() - cached.at < STREAM_CACHE_TTL_MS &&
+                cached.list.any { !com.hikari.app.data.ContentRepository.signedExpired(it) }
             ) {
                 return@launch
             }
@@ -1783,6 +1796,10 @@ fun DetailScreen(
    val openStreams: (Episode?, Long, Boolean) -> Unit = openStreamsCall@{ ep, startPos, wantsDownload ->
         if (playScopeAskOn && !scopeAskArmed) {
             pendingNarrowTo = null
+            // A stale one-tap "this extension only" from an older Play must
+            // never narrow this one: a fresh tap without a fresh narrow
+            // choice always searches wide.
+            com.hikari.app.data.SearchScope.oneShotOriginOnly = null
             scopeAskPending = Triple(ep, startPos, wantsDownload)
             scopeAskShow = true
             return@openStreamsCall
@@ -1791,6 +1808,9 @@ fun DetailScreen(
         val narrowTo = pendingNarrowTo
         pendingNarrowTo = null
         lastSearchNarrowed = (narrowTo != null)
+        // Same stale-narrow guard for the no-dialog path (see above): only a
+        // fresh "this extension only" pick may narrow, and it sets narrowTo.
+        if (narrowTo == null) com.hikari.app.data.SearchScope.oneShotOriginOnly = null
         selectedEp = ep
         pendingStartPos = startPos
         streams = emptyList()
@@ -1847,7 +1867,12 @@ fun DetailScreen(
                 val warmKey = "${livePid}|$warmType|${mediaId}|${ep?.id.orEmpty()}"
                 val last = app.store.lastSource(warmKey)
                 val warmUrl = last?.url.orEmpty()
-                if (warmUrl.isNotBlank() && !warmUrl.startsWith("javascript:", true)) {
+                // Never warm-start on a link already proven dead or expired:
+                // yesterday's signed URL is today's 404.
+                if (warmUrl.isNotBlank() && !warmUrl.startsWith("javascript:", true) &&
+                    !com.hikari.app.net.StreamProbe.knownBad(warmUrl) &&
+                    !com.hikari.app.data.ContentRepository.signedExpired(warmUrl)
+                ) {
                     StreamsLive.append(
                         sid,
                         listOf(
