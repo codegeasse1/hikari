@@ -921,6 +921,12 @@ class PlayerActivity : ComponentActivity() {
      *  caused by the user's own tap must NOT also trigger that abandon. */
     private var startChoicePending = false
 
+    /** Set when the search ends (or gives up) with zero servers while the
+     *  start chooser is still up: the sheet stays open showing this note
+     *  instead of auto-backing to an error panel. Cleared the moment a
+     *  server lands (see the chooser ticker). */
+    private var chooserEmptyNote: String? = null
+
     /** Set the instant a server row is TAPPED in the chooser, before the dismiss
      *  it triggers. The dismiss listener runs on the next loop turn (the
      *  dismissal is posted), so it cannot tell "the user picked a row and moved
@@ -3085,6 +3091,18 @@ class PlayerActivity : ComponentActivity() {
         }
 
         nextBtn?.setOnClickListener {
+            if (sources.isEmpty()) {
+                // The panel over an empty list: there is no index 0 to
+                // replay — that just re-showed "No more servers". Run the
+                // same fresh-search wait the failover uses instead; it
+                // plays the first fresh row when it lands and only reports
+                // failure once the search has genuinely ended.
+                noSubsRetry = false
+                if (!refreshSources(-1)) {
+                    showError(I18n.t("No playable sources received."), false)
+                }
+                return@setOnClickListener
+            }
             if (currentIndex + 1 < sources.size) {
                 noSubsRetry = false
                 playSource(currentIndex + 1)
@@ -3517,10 +3535,17 @@ class PlayerActivity : ComponentActivity() {
                         }
                     }
                     if (sources.isEmpty() && !liveSearchDone) {
-                        // Give up on the search: close a still-empty chooser
-                        // first so the error isn't buried behind it.
-                        runCatching { serverChooserDialog?.dismiss() }
-                        showError(I18n.t("No playable sources received."), false)
+                        // Give up on the search. A still-open chooser stays
+                        // open on an honest "No servers found." note — it
+                        // never auto-backs to an error panel; backing out
+                        // (or the panel's Retry, reached by backing out)
+                        // re-runs the search from Play.
+                        if (serverChooserDialog?.isShowing == true) {
+                            chooserEmptyNote = I18n.t("No servers found.")
+                        } else {
+                            runCatching { serverChooserDialog?.dismiss() }
+                            showError(I18n.t("No playable sources received."), false)
+                        }
                     }
                 } else null
                 // Nothing will call [tryStart] again once the servers stop
@@ -3644,18 +3669,23 @@ class PlayerActivity : ComponentActivity() {
                             // what made a search that was still finding servers
                             // look like an empty catalogue ~9 seconds into a tap.
                             val last = StreamsLive.statusFlow(liveId).value
-                            // The "don't play directly" chooser may already be
-                            // up with nothing in it (it opens the instant the
-                            // player does). Close it before showing the error,
-                            // so the message isn't buried behind an empty sheet.
-                            runCatching { serverChooserDialog?.dismiss() }
-                            if (last != null && isNoResultVerdict(last)) {
-                                showError(I18n.t("No playable sources received."), false)
+                            // A still-open chooser stays open on the honest
+                            // note instead of auto-backing: the sheet is the
+                            // retry surface (back out and Play searches fresh;
+                            // its own auto-retry already fired once per open).
+                            val emptyMsg = if (last != null && isNoResultVerdict(last)) {
+                                I18n.t("No servers found.")
                             } else {
-                                // Honest: the search did not get to answer. The
-                                // panel's "Retry all" button re-runs it.
+                                I18n.t("The search was cut short before it found anything.")
+                            }
+                            if (serverChooserDialog?.isShowing == true) {
+                                chooserEmptyNote = emptyMsg
+                            } else {
+                                runCatching { serverChooserDialog?.dismiss() }
                                 showError(
-                                    I18n.t("The search was cut short before it found anything."),
+                                    if (last != null && isNoResultVerdict(last)) {
+                                        I18n.t("No playable sources received.")
+                                    } else emptyMsg,
                                     false,
                                 )
                             }
@@ -3722,8 +3752,12 @@ class PlayerActivity : ComponentActivity() {
                         s != null && isNoResultVerdict(s)
                     ) {
                         liveSearchDone = true
-                        runCatching { serverChooserDialog?.dismiss() }
-                        showError(I18n.t("No playable sources received."), false)
+                        if (serverChooserDialog?.isShowing == true) {
+                            chooserEmptyNote = I18n.t("No servers found.")
+                        } else {
+                            runCatching { serverChooserDialog?.dismiss() }
+                            showError(I18n.t("No playable sources received."), false)
+                        }
                     }
                 }
             }
@@ -9265,6 +9299,9 @@ class PlayerActivity : ComponentActivity() {
      * a server the user never picked.
      */
     private fun showServerChooser(startMode: Boolean = false, forDownload: Boolean = false, forceHorizontal: Boolean = false) {
+        // Fresh open, fresh verdict: a "No servers found." note left over
+        // from a previous empty search must never greet the new one.
+        chooserEmptyNote = null
         // startMode is the "don't play directly" chooser, which is opened the
         // instant the player does — before the first server has landed — so it
         // may legitimately be empty and fill in live. The Source pill
@@ -10587,6 +10624,7 @@ class PlayerActivity : ComponentActivity() {
                     // Reference header live counts (same 1.5s cadence, only
                     // on change so the header never remeasures for nothing).
                     val n = sources.size
+                    if (n > 0 && chooserEmptyNote != null) chooserEmptyNote = null
                     val tally = ContentRepository.crossTally
                     val searchingNow = tally.running.size + tally.primaryRunning.size > 0 ||
                         ContentRepository.unfinishedSearchCount() > 0
@@ -10596,7 +10634,7 @@ class PlayerActivity : ComponentActivity() {
                     } else if (searchingNow) {
                         "Finding servers…"
                     } else {
-                        baseHint
+                        chooserEmptyNote ?: baseHint
                     }
                     if (foundText != shownFound) {
                         shownFound = foundText
@@ -14118,6 +14156,18 @@ class PlayerActivity : ComponentActivity() {
                 }
                 return
             }
+            // A row that already died this session (its URL was tried, or
+            // its host failed terminally): replaying the identical URL can
+            // only replay the identical error — the "same server 404s on
+            // every tap" report. Ask for a fresh extraction for THIS
+            // server instead; the refresh plays the same-name fresh link
+            // when it lands. An explicit tap with no session left to ask
+            // still falls through below — the tap remains the user's call.
+            if (!src.torrentStream && !src.local && !downloadPickMode &&
+                (src.url in triedUrls || mirrorHostOf(src.url) in deadHosts)
+            ) {
+                if (refreshSources(index)) return
+            }
             // Extension-less / container-unknown URLs — HLS & DASH manifests
             // served at API paths, and JSON/HTML wrapper pages — get probed
             // once before playback so the real mime/URL is known. Otherwise
@@ -14278,7 +14328,23 @@ class PlayerActivity : ComponentActivity() {
             // see the re-resolve after [playDirectInner].
             val probing = async { StreamProbe.resolve(src.url, headers + mapOf("User-Agent" to ua)) }
             val probeT0 = android.os.SystemClock.elapsedRealtime()
-            val resolved = withTimeoutOrNull(firstProbeWaitMs) { probing.await() }
+            var resolved = withTimeoutOrNull(firstProbeWaitMs) { probing.await() }
+            if (resolved == null && !StreamProbe.knownBad(src.url) && currentIndex == index &&
+                android.os.SystemClock.elapsedRealtime() - probeT0 < 500L
+            ) {
+                // Inconclusive AND no round trip could have completed: a
+                // local race (reset connection, DNS hiccup), not a dead
+                // link. One genuine retry with the full budget before
+                // anything is condemned — a definitive host verdict
+                // (knownBad) never retries.
+                com.hikari.app.data.Logs.log(
+                    "Player",
+                    "probe fast-miss \"${src.name}\" — retrying once before condemning",
+                )
+                resolved = withTimeoutOrNull(firstProbeWaitMs) {
+                    StreamProbe.resolve(src.url, headers + mapOf("User-Agent" to ua))
+                }
+            }
             com.hikari.app.data.Logs.log(
                 "Player",
                 "probe end \"${src.name}\" in ${android.os.SystemClock.elapsedRealtime() - probeT0}ms " +
@@ -17157,7 +17223,14 @@ class PlayerActivity : ComponentActivity() {
             // qualifies — pinning this to bridge hosts left every other
             // server's expired link walking the list instead of refreshing.
             val stale5xxRefresh = httpStatus == 502 || httpStatus == 503 || httpStatus == 504
-            if ((httpStatus == 403 || loopback400Refresh || stale5xxRefresh) &&
+            // A 404/410 on a listed signed path is the same expired-link
+            // class: extractors rotate file paths, and a link that 404s now
+            // can hand out clean minutes later (the VidOut host 404'd twice,
+            // then played the same title clean). Re-run the extraction for
+            // a fresh link before walking the list — exactly like a stale
+            // 403 — instead of grinding sibling rows of the same dead file.
+            val staleGoneRefresh = httpStatus == 404 || httpStatus == 410
+            if ((httpStatus == 403 || loopback400Refresh || stale5xxRefresh || staleGoneRefresh) &&
                 liveSessionId != null &&
                 signedLinkRefreshes < 2 &&
                 !isLiveSource(sources.getOrNull(currentIndex))

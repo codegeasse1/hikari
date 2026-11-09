@@ -262,6 +262,24 @@ fun NovelReaderScreen(
                 at = System.currentTimeMillis(),
             )
         )
+        // Tracker: report the open chapter as manga progress, same as the
+        // manga reader (deduped per chapter by pushWatched — repeats are no-ops).
+        runCatching {
+            val num = ch?.number?.toInt()?.takeIf { it > 0 }
+                ?: com.hikari.app.tracker.TrackerSync.chapterNumberFromName(chName)
+            val t = title.ifBlank { mangaUrl }
+            if (t.isNotBlank() && num > 0) {
+                scope.launch(Dispatchers.IO) {
+                    runCatching {
+                        com.hikari.app.tracker.TrackerSync.pushWatched(
+                            app.store,
+                            com.hikari.app.data.TrackerMedia(title = t, movie = false, episode = num, manga = true),
+                            "manga|" + key + "|" + chapter,
+                        )
+                    }
+                }
+            }
+        }
         // Drop the previous chapter's scroll position first, then go to this
         // chapter's own spot (same-chapter reopen) or stay at the top.
         runCatching { listState.scrollToItem(0) }

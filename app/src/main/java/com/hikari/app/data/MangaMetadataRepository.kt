@@ -22,6 +22,8 @@ object MangaMetadataRepository {
         val isAdult: Boolean = false,
         /** AniList media id behind this record (0 when the AniList step missed). */
         val anilistId: Int = 0,
+        /** MyAnimeList id behind this record (0 when the Jikan step missed). */
+        val malId: Int = 0,
         /** PornHwaDB slug behind this record (null when its step missed). */
         val pwdbSlug: String? = null,
     )
@@ -81,26 +83,44 @@ object MangaMetadataRepository {
         val ck = (if (pwdbKey.isNotEmpty()) "P:" else "A:") + title.lowercase()
         cache[ck]?.let { if (System.currentTimeMillis() - it.at < TTL_MS) return it.meta }
         val anilist = if (wantAnilist) {
+            // One immediate retry: a single dropped request must not become a
+            // cached 24h miss (the "sometimes no metadata" report).
             runCatching { withContext(Dispatchers.IO) { fetchAnilistManga(title) } }.getOrNull()
+                ?: runCatching {
+                    kotlinx.coroutines.delay(800)
+                    withContext(Dispatchers.IO) { fetchAnilistManga(title) }
+                }.getOrNull()
+        } else null
+        // Jikan (MyAnimeList) fallback, then MangaDex: only when AniList drew a
+        // blank, so normal loads pay nothing extra.
+        val jikan = if (anilist == null) {
+            runCatching { withContext(Dispatchers.IO) { fetchJikanManga(title) } }.getOrNull()
+        } else null
+        val dex = if (anilist == null && jikan == null) {
+            runCatching { withContext(Dispatchers.IO) { fetchDexManga(title) } }.getOrNull()
         } else null
         val pwdb = if (pwdbKey.isNotEmpty() && (anilist == null || anilist.isAdult)) {
             runCatching { withContext(Dispatchers.IO) { fetchPwdb(title, pwdbKey) } }.getOrNull()
         } else null
-        val merged = if (anilist == null && pwdb == null) null else MangaMeta(
-            description = pwdb?.description ?: anilist?.description,
-            genres = if (!pwdb?.genres.isNullOrEmpty()) pwdb.genres else anilist?.genres.orEmpty(),
-            coverUrl = pwdb?.coverUrl ?: anilist?.coverUrl,
-            rating = pwdb?.rating ?: anilist?.rating,
-            source = if (pwdb != null) "PornHwaDB" else "AniList",
+        val merged = if (anilist == null && jikan == null && dex == null && pwdb == null) null else MangaMeta(
+            description = pwdb?.description ?: anilist?.description ?: jikan?.description ?: dex?.description,
+            genres = if (!pwdb?.genres.isNullOrEmpty()) pwdb.genres else (anilist?.genres?.takeIf { it.isNotEmpty() }
+                ?: jikan?.genres?.takeIf { it.isNotEmpty() } ?: dex?.genres.orEmpty()),
+            coverUrl = pwdb?.coverUrl ?: anilist?.coverUrl ?: jikan?.coverUrl ?: dex?.coverUrl,
+            rating = pwdb?.rating ?: anilist?.rating ?: jikan?.rating ?: dex?.rating,
+            source = if (pwdb != null) "PornHwaDB" else if (anilist != null) "AniList" else if (jikan != null) "Jikan" else "MangaDex",
             isAdult = (anilist?.isAdult == true) || pwdb != null,
             anilistId = anilist?.anilistId ?: 0,
+            malId = jikan?.malId ?: 0,
             pwdbSlug = pwdb?.pwdbSlug,
         )
-        cache[ck] = CacheEntry(System.currentTimeMillis(), merged)
+        // Never latch a failure: only real answers are cached, so a flaky
+        // request retries fresh on the next open instead of missing for 24h.
+        if (merged != null) cache[ck] = CacheEntry(System.currentTimeMillis(), merged)
         Logs.log(
             "MangaMeta",
             "manga metadata for \"" + title.take(80) + "\" from " + (merged?.source ?: "none") +
-                " (anilist=" + (anilist != null) + " pwdb=" + (pwdb != null) + ")",
+                " (anilist=" + (anilist != null) + " jikan=" + (jikan != null) + " dex=" + (dex != null) + " pwdb=" + (pwdb != null) + ")",
         )
         return merged
     }
@@ -160,6 +180,160 @@ object MangaMetadataRepository {
         return MangaMeta(desc, genres, cover, score, "AniList", media.optBoolean("isAdult", false), media.optInt("id", 0))
     }
 
+    /** Jikan (MyAnimeList, keyless) is throttled to one call per 400ms so a
+     *  burst of detail opens never trips its 3 req/s limit. */
+    @Volatile
+    private var lastJikanAt = 0L
+
+    private fun jikanThrottle() {
+        val wait = 400L - (System.currentTimeMillis() - lastJikanAt)
+        if (wait > 0) runCatching { Thread.sleep(wait) }
+        lastJikanAt = System.currentTimeMillis()
+    }
+
+    /** Title search on Jikan, same 55+ gate as the AniList step. Only runs
+     *  when AniList missed, so normal loads pay nothing. */
+    private fun fetchJikanManga(wanted: String): MangaMeta? {
+        jikanThrottle()
+        val q = URLEncoder.encode(wanted, "UTF-8")
+        val raw = Http.getStringQuiet(
+            "https://api.jikan.moe/v4/manga?q=$q&limit=5&order_by=members&sort=desc",
+        ) ?: return null
+        val arr = runCatching {
+            JSONObject(raw).optJSONArray("data")
+        }.getOrNull() ?: return null
+        var best: JSONObject? = null
+        var bestScore = 0
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val aliases = buildSet {
+                o.optString("title").trim().takeIf { it.isNotBlank() }?.let { add(it) }
+                o.optString("title_english").trim().takeIf { it.isNotBlank() }?.let { add(it) }
+                val syns = o.optJSONArray("title_synonyms")
+                for (k in 0 until (syns?.length() ?: 0)) {
+                    syns?.optString(k)?.trim()?.takeIf { it.isNotBlank() }?.let { add(it) }
+                }
+            }
+            if (aliases.isEmpty()) continue
+            val s = AnimeMetadataRepository.matchAliases(wanted, aliases)
+            if (s > bestScore) {
+                bestScore = s
+                best = o
+            }
+        }
+        if (best == null || bestScore < 55) return null
+        val genres = (0 until (best.optJSONArray("genres")?.length() ?: 0))
+            .mapNotNull { i -> best.optJSONArray("genres")?.optJSONObject(i)?.optString("name")?.trim()?.takeIf { it.isNotBlank() } }
+        val cover = best.optJSONObject("images")?.optJSONObject("jpg")
+            ?.optString("large_image_url")?.trim()?.takeIf { it.startsWith("http") }
+        val score = best.optDouble("score", 0.0).takeIf { it > 0 }
+        return MangaMeta(
+            best.optString("synopsis").trim().takeIf { it.isNotBlank() },
+            genres, cover, score, "Jikan", false, 0, best.optInt("mal_id", 0),
+        )
+    }
+
+    /** Characters for a MAL id (Jikan, keyless). Role reads "Main"/"Supporting". */
+    private fun fetchJikanCharacters(malId: Int): List<MangaCharacter> {
+        jikanThrottle()
+        val raw = Http.getStringQuiet("https://api.jikan.moe/v4/manga/$malId/characters")
+            ?: return emptyList()
+        val arr = runCatching {
+            JSONObject(raw).optJSONArray("data")
+        }.getOrNull() ?: return emptyList()
+        val out = ArrayList<MangaCharacter>(24)
+        for (i in 0 until arr.length()) {
+            if (out.size >= 24) break
+            val o = arr.optJSONObject(i) ?: continue
+            val c = o.optJSONObject("character") ?: continue
+            val name = c.optString("name").trim().takeIf { it.isNotBlank() } ?: continue
+            val img = c.optJSONObject("images")?.optJSONObject("jpg")
+                ?.optString("image_url")?.trim()?.takeIf { it.startsWith("http") }
+            out += MangaCharacter(name, img, o.optString("role").trim().takeIf { it.isNotBlank() })
+        }
+        return out
+    }
+
+    /** MangaDex (keyless) metadata fallback: description, genres and cover.
+     *  No characters — MangaDex's character data is too thin to trust. */
+    private fun fetchDexManga(wanted: String): MangaMeta? {
+        val q = URLEncoder.encode(wanted, "UTF-8")
+        val raw = Http.getStringQuiet(
+            "https://api.mangadex.org/manga?title=$q&limit=5&contentRating[]=safe" +
+                "&contentRating[]=suggestive&includes[]=cover_art&order[relevance]=desc",
+        ) ?: return null
+        val arr = runCatching {
+            JSONObject(raw).optJSONArray("data")
+        }.getOrNull() ?: return null
+        var bestId: String? = null
+        var bestAttr: JSONObject? = null
+        var bestScore = 0
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val a = o.optJSONObject("attributes") ?: continue
+            val titles = a.optJSONObject("title")
+            val aliases = buildSet {
+                if (titles != null) {
+                    val keys = titles.keys()
+                    while (keys.hasNext()) {
+                        titles.optString(keys.next()).trim().takeIf { it.isNotBlank() }?.let { add(it) }
+                    }
+                }
+                val alts = a.optJSONArray("altTitles")
+                for (k in 0 until (alts?.length() ?: 0)) {
+                    val t = alts?.optJSONObject(k) ?: continue
+                    val keys = t.keys()
+                    while (keys.hasNext()) {
+                        t.optString(keys.next()).trim().takeIf { it.isNotBlank() }?.let { add(it) }
+                    }
+                }
+            }
+            if (aliases.isEmpty()) continue
+            val s = AnimeMetadataRepository.matchAliases(wanted, aliases)
+            if (s > bestScore) {
+                bestScore = s
+                bestId = o.optString("id")
+                bestAttr = a
+            }
+        }
+        if (bestAttr == null || bestScore < 55) return null
+        val a = bestAttr
+        val descObj = a.optJSONObject("description")
+        var desc: String? = null
+        if (descObj != null) {
+            desc = descObj.optString("en").trim().takeIf { it.isNotBlank() }
+            if (desc == null) {
+                val keys = descObj.keys()
+                while (keys.hasNext()) {
+                    desc = descObj.optString(keys.next()).trim().takeIf { it.isNotBlank() }
+                    if (desc != null) break
+                }
+            }
+        }
+        val genres = (0 until (a.optJSONArray("tags")?.length() ?: 0)).mapNotNull { i ->
+            val t = a.optJSONArray("tags")?.optJSONObject(i) ?: return@mapNotNull null
+            if (t.optJSONObject("attributes")?.optString("group") !in listOf("genre", "theme")) return@mapNotNull null
+            t.optJSONObject("attributes")?.optJSONObject("name")?.optString("en")?.trim()?.takeIf { it.isNotBlank() }
+        }.take(6)
+        var cover: String? = null
+        val rels = JSONObject(raw).optJSONArray("data")
+        outer@ for (i in 0 until (rels?.length() ?: 0)) {
+            val o = rels?.optJSONObject(i) ?: continue
+            if (o.optString("id") != bestId) continue
+            val rr = o.optJSONArray("relationships")
+            for (k in 0 until (rr?.length() ?: 0)) {
+                val r = rr?.optJSONObject(k) ?: continue
+                if (r.optString("type") != "cover_art") continue
+                val file = r.optJSONObject("attributes")?.optString("fileName")?.trim()
+                if (!file.isNullOrBlank()) {
+                    cover = "https://uploads.mangadex.org/covers/$bestId/$file"
+                    break@outer
+                }
+            }
+        }
+        return MangaMeta(desc, genres, cover?.takeIf { it.startsWith("http") }, null, "MangaDex", false, 0, 0)
+    }
+
     private fun fetchPwdb(wanted: String, key: String): MangaMeta? {
         val headers = mapOf("X-API-Key" to key)
         val q = URLEncoder.encode(wanted, "UTF-8")
@@ -204,18 +378,30 @@ object MangaMetadataRepository {
                 if (System.currentTimeMillis() - at < TTL_MS) return@withContext list
             }
             val ext = runCatching { fetchExternal(app, fallbackTitle) }.getOrNull()
-            // AniList first (keyless, every title); PornHwaDB only when AniList
-            // has no record but the adult DB does.
+            // AniList first (keyless, every title); Jikan (MAL) when AniList
+            // missed; PornHwaDB only when neither has a record. One retry per
+            // step: a dropped request must not read as "no characters".
             var out = if ((ext?.anilistId ?: 0) > 0) {
                 runCatching { fetchAnilistCharacters(ext!!.anilistId) }.getOrDefault(emptyList())
+                    .ifEmpty {
+                        runCatching {
+                            kotlinx.coroutines.delay(800)
+                            fetchAnilistCharacters(ext!!.anilistId)
+                        }.getOrDefault(emptyList())
+                    }
             } else emptyList()
+            if (out.isEmpty() && (ext?.malId ?: 0) > 0) {
+                out = runCatching { fetchJikanCharacters(ext!!.malId) }.getOrDefault(emptyList())
+            }
             if (out.isEmpty() && !ext?.pwdbSlug.isNullOrBlank()) {
                 val k = runCatching { app.store.pornhwaApiKey() }.getOrDefault("").trim()
                 if (k.isNotEmpty()) {
                     out = runCatching { fetchPwdbCharacters(ext!!.pwdbSlug!!, k) }.getOrDefault(emptyList())
                 }
             }
-            charCache[key] = System.currentTimeMillis() to out
+            // Only real answers are cached: an empty list is "unknown", not
+            // "none", and retries fresh on the next open.
+            if (out.isNotEmpty()) charCache[key] = System.currentTimeMillis() to out
             Logs.log("MangaMeta", "manga characters for \"" + fallbackTitle.take(60) + "\": " + out.size)
             out
         }
