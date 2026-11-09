@@ -270,6 +270,13 @@ class AppStore(private val ctx: Context) {
         val PLAYER_TOP_ICON_SIZE = intPreferencesKey("playerTopIconSize")
         /** Use the large left-side TV menu for player panels. */
         val PLAYER_TV_PANELS = booleanPreferencesKey("playerTvPanels")
+        /** Default video quality in pixels of height (0 = Auto / adaptive).
+         *  Settings -> Player -> Default quality & audio. */
+        val PLAYER_DEFAULT_QUALITY = intPreferencesKey("playerDefaultQuality")
+        /** Default audio language (2-letter code, blank = the stream's own default)
+         *  and the language to try when the first one is not found. */
+        val PLAYER_DEFAULT_AUDIO = stringPreferencesKey("playerDefaultAudio")
+        val PLAYER_DEFAULT_AUDIO2 = stringPreferencesKey("playerDefaultAudio2")
         /** Size of TV episode rows/cards as a percentage of the default size. */
         val TV_EPISODE_SIZE = intPreferencesKey("tvEpisodeSize")
         /** TV text size as a percentage of the shipped sizes (50–150, 100 is
@@ -3080,6 +3087,38 @@ fun searchExceptionOnFlow(): Flow<Boolean> =
 
     suspend fun setPlayerTvPanels(on: Boolean) {
         write("PLAYER_TV_PANELS") { it[K.PLAYER_TV_PANELS] = on }
+    }
+
+    /** Default video quality in pixels of height; 0 = Auto (adaptive). */
+    fun playerDefaultQualityFlow(): Flow<Int> =
+        store.data.map { (it[K.PLAYER_DEFAULT_QUALITY] ?: 0).coerceIn(0, 4320) }
+            .distinctUntilChanged()
+            .flowOn(Dispatchers.Default)
+
+    suspend fun playerDefaultQuality(): Int = playerDefaultQualityFlow().first()
+
+    suspend fun setPlayerDefaultQuality(height: Int) {
+        write("PLAYER_DEFAULT_QUALITY") { it[K.PLAYER_DEFAULT_QUALITY] = height.coerceIn(0, 4320) }
+    }
+
+    /** Default audio language code (blank = the stream's own default). */
+    fun playerDefaultAudioFlow(): Flow<String> =
+        store.data.map { it[K.PLAYER_DEFAULT_AUDIO] ?: "" }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun playerDefaultAudio(): String = playerDefaultAudioFlow().first()
+
+    suspend fun setPlayerDefaultAudio(code: String) {
+        write("PLAYER_DEFAULT_AUDIO") { it[K.PLAYER_DEFAULT_AUDIO] = code }
+    }
+
+    /** The audio language to try when the default one is not found. */
+    fun playerDefaultAudio2Flow(): Flow<String> =
+        store.data.map { it[K.PLAYER_DEFAULT_AUDIO2] ?: "" }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun playerDefaultAudio2(): String = playerDefaultAudio2Flow().first()
+
+    suspend fun setPlayerDefaultAudio2(code: String) {
+        write("PLAYER_DEFAULT_AUDIO2") { it[K.PLAYER_DEFAULT_AUDIO2] = code }
     }
 
     /** Size of the TV detail screen's episode rows/cards (80–160%). */
