@@ -953,6 +953,7 @@ private fun controlIcon(control: PlayerControl): Int = when (control) {
     PlayerControl.LOCK -> R.drawable.ic_lock
     PlayerControl.SPEED -> R.drawable.ic_speed
     PlayerControl.EPISODES -> R.drawable.ic_episodes
+    PlayerControl.CHANNELS -> R.drawable.ic_channels
     PlayerControl.SOURCES -> R.drawable.ic_server
     PlayerControl.QUALITY -> R.drawable.ic_quality
     PlayerControl.AUDIO -> R.drawable.ic_audio

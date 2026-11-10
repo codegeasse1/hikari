@@ -5850,6 +5850,7 @@ class PlayerActivity : ComponentActivity() {
 
             PlayerControl.SPEED,
             PlayerControl.EPISODES,
+            PlayerControl.CHANNELS,
             PlayerControl.SOURCES,
             PlayerControl.QUALITY,
             PlayerControl.AUDIO,
