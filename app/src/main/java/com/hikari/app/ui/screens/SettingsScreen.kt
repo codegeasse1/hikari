@@ -592,6 +592,7 @@ private fun searchSettings(rawQuery: String): List<SettingsSearchEntry> {
         out += SettingsSearchEntry(key, title, path, folder, sub, sectionId, keywords)
     }
     section("sec-player-style", "Player UI style", "Customize", "customize", null, null, "player ui style buttons icons size bigger colour color shape round square circle position move opacity customize")
+    section("sec-server-screen-style", "Server screen style", "Customize", "customize", null, "customize.server_screen", "server screen style page list loading streams chips extension hero banner look classic new design customize")
     section("sec-player-gestures", "Player gestures & decoder", "Customize", "customize", null, null, "player gestures decoder brightness volume swipe slide seek pinch zoom hardware software video")
     section("sec-default-playback", "Default quality & audio", "Player", "player", null, null, "default quality audio language voice dub hindi english 1080p 720p 480p resolution auto")
     val servers = "Playback & Servers"
@@ -1018,6 +1019,7 @@ fun SettingsScreen(nav: NavHostController) {
                             }
                         }
                     }
+                    item { SettingsCard { ServerScreenStyleCard(app) } }
                     item { SettingsCard { PlayerStyleCard(onOpen = { showPlayerStyle = true }) } }
                     item { SettingsCard { PlayerGesturesCard(onOpen = { showPlayerGestures = true }) } }
                 }
@@ -4740,6 +4742,79 @@ private fun PlaybackStartCard(app: HikariApp) {
                     scope.launch { runCatching { app.store.setPlayScopeAsk(it) } }
                 },
             )
+        }
+    }
+}
+
+@Composable
+private fun ServerScreenStyleCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    var style by remember { mutableStateOf(com.hikari.app.player.ServerScreenStyles.CLASSIC) }
+
+    LaunchedEffect(Unit) {
+        style = runCatching { app.store.serverScreenStyle() }
+            .getOrDefault(com.hikari.app.player.ServerScreenStyles.CLASSIC)
+    }
+
+    fun persist(next: String) {
+        style = com.hikari.app.player.ServerScreenStyles.namespace(next)
+        scope.launch { runCatching { app.store.setServerScreenStyle(style) } }
+    }
+
+    val isStreams = style == com.hikari.app.player.ServerScreenStyles.STREAMS
+    SettingsSection(
+        id = "customize.server_screen",
+        icon = Icons.Filled.ViewModule,
+        title = tr("Server screen style"),
+        summary = if (isStreams) {
+            tr("Streams list — banner, extension chips, live list")
+        } else {
+            tr("Classic — the server page you already have")
+        },
+    ) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clickable { persist(com.hikari.app.player.ServerScreenStyles.CLASSIC) }
+                .tvToggle(!isStreams, onValueChange = {
+                    if (it) persist(com.hikari.app.player.ServerScreenStyles.CLASSIC)
+                }),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            RadioButton(selected = !isStreams, onClick = null)
+            Column(Modifier.weight(1f)) {
+                Text(
+                    tr("Classic (default)"),
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Text(
+                    tr("The server page as it is now"),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clickable { persist(com.hikari.app.player.ServerScreenStyles.STREAMS) }
+                .tvToggle(isStreams, onValueChange = {
+                    if (it) persist(com.hikari.app.player.ServerScreenStyles.STREAMS)
+                }),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            RadioButton(selected = isStreams, onClick = null)
+            Column(Modifier.weight(1f)) {
+                Text(
+                    tr("Streams list"),
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Text(
+                    tr("Title banner, extension chips, loading cards and a live list per extension"),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
     }
 }
