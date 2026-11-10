@@ -4273,6 +4273,14 @@ fun ExtensionsScreen(nav: NavHostController? = null) {
             onRemoveSite = { url ->
                 vm.runUninstall("Removing website…", "Website removed") { vm.removeSite(url) }
             },
+            onOpenSitesPage = {
+                nav?.let {
+                    com.hikari.app.ui.navigation.Routes.safeNavigate(
+                        it,
+                        com.hikari.app.ui.navigation.Routes.WEBSITES,
+                    )
+                }
+            },
             onPickCs3File = {
                 vm.clearStatus()
                 filePicker.launch(arrayOf("application/octet-stream", "*/*"))
@@ -5275,6 +5283,7 @@ private fun RepoBrowserView(
     onAddSite: () -> Unit,
     onOpenSite: (Site) -> Unit,
     onRemoveSite: (String) -> Unit,
+    onOpenSitesPage: () -> Unit = {},
     onRefreshRepo: (Cs3Repo) -> Unit,
     onInstallPlugin: (Cs3RepoPlugin, RepoKind) -> Unit,
     onUninstallPlugin: (Cs3RepoPlugin, RepoKind) -> Unit,
@@ -5835,8 +5844,7 @@ private fun RepoBrowserView(
         item {
             SitesFolder(
                 sites = sites,
-                onOpen = { onOpenSite(it) },
-                onRemove = { onRemoveSite(it) }
+                onOpenPage = onOpenSitesPage,
             )
         }
         item { Spacer(Modifier.height(8.dp)) }
@@ -8108,122 +8116,48 @@ private fun pluginStatus(p: ContentProvider, iptvTick: Int = 0): String? {
 @Composable
 private fun SitesFolder(
     sites: List<Site>,
-    onOpen: (Site) -> Unit,
-    onRemove: (String) -> Unit,
+    onOpenPage: () -> Unit,
 ) {
-    var expanded by remember { mutableStateOf(false) }
+    // Entry card into the full Websites page: tap anywhere to open the grid.
     GlassCard(
         Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 6.dp)
     ) {
-        Column {
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .clickable { expanded = !expanded }
-                    .padding(horizontal = 12.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                // Theme tile (accent wash + hairline + accent glyph): the same
-                // tile every other row on this screen wears.
-                SettingsThemeTile(Icons.Filled.Public, tr("Webview sites"), 40.dp)
-                Spacer(Modifier.width(12.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        tr("Webview sites"),
-                        style = MaterialTheme.typography.titleSmall,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        if (sites.isEmpty()) I18n.t("No sites added yet — tap to expand")
-                        else I18n.t(if (sites.size == 1) "%s site" else "%s sites").replace("%s", sites.size.toString()),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                Icon(
-                    if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
-                    contentDescription = if (expanded) "Collapse" else "Expand",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            if (expanded) {
-                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
-                if (sites.isEmpty()) {
-                    if (!LocalHideHelp.current) {
-                    Text(
-                        tr("Add any movie/streaming website and it opens in an ad-free web view — ads, trackers and popups blocked, with one-tap video playback in the player."),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(16.dp)
-                    )
-                    }
-                } else {
-                    sites.forEach { site ->
-                        SiteRow(
-                            site = site,
-                            onOpen = { onOpen(site) },
-                            onRemove = { onRemove(site.url) }
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun SiteRow(
-    site: Site,
-    onOpen: () -> Unit,
-    onRemove: () -> Unit,
-) {
-    GlassCard(Modifier
-        .fillMaxWidth()
-        .padding(horizontal = 16.dp, vertical = 6.dp)) {
         Row(
             Modifier
-                .padding(12.dp)
-                .tvPress(previewPass = false, onClick = onOpen),
+                .fillMaxWidth()
+                .clickable(onClick = onOpenPage)
+                .padding(horizontal = 12.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             // Theme tile (accent wash + hairline + accent glyph): the same
             // tile every other row on this screen wears.
-            SettingsThemeTile(Icons.Filled.Public, site.name, 40.dp)
+            SettingsThemeTile(Icons.Filled.Public, tr("Webview sites"), 40.dp)
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(
-                    site.name,
+                    tr("Webview sites"),
                     style = MaterialTheme.typography.titleSmall,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    site.url,
+                    if (sites.isEmpty()) I18n.t("No sites added yet — tap to open")
+                    else I18n.t(if (sites.size == 1) "%s site — tap to open" else "%s sites — tap to open").replace("%s", sites.size.toString()),
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            Spacer(Modifier.width(8.dp))
-            Button(onClick = onOpen) {
-                Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(4.dp))
-                Text(tr("Open"))
-            }
-            IconButton(onClick = onRemove) {
-                Icon(
-                    Icons.Filled.Delete,
-                    contentDescription = tr("Remove website"),
-                    tint = MaterialTheme.colorScheme.error
-                )
-            }
+            Icon(
+                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = tr("Open websites"),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }
+
 
 private fun isMangayomiRepo(repo: Cs3Repo): Boolean {
     val u = repo.url.lowercase()

@@ -32,7 +32,7 @@ object PosterLoader {
     /** Bounded worker pool: decodes are heavy (multi-MB buffers) and running
      *  them two-at-a-time keeps the memory churn low and predictable instead of
      *  a hundred parallel allocations. */
-    private val prepExecutor = Executors.newFixedThreadPool(2) { r ->
+    private val prepExecutor = Executors.newFixedThreadPool(8) { r ->
         Thread(r, "hikari-poster-prep").apply {
             isDaemon = true
             priority = Thread.MIN_PRIORITY
@@ -61,8 +61,24 @@ object PosterLoader {
     }
 
     fun model(url: String?): Any? {
+        // A provider that left no art is a blank cell by construction — count
+        // it, so the Logs screen can tell "empty-handed" apart from "failed".
+        if (url.isNullOrBlank()) {
+            com.hikari.app.data.Logs.traceSampledEvery(
+                "Poster", "empty-poster", 50L,
+            ) { "blank posterUrl from provider (no art to fetch)" }
+            return null
+        }
         val u = normalize(url) ?: return null
-        if (!u.startsWith(DATA_IMAGE) && !u.startsWith(CACHE_TOKEN)) return u
+        if (!u.startsWith(DATA_IMAGE) && !u.startsWith(CACHE_TOKEN)) {
+            // Plain remote poster: the fetch census. If these lines exist but
+            // no Image/refused lines follow, Coil either never fired or got a
+            // 200 with undecodable bytes (see the coil-error lines).
+            com.hikari.app.data.Logs.traceSampledEvery(
+                "Poster", "http-poster", 200L,
+            ) { "fetch host=${com.hikari.app.data.Logs.safeHost(u)}" }
+            return u
+        }
 
         val name = hashOf(u)
         existingFile(name)?.let { return request(it, name) }
@@ -227,6 +243,11 @@ object PosterLoader {
             return poolGiant(u)
         }
         pruneIfNeeded()
+        // Success census: without it a screen of clean decodes looks exactly
+        // like a screen that never tried (zero lines either way).
+        com.hikari.app.data.Logs.traceSampledEvery(
+            "Poster", "tokenize-ok", 200L,
+        ) { "decoded + cached hash=$name bytes=${bytes.size}" }
         return CACHE_TOKEN + name
     }
 
@@ -281,11 +302,13 @@ object PosterLoader {
 
     private fun schedulePrep(u: String, name: String) {
         val now = System.currentTimeMillis()
-        // Keyed by hash, never by the full data URI (see [lastAttempt]).
+        // Failure backoff ONLY (keyed by hash, never by the full data URI): a
+        // hash lands in [lastAttempt] when its previous decode FAILED. The
+        // first attempt of a new poster is never delayed — the old code parked
+        // every new poster behind the same cooldown, so a fast scroll showed
+        // only the first decodes and blank cells behind them.
         lastAttempt[name]?.let { if (now - it < RETRY_COOLDOWN_MS) return }
         if (!inFlight.add(name)) return
-        if (lastAttempt.size >= LAST_ATTEMPT_MAX) lastAttempt.clear()
-        lastAttempt[name] = now
         prepExecutor.execute {
             try {
                 val bytes = decodeDataUri(u)
@@ -300,6 +323,7 @@ object PosterLoader {
                         // poster (see [pending]).
                         pending.remove(name)?.let { st -> st.value = st.value + 1L }
                     } else {
+                        prepFailed(name)
                         com.hikari.app.data.Logs.traceSampledEvery(
                             "Poster", "prep-write-fail", 50L,
                         ) { "async persist failed hash=$name bytes=${bytes.size}" }
@@ -310,6 +334,7 @@ object PosterLoader {
                         bytes.isEmpty() -> "empty-bytes"
                         else -> "no-store-dir"
                     }
+                    prepFailed(name)
                     com.hikari.app.data.Logs.traceSampledEvery(
                         "Poster", "prep-undecodable", 50L,
                     ) { "async decode failed ($why) len=${u.length} hash=$name" }
@@ -318,6 +343,13 @@ object PosterLoader {
                 inFlight.remove(name)
             }
         }
+    }
+
+    /** Records a failed decode so the next attempt backs off (see
+     *  [RETRY_COOLDOWN_MS]); successes never touch [lastAttempt]. */
+    private fun prepFailed(name: String) {
+        if (lastAttempt.size >= LAST_ATTEMPT_MAX) lastAttempt.clear()
+        lastAttempt[name] = System.currentTimeMillis()
     }
 
     /** A host-looking path with no scheme ('pic.example.com/x.jpg') — plugins

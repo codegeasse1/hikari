@@ -1,3 +1,10 @@
+## 0.12.81 (continuous build only)
+
+- Poster pipeline can finally be diagnosed AND keeps up: decode pool 2 → 8 threads, first attempts are never parked behind the failure cooldown (backoff now applies to failures only), and every blank now leaves a line — empty-poster census, http-poster fetch census, tokenize-ok success census, and coil-error lines for File decodes / 200-with-garbage that bypass the Image interceptor (filter "Poster" in the Logs live tail)
+- Playlists page rebuilt in the new Live TV style: the old swipeable IPTV/Tor/Network pill layout is gone — one stacked page with IPTV, Tor and Network stream group cards (rows with cover, counts, delete, tap-to-open). Torrent and network-stream add/play flows are unchanged, and the engine import still runs on open
+- Saved websites are their own Websites page: searchable card grid with letter avatars, one-tap open in the ad-free web view, add dialog and delete confirm — the Extensions entry card opens it instead of inline rows
+- 0.12.80 entry below still applies (Live TV home, player Channels, full-app logger)
+
 ## 0.12.80 (continuous build only)
 
 - IPTV tab is now a Nuvio-style Live TV home: big Live TV header with overflow menu (Manage groups and channels, Update now, Playlists), icon action row (Search / Guide / Calendar / On Demand / Sports / Settings), expandable group cards with channel counts and logo strips, inline channel rows (logo + number + name) that play on tap with favorite stars, group pin-to-top stars, inline channel search, and an empty state that points at playlist setup. The old playlist/Tor/Network tiles moved one tap away under Playlists

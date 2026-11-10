@@ -316,7 +316,18 @@ fun PosterImage(
         modifier = modifier,
         alignment = alignment,
         contentScale = contentScale,
-        onError = {
+        onError = { state ->
+            // Decode/network failure census (File decodes and 200-with-garbage
+            // bypass the Image interceptor, so this is the only line they get).
+            com.hikari.app.data.Logs.traceSampledEvery(
+                "Poster", "coil-error", 20L,
+            ) {
+                val err = (state as? coil.compose.AsyncImagePainter.State.Error)
+                    ?.result?.throwable
+                "coil ${if (attempt >= POSTER_RETRIES) "final" else "retry#${attempt + 1}"} " +
+                    "model=${describePosterModel(model)} " +
+                    "err=${err?.javaClass?.simpleName}: ${err?.message?.take(160)}"
+            }
             if (attempt < POSTER_RETRIES) {
                 scope.launch {
                     delay(700L * (attempt + 1))
@@ -327,6 +338,15 @@ fun PosterImage(
             }
         },
     )
+}
+
+/** Short, secret-free description of a Coil model for the coil-error lines. */
+private fun describePosterModel(model: Any?): String = when (model) {
+    null -> "<null>"
+    is java.io.File -> "file:${model.name} len=${runCatching { model.length() }.getOrDefault(-1)}"
+    is String -> com.hikari.app.data.Logs.safeUrl(model)
+    is coil.request.ImageRequest -> "req(" + describePosterModel(model.data) + ")"
+    else -> model.javaClass.simpleName
 }
 
 @Composable

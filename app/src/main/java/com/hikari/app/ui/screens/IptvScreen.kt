@@ -345,25 +345,112 @@ fun IptvScreen(nav: NavHostController) {
         )
     }
 
-    Column(Modifier.fillMaxSize()) {
-        // Live TV engine shortcuts (guide, On Demand, recordings, Sports,
-        // calendar, Xtream/EPG add, Update, settings) + the one-time import of
-        // this tab's own playlists into the engine.
-        LiveTvShortcutBar(nav)
-        IptvSectionStrip(
-            sections = listOf(IptvSection.PLAYLIST, IptvSection.TORRENT, IptvSection.STREAM),
-            current = section,
-            onPick = { section = it },
-        )
-        if (tvNow) {
-            Box(Modifier.fillMaxSize()) { SectionPage(section) }
+    // The new Live TV look: one stacked page (Playlists / Tor / Network
+    // streams as group cards like the Live TV home), no swipeable pill pages.
+    // Data, dialogs and navigation are untouched — only this layout block is
+    // new, so Tor and Network streams keep working exactly as before.
+    LaunchedEffect(ids) {
+        // The engine import the shortcut bar used to fire: the tab's own
+        // playlists still have to reach the engine now that the bar is gone.
+        withContext(Dispatchers.IO) {
+            runCatching { com.hikari.app.iptv.LiveTvEngine.init(uiContext) }
+            runCatching { com.hikari.app.iptv.LiveTvImport.importExistingProviders(app) }
+        }
+    }
+    fun openCard(card: IptvCard) {
+        if (card.torrent) {
+            Routes.safeNavigate(
+                nav,
+                Routes.catalog(
+                    providerId = card.id,
+                    catalogId = IptvProvider.CATALOG_ALL,
+                    title = card.name,
+                    providerName = card.name,
+                    type = MediaType.MOVIE,
+                    rawType = "torrent",
+                ),
+            )
+        } else if (card.stream && !card.torrent) {
+            Routes.safeNavigate(
+                nav,
+                Routes.detail(
+                    providerId = card.id,
+                    type = MediaType.MOVIE,
+                    mediaId = card.url,
+                    title = card.name,
+                    posterUrl = card.cover,
+                    rawType = "stream",
+                ),
+            )
         } else {
-            androidx.compose.foundation.pager.HorizontalPager(
-                state = pager,
-                modifier = Modifier.fillMaxSize(),
-            ) { page ->
-                SectionPage(sectionAt(page))
+            Routes.safeNavigate(nav, Routes.iptvPlaylist(card.id))
+        }
+    }
+    Column(Modifier.fillMaxSize()) {
+        IptvHeader(
+            title = "Playlists",
+            subtitle = I18n.t("%s playlists · %s channels · %s torrents · %s streams")
+                .replace("%s", playlistCards.size.toString())
+                .replace("%s", playlistCards.sumOf { it.channels }.toString())
+                .replace("%s", torCards.size.toString())
+                .replace("%s", streamCards.size.toString()),
+            onBack = null,
+            shape = playlistShape,
+            onCycleShape = { scope.launch { app.store.setIptvShape(nextShape(playlistShape)) } },
+            onSearch = null,
+            onAdd = { presetAdd(IptvSection.PLAYLIST) },
+        )
+        Column(
+            Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(bottom = LocalTaskbarInset.current + 24.dp),
+        ) {
+            if (reading && cards.isEmpty()) {
+                Box(
+                    Modifier.fillMaxWidth().padding(24.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
+                }
             }
+            ListsSection(
+                title = tr("IPTV"),
+                subtitle = if (playlists.isEmpty()) tr("No playlists yet")
+                else I18n.t("%s playlists").replace("%s", playlistCards.size.toString()),
+                cards = playlistCards,
+                kind = IptvSection.PLAYLIST,
+                emptyText = tr("Paste an M3U/M3U8 link (or pick a playlist file) and it appears here."),
+                addLabel = tr("Add playlist"),
+                onAddPreset = { presetAdd(it) },
+                onOpen = ::openCard,
+                onRemove = { removeTarget = it },
+            )
+            ListsSection(
+                title = tr("Tor"),
+                subtitle = if (torCards.isEmpty()) tr("No torrents yet")
+                else I18n.t("%s torrents").replace("%s", torCards.size.toString()),
+                cards = torCards,
+                kind = IptvSection.TORRENT,
+                emptyText = tr("Paste a magnet link, a .torrent URL or a bare info hash and it appears here."),
+                addLabel = tr("Add torrent"),
+                onAddPreset = { presetAdd(it) },
+                onOpen = ::openCard,
+                onRemove = { removeTarget = it },
+            )
+            ListsSection(
+                title = tr("Network stream"),
+                subtitle = if (streamCards.isEmpty()) tr("No network streams yet")
+                else I18n.t("%s network streams").replace("%s", streamCards.size.toString()),
+                cards = streamCards,
+                kind = IptvSection.STREAM,
+                emptyText = tr("Paste a direct link (m3u8, mp4, Terabox, MDisk…) and it appears here."),
+                addLabel = tr("Add stream"),
+                onAddPreset = { presetAdd(it) },
+                onOpen = ::openCard,
+                onRemove = { removeTarget = it },
+            )
+            Spacer(Modifier.height(8.dp))
         }
     }
 
@@ -1678,4 +1765,138 @@ private fun shapeLabel(shape: String): String = when (TileShapes.normalize(shape
     TileShapes.WIDE -> I18n.t("Wide")
     TileShapes.SQUARE -> I18n.t("Square")
     else -> I18n.t("Poster")
+}
+
+/** One stacked group of the new Playlists page: a Live TV home-style group
+ *  card holding this section's rows (see [ListsRow]). */
+@Composable
+private fun ListsSection(
+    title: String,
+    subtitle: String,
+    cards: List<IptvCard>,
+    kind: String,
+    emptyText: String,
+    addLabel: String,
+    onAddPreset: (String) -> Unit,
+    onOpen: (IptvCard) -> Unit,
+    onRemove: (IptvCard) -> Unit,
+) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+        Row(
+            Modifier.fillMaxWidth().padding(top = 14.dp, bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    title,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    subtitle,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            TextButton(onClick = { onAddPreset(kind) }) { Text(addLabel) }
+        }
+        if (cards.isEmpty()) {
+            Text(
+                emptyText,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(vertical = 4.dp),
+            )
+        } else {
+            cards.forEach { card ->
+                ListsRow(card = card, kind = kind, onOpen = onOpen, onRemove = onRemove)
+            }
+        }
+    }
+}
+
+/** One playlist/torrent/stream row: cover thumb, name + channels subtitle,
+ *  delete on the right; tap opens it (same destinations as the old tiles). */
+@Composable
+private fun ListsRow(
+    card: IptvCard,
+    kind: String,
+    onOpen: (IptvCard) -> Unit,
+    onRemove: (IptvCard) -> Unit,
+) {
+    val subtitle = when {
+        card.error != null -> card.error
+        card.torrent -> tr("Torrent")
+        card.stream -> tr("Network stream")
+        card.channels == 0 -> tr("Empty playlist")
+        else -> I18n.t("%s channels · %s groups")
+            .replace("%s", card.channels.toString())
+            .replace("%s", card.groups.toString())
+    }
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
+            .clickable { onOpen(card) }
+            .padding(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier
+                .size(48.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (!card.cover.isNullOrBlank()) {
+                AsyncImage(
+                    model = card.cover,
+                    contentDescription = card.name,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            } else {
+                Icon(
+                    when (kind) {
+                        IptvSection.TORRENT -> Icons.Filled.Download
+                        IptvSection.STREAM -> Icons.Filled.Link
+                        else -> Icons.Filled.LiveTv
+                    },
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(24.dp),
+                )
+            }
+        }
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                card.name,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        IconButton(onClick = { onRemove(card) }) {
+            Icon(
+                Icons.Filled.Delete,
+                contentDescription = I18n.t("Remove %s").replace("%s", card.name),
+                tint = MaterialTheme.colorScheme.error,
+            )
+        }
+    }
+    Spacer(Modifier.height(8.dp))
 }

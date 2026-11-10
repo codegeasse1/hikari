@@ -116,6 +116,7 @@ import com.hikari.app.ui.screens.DetailScreen
 import com.hikari.app.ui.screens.DownloadsScreen
 import com.hikari.app.ui.screens.ExtensionsScreen
 import com.hikari.app.ui.screens.HistoryScreen
+import com.hikari.app.ui.screens.WebSitesScreen
 import com.hikari.app.ui.screens.HomeScreen
 import com.hikari.app.ui.screens.IptvPlaylistScreen
 import com.hikari.app.ui.screens.IptvScreen
@@ -166,7 +167,7 @@ object Routes {
         "tracker-shelf?source=${Uri.encode(source)}&key=${Uri.encode(shelfKey)}" +
             "&title=${Uri.encode(title.take(200))}&filter=${Uri.encode(filter)}"
     const val IPTV = "iptv"
-    /** The old playlist/Tor/Network tiles, one tap away from the Live TV home. */
+    /** Playlists, Tor and Network streams in the new Live TV style (stacked group cards). */
     const val IPTV_LISTS = "iptv-lists"
     /** One playlist's own page: its groups, each opening a paged channel grid. */
     const val IPTV_PLAYLIST = "iptv-playlist?pid={pid}"
@@ -196,6 +197,9 @@ object Routes {
     const val STATS = "stats"
 
     const val TELEGRAM = "telegram"
+
+    /** Saved websites opened in the ad-free web view (see SitesFolder). */
+    const val WEBSITES = "websites"
 
     /** Opens one manga. [url] is the source's own url for the title (its id). */
     fun mangaDetail(
@@ -1169,6 +1173,7 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
                 IptvPlaylistScreen(nav, pid)
             }
             composable(Routes.EXTENSIONS) { ExtensionsScreen(nav) }
+            composable(Routes.WEBSITES) { WebSitesScreen(nav) }
             // The Telegram tab (off by default — see Routes.TELEGRAM): the public
             // channels the user added, played in this app's own player.
             composable(Routes.TELEGRAM) { TelegramScreen(nav) }
