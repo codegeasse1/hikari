@@ -51,16 +51,57 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 17
 
+      # ---- Android SDK licenses ----
+      # This step used to run `sdkmanager --licenses` and then `sdkmanager "platforms;..."`
+      # with no time limit. When dl.google.com stalled, sdkmanager sat there for 15+ minutes
+      # (the normal time is ~10 seconds) and held the whole build. Now:
+      #   1. the licenses are accepted by writing the license files directly (no network,
+      #      no sdkmanager, takes a fraction of a second),
+      #   2. the platforms / build-tools are only installed if the runner image does not
+      #      already have them (the GitHub image normally does),
+      #   3. every sdkmanager call has a hard time limit, and the whole step is capped at
+      #      5 minutes and can never fail the build (Gradle can fetch what it needs itself).
       - name: Accept Android SDK licenses
+        timeout-minutes: 5
+        continue-on-error: true
         run: |
-          if [ -n "$ANDROID_HOME" ]; then
-            yes | "$ANDROID_HOME"/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null 2>&1 || true
-            "$ANDROID_HOME"/cmdline-tools/latest/bin/sdkmanager "platforms;android-34" "platforms;android-35" "platforms;android-36" "build-tools;34.0.0" "build-tools;35.0.0" > /dev/null 2>&1 || true
+          SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          if [ -z "$SDK" ] || [ ! -d "$SDK" ]; then
+            echo "No Android SDK directory on this runner; Gradle will handle it."
+            exit 0
+          fi
+          LIC="$SDK/licenses"
+          sudo mkdir -p "$LIC"
+          printf '\n8933bad161af4178b1185d1a37fbf41ea5269c55\nd56f5187479451eabf01fb78af6dfcb131a6481e\n24333f8a63b6825ea9c5514f83c2829b004d1fee\n' | sudo tee "$LIC/android-sdk-license" > /dev/null
+          printf '\n84831b9409646a918e30573bab4c9c91346d8abd\n' | sudo tee "$LIC/android-sdk-preview-license" > /dev/null
+          echo "Licenses written to $LIC"
+
+          MISSING=()
+          for P in android-34 android-35 android-36; do
+            [ -d "$SDK/platforms/$P" ] || MISSING+=("platforms;$P")
+          done
+          for B in 34.0.0 35.0.0; do
+            [ -d "$SDK/build-tools/$B" ] || MISSING+=("build-tools;$B")
+          done
+          echo "Installed platforms:   $(ls "$SDK/platforms" 2>/dev/null | tr '\n' ' ')"
+          echo "Installed build-tools: $(ls "$SDK/build-tools" 2>/dev/null | tr '\n' ' ')"
+
+          if [ "${#MISSING[@]}" -eq 0 ]; then
+            echo "All needed SDK parts are already installed - nothing to download."
+          else
+            echo "Installing missing: ${MISSING[*]}"
+            SDKM="$SDK/cmdline-tools/latest/bin/sdkmanager"
+            if [ -x "$SDKM" ]; then
+              yes | timeout 240 "$SDKM" "${MISSING[@]}" > /tmp/sdkmanager.log 2>&1 || echo "sdkmanager did not finish (exit $?); Gradle will fetch what it needs."
+              tail -n 5 /tmp/sdkmanager.log || true
+            else
+              echo "sdkmanager not found; Gradle will fetch what it needs."
+            fi
           fi
 
       - name: Prepare signing keystore
@@ -167,34 +208,81 @@ jobs:
           SIGNING_KEY_ALIAS: ${{ secrets.ALIAS }}
           SIGNING_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          # Maven Central occasionally rate-limits (HTTP 429) cold dependency
-          # resolution. Retry the whole build a few times with a pause so the
-          # rate-limit bucket can drain, instead of failing the first run.
-          # Each attempt is capped as well as retried: a stalled download can
-          # hang a Gradle build indefinitely (no output, no exit code), and
-          # that is worse than a clean failure, because the retry never gets a
-          # chance to run. "timeout" turns a hang into exit code 124, which the
-          # retry below treats like any other transient network problem.
-          # `set +e` is load-bearing: this step's shell runs with `-e` (see
-          # `shell:` above), and a failing `timeout gradle…` would abort the
-          # script at that line — before `code=$?`, before the retry, and before
-          # the error dump below. That is why a failed build used to be logged
-          # as "attempt 1/5" followed by nothing at all: the actual Kotlin
-          # errors were in gradle-build.log, and the step never printed them.
+          # Maven Central / JitPack occasionally rate-limit (HTTP 429) or stall cold
+          # dependency downloads. The whole build is retried a few times.
+          #
+          # A stalled build used to be noticed only when the 25-minute per-attempt timeout
+          # fired - twice in a row that is 50 of the job's 60 minutes gone for nothing.
+          # Also, `timeout` stopped only the `gradle` launcher and could leave the Gradle
+          # JVM (and the Kotlin compile daemon) running in the background, still holding
+          # the dependency locks, so the next attempt stalled behind it.
+          # Now:
+          #   - Gradle runs in its own process group, so one kill stops all of it,
+          #   - a watchdog stops an attempt whose log has not grown for STALL seconds
+          #     (a real compile never goes silent that long), or that passes MAX seconds,
+          #   - leftover Gradle / Kotlin daemons are killed before the next attempt.
+          # `set +e` is load-bearing: this step's shell runs with `-e`, and a failing
+          # command would abort the script before the retry and before the error dump below.
           set +e
+          MAX=1500
+          STALL=720
+
+          kill_gradle() {
+            [ -n "$GPID" ] && kill -TERM -- "-$GPID" 2>/dev/null
+            sleep 3
+            [ -n "$GPID" ] && kill -KILL -- "-$GPID" 2>/dev/null
+            pkill -9 -f 'org.gradle.launcher.daemon.bootstrap.GradleDaemon' 2>/dev/null
+            pkill -9 -f 'org.jetbrains.kotlin.daemon.KotlinCompileDaemon' 2>/dev/null
+            pkill -9 -f 'gradle-launcher' 2>/dev/null
+            return 0
+          }
+
+          run_gradle() {
+            : > gradle-build.log
+            setsid gradle assembleDebug assembleRelease --no-daemon --stacktrace --console=plain \
+              -Dorg.gradle.internal.http.connectionTimeout=30000 \
+              -Dorg.gradle.internal.http.socketTimeout=60000 \
+              -Dorg.gradle.internal.repository.max.tentatives=5 \
+              > gradle-build.log 2>&1 &
+            GPID=$!
+            START=$(date +%s)
+            LAST_SIZE=0
+            LAST_CHANGE=$START
+            while kill -0 "$GPID" 2>/dev/null; do
+              sleep 10
+              NOW=$(date +%s)
+              SIZE=$(stat -c%s gradle-build.log 2>/dev/null || echo 0)
+              if [ "$SIZE" != "$LAST_SIZE" ]; then
+                LAST_SIZE=$SIZE
+                LAST_CHANGE=$NOW
+              fi
+              if [ $((NOW - START)) -gt $MAX ]; then
+                echo "==== attempt ran longer than ${MAX}s - stopping it ===="
+                kill_gradle
+                return 124
+              fi
+              if [ $((NOW - LAST_CHANGE)) -gt $STALL ]; then
+                echo "==== no Gradle output for ${STALL}s (stalled download?) - stopping it ===="
+                kill_gradle
+                return 124
+              fi
+            done
+            wait "$GPID"
+            return $?
+          }
+
           code=1
           for attempt in 1 2 3 4 5; do
             echo "==== Gradle build attempt $attempt/5 ===="
-            timeout 1500 gradle assembleDebug assembleRelease --no-daemon --stacktrace \
-              -Dorg.gradle.internal.http.connectionTimeout=30000 \
-              -Dorg.gradle.internal.http.socketTimeout=60000 > gradle-build.log 2>&1
+            run_gradle
             code=$?
             if [ $code -eq 0 ]; then
               break
             fi
-            if [ $code -eq 124 ] || grep -qE "429|Too Many Requests|Connection reset|Read timed out|SocketTimeout|connect timed out|Could not resolve|Unable to load Maven meta-data" gradle-build.log; then
-              echo "==== Attempt $attempt hit a rate-limit or network stall (exit $code); retrying in 45s ===="
-              sleep 45
+            kill_gradle
+            if [ $code -eq 124 ] || grep -qE "429|Too Many Requests|Connection reset|Read timed out|SocketTimeout|connect timed out|Could not resolve|Unable to load Maven meta-data|Could not GET|Could not HEAD" gradle-build.log; then
+              echo "==== Attempt $attempt hit a rate-limit or network stall (exit $code); retrying in 30s ===="
+              sleep 30
             else
               echo "==== Attempt $attempt failed with a non-network error; stopping ===="
               break
@@ -280,24 +368,62 @@ jobs:
           if-no-files-found: error
 
       # ---- TEST CHANNELS: updated on every push to main ----
-      - name: Publish test APK to build branch
+      # The build branch gets all three APKs (universal, arm64-v8a, armeabi-v7a), each one
+      # on its own. GitHub refuses any single file over 100 MiB, and the universal APK
+      # (both processors in one file) can pass that, which used to make this step skip the
+      # WHOLE push, so even the small arm64 / arm32 APKs never reached the branch. Now each
+      # file is checked on its own: the ones under the limit are pushed, one that is too big
+      # is skipped with a warning (it is still on the `continuous` release, which has no
+      # such limit, and in the run's artifacts).
+      # The branch is built in a fresh empty folder so it only ever contains the APKs
+      # (the old way committed from the checked-out source tree).
+      - name: Publish test APKs to build branch
         if: github.ref == 'refs/heads/main'
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          cp "app/build/outputs/apk/release/$APK_UNIVERSAL" hikari.apk
-          SIZE_MB=$(du -m hikari.apk | cut -f1)
-          if [ "$SIZE_MB" -ge 100 ]; then
-            echo "hikari.apk is ${SIZE_MB}MB - over GitHub's 100MB file limit, skipping build-branch push (the release APK is still in the artifacts)."
+          OUT="$PWD/app/build/outputs/apk/release"
+          LIMIT=104000000   # just under GitHub's 100 MiB (104,857,600 B) per-file limit
+          STAGE="$RUNNER_TEMP/build-branch"
+          rm -rf "$STAGE" && mkdir -p "$STAGE"
+          COUNT=0
+          for spec in \
+            "$APK_UNIVERSAL=hikari.apk" \
+            "$APK_ARM64=hikari-arm64-v8a.apk" \
+            "$APK_ARM32=hikari-armeabi-v7a.apk"
+          do
+            SRC="${spec%%=*}"
+            DST="${spec#*=}"
+            if [ -z "$SRC" ] || [ ! -f "$OUT/$SRC" ]; then
+              echo "::warning::$DST: no source APK found, skipped."
+              continue
+            fi
+            SIZE=$(stat -c%s "$OUT/$SRC")
+            if [ "$SIZE" -ge "$LIMIT" ]; then
+              echo "::warning::$DST is $((SIZE / 1048576)) MB - over GitHub's 100 MB file limit, not put on the build branch. Download it from the 'continuous' release instead."
+              continue
+            fi
+            cp "$OUT/$SRC" "$STAGE/$DST"
+            echo "build branch: $DST ($((SIZE / 1048576)) MB)"
+            COUNT=$((COUNT + 1))
+          done
+          if [ "$COUNT" -eq 0 ]; then
+            echo "Nothing small enough for the build branch; the APKs are on the continuous release and in the artifacts."
             exit 0
           fi
+          cd "$STAGE"
+          git init -q
+          git checkout -q --orphan build
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git fetch origin build >/dev/null 2>&1 && git checkout build 2>/dev/null || git checkout --orphan build
-          cp "app/build/outputs/apk/release/$APK_UNIVERSAL" hikari.apk
-          git add hikari.apk
-          git commit -m "build: update test APK $(date -u +%Y%m%d%H%M)" || true
-          git push origin build --force || { echo "build-branch push rejected (APK too large for GitHub's 100MB limit) - not fatal, release APK stays in artifacts."; exit 0; }
+          git add -A
+          git commit -q -m "build: update test APKs $(date -u +%Y%m%d%H%M)"
+          for i in 1 2 3; do
+            git push --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" build && break
+            echo "build-branch push attempt $i failed, retrying in 10s..."
+            sleep 10
+          done || true
 
       - name: Publish test APK to continuous release
         if: github.ref == 'refs/heads/main'
