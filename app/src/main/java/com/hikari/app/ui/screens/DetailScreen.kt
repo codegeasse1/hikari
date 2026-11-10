@@ -1832,6 +1832,7 @@ fun DetailScreen(
         // search stopped in the middle and only one category loaded".
         val sid = UUID.randomUUID().toString()
         sessionId = sid
+        com.hikari.app.data.SearchScope.serverPageOpen = true
         vm.resetLiveStreams()
         // Local once-only flag: playback launches exactly ONCE per tap (here —
         // the immediate launch below — or later from the feed as the first

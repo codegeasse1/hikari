@@ -201,15 +201,28 @@ object PosterLoader {
         val name = fnv1a(u)
         if (existingFile(name) != null) return CACHE_TOKEN + name
 
-        val bytes = decodeDataUri(u) ?: return u
-        val file = destFile(name) ?: return u
+        val bytes = decodeDataUri(u) ?: return poolGiant(u)
+        val file = destFile(name) ?: return poolGiant(u)
         val wrote = runCatching {
             file.writeBytes(bytes)
             file.length() > 0
         }.getOrDefault(false)
-        if (!wrote) return u
+        if (!wrote) return poolGiant(u)
         pruneIfNeeded()
         return CACHE_TOKEN + name
+    }
+
+    /** Identical giant data-URIs (same poster in 2-3 rows) share one instance
+     *  instead of pinning 2-3 copies of the same 1-2MB string. Bounded so an
+     *  undecodable catalog can't grow it without limit. */
+    private val giantPool = ConcurrentHashMap<String, String>()
+    private const val GIANT_POOL_MAX = 512
+    private fun poolGiant(u: String): String {
+        if (u.length < 8192) return u
+        giantPool[u]?.let { return it }
+        if (giantPool.size >= GIANT_POOL_MAX) giantPool.clear()
+        giantPool[u] = u
+        return u
     }
 
     /** The filename a poster's bytes are stored under: the URI hash carried in a

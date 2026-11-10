@@ -3578,7 +3578,9 @@ class PlayerActivity : ComponentActivity() {
                 // only after it has produced NOTHING for this long do we request one
                 // fresh pass. StreamCache's stale-owner guard lets that pass take over
                 // an abandoned extraction without starting duplicate work immediately.
-                if (awaitLive && !downloadPickMode && !rescueRefreshUsed) launch {
+                // Server page open: no rescue cancel — the running pass keeps
+                // waiting and painting instead of being replaced.
+                if (awaitLive && !downloadPickMode && !rescueRefreshUsed && !com.hikari.app.data.SearchScope.serverPageOpen) launch {
                     delay(SEARCH_RESCUE_MS)
                     if (playbackCommitted || sources.isNotEmpty() || liveSearchDone) return@launch
                     rescueRefreshUsed = true

@@ -725,6 +725,10 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                     emptyList()
                 }
             }
+            // Search verdict must not leave a stale error behind: a success
+            // clears the search error so a later transient failure ("ex" found
+            // nothing once on a bad network) doesn't brand the next open.
+            if (found.isNotEmpty()) streamErrors.remove(config.id)
             found.mapNotNull { it.toMediaItem() }
         }
 

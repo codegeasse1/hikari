@@ -1,3 +1,9 @@
+## 0.12.77 (continuous build only)
+
+- Server page is now unbounded: while it is open there is no stall/ceiling cut-off, no 5s rescue re-lookup, slow/hung/403 providers never block the rest, 0 stays loading until every target really answers, and every Play is a fresh live search (remember-merge removed per user)
+- Prmovies hardening: search success clears stale search errors, title probes and fallback now send the Verify WebView cf_clearance (getQuiet), undecodable giant posters share one pooled instance instead of 2-3 copies
+- 0.12.76 entry below still applies (Live TV, heap snapshot, manga-on-Home)
+
 ## 0.12.76 (continuous build only)
 
 - Full Live TV section in the IPTV tab: M3U playlists, Xtream logins (server/user/password, guide comes with the login) and XMLTV guide sources, with update-everything-now, per-source refresh intervals, stream format Auto/MPEG-TS/HLS, backup-channel switching, Continue Watching row, guide grid with now-line, catch-up replays, On Demand movies/series import, recordings (schedule + series rules + foreground record service), Sports hub (ESPN scoreboards, follow teams, channel matching, game alerts), reminders, calendar, parental PIN with adult locks, hide/reorder/rename/custom groups, EPG assignment, and export/import backup

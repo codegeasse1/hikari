@@ -50,6 +50,13 @@ object Http {
     fun getQuiet(url: String, headers: Map<String, String> = emptyMap()): Response {
         val builder = Request.Builder().url(url).header("User-Agent", UA)
         headers.forEach { (k, v) -> builder.header(k, v) }
+        // Prmovies 403 fix: probes and the safety-net fallback use getQuiet,
+        // which bypassed the Cloudflare interceptor — so they never sent the
+        // cf_clearance the Verify WebView earned. Attach it here too.
+        if (builder.build().header("Cookie") == null) {
+            runCatching { CloudflareVerifier.clearanceFor(url) }
+                .getOrNull()?.let { builder.header("Cookie", it) }
+        }
         return quietClient.newCall(builder.build()).execute()
     }
 

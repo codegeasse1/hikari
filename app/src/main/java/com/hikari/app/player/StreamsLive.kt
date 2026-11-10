@@ -25,6 +25,7 @@ object StreamsLive {
     fun holdSweep(id: String, item: MediaItem, episode: Episode?) {
         sweepOwners[id] = item to episode
         sweepKeys[id] = ContentRepository.holdSweepFor(item, episode)
+        com.hikari.app.data.SearchScope.serverPageOpen = true
     }
 
     /** Playback really started: let the held sweep run. */
@@ -105,8 +106,7 @@ object StreamsLive {
         if (holdSweep) pauseSweep(id) else releaseSweep(id)
         val owner = sweepOwners[id]
         if (owner != null) {
-            // The server page closed: drop this title's cached list so the
-            // next Play re-searches from zero instead of painting stale rows.
+            // Remember disabled: next Play re-searches live from zero.
             runCatching { ContentRepository.forgetLiveServers(owner.first, owner.second) }
         }
         sessions.remove(id)
@@ -117,5 +117,6 @@ object StreamsLive {
         originSettled.remove(id)
         sweepKeys.remove(id)
         sweepOwners.remove(id)
+        if (sessions.isEmpty()) com.hikari.app.data.SearchScope.serverPageOpen = false
     }
 }

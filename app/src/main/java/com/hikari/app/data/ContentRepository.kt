@@ -80,6 +80,11 @@ object SearchScope {
     @Volatile
     var oneShotOriginOnly: String? = null
 
+    /** True while a server page / player session is open: lookups run
+     *  unbounded (no stall/ceiling cut-off) and 0 is loading, never final. */
+    @Volatile
+    var serverPageOpen: Boolean = false
+
     /** The picked ids that apply to [type] when its family switch is off. */
     fun pickedIdsFor(type: ProviderType): Set<String> = when (type) {
         ProviderType.NUVIO -> searchNuvioIds
@@ -365,6 +370,9 @@ class ContentRepository(private val manager: ProviderManager) {
         val streamsRemembered = ConcurrentHashMap<String, RememberedStreams>()
 
         fun rememberLiveServers(item: MediaItem, episode: Episode?, list: List<StreamSource>) {
+            // Remember disabled per user: every Play re-searches live from zero.
+            return
+            // dead anchor below keeps the diff reviewable
             if (list.isEmpty()) return
             val key = streamsRememberedKey(item, episode)
             val now = System.currentTimeMillis()
@@ -2001,15 +2009,8 @@ class ContentRepository(private val manager: ProviderManager) {
         try {
             val servers = streamsForInner(item, episode, onProgress, onOriginSettled, passSeq)
             if (servers.isNotEmpty()) return StreamLookup(servers, complete = true)
-            val kept = recentlyFoundStreams(item, episode)
-            if (kept.isNotEmpty()) {
-                com.hikari.app.data.Logs.log(
-                    "Search",
-                    "pass for \"${item.title.take(60)}\" found nothing — " +
-                        "keeping ${kept.size} server(s) from the previous lookup",
-                )
-                return StreamLookup(kept, complete = true)
-            }
+            // Remember disabled: no kept-list fallback — empty here is either
+            // loading (server page open) or a real empty (caller decides via complete).
             // Empty is only an ANSWER when every provider really answered. A
             // cold plugin (its first call still spinning the runtime up), a
             // dropped request, a call cut off by the deadline — [fetchStreams]
@@ -2046,9 +2047,8 @@ class ContentRepository(private val manager: ProviderManager) {
     }
 
     fun recentlyFoundStreams(item: MediaItem, episode: Episode?): List<StreamSource> {
-        val record = streamsRemembered[streamsRememberedKey(item, episode)] ?: return emptyList()
-        if (System.currentTimeMillis() - record.at >= REMEMBERED_STREAMS_TTL_MS) return emptyList()
-        return filterToScope(item, record.list).filterNot { signedExpired(it) }
+        // Remember disabled per user: every Play re-searches live from zero.
+        return emptyList()
     }
 
     fun scopeAllowedIds(item: MediaItem): Set<String>? {
@@ -2714,15 +2714,25 @@ class ContentRepository(private val manager: ProviderManager) {
                     }
                     val outstanding = searchQueue.size + searchJobs.size + extractJobs.size
                     if (outstanding > 0 && now - lastProgressAt >= CROSS_EXT_STALL_MS) {
-                        passStalled = true
-                        com.hikari.app.data.Logs.log(
-                            "Search",
-                            "pass over \"${item.title}\": nothing has answered in " +
-                                "${CROSS_EXT_STALL_MS / 1000}s with $outstanding repo(s) " +
-                                "still outstanding — abandoning the wedged work and " +
-                                "re-asking them in the background",
-                        )
-                        break
+                        if (SearchScope.serverPageOpen) {
+                            com.hikari.app.data.Logs.log(
+                                "Search",
+                                "pass over \"${item.title}\": nothing has answered in " +
+                                    "${CROSS_EXT_STALL_MS / 1000}s with $outstanding repo(s) " +
+                                    "still outstanding — server page is open, keep waiting",
+                            )
+                            lastProgressAt = now
+                        } else {
+                            passStalled = true
+                            com.hikari.app.data.Logs.log(
+                                "Search",
+                                "pass over \"${item.title}\": nothing has answered in " +
+                                    "${CROSS_EXT_STALL_MS / 1000}s with $outstanding repo(s) " +
+                                    "still outstanding — abandoning the wedged work and " +
+                                    "re-asking them in the background",
+                            )
+                            break
+                        }
                     }
                     val allDone = jobs.all { it.isCompleted } && searchQueue.isEmpty() &&
                         searchJobs.isEmpty() && extractJobs.all { it.isCompleted }
@@ -2731,7 +2741,12 @@ class ContentRepository(private val manager: ProviderManager) {
                         targets[i].config.type == ProviderType.NUVIO && !jobs[i].isCompleted
                     }
                     val overCeiling = now > maxOf(deadline, started + CROSS_EXT_BUDGET_MS)
-                    if (overCeiling && !(nuvioStillRunning && now <= deadline + NUVIO_TAIL_MS)) {
+                    // Server page open: no ceiling — wait until everything answers.
+                    // Absolute 5-min cap only guards a truly wedged provider; the
+                    // unfinished hand-off below keeps painting via the sweep.
+                    if (SearchScope.serverPageOpen) {
+                        if (now > started + 300_000L) break
+                    } else if (overCeiling && !(nuvioStillRunning && now <= deadline + NUVIO_TAIL_MS)) {
                         break
                     }
                     kotlinx.coroutines.delay(80)
@@ -2943,53 +2958,11 @@ class ContentRepository(private val manager: ProviderManager) {
             // remaining engines are the plugin's own loadLinks, the jar
             // extractor registry, MovieBlast, FallbackResolver and the
             // Nuvio/SkyStream JS runtimes.)
-            // A title that JUST played is usually looked up again (replay,
-            // picking another server, backing out and in), and the second pass
-            // is a fresh, cold, time-bounded sweep — it can be slower, hit
-            // different sites, or simply get unlucky, and the user who had a
-            // full server list a minute ago then reads "no playable sources",
-            // which looks like the app broke. Servers a recent pass actually
-            // produced for this exact title+episode are remembered briefly and
-            // stand in when the new pass comes back with nothing, so a repeat
-            // lookup never empties a list it just had. The record is replaced by
-            // any fresh non-empty result, and it expires on its own.
-            val rememberKey = streamsRememberedKey(item, episode)
-            val remembered = streamsRemembered[rememberKey]?.takeIf {
-                System.currentTimeMillis() - it.at < REMEMBERED_STREAMS_TTL_MS
-            }
-            if (remembered != null) {
-                val have = finalResult.mapTo(HashSet<String>()) { mergeKey(it) }
-                val extra = filterToScope(item, remembered.list)
-                    .filterNot { signedExpired(it) }
-                    .filterNot { mergeKey(it) in have }
-                if (extra.isNotEmpty()) {
-                    val fresh = finalResult.size
-                    finalResult = finalResult + extra
-                    com.hikari.app.data.Logs.log(
-                        "Search",
-                        "done \"${item.title}\" → kept ${extra.size} server(s) from the " +
-                            "previous lookup (this pass found $fresh)",
-                    )
-                }
-            }
-            if (finalResult.isNotEmpty()) {
-                streamsRemembered[rememberKey] = RememberedStreams(finalResult, System.currentTimeMillis())
-                if (streamsRemembered.size > REMEMBERED_STREAMS_MAX) {
-                    val cutoff = System.currentTimeMillis() - REMEMBERED_STREAMS_TTL_MS
-                    streamsRemembered.entries.removeAll { it.value.at < cutoff }
-                    while (streamsRemembered.size > REMEMBERED_STREAMS_MAX) {
-                        val oldest = streamsRemembered.entries.minByOrNull { it.value.at }?.key ?: break
-                        streamsRemembered.remove(oldest)
-                    }
-                }
-            }
+            // Remember disabled per user: every lookup is a fresh live search.
+            // No kept-list merge, no save — fresh result stands on its own.
             val resolvedResult = com.hikari.app.cs3.PlayableResolver.resolve(finalResult)
             if (resolvedResult !== finalResult) {
                 finalResult = resolvedResult
-                if (finalResult.isNotEmpty()) {
-                    streamsRemembered[rememberKey] =
-                        RememberedStreams(finalResult, System.currentTimeMillis())
-                }
             }
             // The repos this pass answered OUT OF MEMORY ([crossEmpty], the
             // session's own "no such title" record) are re-asked for real
