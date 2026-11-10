@@ -73,6 +73,7 @@ import com.hikari.app.HikariApp
 import com.hikari.app.data.MediaItem
 import com.hikari.app.data.MangaMetadataRepository
 import com.hikari.app.data.MediaType
+import com.hikari.app.data.MetaCache
 import com.hikari.app.i18n.I18n
 import com.hikari.app.i18n.tr
 import com.hikari.app.manga.MangaChapter
@@ -218,9 +219,23 @@ fun MangaDetailScreen(
         // wait on the tracker chain (AniList/Jikan/Kitsu/MangaDex), which
         // enriches the header in the background and repaints when it lands.
         // A tracker miss simply leaves the extension's own metadata in place.
-        var baseMeta = withContext(Dispatchers.IO) {
+        // The last painted header (memory + MetaCache) shows instantly while
+        // the extension refreshes underneath — reopening a title is free.
+        val mangaKey = MetaCache.mangaMetaKey(providerId, mangaUrl)
+        meta = withContext(Dispatchers.IO) {
+            runCatching { MetaCache.cachedMeta(mangaKey) }.getOrNull()
+        }
+        // Meta and chapters load CONCURRENTLY: two slow extension calls used
+        // to run back-to-back (plus a getMeta retry), which is why the page
+        // took forever to locate. Episodes try the plain base item first and
+        // only retry against the enriched meta when that draws a blank.
+        val metaD = async(Dispatchers.IO) {
             runCatching { provider.getMeta(base) }.getOrDefault(base)
         }
+        val epsD = async(Dispatchers.IO) {
+            runCatching { provider.getEpisodes(base) }.getOrNull()
+        }
+        val baseMeta = metaD.await()
         meta = baseMeta
         val externalDeferred = async(Dispatchers.IO) {
             runCatching { MangaMetadataRepository.fetchExternal(app, title) }.getOrNull()
@@ -228,28 +243,37 @@ fun MangaDetailScreen(
         scope.launch {
             val ext = runCatching { externalDeferred.await() }.getOrNull()
             if (ext != null) {
-                // Merge onto the CURRENT header: the chapter retry below may
+                // Merge onto the CURRENT header: the chapter load below may
                 // have refreshed the extension meta while this was in flight.
                 val cur = meta
                 if (cur != null) {
-                    meta = MangaMetadataRepository.mergeExternalFirst(cur, ext)
+                    val merged = MangaMetadataRepository.mergeExternalFirst(cur, ext)
+                    meta = merged
                     extAnilistId = ext.anilistId
+                    if (merged != cur) {
+                        withContext(Dispatchers.IO) {
+                            runCatching { MetaCache.putMeta(mangaKey, merged) }
+                        }
+                    }
                 }
             }
         }
         val extTitle = title
         scope.launch {
+            // One shared enrichment for all four rows: the header above
+            // already started it, so this only awaits it (no second chain).
+            val ext = runCatching { externalDeferred.await() }.getOrNull()
             val charsD = async(Dispatchers.IO) {
-                runCatching { MangaMetadataRepository.fetchCharacters(app, extTitle) }.getOrDefault(emptyList())
+                runCatching { MangaMetadataRepository.fetchCharacters(app, extTitle, ext) }.getOrDefault(emptyList())
             }
             val threadsD = async(Dispatchers.IO) {
-                runCatching { MangaMetadataRepository.fetchThreads(app, extTitle) }.getOrDefault(emptyList())
+                runCatching { MangaMetadataRepository.fetchThreads(app, extTitle, ext) }.getOrDefault(emptyList())
             }
             val reviewsD = async(Dispatchers.IO) {
-                runCatching { MangaMetadataRepository.fetchReviews(app, extTitle) }.getOrDefault(emptyList())
+                runCatching { MangaMetadataRepository.fetchReviews(app, extTitle, ext) }.getOrDefault(emptyList())
             }
             val hintsD = async(Dispatchers.IO) {
-                runCatching { MangaMetadataRepository.fetchChapterHints(app, extTitle) }.getOrDefault(emptyMap())
+                runCatching { MangaMetadataRepository.fetchChapterHints(app, extTitle, ext) }.getOrDefault(emptyMap())
             }
             characters = runCatching { charsD.await() }.getOrDefault(emptyList())
             threads = runCatching { threadsD.await() }.getOrDefault(emptyList())
@@ -260,16 +284,42 @@ fun MangaDetailScreen(
             commentsLoading = false
         }
         val cached = MangaStore.chaptersFor(key)
-        if (cached.isNullOrEmpty()) {
+        // The parallel episodes call above already ran against the base
+        // item; only bridge it in when the disk has nothing yet.
+        val firstEps = if (!cached.isNullOrEmpty()) null else epsD.await()
+        if (!firstEps.isNullOrEmpty() && MangaStore.chaptersFor(key).isNullOrEmpty()) {
             withContext(Dispatchers.IO) {
                 runCatching {
-                    val eps = provider.getEpisodes(baseMeta)
                     // AnymexMangaProvider returns Episode list; bridge into MangaStore
                     // so the chapter UI (which only reads MangaStore) fills.
-                    if (!eps.isNullOrEmpty() && MangaStore.chaptersFor(key).isNullOrEmpty()) {
+                    MangaStore.putChapters(
+                        key,
+                        firstEps.map { e ->
+                            MangaChapter(
+                                url = e.id,
+                                name = e.name ?: "Chapter ${e.number}",
+                                number = e.number.toFloat(),
+                            )
+                        },
+                    )
+                }
+            }
+        }
+        var list = MangaStore.chaptersFor(key).orEmpty()
+        if (list.isEmpty()) {
+            // One retry against the ENRICHED meta (some engines key off it);
+            // meta itself is never re-fetched — it already landed above.
+            // Keep any tracker enrichment that already landed: the retry
+            // must never wipe the header back to extension-only.
+            val retryEps = withContext(Dispatchers.IO) {
+                runCatching { provider.getEpisodes(baseMeta) }.getOrNull()
+            }
+            if (!retryEps.isNullOrEmpty() && MangaStore.chaptersFor(key).isNullOrEmpty()) {
+                withContext(Dispatchers.IO) {
+                    runCatching {
                         MangaStore.putChapters(
                             key,
-                            eps.map { e ->
+                            retryEps.map { e ->
                                 MangaChapter(
                                     url = e.id,
                                     name = e.name ?: "Chapter ${e.number}",
@@ -280,27 +330,16 @@ fun MangaDetailScreen(
                     }
                 }
             }
-        }
-        var list = MangaStore.chaptersFor(key).orEmpty()
-        if (list.isEmpty()) {
-            runCatching {
-                val retryMeta = withContext(Dispatchers.IO) {
-                    runCatching { provider.getMeta(base) }.getOrDefault(base)
-                }
-                // Keep any tracker enrichment that already landed: the
-                // retry must never wipe the header back to extension-only.
-                baseMeta = retryMeta
-                meta = MangaMetadataRepository.mergeExternalFirst(
-                    retryMeta,
-                    if (externalDeferred.isCompleted) {
-                        runCatching { externalDeferred.getCompleted() }.getOrNull()
-                    } else null,
-                )
-                withContext(Dispatchers.IO) { runCatching { provider.getEpisodes(retryMeta) } }
-            }
             list = MangaStore.chaptersFor(key).orEmpty()
         }
         chapters = list
+        // Cache the final header: the next open paints it instantly while
+        // the extension refreshes underneath.
+        meta?.let { final ->
+            withContext(Dispatchers.IO) {
+                runCatching { MetaCache.putMeta(mangaKey, final) }
+            }
+        }
         if (list.isEmpty()) {
             // A CATALOG outcome ("✓ 24 titles (js)") is about the listing,
             // not the chapters — showing it under "Chapters" is what put

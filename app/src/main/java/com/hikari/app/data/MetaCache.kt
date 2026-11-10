@@ -42,7 +42,7 @@ object MetaCache {
         runCatching { prefs().edit().putInt("episodes_epoch", next).apply() }
         synchronized(mem) {
             val doomed = mem.keys.filter { it.startsWith("eps|") }
-            doomed.forEach { mem.remove(it) }
+            doomed.forEach { memDrop(it) }
         }
     }
 
@@ -51,17 +51,38 @@ object MetaCache {
 
     private data class Payload(val json: String, val at: Long)
 
-    /** Small in-process mirror of the files. Access-ordered and bounded, because
-     *  a cached catalogue page can be a few hundred KB of JSON — the disk is the
-     *  real store, this is only so a hit costs nothing. */
-    private val mem = object : LinkedHashMap<String, Payload>(64, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Payload>?) =
-            size > 256
-    }
+    /** Small in-process mirror of the files. Catalogue pages can be tens of MB
+     *  of JSON (posters sometimes arrive as inline base64 data URIs), which is
+     *  what OOMed phones — so this mirror is BYTE-bounded, not just
+     *  count-bounded. The disk is the real store. */
+    private val mem = LinkedHashMap<String, Payload>(64, 0.75f, true)
+    private var memBytes = 0L
+    private const val MEM_MAX = 256
+    /** Total JSON held in memory (UTF-16 chars ~= 2 bytes each). */
+    private const val MEM_BUDGET = 6L * 1024 * 1024
+    /** Anything bigger than this never enters memory at all (disk only). */
+    private const val MEM_SINGLE_MAX = 2L * 1024 * 1024
 
     private fun memGet(key: String): Payload? = synchronized(mem) { mem[key] }
-    private fun memPut(key: String, value: Payload) { synchronized(mem) { mem[key] = value } }
-    private fun memDrop(key: String) { synchronized(mem) { mem.remove(key) } }
+    private fun memPut(key: String, value: Payload) = synchronized(mem) {
+        val prev = mem.put(key, value)
+        if (prev != null) memBytes -= prev.json.length * 2L
+        if (value.json.length * 2L > MEM_SINGLE_MAX) {
+            // Giant: disk only, never resident.
+            mem.remove(key)
+            return
+        }
+        memBytes += value.json.length * 2L
+        while ((memBytes > MEM_BUDGET || mem.size > MEM_MAX) && mem.isNotEmpty()) {
+            val eldest = mem.entries.iterator().next()
+            memBytes -= eldest.value.json.length * 2L
+            mem.remove(eldest.key)
+        }
+    }
+    private fun memDrop(key: String) = synchronized(mem) {
+        val prev = mem.remove(key)
+        if (prev != null) memBytes -= prev.json.length * 2L
+    }
 
     /** Bumped every time an episode list lands (see [putEpisodes]): poster
      *  Dub/Sub pills collect this so a grid that is already on screen gains
@@ -72,6 +93,36 @@ object MetaCache {
     private fun ctx(): Context = HikariApp.instance.applicationContext
 
     private fun dir(): File = File(ctx().filesDir, "metacache").apply { mkdirs() }
+
+    /** Inline `data:` payloads (base64 posters) must never sit in the memory
+     *  mirror: one catalogue page of them is tens of MB. Big ones spill to a
+     *  sidecar file and the JSON keeps a tiny token instead. */
+    private const val DATA_TOKEN = "mcf:"
+    private const val DATA_MIN = 8192
+
+    private fun sha1Hex(s: String): String = runCatching {
+        val d = java.security.MessageDigest.getInstance("SHA-1")
+        d.update(s.toByteArray(Charsets.UTF_8))
+        d.digest().joinToString("") { "%02x".format(it) }
+    }.getOrNull() ?: (s.hashCode().toUInt().toString(16) + s.length.toString(16))
+
+    private fun storeUrl(u: String?): String? {
+        if (u == null || u.length < DATA_MIN || !u.startsWith("data:", ignoreCase = true)) return u
+        val h = sha1Hex(u)
+        runCatching {
+            val f = File(dir(), "u$h.txt")
+            if (!f.exists()) f.writeText(u)
+        }
+        return DATA_TOKEN + h
+    }
+
+    private fun resolveUrl(u: String?): String? {
+        if (u == null || !u.startsWith(DATA_TOKEN)) return u
+        return runCatching {
+            File(dir(), "u" + u.removePrefix(DATA_TOKEN) + ".txt")
+                .takeIf { it.exists() }?.readText()
+        }.getOrNull()
+    }
 
     private fun file(key: String): File {
         val a = key.hashCode().toUInt().toString(16)
@@ -139,6 +190,8 @@ object MetaCache {
 
     fun metaKey(uniqueId: String): String = "meta|$uniqueId"
 
+    fun mangaMetaKey(providerId: String, mangaUrl: String): String = "metamanga|$providerId|$mangaUrl"
+
     fun cachedMeta(key: String, ttlMs: Long = META_TTL_MS): MediaItem? {
         val o = read(key, ttlMs) ?: return null
         return runCatching { itemOf(o.getJSONObject("item")) }.getOrNull()
@@ -162,7 +215,7 @@ fun episodesKey(uniqueId: String): String = "eps|${episodesEpoch()}|$uniqueId"
                     number = e.getInt("number"),
                     id = e.getString("id"),
                     name = e.stringOrNull("name"),
-                    image = e.stringOrNull("image"),
+                    image = resolveUrl(e.stringOrNull("image")),
                     season = e.optInt("season", 1),
                     overview = e.stringOrNull("overview"),
                     released = e.stringOrNull("released"),
@@ -183,7 +236,7 @@ fun episodesKey(uniqueId: String): String = "eps|${episodesEpoch()}|$uniqueId"
                     put("number", e.number)
                     put("id", e.id)
                     e.name?.let { put("name", it) }
-                    e.image?.let { put("image", it) }
+                    e.image?.let { put("image", storeUrl(it)) }
                     put("season", e.season)
                     e.overview?.let { put("overview", it) }
                     e.released?.let { put("released", it) }
@@ -221,11 +274,11 @@ fun episodesKey(uniqueId: String): String = "eps|${episodesEpoch()}|$uniqueId"
         put("id", i.id)
         put("title", i.title)
         put("type", i.type.name)
-        i.posterUrl?.let { put("posterUrl", it) }
+        i.posterUrl?.let { put("posterUrl", storeUrl(it)) }
         i.year?.let { put("year", it) }
         i.overview?.let { put("overview", it) }
         if (i.genres.isNotEmpty()) put("genres", JSONArray(i.genres))
-        i.backdropUrl?.let { put("backdropUrl", it) }
+        i.backdropUrl?.let { put("backdropUrl", storeUrl(it)) }
         if (i.rawType.isNotEmpty()) put("rawType", i.rawType)
         i.rating?.let { put("rating", it) }
         if (i.originalTitle.isNotEmpty()) put("originalTitle", i.originalTitle)
@@ -239,12 +292,12 @@ fun episodesKey(uniqueId: String): String = "eps|${episodesEpoch()}|$uniqueId"
         title = o.getString("title"),
         type = runCatching { MediaType.valueOf(o.optString("type", "UNKNOWN")) }
             .getOrDefault(MediaType.UNKNOWN),
-        posterUrl = o.stringOrNull("posterUrl"),
+        posterUrl = resolveUrl(o.stringOrNull("posterUrl")),
         year = if (o.isNull("year")) null else o.optInt("year"),
         overview = o.stringOrNull("overview"),
         genres = o.optJSONArray("genres")?.let { a -> (0 until a.length()).map { a.getString(it) } }
             .orEmpty(),
-        backdropUrl = o.stringOrNull("backdropUrl"),
+        backdropUrl = resolveUrl(o.stringOrNull("backdropUrl")),
         rawType = o.optString("rawType", ""),
         rating = if (o.isNull("rating")) null else o.optDouble("rating"),
         originalTitle = o.optString("originalTitle", ""),

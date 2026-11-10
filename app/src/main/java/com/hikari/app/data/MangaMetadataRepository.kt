@@ -159,21 +159,61 @@ object MangaMetadataRepository {
         )
     }
 
+    /** Extension titles carry site junk AniList never spells that way —
+     *  "(Manhwa)", trailing "Novel", " - Asura", ... A cleaned variant is
+     *  tried as a second query before falling down the (slow, throttled)
+     *  Jikan/Kitsu/Dex chain. The 55+ gate still guards every hit, so a
+     *  wrong spelling can never repaint the page. */
+    internal fun cleanMangaTitle(raw: String): String {
+        var t = raw.trim()
+        t = t.replace(Regex("(?i)\\s*[\\(\\[\\{（【]\\s*(manhwa|manhua|manga|webtoon|novel|light\\s+novel|raw|official|oneshot|one[\\s\\-]*shot|doujinshi|adult|18\\+)\\s*[\\)\\]\\}）】]"), "")
+        t = t.replace(Regex("(?i)\\s*[-–—|:]+\\s*(manhwa|manhua|manga|webtoon|novel|light\\s+novel|raw|official)\\s*$"), "")
+        t = t.replace(Regex("(?i)\\s+(manhwa|manhua|webtoon|novel|light\\s+novel|comic|raw)\\s*$"), "")
+        return t.replace(Regex("\\s{2,}"), " ").trim()
+    }
+
     /** AniList search as a Page (top 8, best-by-gate): the top-1 Media query
      *  404s outright for titles AniList ranks oddly, which read as "no record".
      *  Only runs when metadata is wanted; characters still need a matched id. */
     private fun fetchAnilistManga(wanted: String): MangaMeta? {
-        val query = "query{Page(perPage:8){media(search:" + JSONObject.quote(wanted) +
-            ",type:MANGA){id title{userPreferred english romaji native} synonyms " +
-            "description(asHtml:false) averageScore genres isAdult countryOfOrigin " +
-            "coverImage{large} startDate{year}}}}"
+        // Raw title first, cleaned variant second (site junk like "(Manhwa)"
+        // or a trailing "Novel" never matches, but costs one cheap keyless
+        // query to retry without). Best score across both wins.
+        val queries = listOf(wanted, cleanMangaTitle(wanted))
+            .map { it.trim() }.filter { it.isNotBlank() }.distinct()
+        var best: JSONObject? = null
+        var bestScore = 0
+        for (q in queries) {
+            val (media, score) = searchAnilistManga(q)
+            if (score > bestScore) {
+                bestScore = score
+                best = media
+            }
+            if (bestScore >= 90) break
+        }
+        // Same 55+ gate as the anime chain: a mistranslation never repaints.
+        val media = best ?: return null
+        if (bestScore < 55) return null
+        val desc = media.optString("description").trim().takeIf { it.isNotBlank() }
+        val genres = (0 until (media.optJSONArray("genres")?.length() ?: 0))
+            .mapNotNull { i -> media.optJSONArray("genres")?.optString(i)?.trim()?.takeIf { it.isNotBlank() } }
+        val cover = media.optJSONObject("coverImage")?.optString("large")?.trim()?.takeIf { it.startsWith("http") }
+        val score = media.optDouble("averageScore", 0.0).takeIf { it > 0 }?.div(10.0)
+        return MangaMeta(desc, genres, cover, score, "AniList", media.optBoolean("isAdult", false), media.optInt("id", 0))
+    }
+
+    /** One AniList Page search, best record + its gate score (0 when blank). */
+    private fun searchAnilistManga(query: String): Pair<JSONObject?, Int> {
         val raw = Http.postStringQuiet(
             "https://graphql.anilist.co",
-            JSONObject().put("query", query).toString(),
-        ) ?: return null
+            JSONObject().put("query", "query{Page(perPage:8){media(search:" + JSONObject.quote(query) +
+                ",type:MANGA){id title{userPreferred english romaji native} synonyms " +
+                "description(asHtml:false) averageScore genres isAdult countryOfOrigin " +
+                "coverImage{large} startDate{year}}}}").toString(),
+        ) ?: return null to 0
         val arr = runCatching {
             JSONObject(raw).optJSONObject("data")?.optJSONObject("Page")?.optJSONArray("media")
-        }.getOrNull() ?: return null
+        }.getOrNull() ?: return null to 0
         var best: JSONObject? = null
         var bestScore = 0
         for (i in 0 until arr.length()) {
@@ -194,21 +234,13 @@ object MangaMetadataRepository {
                 }
             }
             if (aliases.isEmpty()) continue
-            val s = AnimeMetadataRepository.matchAliases(wanted, aliases)
+            val s = AnimeMetadataRepository.matchAliases(query, aliases)
             if (s > bestScore) {
                 bestScore = s
                 best = media
             }
         }
-        // Same 55+ gate as the anime chain: a mistranslation never repaints.
-        val media = best ?: return null
-        if (bestScore < 55) return null
-        val desc = media.optString("description").trim().takeIf { it.isNotBlank() }
-        val genres = (0 until (media.optJSONArray("genres")?.length() ?: 0))
-            .mapNotNull { i -> media.optJSONArray("genres")?.optString(i)?.trim()?.takeIf { it.isNotBlank() } }
-        val cover = media.optJSONObject("coverImage")?.optString("large")?.trim()?.takeIf { it.startsWith("http") }
-        val score = media.optDouble("averageScore", 0.0).takeIf { it > 0 }?.div(10.0)
-        return MangaMeta(desc, genres, cover, score, "AniList", media.optBoolean("isAdult", false), media.optInt("id", 0))
+        return best to bestScore
     }
 
     /** Jikan (MyAnimeList, keyless) is throttled to one call per 400ms so a
@@ -466,33 +498,36 @@ object MangaMetadataRepository {
         return MangaMeta(desc, tags, cover, rating, "PornHwaDB", true, 0, 0, bestSlug)
     }
 
-    suspend fun fetchCharacters(app: HikariApp, fallbackTitle: String): List<MangaCharacter> =
+    suspend fun fetchCharacters(app: HikariApp, fallbackTitle: String, ext: MangaMeta? = null): List<MangaCharacter> =
         withContext(Dispatchers.IO) {
             val key = fallbackTitle.trim().lowercase()
             if (key.isBlank()) return@withContext emptyList()
             charCache[key]?.let { (at, list) ->
                 if (System.currentTimeMillis() - at < TTL_MS) return@withContext list
             }
-            val ext = runCatching { fetchExternal(app, fallbackTitle) }.getOrNull()
+            // The detail screen passes its already-resolved enrichment: one
+            // AniList search per open, not one per row (header + characters +
+            // threads + reviews + hints used to fan out into five).
+            val resolved = ext ?: runCatching { fetchExternal(app, fallbackTitle) }.getOrNull()
             // AniList first (keyless, every title); Jikan (MAL) when AniList
             // missed; PornHwaDB only when neither has a record. One retry per
             // step: a dropped request must not read as "no characters".
-            var out = if ((ext?.anilistId ?: 0) > 0) {
-                runCatching { fetchAnilistCharacters(ext!!.anilistId) }.getOrDefault(emptyList())
+            var out = if ((resolved?.anilistId ?: 0) > 0) {
+                runCatching { fetchAnilistCharacters(resolved!!.anilistId) }.getOrDefault(emptyList())
                     .ifEmpty {
                         runCatching {
                             kotlinx.coroutines.delay(800)
-                            fetchAnilistCharacters(ext!!.anilistId)
+                            fetchAnilistCharacters(resolved!!.anilistId)
                         }.getOrDefault(emptyList())
                     }
             } else emptyList()
-            if (out.isEmpty() && (ext?.malId ?: 0) > 0) {
-                out = runCatching { fetchJikanCharacters(ext!!.malId) }.getOrDefault(emptyList())
+            if (out.isEmpty() && (resolved?.malId ?: 0) > 0) {
+                out = runCatching { fetchJikanCharacters(resolved!!.malId) }.getOrDefault(emptyList())
             }
-            if (out.isEmpty() && !ext?.pwdbSlug.isNullOrBlank()) {
+            if (out.isEmpty() && !resolved?.pwdbSlug.isNullOrBlank()) {
                 val k = runCatching { app.store.pornhwaApiKey() }.getOrDefault("").trim()
                 if (k.isNotEmpty()) {
-                    out = runCatching { fetchPwdbCharacters(ext!!.pwdbSlug!!, k) }.getOrDefault(emptyList())
+                    out = runCatching { fetchPwdbCharacters(resolved!!.pwdbSlug!!, k) }.getOrDefault(emptyList())
                 }
             }
             // Only real answers are cached: an empty list is "unknown", not
@@ -553,14 +588,14 @@ object MangaMetadataRepository {
      * The Comments tab's AniList rows: forum threads about this title, newest
      * reply first (the reference layout's Threads section). Keyless.
      */
-    suspend fun fetchThreads(app: HikariApp, fallbackTitle: String): List<MangaThread> =
+    suspend fun fetchThreads(app: HikariApp, fallbackTitle: String, ext: MangaMeta? = null): List<MangaThread> =
         withContext(Dispatchers.IO) {
             val key = fallbackTitle.trim().lowercase()
             if (key.isBlank()) return@withContext emptyList()
             threadCache[key]?.let { (at, list) ->
                 if (System.currentTimeMillis() - at < THREAD_TTL_MS) return@withContext list
             }
-            val id = runCatching { fetchExternal(app, fallbackTitle) }.getOrNull()?.anilistId ?: 0
+            val id = (ext ?: runCatching { fetchExternal(app, fallbackTitle) }.getOrNull())?.anilistId ?: 0
             val out = if (id > 0) runCatching { fetchAnilistThreads(id) }.getOrDefault(emptyList())
             else emptyList()
             threadCache[key] = System.currentTimeMillis() to out
@@ -599,15 +634,15 @@ object MangaMetadataRepository {
      * The Comments tab's PornHwaDB rows (adult titles with a key): user
      * reviews, newest first. Read-only — writing goes through AniList.
      */
-    suspend fun fetchReviews(app: HikariApp, fallbackTitle: String): List<MangaReview> =
+    suspend fun fetchReviews(app: HikariApp, fallbackTitle: String, ext: MangaMeta? = null): List<MangaReview> =
         withContext(Dispatchers.IO) {
             val key = fallbackTitle.trim().lowercase()
             if (key.isBlank()) return@withContext emptyList()
             reviewCache[key]?.let { (at, list) ->
                 if (System.currentTimeMillis() - at < THREAD_TTL_MS) return@withContext list
             }
-            val ext = runCatching { fetchExternal(app, fallbackTitle) }.getOrNull()
-            val slug = ext?.pwdbSlug?.takeIf { it.isNotBlank() }
+            val resolved = ext ?: runCatching { fetchExternal(app, fallbackTitle) }.getOrNull()
+            val slug = resolved?.pwdbSlug?.takeIf { it.isNotBlank() }
             val apiKey = runCatching { app.store.pornhwaApiKey() }.getOrDefault("").trim()
             val out = if (slug != null && apiKey.isNotEmpty()) {
                 runCatching { fetchPwdbReviews(slug, apiKey) }.getOrDefault(emptyList())
@@ -639,15 +674,15 @@ object MangaMetadataRepository {
         return out
     }
 
-    suspend fun fetchChapterHints(app: HikariApp, fallbackTitle: String): Map<Int, String> =
+    suspend fun fetchChapterHints(app: HikariApp, fallbackTitle: String, ext: MangaMeta? = null): Map<Int, String> =
         withContext(Dispatchers.IO) {
             val key = fallbackTitle.trim().lowercase()
             if (key.isBlank()) return@withContext emptyMap()
             hintCache[key]?.let { (at, map) ->
                 if (System.currentTimeMillis() - at < TTL_MS) return@withContext map
             }
-            val ext = runCatching { fetchExternal(app, fallbackTitle) }.getOrNull()
-            val slug = ext?.pwdbSlug?.takeIf { it.isNotBlank() }
+            val resolved = ext ?: runCatching { fetchExternal(app, fallbackTitle) }.getOrNull()
+            val slug = resolved?.pwdbSlug?.takeIf { it.isNotBlank() }
             val apiKey = runCatching { app.store.pornhwaApiKey() }.getOrDefault("").trim()
             val out = LinkedHashMap<Int, String>()
             if (slug != null && apiKey.isNotEmpty()) {
