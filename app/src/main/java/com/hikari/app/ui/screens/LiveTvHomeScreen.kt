@@ -95,7 +95,7 @@ fun LiveTvHomeScreen(nav: NavHostController) {
     var loading by remember { mutableStateOf(true) }
     var groups by remember { mutableStateOf<List<LiveChannelGroup>>(emptyList()) }
     var previews by remember { mutableStateOf<Map<String, List<String>>>(emptyMap()) }
-    var favKeys by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var favKeys by remember { mutableStateOf<List<String>>(emptyList()) }
     var pinnedFirst by remember { mutableStateOf<String?>(null) }
     var sourceCount by remember { mutableStateOf(0) }
     var expanded by remember { mutableStateOf<Set<String>>(emptySet()) }
@@ -110,6 +110,7 @@ fun LiveTvHomeScreen(nav: NavHostController) {
     var warmed by remember { mutableStateOf(false) }
 
     fun toast(msg: String) = Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+    val nothingPlayable = tr("Nothing playable here yet")
 
     LaunchedEffect(tick) {
         loading = true
@@ -172,7 +173,7 @@ fun LiveTvHomeScreen(nav: NavHostController) {
             val ok = withContext(Dispatchers.IO) {
                 runCatching { LiveTvPlayback.playChannel(context, channel) }.getOrDefault(false)
             }
-            if (!ok) toast(tr("Nothing playable here yet"))
+            if (!ok) toast(nothingPlayable)
         }
     }
 
@@ -505,7 +506,7 @@ fun LiveTvHomeScreen(nav: NavHostController) {
 private data class HomeData(
     val groups: List<LiveChannelGroup>,
     val previews: Map<String, List<String>>,
-    val favs: Set<String>,
+    val favs: List<String>,
     val pinned: String?,
     val sources: Int,
 )
@@ -525,13 +526,22 @@ private fun LiveTvActionRow(
         modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
+        // Labels resolve OUTSIDE listOf: a @Composable call (tr) is only
+        // legal directly in the body or inside another @Composable call's
+        // arguments — never nested in listOf/Triple (plain) arguments.
+        val searchLabel = tr("Search")
+        val guideLabel = tr("Guide")
+        val calendarLabel = tr("Calendar")
+        val onDemandLabel = tr("On Demand")
+        val sportsLabel = tr("Sports")
+        val settingsLabel = tr("Settings")
         val actions = listOf(
-            Triple(tr("Search"), Icons.Filled.Search, onSearch),
-            Triple(tr("Guide"), Icons.Filled.DateRange, onGuide),
-            Triple(tr("Calendar"), Icons.Filled.CalendarMonth, onCalendar),
-            Triple(tr("On Demand"), Icons.Filled.OndemandVideo, onDemand),
-            Triple(tr("Sports"), Icons.Filled.SportsSoccer, onSports),
-            Triple(tr("Settings"), Icons.Filled.Settings, onSettings),
+            Triple(searchLabel, Icons.Filled.Search, onSearch),
+            Triple(guideLabel, Icons.Filled.DateRange, onGuide),
+            Triple(calendarLabel, Icons.Filled.CalendarMonth, onCalendar),
+            Triple(onDemandLabel, Icons.Filled.OndemandVideo, onDemand),
+            Triple(sportsLabel, Icons.Filled.SportsSoccer, onSports),
+            Triple(settingsLabel, Icons.Filled.Settings, onSettings),
         )
         items(actions) { (label, icon, fn) ->
             Column(
