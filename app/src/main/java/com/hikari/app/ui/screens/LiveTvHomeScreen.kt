@@ -250,7 +250,7 @@ fun LiveTvHomeScreen(nav: NavHostController) {
                 DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                     DropdownMenuItem(
                         text = { Text(tr("Manage groups and channels")) },
-                        onClick {
+                        onClick = {
                             menuOpen = false
                             nav.navigate(Routes.LIVETV_MANAGE)
                         },
