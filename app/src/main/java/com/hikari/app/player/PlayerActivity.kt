@@ -9316,6 +9316,13 @@ class PlayerActivity : ComponentActivity() {
         // loading cover, which is the point, but it must never be invisible in
         // the one place the user is actually looking for servers.
         if (!startMode) liveSessionId?.let { StreamsLive.releaseSweep(it) }
+        // Settings -> Customize -> Server screen style: the "Streams list"
+        // look has its own page. Classic (the default) falls through to the
+        // page below, untouched.
+        if (com.hikari.app.player.ServerScreenStyles.isStreams()) {
+            showServerChooserStreams(startMode, forDownload)
+            return
+        }
         // The START chooser (and the download chooser, which is the same
         // screen) follows the Server page layout setting: vertical keeps
         // the portrait box, horizontal the full-bleed page. Only the
@@ -10735,6 +10742,300 @@ class PlayerActivity : ComponentActivity() {
             sheetHandler.postDelayed({ kickSheet() }, 120)
         } else {
             showSheet()
+        }
+    }
+
+    /**
+     * The "Streams list" server page (Settings -> Customize -> Server screen
+     * style). It uses the same server list, the same live search and the same
+     * pick / download / back-out behaviour as [showServerChooser]; only the
+     * drawing differs (see [ServerStreamsPage]).
+     */
+    private fun showServerChooserStreams(startMode: Boolean, forDownload: Boolean) {
+        if (startMode) {
+            // Once per Activity, like the classic page: the live search keeps
+            // growing the list and must not re-open the page after a pick.
+            if (startChooserShown) return
+            startChooserShown = true
+            if (!playerTvRemote()) {
+                runCatching { requestedOrientation = SCREEN_ORIENTATION_PORTRAIT }
+            }
+            startChoicePending = !forDownload
+        }
+        val dialog = Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen)
+        serverChooserDialog = dialog
+        var pageRef: ServerStreamsPage? = null
+
+        /** Pulls the live session straight into this page (same dedup as the classic page). */
+        fun syncFromSession() {
+            val id = liveSessionId ?: return
+            if (!dialog.isShowing) return
+            val current = runCatching { StreamsLive.flow(id).value }.getOrDefault(emptyList())
+            if (current.isEmpty()) return
+            val have = HashSet<String>(sources.size + current.size)
+            for (s in sources) have.add(s.identityKey())
+            var added = false
+            val out = sources.toMutableList()
+            for (s in current) {
+                if (!have.add(s.identityKey())) continue
+                out += runCatching { s.toPlayerSource() }.getOrNull() ?: continue
+                added = true
+            }
+            if (added) sources = out
+        }
+
+        fun addonOf(src: PlayerSource): String =
+            src.providerName.trim().ifBlank { serverGroup(src) }
+
+        fun subOf(src: PlayerSource): String {
+            val quality = com.hikari.app.data.ServerMeta.rowQuality(src.name, src.details)
+            var facts = com.hikari.app.data.ServerMeta.enrichedDetails(src.name, src.details, src.url)
+            if (quality != "SRC") {
+                val segs = facts.split(" \u2022 ").toMutableList()
+                if (segs.isNotEmpty() && segs[0].equals(quality, ignoreCase = true)) segs.removeAt(0)
+                facts = segs.joinToString(" \u2022 ")
+            }
+            val badgeLine = listOfNotNull(
+                if (src.isM3u8) "HLS" else null,
+                if (src.isMpd) "DASH" else null,
+                if (src.isTorrent || src.torrentStream) "TORRENT" else null,
+                if (src.subtitles.isNotEmpty()) "SUBS " + src.subtitles.size else null,
+            ).joinToString(" \u00B7 ")
+            return listOf(if (quality != "SRC") quality else "", badgeLine, facts)
+                .filter { it.isNotBlank() }
+                .joinToString(" \u00B7 ")
+        }
+
+        fun buildState(): ServerStreamsPage.State {
+            val snap = sources
+            val originIdx = snap.indices.filter { snap[it].isFromOrigin() }
+            val restIdx = snap.indices.filter { !snap[it].isFromOrigin() }
+            val items = (originIdx + restIdx).map { i ->
+                val src = snap[i]
+                ServerStreamsPage.Item(
+                    index = i,
+                    title = serverLabel(src),
+                    sub = subOf(src),
+                    addon = addonOf(src),
+                    selected = playbackCommitted && i == currentIndex,
+                )
+            }
+            val tally = ContentRepository.crossTally
+            val runningNames = (tally.running.values + tally.primaryRunning.values)
+                .map { it.trim() }.filter { it.isNotBlank() }.distinct()
+            val searching = tally.running.size + tally.primaryRunning.size > 0 ||
+                ContentRepository.unfinishedSearchCount() > 0
+            val names = ArrayList<String>()
+            for (item in items) if (names.none { n -> n.equals(item.addon, ignoreCase = true) }) names.add(item.addon)
+            for (n in runningNames) if (names.none { x -> x.equals(n, ignoreCase = true) }) names.add(n)
+            val addons = names.map { n ->
+                ServerStreamsPage.Addon(n, runningNames.any { r -> r.equals(n, ignoreCase = true) })
+            }
+            return ServerStreamsPage.State(items, addons, searching, chooserEmptyNote)
+        }
+
+        fun refresh() {
+            if (!dialog.isShowing) return
+            pageRef?.update(buildState())
+        }
+
+        val onPlay: (Int) -> Unit = { i ->
+            startChoicePending = false
+            serverPickActed = true
+            dialog.dismiss()
+            if (forDownload) {
+                currentIndex = i
+                pickedByUser = true
+                showDownloadDialog()
+            } else if (i != currentIndex || !playbackCommitted) {
+                noSubsRetry = false
+                com.hikari.app.data.Logs.log(
+                    "Player",
+                    "chooser tap server ${i + 1}/${sources.size} \"${sources.getOrNull(i)?.name ?: "?"}\"",
+                )
+                playSource(i)
+                pickedByUser = true
+            }
+        }
+        val onDownload: (Int) -> Unit = { i ->
+            startChoicePending = false
+            serverPickActed = true
+            currentIndex = i
+            pickedByUser = true
+            dialog.dismiss()
+            showDownloadDialog()
+        }
+        val onExternal: (Int) -> Unit = ext@{ i ->
+            val url = sources.getOrNull(i)?.url.orEmpty()
+            if (url.isBlank() || !url.startsWith("http", ignoreCase = true)) {
+                android.widget.Toast.makeText(
+                    this@PlayerActivity, I18n.t("No link to open."), android.widget.Toast.LENGTH_SHORT
+                ).show()
+                return@ext
+            }
+            runCatching {
+                startActivity(
+                    android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)).apply {
+                        addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                        addCategory(android.content.Intent.CATEGORY_BROWSABLE)
+                    }
+                )
+            }.onFailure {
+                android.widget.Toast.makeText(
+                    this@PlayerActivity, I18n.t("No app can open this link."), android.widget.Toast.LENGTH_SHORT
+                ).show()
+            }
+        }
+        // Long-press a card: the same extra actions the classic row has as buttons.
+        val onLongPick: (Int) -> Unit = { i ->
+            val src = sources.getOrNull(i)
+            if (src != null) {
+                val labels = ArrayList<String>()
+                val acts = ArrayList<() -> Unit>()
+                if (!forDownload) {
+                    labels.add(I18n.t("Play"))
+                    acts.add { onPlay(i) }
+                }
+                labels.add(I18n.t("Download"))
+                acts.add { onDownload(i) }
+                if (src.url.startsWith("http", ignoreCase = true)) {
+                    labels.add(I18n.t("Open in browser"))
+                    acts.add { onExternal(i) }
+                }
+                android.app.AlertDialog.Builder(this@PlayerActivity)
+                    .setItems(labels.toTypedArray()) { d, which ->
+                        d.dismiss()
+                        acts.getOrNull(which)?.invoke()
+                    }
+                    .show()
+            }
+        }
+
+        // Header text: "S1 E1" / episode name / show title (a movie: just the title).
+        val epS = intent.getIntExtra("histEpisodeSeason", 0)
+        val epN = intent.getIntExtra("histEpisodeNumber", 0)
+        val epNm = intent.getStringExtra("histEpisodeName").orEmpty().trim()
+        val showTitle = intent.getStringExtra("title").orEmpty().ifBlank { "Sources" }
+        val epLabel = when {
+            epS > 0 && epN > 0 -> "S$epS E$epN"
+            epN > 0 -> "Episode $epN"
+            else -> ""
+        }
+        val epNameUseful = epLabel.isNotBlank() && epNm.isNotBlank() &&
+            !epNm.equals("Episode $epN", ignoreCase = true) && !epNm.equals(epLabel, ignoreCase = true)
+        val mainTitle = if (epNameUseful) epNm else showTitle
+        val subTitle = if (epNameUseful) showTitle else ""
+        val artModel: Any? =
+            intent?.getStringArrayListExtra("serverArts")?.firstOrNull { it.isNotBlank() }
+                ?: intent?.getStringExtra("serverArt")?.takeIf { it.isNotBlank() }
+                ?: PosterLoader.model(intent?.getStringExtra("bannerBackdrop")?.takeIf { it.isNotBlank() })
+                ?: PosterLoader.model(intent?.getStringExtra("histPoster")?.takeIf { it.isNotBlank() })
+
+        val page = ServerStreamsPage(
+            activity = this,
+            episodeLabel = epLabel,
+            mainTitle = mainTitle,
+            subTitle = subTitle,
+            artModel = artModel,
+            isTv = playerTvRemote(),
+            loadImage = { iv, model -> runCatching { iv.load(model) } },
+            focusRing = { tvFocusRing() },
+            onBack = { dialog.dismiss() },
+            onRefresh = {
+                chooserEmptyNote = null
+                liveSessionId?.let { runCatching { StreamsLive.requestRefresh(it) } }
+                refresh()
+            },
+            onPick = onPlay,
+            onLongPick = onLongPick,
+        )
+        pageRef = page
+
+        // Servers that land while the page is open repaint it (coalesced).
+        val uiHandler = Handler(Looper.getMainLooper())
+        val repaint = Runnable {
+            if (dialog.isShowing) {
+                syncFromSession()
+                refresh()
+            }
+        }
+        val watcher: () -> Unit = {
+            uiHandler.removeCallbacks(repaint)
+            uiHandler.postDelayed(repaint, 250L)
+        }
+        sourcesWatchers.add(watcher)
+        var ticker: Job? = null
+
+        dialog.setOnDismissListener {
+            ticker?.cancel()
+            uiHandler.removeCallbacks(repaint)
+            sourcesWatchers.remove(watcher)
+            page.stop()
+            if (serverChooserDialog === dialog) serverChooserDialog = null
+            if (startMode && !playerTvRemote()) {
+                runCatching { requestedOrientation = SCREEN_ORIENTATION_UNSPECIFIED }
+            }
+            // Closed without a pick (back button / arrow): abandon the play, exactly
+            // like the classic page — never fall back to auto-playing.
+            if (startChoicePending) {
+                startChoicePending = false
+                if (!isFinishing && !isDestroyed && !isChangingConfigurations) finish()
+            }
+            if (forDownload && !serverPickActed && !playbackCommitted && !isFinishing) finish()
+        }
+
+        dialog.setContentView(
+            page.root,
+            ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+        )
+        dialog.window?.let { w ->
+            w.setBackgroundDrawable(ColorDrawable(0xFF0C0C0C.toInt()))
+            w.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+            if (Build.VERSION.SDK_INT >= 28) {
+                val lp = w.attributes
+                lp.layoutInDisplayCutoutMode =
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                w.attributes = lp
+            }
+        }
+        androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(page.root) { _, insets ->
+            val b = insets.getInsets(
+                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
+            )
+            page.setInsets(b.top, b.bottom, b.left, b.right)
+            insets
+        }
+        dialog.show()
+        page.root.requestApplyInsets()
+        syncFromSession()
+        refresh()
+        page.requestInitialFocus()
+
+        // Live status loop: "Fetching…" tags, the empty note, and the same single
+        // automatic re-ask the classic page does when a search goes quiet and empty.
+        ticker = lifecycleScope.launch {
+            var autoRetried = false
+            while (dialog.isShowing) {
+                syncFromSession()
+                if (sources.isNotEmpty() && chooserEmptyNote != null) chooserEmptyNote = null
+                refresh()
+                val tally = ContentRepository.crossTally
+                val searchingNow = tally.running.size + tally.primaryRunning.size > 0 ||
+                    ContentRepository.unfinishedSearchCount() > 0
+                val sessionSize = liveSessionId?.let {
+                    runCatching { StreamsLive.flow(it).value.size }.getOrDefault(0)
+                } ?: 0
+                if (!autoRetried && !searchingNow && sources.isEmpty() && sessionSize == 0 && dialog.isShowing) {
+                    val lastVerdict = liveSessionId?.let {
+                        runCatching { StreamsLive.statusFlow(it).value }.getOrNull()
+                    }
+                    if (lastVerdict == null || !isNoResultVerdict(lastVerdict)) {
+                        autoRetried = true
+                        liveSessionId?.let { runCatching { StreamsLive.requestRefresh(it) } }
+                    }
+                }
+                delay(1000)
+            }
         }
     }
 
