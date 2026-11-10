@@ -143,6 +143,9 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
         /** Per-provider reason why its home catalog failed (empty = it works). */
         val catalogErrors = java.util.concurrent.ConcurrentHashMap<String, String>()
 
+        /** Per-provider reason why a title search failed; separate from home-catalog failures. */
+        val searchErrors = java.util.concurrent.ConcurrentHashMap<String, String>()
+
         /**
          * CloudStream plugins set `posterHeaders` (e.g. LeakPorner demands
          * `Referer: https://leakporner.org/` for its 58img.top thumbnails), but
@@ -690,8 +693,10 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
 
     override suspend fun search(query: String, page: Int): List<MediaItem> =
         withContext(Dispatchers.IO) {
+            searchErrors.remove(config.id)
             val a = api
             if (a == null) {
+                searchErrors[config.id] = apiFailureReason()
                 streamErrors[config.id] = apiFailureReason()
                 com.hikari.app.data.Logs.log(
                     "Provider",
@@ -713,11 +718,12 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                     val noSearch = why.contains("NotImplementedError") ||
                         why.contains("UnsupportedOperationException") ||
                         why.contains("not implemented", ignoreCase = true)
-                    streamErrors[config.id] = if (noSearch) {
+                    searchErrors[config.id] = if (noSearch) {
                         "This extension is extractor-only (no search) — it cannot be asked by title."
                     } else {
                         "Search failed: $why"
                     }
+                    streamErrors[config.id] = searchErrors[config.id]!!
                     com.hikari.app.data.Logs.log(
                         "Provider",
                         "${config.name}: " + (if (noSearch) "has no search (extractor-only)" else "search failed — $why"),
