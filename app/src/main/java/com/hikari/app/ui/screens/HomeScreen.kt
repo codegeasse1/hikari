@@ -2832,6 +2832,9 @@ private fun MediaItem.shrinkPoster(): MediaItem {
     else copy(posterUrl = p, backdropUrl = b)
 }
 
+private fun engineSearchFailureReason(providerId: String): String? =
+    com.hikari.app.cs3.Cs3MainApiProvider.searchErrors[providerId]
+
 private fun engineFailureReason(providerId: String): String? =
     com.hikari.app.data.TrackerLibraryRepository.errors[providerId]
         ?: com.hikari.app.providers.HikariProviderAdapter.catalogErrors[providerId]
@@ -3495,7 +3498,7 @@ private fun HomeSearchOverlay(
                         .replace("%s", label).replace("%s", applied),
                     actionLabel = null,
                     action = null,
-                    detail = providerIds.firstOrNull()?.let { engineFailureReason(it) },
+                    detail = providerIds.firstOrNull()?.let { engineSearchFailureReason(it) },
                 )
                 else -> {
                     val unique = rememberVisibleItems(combinedResults)
