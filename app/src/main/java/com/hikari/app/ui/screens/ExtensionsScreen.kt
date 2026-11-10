@@ -8150,7 +8150,7 @@ private fun SitesFolder(
                 )
             }
             Icon(
-                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                Icons.AutoMirrored.Filled.ArrowForward,
                 contentDescription = tr("Open websites"),
                 tint = MaterialTheme.colorScheme.onSurfaceVariant
             )
