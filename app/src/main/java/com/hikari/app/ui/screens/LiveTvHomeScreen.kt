@@ -22,12 +22,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
 import androidx.compose.material.icons.filled.CalendarMonth
-import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
-import androidx.compose.material.icons.filled.GuideBoard
+import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.History
-import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.LiveTv
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Movie
@@ -529,7 +527,7 @@ private fun LiveTvActionRow(
     ) {
         val actions = listOf(
             Triple(tr("Search"), Icons.Filled.Search, onSearch),
-            Triple(tr("Guide"), Icons.Filled.GuideBoard, onGuide),
+            Triple(tr("Guide"), Icons.Filled.DateRange, onGuide),
             Triple(tr("Calendar"), Icons.Filled.CalendarMonth, onCalendar),
             Triple(tr("On Demand"), Icons.Filled.OndemandVideo, onDemand),
             Triple(tr("Sports"), Icons.Filled.SportsSoccer, onSports),
