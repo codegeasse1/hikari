@@ -201,13 +201,31 @@ object PosterLoader {
         val name = fnv1a(u)
         if (existingFile(name) != null) return CACHE_TOKEN + name
 
-        val bytes = decodeDataUri(u) ?: return poolGiant(u)
-        val file = destFile(name) ?: return poolGiant(u)
+        val bytes = decodeDataUri(u)
+        if (bytes == null) {
+            // Undecodable payload (encrypted-but-not-decrypted provider art,
+            // truncated base64, unknown image magic): the grid shows a blank
+            // tile for this poster, so record WHY, not just that.
+            com.hikari.app.data.Logs.traceSampledEvery(
+                "Poster", "tokenize-undecodable", 50L,
+            ) { "undecodable data-poster len=${u.length} hash=$name sig=${sigHead(u)}" }
+            return poolGiant(u)
+        }
+        val file = destFile(name)
+        if (file == null) {
+            com.hikari.app.data.Logs.trace("Poster", "no store dir for hash=$name")
+            return poolGiant(u)
+        }
         val wrote = runCatching {
             file.writeBytes(bytes)
             file.length() > 0
         }.getOrDefault(false)
-        if (!wrote) return poolGiant(u)
+        if (!wrote) {
+            com.hikari.app.data.Logs.traceSampledEvery(
+                "Poster", "tokenize-write-fail", 50L,
+            ) { "could not persist decoded poster hash=$name bytes=${bytes.size}" }
+            return poolGiant(u)
+        }
         pruneIfNeeded()
         return CACHE_TOKEN + name
     }
@@ -225,8 +243,15 @@ object PosterLoader {
         return u
     }
 
-    /** The filename a poster's bytes are stored under: the URI hash carried in a
-     *  [CACHE_TOKEN], or the hash of the URI itself. */
+    /** First bytes of a data-URI payload's alphabet for failure lines: the
+     *  base64 header is predictable per image kind (never secrets), so a few
+     *  chars say a lot (JPEG vs PNG vs encrypted garbage). Never the bytes. */
+    private fun sigHead(dataUri: String): String {
+        val comma = dataUri.indexOf(',')
+        if (comma <= 0) return "<no-comma len=${dataUri.length}>"
+        val payload = dataUri.substring(comma + 1).take(16)
+        return payload.ifBlank { "<empty-payload>" }
+    }
     private fun hashOf(u: String): String =
         if (u.startsWith(CACHE_TOKEN)) u.substring(CACHE_TOKEN.length) else fnv1a(u)
 
@@ -274,7 +299,20 @@ object PosterLoader {
                         // Repaint exactly the cells that were waiting on THIS
                         // poster (see [pending]).
                         pending.remove(name)?.let { st -> st.value = st.value + 1L }
+                    } else {
+                        com.hikari.app.data.Logs.traceSampledEvery(
+                            "Poster", "prep-write-fail", 50L,
+                        ) { "async persist failed hash=$name bytes=${bytes.size}" }
                     }
+                } else {
+                    val why = when {
+                        bytes == null -> "undecodable sig=${sigHead(u)}"
+                        bytes.isEmpty() -> "empty-bytes"
+                        else -> "no-store-dir"
+                    }
+                    com.hikari.app.data.Logs.traceSampledEvery(
+                        "Poster", "prep-undecodable", 50L,
+                    ) { "async decode failed ($why) len=${u.length} hash=$name" }
                 }
             } finally {
                 inFlight.remove(name)

@@ -15,11 +15,16 @@ import java.util.concurrent.TimeUnit
 
 object Logs {
 
-    /** Roll `app.log` over once it passes this size. */
-    private const val FILE_MAX_BYTES = 512L * 1024L
+    /** Roll `app.log` over once it passes this size. 2MB: image/poster
+     *  failure traces are sampled into the file, so the older 512KB rolled
+     *  away the evidence before a bug report was ever shared. */
+    private const val FILE_MAX_BYTES = 2L * 1024L * 1024L
 
-    /** How many recent lines the crash report carries as breadcrumbs. */
-    private const val RING_MAX = 300
+    /** How many recent lines the crash report carries as breadcrumbs. 2000:
+     *  per-poster/per-image failures go to the ring (see [trace]) without
+     *  touching the file, so the ring has to be deep enough to still hold
+     *  them when a crash report is written. */
+    private const val RING_MAX = 2000
 
     /** How long a reader waits for the writer to drain before giving up (a
      *  log file must never be able to hang the Settings screen). */
@@ -186,6 +191,57 @@ object Logs {
         log("$tag!", message + suffix)
         if (t != null && enabled) append(stackTrace(t))
     }
+
+    /** Hot-path logging: ring + logcat, but NEVER the file. Per-poster and
+     *  per-image failures fire hundreds of times per screen — they would
+     *  churn the log file (and its rotation) without bound — so they live
+     *  here: still visible in logcat, still in the crash-report breadcrumbs
+     *  (the ring is deep on purpose), and the Logs screen's live tail reads
+     *  the ring. Callers add a sampled file line (see [traceSampledCount])
+     *  so the persisted log keeps a census without the flood. */
+    fun trace(tag: String, message: String) {
+        val line = "${stampOf(stamp)} [${Thread.currentThread().name}] $tag: $message"
+        synchronized(lock) { pushRing(line) }
+        runCatching { Log.d("Hikari/$tag", message) }
+    }
+
+    /** Per-key occurrence counter for [traceSampledEvery]: how many times
+     *  each failure key has fired this process. Bounded — keys are
+     *  caller-chosen constants/small hashes, never full payloads. */
+    private val traceCounts = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicLong>()
+    private const val TRACE_COUNTS_MAX = 256
+
+    /** Fires [trace] every call but also writes ONE file line per [every]
+     *  occurrences of [key] ("still failing: N so far"). The persisted log
+     *  keeps a census of chronic failures; the ring keeps every instance. */
+    fun traceSampledEvery(tag: String, key: String, every: Long, message: () -> String) {
+        if (traceCounts.size >= TRACE_COUNTS_MAX) traceCounts.clear()
+        val n = (traceCounts.getOrPut(key) { java.util.concurrent.atomic.AtomicLong(0L) }.incrementAndGet())
+        trace(tag, message())
+        if (n % every == 0L) log(tag, "$key still failing: $n so far · ${message()}")
+    }
+
+    /** Redacts a URL for logging: masks credential/token query values, drops
+     *  cookies, truncates to 300 chars. Host + path shape stay, secrets go. */
+    fun safeUrl(url: String?): String {
+        if (url.isNullOrBlank()) return "<empty>"
+        var s = url.trim()
+        if (s.startsWith("data:")) {
+            val comma = s.indexOf(',')
+            val head = if (comma > 0) s.substring(0, comma.coerceAtMost(64)) else s.take(64)
+            return "$head…<data len=${s.length}>"
+        }
+        s = s.replace(Regex("(?i)((?:password|passwd|pwd|token|auth|api[_-]?key|session|sid)=)[^&\\s]*")) { m -> m.groupValues[1] + "… " }
+        return if (s.length > 300) s.take(300) + "…<len=${url.length}>" else s
+    }
+
+    /** Host + scheme only — for per-host failure lines (no path, no query). */
+    fun safeHost(url: String?): String = runCatching {
+        val u = url?.trim().orEmpty()
+        if (u.startsWith("data:")) return "data:uri len=${u.length}"
+        val uri = java.net.URI(u)
+        "${uri.scheme}://${uri.host ?: "?"}"
+    }.getOrDefault("<bad-url>")
 
     suspend fun <T> timed(tag: String, label: String, block: suspend () -> T): T {
         val t0 = android.os.SystemClock.elapsedRealtime()

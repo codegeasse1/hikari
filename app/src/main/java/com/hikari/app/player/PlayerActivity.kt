@@ -1386,6 +1386,7 @@ class PlayerActivity : ComponentActivity() {
     private var qualityBtn: TextView? = null
     private var sourcesBtn: TextView? = null
     private var episodesBtn: TextView? = null
+    private var channelsBtn: TextView? = null
     private var prevEpBtn: TextView? = null
     private var nextEpBtn: TextView? = null
     private var autoplayBtn: TextView? = null
@@ -2569,6 +2570,7 @@ class PlayerActivity : ComponentActivity() {
         qualityBtn = findViewById(R.id.quality_btn)
         sourcesBtn = findViewById(R.id.sources_btn)
         episodesBtn = findViewById(R.id.episodes_btn)
+        channelsBtn = findViewById(R.id.channels_btn)
         prevEpBtn = findViewById(R.id.prev_ep_btn)
         nextEpBtn = findViewById(R.id.next_ep_btn)
         autoplayBtn = findViewById(R.id.autoplay_btn)
@@ -2694,6 +2696,10 @@ class PlayerActivity : ComponentActivity() {
         // series — it stays hidden otherwise, so it is never a dead button.
         episodesBtn?.visibility = View.GONE
         episodesBtn?.setOnClickListener { showEpisodesDialog() }
+        // Nuvio's Channels pill: only live TV (bridge streams) has a channel
+        // group to switch inside — same hidden-until-live rule as Episodes.
+        channelsBtn?.visibility = View.GONE
+        channelsBtn?.setOnClickListener { showChannelsDialog() }
         prevEpBtn?.visibility = View.GONE
         prevEpBtn?.setOnClickListener { stepEpisode(-1) }
         nextEpBtn?.visibility = View.GONE
@@ -3355,6 +3361,10 @@ class PlayerActivity : ComponentActivity() {
         // episode list to show, so the pills stay hidden rather than dead.
         val seriesKnown = favouriteItem != null && favouriteItem?.type != MediaType.MOVIE
         episodesBtn?.visibility = if (seriesKnown) View.VISIBLE else View.GONE
+        // Live TV bridge streams get the Channels pill instead: same group,
+        // one tap to switch (see showChannelsDialog). Never beside Episodes.
+        val liveKnown = originProviderId.startsWith(com.hikari.app.iptv.LiveTvEngine.PROVIDER_PREFIX)
+        channelsBtn?.visibility = if (liveKnown && !seriesKnown) View.VISIBLE else View.GONE
         prevEpBtn?.visibility = if (seriesKnown) View.VISIBLE else View.GONE
         nextEpBtn?.visibility = if (seriesKnown) View.VISIBLE else View.GONE
         autoplayBtn?.visibility = if (seriesKnown) View.VISIBLE else View.GONE
@@ -5142,7 +5152,7 @@ class PlayerActivity : ComponentActivity() {
     /** Every labelled pill in the control bar (accent ones included), so the
      *  Player UI skin can restyle the whole row in one pass. */
     private val pillIds = intArrayOf(
-        R.id.speed_btn, R.id.episodes_btn, R.id.prev_ep_btn, R.id.next_ep_btn,
+        R.id.speed_btn, R.id.episodes_btn, R.id.channels_btn, R.id.prev_ep_btn, R.id.next_ep_btn,
         R.id.autoplay_btn, R.id.sources_btn, R.id.quality_btn,
         R.id.audio_btn, R.id.subs_btn, R.id.rotate_btn, R.id.skip_btn, R.id.enhance_btn,
         R.id.fav_btn, R.id.download_btn, R.id.pip_btn, R.id.options_btn, R.id.lock_btn,
@@ -5729,7 +5739,7 @@ class PlayerActivity : ComponentActivity() {
     private val controlOrder = listOf(
         PlayerControl.FAVORITE, PlayerControl.DOWNLOAD, PlayerControl.PIP,
         PlayerControl.OPTIONS, PlayerControl.LOCK,
-        PlayerControl.SPEED, PlayerControl.EPISODES, PlayerControl.SOURCES,
+        PlayerControl.SPEED, PlayerControl.EPISODES, PlayerControl.CHANNELS, PlayerControl.SOURCES,
         PlayerControl.QUALITY, PlayerControl.AUDIO, PlayerControl.SUBS,
         PlayerControl.ROTATE, PlayerControl.SKIP,
         PlayerControl.ENHANCE, PlayerControl.EXTERNAL, PlayerControl.RESIZE,
@@ -5743,6 +5753,7 @@ class PlayerActivity : ComponentActivity() {
         PlayerControl.LOCK -> findViewById(R.id.lock_btn)
         PlayerControl.SPEED -> findViewById(R.id.speed_btn)
         PlayerControl.EPISODES -> findViewById(R.id.episodes_btn)
+        PlayerControl.CHANNELS -> findViewById(R.id.channels_btn)
         PlayerControl.SOURCES -> findViewById(R.id.sources_btn)
         PlayerControl.QUALITY -> findViewById(R.id.quality_btn)
         PlayerControl.AUDIO -> findViewById(R.id.audio_btn)
@@ -5764,7 +5775,7 @@ class PlayerActivity : ComponentActivity() {
         val left = findViewById<ViewGroup>(R.id.player_pills) ?: return
         val right = findViewById<ViewGroup>(R.id.player_right_actions) ?: return
 
-        val managedHidden = listOf(R.id.episodes_btn, R.id.pip_btn).filter {
+        val managedHidden = listOf(R.id.episodes_btn, R.id.channels_btn, R.id.pip_btn).filter {
             findViewById<View>(it)?.visibility == View.GONE
         }
 
@@ -8799,6 +8810,146 @@ class PlayerActivity : ComponentActivity() {
             ) { which ->
                 eps.getOrNull(which)?.let { switchToEpisode(it) }
             }
+        }
+    }
+
+    /** Nuvio's in-player Channels drawer: the current live channel's group,
+     *  one tap to switch. Group first (a group can hold thousands), then its
+     *  channels; the pick restarts playback on the new channel and this
+     *  player finishes, so Back never stacks players. Dead when this is not
+     *  a Live TV bridge stream. */
+    private fun showChannelsDialog() {
+        if (!originProviderId.startsWith(com.hikari.app.iptv.LiveTvEngine.PROVIDER_PREFIX)) return
+        Toast.makeText(this, I18n.t("Loading channels…"), Toast.LENGTH_SHORT).show()
+        lifecycleScope.launch {
+            val data = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching {
+                    com.hikari.app.iptv.LiveTvEngine.init(this@PlayerActivity)
+                    val key = historyEntry?.mediaId?.removePrefix("ch:")?.takeIf {
+                        historyEntry?.mediaId?.startsWith("ch:") == true
+                    }
+                    val current = key?.let { com.hikari.app.iptv.LiveTvEngine.channelByKey(it) }
+                    val allGroups = com.hikari.app.iptv.LiveTvEngine.groupsOf(null)
+                    val startGroup = current?.let { ch ->
+                        allGroups.firstOrNull { it.id == ch.groupId }
+                    } ?: allGroups.firstOrNull { it.id == com.hikari.app.iptv.LiveChannelGroup.ALL }
+                    val startChannels = startGroup?.let {
+                        com.hikari.app.iptv.LiveTvEngine.channelsInGroup(it, null).take(800)
+                    }.orEmpty()
+                    ChannelsData(current?.key, allGroups, startGroup, startChannels)
+                }.getOrElse {
+                    com.hikari.app.data.Logs.logError("Player", "channels drawer failed", it)
+                    null
+                }
+            }
+            if (data == null) {
+                Toast.makeText(this@PlayerActivity, I18n.t("No channels here yet"), Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            if (data.groups.isEmpty() || data.startChannels.isEmpty()) {
+                Toast.makeText(this@PlayerActivity, I18n.t("No channels in this group"), Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            showGlassMenu(
+                I18n.t("Channels") + (data.startGroup?.let { " · " + it.title } ?: ""),
+                (listOf(
+                    GlassOption(
+                        label = I18n.t("All groups…"),
+                        badge = data.groups.size.toString(),
+                        iconRes = R.drawable.ic_channels,
+                        chevron = true,
+                    )
+                ) + data.startChannels.map { ch ->
+                    GlassOption(
+                        label = (if (ch.number > 0) ch.number.toString() + "  " else "") + ch.name,
+                        sub = ch.group.takeIf { it.isNotBlank() },
+                        selected = ch.key == data.currentKey,
+                        labelMaxLines = 2,
+                    )
+                }),
+                hint = I18n.t("Switching restarts playback on the new channel.") +
+                    if ((data.startGroup?.count ?: 0) > data.startChannels.size) {
+                        " " + I18n.t("Showing %s of %s — narrow it from Live TV search.")
+                            .replaceFirst("%s", data.startChannels.size.toString())
+                            .replaceFirst("%s", (data.startGroup?.count ?: 0).toString())
+                    } else "",
+                iconRes = R.drawable.ic_channels,
+            ) { which ->
+                if (which == 0) {
+                    showChannelGroupsMenu(data)
+                    return@showGlassMenu
+                }
+                val pick = data.startChannels.getOrNull(which - 1) ?: return@showGlassMenu
+                if (pick.key == data.currentKey) return@showGlassMenu
+                switchToChannel(pick)
+            }
+        }
+    }
+
+    private data class ChannelsData(
+        val currentKey: String?,
+        val groups: List<com.hikari.app.iptv.LiveChannelGroup>,
+        val startGroup: com.hikari.app.iptv.LiveChannelGroup?,
+        val startChannels: List<com.hikari.app.iptv.LiveChannel>,
+    )
+
+    /** First step of the drawer: pick the group, then its channels. */
+    private fun showChannelGroupsMenu(data: ChannelsData) {
+        showGlassMenu(
+            I18n.t("Groups"),
+            data.groups.take(300).map { g ->
+                GlassOption(
+                    label = g.title,
+                    badge = g.count.toString(),
+                    selected = g.id == data.startGroup?.id,
+                    chevron = true,
+                    labelMaxLines = 2,
+                )
+            },
+            hint = I18n.t("Pick a group, then a channel."),
+            iconRes = R.drawable.ic_channels,
+        ) { which ->
+            val group = data.groups.take(300).getOrNull(which) ?: return@showGlassMenu
+            Toast.makeText(this, I18n.t("Loading channels…"), Toast.LENGTH_SHORT).show()
+            lifecycleScope.launch {
+                val list = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    runCatching { com.hikari.app.iptv.LiveTvEngine.channelsInGroup(group, null).take(800) }
+                        .getOrDefault(emptyList())
+                }
+                if (list.isEmpty()) {
+                    Toast.makeText(this@PlayerActivity, I18n.t("No channels in this group"), Toast.LENGTH_SHORT).show()
+                    return@launch
+                }
+                showGlassMenu(
+                    I18n.t("Channels") + " · " + group.title,
+                    list.map { ch ->
+                        GlassOption(
+                            label = (if (ch.number > 0) ch.number.toString() + "  " else "") + ch.name,
+                            sub = ch.group.takeIf { it.isNotBlank() },
+                            selected = ch.key == data.currentKey,
+                            labelMaxLines = 2,
+                        )
+                    },
+                    iconRes = R.drawable.ic_channels,
+                ) { pick ->
+                    list.getOrNull(pick)?.let { switchToChannel(it) }
+                }
+            }
+        }
+    }
+
+    /** Switches playback to [channel] in place of a relaunch-free handoff:
+     *  the new channel starts in a fresh player and this one finishes, so
+     *  the back stack never piles players on players. */
+    private fun switchToChannel(channel: com.hikari.app.iptv.LiveChannel) {
+        lifecycleScope.launch {
+            val ok = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching {
+                    com.hikari.app.iptv.LiveTvPlayback.playChannel(this@PlayerActivity, channel)
+                }.getOrDefault(false)
+            }
+            if (ok) finish()
+            else Toast.makeText(this@PlayerActivity, I18n.t("Nothing playable here yet"), Toast.LENGTH_LONG).show()
         }
     }
 

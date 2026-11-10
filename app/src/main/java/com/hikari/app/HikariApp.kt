@@ -915,6 +915,8 @@ class HikariApp : Application() {
                     variants.add(emptyMap())
 
                     var last: Response? = null
+                    var lastCode = -1
+                    var lastType = ""
                     for (headers in variants) {
                         last?.close()
                         last = null
@@ -926,9 +928,28 @@ class HikariApp : Application() {
                                     .clearanceFor(req.url.toString())
                             }.getOrNull()?.let { builder.header("Cookie", it) }
                         }
-                        val response = chain.proceed(builder.build())
+                        val response = runCatching { chain.proceed(builder.build()) }.getOrElse { e ->
+                            com.hikari.app.data.Logs.trace(
+                                "Image",
+                                "request threw host=$host kind=" +
+                                    (if (headers.isEmpty()) "bare" else "headers(${headers.size})") +
+                                    " err=${e.javaClass.simpleName}: ${e.message} " +
+                                    "url=${com.hikari.app.data.Logs.safeUrl(req.url.toString())}",
+                            )
+                            throw e
+                        }
                         if (isUsableImage(response)) return@addInterceptor response
+                        lastCode = response.code
+                        lastType = response.body?.contentType()?.toString() ?: "<no-type>"
                         last = response
+                    }
+                    // Every variant refused: this is the blank-tile line. The
+                    // URL is redacted (tokens masked), the host is not.
+                    com.hikari.app.data.Logs.traceSampledEvery(
+                        "Image", "refused:$host", 20L,
+                    ) {
+                        "refused host=$host code=$lastCode type=$lastType " +
+                            "url=${com.hikari.app.data.Logs.safeUrl(req.url.toString())}"
                     }
                     last ?: chain.proceed(req)
                 }

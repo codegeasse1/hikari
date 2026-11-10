@@ -1,3 +1,11 @@
+## 0.12.80 (continuous build only)
+
+- IPTV tab is now a Nuvio-style Live TV home: big Live TV header with overflow menu (Manage groups and channels, Update now, Playlists), icon action row (Search / Guide / Calendar / On Demand / Sports / Settings), expandable group cards with channel counts and logo strips, inline channel rows (logo + number + name) that play on tap with favorite stars, group pin-to-top stars, inline channel search, and an empty state that points at playlist setup. The old playlist/Tor/Network tiles moved one tap away under Playlists
+- Manage screen matches Nuvio: Groups and Channels are tabs — Groups lists every group with show/hide eye, reorder arrows and tap-to-rename; Channels keeps the hide/reorder/rename/number/EPG/favorite row
+- Player has a Channels pill on live TV: opens the current group with the playing channel marked, an All groups step for big lists, and one-tap switching that restarts playback on the new channel without stacking players
+- Full-app logger: per-poster/per-image failures are finally recorded — a hot-path trace (ring + logcat, never the file) with redacted URLs, a sampled file census line every 20–50 repeats, ring grown to 2000 lines, log file to 2MB, and a Live log tail card on Settings → Logs with a filter box (try "Poster" or "Image") so the next blank-tile report names the exact host, HTTP code and payload signature
+- 0.12.79 entry below still applies (WebView-cookie merge, UA-aligned clearance)
+
 ## 0.12.79 (continuous build only)
 
 - Prmovies 403 root fix: the extension ships a hardcoded Cookie from the author's browser, and the app used to yield to it entirely — the user's own Verify WebView cookies never reached the site. Extension requests now merge the WebView jar cookies in front (user's real session wins), and clearance is always sent under the WebView UA it was minted for (mismatched UA gets rejected). Same UA alignment for the app client first shot and quiet probes

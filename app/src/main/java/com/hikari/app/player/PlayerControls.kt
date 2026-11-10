@@ -27,6 +27,7 @@ enum class PlayerControl(
     LOCK("lock", "Lock controls", "Hide the controls until you unlock", PlayerControlSlot.TOP_BAR),
     SPEED("speed", "Playback speed", "Cycle through 1x, 1.25x, 1.5x, 2x", PlayerControlSlot.BOTTOM_LEFT),
     EPISODES("episodes", "Episodes", "Jump to another episode", PlayerControlSlot.BOTTOM_LEFT),
+    CHANNELS("channels", "Channels", "Switch to another channel in the same group", PlayerControlSlot.BOTTOM_LEFT),
     SOURCES("sources", "Servers", "Switch between the servers found", PlayerControlSlot.BOTTOM_LEFT),
     QUALITY("quality", "Quality", "Pick a video track", PlayerControlSlot.BOTTOM_LEFT),
     AUDIO("audio", "Audio track", "Pick an audio track", PlayerControlSlot.BOTTOM_LEFT),

@@ -119,6 +119,7 @@ import com.hikari.app.ui.screens.HistoryScreen
 import com.hikari.app.ui.screens.HomeScreen
 import com.hikari.app.ui.screens.IptvPlaylistScreen
 import com.hikari.app.ui.screens.IptvScreen
+import com.hikari.app.ui.screens.LiveTvHomeScreen
 import com.hikari.app.ui.screens.LibraryScreen
 import com.hikari.app.ui.screens.LiveTvCalendarScreen
 import com.hikari.app.ui.screens.LiveTvGuideScreen
@@ -165,6 +166,8 @@ object Routes {
         "tracker-shelf?source=${Uri.encode(source)}&key=${Uri.encode(shelfKey)}" +
             "&title=${Uri.encode(title.take(200))}&filter=${Uri.encode(filter)}"
     const val IPTV = "iptv"
+    /** The old playlist/Tor/Network tiles, one tap away from the Live TV home. */
+    const val IPTV_LISTS = "iptv-lists"
     /** One playlist's own page: its groups, each opening a paged channel grid. */
     const val IPTV_PLAYLIST = "iptv-playlist?pid={pid}"
     /** Live TV engine pages (guide, settings, manage, on-demand, recordings, sports, calendar). */
@@ -1147,7 +1150,8 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
             }
             composable(Routes.HISTORY) { MyStuffScreen(nav, MyStuff.HISTORY) }
             composable(Routes.DOWNLOADS) { MyStuffScreen(nav, MyStuff.DOWNLOADS) }
-            composable(Routes.IPTV) { IptvScreen(nav) }
+            composable(Routes.IPTV) { LiveTvHomeScreen(nav) }
+            composable(Routes.IPTV_LISTS) { IptvScreen(nav) }
             composable(Routes.LIVETV_SETTINGS) { LiveTvSettingsScreen(nav) }
             composable(Routes.LIVETV_GUIDE) { LiveTvGuideScreen(nav) }
             composable(Routes.LIVETV_MANAGE) { LiveTvManageScreen(nav) }

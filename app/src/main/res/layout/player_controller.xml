@@ -306,6 +306,12 @@
               android:text="@string/player_episodes" />
 
           <TextView
+              android:id="@+id/channels_btn"
+              style="@style/HikariPill"
+              android:drawableStart="@drawable/ic_channels"
+              android:text="@string/player_channels" />
+
+          <TextView
               android:id="@+id/prev_ep_btn"
               style="@style/HikariPill"
               android:drawableStart="@drawable/ic_prev_ep"

@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
@@ -80,6 +81,9 @@ fun LiveTvManageScreen(nav: NavHostController) {
     var showCustom by remember { mutableStateOf(false) }
     var showGroups by remember { mutableStateOf(false) }
     var warmed by remember { mutableStateOf(false) }
+    // Nuvio "Manage" look: Groups and Channels are tabs, not dialogs.
+    var tab by remember { mutableStateOf(0) }
+    var groupRename by remember { mutableStateOf<LiveChannelGroup?>(null) }
 
     fun toast(msg: String) = Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
 
@@ -137,21 +141,120 @@ fun LiveTvManageScreen(nav: NavHostController) {
     ) {
         item {
             SettingsPageHeader(
-                title = tr("Manage channels"),
-                subtitle = tr("Hide, reorder, rename and regroup"),
+                title = tr("Manage"),
+                subtitle = if (tab == 0) tr("Groups") else tr("Channels"),
                 onBack = { nav.popBackStack() },
+            )
+        }
+        item {
+            Row(
+                Modifier.fillMaxWidth().padding(top = 12.dp),
+                horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp),
+            ) {
+                ManageTabPill(
+                    label = tr("Groups"),
+                    selected = tab == 0,
+                    modifier = Modifier.weight(1f),
+                    onClick = { tab = 0 },
+                )
+                ManageTabPill(
+                    label = tr("Channels"),
+                    selected = tab == 1,
+                    modifier = Modifier.weight(1f),
+                    onClick = { tab = 1 },
+                )
+            }
+        }
+        item {
+            Text(
+                if (tab == 0) tr("The eye shows or hides. Tap a group to rename it.")
+                else tr("Hide, reorder, rename and regroup channels"),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 8.dp),
             )
         }
         if (loading) {
             item { LiveTvLoading(tr("Reading channels…")) }
             return@LazyColumn
         }
-        item {
-            Row(Modifier.fillMaxWidth().padding(top = 12.dp)) {
-                TextButton(onClick = { showGroups = true }) { Text(tr("Groups")) }
-                TextButton(onClick = { showCustom = true }) { Text(tr("Custom groups")) }
+        if (tab == 0) {
+            items(groups, key = { "g:" + it.id }) { g ->
+                val hidden = g.id in hiddenGroups
+                GlassCard(Modifier.fillMaxWidth().padding(top = 8.dp)) {
+                    Row(
+                        Modifier.fillMaxWidth()
+                            .clickable { groupRename = g }
+                            .padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                (if (hidden) "⊘ " else "") + g.title,
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = if (hidden) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
+                            )
+                            Text(
+                                I18n.t("%s channels").replace("%s", g.count.toString()),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        IconButton(
+                            onClick = {
+                                scope.launch {
+                                    withContext(Dispatchers.IO) { LiveTvEngine.setHiddenGroup(g.id, !hidden) }
+                                    tick++
+                                }
+                            },
+                            modifier = androidx.compose.ui.Modifier.size(36.dp),
+                        ) {
+                            Icon(
+                                if (hidden) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                                contentDescription = null,
+                                tint = if (hidden) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        IconButton(
+                            onClick = {
+                                scope.launch {
+                                    withContext(Dispatchers.IO) { LiveTvUserStateAccess.moveGroup(g.id, -1) }
+                                    tick++
+                                }
+                            },
+                            modifier = androidx.compose.ui.Modifier.size(32.dp),
+                        ) {
+                            Icon(Icons.Filled.KeyboardArrowUp, contentDescription = null)
+                        }
+                        IconButton(
+                            onClick = {
+                                scope.launch {
+                                    withContext(Dispatchers.IO) { LiveTvUserStateAccess.moveGroup(g.id, 1) }
+                                    tick++
+                                }
+                            },
+                            modifier = androidx.compose.ui.Modifier.size(32.dp),
+                        ) {
+                            Icon(Icons.Filled.KeyboardArrowDown, contentDescription = null)
+                        }
+                    }
+                }
+            }
+            item {
+                Row(Modifier.fillMaxWidth().padding(top = 4.dp)) {
+                    TextButton(onClick = { showGroups = true }) { Text(tr("Locks")) }
+                    TextButton(onClick = { showCustom = true }) { Text(tr("Custom groups")) }
+                }
             }
         }
+        if (tab == 1) {
+            item {
+                Row(Modifier.fillMaxWidth().padding(top = 4.dp)) {
+                    TextButton(onClick = { showGroups = true }) { Text(tr("Groups")) }
+                    TextButton(onClick = { showCustom = true }) { Text(tr("Custom groups")) }
+                }
+            }
         item {
             OutlinedTextField(
                 value = query, onValueChange = { query = it },
@@ -159,6 +262,7 @@ fun LiveTvManageScreen(nav: NavHostController) {
                 modifier = Modifier.fillMaxWidth().padding(top = 4.dp).tvTextFieldKeys(query),
             )
         }
+        if (tab == 1) {
         item {
             androidx.compose.foundation.lazy.LazyRow(modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
                 items(groups, key = { it.id }) { g ->
@@ -214,6 +318,8 @@ fun LiveTvManageScreen(nav: NavHostController) {
             )
         }
         item { Spacer(Modifier.height(24.dp)) }
+        } // tab == 1 channels
+        } // tab == 1
     }
 
     renameTarget?.let { channel ->
@@ -297,6 +403,40 @@ fun LiveTvManageScreen(nav: NavHostController) {
         EpgAssignDialog(channel = channel, onDone = { epgTarget = null; tick++ }, onDismiss = { epgTarget = null })
     }
 
+    groupRename?.let { g ->
+        var draft by remember(g.id) {
+            mutableStateOf(LiveTvEngine.store.userState().groupNames[g.id] ?: g.title)
+        }
+        AlertDialog(
+            onDismissRequest = { groupRename = null },
+            title = { Text(tr("Rename group")) },
+            text = {
+                OutlinedTextField(
+                    value = draft, onValueChange = { draft = it }, singleLine = true,
+                    modifier = Modifier.fillMaxWidth().tvTextFieldKeys(draft),
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        groupRename = null
+                        scope.launch {
+                            withContext(Dispatchers.IO) {
+                                LiveTvEngine.store.updateUserState { st ->
+                                    st.copy(groupNames = st.groupNames + (g.id to draft.trim()))
+                                }
+                            }
+                            tick++
+                        }
+                    }
+                ) { Text(tr("Save")) }
+            },
+            dismissButton = {
+                TextButton(onClick = { groupRename = null }) { Text(tr("Cancel")) }
+            },
+        )
+    }
+
     if (showGroups) {
         GroupManagerSheet(
             groups = groups,
@@ -321,6 +461,39 @@ private data class ManageData(
     val lockedGroups: Set<String>,
     val pinSet: Boolean,
 )
+
+/** Nuvio "Manage" segmented tab: Groups or Channels, full-width halves with
+ *  the active half filled. */
+@Composable
+private fun ManageTabPill(
+    label: String,
+    selected: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    androidx.compose.material3.Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(10.dp),
+        color = if (selected) MaterialTheme.colorScheme.surfaceVariant
+        else MaterialTheme.colorScheme.surface.copy(alpha = 0.4f),
+        border = androidx.compose.foundation.BorderStroke(
+            1.dp,
+            if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)
+            else MaterialTheme.colorScheme.outline.copy(alpha = 0.4f),
+        ),
+        modifier = modifier,
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+            color = if (selected) MaterialTheme.colorScheme.onSurface
+            else MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+        )
+    }
+}
 
 @Composable
 private fun ManageChannelRow(

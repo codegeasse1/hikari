@@ -596,6 +596,19 @@ object LiveTvEngine {
         }
     }
 
+    /** One channel by its stable key (the player drawer resolves "ch:<key>"
+     *  through this), with the user's rename/number overrides applied — the
+     *  same mapping [visibleChannels] uses, so the drawer names match Home. */
+    fun channelByKey(key: String): LiveChannel? {
+        val raw = channelIndex[key] ?: return null
+        return runCatching {
+            val st = store.userState()
+            val name = st.channelNames[key] ?: raw.name
+            val num = st.channelNumbers[key] ?: raw.number
+            if (name == raw.name && num == raw.number) raw else raw.copy(name = name, number = num)
+        }.getOrDefault(raw)
+    }
+
     fun markRecent(key: String) {
         if (!store.settings().continueWatching) return
         store.updateUserState { st ->

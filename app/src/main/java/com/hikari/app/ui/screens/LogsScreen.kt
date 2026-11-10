@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -161,6 +162,10 @@ fun LogsPage(app: HikariApp, onBack: () -> Unit) {
 
         item {
             HeapSnapshotCard(onChanged = { refreshTick++ })
+        }
+
+        item {
+            LiveLogTailCard()
         }
 
         for (heap in heapFiles) {
@@ -557,3 +562,72 @@ private fun formatSize(bytes: Long): String = when {
 private fun formatTime(millis: Long): String =
     runCatching { SimpleDateFormat("d MMM, HH:mm", Locale.US).format(Date(millis)) }
         .getOrDefault("—")
+
+/** Live tail of the in-memory ring (see [Logs.trace]): the per-poster and
+ *  per-image failure lines never reach the file at full volume, but they are
+ *  all here. Filter narrows to a tag or host; the newest 200 matches show. */
+@Composable
+private fun LiveLogTailCard() {
+    val context = LocalContext.current
+    var filter by remember { mutableStateOf("") }
+    var tick by remember { mutableStateOf(0) }
+    val lines = remember(tick, filter) {
+        val q = filter.trim().lowercase()
+        val all = Logs.snapshot().lineSequence().toList()
+        val hits = if (q.isBlank()) all else all.filter { it.lowercase().contains(q) }
+        hits.takeLast(200)
+    }
+    GlassCard(Modifier.fillMaxWidth().padding(top = 8.dp)) {
+        Column(Modifier.padding(14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Filled.BugReport,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(20.dp),
+                )
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        tr("Live log tail"),
+                        style = MaterialTheme.typography.titleSmall,
+                    )
+                    Text(
+                        tr("Every recent line, including image/poster failures that never reach the file. Try \"Poster\" or \"Image\"."),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(
+                    value = filter,
+                    onValueChange = { filter = it },
+                    label = { Text(tr("Filter (e.g. Poster, Image, 51CG)")) },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f),
+                )
+                Spacer(Modifier.width(8.dp))
+                TextButton(onClick = { tick++ }) { Text(tr("Refresh")) }
+            }
+            Spacer(Modifier.height(8.dp))
+            if (lines.isEmpty()) {
+                Text(
+                    tr("No lines match yet — reproduce the problem, then tap Refresh."),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                Text(
+                    lines.joinToString("\n"),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                    maxLines = 200,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
