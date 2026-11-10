@@ -65,11 +65,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavHostController
 import coil.compose.AsyncImage
+import com.hikari.app.HikariApp
 import com.hikari.app.data.Logs
 import com.hikari.app.i18n.tr
 import com.hikari.app.iptv.LiveChannel
 import com.hikari.app.iptv.LiveChannelGroup
 import com.hikari.app.iptv.LiveTvEngine
+import com.hikari.app.iptv.LiveTvImport
 import com.hikari.app.iptv.LiveTvPlayback
 import com.hikari.app.ui.components.GlassCard
 import com.hikari.app.ui.navigation.LocalTaskbarInset
@@ -114,9 +116,15 @@ fun LiveTvHomeScreen(nav: NavHostController) {
 
     LaunchedEffect(tick) {
         loading = true
+        val app = context.applicationContext as HikariApp
         val data = withContext(Dispatchers.IO) {
             runCatching {
+                // Self-sufficient load: init the engine AND import the stored
+                // playlists before reading groups, so this home never shows
+                // the "No channels yet" dead-end just because the Playlists
+                // page (the old import trigger) was never opened.
                 LiveTvEngine.init(context)
+                LiveTvImport.importExistingProviders(app)
                 val gs = LiveTvEngine.groupsOf(null)
                 val st = LiveTvEngine.store.userState()
                 val prev = if (gs.isEmpty()) emptyMap() else runCatching {

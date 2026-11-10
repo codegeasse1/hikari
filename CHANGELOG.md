@@ -1,3 +1,10 @@
+## 0.12.82 (continuous build only)
+
+- 51CG posters are back: the site's theme renamed its card lazy-load attribute (x-bg-loader-url → z-bg-loader-url), so 23 of 25 cards arrived with blank poster URLs while the site looked fine in a browser — the extension now reads the new attribute first (51CG v6, update it in-app). Verified 25/25 cards with posters on home + category pages
+- Live TV home loads its own data: it now inits the engine and imports the stored playlists itself before reading groups, so first entry shows a loading spinner and then the groups — no more "No channels yet" dead-end just because the Playlists page was never opened
+- Playlist groups are rows now: the per-playlist flag grid is a group-card row list in the new Playlists language (thumb, name, channel count, chevron — tap still opens the channels), with the scroll position still held per playlist
+- 0.12.81 entry below still applies (poster diagnosis + pool, Playlists page, Websites page)
+
 ## 0.12.81 (continuous build only)
 
 - Poster pipeline can finally be diagnosed AND keeps up: decode pool 2 → 8 threads, first attempts are never parked behind the failure cooldown (backoff now applies to failures only), and every blank now leaves a line — empty-poster census, http-poster fetch census, tokenize-ok success census, and coil-error lines for File decodes / 200-with-garbage that bypass the Image interceptor (filter "Poster" in the Logs live tail)

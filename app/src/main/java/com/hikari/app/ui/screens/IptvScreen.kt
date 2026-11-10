@@ -34,6 +34,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.FolderOpen
@@ -1107,27 +1108,27 @@ fun IptvPlaylistScreen(nav: NavHostController, providerId: String) {
             return@Column
         }
         val name = playlist?.displayName ?: providerId
-        LazyVerticalGrid(
-            columns = GridCells.Adaptive(minSize = tileMinFor(shape)),
-            // Group grid position held per playlist (see ScrollKeeper): Back
-            // from a channel lands where the grid was.
-            state = com.hikari.app.ui.components.keptGridState(
+        // Groups as rows in the new Playlists language (same destinations the
+        // flag grid used — tap still opens the group's channel catalog).
+        LazyColumn(
+            // Group list position held per playlist (see ScrollKeeper): Back
+            // from a channel lands where the list was.
+            state = com.hikari.app.ui.components.keptListState(
                 "iptvGroups:$providerId",
                 itemKeys = remember(loaded) { loaded.map { it.catalogId } },
             ),
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(
-                start = 12.dp,
-                end = 12.dp,
+                start = 16.dp,
+                end = 16.dp,
                 top = 4.dp,
                 bottom = LocalTaskbarInset.current + 24.dp,
             ),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             items(loaded, key = { it.catalogId }) { g ->
                 // Drawn off the main thread: a group has no artwork of its own,
-                // so its tile is generated from its name (once — see IptvArt).
+                // so its thumb is generated from its name (once — see IptvArt).
                 val art by produceState<String?>(initialValue = null, providerId, g.catalogId) {
                     value = withContext(Dispatchers.IO) {
                         IptvArt.tile(
@@ -1144,29 +1145,100 @@ fun IptvPlaylistScreen(nav: NavHostController, providerId: String) {
                 // A known country wears its flag; any other group wears the
                 // first real channel logo inside it (entertainment shows an
                 // entertainment logo, India an Indian channel logo…); only a
-                // group with no logo at all falls back to initials.
+                // group with no logo at all falls back to generated initials.
                 val flag = remember(g.name) { IptvPlaylist.countryCodeOf(g.name)?.let { IptvPlaylist.flagUrl(it) } }
-                IptvTile(
-                    cover = flag ?: g.cover,
-                    art = art,
+                IptvGroupRow(
                     name = g.name,
                     subtitle = I18n.t("%s channels").replace("%s", g.count.toString()),
-                    shape = shape,
-                ) {
-                    Routes.safeNavigate(
-                        nav,
-                        Routes.catalog(
-                            providerId = providerId,
-                            catalogId = g.catalogId,
-                            title = g.name,
-                            providerName = name,
-                            type = MediaType.MOVIE,
-                            rawType = "channel",
-                        ),
-                    )
-                }
+                    cover = flag ?: g.cover,
+                    art = art,
+                    onOpen = {
+                        Routes.safeNavigate(
+                            nav,
+                            Routes.catalog(
+                                providerId = providerId,
+                                catalogId = g.catalogId,
+                                title = g.name,
+                                providerName = name,
+                                type = MediaType.MOVIE,
+                                rawType = "channel",
+                            ),
+                        )
+                    },
+                )
             }
         }
+    }
+}
+
+/** One group row: flag/logo/initials thumb, name + channel count, chevron;
+ *  tap opens the group's channel catalog. Same visual language as [ListsRow]
+ *  on the Playlists page. */
+@Composable
+private fun IptvGroupRow(
+    name: String,
+    subtitle: String,
+    cover: String?,
+    art: String?,
+    onOpen: () -> Unit,
+) {
+    var coverFailed by remember(cover) { mutableStateOf(false) }
+    val model = if (coverFailed) art else (cover ?: art)
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
+            .clickable(onClick = onOpen)
+            .padding(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier
+                .size(48.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (model.isNullOrBlank()) {
+                Text(
+                    name.take(2).uppercase(),
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            } else {
+                AsyncImage(
+                    model = model,
+                    contentDescription = name,
+                    contentScale = ContentScale.Crop,
+                    onError = { coverFailed = true },
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
+        }
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                name,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Icon(
+            Icons.Filled.ChevronRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
