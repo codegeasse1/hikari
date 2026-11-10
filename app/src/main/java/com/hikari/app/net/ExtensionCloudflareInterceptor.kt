@@ -33,16 +33,21 @@ open class ExtensionCloudflareInterceptor(
     }
 
     /** The request with the shared WebView jar's cookies attached, presented the
-     *  way Cloudflare needs them. */
+     *  way Cloudflare needs them. Extensions (e.g. Prmovies) ship a hardcoded
+     *  Cookie header from the author's own browser — stale the moment the user
+     *  installs. The jar holds the cookies the user's own Verify WebView just
+     *  earned, so merge them IN FRONT instead of yielding to the stale header
+     *  entirely; the user's real session cookies then win over the stale ones. */
     private fun withJarCookies(request: Request): Request {
         val url = request.url.toString()
-        val cookie = runCatching {
+        val jar = runCatching {
             android.webkit.CookieManager.getInstance().getCookie(url)
         }.getOrNull().orEmpty()
-        if (cookie.isBlank()) return request
-        val builder = request.newBuilder()
-        if (request.header("Cookie") == null) builder.header("Cookie", cookie)
-        if (cookie.contains("cf_clearance")) {
+        if (jar.isBlank()) return request
+        val existing = request.header("Cookie")
+        val merged = if (existing.isNullOrBlank()) jar else jar + "; " + existing
+        val builder = request.newBuilder().header("Cookie", merged)
+        if (jar.contains("cf_clearance")) {
             builder.header("User-Agent", webViewUa())
         }
         return builder.build()

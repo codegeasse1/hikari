@@ -1,3 +1,8 @@
+## 0.12.79 (continuous build only)
+
+- Prmovies 403 root fix: the extension ships a hardcoded Cookie from the author's browser, and the app used to yield to it entirely — the user's own Verify WebView cookies never reached the site. Extension requests now merge the WebView jar cookies in front (user's real session wins), and clearance is always sent under the WebView UA it was minted for (mismatched UA gets rejected). Same UA alignment for the app client first shot and quiet probes
+- 0.12.78 entry below still applies (search-error bucket, empty-search diagnosis, heap delete/clear)
+
 ## 0.12.78 (continuous build only)
 
 - Search No-matches screen shows the search error, never a stale catalog-row error ("No items in Hollywood" is gone from search): CloudStream title-search failures are tracked in their own bucket, and a silent empty search now probes the site and names the real reason (bot-block 403, site down, or genuinely no match)

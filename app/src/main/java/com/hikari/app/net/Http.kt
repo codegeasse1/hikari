@@ -1,5 +1,6 @@
 package com.hikari.app.net
 
+import com.hikari.app.HikariApp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
@@ -52,10 +53,18 @@ object Http {
         headers.forEach { (k, v) -> builder.header(k, v) }
         // Prmovies 403 fix: probes and the safety-net fallback use getQuiet,
         // which bypassed the Cloudflare interceptor — so they never sent the
-        // cf_clearance the Verify WebView earned. Attach it here too.
+        // cf_clearance the Verify WebView earned. Attach it here too, under the
+        // WebView UA the clearance was minted for (wrong UA gets rejected).
         if (builder.build().header("Cookie") == null) {
             runCatching { CloudflareVerifier.clearanceFor(url) }
-                .getOrNull()?.let { builder.header("Cookie", it) }
+                .getOrNull()?.let {
+                    builder.header("Cookie", it)
+                    if (it.contains("cf_clearance")) {
+                        val ua = runCatching { HikariApp.instance.effectiveWebViewUa() }
+                            .getOrNull()?.takeIf { u -> u.isNotBlank() } ?: WEBVIEW_UA
+                        builder.header("User-Agent", ua)
+                    }
+                }
         }
         return quietClient.newCall(builder.build()).execute()
     }

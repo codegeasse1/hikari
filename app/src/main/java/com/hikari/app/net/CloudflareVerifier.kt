@@ -79,9 +79,19 @@ object CloudflareVerifier {
 
     fun intercept(chain: Interceptor.Chain): Response {
         val request = chain.request()
+        // A clearance is minted for the WebView UA that solved the challenge —
+        // sending it under a different UA gets rejected, so align both.
         val firstReq = if (request.header("Cookie") == null) {
             val c = clearanceFor(request.url.toString())
-            if (c != null) request.newBuilder().header("Cookie", c).build() else request
+            if (c != null) {
+                val b = request.newBuilder().header("Cookie", c)
+                if (c.contains("cf_clearance")) {
+                    val ua = runCatching { HikariApp.instance.effectiveWebViewUa() }
+                        .getOrNull()?.takeIf { it.isNotBlank() } ?: Http.WEBVIEW_UA
+                    b.header("User-Agent", ua)
+                }
+                b.build()
+            } else request
         } else request
         val first = chain.proceed(firstReq)
         val bodyText = peekBody(first)
