@@ -514,6 +514,9 @@ class AppStore(private val ctx: Context) {
         /** "horizontal" (backdrop rows, like now) | "vertical" (compact
          *  cards + portrait art). See [com.hikari.app.player.ServerLayouts]. */
         val SERVER_LAYOUT = stringPreferencesKey("serverLayout")
+        /** "classic" (the app's own server page, default) | "streams" (hero
+         *  banner + extension chips). See [com.hikari.app.player.ServerScreenStyles]. */
+        val SERVER_SCREEN_STYLE = stringPreferencesKey("serverScreenStyle")
         /** providerId → seconds (20–100), as JSON. Only the extensions the user
          *  touched are in here; everything else reads the built-in budget. */
         val SERVER_TIMEOUTS = stringPreferencesKey("serverTimeouts")
@@ -1150,6 +1153,19 @@ class AppStore(private val ctx: Context) {
             .distinctUntilChanged().flowOn(Dispatchers.Default)
 
     suspend fun serverLayout(): String = serverLayoutFlow().first()
+
+    /** Look of the server list page (Settings -> Customize). Default: classic. */
+    fun serverScreenStyleFlow(): Flow<String> =
+        store.data.map {
+            com.hikari.app.player.ServerScreenStyles.namespace(it[K.SERVER_SCREEN_STYLE])
+        }
+            .distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    suspend fun serverScreenStyle(): String = serverScreenStyleFlow().first()
+
+    suspend fun setServerScreenStyle(key: String) {
+        write("SERVER_SCREEN_STYLE") { it[K.SERVER_SCREEN_STYLE] = com.hikari.app.player.ServerScreenStyles.namespace(key) }
+    }
 
     suspend fun setServerLayout(key: String) {
         write("SERVER_LAYOUT") { it[K.SERVER_LAYOUT] = com.hikari.app.player.ServerLayouts.namespace(key) }
