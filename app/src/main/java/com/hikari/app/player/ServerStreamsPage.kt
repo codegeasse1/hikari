@@ -187,7 +187,8 @@ internal class ServerStreamsPage(
             FrameLayout.LayoutParams(dp(40f), dp(40f)).apply { gravity = Gravity.TOP or Gravity.START }
         )
 
-        if (artModel != null) runCatching { loadImage(heroImage, artModel) }
+        val art = artModel
+        if (art != null) runCatching { loadImage(heroImage, art) }
 
         // Refresh button (first thing in the chip row, never rebuilt).
         refreshBtn.background = pill(CHIP)
