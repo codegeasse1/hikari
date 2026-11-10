@@ -392,6 +392,9 @@ class HikariApp : Application() {
             store.serverLayoutFlow().collect { com.hikari.app.player.ServerLayouts.setCurrent(it) }
         }
         appScope.launch {
+            store.serverScreenStyleFlow().collect { com.hikari.app.player.ServerScreenStyles.setCurrent(it) }
+        }
+        appScope.launch {
             runCatching { com.hikari.app.data.NsfwGate.setEnabled(store.nsfwEnabled()) }
             store.nsfwEnabledFlow().collect { on ->
                 val changed = on != com.hikari.app.data.NsfwGate.enabled
@@ -415,6 +418,7 @@ class HikariApp : Application() {
             // Sources sheet layout: seed the synchronous mirror too, so a
             // sheet opened immediately after launch gets the stored layout.
             runCatching { com.hikari.app.player.ServerLayouts.setCurrent(store.serverLayout()) }
+            runCatching { com.hikari.app.player.ServerScreenStyles.setCurrent(store.serverScreenStyle()) }
             // Registering extractor aliases initializes the jar's full extractor
             // registry — do it off the main thread.
             com.hikari.app.cs3.HikariExtractorRegistry.register()
