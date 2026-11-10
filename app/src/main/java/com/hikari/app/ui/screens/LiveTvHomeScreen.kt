@@ -128,7 +128,7 @@ fun LiveTvHomeScreen(nav: NavHostController) {
                 HomeData(gs, prev, st.favorites, st.groupOrder.firstOrNull(), LiveTvEngine.sources().size)
             }.getOrElse {
                 Logs.logError("LiveTv", "home load failed", it)
-                HomeData(emptyList(), emptyMap(), emptySet(), null, 0)
+                HomeData(emptyList(), emptyMap(), emptyList<String>(), null, 0)
             }
         }
         groups = data.groups
@@ -512,7 +512,9 @@ private data class HomeData(
 )
 
 /** Nuvio's icon action row: Search / Guide / Calendar / On Demand / Sports /
- *  Settings — one tap each, horizontally scrollable on narrow phones. */
+ *  Settings — one tap each, horizontally scrollable on narrow phones. The
+ *  labels resolve here (composable body), because LazyRow's content lambda
+ *  is LazyListScope, not composable, and tr() may not run inside it. */
 @Composable
 private fun LiveTvActionRow(
     onSearch: () -> Unit,
@@ -522,19 +524,18 @@ private fun LiveTvActionRow(
     onSports: () -> Unit,
     onSettings: () -> Unit,
 ) {
+    val searchLabel = tr("Search")
+    val guideLabel = tr("Guide")
+    val calendarLabel = tr("Calendar")
+    val onDemandLabel = tr("On Demand")
+    val sportsLabel = tr("Sports")
+    val settingsLabel = tr("Settings")
     LazyRow(
         modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        // Labels resolve OUTSIDE listOf: a @Composable call (tr) is only
-        // legal directly in the body or inside another @Composable call's
-        // arguments — never nested in listOf/Triple (plain) arguments.
-        val searchLabel = tr("Search")
-        val guideLabel = tr("Guide")
-        val calendarLabel = tr("Calendar")
-        val onDemandLabel = tr("On Demand")
-        val sportsLabel = tr("Sports")
-        val settingsLabel = tr("Settings")
+        // NOTE: this lambda is LazyListScope (NOT @Composable), so the tr()
+        // labels resolve above in the composable body, not here.
         val actions = listOf(
             Triple(searchLabel, Icons.Filled.Search, onSearch),
             Triple(guideLabel, Icons.Filled.DateRange, onGuide),
