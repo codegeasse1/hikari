@@ -1,3 +1,9 @@
+## 0.12.78 (continuous build only)
+
+- Search No-matches screen shows the search error, never a stale catalog-row error ("No items in Hollywood" is gone from search): CloudStream title-search failures are tracked in their own bucket, and a silent empty search now probes the site and names the real reason (bot-block 403, site down, or genuinely no match)
+- Heap dumps can be deleted: each snapshot card has Delete, plus Clear heap dumps with a confirm that shows count + MB — the list won't fill up anymore
+- 0.12.77 entry below still applies (unbounded server page, no remember-merge)
+
 ## 0.12.77 (continuous build only)
 
 - Server page is now unbounded: while it is open there is no stall/ceiling cut-off, no 5s rescue re-lookup, slow/hung/403 providers never block the rest, 0 stays loading until every target really answers, and every Play is a fresh live search (remember-merge removed per user)

@@ -734,9 +734,45 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
             // Search verdict must not leave a stale error behind: a success
             // clears the search error so a later transient failure ("ex" found
             // nothing once on a bad network) doesn't brand the next open.
-            if (found.isNotEmpty()) streamErrors.remove(config.id)
+            if (found.isNotEmpty()) {
+                streamErrors.remove(config.id)
+            } else if (searchErrors[config.id] == null) {
+                // No exception, just nothing: say why — site blocked vs
+                // genuinely no match — instead of leaving the screen to show
+                // a stale catalog-row error (e.g. "No items in Hollywood").
+                val reason = diagnoseEmptySearch(a, query)
+                searchErrors[config.id] = reason
+                com.hikari.app.data.Logs.log(
+                    "Provider",
+                    "${config.name}: search \"$query\" → 0 items ($reason)",
+                )
+            }
             found.mapNotNull { it.toMediaItem() }
         }
+
+    /** Why a search came back empty without throwing: probe the site root so
+     *  the No-matches screen names the real reason (bot-block vs no match). */
+    private suspend fun diagnoseEmptySearch(a: MainAPI, query: String): String {
+        val root = runCatching { a.mainUrl }.getOrNull()?.takeIf { it.startsWith("http") }
+            ?: return "search returned nothing for \"$query\""
+        val note: String? = try {
+            withTimeoutOrNull(10_000) {
+                com.hikari.app.net.Http.getQuiet(root).use { res ->
+                    when {
+                        res.code == 401 || res.code == 403 ->
+                            "the site refused this app (HTTP ${res.code}) — open Verify WebView or check the mirror setting"
+                        res.code in 500..599 -> "the site itself is erroring right now (HTTP ${res.code})"
+                        res.code !in 200..299 -> "the site answered HTTP ${res.code}"
+                        else -> null
+                    }
+                }
+            } ?: "the site could not be reached (network error or timeout)"
+        } catch (e: Throwable) {
+            if (e is CancellationException) throw e
+            "the site could not be reached (network error or timeout)"
+        }
+        return note ?: "the site loads OK but has nothing for \"$query\""
+    }
 
     private suspend fun searchItems(a: MainAPI, query: String, page: Int): List<SearchResponse> {
         return try {

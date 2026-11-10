@@ -26,6 +26,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BugReport
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Memory
@@ -71,6 +72,7 @@ fun LogsPage(app: HikariApp, onBack: () -> Unit) {
     val context = LocalContext.current
     var refreshTick by remember { mutableStateOf(0) }
     var showClearDialog by remember { mutableStateOf(false) }
+    var showClearHeapDialog by remember { mutableStateOf(false) }
     // Log page position held across visits (see ScrollKeeper).
     val listState = com.hikari.app.ui.components.keptListState("logs")
 
@@ -210,8 +212,32 @@ fun LogsPage(app: HikariApp, onBack: () -> Unit) {
                                     }
                                 )
                             }
+                            ActionPill(
+                                icon = Icons.Filled.Delete,
+                                label = tr("Delete"),
+                                primary = false,
+                            ) {
+                                val ok = runCatching { heap.delete() }.getOrDefault(false)
+                                refreshTick++
+                                toast(if (ok) "Deleted ${heap.name}" else "Could not delete ${heap.name}")
+                            }
                         }
                     }
+                }
+            }
+        }
+
+        if (heapFiles.isNotEmpty()) {
+            item {
+                TextButton(onClick = { showClearHeapDialog = true }) {
+                    Icon(
+                        Icons.Filled.DeleteSweep,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(tr("Clear heap dumps"), color = MaterialTheme.colorScheme.error)
                 }
             }
         }
@@ -326,6 +352,27 @@ fun LogsPage(app: HikariApp, onBack: () -> Unit) {
                 }
             }
         }
+    }
+
+    if (showClearHeapDialog) {
+        val heapCount = heapFiles.size
+        val heapTotalMb = heapFiles.sumOf { it.length() } / (1024 * 1024)
+        AlertDialog(
+            onDismissRequest = { showClearHeapDialog = false },
+            title = { Text(tr("Clear heap dumps?")) },
+            text = { Text(tr("Delete $heapCount heap snapshot(s) ($heapTotalMb MB) from this device to free space.")) },
+            confirmButton = {
+                TextButton(onClick = {
+                    Logs.clearHeap(context)
+                    showClearHeapDialog = false
+                    refreshTick++
+                    toast("Heap dumps cleared")
+                }) { Text(tr("Clear"), color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearHeapDialog = false }) { Text(tr("Cancel")) }
+            },
+        )
     }
 
     if (showClearDialog) {

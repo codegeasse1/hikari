@@ -295,6 +295,13 @@ object Logs {
         else runCatching { File(dir ?: File(context.filesDir, "logs"), "crash.log").delete() }
     }
 
+    /** Delete all heap dumps from this device (the Logs-screen clear button).
+     *  Heap files are written directly by `dumpHprofData`, never by the log
+     *  writer thread, so a plain delete can't race a queued append. */
+    fun clearHeap(context: Context) {
+        heapFiles(context).forEach { runCatching { it.delete() } }
+    }
+
     /** The in-memory breadcrumb snapshot, newest last. */
     fun snapshot(): String = synchronized(lock) { snapshotLocked(RING_MAX).joinToString("\n") }
 
