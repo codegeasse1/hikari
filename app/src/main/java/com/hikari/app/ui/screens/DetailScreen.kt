@@ -2766,7 +2766,7 @@ fun DetailScreen(
                         }
                     }
                 }
-                suspend fun lookupEp(ep: Episode, all: List<Episode>): List<StreamSource> {
+                suspend fun lookupEp(ep: Episode, all: List<Episode>, origin: Boolean): List<StreamSource> {
                     if (gen != dlGen) return emptyList()
                     val epKey = dlEpKey(ep)
                     mutex.withLock {
@@ -2775,7 +2775,7 @@ fun DetailScreen(
                         }
                     }
                     val servers = runCatching {
-                        vm.serversForBatch(batchItem, ep, useOrigin, onServers = { prog ->
+                        vm.serversForBatch(batchItem, ep, origin, onServers = { prog ->
                             if (gen == dlGen) dlCache[epKey] = prog
                             pumpFills(epKey, prog, all)
                             withContext(Dispatchers.Main) { publishLive(prog) }
@@ -2799,7 +2799,7 @@ fun DetailScreen(
                         fillScope = this
                         list.map { ep ->
                             async {
-                                slots.withPermit { lookupEp(ep, list) }
+                                slots.withPermit { lookupEp(ep, list, useOrigin) }
                             }
                         }.awaitAll()
                         // Exiting waits for every fill child pumpFills launched.
@@ -2813,7 +2813,7 @@ fun DetailScreen(
                                 (if (gaps.size == 1) "" else "s") + " on other servers\u2026"
                             kotlinx.coroutines.supervisorScope {
                                 gaps.map { ep ->
-                                    async { slots.withPermit { lookupEp(ep, gaps) } }
+                                    async { slots.withPermit { lookupEp(ep, gaps, useOrigin) } }
                                 }.awaitAll()
                             }
                         }

@@ -595,18 +595,6 @@ fun HomeScreen(nav: NavHostController) {
     // A genre tap made while extensions are picked: WHERE should it look —
     // those extensions alone, or everything (see the genre strip call site).
     var genreScope by remember { mutableStateOf<GenreScopePick?>(null) }
-    // One genre tap, wherever it comes from (the home strip, the Genres
-    // screen): with extensions picked it asks WHERE (this extension or
-    // everything), otherwise it opens the TMDB genre grid straight away.
-    val onGenrePick: (String, String, String) -> Unit = { name, genresText, keywordsText ->
-        val ext = selection.filter { !it.startsWith(COLLECTION_PREFIX) }.toSet()
-        if (ext.isEmpty()) {
-            openTmdbGenre(name, genresText, keywordsText)
-        } else {
-            genreScope = GenreScopePick(name, genresText, keywordsText, ext)
-        }
-    }
-    var showGenres by rememberSaveable { mutableStateOf(false) }
     // The genre an in-place overlay is narrowed to ("" = no narrowing).
     var overlayGenre by rememberSaveable { mutableStateOf("") }
     val scope = rememberCoroutineScope()
@@ -770,6 +758,18 @@ fun HomeScreen(nav: NavHostController) {
             )
         )
     }
+    // One genre tap, wherever it comes from (the home strip, the Genres
+    // screen): with extensions picked it asks WHERE (this extension or
+    // everything), otherwise it opens the TMDB genre grid straight away.
+    val onGenrePick: (String, String, String) -> Unit = { name, genresText, keywordsText ->
+        val ext = selection.filter { !it.startsWith(COLLECTION_PREFIX) }.toSet()
+        if (ext.isEmpty()) {
+            openTmdbGenre(name, genresText, keywordsText)
+        } else {
+            genreScope = GenreScopePick(name, genresText, keywordsText, ext)
+        }
+    }
+    var showGenres by rememberSaveable { mutableStateOf(false) }
     val openVerify: () -> Unit = {        scope.launch {
             val own = withContext(Dispatchers.IO) {
                 providers.firstOrNull { it.config.id == selected }?.let { webUrlChainAsync(it) }
@@ -3611,7 +3611,7 @@ private fun HomeGenresButton(onClick: () -> Unit) {
         contentPadding = PaddingValues(vertical = 12.dp),
     ) {
         Icon(
-            androidx.compose.material.icons.Icons.Filled.LocalOffer,
+            Icons.Filled.List,
             contentDescription = null,
             modifier = Modifier.size(18.dp),
         )
@@ -3680,7 +3680,7 @@ private fun HomeGenreStrip(
                 onShowAll()
             }) {
                 Icon(
-                    androidx.compose.material.icons.Icons.Filled.GridView,
+                    Icons.Filled.List,
                     contentDescription = tr("All genres"),
                     tint = if (com.hikari.app.tv.TvMode.current()) com.hikari.app.tv.TvDesktop.TextPrimary
                     else MaterialTheme.colorScheme.primary,
