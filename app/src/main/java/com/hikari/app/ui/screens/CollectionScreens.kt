@@ -1,6 +1,7 @@
 package com.hikari.app.ui.screens
 
 import com.hikari.app.ui.components.LocalHideHelp
+import com.hikari.app.ui.components.heroPoster
 import com.hikari.app.tv.TvUi
 import com.hikari.app.i18n.tr
 import com.hikari.app.i18n.I18n
@@ -4574,7 +4575,8 @@ private fun TmdbGridCard(item: MediaItem, style: PosterStyle, onClick: () -> Uni
             imageAlignment = if (cinema) com.hikari.app.ui.Artwork.CINEMA_ALIGNMENT else Alignment.Center,
             modifier = Modifier
                 .fillMaxWidth()
-                .aspectRatio(if (cinema) 16f / 9f else 2f / 3f),
+                .aspectRatio(if (cinema) 16f / 9f else 2f / 3f)
+                .heroPoster(item.uniqueId),
         )
         if (style.showTitles) {
             Text(

@@ -177,6 +177,7 @@ import com.hikari.app.player.StreamsLive
 import com.hikari.app.providers.ContentProvider
 import com.hikari.app.providers.IptvProvider
 import com.hikari.app.ui.Artwork
+import com.hikari.app.ui.components.heroPoster
 import com.hikari.app.ui.LoadingStyles
 import com.hikari.app.ui.PosterArt
 import com.hikari.app.ui.PosterLoader
@@ -6559,6 +6560,10 @@ private fun Hero(
             ?: (PosterLoader.model(fallbackPoster) to false)
     }
     val posterModel = PosterLoader.model(fallbackPoster)
+    // Shared-element key for the poster-travel animation (see heroPoster):
+    // phone only — the TV hero never takes part, so TV focus stays untouched.
+    // Blank disables the modifier on styles with no portrait art.
+    val heroKey = if (com.hikari.app.tv.TvMode.current()) "" else meta?.uniqueId.orEmpty()
     val adaptive = if (DetailHeroStyles.normalize(style) == DetailHeroStyles.WIDE && !image.second) {
         DetailHeroStyles.SIDE
     } else {
@@ -6632,7 +6637,8 @@ private fun Hero(
                 style = rememberPosterStyle(),
                 modifier = Modifier
                     .fillMaxHeight(0.86f)
-                    .aspectRatio(2f / 3f),
+                    .aspectRatio(2f / 3f)
+                    .heroPoster(heroKey),
             )
             IconButton(onClick = onBack, modifier = Modifier.align(Alignment.TopStart).padding(4.dp)) {
                 Icon(
@@ -6679,7 +6685,8 @@ private fun Hero(
                     .align(Alignment.CenterStart)
                     .padding(start = 16.dp)
                     .fillMaxHeight(0.78f)
-                    .aspectRatio(2f / 3f),
+                    .aspectRatio(2f / 3f)
+                    .heroPoster(heroKey),
             )
             IconButton(onClick = onBack, modifier = Modifier.align(Alignment.TopEnd).padding(4.dp)) {
                 Icon(

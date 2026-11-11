@@ -59,13 +59,18 @@ import java.util.concurrent.ConcurrentHashMap
  *  gradient — the grid never shows an empty box for it. */
 object GenreArt {
     private val cache = ConcurrentHashMap<String, String?>()
+    /** Genres whose lookup already came back empty: not an error, just no
+     *  art — remembered so a scroll doesn't refetch them every time. Kept
+     *  apart from [cache] because that map (like every ConcurrentHashMap)
+     *  throws on null values, which is what crashed 0.12.84 on opening. */
+    private val dead = ConcurrentHashMap.newKeySet<String>()
 
     fun cached(name: String): String? =
-        if (cache.containsKey(name)) cache[name] else null
+        if (dead.contains(name)) null else cache[name]
 
     suspend fun artFor(name: String, genresText: String, keywordsText: String): String? {
         cache[name]?.let { return it }
-        if (cache.containsKey(name)) return null
+        if (dead.contains(name)) return null
         val art = runCatching {
             val items: List<MediaItem> = TmdbSources.page(
                 TmdbSpec(
@@ -81,7 +86,7 @@ object GenreArt {
             items.firstOrNull { !it.backdropUrl.isNullOrBlank() }?.backdropUrl
                 ?: items.firstOrNull { !it.posterUrl.isNullOrBlank() }?.posterUrl
         }.getOrNull()
-        cache[name] = art
+        if (art != null) cache[name] = art else dead.add(name)
         return art
     }
 }

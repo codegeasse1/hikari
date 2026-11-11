@@ -1,3 +1,11 @@
+## 0.12.85 (continuous build only)
+
+- Infinite auto-scrolling poster carousel: Home's anime sections each get a self-moving marquee row under the hero — posters glide by on a seamless loop with no interaction needed, every section at its own speed and alternating direction, with a slower glow drifting behind the cards for a parallax read. Touching a row pauses it and it resumes a moment after release; TV keeps its static shelves
+- Genres crash fixed: opening Genres no longer dies when TMDB has no backdrop/poster for a genre — misses are remembered instead of re-fetched
+- Old "Browse by genre" strip is gone: genres live only behind the new artwork-backed Genres button (Action-genre art, list icon) under the hero and at the end of the TV feed
+- Poster-travel animation between screens: tapping a poster now flies it into the detail header (and back) with a slide between pages — catalog, collection, home-search and phone-search tiles all take part, TV heroes stay out so remote focus is untouched
+- 0.12.84 entry below still applies (search-poster streaming fix, server-first download-all, Genres browser, stagger reveal)
+
 ## 0.12.84 (continuous build only)
 
 - Search posters stop going blank: result lists publish at most ~3x/sec (the 120ms stream churn was cancelling Coil loads faster than DoH+TLS+burst could complete), each tile retries 4x instead of 2x, the image DNS is warmed when a search starts, and every finished scan gives dead tiles one more round — so images land on the first search, not the 3rd–4th

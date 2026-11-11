@@ -102,6 +102,14 @@ import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.compose.animation.AnimatedContentTransitionScope
+import androidx.compose.animation.ExperimentalSharedTransitionApi
+import androidx.compose.animation.SharedTransitionLayout
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.slideIntoContainer
+import androidx.compose.animation.slideOutOfContainer
+import com.hikari.app.ui.components.HeroScope
+import com.hikari.app.ui.components.LocalHeroSharedScope
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
@@ -858,6 +866,7 @@ val BottomTabs = listOf(
     BottomTab(Routes.SETTINGS, "Settings", Icons.Filled.Settings),
 )
 
+@OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
 fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
     val nav = rememberNavController()
@@ -1095,9 +1104,15 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
                     BarMetrics.inset(navStyle) + navBarBottom
                 } else 0.dp
             ) {
+                SharedTransitionLayout {
+                    CompositionLocalProvider(LocalHeroSharedScope provides this@SharedTransitionLayout) {
                 NavHost(
                     navController = nav,
                     startDestination = Routes.HOME,
+                    enterTransition = { slideIntoContainer(AnimatedContentTransitionScope.SlideDirection.Start, tween(280)) },
+                    exitTransition = { slideOutOfContainer(AnimatedContentTransitionScope.SlideDirection.Start, tween(280)) },
+                    popEnterTransition = { slideIntoContainer(AnimatedContentTransitionScope.SlideDirection.End, tween(280)) },
+                    popExitTransition = { slideOutOfContainer(AnimatedContentTransitionScope.SlideDirection.End, tween(280)) },
                     modifier = Modifier
                         .padding(padding)
                         // A page with no bottom bar (a detail page, a grid)
@@ -1114,21 +1129,21 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
                             if (isTv && showBar && tabRoute != Routes.HOME) Modifier.padding(start = TvUi.railWidth()) else Modifier
                         )
                 ) {
-            composable(Routes.HOME) { HomeScreen(nav) }
-            composable(Routes.ANIME_CALENDAR) { AnimeCalendarScreen(nav) }
-            composable(Routes.SEARCH) { SearchScreen(nav) }
+            composable(Routes.HOME) { HeroScope { HomeScreen(nav) } }
+            composable(Routes.ANIME_CALENDAR) { HeroScope { AnimeCalendarScreen(nav) } }
+            composable(Routes.SEARCH) { HeroScope { SearchScreen(nav) } }
             composable(
                 route = Routes.SEARCH_QUERY,
                 arguments = listOf(
                     navArgument("q") { type = NavType.StringType; defaultValue = "" },
                     navArgument("provider") { type = NavType.StringType; defaultValue = "" },
                 )
-            ) { entry ->
+            ) { entry -> HeroScope {
                 val q = Uri.decode(entry.arguments?.getString("q").orEmpty())
                 val provider = Uri.decode(entry.arguments?.getString("provider").orEmpty())
                 SearchScreen(nav, initialQuery = q, initialProvider = provider)
-            }
-            composable(Routes.LIBRARY) { MyStuffScreen(nav, MyStuff.LIBRARY) }
+            } }
+            composable(Routes.LIBRARY) { HeroScope { MyStuffScreen(nav, MyStuff.LIBRARY) } }
             composable(
                 route = Routes.TRACKER_SHELF,
                 arguments = listOf(
@@ -1137,30 +1152,30 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
                     navArgument("title") { type = NavType.StringType; defaultValue = "" },
                     navArgument("filter") { type = NavType.StringType; defaultValue = "" },
                 )
-            ) { entry ->
+            ) { entry -> HeroScope {
                 val tSource = Uri.decode(entry.arguments?.getString("source").orEmpty())
                 val tKey = Uri.decode(entry.arguments?.getString("key").orEmpty())
                 val tTitle = Uri.decode(entry.arguments?.getString("title").orEmpty())
                 val tFilter = Uri.decode(entry.arguments?.getString("filter").orEmpty())
                 TrackerShelfScreen(nav, tSource, tKey, tTitle, tFilter)
-            }
-            composable(Routes.HISTORY) { MyStuffScreen(nav, MyStuff.HISTORY) }
-            composable(Routes.DOWNLOADS) { MyStuffScreen(nav, MyStuff.DOWNLOADS) }
-            composable(Routes.IPTV) { LiveTvHomeScreen(nav) }
-            composable(Routes.LIVETV_SETTINGS) { LiveTvSettingsScreen(nav) }
-            composable(Routes.LIVETV_GUIDE) { LiveTvGuideScreen(nav) }
-            composable(Routes.LIVETV_MANAGE) { LiveTvManageScreen(nav) }
-            composable(Routes.LIVETV_ONDEMAND) { LiveTvOnDemandScreen(nav) }
-            composable(Routes.LIVETV_RECORDINGS) { LiveTvRecordingsScreen(nav) }
-            composable(Routes.LIVETV_SPORTS) { LiveTvSportsScreen(nav) }
-            composable(Routes.LIVETV_CALENDAR) { LiveTvCalendarScreen(nav) }
-            composable(Routes.EXTENSIONS) { ExtensionsScreen(nav) }
-            composable(Routes.WEBSITES) { WebSitesScreen(nav) }
+            } }
+            composable(Routes.HISTORY) { HeroScope { MyStuffScreen(nav, MyStuff.HISTORY) } }
+            composable(Routes.DOWNLOADS) { HeroScope { MyStuffScreen(nav, MyStuff.DOWNLOADS) } }
+            composable(Routes.IPTV) { HeroScope { LiveTvHomeScreen(nav) } }
+            composable(Routes.LIVETV_SETTINGS) { HeroScope { LiveTvSettingsScreen(nav) } }
+            composable(Routes.LIVETV_GUIDE) { HeroScope { LiveTvGuideScreen(nav) } }
+            composable(Routes.LIVETV_MANAGE) { HeroScope { LiveTvManageScreen(nav) } }
+            composable(Routes.LIVETV_ONDEMAND) { HeroScope { LiveTvOnDemandScreen(nav) } }
+            composable(Routes.LIVETV_RECORDINGS) { HeroScope { LiveTvRecordingsScreen(nav) } }
+            composable(Routes.LIVETV_SPORTS) { HeroScope { LiveTvSportsScreen(nav) } }
+            composable(Routes.LIVETV_CALENDAR) { HeroScope { LiveTvCalendarScreen(nav) } }
+            composable(Routes.EXTENSIONS) { HeroScope { ExtensionsScreen(nav) } }
+            composable(Routes.WEBSITES) { HeroScope { WebSitesScreen(nav) } }
             // The Telegram tab (off by default — see Routes.TELEGRAM): the public
             // channels the user added, played in this app's own player.
-            composable(Routes.TELEGRAM) { TelegramScreen(nav) }
+            composable(Routes.TELEGRAM) { HeroScope { TelegramScreen(nav) } }
             // ---- Manga (the off-by-default tab, its detail page and reader) ----
-            composable(Routes.MANGA) { MangaScreen(nav) }
+            composable(Routes.MANGA) { HeroScope { MangaScreen(nav) } }
             composable(
                 route = Routes.MANGA_SEARCH,
                 arguments = listOf(
@@ -1168,12 +1183,12 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
                     navArgument("genre") { type = NavType.StringType; defaultValue = "" },
                     navArgument("engine") { type = NavType.StringType; defaultValue = "" },
                 )
-            ) { entry ->
+            ) { entry -> HeroScope {
                 val q = Uri.decode(entry.arguments?.getString("q").orEmpty())
                 val g = Uri.decode(entry.arguments?.getString("genre").orEmpty())
                 val e = Uri.decode(entry.arguments?.getString("engine").orEmpty())
                 MangaScreen(nav, initialQuery = q, initialGenre = g, initialEngine = e)
-            }
+            } }
             composable(
                 route = Routes.MANGA_DETAIL,
                 arguments = listOf(
@@ -1182,13 +1197,13 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
                     navArgument("title") { type = NavType.StringType; defaultValue = "" },
                     navArgument("poster") { type = NavType.StringType; defaultValue = "" },
                 )
-            ) { entry ->
+            ) { entry -> HeroScope {
                 val providerId = entry.arguments?.getString("providerId").orEmpty()
                 val url = Uri.decode(entry.arguments?.getString("url").orEmpty())
                 val title = Uri.decode(entry.arguments?.getString("title").orEmpty())
                 val poster = Uri.decode(entry.arguments?.getString("poster").orEmpty())
                 MangaDetailScreen(nav, providerId, url, title, poster)
-            }
+            } }
             composable(
                 route = Routes.MANGA_READER,
                 arguments = listOf(
@@ -1198,14 +1213,14 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
                     navArgument("title") { type = NavType.StringType; defaultValue = "" },
                     navArgument("poster") { type = NavType.StringType; defaultValue = "" },
                 )
-            ) { entry ->
+            ) { entry -> HeroScope {
                 val providerId = entry.arguments?.getString("providerId").orEmpty()
                 val url = Uri.decode(entry.arguments?.getString("url").orEmpty())
                 val chapter = Uri.decode(entry.arguments?.getString("chapter").orEmpty())
                 val title = Uri.decode(entry.arguments?.getString("title").orEmpty())
                 val poster = Uri.decode(entry.arguments?.getString("poster").orEmpty())
                 MangaReaderScreen(nav, providerId, url, chapter, title, poster)
-            }
+            } }
             composable(
                 route = Routes.NOVEL_READER,
                 arguments = listOf(
@@ -1215,68 +1230,68 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
                     navArgument("title") { type = NavType.StringType; defaultValue = "" },
                     navArgument("poster") { type = NavType.StringType; defaultValue = "" },
                 )
-            ) { entry ->
+            ) { entry -> HeroScope {
                 val providerId = entry.arguments?.getString("providerId").orEmpty()
                 val url = Uri.decode(entry.arguments?.getString("url").orEmpty())
                 val chapter = Uri.decode(entry.arguments?.getString("chapter").orEmpty())
                 val title = Uri.decode(entry.arguments?.getString("title").orEmpty())
                 val poster = Uri.decode(entry.arguments?.getString("poster").orEmpty())
                 NovelReaderScreen(nav, providerId, url, chapter, title, poster)
-            }
+            } }
             composable(
                 route = Routes.SCRAPER_READER,
                 arguments = listOf(
                     navArgument("key") { type = NavType.StringType },
                     navArgument("title") { type = NavType.StringType; defaultValue = "" },
                 )
-            ) { entry ->
+            ) { entry -> HeroScope {
                 val key = entry.arguments?.getString("key").orEmpty()
                 val title = Uri.decode(entry.arguments?.getString("title").orEmpty())
                 ScraperReaderScreen(nav, key, title)
-            }
-            composable(Routes.SETTINGS) { SettingsScreen(nav) }
-            composable(Routes.STATS) {
+            } }
+            composable(Routes.SETTINGS) { HeroScope { SettingsScreen(nav) } }
+            composable(Routes.STATS) { HeroScope {
                 StatsScreen(
                     app,
                     onOpenTitle = { t ->
                         Routes.fromStatsKey(t.key, t.title, t.posterUrl)?.let { nav.navigate(it) }
                     },
                 )
-            }
-            composable(Routes.COLLECTIONS) {
+            } }
+            composable(Routes.COLLECTIONS) { HeroScope {
                 CollectionsScreen(nav, onBack = { nav.popBackStack() })
-            }
+            } }
             composable(
                 route = Routes.COLLECTION_VIEW,
                 arguments = listOf(
                     navArgument("cid") { type = NavType.StringType },
                     navArgument("fid") { type = NavType.StringType; defaultValue = "" },
                 )
-            ) { entry ->
+            ) { entry -> HeroScope {
                 val cid = Uri.decode(entry.arguments?.getString("cid").orEmpty())
                 val fid = Uri.decode(entry.arguments?.getString("fid").orEmpty())
                 CollectionViewScreen(nav, cid, fid)
-            }
+            } }
             composable(
                 route = Routes.COLLECTION_GRID,
                 arguments = listOf(
                     navArgument("cid") { type = NavType.StringType },
                 )
-            ) { entry ->
+            ) { entry -> HeroScope {
                 val cid = Uri.decode(entry.arguments?.getString("cid").orEmpty())
                 CollectionGridScreen(nav, cid)
-            }
+            } }
             composable(
                 route = Routes.TMDB_GRID,
                 arguments = listOf(
                     navArgument("preset") { type = NavType.StringType },
                     navArgument("title") { type = NavType.StringType; defaultValue = "" },
                 )
-            ) { entry ->
+            ) { entry -> HeroScope {
                 val preset = Uri.decode(entry.arguments?.getString("preset").orEmpty())
                 val title = Uri.decode(entry.arguments?.getString("title").orEmpty())
                 TmdbGridScreen(nav, preset, title)
-            }
+            } }
             composable(
                 route = Routes.TMDB_GRID_SPEC,
                 arguments = listOf(
@@ -1284,12 +1299,12 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
                     navArgument("title") { type = NavType.StringType; defaultValue = "" },
                     navArgument("genre") { type = NavType.StringType; defaultValue = "" },
                 )
-            ) { entry ->
+            ) { entry -> HeroScope {
                 val spec = Uri.decode(entry.arguments?.getString("spec").orEmpty())
                 val title = Uri.decode(entry.arguments?.getString("title").orEmpty())
                 val genre = Uri.decode(entry.arguments?.getString("genre").orEmpty())
                 TmdbGridScreen(nav, "", title, spec, genre)
-            }
+            } }
             composable(
                 route = Routes.CATALOG,
                 arguments = listOf(
@@ -1300,7 +1315,7 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
                     navArgument("type") { type = NavType.StringType; defaultValue = "UNKNOWN" },
                     navArgument("rawType") { type = NavType.StringType; defaultValue = "" },
                 )
-            ) { entry ->
+            ) { entry -> HeroScope {
                 val providerId = Uri.decode(entry.arguments?.getString("providerId").orEmpty())
                 val catalogId = Uri.decode(entry.arguments?.getString("catalogId").orEmpty())
                 val title = Uri.decode(entry.arguments?.getString("title").orEmpty())
@@ -1310,7 +1325,7 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
                 }.getOrDefault(MediaType.UNKNOWN)
                 val rawType = Uri.decode(entry.arguments?.getString("rawType").orEmpty())
                 CatalogScreen(nav, providerId, catalogId, title, providerName, type, rawType)
-            }
+            } }
             composable(
                 route = Routes.DETAIL,
                 arguments = listOf(
@@ -1324,7 +1339,7 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
                     navArgument("startPos") { type = NavType.StringType; defaultValue = "0" },
                     navArgument("autoplay") { type = NavType.StringType; defaultValue = "0" },
                 )
-            ) { entry ->
+            ) { entry -> HeroScope {
                 val providerId = entry.arguments?.getString("providerId").orEmpty()
                 val type = runCatching {
                     MediaType.valueOf(entry.arguments?.getString("type").orEmpty())
@@ -1337,6 +1352,8 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
                 val startPos = entry.arguments?.getString("startPos")?.toLongOrNull() ?: 0L
                 val autoplay = entry.arguments?.getString("autoplay") == "1"
                 DetailScreen(nav, providerId, type, mediaId, title, poster, rawType, episodeId, startPos, autoplay)
+            } }
+                }
             }
                 }
             }

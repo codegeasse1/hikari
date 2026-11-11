@@ -4,6 +4,7 @@ import com.hikari.app.i18n.I18n
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -14,6 +15,9 @@ import androidx.compose.animation.scaleIn
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -68,7 +72,9 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.BiasAlignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.composed
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.graphicsLayer
@@ -76,6 +82,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -87,6 +96,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import kotlinx.coroutines.isActive
 import coil.compose.AsyncImage
 import com.hikari.app.data.HistoryEntry
 import com.hikari.app.data.MediaItem
@@ -109,6 +119,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.abs
 import com.hikari.app.tv.tvTextFieldKeys
 
 /** How many automatic re-requests a poster gets before its cell settles on the
@@ -371,6 +382,254 @@ fun StaggerIn(
     }
 }
 
+/** Hero (shared element) plumbing for the poster-travel animation.
+ *
+ *  AppNav wraps the NavHost in a SharedTransitionLayout and every destination
+ *  in [HeroScope]; both scopes are published through these locals so ANY
+ *  poster tile can opt in with one modifier ([Modifier.heroPoster]) without
+ *  threading scope parameters through rows, cards and screens. Outside a
+ *  destination (or before navigation 2.8) the modifier is a no-op. */
+@OptIn(androidx.compose.animation.ExperimentalSharedTransitionApi::class)
+val LocalHeroSharedScope =
+    androidx.compose.runtime.compositionLocalOf<androidx.compose.animation.SharedTransitionScope?> { null }
+
+val LocalHeroAnimatedScope =
+    androidx.compose.runtime.compositionLocalOf<androidx.compose.animation.AnimatedContentScope?> { null }
+
+/** Publishes this destination's AnimatedContentScope (see AppNav). */
+@Composable
+fun androidx.compose.animation.AnimatedContentScope.HeroScope(
+    content: @Composable () -> Unit,
+) {
+    androidx.compose.runtime.CompositionLocalProvider(
+        LocalHeroAnimatedScope provides this,
+    ) {
+        content()
+    }
+}
+
+/** Makes this poster art the travelling hero: on navigation to a screen that
+ *  marks the same [key] (see DetailScreen), the tile visually flies from the
+ *  grid into its detail position — and back on return. Mismatched keys simply
+ *  don't animate (no crash, no freeze), so grids whose items can't be rebuilt
+ *  on the detail side degrade to the plain slide. */
+@OptIn(androidx.compose.animation.ExperimentalSharedTransitionApi::class)
+fun Modifier.heroPoster(key: String): Modifier = composed {
+    val sts = LocalHeroSharedScope.current
+    val avs = LocalHeroAnimatedScope.current
+    if (sts == null || avs == null || key.isBlank()) this
+    else with(sts) {
+        sharedElement(
+            state = rememberSharedContentState(key = "poster:$key"),
+            animatedVisibilityScope = avs,
+        )
+    }
+}
+
+/** Infinite auto-scrolling poster carousel ("marquee") with a parallax glow.
+ *
+ *  The strip holds [copies] repeats of the cards and slides them by exactly
+ *  one copy width on a seamless loop: reaching the end snaps back to zero,
+ *  which renders identically because every copy is the same. Each section
+ *  passes its own [speedDpPerSec] and [reverse], so stacked rows drift
+ *  against each other instead of marching in lockstep (the parallax read),
+ *  while a glow layer slides behind the posters at 45% speed for depth.
+ *  Touching the strip pauses it; it resumes a moment after release.
+ *  Phone only — callers must not place this on TV (a 1GB box cannot afford
+ *  always-on repaint loops). */
+@Composable
+fun AutoScrollPosterRow(
+    title: String,
+    providerName: String,
+    items: List<MediaItem>,
+    onClick: (MediaItem) -> Unit,
+    /** Poster widths per second; every row gets its own speed so stacked
+     *  marquee rows drift against each other. */
+    speedDpPerSec: Float = 34f,
+    /** Alternate direction per section: stacked rows counter-scroll. */
+    reverse: Boolean = false,
+    onShowAll: (() -> Unit)? = null,
+) {
+    val cards = remember(items) {
+        val distinct = items.distinctBy { it.uniqueId }
+        if (distinct.isEmpty()) emptyList()
+        else buildList { do { addAll(distinct) } while (size < 8) }
+    }
+    if (cards.isEmpty()) return
+    Column(Modifier.padding(top = 20.dp)) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    tr(title),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (providerName.isNotBlank()) {
+                    Text(
+                        providerName.uppercase(),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+            if (onShowAll != null) {
+                TextButton(onClick = onShowAll) {
+                    Text(tr("Show All"), fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
+        // Instant vertical: warm portrait art with the row, like MediaRow.
+        val warm = rememberVisibleItems(cards)
+        LaunchedEffect(warm) {
+            runCatching {
+                withContext(Dispatchers.IO) { Artwork.warmRow(warm) }
+            }
+        }
+        val density = LocalDensity.current
+        val speedPx = with(density) { speedDpPerSec.dp.toPx() }.coerceAtLeast(1f)
+        // Full strip width in px; one copy is exactly a third of it (every
+        // copy carries its own trailing gap, so copies tile seamlessly).
+        var stripPx by remember { mutableIntStateOf(0) }
+        val copies = 3
+        val offset = remember(cards, reverse) { Animatable(if (reverse) 1f else 0f) }
+        var paused by remember(cards) { mutableStateOf(false) }
+        val pausedNow by rememberUpdatedState(paused)
+        LaunchedEffect(stripPx, speedPx, reverse) {
+            val span = stripPx / copies.toFloat()
+            if (span <= 0f) return@LaunchedEffect
+            offset.snapTo(if (reverse) span else 0f)
+            while (isActive) {
+                if (pausedNow) {
+                    delay(120)
+                    continue
+                }
+                val target = if (reverse) 0f else span
+                if (abs(offset.value - target) < 0.5f) {
+                    // End of the loop renders identically to the start.
+                    offset.snapTo(if (reverse) span else 0f)
+                    continue
+                }
+                val durMs = ((abs(target - offset.value) / speedPx) * 1000)
+                    .toInt().coerceAtLeast(1)
+                offset.animateTo(target, tween(durMs, easing = LinearEasing))
+            }
+        }
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .clipToBounds()
+                .pointerInput(cards) {
+                    awaitEachGesture {
+                        awaitFirstDown(requireUnconsumed = false)
+                        paused = true
+                        runCatching { waitForUpOrCancellation() }
+                        delay(2500)
+                        paused = false
+                    }
+                }
+        ) {
+            // Parallax glow: one soft disc per copy, sliding at 45% speed.
+            // offset is read inside graphicsLayer only, so the slide never
+            // recomposes — it just moves the layer.
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .height(196.dp)
+                    .graphicsLayer {
+                        val span = stripPx / copies.toFloat()
+                        translationX =
+                            if (span > 0f) -((offset.value * 0.45f) % span) else 0f
+                    },
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                val spanDp = with(density) { (stripPx / copies.toFloat()).toDp() }
+                repeat(copies) {
+                    Box(
+                        Modifier
+                            .width(spanDp.coerceAtLeast(0.dp))
+                            .fillMaxHeight(),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Box(
+                            Modifier
+                                .size(150.dp)
+                                .background(
+                                    Brush.radialGradient(
+                                        0f to MaterialTheme.colorScheme.primary.copy(alpha = 0.10f),
+                                        1f to Color.Transparent,
+                                    ),
+                                    RoundedCornerShape(75.dp),
+                                )
+                        )
+                    }
+                }
+            }
+            // The poster strip itself, sliding at full speed.
+            Row(
+                Modifier
+                    .onSizeChanged { stripPx = it.width }
+                    .graphicsLayer { translationX = -offset.value },
+            ) {
+                repeat(copies) { copy ->
+                    key(copy) {
+                        Row(
+                            Modifier.padding(end = 8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            cards.forEach { card ->
+                                key(card.uniqueId) {
+                                    AutoScrollPosterCard(card, onClick)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** One marquee card: a plain 2:3 poster with its title. No [Modifier.heroPoster]
+ *  here on purpose — the strip holds several copies of every card and shared
+ *  elements require unique keys. */
+@Composable
+private fun AutoScrollPosterCard(item: MediaItem, onClick: (MediaItem) -> Unit) {
+    Column(
+        Modifier
+            .width(112.dp)
+            .clickable { onClick(item) }
+    ) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .aspectRatio(2f / 3f)
+                .clip(RoundedCornerShape(10.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+        ) {
+            AsyncImage(
+                model = Artwork.model(item),
+                contentDescription = item.title,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop,
+            )
+        }
+        Text(
+            item.title,
+            style = MaterialTheme.typography.bodySmall,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(top = 4.dp)
+        )
+    }
+}
+
 /** Short, secret-free description of a Coil model for the coil-error lines. */
 private fun describePosterModel(model: Any?): String = when (model) {
     null -> "<null>"
@@ -428,6 +687,7 @@ fun PosterCard(
             Modifier
                 .fillMaxWidth()
                 .aspectRatio(2f / 3f)
+                .heroPoster(item.uniqueId)
                 .quickMenuGesture(quickMenu) { slot ->
                     when (slot) {
                         0 -> latestClick()

@@ -1,6 +1,7 @@
 package com.hikari.app.ui.screens
 
 import com.hikari.app.ui.components.LocalHideHelp
+import com.hikari.app.ui.components.heroPoster
 import com.hikari.app.i18n.tr
 import com.hikari.app.i18n.I18n
 
@@ -158,6 +159,7 @@ import com.hikari.app.ui.components.GlassSearchField
 import com.hikari.app.ui.components.HeroBanner
 import com.hikari.app.ui.components.HeroConfig
 import com.hikari.app.ui.components.HeroStyles
+import com.hikari.app.ui.components.AutoScrollPosterRow
 import com.hikari.app.ui.components.MediaRow
 import com.hikari.app.ui.components.ShimmerRow
 import com.hikari.app.ui.theme.pageBackground
@@ -811,6 +813,13 @@ fun HomeScreen(nav: NavHostController) {
     val uniqueRows = remember(rows) {
         rows.distinctBy { it.key.ifBlank { "${it.providerName}|${it.title}" } }
     }
+    // Infinite auto-scroll showcase: anime sections get their own marquee
+    // rows (see AutoScrollPosterRow), each moving at its own speed and
+    // alternating direction, instead of another static shelf. Phone only —
+    // a TV box cannot afford several always-on repaint loops.
+    val animeMarqueeRows = remember(uniqueRows) {
+        uniqueRows.filter { row -> row.items.any { it.looksAnime() } }.take(3)
+    }
     // ScrollKeeper mirror of the feed below (see ScrollKeeper): the exact key
     // of every item in Lazy order, so Back lands on the same ROW even when
     // shelves stream in differently ordered, shimmer placeholders come and go,
@@ -822,6 +831,7 @@ fun HomeScreen(nav: NavHostController) {
     val feedKeys = remember(uniqueRows, continueEntries, collectionFolderRows, loading, hideContinue, rows.isEmpty(), tvHome) {
         buildList {
             add("home-header")
+            if (!tvHome && animeMarqueeRows.isNotEmpty()) add("anime-marquee")
             if (!hideContinue && continueEntries.isNotEmpty()) add("continue-watching")
             collectionFolderRows.forEach { c -> add("collection-folders|${c.id}") }
             if (loading && collectionFolderRows.isEmpty()) repeat(4) { i -> add("home-shimmer|$i") }
@@ -921,10 +931,34 @@ fun HomeScreen(nav: NavHostController) {
                     }
                     if (!tvHome) {
                         HomeGenresButton(onClick = { showGenres = true })
-                        HomeGenreStrip(
-                            onPick = onGenrePick,
-                            onShowAll = { showGenres = true },
-                        )
+                    }
+                }
+            }
+            // Infinite auto-scrolling showcase, one marquee row per anime
+            // section — each moves at its own speed and direction (see
+            // AutoScrollPosterRow). Phone only; TV keeps its static shelves.
+            if (!tvHome && animeMarqueeRows.isNotEmpty()) {
+                item(key = "anime-marquee") {
+                    Column(Modifier.fillMaxWidth()) {
+                        animeMarqueeRows.forEachIndexed { index, row ->
+                            AutoScrollPosterRow(
+                                title = row.title,
+                                providerName = row.providerName,
+                                items = row.items,
+                                speedDpPerSec = 30f + index * 14f,
+                                reverse = index % 2 == 1,
+                                onClick = { item ->
+                                    Routes.safeNavigate(
+                                        nav,
+                                        if (item.rawType == "manga") {
+                                            Routes.mangaRoute(item.providerId, item.id, item.title, item.posterUrl)
+                                        } else {
+                                            Routes.detail(item.providerId, item.type, item.id, item.title, item.posterUrl, item.rawType)
+                                        }
+                                    )
+                                },
+                            )
+                        }
                     }
                 }
             }
@@ -1149,13 +1183,11 @@ fun HomeScreen(nav: NavHostController) {
                     }
                 }
             }
-            // Television: the genre strip lives at the end of the feed.
+            // Television: genres live behind the same button (see the phone
+            // feed); the strip at the end of the feed is gone.
             if (tvHome) {
-                item(key = "tv-genres") {
-                    HomeGenreStrip(
-                        onPick = onGenrePick,
-                        onShowAll = { showGenres = true },
-                    )
+                item(key = "tv-genres-button") {
+                    HomeGenresButton(onClick = { showGenres = true })
                 }
             }
         }
@@ -3564,7 +3596,8 @@ private fun HomeResultCard(item: MediaItem, onClick: () -> Unit) {
                 .fillMaxWidth()
                 .aspectRatio(2f / 3f)
                 .clip(RoundedCornerShape(12.dp))
-                .background(MaterialTheme.colorScheme.surfaceVariant),
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+                .heroPoster(item.uniqueId),
         ) {
             AsyncImage(
                 model = Artwork.model(item),
@@ -3591,133 +3624,71 @@ internal data class HomeGenre(
     val keywordsText: String,
 )
 
-/** Full-width Genres entry below the hero: opens every genre as image cards
- *  (see GenresOverlay), the way the reference app does under its banner. */
+/** Full-width Genres entry below the hero: an artwork-backed card (like the
+ *  reference app's Schedule/Genres pair) opening every genre as image cards
+ *  (see GenresOverlay). */
 @Composable
 private fun HomeGenresButton(onClick: () -> Unit) {
-    val tv = com.hikari.app.tv.TvMode.current()
-    androidx.compose.material3.Button(
-        onClick = onClick,
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(start = 16.dp, end = 16.dp, top = 10.dp),
-        shape = RoundedCornerShape(16.dp),
-        colors = androidx.compose.material3.ButtonDefaults.buttonColors(
-            containerColor = if (tv) com.hikari.app.tv.TvDesktop.SurfaceElevated
-            else MaterialTheme.colorScheme.surfaceVariant,
-            contentColor = if (tv) com.hikari.app.tv.TvDesktop.TextPrimary
-            else MaterialTheme.colorScheme.onSurfaceVariant,
-        ),
-        contentPadding = PaddingValues(vertical = 12.dp),
-    ) {
-        Icon(
-            Icons.Filled.List,
-            contentDescription = null,
-            modifier = Modifier.size(18.dp),
-        )
-        Spacer(Modifier.width(8.dp))
-        Text(tr("Genres"), style = MaterialTheme.typography.titleSmall)
+    var art by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(Unit) {
+        val ids = com.hikari.app.data.Genres.tmdbGenreFilter("Action")
+        art = GenreArt.artFor("Action", ids, "")
     }
-}
-
-@Composable
-private fun HomeGenreStrip(
-    onPick: (name: String, genresText: String, keywordsText: String) -> Unit,
-    onShowAll: () -> Unit,
-) {
-    val genres = remember {
-        com.hikari.app.data.Genres.ALL.map { name ->
-            val ids = com.hikari.app.data.Genres.tmdbGenreFilter(name)
-            HomeGenre(
-                name = name,
-                genresText = ids,
-                keywordsText = if (ids.isNotEmpty()) ""
-                else com.hikari.app.data.Genres.keywordCandidates(name).joinToString("|"),
-            )
-        }
-    }
-    var query by remember { mutableStateOf("") }
-    val shown = remember(genres, query) {
-        val q = query.trim().lowercase()
-        if (q.isEmpty()) genres
-        else genres.filter { g ->
-            g.name.lowercase().contains(q) || I18n.t(g.name).lowercase().contains(q)
-        }
-    }
-    val listState = com.hikari.app.ui.components.keptListState("homeGenres")
-    LaunchedEffect(query) { if (shown.isNotEmpty()) listState.scrollToItem(0) }
-    Column(
+    Box(
         Modifier
             .fillMaxWidth()
-            .padding(top = 14.dp),
+            .padding(start = 16.dp, end = 16.dp, top = 10.dp)
+            .height(64.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
     ) {
+        if (art != null) {
+            coil.compose.AsyncImage(
+                model = art,
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop,
+            )
+        } else {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
+            )
+        }
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.horizontalGradient(
+                        0f to Color.Black.copy(alpha = 0.72f),
+                        0.6f to Color.Black.copy(alpha = 0.45f),
+                        1f to Color.Black.copy(alpha = 0.25f),
+                    )
+                ),
+        )
         Row(
             Modifier
-                .fillMaxWidth()
+                .fillMaxSize()
                 .padding(horizontal = 16.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
-                tr("Browse by genre"),
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-                color = if (com.hikari.app.tv.TvMode.current()) com.hikari.app.tv.TvDesktop.TextPrimary
-                else MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
+            Icon(
+                Icons.Filled.List,
+                contentDescription = null,
+                tint = Color.White,
+                modifier = Modifier.size(20.dp),
             )
             Spacer(Modifier.width(10.dp))
-            GlassSearchField(
-                value = query,
-                onValueChange = { query = it },
-                placeholder = tr("Search genres"),
-                height = 38.dp,
-                modifier = Modifier.weight(1f),
-            )
-            Spacer(Modifier.width(8.dp))
-            androidx.compose.material3.IconButton(onClick = {
-                query = ""
-                onShowAll()
-            }) {
-                Icon(
-                    Icons.Filled.List,
-                    contentDescription = tr("All genres"),
-                    tint = if (com.hikari.app.tv.TvMode.current()) com.hikari.app.tv.TvDesktop.TextPrimary
-                    else MaterialTheme.colorScheme.primary,
-                )
-            }
-        }
-        if (shown.isEmpty()) {
             Text(
-                tr("No genre matches") + " \u201c${query.trim()}\u201d",
-                style = MaterialTheme.typography.bodySmall,
-                color = if (com.hikari.app.tv.TvMode.current()) com.hikari.app.tv.TvDesktop.TextMuted
-                else MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp),
+                tr("Genres"),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = Color.White,
             )
-        } else {
-            LazyRow(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(top = 6.dp),
-                state = listState,
-                contentPadding = PaddingValues(horizontal = 16.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                items(shown, key = { it.name }) { g ->
-                    FilterChipLine(
-                        label = tr(g.name),
-                        selected = false,
-                        onClick = {
-                            query = ""
-                            onPick(g.name, g.genresText, g.keywordsText)
-                        },
-                    )
-                }
-            }
         }
     }
 }
+
+/** The strip is gone: genres live only behind the Genres button now. */

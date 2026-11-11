@@ -91,6 +91,7 @@ import com.hikari.app.ui.RatingBadge
 import com.hikari.app.ui.components.EmptyState
 import com.hikari.app.ui.components.GlassSearchField
 import com.hikari.app.ui.components.StaggerIn
+import com.hikari.app.ui.components.heroPoster
 import com.hikari.app.ui.navigation.LocalTaskbarInset
 import com.hikari.app.ui.navigation.Routes
 import com.hikari.app.ui.rememberPosterScore
@@ -1424,6 +1425,7 @@ private fun PhoneSearchCell(
                 .fillMaxWidth()
                 .aspectRatio(if (phoneCinema) 16f / 9f else 2f / 3f)
                 .clip(RoundedCornerShape(10.dp))
+                .heroPoster(item.uniqueId)
         ) {
             if (phoneCinema && hero != null && !hero.second) {
                 AsyncImage(
