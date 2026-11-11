@@ -329,6 +329,14 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
         log("lookup done: ${best.size} server(s)")
         return best
     }
+    /** One provider's streams for one batch episode (see
+     *  ContentRepository.providerStreams) — the composable calls through here
+     *  because [repo] is private. */
+    suspend fun batchProviderStreams(
+        providerId: String,
+        item: MediaItem,
+        episode: Episode?,
+    ): List<StreamSource> = repo.providerStreams(providerId, item, episode)
     suspend fun enqueueBatch(ctx: android.content.Context, item: MediaItem, episodes: List<Episode>, chosen: StreamSource): Int {
         var done = 0
         for (ep in episodes) {
@@ -2674,72 +2682,143 @@ fun DetailScreen(
         showDlServer = true
         fun publishLive(servers: List<StreamSource>) {
             if (gen != dlGen) return
-            var changed = false
-            for (s in servers) {
-                // The picker lists only what can actually download (same rule
-                // the sweep filters by): a torrent, external or blank-URL row
-                // used to sit in the picker and then toast "No downloadable
-                // server found" the moment it was picked.
-                if (!dlOk(s)) continue
-                // One row per server, not one row per episode carrying it:
-                // the same mirror repeats across episodes with a different
-                // URL, and printing it N times is what made a small sweep
-                // look like dozens of rows.
-                if (seen.add(s.providerId + "|" + s.name)) {
-                    union.add(s)
-                    changed = true
+            synchronized(union) {
+                var changed = false
+                for (s in servers) {
+                    // The picker lists only what can actually download (same rule
+                    // the sweep filters by): a torrent, external or blank-URL row
+                    // used to sit in the picker and then toast "No downloadable
+                    // server found" the moment it was picked.
+                    if (!dlOk(s)) continue
+                    // One row per server, not one row per episode carrying it:
+                    // the same mirror repeats across episodes with a different
+                    // URL, and printing it N times is what made a small sweep
+                    // look like dozens of rows.
+                    if (seen.add(s.providerId + "|" + s.name)) {
+                        union.add(s)
+                        changed = true
+                    }
                 }
-            }
-            if (changed) {
-                dlServers = ArrayList(union)
-                dlMsg = "Found " + union.size + " server" + (if (union.size == 1) "" else "s") + " \u2014 still searching\u2026"
+                if (changed) {
+                    dlServers = ArrayList(union)
+                    dlMsg = "Found " + union.size + " server" + (if (union.size == 1) "" else "s") + " \u2014 still searching\u2026"
+                }
             }
         }
         var job: Job? = null
         job = scope.launch {
             try {
-                // Bounded per episode (see serversForBatch), and live: every
-                // server the running lookup finds is published through
-                // [publishLive] while slower providers - and later episodes -
-                // keep searching behind it. Every finished episode is marked
-                // in [dlSwept] so the picker can tell "no server for this
-                // episode" (searched, nothing) from "not checked yet".
-                // Per-server batching: every selected episode sweeps its servers
-                // CONCURRENTLY (3 at a time) instead of one episode after
-                // another — a server holding all episodes completes fast, so
-                // the user can pick it without waiting for the slowest
-                // extension to finish every episode in turn.
-                suspend fun sweep(list: List<Episode>, useOrigin: Boolean) {
-                    val slots = kotlinx.coroutines.sync.Semaphore(3)
-                    val mutex = kotlinx.coroutines.sync.Mutex()
-                    kotlinx.coroutines.supervisorScope {
-                        list.map { ep ->
-                            async {
-                                slots.withPermit {
-                                    if (gen != dlGen) return@async
-                                    val epKey = dlEpKey(ep)
-                                    mutex.withLock {
-                                        if (union.isEmpty()) {
-                                            dlMsg = "Finding servers (" + (dlSwept.size + 1) + "/" + eps.size + ")\u2026"
-                                        }
-                                    }
-                                    val servers = runCatching {
-                                        vm.serversForBatch(batchItem, ep, useOrigin, onServers = { prog ->
-                                            if (gen == dlGen) dlCache[epKey] = prog
-                                            withContext(Dispatchers.Main) { publishLive(prog) }
-                                        })
+                // Server-first, all episodes at once: every selected episode runs
+                // its own lookup simultaneously, and the instant ANY episode
+                // reveals a server, that server is resolved for every OTHER
+                // episode too — one targeted call per (episode, provider).
+                // Server rows therefore complete with all episodes together
+                // instead of "1 of 3 — missing E2–3" while each episode
+                // re-discovers the same mirrors on its own. Episodes whose
+                // servers live outside everything discovered still get their
+                // own full lookup afterwards (phase 2, all-extensions only).
+                val slots = kotlinx.coroutines.sync.Semaphore(3)
+                val ioGate = kotlinx.coroutines.sync.Semaphore(8)
+                val mutex = kotlinx.coroutines.sync.Mutex()
+                val filled = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+                var fillScope: kotlinx.coroutines.CoroutineScope? = null
+                // Resolves [servers]' providers for every selected episode
+                // except the one they came from. Launched as children of the
+                // sweep scope, so the sweep only finishes once every fill has
+                // landed (or died); [filled] keeps two episodes revealing the
+                // same provider from doubling the work.
+                fun pumpFills(foundEpKey: String, servers: List<StreamSource>, all: List<Episode>) {
+                    val fs = fillScope ?: return
+                    if (gen != dlGen || servers.isEmpty()) return
+                    for (ep in all) {
+                        val ek = dlEpKey(ep)
+                        if (ek == foundEpKey) continue
+                        for (s in servers) {
+                            if (!filled.add(ek + "|" + s.providerId)) continue
+                            fs.launch {
+                                ioGate.withPermit {
+                                    if (gen != dlGen) return@launch
+                                    val got = runCatching {
+                                        vm.batchProviderStreams(s.providerId, batchItem, ep)
                                     }.getOrDefault(emptyList())
-                                    if (gen != dlGen) return@async
+                                    if (gen != dlGen) return@launch
+                                    val fresh = got.filter { dlOk(it) }
+                                    if (fresh.isEmpty()) return@launch
                                     mutex.withLock {
                                         if (gen != dlGen) return@withLock
-                                        if (servers.isNotEmpty()) dlCache[epKey] = servers
-                                        publishLive(servers)
-                                        dlSwept = dlSwept + epKey
+                                        val have = dlCache[ek].orEmpty()
+                                        val seenKeys = have.map { BatchServerPlanner.serverKey(it) }.toHashSet()
+                                        val merged = ArrayList(have)
+                                        var grew = false
+                                        for (x in fresh) {
+                                            if (seenKeys.add(BatchServerPlanner.serverKey(x))) {
+                                                merged.add(x)
+                                                grew = true
+                                            }
+                                        }
+                                        if (grew) {
+                                            dlCache[ek] = merged
+                                            publishLive(merged)
+                                        }
                                     }
                                 }
                             }
-                        }.awaitAll()
+                        }
                     }
+                }
+                suspend fun lookupEp(ep: Episode, all: List<Episode>): List<StreamSource> {
+                    if (gen != dlGen) return emptyList()
+                    val epKey = dlEpKey(ep)
+                    mutex.withLock {
+                        if (union.isEmpty()) {
+                            dlMsg = "Finding servers (" + (dlSwept.size + 1) + "/" + eps.size + ")\u2026"
+                        }
+                    }
+                    val servers = runCatching {
+                        vm.serversForBatch(batchItem, ep, useOrigin, onServers = { prog ->
+                            if (gen == dlGen) dlCache[epKey] = prog
+                            pumpFills(epKey, prog, all)
+                            withContext(Dispatchers.Main) { publishLive(prog) }
+                        })
+                    }.getOrDefault(emptyList())
+                    if (gen != dlGen) return emptyList()
+                    mutex.withLock {
+                        if (gen != dlGen) return@withLock
+                        if (servers.isNotEmpty()) {
+                            dlCache[epKey] = servers
+                            pumpFills(epKey, servers, all)
+                        }
+                        publishLive(servers)
+                        dlSwept = dlSwept + epKey
+                    }
+                    return servers
+                }
+                suspend fun sweep(list: List<Episode>, useOrigin: Boolean) {
+                    if (list.isEmpty() || gen != dlGen) return
+                    kotlinx.coroutines.supervisorScope {
+                        fillScope = this
+                        list.map { ep ->
+                            async {
+                                slots.withPermit { lookupEp(ep, list) }
+                            }
+                        }.awaitAll()
+                        // Exiting waits for every fill child pumpFills launched.
+                    }
+                    fillScope = null
+                    if (gen != dlGen) return
+                    if (!useOrigin) {
+                        val gaps = list.filter { dlCache[dlEpKey(it)].isNullOrEmpty() }
+                        if (gaps.isNotEmpty()) {
+                            dlMsg = "Looking for " + gaps.size + " missing episode" +
+                                (if (gaps.size == 1) "" else "s") + " on other servers\u2026"
+                            kotlinx.coroutines.supervisorScope {
+                                gaps.map { ep ->
+                                    async { slots.withPermit { lookupEp(ep, gaps) } }
+                                }.awaitAll()
+                            }
+                        }
+                    }
+                    if (gen != dlGen) return
                 }
                 sweep(eps, originOnly)
                 if (gen != dlGen) return@launch

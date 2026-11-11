@@ -1984,6 +1984,33 @@ class ContentRepository(private val manager: ProviderManager) {
         return got.orEmpty()
     }
 
+    /** Direct streams for ONE episode from ONE provider — no sweep, no
+     *  passes, never throws. The batch picker's server-first fill (see
+     *  DetailScreen.resolveFirstServer): every selected episode searches at
+     *  once, and the instant any episode reveals a provider, that provider is
+     *  resolved for every other episode through here — instead of every
+     *  episode re-running the full cross-extension discovery and re-finding
+     *  the same mirrors. Episode mapping across providers is the same
+     *  [resolveOwnEpisode] path the sweep itself uses (via [fetchStreams]). */
+    suspend fun providerStreams(
+        providerId: String,
+        item: MediaItem,
+        episode: Episode?,
+        budgetMs: Long = 75_000L,
+    ): List<StreamSource> {
+        val p = manager.byId(providerId) ?: return emptyList()
+        if (!p.config.enabled) return emptyList()
+        return runCatching {
+            if (p.config.type == ProviderType.NUVIO) {
+                com.hikari.app.nuvio.NuvioRuntime.withBackgroundSlot {
+                    detached(budgetMs) { fetchStreams(p, item, episode) }
+                }
+            } else {
+                detached(budgetMs) { fetchStreams(p, item, episode) }
+            }
+        }.getOrDefault(null).orEmpty()
+    }
+
     /** [streamsFor] plus "did this lookup actually finish?" — see [StreamLookup].
      *  Never throws: a lookup that dies is reported as `complete = false`, so the
      *  caller can ask again instead of telling the user there is nothing. */

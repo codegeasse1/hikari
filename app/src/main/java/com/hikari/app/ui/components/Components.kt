@@ -2,12 +2,15 @@ package com.hikari.app.ui.components
 import com.hikari.app.i18n.tr
 import com.hikari.app.i18n.I18n
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.scaleIn
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -111,7 +114,7 @@ import com.hikari.app.tv.tvTextFieldKeys
 /** How many automatic re-requests a poster gets before its cell settles on the
  *  placeholder icon. Two is enough to ride out a dropped connection or a CDN
  *  hiccup without hammering an image that is genuinely gone. */
-private const val POSTER_RETRIES = 2
+private const val POSTER_RETRIES = 4
 
 @Composable
 fun MediaRow(
@@ -308,10 +311,10 @@ fun PosterImage(
      *  have a fallback model swap to it here. */
     onFinalError: (() -> Unit)? = null,
 ) {
-    var attempt by remember(model) { mutableIntStateOf(0) }
+    var attempt by remember(model, PosterLoader.retryEpoch.value) { mutableIntStateOf(0) }
     val scope = rememberCoroutineScope()
     AsyncImage(
-        model = PosterLoader.retryModel(model, attempt),
+        model = PosterLoader.retryModel(model, attempt, PosterLoader.retryEpoch.value),
         contentDescription = contentDescription,
         modifier = modifier,
         alignment = alignment,
@@ -338,6 +341,34 @@ fun PosterImage(
             }
         },
     )
+}
+
+/** Staggered grid reveal: cards fade + scale in one after another instead of
+ *  popping in all at once. New rows animate as result pages stream in; the
+ *  delay is capped so long grids never take forever. Keyed on [index] within
+ *  the current list — pair with stable item keys so scrolled-in tiles don't
+ *  re-animate. Exit is intentionally instant (lazy grids can't animate removals
+ *  without holding dead tiles); moves are handled by Modifier.animateItem at
+ *  the call site where it matters. */
+@Composable
+fun StaggerIn(
+    index: Int,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
+) {
+    var shown by remember { mutableStateOf(false) }
+    LaunchedEffect(index) {
+        delay(((index % 24) * 30).coerceAtMost(360).toLong())
+        shown = true
+    }
+    AnimatedVisibility(
+        visible = shown,
+        enter = fadeIn(animationSpec = tween(240)) +
+            scaleIn(initialScale = 0.94f, animationSpec = tween(240)),
+        modifier = modifier,
+    ) {
+        content()
+    }
 }
 
 /** Short, secret-free description of a Coil model for the coil-error lines. */

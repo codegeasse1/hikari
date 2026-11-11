@@ -198,6 +198,32 @@ object PosterLoader {
         return builder.setParameter("hikariRetry", attempt).build()
     }
 
+    /** Global "try dead posters once more" signal, read during composition by
+     *  [PosterImage][com.hikari.app.ui.components.PosterImage]. A tile that
+     *  exhausted its retries stays blank for its model — bumping this gives
+     *  every dead tile one more round without touching tiles that loaded.
+     *  Bumped once per finished search scan (see SearchSessionScope): the
+     *  first attempts fail while DNS/TLS is still warming up, and by the time
+     *  the pipes are hot the tiles have already given up. */
+    val retryEpoch = mutableStateOf(0L)
+
+    fun bumpRetryEpoch() {
+        retryEpoch.value = retryEpoch.value + 1L
+    }
+
+    /** Same as [retryModel], but also stamps the epoch: the request object
+     *  changes when the epoch does, so Coil actually re-runs dead requests
+     *  instead of handing back the same failed state. Loaded tiles resolve
+     *  from the memory cache, so the bump costs them nothing visible. */
+    fun retryModel(model: Any?, attempt: Int, epoch: Long): Any? {
+        if (model == null) return null
+        val builder = if (model is ImageRequest) model.newBuilder()
+        else ImageRequest.Builder(HikariApp.instance).data(model)
+        builder.setParameter("hikariEpoch", epoch)
+        if (attempt > 0) builder.setParameter("hikariRetry", attempt)
+        return builder.build()
+    }
+
     fun haloModel(model: Any?, blurDp: Int): Any? {
         if (model == null || blurDp <= 0) return null
         val px = (34 - blurDp).coerceIn(6, 34)

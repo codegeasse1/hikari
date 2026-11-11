@@ -74,30 +74,55 @@ open class SearchSessionScope(private val snapshotName: String) {
             started?.cancel()
         }
         started = scope.launch {
+            // Warm the image pipes before the first tile composes: the Coil
+            // client resolves DNS over HTTPS, so the very first poster batch
+            // pays a full DoH round trip + TLS before a single byte loads —
+            // exactly the "blank on the first searches" window.
+            runCatching {
+                kotlinx.coroutines.withContext(Dispatchers.IO) {
+                    com.hikari.app.net.DohDns.lookup("image.tmdb.org")
+                }
+            }
+            var accum = if (merge) _results.value else emptyList<MediaItem>()
+            var lastPub = 0L
             try {
                 repo.searchStreaming(query, providerIds = providersOf(k)).collect { raw ->
                     // A superseding search started: stop feeding a dead key.
                     if (currentKey != k) return@collect
                     val page = raw.map { it.tokenizePoster() }
-                    _results.value = if (merge) mergeDistinct(_results.value, page) else page
-                    // Snapshot what has landed (throttled): the return path
-                    // in [search] reads exactly this file.
+                    accum = if (merge) mergeDistinct(accum, page) else page
                     val now = android.os.SystemClock.uptimeMillis()
-                    if (now - lastDiskWrite > 2_000L) {
-                        lastDiskWrite = now
-                        writeSnapshot(k, _results.value)
+                    // The stream emits every ~120ms; republishing the whole
+                    // list that often cancels in-flight Coil loads faster
+                    // than they complete (first contact is DoH + TLS + burst
+                    // queue). Publish at most ~3x/sec; the finally below
+                    // flushes whatever is left, so nothing is ever lost.
+                    if (now - lastPub >= 350L) {
+                        lastPub = now
+                        _results.value = accum
+                        if (now - lastDiskWrite > 2_000L) {
+                            lastDiskWrite = now
+                            writeSnapshot(k, accum)
+                        }
                     }
                 }
                 if (currentKey == k) {
-                    SearchResultsCache.put(k, _results.value)
-                    writeSnapshot(k, _results.value)
+                    SearchResultsCache.put(k, accum)
+                    writeSnapshot(k, accum)
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Throwable) {
-                // Keep whatever pages already landed; the finally flips the flag.
+                // Keep whatever pages already landed; the finally flushes.
             } finally {
-                if (currentKey == k) _searching.value = false
+                if (currentKey == k) {
+                    _results.value = accum
+                    // The scan is settled: give every tile that exhausted its
+                    // retries while the pipes were still warming up one more
+                    // round (see PosterLoader.retryEpoch).
+                    PosterLoader.bumpRetryEpoch()
+                    _searching.value = false
+                }
             }
         }
         // Covers cancellation too (a new query replaces this job), so the

@@ -32,6 +32,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -89,6 +90,7 @@ import com.hikari.app.ui.PosterLoader
 import com.hikari.app.ui.RatingBadge
 import com.hikari.app.ui.components.EmptyState
 import com.hikari.app.ui.components.GlassSearchField
+import com.hikari.app.ui.components.StaggerIn
 import com.hikari.app.ui.navigation.LocalTaskbarInset
 import com.hikari.app.ui.navigation.Routes
 import com.hikari.app.ui.rememberPosterScore
@@ -1064,7 +1066,8 @@ fun SearchScreen(
                 horizontalArrangement = Arrangement.spacedBy(if (tvSearch) 12.dp else 8.dp),
                 verticalArrangement = Arrangement.spacedBy(if (tvSearch) 16.dp else 10.dp)
             ) {
-                items(gridItems, key = { it.uniqueId }) { item ->
+                itemsIndexed(gridItems, key = { _, it -> it.uniqueId }) { index, item ->
+                    StaggerIn(index = index) {
                     if (tvSearch) {
                         val go = {
                             Routes.safeNavigate(
@@ -1145,6 +1148,7 @@ fun SearchScreen(
                                 overflow = TextOverflow.Ellipsis
                             )
                         }
+                    }
                     }
                     }
                 }

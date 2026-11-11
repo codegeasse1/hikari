@@ -307,7 +307,7 @@ object Routes {
     /** One hand-built TMDB source (a studio, a network, a person, a custom
      *  discover query…) as a full grid. The spec is JSON in the query string,
      *  the same way a detail route carries its poster. */
-    const val TMDB_GRID_SPEC = "tmdb-grid-spec?spec={spec}&title={title}"
+    const val TMDB_GRID_SPEC = "tmdb-grid-spec?spec={spec}&title={title}&genre={genre}"
 
     fun collectionView(collectionId: String, folderId: String = ""): String =
         "collection-view?cid=${Uri.encode(collectionId)}&fid=${Uri.encode(folderId)}"
@@ -319,9 +319,10 @@ object Routes {
     fun tmdbGrid(presetKey: String, title: String): String =
         "tmdb-grid?preset=${Uri.encode(presetKey)}&title=${Uri.encode(title)}"
 
-    /** Opens one saved [com.hikari.app.data.TmdbSpec] as a full grid. */
-    fun tmdbGridSpec(specJson: String, title: String): String =
-        "tmdb-grid-spec?spec=${Uri.encode(specJson)}&title=${Uri.encode(title)}"
+    /** Opens one saved [com.hikari.app.data.TmdbSpec] as a full grid. [genre]
+     *  arms the active-genre chip row (a genre browse); blank everywhere else. */
+    fun tmdbGridSpec(specJson: String, title: String, genre: String = ""): String =
+        "tmdb-grid-spec?spec=${Uri.encode(specJson)}&title=${Uri.encode(title)}&genre=${Uri.encode(genre)}"
 
     fun catalog(
         providerId: String,
@@ -1281,11 +1282,13 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
                 arguments = listOf(
                     navArgument("spec") { type = NavType.StringType; defaultValue = "" },
                     navArgument("title") { type = NavType.StringType; defaultValue = "" },
+                    navArgument("genre") { type = NavType.StringType; defaultValue = "" },
                 )
             ) { entry ->
                 val spec = Uri.decode(entry.arguments?.getString("spec").orEmpty())
                 val title = Uri.decode(entry.arguments?.getString("title").orEmpty())
-                TmdbGridScreen(nav, "", title, spec)
+                val genre = Uri.decode(entry.arguments?.getString("genre").orEmpty())
+                TmdbGridScreen(nav, "", title, spec, genre)
             }
             composable(
                 route = Routes.CATALOG,

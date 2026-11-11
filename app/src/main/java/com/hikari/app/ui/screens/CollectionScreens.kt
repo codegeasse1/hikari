@@ -50,6 +50,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -4324,6 +4325,9 @@ fun TmdbGridScreen(
     presetKey: String,
     title: String,
     specJson: String = "",
+    /** Active genre this grid was opened for (see Routes.tmdbGridSpec): shown
+     *  as a removable chip row, blank on every non-genre grid. */
+    genreChip: String = "",
 ) {
     val app = LocalContext.current.applicationContext as Application
     val vm: TmdbGridViewModel = viewModel(
@@ -4404,12 +4408,48 @@ fun TmdbGridScreen(
         GlassSearchField(
             value = filterText,
             onValueChange = { filterText = it },
-            placeholder = tr("Search this catalog"),
+            placeholder = if (genreChip.isNotBlank()) tr("Search this genre") else tr("Search this catalog"),
             height = 46.dp,
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(start = 12.dp, end = 12.dp, bottom = 8.dp),
         )
+        if (genreChip.isNotBlank()) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(start = 12.dp, end = 12.dp, bottom = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                FilterChip(
+                    selected = true,
+                    onClick = { nav.popBackStack() },
+                    label = { Text(genreChip) },
+                    trailingIcon = {
+                        Icon(
+                            androidx.compose.material.icons.Icons.Filled.Close,
+                            contentDescription = tr("Clear"),
+                            modifier = Modifier.size(16.dp),
+                        )
+                    },
+                    shape = RoundedCornerShape(24.dp),
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.22f),
+                        labelColor = MaterialTheme.colorScheme.primary,
+                    ),
+                )
+                Text(
+                    tr("Filtered") + " · " + (spec?.let { TmdbSources.detail(it) } ?: preset?.detail ?: "TMDB"),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = { nav.popBackStack() }) { Text(tr("Clear")) }
+            }
+        }
         Row(
             Modifier
                 .fillMaxWidth()
@@ -4479,15 +4519,17 @@ fun TmdbGridScreen(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                items(shown, key = { it.uniqueId }) { item ->
-                    TmdbGridCard(item, style) {
-                        Routes.safeNavigate(
-                            nav,
-                            Routes.detail(
-                                item.providerId, item.type, item.id,
-                                item.title, item.posterUrl, item.rawType
+                itemsIndexed(shown, key = { _, it -> it.uniqueId }) { index, item ->
+                    com.hikari.app.ui.components.StaggerIn(index = index) {
+                        TmdbGridCard(item, style) {
+                            Routes.safeNavigate(
+                                nav,
+                                Routes.detail(
+                                    item.providerId, item.type, item.id,
+                                    item.title, item.posterUrl, item.rawType
+                                )
                             )
-                        )
+                        }
                     }
                 }
                 item(span = { GridItemSpan(maxLineSpan) }) {

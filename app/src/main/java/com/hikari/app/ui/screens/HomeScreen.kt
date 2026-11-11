@@ -595,6 +595,18 @@ fun HomeScreen(nav: NavHostController) {
     // A genre tap made while extensions are picked: WHERE should it look —
     // those extensions alone, or everything (see the genre strip call site).
     var genreScope by remember { mutableStateOf<GenreScopePick?>(null) }
+    // One genre tap, wherever it comes from (the home strip, the Genres
+    // screen): with extensions picked it asks WHERE (this extension or
+    // everything), otherwise it opens the TMDB genre grid straight away.
+    val onGenrePick: (String, String, String) -> Unit = { name, genresText, keywordsText ->
+        val ext = selection.filter { !it.startsWith(COLLECTION_PREFIX) }.toSet()
+        if (ext.isEmpty()) {
+            openTmdbGenre(name, genresText, keywordsText)
+        } else {
+            genreScope = GenreScopePick(name, genresText, keywordsText, ext)
+        }
+    }
+    var showGenres by rememberSaveable { mutableStateOf(false) }
     // The genre an in-place overlay is narrowed to ("" = no narrowing).
     var overlayGenre by rememberSaveable { mutableStateOf("") }
     val scope = rememberCoroutineScope()
@@ -754,6 +766,7 @@ fun HomeScreen(nav: NavHostController) {
                     title = name,
                 ).encode(),
                 name,
+                name,
             )
         )
     }
@@ -907,14 +920,11 @@ fun HomeScreen(nav: NavHostController) {
                         }
                     }
                     if (!tvHome) {
-                        HomeGenreStrip { name, genresText, keywordsText ->
-                            val ext = selection.filter { !it.startsWith(COLLECTION_PREFIX) }.toSet()
-                            if (ext.isEmpty()) {
-                                openTmdbGenre(name, genresText, keywordsText)
-                            } else {
-                                genreScope = GenreScopePick(name, genresText, keywordsText, ext)
-                            }
-                        }
+                        HomeGenresButton(onClick = { showGenres = true })
+                        HomeGenreStrip(
+                            onPick = onGenrePick,
+                            onShowAll = { showGenres = true },
+                        )
                     }
                 }
             }
@@ -1142,14 +1152,10 @@ fun HomeScreen(nav: NavHostController) {
             // Television: the genre strip lives at the end of the feed.
             if (tvHome) {
                 item(key = "tv-genres") {
-                    HomeGenreStrip { name, genresText, keywordsText ->
-                        val ext = selection.filter { !it.startsWith(COLLECTION_PREFIX) }.toSet()
-                        if (ext.isEmpty()) {
-                            openTmdbGenre(name, genresText, keywordsText)
-                        } else {
-                            genreScope = GenreScopePick(name, genresText, keywordsText, ext)
-                        }
-                    }
+                    HomeGenreStrip(
+                        onPick = onGenrePick,
+                        onShowAll = { showGenres = true },
+                    )
                 }
             }
         }
@@ -1414,6 +1420,19 @@ fun HomeScreen(nav: NavHostController) {
                     genreScope = null
                     openTmdbGenre(pick.name, pick.genresText, pick.keywordsText)
                 }) { Text(tr("Everything")) }
+            },
+        )
+    }
+
+    // Full-screen genre browser (see GenresOverlay): image cards for every
+    // genre, with its own search. A genre tap closes the browser first so the
+    // scope dialog (extensions picked) or the TMDB grid lands on top.
+    if (showGenres) {
+        GenresOverlay(
+            onClose = { showGenres = false },
+            onPick = { name, genresText, keywordsText ->
+                showGenres = false
+                onGenrePick(name, genresText, keywordsText)
             },
         )
     }
@@ -3566,14 +3585,45 @@ private fun HomeResultCard(item: MediaItem, onClick: () -> Unit) {
 }
 
 
-private data class HomeGenre(
+internal data class HomeGenre(
     val name: String,
     val genresText: String,
     val keywordsText: String,
 )
 
+/** Full-width Genres entry below the hero: opens every genre as image cards
+ *  (see GenresOverlay), the way the reference app does under its banner. */
 @Composable
-private fun HomeGenreStrip(onPick: (name: String, genresText: String, keywordsText: String) -> Unit) {
+private fun HomeGenresButton(onClick: () -> Unit) {
+    val tv = com.hikari.app.tv.TvMode.current()
+    androidx.compose.material3.Button(
+        onClick = onClick,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 16.dp, end = 16.dp, top = 10.dp),
+        shape = RoundedCornerShape(16.dp),
+        colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+            containerColor = if (tv) com.hikari.app.tv.TvDesktop.SurfaceElevated
+            else MaterialTheme.colorScheme.surfaceVariant,
+            contentColor = if (tv) com.hikari.app.tv.TvDesktop.TextPrimary
+            else MaterialTheme.colorScheme.onSurfaceVariant,
+        ),
+        contentPadding = PaddingValues(vertical = 12.dp),
+    ) {
+        Icon(
+            androidx.compose.material.icons.Icons.Filled.LocalOffer,
+            contentDescription = null,
+            modifier = Modifier.size(18.dp),
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(tr("Genres"), style = MaterialTheme.typography.titleSmall)
+    }
+}
+
+private fun HomeGenreStrip(
+    onPick: (name: String, genresText: String, keywordsText: String) -> Unit,
+    onShowAll: () -> Unit,
+) {
     val genres = remember {
         com.hikari.app.data.Genres.ALL.map { name ->
             val ids = com.hikari.app.data.Genres.tmdbGenreFilter(name)
@@ -3622,8 +3672,20 @@ private fun HomeGenreStrip(onPick: (name: String, genresText: String, keywordsTe
                 onValueChange = { query = it },
                 placeholder = tr("Search genres"),
                 height = 38.dp,
-                modifier = Modifier.width(156.dp),
+                modifier = Modifier.weight(1f),
             )
+            Spacer(Modifier.width(8.dp))
+            androidx.compose.material3.IconButton(onClick = {
+                query = ""
+                onShowAll()
+            }) {
+                Icon(
+                    androidx.compose.material.icons.Icons.Filled.GridView,
+                    contentDescription = tr("All genres"),
+                    tint = if (com.hikari.app.tv.TvMode.current()) com.hikari.app.tv.TvDesktop.TextPrimary
+                    else MaterialTheme.colorScheme.primary,
+                )
+            }
         }
         if (shown.isEmpty()) {
             Text(

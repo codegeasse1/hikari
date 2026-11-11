@@ -1,3 +1,11 @@
+## 0.12.84 (continuous build only)
+
+- Search posters stop going blank: result lists publish at most ~3x/sec (the 120ms stream churn was cancelling Coil loads faster than DoH+TLS+burst could complete), each tile retries 4x instead of 2x, the image DNS is warmed when a search starts, and every finished scan gives dead tiles one more round — so images land on the first search, not the 3rd–4th
+- Download-all is server-first with ALL episodes at once: every selected episode searches simultaneously, and the instant any episode reveals a server, that server is checked for all other episodes immediately — rows complete with every episode together, no episode goes first, no more "1 of 3 — missing E2–3" waits
+- Genres browser like the reference app: a Genres button under the hero plus a grid button in the genre strip open a full-screen 2-column genre card grid (artwork backdrops, own search field); tapping a genre asks everything-vs-extension as before, then the grid shows a removable genre chip, "Filtered · source", Clear, and a search-this-genre box
+- Staggered grid reveal: cards fade + scale in one after another (capped stagger), new rows animate as results stream in — search grids, TMDB/catalog grids and the genre grid
+- 0.12.83 entry below still applies (Playlists removal, home cold-start force-parse, concurrent batch sweep, Websites previews)
+
 ## 0.12.83 (continuous build only)
 
 - Playlists middle page is gone: the IPTV tab is just the Live TV home now — channels in group cards plus torrent and network-stream rows in the same UI, playing in place. "+ Add torrent" / "+ Add stream" moved into Live TV settings next to Xtream/M3U (add, Play-now, remove all there). Nothing to drill into and come back from
