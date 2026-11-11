@@ -3620,6 +3620,7 @@ private fun HomeGenresButton(onClick: () -> Unit) {
     }
 }
 
+@Composable
 private fun HomeGenreStrip(
     onPick: (name: String, genresText: String, keywordsText: String) -> Unit,
     onShowAll: () -> Unit,
