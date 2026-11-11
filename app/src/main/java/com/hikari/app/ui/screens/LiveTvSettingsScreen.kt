@@ -52,6 +52,7 @@ import com.hikari.app.i18n.tr
 import com.hikari.app.data.NetworkStream
 import com.hikari.app.data.ProviderConfig
 import com.hikari.app.data.ProviderType
+import com.hikari.app.providers.IptvProvider
 import com.hikari.app.iptv.LiveTvEngine
 import com.hikari.app.iptv.LiveTvEpgSource
 import com.hikari.app.iptv.LiveTvSettings
@@ -142,7 +143,7 @@ fun LiveTvSettingsScreen(nav: NavHostController) {
     val app = context.applicationContext as HikariApp
     val allProviders by remember { app.providers.providers }.collectAsState()
     val torStreams = remember(allProviders) {
-        allProviders.filter {
+        allProviders.filterIsInstance<IptvProvider>().map { it.config }.filter {
             it.type == ProviderType.IPTV &&
                 (NetworkStream.isStream(it) || NetworkStream.isTorrentLink(it.url))
         }

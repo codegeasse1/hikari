@@ -70,6 +70,7 @@ import com.hikari.app.HikariApp
 import com.hikari.app.data.Logs
 import com.hikari.app.data.NetworkStream
 import com.hikari.app.data.ProviderType
+import com.hikari.app.providers.IptvProvider
 import com.hikari.app.i18n.tr
 import com.hikari.app.iptv.LiveChannel
 import com.hikari.app.iptv.LiveChannelGroup
@@ -101,12 +102,12 @@ fun LiveTvHomeScreen(nav: NavHostController) {
     // engine): home plays them straight from these rows, settings owns them.
     val allProviders by remember { app.providers.providers }.collectAsState()
     val torProviders = remember(allProviders) {
-        allProviders.filter {
+        allProviders.filterIsInstance<IptvProvider>().map { it.config }.filter {
             it.type == ProviderType.IPTV && NetworkStream.isTorrentLink(it.url)
         }
     }
     val streamProviders = remember(allProviders) {
-        allProviders.filter {
+        allProviders.filterIsInstance<IptvProvider>().map { it.config }.filter {
             it.type == ProviderType.IPTV && NetworkStream.isStream(it) && !NetworkStream.isTorrentLink(it.url)
         }
     }
