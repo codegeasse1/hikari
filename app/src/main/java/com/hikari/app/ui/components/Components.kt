@@ -526,12 +526,20 @@ fun AutoScrollPosterRow(
                 .fillMaxWidth()
                 .clipToBounds()
                 .pointerInput(cards) {
+                    // awaitEachGesture is a restricted scope (no delay() etc),
+                    // so the resume-after-release timer lives in a child
+                    // coroutine; a generation counter drops stale resumes.
+                    var resumeGen = 0
                     awaitEachGesture {
                         awaitFirstDown(requireUnconsumed = false)
+                        resumeGen += 1
                         paused = true
                         runCatching { waitForUpOrCancellation() }
-                        delay(2500)
-                        paused = false
+                        val g = resumeGen
+                        launch {
+                            delay(2500)
+                            if (g == resumeGen) paused = false
+                        }
                     }
                 }
         ) {

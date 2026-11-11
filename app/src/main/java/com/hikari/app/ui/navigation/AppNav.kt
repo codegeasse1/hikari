@@ -102,12 +102,13 @@ import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
-import androidx.compose.animation.AnimatedContentTransitionScope
 import androidx.compose.animation.ExperimentalSharedTransitionApi
 import androidx.compose.animation.SharedTransitionLayout
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.slideIntoContainer
-import androidx.compose.animation.slideOutOfContainer
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import com.hikari.app.ui.components.HeroScope
 import com.hikari.app.ui.components.LocalHeroSharedScope
 import androidx.navigation.compose.currentBackStackEntryAsState
@@ -1109,10 +1110,10 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
                 NavHost(
                     navController = nav,
                     startDestination = Routes.HOME,
-                    enterTransition = { slideIntoContainer(AnimatedContentTransitionScope.SlideDirection.Start, tween(280)) },
-                    exitTransition = { slideOutOfContainer(AnimatedContentTransitionScope.SlideDirection.Start, tween(280)) },
-                    popEnterTransition = { slideIntoContainer(AnimatedContentTransitionScope.SlideDirection.End, tween(280)) },
-                    popExitTransition = { slideOutOfContainer(AnimatedContentTransitionScope.SlideDirection.End, tween(280)) },
+                    enterTransition = { fadeIn(tween(280)) + slideInHorizontally(tween(280)) { it / 4 } },
+                    exitTransition = { fadeOut(tween(280)) + slideOutHorizontally(tween(280)) { -it / 4 } },
+                    popEnterTransition = { fadeIn(tween(280)) + slideInHorizontally(tween(280)) { -it / 4 } },
+                    popExitTransition = { fadeOut(tween(280)) + slideOutHorizontally(tween(280)) { it / 4 } },
                     modifier = Modifier
                         .padding(padding)
                         // A page with no bottom bar (a detail page, a grid)
