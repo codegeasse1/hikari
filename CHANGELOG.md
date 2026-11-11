@@ -1,3 +1,11 @@
+## 0.12.83 (continuous build only)
+
+- Playlists middle page is gone: the IPTV tab is just the Live TV home now — channels in group cards plus torrent and network-stream rows in the same UI, playing in place. "+ Add torrent" / "+ Add stream" moved into Live TV settings next to Xtream/M3U (add, Play-now, remove all there). Nothing to drill into and come back from
+- Home cold-start fixed for real: it force-parses every enabled source with no rows yet (the same bridge pattern opening a playlist used) before reading groups, under the spinner — no more "No channels yet" on first entry with playlists added
+- Batch download searches per server, not per episode: all selected episodes sweep concurrently (3 at a time), so a server holding everything completes fast and can be picked without waiting for the slowest extension to finish every episode in turn
+- Websites are 2-per-row with live page-preview banners: each card shows a real miniature screenshot (captured once on add in a hidden WebView, cached on disk), falling back to the letter avatar until its shot lands; retake button per card, previews deleted with the site
+- 0.12.82 entry below still applies (51CG v6 note, home self-load, group rows)
+
 ## 0.12.82 (continuous build only)
 
 - 51CG posters are back: the site's theme renamed its card lazy-load attribute (x-bg-loader-url → z-bg-loader-url), so 23 of 25 cards arrived with blank poster URLs while the site looked fine in a browser — the extension now reads the new attribute first (51CG v6, update it in-app). Verified 25/25 cards with posters on home + category pages

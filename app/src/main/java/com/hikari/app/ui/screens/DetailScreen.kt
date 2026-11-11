@@ -214,6 +214,11 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -2699,25 +2704,41 @@ fun DetailScreen(
                 // keep searching behind it. Every finished episode is marked
                 // in [dlSwept] so the picker can tell "no server for this
                 // episode" (searched, nothing) from "not checked yet".
+                // Per-server batching: every selected episode sweeps its servers
+                // CONCURRENTLY (3 at a time) instead of one episode after
+                // another — a server holding all episodes completes fast, so
+                // the user can pick it without waiting for the slowest
+                // extension to finish every episode in turn.
                 suspend fun sweep(list: List<Episode>, useOrigin: Boolean) {
-                    for (ep in list) {
-                        if (gen != dlGen) return
-                        val epKey = dlEpKey(ep)
-                        if (union.isEmpty()) {
-                            dlMsg = "Finding servers (" + (dlSwept.size + 1) + "/" + eps.size + ")\u2026"
-                        }
-                        val servers = runCatching {
-                            vm.serversForBatch(batchItem, ep, useOrigin, onServers = { prog ->
-                                if (gen == dlGen) dlCache[epKey] = prog
-                                withContext(Dispatchers.Main) { publishLive(prog) }
-                            })
-                        }.getOrDefault(emptyList())
-                        // A cancelled / superseded search must not write into
-                        // the cache its replacement now owns.
-                        if (gen != dlGen) return
-                        if (servers.isNotEmpty()) dlCache[epKey] = servers
-                        publishLive(servers)
-                        dlSwept = dlSwept + epKey
+                    val slots = kotlinx.coroutines.sync.Semaphore(3)
+                    val mutex = kotlinx.coroutines.sync.Mutex()
+                    kotlinx.coroutines.supervisorScope {
+                        list.map { ep ->
+                            async {
+                                slots.withPermit {
+                                    if (gen != dlGen) return@async
+                                    val epKey = dlEpKey(ep)
+                                    mutex.withLock {
+                                        if (union.isEmpty()) {
+                                            dlMsg = "Finding servers (" + (dlSwept.size + 1) + "/" + eps.size + ")\u2026"
+                                        }
+                                    }
+                                    val servers = runCatching {
+                                        vm.serversForBatch(batchItem, ep, useOrigin, onServers = { prog ->
+                                            if (gen == dlGen) dlCache[epKey] = prog
+                                            withContext(Dispatchers.Main) { publishLive(prog) }
+                                        })
+                                    }.getOrDefault(emptyList())
+                                    if (gen != dlGen) return@async
+                                    mutex.withLock {
+                                        if (gen != dlGen) return@withLock
+                                        if (servers.isNotEmpty()) dlCache[epKey] = servers
+                                        publishLive(servers)
+                                        dlSwept = dlSwept + epKey
+                                    }
+                                }
+                            }
+                        }.awaitAll()
                     }
                 }
                 sweep(eps, originOnly)

@@ -34,6 +34,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -45,8 +46,12 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavHostController
+import com.hikari.app.HikariApp
 import com.hikari.app.i18n.I18n
 import com.hikari.app.i18n.tr
+import com.hikari.app.data.NetworkStream
+import com.hikari.app.data.ProviderConfig
+import com.hikari.app.data.ProviderType
 import com.hikari.app.iptv.LiveTvEngine
 import com.hikari.app.iptv.LiveTvEpgSource
 import com.hikari.app.iptv.LiveTvSettings
@@ -83,6 +88,11 @@ fun LiveTvSettingsScreen(nav: NavHostController) {
     var removeEpg by remember { mutableStateOf<LiveTvEpgSource?>(null) }
     var pinDraft by remember { mutableStateOf("") }
     var lockAdult by remember { mutableStateOf(true) }
+    // Torrents & streams (the old Playlists page's other two tabs): provider
+    // rows owned here, played from home.
+    var showStreamAdd by remember { mutableStateOf(false) }
+    var streamStartTorrent by remember { mutableStateOf(false) }
+    var removeStream by remember { mutableStateOf<ProviderConfig?>(null) }
 
     fun toast(msg: String) = Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
 
@@ -129,8 +139,16 @@ fun LiveTvSettingsScreen(nav: NavHostController) {
         }
     }
 
-    val importer = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri == null) return@rememberLauncherForActivityResult
+    val app = context.applicationContext as HikariApp
+    val allProviders by remember { app.providers.providers }.collectAsState()
+    val torStreams = remember(allProviders) {
+        allProviders.filter {
+            it.type == ProviderType.IPTV &&
+                (NetworkStream.isStream(it) || NetworkStream.isTorrentLink(it.url))
+        }
+    }
+
+    val importer = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->        if (uri == null) return@rememberLauncherForActivityResult
         scope.launch {
             val err = withContext(Dispatchers.IO) {
                 runCatching {
@@ -296,6 +314,34 @@ fun LiveTvSettingsScreen(nav: NavHostController) {
                     Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(4.dp))
                     Text(tr("Add M3U"))
+                }
+            }
+        }
+
+        // ---- torrents & streams (the old Playlists page's other two tabs) ----
+        item { LiveTvSectionTitle(tr("Torrents & streams")) }
+        items(torStreams, key = { "tor:" + it.id }) { p ->
+            val torrent = NetworkStream.isTorrentLink(p.url)
+            TorrentStreamRow(
+                name = p.name.ifBlank { tr("Stream") },
+                subtitle = if (torrent) tr("Torrent")
+                else runCatching { NetworkStream.hostOf(p.url) }.getOrDefault(p.url).take(80),
+                torrent = torrent,
+                onOpen = { openTorrentStream(nav, p) },
+                onRemove = { removeStream = p },
+            )
+        }
+        item {
+            Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = { streamStartTorrent = false; showStreamAdd = true }) {
+                    Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text(tr("Add stream"))
+                }
+                TextButton(onClick = { streamStartTorrent = true; showStreamAdd = true }) {
+                    Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text(tr("Add torrent"))
                 }
             }
         }
@@ -601,6 +647,35 @@ fun LiveTvSettingsScreen(nav: NavHostController) {
     }
     if (showEpg) {
         AddEpgDialog(onDone = { showEpg = false; tick++ }, onDismiss = { showEpg = false })
+    }
+    if (showStreamAdd) {
+        TorrentStreamAddDialog(
+            nav,
+            startAsTorrent = streamStartTorrent,
+            onDone = { showStreamAdd = false; tick++ },
+            onDismiss = { showStreamAdd = false },
+        )
+    }
+    removeStream?.let { p ->
+        AlertDialog(
+            onDismissRequest = { removeStream = null },
+            title = { Text(I18n.t("Remove %s?").replace("%s", p.name)) },
+            text = { Text(tr("It will no longer open from here.")) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        removeStream = null
+                        scope.launch {
+                            removeTorrentStreamProvider(app, p.id)
+                            tick++
+                        }
+                    }
+                ) { Text(tr("Remove"), color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { removeStream = null }) { Text(tr("Cancel")) }
+            },
+        )
     }
     removeSource?.let { src ->
         AlertDialog(

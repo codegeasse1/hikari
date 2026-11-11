@@ -50,6 +50,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -67,6 +68,8 @@ import androidx.navigation.NavHostController
 import coil.compose.AsyncImage
 import com.hikari.app.HikariApp
 import com.hikari.app.data.Logs
+import com.hikari.app.data.NetworkStream
+import com.hikari.app.data.ProviderType
 import com.hikari.app.i18n.tr
 import com.hikari.app.iptv.LiveChannel
 import com.hikari.app.iptv.LiveChannelGroup
@@ -92,7 +95,21 @@ import kotlinx.coroutines.withContext
 fun LiveTvHomeScreen(nav: NavHostController) {
     LiveTvInit()
     val context = LocalContext.current
+    val app = context.applicationContext as HikariApp
     val scope = rememberCoroutineScope()
+    // Torrents & network streams live in the provider store (never in the
+    // engine): home plays them straight from these rows, settings owns them.
+    val allProviders by remember { app.providers.providers }.collectAsState()
+    val torProviders = remember(allProviders) {
+        allProviders.filter {
+            it.type == ProviderType.IPTV && NetworkStream.isTorrentLink(it.url)
+        }
+    }
+    val streamProviders = remember(allProviders) {
+        allProviders.filter {
+            it.type == ProviderType.IPTV && NetworkStream.isStream(it) && !NetworkStream.isTorrentLink(it.url)
+        }
+    }
     var tick by remember { mutableStateOf(0) }
     var loading by remember { mutableStateOf(true) }
     var groups by remember { mutableStateOf<List<LiveChannelGroup>>(emptyList()) }
@@ -120,11 +137,16 @@ fun LiveTvHomeScreen(nav: NavHostController) {
         val data = withContext(Dispatchers.IO) {
             runCatching {
                 // Self-sufficient load: init the engine AND import the stored
-                // playlists before reading groups, so this home never shows
-                // the "No channels yet" dead-end just because the Playlists
-                // page (the old import trigger) was never opened.
+                // playlists AND force-parse every enabled source that has no
+                // rows yet (the Bridge pattern — see LiveTvBridge.catalogs):
+                // a fresh process starts with bare in-memory channels while
+                // the refresh interval still says "not stale", so without
+                // this groupsOf answers empty until a playlist is opened.
                 LiveTvEngine.init(context)
                 LiveTvImport.importExistingProviders(app)
+                LiveTvEngine.sources()
+                    .filter { it.enabled && LiveTvEngine.channelsOf(it.id).isEmpty() }
+                    .forEach { src -> runCatching { LiveTvEngine.refreshSource(src.id) } }
                 val gs = LiveTvEngine.groupsOf(null)
                 val st = LiveTvEngine.store.userState()
                 val prev = if (gs.isEmpty()) emptyMap() else runCatching {
@@ -280,13 +302,6 @@ fun LiveTvHomeScreen(nav: NavHostController) {
                             }
                         },
                     )
-                    DropdownMenuItem(
-                        text = { Text(tr("Playlists")) },
-                        onClick = {
-                            menuOpen = false
-                            nav.navigate(Routes.IPTV_LISTS)
-                        },
-                    )
                 }
             }
         }
@@ -371,9 +386,6 @@ fun LiveTvHomeScreen(nav: NavHostController) {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             TextButton(onClick = { nav.navigate(Routes.LIVETV_SETTINGS) }) {
                                 Text(tr("Add playlist"))
-                            }
-                            TextButton(onClick = { nav.navigate(Routes.IPTV_LISTS) }) {
-                                Text(tr("Playlists"))
                             }
                         }
                     }
@@ -507,8 +519,46 @@ fun LiveTvHomeScreen(nav: NavHostController) {
                 }
             }
         }
+        if (torProviders.isNotEmpty()) {
+            item {
+                TorrentStreamHomeHeader(title = tr("Torrents"))
+            }
+            items(torProviders, key = { "tor:" + it.id }) { p ->
+                TorrentStreamRow(
+                    name = p.name.ifBlank { tr("Torrent") },
+                    subtitle = tr("Torrent"),
+                    torrent = true,
+                    onOpen = { openTorrentStream(nav, p) },
+                )
+            }
+        }
+        if (streamProviders.isNotEmpty()) {
+            item {
+                TorrentStreamHomeHeader(title = tr("Network streams"))
+            }
+            items(streamProviders, key = { "stream:" + it.id }) { p ->
+                TorrentStreamRow(
+                    name = p.name.ifBlank { tr("Stream") },
+                    subtitle = runCatching { NetworkStream.hostOf(p.url) }.getOrDefault(p.url).take(80),
+                    torrent = false,
+                    onOpen = { openTorrentStream(nav, p) },
+                )
+            }
+        }
         item { Spacer(Modifier.height(12.dp)) }
     }
+}
+
+/** Small section header for home's torrents / network streams rows. */
+@Composable
+private fun TorrentStreamHomeHeader(title: String) {
+    Text(
+        title,
+        style = MaterialTheme.typography.titleSmall,
+        fontWeight = FontWeight.Bold,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.fillMaxWidth().padding(top = 18.dp, bottom = 6.dp),
+    )
 }
 
 private data class HomeData(

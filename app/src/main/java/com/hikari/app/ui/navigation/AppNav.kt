@@ -118,8 +118,6 @@ import com.hikari.app.ui.screens.ExtensionsScreen
 import com.hikari.app.ui.screens.HistoryScreen
 import com.hikari.app.ui.screens.WebSitesScreen
 import com.hikari.app.ui.screens.HomeScreen
-import com.hikari.app.ui.screens.IptvPlaylistScreen
-import com.hikari.app.ui.screens.IptvScreen
 import com.hikari.app.ui.screens.LiveTvHomeScreen
 import com.hikari.app.ui.screens.LibraryScreen
 import com.hikari.app.ui.screens.LiveTvCalendarScreen
@@ -167,10 +165,6 @@ object Routes {
         "tracker-shelf?source=${Uri.encode(source)}&key=${Uri.encode(shelfKey)}" +
             "&title=${Uri.encode(title.take(200))}&filter=${Uri.encode(filter)}"
     const val IPTV = "iptv"
-    /** Playlists, Tor and Network streams in the new Live TV style (stacked group cards). */
-    const val IPTV_LISTS = "iptv-lists"
-    /** One playlist's own page: its groups, each opening a paged channel grid. */
-    const val IPTV_PLAYLIST = "iptv-playlist?pid={pid}"
     /** Live TV engine pages (guide, settings, manage, on-demand, recordings, sports, calendar). */
     const val LIVETV_SETTINGS = "livetv-settings"
     const val LIVETV_GUIDE = "livetv-guide"
@@ -297,9 +291,6 @@ object Routes {
     ): String = if (isTrackerMangaSource(providerId)) mangaSearch(title)
     else mangaDetail(providerId, url, title, posterUrl)
 
-    /** Opens one IPTV playlist's group list. */
-    fun iptvPlaylist(providerId: String): String =
-        "iptv-playlist?pid=${Uri.encode(providerId)}"
     const val SEARCH_QUERY = "provider-search?q={q}&provider={provider}"
     /** Base path of [SEARCH_QUERY] — used to map the scoped route onto the
      *  Search tab for the bottom bar. */
@@ -1155,7 +1146,6 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
             composable(Routes.HISTORY) { MyStuffScreen(nav, MyStuff.HISTORY) }
             composable(Routes.DOWNLOADS) { MyStuffScreen(nav, MyStuff.DOWNLOADS) }
             composable(Routes.IPTV) { LiveTvHomeScreen(nav) }
-            composable(Routes.IPTV_LISTS) { IptvScreen(nav) }
             composable(Routes.LIVETV_SETTINGS) { LiveTvSettingsScreen(nav) }
             composable(Routes.LIVETV_GUIDE) { LiveTvGuideScreen(nav) }
             composable(Routes.LIVETV_MANAGE) { LiveTvManageScreen(nav) }
@@ -1163,15 +1153,6 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
             composable(Routes.LIVETV_RECORDINGS) { LiveTvRecordingsScreen(nav) }
             composable(Routes.LIVETV_SPORTS) { LiveTvSportsScreen(nav) }
             composable(Routes.LIVETV_CALENDAR) { LiveTvCalendarScreen(nav) }
-            composable(
-                route = Routes.IPTV_PLAYLIST,
-                arguments = listOf(
-                    navArgument("pid") { type = NavType.StringType },
-                )
-            ) { entry ->
-                val pid = Uri.decode(entry.arguments?.getString("pid").orEmpty())
-                IptvPlaylistScreen(nav, pid)
-            }
             composable(Routes.EXTENSIONS) { ExtensionsScreen(nav) }
             composable(Routes.WEBSITES) { WebSitesScreen(nav) }
             // The Telegram tab (off by default — see Routes.TELEGRAM): the public

@@ -26,6 +26,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Public
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -36,15 +37,21 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.viewinterop.AndroidView
+import coil.compose.AsyncImage
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -78,6 +85,26 @@ fun WebSitesScreen(nav: NavHostController) {
     var siteUrl by remember { mutableStateOf("") }
     var adding by remember { mutableStateOf(false) }
     var removeTarget by remember { mutableStateOf<Site?>(null) }
+    // Live preview thumbnails: captured once per site in a hidden WebView,
+    // cached on disk (see SitePreview) — the grid shows the real page, not
+    // the letter avatar, once its shot lands.
+    var previewTick by remember { mutableStateOf(0) }
+    var pendingCaptures by remember { mutableStateOf(listOf<Site>()) }
+    LaunchedEffect(sites) {
+        val missing = sites.filter { !SitePreview.fileFor(context, it.url).exists() }
+        if (missing.isNotEmpty()) {
+            pendingCaptures = (pendingCaptures + missing).distinctBy { it.url }
+        }
+    }
+    val capturing = pendingCaptures.firstOrNull()
+    if (capturing != null) {
+        key(capturing.url) {
+            SiteCaptureView(site = capturing) {
+                pendingCaptures = pendingCaptures.drop(1)
+                previewTick++
+            }
+        }
+    }
 
     fun openSite(site: Site) {
         val opened = runCatching {
@@ -189,7 +216,7 @@ fun WebSitesScreen(nav: NavHostController) {
             }
         } else {
             LazyVerticalGrid(
-                columns = GridCells.Adaptive(minSize = 160.dp),
+                columns = GridCells.Fixed(2),
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(
                     start = 16.dp, end = 16.dp, top = 4.dp,
@@ -199,10 +226,18 @@ fun WebSitesScreen(nav: NavHostController) {
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 items(shown, key = { it.url }) { site ->
+                    val preview = remember(site.url, previewTick) {
+                        SitePreview.fileFor(context, site.url).takeIf { it.exists() }
+                    }
                     WebSiteCard(
                         site = site,
+                        preview = preview,
                         onOpen = { openSite(site) },
                         onRemove = { removeTarget = site },
+                        onRetake = {
+                            runCatching { SitePreview.fileFor(context, site.url).delete() }
+                            pendingCaptures = (pendingCaptures + site).distinctBy { it.url }
+                        },
                     )
                 }
             }
@@ -285,7 +320,10 @@ fun WebSitesScreen(nav: NavHostController) {
             text = { Text(tr("It will no longer open from here."), style = MaterialTheme.typography.bodySmall) },
             confirmButton = {
                 TextButton(onClick = {
-                    scope.launch { runCatching { vm.removeSite(target.url) } }
+                    scope.launch {
+                        runCatching { vm.removeSite(target.url) }
+                        runCatching { SitePreview.fileFor(context, target.url).delete() }
+                    }
                     removeTarget = null
                 }) {
                     Text(tr("Remove"), color = MaterialTheme.colorScheme.error)
@@ -303,8 +341,10 @@ fun WebSitesScreen(nav: NavHostController) {
 @Composable
 private fun WebSiteCard(
     site: Site,
+    preview: java.io.File?,
     onOpen: () -> Unit,
     onRemove: () -> Unit,
+    onRetake: () -> Unit,
 ) {
     GlassCard(
         Modifier
@@ -328,29 +368,46 @@ private fun WebSiteCard(
                     .background(tint),
                 contentAlignment = Alignment.Center,
             ) {
-                Box(
-                    Modifier
-                        .size(44.dp)
-                        .clip(CircleShape)
-                        .background(Color.White.copy(alpha = 0.22f)),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        letter,
-                        style = MaterialTheme.typography.headlineMedium,
-                        fontWeight = FontWeight.ExtraBold,
-                        color = Color.White,
+                // The live page shot when captured; the letter avatar while
+                // the capture is still queued or failed.
+                if (preview != null) {
+                    AsyncImage(
+                        model = preview,
+                        contentDescription = site.name,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize(),
                     )
+                } else {
+                    Box(
+                        Modifier
+                            .size(44.dp)
+                            .clip(CircleShape)
+                            .background(Color.White.copy(alpha = 0.22f)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            letter,
+                            style = MaterialTheme.typography.headlineMedium,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = Color.White,
+                        )
+                    }
                 }
-                IconButton(
-                    onClick = onRemove,
-                    modifier = Modifier.align(Alignment.TopEnd),
-                ) {
-                    Icon(
-                        Icons.Filled.Delete,
-                        contentDescription = tr("Remove website"),
-                        tint = Color.White.copy(alpha = 0.9f),
-                    )
+                Row(modifier = Modifier.align(Alignment.TopEnd)) {
+                    IconButton(onClick = onRetake) {
+                        Icon(
+                            Icons.Filled.Refresh,
+                            contentDescription = tr("Retake preview"),
+                            tint = Color.White.copy(alpha = 0.9f),
+                        )
+                    }
+                    IconButton(onClick = onRemove) {
+                        Icon(
+                            Icons.Filled.Delete,
+                            contentDescription = tr("Remove website"),
+                            tint = Color.White.copy(alpha = 0.9f),
+                        )
+                    }
                 }
             }
             Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
@@ -370,5 +427,82 @@ private fun WebSiteCard(
                 )
             }
         }
+    }
+}
+
+/** Disk cache for live website preview thumbnails: one PNG per site URL, so
+ *  the grid shows the real page without re-rendering it on every open. */
+private object SitePreview {
+    fun fileFor(context: android.content.Context, url: String): java.io.File {
+        val dir = java.io.File(context.filesDir, "site-previews").apply { mkdirs() }
+        val sha = java.security.MessageDigest.getInstance("SHA-1").digest(url.toByteArray())
+            .joinToString("") { "%02x".format(it) }
+        return java.io.File(dir, sha + ".png")
+    }
+}
+
+/** Renders one site in a near-invisible WebView and saves its screenshot for
+ *  the grid. One at a time (the caller queues), with a hard timeout so a hung
+ *  page can never stall the queue. */
+@Composable
+private fun SiteCaptureView(site: Site, onFinished: () -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var webView by remember { mutableStateOf<android.webkit.WebView?>(null) }
+    var finished by remember(site.url) { mutableStateOf(false) }
+    fun finish() {
+        if (!finished) {
+            finished = true
+            onFinished()
+        }
+    }
+    AndroidView(
+        factory = { ctx ->
+            android.webkit.WebView(ctx).apply {
+                settings.javaScriptEnabled = true
+                settings.domStorageEnabled = true
+                settings.loadWithOverviewMode = true
+                settings.useWideViewPort = true
+                layoutParams = android.view.ViewGroup.LayoutParams(1080, 720)
+                webViewClient = object : android.webkit.WebViewClient() {
+                    override fun onPageFinished(view: android.webkit.WebView, url: String) {
+                        scope.launch {
+                            kotlinx.coroutines.delay(4500)
+                            runCatching {
+                                val w = view.width.takeIf { it > 0 } ?: 1080
+                                val h = view.height.takeIf { it > 0 } ?: 720
+                                val full = android.graphics.Bitmap.createBitmap(
+                                    w, h, android.graphics.Bitmap.Config.ARGB_8888
+                                )
+                                view.draw(android.graphics.Canvas(full))
+                                val scaled = android.graphics.Bitmap.createScaledBitmap(
+                                    full, 480, (480f * h / w).toInt().coerceAtLeast(1), true
+                                )
+                                full.recycle()
+                                SitePreview.fileFor(context, site.url).outputStream().use { out ->
+                                    scaled.compress(android.graphics.Bitmap.CompressFormat.PNG, 90, out)
+                                }
+                                scaled.recycle()
+                            }
+                            runCatching { view.stopLoading() }
+                            finish()
+                        }
+                    }
+                }
+                loadUrl(site.url)
+            }.also { webView = it }
+        },
+        modifier = Modifier.size(360.dp, 240.dp).alpha(0.01f),
+    )
+    androidx.compose.runtime.DisposableEffect(site.url) {
+        onDispose {
+            runCatching { webView?.stopLoading() }
+            runCatching { webView?.destroy() }
+        }
+    }
+    LaunchedEffect(site.url) {
+        kotlinx.coroutines.delay(25000)
+        runCatching { webView?.stopLoading() }
+        finish()
     }
 }
