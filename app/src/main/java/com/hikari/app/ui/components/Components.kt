@@ -505,9 +505,19 @@ fun AutoScrollPosterRow(
             val span = stripPx / copies.toFloat()
             if (span <= 0f) return@LaunchedEffect
             offset.snapTo(if (reverse) span else 0f)
+            // Release grace: after a touch ends the row holds still briefly
+            // before gliding again (the timer lives here, in a normal scope,
+            // because the gesture scope below forbids delay()).
+            var coolDown = false
             while (isActive) {
                 if (pausedNow) {
+                    coolDown = true
                     delay(120)
+                    continue
+                }
+                if (coolDown) {
+                    coolDown = false
+                    delay(2500)
                     continue
                 }
                 val target = if (reverse) 0f else span
@@ -526,20 +536,18 @@ fun AutoScrollPosterRow(
                 .fillMaxWidth()
                 .clipToBounds()
                 .pointerInput(cards) {
-                    // awaitEachGesture is a restricted scope (no delay() etc),
-                    // so the resume-after-release timer lives in a child
-                    // coroutine; a generation counter drops stale resumes.
-                    var resumeGen = 0
+                    // Touch pauses the glide; release resumes it (after the
+                    // grace period in the loop above). Only restricted-scope
+                    // calls are allowed in here — no delay(), no launch.
                     awaitEachGesture {
                         awaitFirstDown(requireUnconsumed = false)
-                        resumeGen += 1
                         paused = true
-                        runCatching { waitForUpOrCancellation() }
-                        val g = resumeGen
-                        launch {
-                            delay(2500)
-                            if (g == resumeGen) paused = false
+                        try {
+                            waitForUpOrCancellation()
+                        } catch (_: Exception) {
+                            // Gesture stolen mid-press: treat as a release.
                         }
+                        paused = false
                     }
                 }
         ) {
