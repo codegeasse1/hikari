@@ -66,6 +66,7 @@ import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -151,6 +152,7 @@ import com.hikari.app.ui.screens.TmdbGridScreen
 import com.hikari.app.ui.screens.TrackerShelfScreen
 import com.hikari.app.ui.theme.HikariThemeMode
 import com.hikari.app.ui.theme.rememberGlassTokens
+import com.hikari.app.tv.TV_MUSIC_ROUTE
 import com.hikari.app.tv.TvMode
 import com.hikari.app.tv.TvMouseCursorOverlay
 import com.hikari.app.tv.TvNavRail
@@ -915,6 +917,14 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
     val fullscreenOffFlow = remember { app.store.fullscreenOffFlow() }
     val fullscreenOff by fullscreenOffFlow.collectAsState(initial = false)
     val isTv = TvMode.current()
+    // HIKari music on a television: a full-screen layer opened from the rail's "Music" tab.
+    // The persisted choice is read here, before the first frame, so the pages below never flash.
+    if (isTv) com.hikari.app.music.MusicMode.ensureLoaded(context)
+    val tvMusicOn = isTv && com.hikari.app.music.MusicMode.active
+    val tvMusicPlayerOpen = tvMusicOn && com.hikari.app.music.TvMusicUi.playerOpen
+    // Keeps Hikari's own pages' saved state (scroll positions, typed text) while the music layer
+    // has taken their place - see the Scaffold below.
+    val hikariPages = rememberSaveableStateHolder()
     // The gap kept clear of the screen's edges on a television ("overscan" —
     // see TvUi.DEFAULT_OVERSCAN_DP for why televisions need one at all).
     val overscanFlow = remember { app.store.tvOverscanFlow() }
@@ -1065,6 +1075,10 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
         // drawn over the theme backdrop, under the transparent Scaffold. Draws
         // nothing until a picture is chosen.
         com.hikari.app.ui.CustomBackgroundLayer()
+        // While the music layer is up on a television Hikari's pages are taken out of composition
+        // (not merely covered): a page that is only hidden still takes D-pad focus, so the remote
+        // would wander off onto cards nobody can see. Their saved state is kept by [hikariPages].
+        if (!tvMusicOn) hikariPages.SaveableStateProvider("hikari-pages") {
         Scaffold(
             // Transparent: the backdrop above is the page, so the cards' glass
             // has something to sit on (see the comment on the backdrop).
@@ -1359,6 +1373,11 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
                 }
             }
         }
+        }
+        // HIKari music on a television. Drawn before the rail so the rail stays on top of it.
+        if (tvMusicOn) {
+            com.hikari.app.music.TvMusicRoot(startPad = TvUi.railWidth() + 24.dp)
+        }
         if (showBar && !isTv) {
             AppBottomBar(
                 currentRoute = tabRoute,
@@ -1370,17 +1389,32 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
                 modifier = Modifier.align(Alignment.BottomCenter),
             )
         }
-        if (showBar && isTv) {
+        // The rail steps out of the way only while the full-screen music player is open.
+        if (isTv && (showBar || tvMusicOn) && !tvMusicPlayerOpen) {
             TvNavRail(
                 currentRoute = tabRoute,
                 hidden = visibleTabs,
-                onNavigate = { route -> Routes.navigateTab(nav, route) },
+                onNavigate = { route ->
+                    if (route == TV_MUSIC_ROUTE) {
+                        // Music is a layer over Hikari, not a NavHost page.
+                        com.hikari.app.music.MusicMode.setActive(context, true)
+                    } else {
+                        // Any other tab leaves music (which also pauses it, like the phone's
+                        // provider switch, so a video never plays over a song).
+                        if (com.hikari.app.music.MusicMode.active) {
+                            com.hikari.app.music.MusicMode.setActive(context, false)
+                        }
+                        Routes.navigateTab(nav, route)
+                    }
+                },
                 modifier = Modifier.align(Alignment.CenterStart),
                 isScrolling = !barExpanded,
+                musicActive = tvMusicOn,
             )
         }
         // HIKari music provider: full-screen music UI laid over Hikari (whose screens stay alive
-        // underneath), plus the "Select Provider" drawer. Phones / tablets only.
+        // underneath), plus the "Select Provider" drawer. Phones / tablets only (a television
+        // uses [TvMusicRoot] above, opened from the rail).
         if (!isTv) {
             com.hikari.app.music.MusicMode.ensureLoaded(context)
             if (com.hikari.app.music.MusicMode.active) com.hikari.app.music.MusicRoot()

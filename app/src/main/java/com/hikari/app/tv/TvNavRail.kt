@@ -26,6 +26,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.VideoLibrary
@@ -62,10 +63,18 @@ private class TvRailTab(
     val icon: ImageVector,
 )
 
+/**
+ * The rail's "Music" entry. It is not a NavHost destination: HIKari music is a full-screen layer
+ * (see [com.hikari.app.music.TvMusicRoot]) that AppRoot draws over the normal pages, so this is
+ * only an id the rail hands back through onNavigate and uses to light the tab up.
+ */
+const val TV_MUSIC_ROUTE = "tv-music"
+
 private val TvRailTabs = listOf(
     TvRailTab(Routes.HOME, "Home", Icons.Filled.Home),
     TvRailTab(Routes.SEARCH, "Search", Icons.Filled.Search),
     TvRailTab(Routes.ANIME_CALENDAR, "Schedule", Icons.Filled.CalendarMonth),
+    TvRailTab(TV_MUSIC_ROUTE, "Music", Icons.Filled.MusicNote),
     TvRailTab(Routes.LIBRARY, "My Stuff", Icons.Filled.VideoLibrary),
     TvRailTab(Routes.SETTINGS, "Settings", Icons.Filled.Settings),
 )
@@ -89,8 +98,10 @@ fun TvNavRail(
     onNavigate: (String) -> Unit,
     modifier: Modifier = Modifier,
     isScrolling: Boolean = false,
+    /** True while the HIKari music layer is on screen: Music is then the lit tab. */
+    musicActive: Boolean = false,
 ) {
-    val active = railHighlight(currentRoute)
+    val active = if (musicActive) TV_MUSIC_ROUTE else railHighlight(currentRoute)
     var railFocused by remember { mutableStateOf(false) }
     val s = TvUi.scale()
     val t = TvUi.textScale()
@@ -176,7 +187,7 @@ fun TvNavRail(
             }
         }
 
-        // মাঝখানে ৫টি নেভিগেশন আইটেম
+        // মাঝখানে নেভিগেশন আইটেমগুলো (Home, Search, Schedule, Music, My Stuff, Settings)
         Column(
             modifier = Modifier
                 .fillMaxWidth()
