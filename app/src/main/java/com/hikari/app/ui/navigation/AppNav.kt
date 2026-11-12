@@ -1379,6 +1379,13 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
                 isScrolling = !barExpanded,
             )
         }
+        // HIKari music provider: full-screen music UI laid over Hikari (whose screens stay alive
+        // underneath), plus the "Select Provider" drawer. Phones / tablets only.
+        if (!isTv) {
+            com.hikari.app.music.MusicMode.ensureLoaded(context)
+            if (com.hikari.app.music.MusicMode.active) com.hikari.app.music.MusicRoot()
+            com.hikari.app.music.ProviderDrawer()
+        }
         TvMouseCursorOverlay()
     }
 }

@@ -16,6 +16,7 @@
          going while the user is elsewhere or the screen is off. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <!-- API 33+: the download notification needs this to be visible. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Only for exporting into the public Downloads folder on API < 29;
@@ -480,6 +481,16 @@ android:name=".player.PlayerActivity"
             android:name="com.hikari.app.dub.NeuralTtsService"
             android:process=":neuraltts"
             android:exported="false" />
+
+        <!-- HIKari music: background playback + notification for the music provider. -->
+        <service
+            android:name="com.hikari.app.music.MusicService"
+            android:exported="true"
+            android:foregroundServiceType="mediaPlayback">
+            <intent-filter>
+                <action android:name="androidx.media3.session.MediaSessionService" />
+            </intent-filter>
+        </service>
 
     </application>
 

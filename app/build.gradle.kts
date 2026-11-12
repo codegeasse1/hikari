@@ -244,6 +244,8 @@ dependencies {
     implementation(libs.androidx.media3.exoplayer.dash)
     implementation(libs.androidx.media3.datasource.okhttp)
     implementation(libs.androidx.media3.ui)
+    // HIKari music: lock-screen / notification controls for the music player (same version as the rest of media3).
+    implementation("androidx.media3:media3-session:1.7.1")
     implementation(libs.androidx.media3.effect)
     implementation("io.github.anilbeesetti:nextlib-media3ext:1.7.1-0.9.0")
     implementation(libs.androidx.splashscreen)

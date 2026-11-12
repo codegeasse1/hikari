@@ -60,6 +60,7 @@ import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Translate
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Mouse
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Tune
@@ -2793,6 +2794,12 @@ private fun HomeHeader(
             .padding(horizontal = 8.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        // Hamburger: opens the "Select Provider" drawer (hikari / HIKari music). Not on TV.
+        if (!TvMode.current()) {
+            IconButton(onClick = { com.hikari.app.music.MusicMode.drawerOpen = true }) {
+                Icon(Icons.Filled.Menu, contentDescription = "Select provider", tint = iconTint)
+            }
+        }
         Column(Modifier.weight(1f)) {
             Text(
                 tr("Hikari"),
