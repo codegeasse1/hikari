@@ -593,6 +593,7 @@ private fun searchSettings(rawQuery: String): List<SettingsSearchEntry> {
     }
     section("sec-player-style", "Player UI style", "Customize", "customize", null, null, "player ui style buttons icons size bigger colour color shape round square circle position move opacity customize")
     section("sec-server-screen-style", "Server screen style", "Customize", "customize", null, "customize.server_screen", "server screen style page list loading streams chips extension hero banner look classic new design customize")
+    section("sec-cs3-recommendations", "Recommendations source", "Customize", "customize", null, "customize.cs3_recommendations", "recommendations recommended related similar tmdb plugin provider extension cloudstream cs3 site own source detail page customize")
     section("sec-player-gestures", "Player gestures & decoder", "Customize", "customize", null, null, "player gestures decoder brightness volume swipe slide seek pinch zoom hardware software video")
     section("sec-default-playback", "Default quality & audio", "Player", "player", null, null, "default quality audio language voice dub hindi english 1080p 720p 480p resolution auto")
     val servers = "Playback & Servers"
@@ -1020,6 +1021,7 @@ fun SettingsScreen(nav: NavHostController) {
                         }
                     }
                     item { SettingsCard { ServerScreenStyleCard(app) } }
+                    item { SettingsCard { Cs3RecommendationsCard(app) } }
                     item { SettingsCard { PlayerStyleCard(onOpen = { showPlayerStyle = true }) } }
                     item { SettingsCard { PlayerGesturesCard(onOpen = { showPlayerGestures = true }) } }
                 }
@@ -4811,6 +4813,78 @@ private fun ServerScreenStyleCard(app: HikariApp) {
                 )
                 Text(
                     tr("Title banner, extension chips, loading cards and a live list per extension"),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun Cs3RecommendationsCard(app: HikariApp) {
+    val scope = rememberCoroutineScope()
+    var source by remember { mutableStateOf("plugin") }
+
+    LaunchedEffect(Unit) {
+        source = runCatching { app.store.cs3RecommendationsSource() }.getOrDefault("plugin")
+    }
+
+    fun persist(next: String) {
+        source = if (next == "tmdb") "tmdb" else "plugin"
+        scope.launch { runCatching { app.store.setCs3RecommendationsSource(source) } }
+    }
+
+    val fromPlugin = source != "tmdb"
+    SettingsSection(
+        id = "customize.cs3_recommendations",
+        icon = Icons.Filled.ViewModule,
+        title = tr("Recommendations source"),
+        summary = if (fromPlugin) {
+            tr("CloudStream titles: the plugin's own recommendations")
+        } else {
+            tr("CloudStream titles: TMDB recommendations")
+        },
+    ) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clickable { persist("plugin") }
+                .tvToggle(fromPlugin, onValueChange = {
+                    if (it) persist("plugin")
+                }),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            RadioButton(selected = fromPlugin, onClick = null)
+            Column(Modifier.weight(1f)) {
+                Text(
+                    tr("Original plugin (default)"),
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Text(
+                    tr("Show the recommendations the CloudStream plugin returns, like the CloudStream app. TMDB is used only when the plugin has none"),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clickable { persist("tmdb") }
+                .tvToggle(!fromPlugin, onValueChange = {
+                    if (it) persist("tmdb")
+                }),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            RadioButton(selected = !fromPlugin, onClick = null)
+            Column(Modifier.weight(1f)) {
+                Text(
+                    tr("TMDB"),
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Text(
+                    tr("Always show TMDB's Related and Similar lists"),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

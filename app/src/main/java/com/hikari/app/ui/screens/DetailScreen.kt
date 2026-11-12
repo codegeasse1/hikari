@@ -549,6 +549,11 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
     private val _similar = MutableStateFlow<List<MediaItem>>(emptyList())
     val similar: StateFlow<List<MediaItem>> = _similar.asStateFlow()
 
+    /** True when [related] holds the CloudStream plugin's OWN recommendations
+     *  (Settings -> Customize -> Recommendations source) rather than TMDB's. */
+    private val _relatedFromPlugin = MutableStateFlow(false)
+    val relatedFromPlugin: StateFlow<Boolean> = _relatedFromPlugin.asStateFlow()
+
     /** Detail-page extras (metadata block, Cast, Trailers) for the current
      *  title, from a single background TMDB lookup. Null until it lands, and
      *  stays null when the title has no TMDB match — the sections then simply
@@ -655,6 +660,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             _episodesLoaded.value = false
             _related.value = emptyList()
             _similar.value = emptyList()
+            _relatedFromPlugin.value = false
             _extras.value = null
             val isTmdbRow = providerId == "tmdb" || rawType.equals("tmdb", ignoreCase = true)
             val isTrackerRow = providerId.lowercase() in setOf(
@@ -703,7 +709,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             // winning no matter which finishes last.
             val sgFast = newShelvesGeneration()
             if (!com.hikari.app.data.IptvMark.of(base)) {
-                launch { loadShelves(base, sgFast) }
+                launch { loadShelves(base, sgFast, fastPass = true) }
             }
             _vegaPacks.value = emptyList()
             _vegaMovieOptions.value = emptyList()
@@ -1006,7 +1012,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
         return runCatching { if (anime) store.animeTmdb() else store.videoTmdb() }.getOrDefault(true)
     }
 
-    private suspend fun loadShelves(item: MediaItem, shelvesGen: Int) {
+    private suspend fun loadShelves(item: MediaItem, shelvesGen: Int, fastPass: Boolean = false) {
         withContext(Dispatchers.IO) {
             val tmdbOk = tmdbSectionsAllowed(item)
             if (shelvesGen == shelvesGeneration) _tmdbSectionsOk.value = tmdbOk
@@ -1027,6 +1033,33 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                     onUpdate = { if (shelvesGen == shelvesGeneration) _ratings.value = it },
                 )
             }.getOrDefault(emptyList()).let { if (shelvesGen == shelvesGeneration) _ratings.value = it }
+            // CloudStream (.cs3) titles: show the plugin's OWN recommendations
+            // (what the CloudStream app shows) when the user picked that source
+            // (Settings -> Customize) and the plugin supplies any; TMDB's lists
+            // only fill in when it does not. The first (nav-args) pass leaves
+            // the shelves to the second one: the plugin's load() response is
+            // cached by then, so the site is not asked twice.
+            val cs3 = manager.byId(item.providerId) as? com.hikari.app.cs3.Cs3MainApiProvider
+            if (cs3 != null &&
+                runCatching { HikariApp.instance.store.cs3RecommendationsSource() }
+                    .getOrDefault("plugin") != "tmdb"
+            ) {
+                if (fastPass) return@withContext
+                val fromPlugin: List<MediaItem> = try {
+                    withTimeoutOrNull(15_000L) { cs3.getRecommendations(item) }.orEmpty()
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    emptyList()
+                }
+                if (shelvesGen != shelvesGeneration) return@withContext
+                if (fromPlugin.isNotEmpty()) {
+                    _related.value = fromPlugin
+                    _relatedFromPlugin.value = true
+                    _similar.value = emptyList()
+                    return@withContext
+                }
+            }
             val rel = if (tmdbOk) runCatching { TmdbMeta.related(item) }.getOrDefault(emptyList()) else emptyList()
             if (shelvesGen == shelvesGeneration) _related.value = rel
             val sim = if (tmdbOk) runCatching { TmdbMeta.similar(item) }.getOrDefault(emptyList()) else emptyList()
@@ -1427,6 +1460,7 @@ fun DetailScreen(
     val streamError by vm.streamError.collectAsState()
     val providers by vm.providers.collectAsState()
     val related by vm.related.collectAsState()
+    val relatedFromPlugin by vm.relatedFromPlugin.collectAsState()
     val similar by vm.similar.collectAsState()
     val extras by vm.extras.collectAsState()
     val ratings by vm.ratings.collectAsState()
@@ -1572,6 +1606,18 @@ fun DetailScreen(
     var shelfOpening by remember { mutableStateOf<String?>(null) }
     fun openShelfItem(item: MediaItem) {
         val origin = providers.firstOrNull { it.config.id == livePid }
+        // A recommendation that came from the CS3 plugin itself is already one
+        // of that plugin's own titles (its own id/url): open it directly, no
+        // name search needed.
+        if (origin != null && origin.config.type == ProviderType.CS3 &&
+            item.providerId == origin.config.id
+        ) {
+            Routes.safeNavigate(
+                nav,
+                Routes.detail(item.providerId, item.type, item.id, item.title, item.posterUrl, item.rawType),
+            )
+            return
+        }
         if (origin == null || origin.config.type == ProviderType.NUVIO) {
             Routes.safeNavigate(
                 nav,
@@ -5331,7 +5377,7 @@ fun DetailScreen(
                 if (related.isNotEmpty()) {
                     item {
                         ShelfRow(
-                            heading = tr("Related"),
+                            heading = if (relatedFromPlugin) tr("Recommended") else tr("Related"),
                             shelf = related,
                             tv = isTvLayout,
                             onClick = { openShelfItem(it) },

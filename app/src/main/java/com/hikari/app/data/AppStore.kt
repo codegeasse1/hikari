@@ -398,6 +398,7 @@ class AppStore(private val ctx: Context) {
         val NATIVE_PROVIDERS = stringSetPreferencesKey("nativeMetadataProviders")
         val TRACKER_PROGRESS_SOURCE = stringPreferencesKey("trackerProgressSource")
         val TRACKER_RECOMMENDATIONS_SOURCE = stringPreferencesKey("trackerRecommendationsSource")
+        val CS3_RECOMMENDATIONS_SOURCE = stringPreferencesKey("cs3RecommendationsSource")
         val TRACKER_CONTINUE_DAYS = intPreferencesKey("trackerContinueDays")
         val TRACKER_COMMENTS = booleanPreferencesKey("trackerComments")
         /** Key of the app-wide font (see [com.hikari.app.ui.AppFonts]). */
@@ -834,6 +835,18 @@ class AppStore(private val ctx: Context) {
     fun trackerRecommendationsSourceFlow(): Flow<String> = store.data.map { it[K.TRACKER_RECOMMENDATIONS_SOURCE] ?: "tmdb" }.distinctUntilChanged().flowOn(Dispatchers.Default)
     suspend fun trackerRecommendationsSource(): String = trackerRecommendationsSourceFlow().first()
     suspend fun setTrackerRecommendationsSource(value: String) { write("TRACKER_RECOMMENDATIONS_SOURCE") { it[K.TRACKER_RECOMMENDATIONS_SOURCE] = value } }
+
+    /** Where the detail page's recommendations come from for a CloudStream (.cs3)
+     *  title (Settings -> Customize): "plugin" = the plugin's own list (what the
+     *  CloudStream app shows), falling back to TMDB only when the plugin returns
+     *  none; "tmdb" = always TMDB, as before. Default: plugin. */
+    fun cs3RecommendationsSourceFlow(): Flow<String> =
+        store.data.map { if (it[K.CS3_RECOMMENDATIONS_SOURCE] == "tmdb") "tmdb" else "plugin" }
+            .distinctUntilChanged().flowOn(Dispatchers.Default)
+    suspend fun cs3RecommendationsSource(): String = cs3RecommendationsSourceFlow().first()
+    suspend fun setCs3RecommendationsSource(value: String) {
+        write("CS3_RECOMMENDATIONS_SOURCE") { it[K.CS3_RECOMMENDATIONS_SOURCE] = if (value == "tmdb") "tmdb" else "plugin" }
+    }
     fun trackerContinueDaysFlow(): Flow<Int> = store.data.map { it[K.TRACKER_CONTINUE_DAYS] ?: 60 }.distinctUntilChanged().flowOn(Dispatchers.Default)
     suspend fun trackerContinueDays(): Int = trackerContinueDaysFlow().first()
     suspend fun setTrackerContinueDays(value: Int) { write("TRACKER_CONTINUE_DAYS") { it[K.TRACKER_CONTINUE_DAYS] = value.coerceIn(7, 3650) } }

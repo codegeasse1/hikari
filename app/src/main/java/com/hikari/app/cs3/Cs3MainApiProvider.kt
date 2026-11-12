@@ -843,6 +843,24 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
         }
     }
 
+    /** The site's OWN recommendations for [item]: LoadResponse.recommendations,
+     *  exactly the row the CloudStream app shows under a title. Reuses the
+     *  cached load() (no second site hit when the detail page already opened
+     *  it). Empty when the plugin supplies none. Items are ordinary catalogue
+     *  items of this provider, so they open straight into their own page. */
+    suspend fun getRecommendations(item: MediaItem, limit: Int = 30): List<MediaItem> =
+        withContext(Dispatchers.IO) {
+            val resp = loadResponse(item.id) ?: return@withContext emptyList<MediaItem>()
+            val recs = resp.recommendations ?: return@withContext emptyList<MediaItem>()
+            val selfUrls = setOf(item.id, resp.url)
+            recs.asSequence()
+                .mapNotNull { r -> runCatching { r.toMediaItem() }.getOrNull() }
+                .filter { it.id !in selfUrls }
+                .distinctBy { it.id }
+                .take(limit)
+                .toList()
+        }
+
     private fun recordRespHeaders(resp: LoadResponse) {
         recordPosterHeaders(resp.posterUrl, resp.posterHeaders)
         recordPosterHeaders(resp.backgroundPosterUrl, resp.posterHeaders)
