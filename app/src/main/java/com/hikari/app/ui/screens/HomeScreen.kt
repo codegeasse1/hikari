@@ -3540,7 +3540,7 @@ private fun HomeSearchOverlay(
                                 verticalArrangement = Arrangement.spacedBy(12.dp),
                             ) {
                                 items(blankShown, key = { it.uniqueId }) { item ->
-                                    HomeResultCard(item, heroNamespace = "homeBrowse") { onOpen(item) }
+                                    HomeResultCard(item, onClick = { onOpen(item) }, heroNamespace = "homeBrowse")
                                 }
                             }
                         }
@@ -3580,7 +3580,7 @@ private fun HomeSearchOverlay(
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
                         items(unique, key = { it.uniqueId }) { item ->
-                            HomeResultCard(item, heroNamespace = "homeSearch") { onOpen(item) }
+                            HomeResultCard(item, onClick = { onOpen(item) }, heroNamespace = "homeSearch")
                         }
                     }
                 }

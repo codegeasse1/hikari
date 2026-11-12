@@ -4522,7 +4522,7 @@ fun TmdbGridScreen(
             ) {
                 itemsIndexed(shown, key = { _, it -> it.uniqueId }) { index, item ->
                     com.hikari.app.ui.components.StaggerIn(index = index) {
-                        TmdbGridCard(item, style) {
+                        TmdbGridCard(item, style, onClick = {
                             Routes.safeNavigate(
                                 nav,
                                 Routes.detail(
@@ -4530,7 +4530,7 @@ fun TmdbGridScreen(
                                     item.title, item.posterUrl, item.rawType
                                 )
                             )
-                        }
+                        })
                     }
                 }
                 item(span = { GridItemSpan(maxLineSpan) }) {
@@ -4751,15 +4751,19 @@ fun CollectionGridScreen(nav: NavHostController, collectionId: String) {
                     row.items.distinctBy { it.uniqueId },
                     key = { item -> "$rowIndex|" + row.key + "|" + item.uniqueId },
                 ) { item ->
-                    TmdbGridCard(item, style, heroNamespace = "shelf:$rowIndex:${row.key}") {
-                        Routes.safeNavigate(
-                            nav,
-                            Routes.detail(
-                                item.providerId, item.type, item.id,
-                                item.title, item.posterUrl, item.rawType
+                    TmdbGridCard(
+                        item, style,
+                        onClick = {
+                            Routes.safeNavigate(
+                                nav,
+                                Routes.detail(
+                                    item.providerId, item.type, item.id,
+                                    item.title, item.posterUrl, item.rawType
+                                )
                             )
-                        )
-                    }
+                        },
+                        heroNamespace = "shelf:$rowIndex:${row.key}",
+                    )
                 }
             }
         }
