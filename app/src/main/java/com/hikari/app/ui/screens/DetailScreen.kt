@@ -5407,7 +5407,9 @@ fun DetailScreen(
                             shelf = related,
                             tv = isTvLayout,
                             onClick = { openShelfItem(it) },
-                            onShowAll = { shelfSheet = (if (relatedFromPlugin) tr("Recommended") else tr("Related")) to related },
+                            // The sheet translates the key itself: tr() is
+                            // @Composable and may not run in this click lambda.
+                            onShowAll = { shelfSheet = (if (relatedFromPlugin) "Recommended" else "Related") to related },
                             onSearchHere = {
                                 Routes.safeNavigate(nav, Routes.searchInProvider(livePid, it.title))
                             },
@@ -5424,7 +5426,7 @@ fun DetailScreen(
                             shelf = similar,
                             tv = isTvLayout,
                             onClick = { openShelfItem(it) },
-                            onShowAll = { shelfSheet = tr("Similar") to similar },
+                            onShowAll = { shelfSheet = "Similar" to similar },
                             onSearchHere = {
                                 Routes.safeNavigate(nav, Routes.searchInProvider(livePid, it.title))
                             },
@@ -5441,7 +5443,7 @@ fun DetailScreen(
                             shelf = recommended,
                             tv = isTvLayout,
                             onClick = { openShelfItem(it) },
-                            onShowAll = { shelfSheet = tr("Recommended") to recommended },
+                            onShowAll = { shelfSheet = "Recommended" to recommended },
                             onSearchHere = {
                                 Routes.safeNavigate(nav, Routes.searchInProvider(livePid, it.title))
                             },
@@ -5568,10 +5570,10 @@ fun DetailScreen(
     // Full grid of a Related/Similar/Recommended row: same cells, same taps,
     // just every item instead of the first screenful. Tapping a poster opens
     // it exactly like tapping it in the row, then the sheet goes away.
-    shelfSheet?.let { (sheetTitle, sheetItems) ->
+    shelfSheet?.let { (sheetTitleKey, sheetItems) ->
         ModalBottomSheet(onDismissRequest = { shelfSheet = null }) {
             Text(
-                sheetTitle,
+                tr(sheetTitleKey),
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.padding(horizontal = 16.dp)
@@ -5590,7 +5592,7 @@ fun DetailScreen(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                items(sheetItems.distinctBy { it.uniqueId }, key = { it.uniqueId }) { item ->
+                gridItems(sheetItems.distinctBy { it.uniqueId }, key = { it.uniqueId }) { item ->
                     ShelfCell(
                         item = item,
                         onClick = { shelfSheet = null; openShelfItem(item) },
