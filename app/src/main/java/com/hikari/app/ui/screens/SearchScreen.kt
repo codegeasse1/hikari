@@ -53,6 +53,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -73,7 +74,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.SavedStateHandle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
@@ -306,22 +310,27 @@ fun SearchScreen(
     val context = LocalContext.current
     val searchFocus = remember { androidx.compose.ui.focus.FocusRequester() }
     val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
-    var searchAutoFocused by rememberSaveable { mutableStateOf(false) }
     val searchIsTv = TvMode.current()
+    // Keyboard on EVERY visit: the old one-shot flag survived tab switches
+    // (saved state), so the keyboard only ever opened the first time. The
+    // lifecycle observer re-runs on each return to this tab instead.
+    val searchLifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(searchLifecycle) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME && !searchIsTv) {
+                runCatching {
+                    searchFocus.requestFocus()
+                    keyboard?.show()
+                }
+            }
+        }
+        searchLifecycle.lifecycle.addObserver(observer)
+        onDispose { searchLifecycle.lifecycle.removeObserver(observer) }
+    }
     // Results show only for a SUBMITTED search (the box text equals what was
     // submitted): phone and television alike. While typing, the suggestion list
     // is what shows; the keyboard's search key or a picked suggestion submits.
     val resultsMode = query.isNotBlank() && query.trim() == submitted
-    LaunchedEffect(Unit) {
-        if (searchAutoFocused) return@LaunchedEffect
-        searchAutoFocused = true
-        if (searchIsTv) return@LaunchedEffect
-        kotlinx.coroutines.delay(250)
-        runCatching {
-            searchFocus.requestFocus()
-            keyboard?.show()
-        }
-    }
     val overscanFlow = remember(context) {
         (context.applicationContext as HikariApp).store.tvOverscanFlow()
     }

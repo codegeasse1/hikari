@@ -364,6 +364,34 @@
             </intent-filter>
         </activity-alias>
 
+<activity-alias
+            android:name="com.hikari.app.icon.ToriiMoon"
+            android:targetActivity=".MainActivity"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher_v12"
+            android:roundIcon="@mipmap/ic_launcher_v12"
+            android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+<activity-alias
+            android:name="com.hikari.app.icon.SakuraMoon"
+            android:targetActivity=".MainActivity"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher_v13"
+            android:roundIcon="@mipmap/ic_launcher_v13"
+            android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
         <!-- The TELEVISION launcher entry.
 
              A television home screen lists what carries LEANBACK_LAUNCHER and

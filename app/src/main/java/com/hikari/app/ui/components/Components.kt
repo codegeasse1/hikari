@@ -417,13 +417,24 @@ fun androidx.compose.animation.AnimatedContentScope.HeroScope(
 fun Modifier.heroPoster(key: String): Modifier = composed {
     val sts = LocalHeroSharedScope.current
     val avs = LocalHeroAnimatedScope.current
-    if (sts == null || avs == null || key.isBlank()) this
-    else with(sts) {
-        sharedElement(
-            state = rememberSharedContentState(key = "poster:$key"),
-            animatedVisibilityScope = avs,
+    if (sts == null || avs == null || key.isBlank()) return@composed this
+    // The shared-transition crash ("current bounds not set yet") fires when a
+    // hero registers without laid-out bounds (an off-screen or zero-size tile
+    // joining a navigation). Keep the modifier inert until THIS tile reports a
+    // real size, so only on-screen tiles ever join the transition — anything
+    // else degrades to the plain slide, never a crash.
+    var laidOut by remember(key) { mutableStateOf(false) }
+    val heroState = with(sts) { rememberSharedContentState(key = "poster:$key") }
+    this
+        .onSizeChanged { laidOut = it.width > 0 && it.height > 0 }
+        .then(
+            if (laidOut) with(sts) {
+                sharedElement(
+                    state = heroState,
+                    animatedVisibilityScope = avs,
+                )
+            } else Modifier
         )
-    }
 }
 
 /** Infinite auto-scrolling poster carousel ("marquee") with a parallax glow.

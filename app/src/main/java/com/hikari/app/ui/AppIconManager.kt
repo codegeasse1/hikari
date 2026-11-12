@@ -31,6 +31,8 @@ val AppIconVariants: List<AppIconVariant> = listOf(
     AppIconVariant("violet", "Violet Play", "com.hikari.app.icon.VioletPlay", R.mipmap.ic_launcher_v9, R.drawable.ic_launcher_v9_fg),
     AppIconVariant("horizon", "Horizon", "com.hikari.app.icon.Horizon", R.mipmap.ic_launcher_v10, R.drawable.ic_launcher_v10_fg),
     AppIconVariant("neko", "Neko Moon", "com.hikari.app.icon.NekoMoon", R.mipmap.ic_launcher_v11, R.drawable.ic_launcher_v11_fg),
+    AppIconVariant("toriimoon", "Torii Moon", "com.hikari.app.icon.ToriiMoon", R.mipmap.ic_launcher_v12, R.drawable.ic_launcher_v12_fg),
+    AppIconVariant("sakuramoon", "Sakura Moon", "com.hikari.app.icon.SakuraMoon", R.mipmap.ic_launcher_v13, R.drawable.ic_launcher_v13_fg),
 )
 
 object AppIconManager {
