@@ -23,6 +23,10 @@ object PosterLoader {
 
     private const val DISK_BUDGET_BYTES = 400L * 1024 * 1024
 
+    // Keep Coil request identity stable for persisted poster models across recompositions.
+    private val fileRequests = ConcurrentHashMap<String, ImageRequest>()
+    private const val FILE_REQUESTS_MAX = 1024
+
     private val pending = ConcurrentHashMap<String, MutableState<Long>>()
 
     /** Upper bound on [pending] entries, so a catalog of undecodable payloads
@@ -317,14 +321,21 @@ object PosterLoader {
      *  memory-cache key matters: the model is a File, so Coil would otherwise key
      *  the decoded bitmap by file path — fine — but two different posters that
      *  happen to hash-collide would share one bitmap. */
-    private fun request(file: File, name: String): ImageRequest =
-        ImageRequest.Builder(HikariApp.instance)
+    private fun request(file: File, name: String): ImageRequest {
+        fileRequests[name]?.let { return it }
+        val built = ImageRequest.Builder(HikariApp.instance)
             .data(file)
             .memoryCacheKey("hikari-poster:" + name)
             // The bytes are already persisted by this object; Coil keeping a
             // second copy of every poster in its own disk cache is pure waste.
             .diskCachePolicy(CachePolicy.DISABLED)
             .build()
+        val stable = fileRequests.putIfAbsent(name, built) ?: built
+        if (fileRequests.size > FILE_REQUESTS_MAX) {
+            fileRequests.keys.firstOrNull { it != name }?.let { fileRequests.remove(it) }
+        }
+        return stable
+    }
 
     private fun schedulePrep(u: String, name: String) {
         val now = System.currentTimeMillis()

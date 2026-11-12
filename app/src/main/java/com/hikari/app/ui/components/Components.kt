@@ -322,10 +322,15 @@ fun PosterImage(
      *  have a fallback model swap to it here. */
     onFinalError: (() -> Unit)? = null,
 ) {
-    var attempt by remember(model, PosterLoader.retryEpoch.value) { mutableIntStateOf(0) }
+    val epoch = PosterLoader.retryEpoch.value
+    var attempt by remember(model, epoch) { mutableIntStateOf(0) }
     val scope = rememberCoroutineScope()
+    // Keep the request model stable: otherwise each recomposition makes Coil restart its painter.
+    val imageModel = remember(model, attempt, epoch) {
+        PosterLoader.retryModel(model, attempt, epoch)
+    }
     AsyncImage(
-        model = PosterLoader.retryModel(model, attempt, PosterLoader.retryEpoch.value),
+        model = imageModel,
         contentDescription = contentDescription,
         modifier = modifier,
         alignment = alignment,

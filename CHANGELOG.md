@@ -1,3 +1,7 @@
+## 0.12.87 (continuous build only)
+
+- Poster rendering: keep Coil ImageRequest models stable across Compose recompositions so lazy-list remeasurement does not repeatedly cancel and restart image painters; persisted poster requests use a bounded metadata cache.
+
 ## 0.12.86 (continuous build only)
 
 - Shared-transition lookahead crash fixed: poster tiles no longer measure aspect-ratio and shared-element on the same node (that combination crashed navigation mid-transition) — the aspect sizer stays outer, the hero travels on an inner full-size node, on every poster grid (home, search, collections, detail)
