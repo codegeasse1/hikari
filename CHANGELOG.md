@@ -1,3 +1,8 @@
+## 0.12.91 (continuous build only)
+
+- Scroll-linked reveal everywhere: cards dim/shrink while leaving the viewport and brighten/rise back as they enter — same behavior on horizontal rows and vertical lists/grids, in both scroll directions, with no timers (position-driven, draw-phase only)
+- Select Provider drawer rows are now full-bleed art cards: torii-moon scene for hikari, koto scene for HIKari music, with a dark scrim, accent border + glow on the selected card
+
 ## 0.12.90 (continuous build only)
 
 - HIKari music search shows all results: plain YouTube videos (remixes, slowed + reverb edits, live/lo-fi versions…) are no longer dropped — every row with a playable videoId becomes a track, the "All" tab merges a new "Videos" section, and both phone and TV search get a "Videos" filter pill

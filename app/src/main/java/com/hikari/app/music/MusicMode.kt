@@ -13,6 +13,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.Image
@@ -54,15 +55,20 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.BiasAlignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.media3.common.util.UnstableApi
@@ -156,6 +162,7 @@ fun ProviderDrawer() {
             ProviderRow(
                 name = "hikari",
                 selected = !MusicMode.active,
+                art = R.drawable.provider_hikari,
                 badge = {
                     Image(
                         painter = painterResource(id = R.drawable.provider_hikari),
@@ -173,6 +180,8 @@ fun ProviderDrawer() {
             ProviderRow(
                 name = "HIKari music",
                 selected = MusicMode.active,
+                art = R.drawable.music_provider_hikari,
+                artAlignment = BiasAlignment(0.5f, 0f),
                 badge = {
                     Image(
                         painter = painterResource(id = R.drawable.music_provider_hikari),
@@ -192,22 +201,82 @@ fun ProviderDrawer() {
 }
 
 @Composable
-private fun ProviderRow(name: String, selected: Boolean, badge: @Composable () -> Unit, onClick: () -> Unit) {
+private fun ProviderRow(
+    name: String,
+    selected: Boolean,
+    art: Int,
+    artAlignment: Alignment = Alignment.Center,
+    badge: @Composable () -> Unit,
+    onClick: () -> Unit,
+) {
     val cs = MaterialTheme.colorScheme
-    Row(
+    val shape = RoundedCornerShape(22.dp)
+    Box(
         Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 2.dp)
-            .clip(RoundedCornerShape(16.dp))
-            .background(if (selected) cs.surfaceVariant else Color.Transparent)
+            .padding(horizontal = 12.dp, vertical = 4.dp)
+            .shadow(if (selected) 10.dp else 0.dp, shape, spotColor = cs.primary.copy(alpha = 0.45f))
+            .clip(shape)
+            .background(cs.surfaceVariant)
             .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .height(104.dp)
+            .border(
+                if (selected) 1.4.dp else 1.dp,
+                if (selected) cs.primary else Color.White.copy(alpha = 0.08f),
+                shape,
+            ),
     ) {
-        badge()
-        Spacer(Modifier.width(16.dp))
-        Text(name, color = cs.onSurface, fontSize = 18.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
-        if (selected) Icon(Icons.Filled.Check, contentDescription = "Selected", tint = cs.onSurface)
+        Image(
+            painter = painterResource(id = art),
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            alignment = artAlignment,
+            alpha = if (selected) 1f else 0.72f,
+            modifier = Modifier.fillMaxSize(),
+        )
+        // Dark scrim: ~90% black where the icon + name sit, fading right.
+        Box(
+            Modifier.fillMaxSize().background(
+                Brush.horizontalGradient(
+                    0f to Color.Black.copy(alpha = 0.9f),
+                    0.45f to Color.Black.copy(alpha = 0.62f),
+                    1f to Color.Black.copy(alpha = 0.2f),
+                ),
+            ),
+        )
+        // Subtle bottom vignette so the name never washes out.
+        Box(
+            Modifier.fillMaxSize().background(
+                Brush.verticalGradient(
+                    0.55f to Color.Transparent,
+                    1f to Color.Black.copy(alpha = 0.38f),
+                ),
+            ),
+        )
+        Row(
+            Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            badge()
+            Spacer(Modifier.width(16.dp))
+            Text(
+                name,
+                color = Color.White,
+                style = MaterialTheme.typography.titleMedium.copy(
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    shadow = Shadow(
+                        color = Color.Black.copy(alpha = 0.6f),
+                        offset = Offset(0f, 2f),
+                        blurRadius = 6f,
+                    ),
+                ),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            if (selected) Icon(Icons.Filled.Check, contentDescription = "Selected", tint = Color.White)
+        }
     }
 }
 

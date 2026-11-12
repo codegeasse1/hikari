@@ -54,6 +54,8 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.hikari.app.ui.components.RevealAxis
+import com.hikari.app.ui.components.scrollReveal
 
 /** Square artwork with a quiet placeholder. */
 @Composable
@@ -207,7 +209,8 @@ fun MusicSongRow(
             .fillMaxWidth()
             .background(background)
             .clickable(onClick = onClick)
-            .padding(start = 12.dp, top = 8.dp, bottom = 8.dp, end = 4.dp),
+            .padding(start = 12.dp, top = 8.dp, bottom = 8.dp, end = 4.dp)
+            .scrollReveal(RevealAxis.Vertical),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         MusicCover(song.thumb, Modifier.size(52.dp), RoundedCornerShape(8.dp), 200)
@@ -245,7 +248,7 @@ fun MusicItemRow(item: MItem, onClick: () -> Unit) {
     }
     val sub = if (item.subtitle.isBlank()) label else if (label.isBlank()) item.subtitle else "$label • ${item.subtitle}"
     Row(
-        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 8.dp),
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 8.dp).scrollReveal(RevealAxis.Vertical),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         MusicCover(
@@ -266,7 +269,7 @@ fun MusicItemRow(item: MItem, onClick: () -> Unit) {
 fun MusicItemCard(item: MItem, size: Dp = 144.dp, onClick: () -> Unit) {
     val cs = MaterialTheme.colorScheme
     Column(
-        Modifier.width(size).clip(RoundedCornerShape(12.dp)).clickable(onClick = onClick).padding(bottom = 4.dp),
+        Modifier.width(size).clip(RoundedCornerShape(12.dp)).clickable(onClick = onClick).padding(bottom = 4.dp).scrollReveal(RevealAxis.Horizontal),
     ) {
         MusicCover(
             item.thumb,

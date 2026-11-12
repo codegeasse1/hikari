@@ -62,6 +62,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -82,8 +83,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -366,30 +371,115 @@ fun PosterImage(
     )
 }
 
-/** Staggered grid reveal: cards fade + scale in one after another instead of
- *  popping in all at once. New rows animate as result pages stream in; the
- *  delay is capped so long grids never take forever. Keyed on [index] within
- *  the current list — pair with stable item keys so scrolled-in tiles don't
- *  re-animate. Exit is intentionally instant (lazy grids can't animate removals
- *  without holding dead tiles); moves are handled by Modifier.animateItem at
- *  the call site where it matters. */
+/** Which scroll axis an item reveals along (see [scrollReveal]): horizontal
+ *  rows rise in from the trailing edge, vertical lists/grids rise upward. */
+enum class RevealAxis { Horizontal, Vertical }
+
+/** Master switch for the scroll-linked reveal (see [scrollReveal]): on by
+ *  default and persisted. No settings UI yet — this object is the seam a
+ *  future toggle wires into; flipping [enabled] recomposes the cards. */
+object ScrollReveal {
+    private const val PREFS = "hikari_ui"
+    private var loaded = false
+    var enabled by mutableStateOf(true)
+        private set
+
+    fun ensureLoaded(ctx: android.content.Context) {
+        if (loaded) return
+        loaded = true
+        enabled = runCatching {
+            ctx.applicationContext.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE)
+                .getBoolean("scroll_reveal", true)
+        }.getOrDefault(true)
+    }
+
+    fun setEnabled(ctx: android.content.Context, value: Boolean) {
+        ensureLoaded(ctx)
+        enabled = value
+        runCatching {
+            ctx.applicationContext.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE)
+                .edit().putBoolean("scroll_reveal", value).apply()
+        }
+    }
+}
+
+/** Scroll-linked fade-rise reveal: position-driven, NOT time-driven. The
+ *  item's visible fraction inside its scroll viewport (0 = fully outside,
+ *  1 = fully inside) is eased (easeOutCubic, fully revealed at 45%) and
+ *  drives opacity 0.12 → 1, scale 0.94 → 1 (pivot center) and a 14dp → 0
+ *  slide along [axis]. Scrolling back reverses it smoothly; no stagger
+ *  delays, no one-shot timers.
+ *
+ *  Draw-phase only: the fraction is measured in [onGloballyPositioned] and
+ *  consumed in [graphicsLayer], so scrolling never recomposes the card and
+ *  Coil images keep painting. Items already fully visible on first
+ *  composition measure 1.0 and render revealed — nothing sticks dim. When
+ *  the master switch is off, or the system animator scale is 0 (the
+ *  "remove animations" setting), this is a no-op. */
+fun Modifier.scrollReveal(axis: RevealAxis): Modifier = composed {
+    val ctx = LocalContext.current
+    ScrollReveal.ensureLoaded(ctx)
+    if (!ScrollReveal.enabled) return@composed this
+    val animatorOff = remember {
+        runCatching {
+            android.provider.Settings.Global.getFloat(
+                ctx.contentResolver,
+                android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f,
+            ) == 0f
+        }.getOrDefault(false)
+    }
+    if (animatorOff) return@composed this
+    val density = LocalDensity.current
+    val configuration = LocalConfiguration.current
+    val shiftPx = remember(density) { with(density) { 14.dp.toPx() } }
+    val viewPx = remember(density, axis, configuration.screenWidthDp, configuration.screenHeightDp) {
+        val dp = if (axis == RevealAxis.Horizontal) {
+            configuration.screenWidthDp
+        } else {
+            configuration.screenHeightDp
+        }
+        with(density) { dp.dp.toPx() }
+    }
+    val eased = remember { mutableFloatStateOf(1f) }
+    this
+        .onGloballyPositioned { coords ->
+            val size = (if (axis == RevealAxis.Horizontal) coords.size.width else coords.size.height).toFloat()
+            if (size <= 0.5f || viewPx <= 0.5f) return@onGloballyPositioned
+            val b = coords.boundsInWindow()
+            val start = if (axis == RevealAxis.Horizontal) b.left else b.top
+            val end = if (axis == RevealAxis.Horizontal) b.right else b.bottom
+            val visible = ((minOf(end, viewPx) - maxOf(start, 0f)) / size).coerceIn(0f, 1f)
+            val t = (visible / 0.45f).coerceIn(0f, 1f)
+            val e = 1f - (1f - t) * (1f - t) * (1f - t)
+            if (kotlin.math.abs(e - eased.floatValue) > 0.002f) eased.floatValue = e
+        }
+        .graphicsLayer {
+            val e = eased.floatValue
+            alpha = 0.12f + 0.88f * e
+            val s = 0.94f + 0.06f * e
+            scaleX = s
+            scaleY = s
+            val d = (1f - e) * shiftPx
+            if (axis == RevealAxis.Horizontal) translationX = d else translationY = d
+        }
+}
+
+/** Scroll-driven grid reveal (see [scrollReveal]): cells dim/shrink while
+ *  outside the viewport and brighten/grow into place as they scroll in —
+ *  vertically, in both directions, with no timers. [index] is kept for
+ *  call-site compatibility only. Pair with stable item keys so scrolled-in
+ *  tiles don't jump; exit is intentionally instant (lazy grids can't animate
+ *  removals without holding dead tiles). */
 @Composable
 fun StaggerIn(
     index: Int,
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit,
 ) {
-    var shown by remember { mutableStateOf(false) }
-    LaunchedEffect(index) {
-        delay(((index % 24) * 30).coerceAtMost(360).toLong())
-        shown = true
-    }
-    AnimatedVisibility(
-        visible = shown,
-        enter = fadeIn(animationSpec = tween(240)) +
-            scaleIn(initialScale = 0.94f, animationSpec = tween(240)),
-        modifier = modifier,
-    ) {
+    // [index] is kept for call-site compatibility; the entrance is scroll-driven
+    // now (see scrollReveal): no timers, no stagger delays, and scrolling back
+    // reverses the effect instead of leaving tiles fully shown.
+    Box(modifier.scrollReveal(RevealAxis.Vertical)) {
         content()
     }
 }
@@ -726,6 +816,7 @@ fun PosterCard(
         Modifier
             .width(cardWidth)
             .clickable(onClick = onClick)
+            .scrollReveal(RevealAxis.Horizontal)
     ) {
         // Lookahead-crash guard: aspectRatio (sizing) and the shared-element
         // hero must live on DIFFERENT nodes. Same-node aspect+sharedElement

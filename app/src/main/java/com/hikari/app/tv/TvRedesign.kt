@@ -60,6 +60,8 @@ import androidx.compose.ui.unit.sp
 import com.hikari.app.data.MediaItem
 import com.hikari.app.i18n.tr
 import com.hikari.app.ui.Artwork
+import com.hikari.app.ui.components.RevealAxis
+import com.hikari.app.ui.components.scrollReveal
 import com.hikari.app.ui.components.SettingsThemeTile
 import kotlinx.coroutines.launch
 
@@ -140,7 +142,7 @@ fun TvCinemaCard(
   val artWide = hero.second
   val cardShape = RoundedCornerShape(TvDesktop.CornerCard)
   Column(
-    modifier.width(cardWidth).clickable(onClick = onClick).tvPress(previewPass = true, onClick = onClick).tvFocusGlow(TvDesktop.CornerCard),
+    modifier.width(cardWidth).clickable(onClick = onClick).tvPress(previewPass = true, onClick = onClick).tvFocusGlow(TvDesktop.CornerCard).scrollReveal(RevealAxis.Horizontal),
   ) {
     Box(
       Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(cardShape).background(TvDesktop.SurfaceElevated).border(1.dp, TvDesktop.GlassEdge, cardShape),
