@@ -101,9 +101,7 @@ private val TvMusicError = Color(0xFFFF8A80)
 // ====================================================================== HOME
 
 /**
- * Music Home for the television, laid out like the reference TV home: the picture of the focused
- * card fills the top right, its name is written large over it, and the shelves run underneath as
- * rows of cards. Moving the D-pad over a card changes the picture and the text above it.
+ * Music Home for the television,
  */
 @UnstableApi
 @Composable
