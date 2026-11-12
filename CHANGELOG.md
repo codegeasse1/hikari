@@ -1,3 +1,7 @@
+## 0.12.90 (continuous build only)
+
+- HIKari music search shows all results: plain YouTube videos (remixes, slowed + reverb edits, live/lo-fi versions…) are no longer dropped — every row with a playable videoId becomes a track, the "All" tab merges a new "Videos" section, and both phone and TV search get a "Videos" filter pill
+
 ## 0.12.89 (continuous build only)
 
 - Sakura app icon reverted to its previous daylight cherry-blossom art (the torii-night art stays on Torii Moon / Sakura Moon only)

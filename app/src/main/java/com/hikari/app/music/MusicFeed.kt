@@ -143,6 +143,7 @@ object MusicFeed {
         MKind.ALBUM -> MusicApi.FILTER_ALBUM
         MKind.ARTIST -> MusicApi.FILTER_ARTIST
         MKind.PLAYLIST -> MusicApi.FILTER_PLAYLIST
+        MKind.VIDEO -> MusicApi.FILTER_VIDEO
     }
 
     private fun searchSource(q: Query) = FeedSource {

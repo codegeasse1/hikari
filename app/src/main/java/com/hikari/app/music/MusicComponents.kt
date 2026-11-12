@@ -240,6 +240,7 @@ fun MusicItemRow(item: MItem, onClick: () -> Unit) {
         MKind.ALBUM -> "Album"
         MKind.PLAYLIST -> "Playlist"
         MKind.ARTIST -> "Artist"
+        MKind.VIDEO -> "Video"
         MKind.SONG -> ""
     }
     val sub = if (item.subtitle.isBlank()) label else if (label.isBlank()) item.subtitle else "$label • ${item.subtitle}"

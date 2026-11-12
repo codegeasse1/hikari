@@ -33,6 +33,7 @@ object MusicApi {
     const val FILTER_ALBUM = "EgWKAQIYAWoKEAkQChAFEAMQBA%3D%3D"
     const val FILTER_ARTIST = "EgWKAQIgAWoKEAkQChAFEAMQBA%3D%3D"
     const val FILTER_PLAYLIST = "EgeKAQQoADgBagwQDhAKEAMQBRAJEAQ%3D"
+    const val FILTER_VIDEO = "EgWKAQIQAWoKEAkQChAFEAMQBA%3D%3D"
 
     private val TYPE_WORDS = setOf(
         "Song", "Video", "Album", "Single", "EP", "Playlist", "Artist", "Podcast", "Episode", "Profile",
@@ -190,7 +191,9 @@ object MusicApi {
         val fixed = r.a("fixedColumns")?.objs()?.firstOrNull()
             ?.o("musicResponsiveListItemFixedColumnRenderer")?.runsText("text").orEmpty().trim()
         val ownBrowse = r.o("navigationEndpoint")?.o("browseEndpoint")
-        var videoId = r.o("playlistItemData")?.optString("videoId").orEmpty()
+        val watchId = r.o("navigationEndpoint")?.o("watchEndpoint")?.optString("videoId").orEmpty()
+        var videoId = r.o("playlistItemData")?.optString("videoId").orEmpty().ifBlank { watchId }
+            ?: ""
         // Only fall back to a deep search when this row is not an album / artist / playlist link,
         // otherwise a "play" button inside it would turn an album into a fake song.
         if (videoId.isBlank() && ownBrowse == null) videoId = (findValue(r, "videoId") as? String).orEmpty()
@@ -364,6 +367,7 @@ object MusicApi {
             "Albums" to FILTER_ALBUM,
             "Artists" to FILTER_ARTIST,
             "Playlists" to FILTER_PLAYLIST,
+            "Videos" to FILTER_VIDEO,
         )
         val mixed = async { runCatching { searchOne(query, null) } }
         val typed = groups.map { (title, filter) ->

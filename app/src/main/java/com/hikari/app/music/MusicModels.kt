@@ -10,7 +10,7 @@ data class MSong(
     val thumb: String = "",
 )
 
-enum class MKind { SONG, ALBUM, PLAYLIST, ARTIST }
+enum class MKind { SONG, ALBUM, PLAYLIST, ARTIST, VIDEO }
 
 /** Anything that can sit in a shelf: a song, an album, a playlist or an artist. */
 data class MItem(

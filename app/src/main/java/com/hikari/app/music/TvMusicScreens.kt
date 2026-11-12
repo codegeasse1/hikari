@@ -364,6 +364,7 @@ private val TV_SEARCH_FILTERS: List<Pair<String, String?>> = listOf(
     "Albums" to MusicApi.FILTER_ALBUM,
     "Artists" to MusicApi.FILTER_ARTIST,
     "Playlists" to MusicApi.FILTER_PLAYLIST,
+    "Videos" to MusicApi.FILTER_VIDEO,
 )
 
 private class TvMood(
