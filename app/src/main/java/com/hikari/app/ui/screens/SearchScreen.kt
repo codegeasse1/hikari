@@ -1025,6 +1025,7 @@ fun SearchScreen(
                                             item = item,
                                             onOpen = { openSearchItem(item) },
                                             modifier = Modifier.width(112.dp),
+                                            heroNamespace = "searchRow:$pid",
                                         )
                                     }
                                 }
@@ -1423,6 +1424,9 @@ private fun PhoneSearchCell(
     item: MediaItem,
     onOpen: () -> Unit,
     modifier: Modifier = Modifier,
+    /** Provider-row namespace for the shared-element key (see PosterCard):
+     *  the same title can sit under several providers at once. */
+    heroNamespace: String = "",
 ) {
     val style = rememberPosterStyle()
     val badge = rememberPosterScore(item, style)
@@ -1440,7 +1444,7 @@ private fun PhoneSearchCell(
             Box(
                 Modifier
                     .fillMaxSize()
-                    .heroPoster(item.uniqueId)
+                    .heroPoster(if (heroNamespace.isBlank()) item.uniqueId else heroNamespace + ":" + item.uniqueId)
             ) {
             if (phoneCinema && hero != null && !hero.second) {
                 AsyncImage(

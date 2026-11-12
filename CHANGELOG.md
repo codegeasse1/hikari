@@ -1,3 +1,9 @@
+## 0.12.88 (continuous build only)
+
+- Home posters stop going blank: every feed tile shared one animation key per title, so the same title in two rows fought over it and one rendered black — row tiles now carry row-scoped keys (search grids and collection grids keep the shared key, so their fly-into-detail animation still works)
+- Sakura app icon gets new torii-night artwork, and the HIKari music provider badge gets the koto scene
+- Downgrade-safe app icons: starting a build without the selected icon falls back to Sakura, else the original gold, instead of losing the launcher entry
+
 ## 0.12.87 (continuous build only)
 
 - Poster rendering: keep Coil ImageRequest models stable across Compose recompositions so lazy-list remeasurement does not repeatedly cancel and restart image painters; persisted poster requests use a bounded metadata cache.

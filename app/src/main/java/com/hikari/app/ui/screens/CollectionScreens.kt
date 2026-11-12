@@ -4556,7 +4556,14 @@ fun TmdbGridScreen(
 }
 
 @Composable
-private fun TmdbGridCard(item: MediaItem, style: PosterStyle, onClick: () -> Unit) {
+private fun TmdbGridCard(
+    item: MediaItem,
+    style: PosterStyle,
+    onClick: () -> Unit,
+    /** Shelf namespace for the shared-element key (see PosterCard): collection
+     *  screens stack several shelves, and the same title can sit in two. */
+    heroNamespace: String = "",
+) {
     val badge = rememberPosterScore(item, style)
     val cinema = style.isCinema(com.hikari.app.tv.TvMode.current())
     val hero = if (cinema) Artwork.heroModel(item) else null
@@ -4581,7 +4588,7 @@ private fun TmdbGridCard(item: MediaItem, style: PosterStyle, onClick: () -> Uni
             imageAlignment = if (cinema) com.hikari.app.ui.Artwork.CINEMA_ALIGNMENT else Alignment.Center,
             modifier = Modifier
                 .fillMaxSize()
-                .heroPoster(item.uniqueId),
+                .heroPoster(if (heroNamespace.isBlank()) item.uniqueId else heroNamespace + ":" + item.uniqueId),
         )
         }
         if (style.showTitles) {
@@ -4744,7 +4751,7 @@ fun CollectionGridScreen(nav: NavHostController, collectionId: String) {
                     row.items.distinctBy { it.uniqueId },
                     key = { item -> "$rowIndex|" + row.key + "|" + item.uniqueId },
                 ) { item ->
-                    TmdbGridCard(item, style) {
+                    TmdbGridCard(item, style, heroNamespace = "shelf:$rowIndex:${row.key}") {
                         Routes.safeNavigate(
                             nav,
                             Routes.detail(

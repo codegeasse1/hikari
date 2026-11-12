@@ -3540,7 +3540,7 @@ private fun HomeSearchOverlay(
                                 verticalArrangement = Arrangement.spacedBy(12.dp),
                             ) {
                                 items(blankShown, key = { it.uniqueId }) { item ->
-                                    HomeResultCard(item) { onOpen(item) }
+                                    HomeResultCard(item, heroNamespace = "homeBrowse") { onOpen(item) }
                                 }
                             }
                         }
@@ -3580,7 +3580,7 @@ private fun HomeSearchOverlay(
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
                         items(unique, key = { it.uniqueId }) { item ->
-                            HomeResultCard(item) { onOpen(item) }
+                            HomeResultCard(item, heroNamespace = "homeSearch") { onOpen(item) }
                         }
                     }
                 }
@@ -3592,7 +3592,13 @@ private fun HomeSearchOverlay(
 /** One search result: a 2:3 poster with the title under it — the same cell the
  *  catalog page draws, so results look like a catalog rather than a list. */
 @Composable
-private fun HomeResultCard(item: MediaItem, onClick: () -> Unit) {
+private fun HomeResultCard(
+    item: MediaItem,
+    onClick: () -> Unit,
+    /** Grid namespace for the shared-element key (see PosterCard): the same
+     *  title can sit in browse and search grids at once. */
+    heroNamespace: String = "",
+) {
     Column(
         Modifier
             .clip(RoundedCornerShape(12.dp))
@@ -3610,7 +3616,7 @@ private fun HomeResultCard(item: MediaItem, onClick: () -> Unit) {
             Box(
                 Modifier
                     .fillMaxSize()
-                    .heroPoster(item.uniqueId)
+                    .heroPoster(if (heroNamespace.isBlank()) item.uniqueId else heroNamespace + ":" + item.uniqueId)
             ) {
             AsyncImage(
                 model = Artwork.model(item),

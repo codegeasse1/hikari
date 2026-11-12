@@ -82,4 +82,34 @@ object AppIconManager {
     fun ensureApplied(context: Context, key: String) {
         runCatching { if (currentKey(context) != key) apply(context, key) }
     }
+
+    /** True when this build actually ships [alias]: a downgrade can leave an
+     *  enabled record for an alias the older manifest no longer declares. */
+    fun aliasExists(context: Context, alias: String): Boolean = runCatching {
+        context.packageManager.getActivityInfo(ComponentName(context, alias), 0)
+        true
+    }.getOrDefault(false)
+
+    /** Key to use instead of [key] when this build doesn't ship it: the stored
+     *  Sakura icon first, then the original gold, then whatever survives. */
+    fun resolveAvailable(context: Context, key: String): String {
+        if (AppIconVariants.firstOrNull { it.key == key }?.let { aliasExists(context, it.alias) } == true) return key
+        for (fallback in listOf("sakura", "classic")) {
+            if (AppIconVariants.firstOrNull { it.key == fallback }?.let { aliasExists(context, it.alias) } == true) return fallback
+        }
+        return AppIconVariants.firstOrNull { aliasExists(context, it.alias) }?.key ?: key
+    }
+
+    /** Downgrade guard (call at startup before [ensureApplied]): when the
+     *  enabled alias is gone from this build — e.g. an icon picked on a newer
+     *  version, then downgraded to one without it, which would leave no
+     *  launcher entry and a "vanished" app — fall back to Sakura, else gold.
+     *  Returns the key that is now active. */
+    fun reconcileOnStart(context: Context): String {
+        val cur = AppIconVariants.firstOrNull { it.key == currentKey(context) }
+        if (cur != null && aliasExists(context, cur.alias)) return cur.key
+        val fixed = resolveAvailable(context, cur?.key ?: DEFAULT_KEY)
+        runCatching { apply(context, fixed) }
+        return fixed
+    }
 }

@@ -216,7 +216,14 @@ private fun MediaRowVertical(
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             items(uniqueItems, key = { it.uniqueId }) { item ->
-                PosterCard(item, style, onClick = { onClick(item) }, onQuickPlay = onQuickPlay)
+                PosterCard(
+                    item, style,
+                    onClick = { onClick(item) },
+                    onQuickPlay = onQuickPlay,
+                    // Same title in two rows would share one hero key and
+                    // blank one of them: scope the key to this row.
+                    heroNamespace = keeperKey.ifBlank { "$title/$providerName" },
+                )
             }
         }
     }
@@ -702,6 +709,11 @@ fun PosterCard(
     onClick: () -> Unit,
     /** Hold-menu play action (opens detail with autoplay); plain open when null. */
     onQuickPlay: ((MediaItem) -> Unit)? = null,
+    /** Row namespace for the shared-element key: feed rows reuse the same
+     *  titles across rows, and duplicate shared keys render blank (only one
+     *  node may own a shared key). Blank keeps the bare item key (search and
+     *  collection grids, whose items are unique per screen, still fly). */
+    heroNamespace: String = "",
 ) {
     val badge = rememberPosterScore(item, style)
     val cardWidth = if (TvMode.current()) TvUi.posterWidth() else 120.dp
@@ -728,7 +740,7 @@ fun PosterCard(
         Box(
             Modifier
                 .fillMaxSize()
-                .heroPoster(item.uniqueId)
+                .heroPoster(if (heroNamespace.isBlank()) item.uniqueId else heroNamespace + ":" + item.uniqueId)
                 .quickMenuGesture(quickMenu) { slot ->
                     when (slot) {
                         0 -> latestClick()

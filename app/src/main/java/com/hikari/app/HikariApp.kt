@@ -621,7 +621,14 @@ class HikariApp : Application() {
             // Per-extension auto-translate config + persisted translation cache.
             runCatching { com.hikari.app.data.Translator.init(store) }
             runCatching {
-                com.hikari.app.ui.AppIconManager.ensureApplied(this@HikariApp, store.appIcon())
+                // Downgrade guard first: an icon picked on a newer build may be
+                // gone here — without this the launcher entry vanishes after a
+                // downgrade. Heals the component states, then the stored mirror.
+                com.hikari.app.ui.AppIconManager.reconcileOnStart(this@HikariApp)
+                val want = com.hikari.app.ui.AppIconManager
+                    .resolveAvailable(this@HikariApp, store.appIcon())
+                if (want != store.appIcon()) store.setAppIcon(want)
+                com.hikari.app.ui.AppIconManager.ensureApplied(this@HikariApp, want)
             }
             Logs.log(
                 "App",
