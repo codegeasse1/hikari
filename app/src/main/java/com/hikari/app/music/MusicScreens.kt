@@ -1,6 +1,7 @@
 package com.hikari.app.music
 
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior
@@ -10,6 +11,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -62,11 +64,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -74,6 +79,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.hikari.app.R
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -322,9 +328,31 @@ private val SEARCH_FILTERS: List<Pair<String, String?>> = listOf(
     "Playlists" to MusicApi.FILTER_PLAYLIST,
 )
 
+/**
+ * One tile of the Browse grid. [cover] is a picture in res/drawable-nodpi (already cut to the tile's
+ * 1.8 : 1 shape); a tile without a picture falls back to the [tint] gradient.
+ */
+private class MoodTile(
+    val name: String,
+    val cover: Int? = null,
+    val tint: List<Color> = listOf(Color(0xFF3A3F5C), Color(0xFF1C1F33)),
+)
+
+private const val MOOD_TILE_RATIO = 1.8f
+
 private val MOODS = listOf(
-    "Pop hits", "Hip-hop", "Bollywood", "Romance", "Chill", "Workout",
-    "Party", "Sad songs", "Focus", "Sleep", "Rock", "Classical",
+    MoodTile("Pop hits", R.drawable.music_genre_pop),
+    MoodTile("Hip-hop", R.drawable.music_genre_hiphop),
+    MoodTile("Bollywood", R.drawable.music_genre_bollywood),
+    MoodTile("Romance", R.drawable.music_genre_romance),
+    MoodTile("Chill", R.drawable.music_genre_chill),
+    MoodTile("Workout", R.drawable.music_genre_workout),
+    MoodTile("Party", R.drawable.music_genre_party),
+    MoodTile("Sad songs", R.drawable.music_genre_sad),
+    MoodTile("Focus", tint = listOf(Color(0xFF1E5F74), Color(0xFF0B2530))),
+    MoodTile("Sleep", tint = listOf(Color(0xFF3B3A7A), Color(0xFF12122E))),
+    MoodTile("Rock", tint = listOf(Color(0xFF8A2A2A), Color(0xFF2A0D0D))),
+    MoodTile("Classical", tint = listOf(Color(0xFF7A5A2C), Color(0xFF2A1E0E))),
 )
 
 @Composable
@@ -459,14 +487,40 @@ fun MusicSearchScreen(state: LazyListState, onOpen: (MItem) -> Unit, onMenu: () 
                             Box(
                                 Modifier
                                     .weight(1f)
-                                    .height(64.dp)
+                                    .aspectRatio(MOOD_TILE_RATIO)
                                     .clip(RoundedCornerShape(18.dp))
                                     .background(cs.surfaceVariant.copy(alpha = 0.7f))
-                                    .clickable { doSearch(mood, 0) }
-                                    .padding(horizontal = 16.dp),
-                                contentAlignment = Alignment.CenterStart,
+                                    .clickable { doSearch(mood.name, 0) },
+                                contentAlignment = Alignment.Center,
                             ) {
-                                Text(mood, color = cs.onSurface, fontWeight = FontWeight.SemiBold)
+                                val cover = mood.cover
+                                if (cover != null) {
+                                    Image(
+                                        painter = painterResource(cover),
+                                        contentDescription = null,
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier.fillMaxSize(),
+                                    )
+                                } else {
+                                    Box(Modifier.fillMaxSize().background(Brush.linearGradient(mood.tint)))
+                                }
+                                Box(
+                                    Modifier.fillMaxSize().background(
+                                        Brush.verticalGradient(
+                                            listOf(Color.Black.copy(alpha = 0.22f), Color.Black.copy(alpha = 0.58f)),
+                                        ),
+                                    ),
+                                )
+                                Text(
+                                    mood.name,
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 17.sp,
+                                    textAlign = TextAlign.Center,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.padding(horizontal = 10.dp),
+                                )
                             }
                         }
                         if (pair.size == 1) Spacer(Modifier.weight(1f))
