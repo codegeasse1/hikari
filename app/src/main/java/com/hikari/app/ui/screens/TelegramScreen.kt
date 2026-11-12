@@ -511,7 +511,8 @@ private fun TelegramHome(
             onSection(picked)
             scope.launch {
                 val target = pages.indexOf(picked)
-                if (target >= 0) pager.animateScrollToPage(target)
+                // runCatching: never crash the tab strip on a stale section.
+                if (target >= 0) runCatching { pager.animateScrollToPage(target) }
             }
         }
 

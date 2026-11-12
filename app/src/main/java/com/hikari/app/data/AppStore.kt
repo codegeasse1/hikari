@@ -839,13 +839,25 @@ class AppStore(private val ctx: Context) {
     /** Where the detail page's recommendations come from for a CloudStream (.cs3)
      *  title (Settings -> Customize): "plugin" = the plugin's own list (what the
      *  CloudStream app shows), falling back to TMDB only when the plugin returns
-     *  none; "tmdb" = always TMDB, as before. Default: plugin. */
+     *  none; "tmdb" = always TMDB, as before; "both" = TMDB's Related and Similar
+     *  plus a standalone Recommended row with the plugin list. Default: plugin. */
     fun cs3RecommendationsSourceFlow(): Flow<String> =
-        store.data.map { if (it[K.CS3_RECOMMENDATIONS_SOURCE] == "tmdb") "tmdb" else "plugin" }
+        store.data.map {
+            when (it[K.CS3_RECOMMENDATIONS_SOURCE]) {
+                "tmdb" -> "tmdb"
+                "both" -> "both"
+                else -> "plugin"
+            }
+        }
             .distinctUntilChanged().flowOn(Dispatchers.Default)
     suspend fun cs3RecommendationsSource(): String = cs3RecommendationsSourceFlow().first()
     suspend fun setCs3RecommendationsSource(value: String) {
-        write("CS3_RECOMMENDATIONS_SOURCE") { it[K.CS3_RECOMMENDATIONS_SOURCE] = if (value == "tmdb") "tmdb" else "plugin" }
+        val v = when (value) {
+            "tmdb" -> "tmdb"
+            "both" -> "both"
+            else -> "plugin"
+        }
+        write("CS3_RECOMMENDATIONS_SOURCE") { it[K.CS3_RECOMMENDATIONS_SOURCE] = v }
     }
     fun trackerContinueDaysFlow(): Flow<Int> = store.data.map { it[K.TRACKER_CONTINUE_DAYS] ?: 60 }.distinctUntilChanged().flowOn(Dispatchers.Default)
     suspend fun trackerContinueDays(): Int = trackerContinueDaysFlow().first()

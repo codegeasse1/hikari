@@ -381,10 +381,10 @@ private val TV_MOODS = listOf(
     TvMood("Workout", R.drawable.music_genre_workout),
     TvMood("Party", R.drawable.music_genre_party),
     TvMood("Sad songs", R.drawable.music_genre_sad),
-    TvMood("Focus", tint = listOf(Color(0xFF1E5F74), Color(0xFF0B2530))),
-    TvMood("Sleep", tint = listOf(Color(0xFF3B3A7A), Color(0xFF12122E))),
-    TvMood("Rock", tint = listOf(Color(0xFF8A2A2A), Color(0xFF2A0D0D))),
-    TvMood("Classical", tint = listOf(Color(0xFF7A5A2C), Color(0xFF2A1E0E))),
+    TvMood("Focus", R.drawable.music_genre_focus),
+    TvMood("Sleep", R.drawable.music_genre_sleep),
+    TvMood("Rock", R.drawable.music_genre_rock),
+    TvMood("Classical", R.drawable.music_genre_classical),
 )
 
 @Composable

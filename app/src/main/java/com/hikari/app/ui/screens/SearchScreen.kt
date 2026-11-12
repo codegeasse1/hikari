@@ -1429,13 +1429,19 @@ private fun PhoneSearchCell(
     Column(modifier.clickable { onOpen() }) {
         val phoneCinema = style.isCinema(false)
         val hero = if (phoneCinema) Artwork.heroModel(item) else null
+        // Lookahead-crash guard: the aspect sizer stays outer; the shared hero
+        // travels on an inner full-size node (see PosterCard).
         Box(
             Modifier
                 .fillMaxWidth()
                 .aspectRatio(if (phoneCinema) 16f / 9f else 2f / 3f)
                 .clip(RoundedCornerShape(10.dp))
-                .heroPoster(item.uniqueId)
         ) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .heroPoster(item.uniqueId)
+            ) {
             if (phoneCinema && hero != null && !hero.second) {
                 AsyncImage(
                     model = hero.first,
@@ -1460,6 +1466,7 @@ private fun PhoneSearchCell(
                         .align(Alignment.TopEnd)
                         .padding(4.dp),
                 )
+            }
             }
         }
         // Shrink-to-fit: the name shows in full, never cut mid-word.

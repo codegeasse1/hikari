@@ -4564,6 +4564,12 @@ private fun TmdbGridCard(item: MediaItem, style: PosterStyle, onClick: () -> Uni
         Modifier
             .clickable(onClick = onClick)
     ) {
+        // Lookahead-crash guard: aspect sizer outer, shared hero inner (see PosterCard).
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .aspectRatio(if (cinema) 16f / 9f else 2f / 3f)
+        ) {
         PosterArt(
             model = if (cinema) hero?.first else Artwork.model(item),
             contentDescription = item.title,
@@ -4574,10 +4580,10 @@ private fun TmdbGridCard(item: MediaItem, style: PosterStyle, onClick: () -> Uni
             contentScale = ContentScale.Crop,
             imageAlignment = if (cinema) com.hikari.app.ui.Artwork.CINEMA_ALIGNMENT else Alignment.Center,
             modifier = Modifier
-                .fillMaxWidth()
-                .aspectRatio(if (cinema) 16f / 9f else 2f / 3f)
+                .fillMaxSize()
                 .heroPoster(item.uniqueId),
         )
+        }
         if (style.showTitles) {
             Text(
                 item.title,

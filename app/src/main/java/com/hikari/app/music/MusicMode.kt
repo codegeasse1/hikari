@@ -15,6 +15,7 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -57,12 +58,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.media3.common.util.UnstableApi
+import com.hikari.app.R
 
 /**
  * Which "provider" the app is showing: Hikari (movies / series / anime) or HIKari music.
@@ -169,13 +173,14 @@ fun ProviderDrawer() {
                 name = "HIKari music",
                 selected = MusicMode.active,
                 badge = {
-                    Box(
-                        Modifier
+                    Image(
+                        painter = painterResource(id = R.drawable.music_provider_hikari),
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
                             .size(44.dp)
                             .clip(RoundedCornerShape(12.dp))
-                            .background(Brush.linearGradient(listOf(Color(0xFFFF6A88), Color(0xFF7A5CFF)))),
-                        contentAlignment = Alignment.Center,
-                    ) { Icon(Icons.Filled.MusicNote, contentDescription = null, tint = Color.White) }
+                    )
                 },
             ) {
                 MusicMode.setActive(ctx, true)

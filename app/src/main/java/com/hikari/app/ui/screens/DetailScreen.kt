@@ -554,6 +554,14 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
     private val _relatedFromPlugin = MutableStateFlow(false)
     val relatedFromPlugin: StateFlow<Boolean> = _relatedFromPlugin.asStateFlow()
 
+    /** The plugin's OWN recommendations as a standalone row (Settings ->
+     *  Customize -> Recommendations source = "TMDB + plugin"): TMDB's
+     *  Related/Similar stay untouched and the plugin list renders under
+     *  "Recommended". Empty unless the combined source is on and the plugin
+     *  returned titles the TMDB lists don't already cover. */
+    private val _recommended = MutableStateFlow<List<MediaItem>>(emptyList())
+    val recommended: StateFlow<List<MediaItem>> = _recommended.asStateFlow()
+
     /** Detail-page extras (metadata block, Cast, Trailers) for the current
      *  title, from a single background TMDB lookup. Null until it lands, and
      *  stays null when the title has no TMDB match — the sections then simply
@@ -661,6 +669,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             _related.value = emptyList()
             _similar.value = emptyList()
             _relatedFromPlugin.value = false
+            _recommended.value = emptyList()
             _extras.value = null
             val isTmdbRow = providerId == "tmdb" || rawType.equals("tmdb", ignoreCase = true)
             val isTrackerRow = providerId.lowercase() in setOf(
@@ -1033,37 +1042,51 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                     onUpdate = { if (shelvesGen == shelvesGeneration) _ratings.value = it },
                 )
             }.getOrDefault(emptyList()).let { if (shelvesGen == shelvesGeneration) _ratings.value = it }
-            // CloudStream (.cs3) titles: show the plugin's OWN recommendations
-            // (what the CloudStream app shows) when the user picked that source
-            // (Settings -> Customize) and the plugin supplies any; TMDB's lists
-            // only fill in when it does not. The first (nav-args) pass leaves
-            // the shelves to the second one: the plugin's load() response is
-            // cached by then, so the site is not asked twice.
+            // CloudStream (.cs3) titles: "plugin" shows the plugin's OWN
+            // recommendations in the Related row; "tmdb" always shows TMDB's
+            // Related/Similar; "both" (TMDB + plugin) shows TMDB's Related and
+            // Similar plus a standalone Recommended row with the plugin list.
+            // TMDB fills in whenever the plugin row is not used. The first
+            // (nav-args) pass leaves the plugin shelf to the second one: the
+            // plugin's load() response is cached by then, so the site is not
+            // asked twice — except in "both" mode, where the TMDB shelves
+            // still load on every pass.
+            val recSrc = runCatching { HikariApp.instance.store.cs3RecommendationsSource() }
+                .getOrDefault("plugin")
             val cs3 = manager.byId(item.providerId) as? com.hikari.app.cs3.Cs3MainApiProvider
-            if (cs3 != null &&
-                runCatching { HikariApp.instance.store.cs3RecommendationsSource() }
-                    .getOrDefault("plugin") != "tmdb"
-            ) {
-                if (fastPass) return@withContext
-                val fromPlugin: List<MediaItem> = try {
-                    withTimeoutOrNull(15_000L) { cs3.getRecommendations(item) }.orEmpty()
-                } catch (e: kotlinx.coroutines.CancellationException) {
-                    throw e
-                } catch (e: Throwable) {
-                    emptyList()
-                }
-                if (shelvesGen != shelvesGeneration) return@withContext
-                if (fromPlugin.isNotEmpty()) {
-                    _related.value = fromPlugin
-                    _relatedFromPlugin.value = true
-                    _similar.value = emptyList()
-                    return@withContext
+            var pluginRecs: List<MediaItem> = emptyList()
+            if (cs3 != null && (recSrc == "plugin" || recSrc == "both")) {
+                if (fastPass && recSrc != "both") return@withContext
+                if (!fastPass) {
+                    pluginRecs = try {
+                        withTimeoutOrNull(15_000L) { cs3.getRecommendations(item) }.orEmpty()
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Throwable) {
+                        emptyList()
+                    }
+                    if (shelvesGen != shelvesGeneration) return@withContext
                 }
             }
+            if (recSrc == "plugin" && pluginRecs.isNotEmpty()) {
+                _related.value = pluginRecs
+                _relatedFromPlugin.value = true
+                _similar.value = emptyList()
+                _recommended.value = emptyList()
+                return@withContext
+            }
+            _relatedFromPlugin.value = false
             val rel = if (tmdbOk) runCatching { TmdbMeta.related(item) }.getOrDefault(emptyList()) else emptyList()
             if (shelvesGen == shelvesGeneration) _related.value = rel
             val sim = if (tmdbOk) runCatching { TmdbMeta.similar(item) }.getOrDefault(emptyList()) else emptyList()
             if (shelvesGen == shelvesGeneration) _similar.value = sim
+            if (recSrc == "both") {
+                // Plugin titles the TMDB lists already cover add nothing.
+                val seen = rel.mapTo(HashSet()) { it.uniqueId }
+                _recommended.value = pluginRecs.filter { seen.add(it.uniqueId) }
+            } else if (shelvesGen == shelvesGeneration) {
+                _recommended.value = emptyList()
+            }
         }
     }
 
@@ -1462,6 +1485,7 @@ fun DetailScreen(
     val related by vm.related.collectAsState()
     val relatedFromPlugin by vm.relatedFromPlugin.collectAsState()
     val similar by vm.similar.collectAsState()
+    val recommended by vm.recommended.collectAsState()
     val extras by vm.extras.collectAsState()
     val ratings by vm.ratings.collectAsState()
     val tmdbSectionsOk by vm.tmdbSectionsOk.collectAsState()
@@ -1539,6 +1563,8 @@ fun DetailScreen(
     }
 
     var showSheet by remember { mutableStateOf(false) }
+    // Full-grid sheet for a Related/Similar/Recommended row: title + items.
+    var shelfSheet by remember { mutableStateOf<Pair<String, List<MediaItem>>?>(null) }
     var nuvioReportOpen by remember { mutableStateOf(false) }
     // The rating the user tapped in the score strip, or null when no
     // explanation dialog is up. Set by DetailsBlock, cleared by the dialog.
@@ -5381,6 +5407,7 @@ fun DetailScreen(
                             shelf = related,
                             tv = isTvLayout,
                             onClick = { openShelfItem(it) },
+                            onShowAll = { shelfSheet = (if (relatedFromPlugin) tr("Recommended") else tr("Related")) to related },
                             onSearchHere = {
                                 Routes.safeNavigate(nav, Routes.searchInProvider(livePid, it.title))
                             },
@@ -5397,6 +5424,24 @@ fun DetailScreen(
                             shelf = similar,
                             tv = isTvLayout,
                             onClick = { openShelfItem(it) },
+                            onShowAll = { shelfSheet = tr("Similar") to similar },
+                            onSearchHere = {
+                                Routes.safeNavigate(nav, Routes.searchInProvider(livePid, it.title))
+                            },
+                            onGlobalSearch = {
+                                Routes.safeNavigate(nav, Routes.searchQuery(it.title))
+                            },
+                        )
+                    }
+                }
+                if (recommended.isNotEmpty()) {
+                    item {
+                        ShelfRow(
+                            heading = tr("Recommended"),
+                            shelf = recommended,
+                            tv = isTvLayout,
+                            onClick = { openShelfItem(it) },
+                            onShowAll = { shelfSheet = tr("Recommended") to recommended },
                             onSearchHere = {
                                 Routes.safeNavigate(nav, Routes.searchInProvider(livePid, it.title))
                             },
@@ -5518,6 +5563,50 @@ fun DetailScreen(
             },
             onDismiss = { scopeAskShow = false },
         )
+    }
+
+    // Full grid of a Related/Similar/Recommended row: same cells, same taps,
+    // just every item instead of the first screenful. Tapping a poster opens
+    // it exactly like tapping it in the row, then the sheet goes away.
+    shelfSheet?.let { (sheetTitle, sheetItems) ->
+        ModalBottomSheet(onDismissRequest = { shelfSheet = null }) {
+            Text(
+                sheetTitle,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(horizontal = 16.dp)
+            )
+            Text(
+                tr("%s titles").replace("%s", sheetItems.size.toString()),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+            )
+            Spacer(Modifier.height(8.dp))
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(3),
+                contentPadding = PaddingValues(16.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                items(sheetItems.distinctBy { it.uniqueId }, key = { it.uniqueId }) { item ->
+                    ShelfCell(
+                        item = item,
+                        onClick = { shelfSheet = null; openShelfItem(item) },
+                        onSearchHere = {
+                            shelfSheet = null
+                            Routes.safeNavigate(nav, Routes.searchInProvider(livePid, item.title))
+                        },
+                        onGlobalSearch = {
+                            shelfSheet = null
+                            Routes.safeNavigate(nav, Routes.searchQuery(item.title))
+                        },
+                    )
+                }
+            }
+            Spacer(Modifier.height(24.dp))
+        }
     }
 
     if (showSheet) {
@@ -6677,15 +6766,21 @@ private fun Hero(
                     .fillMaxSize()
                     .background(MaterialTheme.colorScheme.background.copy(alpha = 0.42f))
             )
+            // Lookahead-crash guard: aspect sizer outer, shared hero inner (see PosterCard).
+            Box(
+                Modifier
+                    .fillMaxHeight(0.86f)
+                    .aspectRatio(2f / 3f)
+            ) {
             PosterArt(
                 model = posterModel ?: image.first,
                 contentDescription = meta?.title,
                 style = rememberPosterStyle(),
                 modifier = Modifier
-                    .fillMaxHeight(0.86f)
-                    .aspectRatio(2f / 3f)
+                    .fillMaxSize()
                     .heroPoster(heroKey),
             )
+            }
             IconButton(onClick = onBack, modifier = Modifier.align(Alignment.TopStart).padding(4.dp)) {
                 Icon(
                     Icons.AutoMirrored.Filled.ArrowBack,
@@ -6723,17 +6818,23 @@ private fun Hero(
             )
             // The poster stands at the left, inset from the band's top and bottom
             // so the pair reads as "the artwork, and the poster you know".
+            // Lookahead-crash guard: aspect sizer outer, shared hero inner (see PosterCard).
+            Box(
+                Modifier
+                    .align(Alignment.CenterStart)
+                    .padding(start = 16.dp)
+                    .fillMaxHeight(0.78f)
+                    .aspectRatio(2f / 3f)
+            ) {
             PosterArt(
                 model = posterModel ?: image.first,
                 contentDescription = null,
                 style = rememberPosterStyle(),
                 modifier = Modifier
-                    .align(Alignment.CenterStart)
-                    .padding(start = 16.dp)
-                    .fillMaxHeight(0.78f)
-                    .aspectRatio(2f / 3f)
+                    .fillMaxSize()
                     .heroPoster(heroKey),
             )
+            }
             IconButton(onClick = onBack, modifier = Modifier.align(Alignment.TopEnd).padding(4.dp)) {
                 Icon(
                     Icons.AutoMirrored.Filled.ArrowBack,
@@ -7004,8 +7105,9 @@ private fun logoIsLight(bitmap: android.graphics.Bitmap): Boolean {
     return (total / count) >= 120.0
 }
 
-/** A horizontal "Related"/"Similar" shelf of poster cells under the detail
- *  page's episode list (the Nuvio detail page's Related/Similar tabs, inline). */
+/** A horizontal "Related"/"Similar"/"Recommended" shelf of poster cells under
+ *  the detail page's episode list (the Nuvio detail page's Related/Similar
+ *  tabs, inline). */
 @Composable
 private fun ShelfRow(
     heading: String,
@@ -7013,9 +7115,11 @@ private fun ShelfRow(
     onClick: (MediaItem) -> Unit,
     onSearchHere: (MediaItem) -> Unit,
     onGlobalSearch: (MediaItem) -> Unit,
+    /** Opens the full grid of this shelf (the bottom sheet). Null hides it. */
+    onShowAll: (() -> Unit)? = null,
     /** The TV branch: the reference shelf header (title + scroll chevrons)
-     *  over the same poster cells. Related/Similar have no grid destination
-     *  of their own, so the View All pill stays hidden here. */
+     *  over the same poster cells. TV keeps no pill (dpad focus in sheets is
+     *  poor); phone gets Show All into the bottom-sheet grid. */
     tv: Boolean = false,
 ) {
     if (tv) {
@@ -7048,12 +7152,22 @@ private fun ShelfRow(
         return
     }
     Column(Modifier.padding(top = 12.dp)) {
-        Text(
-            heading,
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
-        )
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                heading,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f)
+            )
+            if (onShowAll != null && shelf.isNotEmpty()) {
+                TextButton(onClick = onShowAll) { Text(tr("Show all")) }
+            }
+        }
         LazyRow(
             contentPadding = PaddingValues(horizontal = 16.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp)

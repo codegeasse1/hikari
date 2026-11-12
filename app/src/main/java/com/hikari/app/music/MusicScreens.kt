@@ -349,10 +349,10 @@ private val MOODS = listOf(
     MoodTile("Workout", R.drawable.music_genre_workout),
     MoodTile("Party", R.drawable.music_genre_party),
     MoodTile("Sad songs", R.drawable.music_genre_sad),
-    MoodTile("Focus", tint = listOf(Color(0xFF1E5F74), Color(0xFF0B2530))),
-    MoodTile("Sleep", tint = listOf(Color(0xFF3B3A7A), Color(0xFF12122E))),
-    MoodTile("Rock", tint = listOf(Color(0xFF8A2A2A), Color(0xFF2A0D0D))),
-    MoodTile("Classical", tint = listOf(Color(0xFF7A5A2C), Color(0xFF2A1E0E))),
+    MoodTile("Focus", R.drawable.music_genre_focus),
+    MoodTile("Sleep", R.drawable.music_genre_sleep),
+    MoodTile("Rock", R.drawable.music_genre_rock),
+    MoodTile("Classical", R.drawable.music_genre_classical),
 )
 
 @Composable

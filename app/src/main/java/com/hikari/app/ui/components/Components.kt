@@ -710,10 +710,19 @@ fun PosterCard(
             .width(cardWidth)
             .clickable(onClick = onClick)
     ) {
+        // Lookahead-crash guard: aspectRatio (sizing) and the shared-element
+        // hero must live on DIFFERENT nodes. Same-node aspect+sharedElement
+        // crashes lookahead measurement mid-transition
+        // ("LookaheadDelegate has not been measured yet"). The outer box sizes;
+        // the inner full-size box is what travels.
         Box(
             Modifier
                 .fillMaxWidth()
                 .aspectRatio(2f / 3f)
+        ) {
+        Box(
+            Modifier
+                .fillMaxSize()
                 .heroPoster(item.uniqueId)
                 .quickMenuGesture(quickMenu) { slot ->
                     when (slot) {
@@ -741,6 +750,7 @@ fun PosterCard(
                 modifier = Modifier.fillMaxSize(),
             )
             if (quickMenu.visible) QuickMenuOverlay(quickMenu.selected)
+            }
         }
         quickLibraryItem?.let { picked ->
             QuickAddToLibrarySheet(item = picked, onDismiss = { quickLibraryItem = null })

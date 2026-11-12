@@ -1,3 +1,10 @@
+## 0.12.86 (continuous build only)
+
+- Shared-transition lookahead crash fixed: poster tiles no longer measure aspect-ratio and shared-element on the same node (that combination crashed navigation mid-transition) — the aspect sizer stays outer, the hero travels on an inner full-size node, on every poster grid (home, search, collections, detail)
+- Detail recommendations: third "TMDB + plugin" source in Customize shows all three rows — Related (TMDB), Similar (TMDB) and Recommended (plugin) — and every Related/Similar/Recommended row gets a "Show all" button opening the full grid
+- Music genre banners: Focus, Sleep, Rock and Classical tiles get their own artwork like the other genres, and the HIKari music provider row uses the torii artwork
+- Programmatic scrolls hardened: player-style, telegram tabs and kept scroll positions can no longer crash on stale indices
+
 ## 0.12.85 (continuous build only)
 
 - HIKari music provider: a menu button at the left of the Home header opens a "Select Provider" drawer (Hikari / HIKari music). Picking music lays a full-screen music app over Hikari — Hikari's own screens stay alive underneath and nothing else in the app changes.

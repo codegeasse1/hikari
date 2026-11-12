@@ -3598,20 +3598,27 @@ private fun HomeResultCard(item: MediaItem, onClick: () -> Unit) {
             .clip(RoundedCornerShape(12.dp))
             .clickable(onClick = onClick),
     ) {
+        // Lookahead-crash guard: the aspect sizer stays outer; the shared hero
+        // travels on an inner full-size node (see PosterCard).
         Box(
             Modifier
                 .fillMaxWidth()
                 .aspectRatio(2f / 3f)
                 .clip(RoundedCornerShape(12.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant)
-                .heroPoster(item.uniqueId),
         ) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .heroPoster(item.uniqueId)
+            ) {
             AsyncImage(
                 model = Artwork.model(item),
                 contentDescription = item.title,
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop,
             )
+            }
         }
         Text(
             item.title,

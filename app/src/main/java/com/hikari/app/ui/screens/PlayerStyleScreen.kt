@@ -176,12 +176,14 @@ fun PlayerStylePage(app: HikariApp, onBack: () -> Unit) {
     }
 
     // Tapping a button in the preview opens its editor and scrolls to it.
+    // runCatching: the element list can shrink under a stale key — never crash
+    // a scroll to a row that is no longer there.
     fun pick(key: String) {
         openKey = key
         val idx = PlayerElements.list.indexOfFirst { it.key == key }
         if (idx >= 0) {
             val start = CARDS_BEFORE_ELEMENTS + (if (pinPreview) 0 else 1)
-            scope.launch { listState.animateScrollToItem(start + idx) }
+            scope.launch { runCatching { listState.animateScrollToItem(start + idx) } }
         }
     }
 

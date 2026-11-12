@@ -4831,19 +4831,24 @@ private fun Cs3RecommendationsCard(app: HikariApp) {
     }
 
     fun persist(next: String) {
-        source = if (next == "tmdb") "tmdb" else "plugin"
+        source = when (next) {
+            "tmdb" -> "tmdb"
+            "both" -> "both"
+            else -> "plugin"
+        }
         scope.launch { runCatching { app.store.setCs3RecommendationsSource(source) } }
     }
 
-    val fromPlugin = source != "tmdb"
+    val fromPlugin = source == "plugin"
+    val fromBoth = source == "both"
     SettingsSection(
         id = "customize.cs3_recommendations",
         icon = Icons.Filled.ViewModule,
         title = tr("Recommendations source"),
-        summary = if (fromPlugin) {
-            tr("CloudStream titles: the plugin's own recommendations")
-        } else {
-            tr("CloudStream titles: TMDB recommendations")
+        summary = when (source) {
+            "tmdb" -> tr("CloudStream titles: TMDB recommendations")
+            "both" -> tr("CloudStream titles: TMDB plus the plugin's own")
+            else -> tr("CloudStream titles: the plugin's own recommendations")
         },
     ) {
         Row(
@@ -4872,12 +4877,12 @@ private fun Cs3RecommendationsCard(app: HikariApp) {
             Modifier
                 .fillMaxWidth()
                 .clickable { persist("tmdb") }
-                .tvToggle(!fromPlugin, onValueChange = {
+                .tvToggle(source == "tmdb", onValueChange = {
                     if (it) persist("tmdb")
                 }),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            RadioButton(selected = !fromPlugin, onClick = null)
+            RadioButton(selected = source == "tmdb", onClick = null)
             Column(Modifier.weight(1f)) {
                 Text(
                     tr("TMDB"),
@@ -4885,6 +4890,28 @@ private fun Cs3RecommendationsCard(app: HikariApp) {
                 )
                 Text(
                     tr("Always show TMDB's Related and Similar lists"),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clickable { persist("both") }
+                .tvToggle(fromBoth, onValueChange = {
+                    if (it) persist("both")
+                }),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            RadioButton(selected = fromBoth, onClick = null)
+            Column(Modifier.weight(1f)) {
+                Text(
+                    tr("TMDB + plugin"),
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Text(
+                    tr("Show TMDB's Related and Similar plus a Recommended row with the plugin's own list"),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
