@@ -157,13 +157,14 @@ fun ProviderDrawer() {
                 name = "hikari",
                 selected = !MusicMode.active,
                 badge = {
-                    Box(
-                        Modifier
+                    Image(
+                        painter = painterResource(id = R.drawable.provider_hikari),
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
                             .size(44.dp)
                             .clip(RoundedCornerShape(12.dp))
-                            .background(Brush.linearGradient(listOf(Color(0xFF1B3A66), Color(0xFF3F8CFF)))),
-                        contentAlignment = Alignment.Center,
-                    ) { Text("hikari", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold) }
+                    )
                 },
             ) {
                 MusicMode.setActive(ctx, false)

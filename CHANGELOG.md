@@ -1,3 +1,8 @@
+## 0.12.89 (continuous build only)
+
+- Sakura app icon reverted to its previous daylight cherry-blossom art (the torii-night art stays on Torii Moon / Sakura Moon only)
+- The plain hikari provider badge in Select Provider now shows the torii-moon scene instead of the blue box
+
 ## 0.12.88 (continuous build only)
 
 - Home posters stop going blank: every feed tile shared one animation key per title, so the same title in two rows fought over it and one rendered black — row tiles now carry row-scoped keys (search grids and collection grids keep the shared key, so their fly-into-detail animation still works)
