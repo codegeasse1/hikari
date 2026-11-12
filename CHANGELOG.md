@@ -1,5 +1,9 @@
 ## 0.12.85 (continuous build only)
 
+- HIKari music provider: a menu button at the left of the Home header opens a "Select Provider" drawer (Hikari / HIKari music). Picking music lays a full-screen music app over Hikari — Hikari's own screens stay alive underneath and nothing else in the app changes.
+
+## 0.12.85 (continuous build only)
+
 - Infinite auto-scrolling poster carousel: Home's anime sections each get a self-moving marquee row under the hero — posters glide by on a seamless loop with no interaction needed, every section at its own speed and alternating direction, with a slower glow drifting behind the cards for a parallax read. Touching a row pauses it and it resumes a moment after release; TV keeps its static shelves
 - Genres crash fixed: opening Genres no longer dies when TMDB has no backdrop/poster for a genre — misses are remembered instead of re-fetched
 - Old "Browse by genre" strip is gone: genres live only behind the new artwork-backed Genres button (Action-genre art, list icon) under the hero and at the end of the TV feed
