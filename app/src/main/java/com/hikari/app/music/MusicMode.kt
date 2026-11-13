@@ -43,6 +43,7 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import com.hikari.app.ui.theme.pageBackground
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Text
@@ -324,10 +325,13 @@ fun MusicRoot() {
     val openMenu: () -> Unit = { MusicMode.drawerOpen = true }
     val goBack: () -> Unit = { if (stack.isNotEmpty()) stack.removeAt(stack.lastIndex) }
 
+    // Opaque backing: in the Glass theme cs.background is transparent, which let
+    // stacked catalogue art show through the music tab. pageBackground() falls
+    // back to solid HikariBg while glass cards keep their translucency.
     Box(
         Modifier
             .fillMaxSize()
-            .background(cs.background)
+            .background(pageBackground())
             .pointerInput(Unit) { detectTapGestures { } },
     ) {
         Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.systemBars)) {
