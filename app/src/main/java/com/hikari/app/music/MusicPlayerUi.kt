@@ -357,7 +357,12 @@ fun MusicFullPlayer(onClose: () -> Unit) {
                 }
             }
 
-            if (showQuality) VxQualityDialog(onClose = { showQuality = false })
+            var showAllSettings by remember { mutableStateOf(false) }
+            if (showQuality) VxQualityDialogFull(
+                onClose = { showQuality = false },
+                onMore = { showQuality = false; showAllSettings = true },
+            )
+            if (showAllSettings) VxSettingsDialog(onClose = { showAllSettings = false })
             Row(
                 Modifier.fillMaxWidth().padding(bottom = 16.dp),
                 horizontalArrangement = Arrangement.SpaceEvenly,
