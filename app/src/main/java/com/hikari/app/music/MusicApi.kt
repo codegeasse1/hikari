@@ -477,22 +477,37 @@ object MusicApi {
     // ------------------------------------------------------------------ lyrics (LRCLIB)
 
     suspend fun lyrics(song: MSong): MLyrics? = withContext(Dispatchers.IO) {
-        val url = "https://lrclib.net/api/get?track_name=" + URLEncoder.encode(song.title, "UTF-8") +
-            "&artist_name=" + URLEncoder.encode(song.artist, "UTF-8") +
-            (if (song.durationSec > 0) "&duration=" + song.durationSec else "")
-        val text = Http.getString(url) ?: return@withContext null
-        val json = runCatching { JSONObject(text) }.getOrNull() ?: return@withContext null
-        val plain = json.optString("plainLyrics")
-        val synced = ArrayList<MLine>()
-        val lrc = json.optString("syncedLyrics")
-        val re = Regex("^\\[(\\d+):(\\d+(?:\\.\\d+)?)](.*)$")
-        for (line in lrc.lines()) {
-            val m = re.find(line.trim()) ?: continue
-            val min = m.groupValues[1].toLongOrNull() ?: continue
-            val sec = m.groupValues[2].toDoubleOrNull() ?: continue
-            synced.add(MLine(min * 60_000L + (sec * 1000).toLong(), m.groupValues[3].trim()))
+        // VxMusic-style: exact /api/get first (with then without duration), then /api/search fallback.
+        fun parseLrclib(text: String?): MLyrics? {
+            if (text.isNullOrBlank()) return null
+            val json = runCatching { JSONObject(text) }.getOrNull() ?: return null
+            // /api/search returns an array; take first usable record.
+            val obj = if (json.has("plainLyrics") || json.has("syncedLyrics")) json else {
+                val arr = json.optJSONArray("result") ?: json.optJSONArray("data") ?: return null
+                if (arr.length() == 0) return null
+                arr.optJSONObject(0) ?: return null
+            }
+            val plain = obj.optString("plainLyrics")
+            val synced = ArrayList<MLine>()
+            val lrc = obj.optString("syncedLyrics")
+            val re = Regex("^\\[(\\d+):(\\d+(?:\\.\\d+)?)](.*)$")
+            for (line in lrc.lines()) {
+                val m = re.find(line.trim()) ?: continue
+                val min = m.groupValues[1].toLongOrNull() ?: continue
+                val sec = m.groupValues[2].toDoubleOrNull() ?: continue
+                synced.add(MLine(min * 60_000L + (sec * 1000).toLong(), m.groupValues[3].trim()))
+            }
+            if (synced.isEmpty() && plain.isBlank()) return null
+            return MLyrics(synced, plain)
         }
-        if (synced.isEmpty() && plain.isBlank()) null else MLyrics(synced, plain)
+        val base = "https://lrclib.net/api/get?track_name=" + URLEncoder.encode(song.title, "UTF-8") +
+            "&artist_name=" + URLEncoder.encode(song.artist, "UTF-8")
+        if (song.durationSec > 0) {
+            parseLrclib(Http.getString(base + "&duration=" + song.durationSec))?.let { return@withContext it }
+        }
+        parseLrclib(Http.getString(base))?.let { return@withContext it }
+        val searchUrl = "https://lrclib.net/api/search?q=" + URLEncoder.encode((song.artist + " " + song.title).trim(), "UTF-8")
+        parseLrclib(Http.getString(searchUrl))
     }
 
     // ------------------------------------------------------------------ streams (NewPipeExtractor)
@@ -634,11 +649,52 @@ object MusicApi {
         else -> Http.UA
     }
 
+    /** Last Vx lossless stream used (for the quality badge). Null = YouTube fallback. */
+    @Volatile
+    var lastVx: VxLosslessApi.VxStream? = null
+
     /**
      * BLOCKING: returns the audio address for [id]. Called by the player's data source on its
      * own loading thread, never on the UI thread.
      */
-    fun resolveStreamBlocking(id: String): String {
+    fun resolveStreamBlocking(id: String): String = resolveStreamBlocking(id, null)
+
+    /**
+     * VxMusic port: tries lossless FLAC first when the user enabled it and we know
+     * title/artist (strict match rejects remix/slowed variants -> YouTube fallback keeps them playable).
+     * Video search is untouched, so unofficial uploads still resolve here via NewPipe.
+     */
+    fun resolveStreamBlocking(id: String, song: MSong?): String {
+        val now = System.currentTimeMillis()
+        streamCache[id]?.let { if (it.expires > now) return it.url }
+        // Lossless-first (needs metadata; without it we cannot safely match Qobuz).
+        if (song != null && song.title.isNotBlank() && song.artist.isNotBlank()) {
+            val app = com.hikari.app.HikariApp.instance.applicationContext
+            if (VxQuality.preferLossless(app)) {
+                val q = VxQuality.streamQuality(app)
+                if (q != VxQuality.YOUTUBE) {
+                    val vx = runCatching {
+                        VxLosslessApi.resolveStreamBlocking(
+                            song.title, song.artist,
+                            song.durationSec.takeIf { it > 0 }, song.album.takeIf { it.isNotBlank() }, q,
+                        )
+                    }.getOrNull()
+                    if (vx != null) {
+                        lastVx = vx
+                        streamCache[id] = Resolved(vx.url, now + 5L * 60 * 60 * 1000)
+                        Logs.log(TAG, "vx lossless ready for " + id + " (" + vx.bitDepth + "/" + vx.samplingRate + " FLAC q=" + vx.formatId + ")")
+                        return vx.url
+                    }
+                }
+            }
+        }
+        lastVx = null
+        return resolveLegacyBlocking(id)
+    }
+
+    private fun resolveLegacyBlocking(id: String): String {
+        val now = System.currentTimeMillis()
+        streamCache[id]?.let { if (it.expires > now) return it.url }
         val now = System.currentTimeMillis()
         streamCache[id]?.let { if (it.expires > now) return it.url }
         if (com.hikari.app.tv.TvMode.isTv && id !in fastSkip) {
