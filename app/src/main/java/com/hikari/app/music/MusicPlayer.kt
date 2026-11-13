@@ -10,15 +10,21 @@ import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.ResolvingDataSource
+import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import kotlinx.coroutines.CoroutineScope
 import com.hikari.app.data.Logs
+import com.hikari.app.net.DohDns
+import com.hikari.app.tv.TvMode
+import okhttp3.OkHttpClient
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -98,7 +104,21 @@ object MusicPlayer {
             .setAllowCrossProtocolRedirects(true)
             .setConnectTimeoutMs(15_000)
             .setReadTimeoutMs(20_000)
-        val upstream = DefaultDataSource.Factory(app, http)
+        // Television: stream through the app's own OkHttp stack (DNS-over-HTTPS fallback, same as the
+        // video player). The plain system HTTP stack uses the TV's own DNS, which on many networks
+        // cannot resolve the audio servers, so the song sat on "Loading" at 0:00. Phone is unchanged.
+        val upstream: DataSource.Factory = if (TvMode.isTv) {
+            val tvClient = OkHttpClient.Builder()
+                .followRedirects(true)
+                .followSslRedirects(true)
+                .connectTimeout(15, TimeUnit.SECONDS)
+                .readTimeout(20, TimeUnit.SECONDS)
+                .dns(DohDns)
+                .build()
+            DefaultDataSource.Factory(app, OkHttpDataSource.Factory(tvClient))
+        } else {
+            DefaultDataSource.Factory(app, http)
+        }
         val resolving = ResolvingDataSource.Factory(upstream, ResolvingDataSource.Resolver { spec ->
             if (spec.uri.scheme != "hikarimusic") {
                 spec
