@@ -40,6 +40,7 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -342,7 +343,8 @@ fun MusicRoot() {
                         onMenu = openMenu,
                     )
                     tab == 1 -> MusicSearchScreen(searchState, openItem, openMenu)
-                    else -> MusicLibraryScreen(libraryState, openRoute, openMenu)
+                    tab == 2 -> MusicLibraryScreen(libraryState, openRoute, openMenu)
+                    else -> MusicSettingsTab(onMenu = openMenu)
                 }
             }
             MusicMiniPlayer { playerOpen = true }
@@ -364,6 +366,12 @@ fun MusicRoot() {
                     onClick = { stack.clear(); tab = 2 },
                     icon = { Icon(Icons.Filled.LibraryMusic, contentDescription = null) },
                     label = { Text("Library") },
+                )
+                NavigationBarItem(
+                    selected = tab == 3 && stack.isEmpty(),
+                    onClick = { stack.clear(); tab = 3 },
+                    icon = { Icon(Icons.Filled.Settings, contentDescription = null) },
+                    label = { Text("Settings") },
                 )
             }
         }
