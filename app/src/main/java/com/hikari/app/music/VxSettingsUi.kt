@@ -61,7 +61,7 @@ fun VxSettingsDialog(onClose: () -> Unit) {
                     }
                     SettingRow("Lyrics Animation", lyricAnim, null, true) { showLyricPick = true }
                     SettingRow("Equalizer", if (eqOn) "On • 15 bands" else "Shape your sound across 15 frequencies", eqOn) {
-                        eqOn = it; VxSettings.setEqEnabled(ctx, it)
+                        eqOn = it; VxSettings.setEqEnabled(ctx, it); VxAudioFx.apply(ctx)
                     }
                     if (eqOn) {
                         Text("Bands (dB, -8..+8)", style = MaterialTheme.typography.bodySmall)
