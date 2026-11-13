@@ -334,10 +334,13 @@ fun LiveTvSettingsScreen(nav: NavHostController) {
         }
         item {
             Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(onClick = { streamStartTorrent = false; showStreamAdd = true }) {
-                    Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text(tr("Add stream"))
+                // HIDDEN_ADD_STREAM_TODO_UNHIDE: "Add stream" hidden per owner request — kept (not removed) so it can be unhidden later by removing this guard.
+                if (false) {
+                    TextButton(onClick = { streamStartTorrent = false; showStreamAdd = true }) {
+                        Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text(tr("Add stream"))
+                    }
                 }
                 TextButton(onClick = { streamStartTorrent = true; showStreamAdd = true }) {
                     Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp))
