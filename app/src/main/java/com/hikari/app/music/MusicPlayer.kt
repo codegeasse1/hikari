@@ -126,6 +126,19 @@ object MusicPlayer {
             .build()
         p.addListener(listener)
         exo = p
+        runCatching {
+            val sid = p.audioSessionId
+            if (sid != androidx.media3.common.C.AUDIO_SESSION_ID_UNSET) VxAudioFx.attach(app, sid)
+        }
+        // Re-apply FX when audio session changes (wired sets a new id).
+        p.addListener(object : androidx.media3.common.Player.Listener {
+            override fun onAudioSessionIdChanged(audioSessionId: Int) {
+                runCatching { VxAudioFx.attach(app, audioSessionId) }
+            }
+        })
+        // Crossfade: simple fade-out before track end when enabled.
+        // True overlap needs dual players; v1 fades to avoid hard cuts.
+        runCatching { VxAudioFx.apply(app) }
         return p
     }
 
