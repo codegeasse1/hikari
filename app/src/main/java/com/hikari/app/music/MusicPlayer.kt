@@ -103,7 +103,9 @@ object MusicPlayer {
                 spec
             } else {
                 val id = spec.uri.lastPathSegment.orEmpty()
-                val url = MusicApi.resolveStreamBlocking(id)
+                // Pass queue metadata so Vx lossless can strict-match (remix/slowed fall back to YouTube).
+                val meta = _state.value.queue.firstOrNull { it.id == id }
+                val url = MusicApi.resolveStreamBlocking(id, meta)
                 spec.buildUpon()
                     .setUri(Uri.parse(url))
                     .setHttpRequestHeaders(mapOf("User-Agent" to MusicApi.userAgentFor(url)))
