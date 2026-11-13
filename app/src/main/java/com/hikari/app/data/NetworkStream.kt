@@ -183,6 +183,9 @@ object NetworkStream {
         }
         val chosen = sources.ifEmpty {
             if (isBoxLink(url) && boxShareKey(url) != null) return@withContext emptyList()
+            // A Diskwala share is a web page, never a video: playing it only
+            // buffers until the 20s watchdog ("Server is not responding").
+            if (hostOf(url).lowercase().contains("diskwala")) return@withContext emptyList()
             listOf(sourceOf(url, name))
         }
         chosen.distinctBy { it.url }.map {
@@ -481,6 +484,7 @@ private class BReader(val b: ByteArray) {
         val key = boxShareKey(url) ?: return emptyList()
         val origin = originOf(url)
         val jar = LinkedList<String>()
+        seedBoxLogin(jar, origin)
         val shareHtml = fetchText(url, BOX_UA, jar, referer = origin)
         var token = if (!shareHtml.isNullOrBlank()) jsTokenOf(shareHtml) else ""
         val home = if (token.isNotBlank()) {
@@ -557,6 +561,7 @@ private class BReader(val b: ByteArray) {
             // sekey cannot doom the retry.
             Logs.log("NetStream", "terabox: list empty (shorturlinfo errno=$tokensErrno), retrying with fresh session")
             val retryJar = LinkedList<String>()
+            seedBoxLogin(retryJar, origin)
             val retryHome = fetchText(url, BOX_UA, retryJar, referer = origin)
                 ?: fetchText("$origin/main", BOX_UA, retryJar)
                 ?: home
@@ -631,6 +636,34 @@ private class BReader(val b: ByteArray) {
             Logs.log("NetStream", "terabox: ${entries.size} entries but no playable dlinks (noDlink=$noDlink) for $origin")
         }
         return files
+    }
+
+    /**
+     * Terabox now refuses most anonymous share lists, so a login made once in
+     * the app's own web view (Extensions -> Websites -> terabox.com) is reused
+     * here: the web view's cookie store is shared with the whole app, and its
+     * cookies (the `ndus` login among them) are added to the API calls.
+     */
+    private fun seedBoxLogin(jar: MutableList<String>, origin: String) {
+        val cm = runCatching { CookieManager.getInstance() }.getOrNull() ?: return
+        var added = 0
+        for (h in listOf(origin, "https://www.terabox.com", "https://terabox.com").distinct()) {
+            val raw = runCatching { cm.getCookie(h) }.getOrNull().orEmpty()
+            for (part in raw.split(";")) {
+                val pair = part.trim()
+                if (pair.isBlank() || !pair.contains('=')) continue
+                val name = pair.substringBefore('=')
+                if (jar.none { it.substringBefore('=') == name }) {
+                    jar.add(pair)
+                    added++
+                }
+            }
+        }
+        Logs.log(
+            "NetStream",
+            "terabox: saved web cookies=$added login=" +
+                (if (jar.any { it.substringBefore('=').trim().equals("ndus", ignoreCase = true) }) "yes" else "none"),
+        )
     }
 
     private fun boxSekeyOf(tokens: String): String? {
@@ -1285,72 +1318,133 @@ private class BReader(val b: ByteArray) {
         return MDISK_HOSTS.any { host.contains(it) }
     }
 
+    /** Hooks fetch/XHR so the page's own API answers can be read back. The
+     *  Diskwala API demands an app-integrity header that only the page's own
+     *  script can make, so the page is run for real and its answer captured. */
+    private const val DISKWALA_HOOK_JS =
+        "(function(){" +
+            "if(window.__dwHooked)return;window.__dwHooked=true;window.__dw=[];" +
+            "function keep(u,t){try{if(!t)return;var s=String(t);" +
+            "if(s.length>200000)s=s.substring(0,200000);" +
+            "if(window.__dw.length<60)window.__dw.push({u:String(u||''),b:s});}catch(e){}}" +
+            "try{var of=window.fetch;if(of){window.fetch=function(){var a=arguments;var u='';" +
+            "try{u=(typeof a[0]==='string')?a[0]:((a[0]&&a[0].url)||'');}catch(e){}" +
+            "var p=of.apply(this,a);" +
+            "try{p.then(function(r){try{r.clone().text().then(function(t){keep(u,t);});}catch(e){}});}catch(e){}" +
+            "return p;};}}catch(e){}" +
+            "try{var oo=XMLHttpRequest.prototype.open;" +
+            "XMLHttpRequest.prototype.open=function(m,u){this.__u=u;return oo.apply(this,arguments);};" +
+            "var os=XMLHttpRequest.prototype.send;" +
+            "XMLHttpRequest.prototype.send=function(){var x=this;" +
+            "x.addEventListener('load',function(){try{" +
+            "keep(x.__u,(x.responseType===''||x.responseType==='text')?x.responseText:'');}catch(e){}});" +
+            "return os.apply(this,arguments);};}catch(e){}" +
+            "})();"
+
+    private const val DISKWALA_VIDEO_JS =
+        "(function(){var v=document.querySelector('video');var s=v?(v.currentSrc||v.src||''):'';" +
+            "if(!s){var so=document.querySelector('video source');if(so)s=so.src||'';}return s;})()"
+
+    /** `fileInfo.url` (and name) out of one captured Diskwala API answer. */
+    private fun diskwalaFileInfo(body: String): Pair<String, String>? {
+        val o = runCatching { JSONObject(body) }.getOrNull() ?: return null
+        val data = o.optJSONObject("data")
+        val info = o.optJSONObject("fileInfo")
+            ?: data?.optJSONObject("fileInfo")
+            ?: return null
+        val u = info.optString("url").trim()
+        if (!u.startsWith("http")) return null
+        return u to info.optString("name").trim()
+    }
+
     private suspend fun mdisk(url: String): List<StreamSource> {
         val host = hostOf(url).lowercase()
-        // Only the host whose API shape is known is attempted; every other
+        // Only the host whose page is known is attempted; every other
         // mdisk-class page keeps the generic stack.
         if (!host.contains("diskwala")) return emptyList()
         // /app/<id> share pages (and any last-segment id form).
         val id = url.trim().substringBefore('?').substringBefore('#').trimEnd('/')
             .substringAfterLast('/').takeIf {
                 it.length >= 8 && it.all { c -> c.isLetterOrDigit() }
-            } ?: return emptyList()
-        val api = "https://ddudapidd.diskwala.com/api/v1"
-        for (body in listOf("{\"id\":\"$id\"}", "{\"file_id\":\"$id\"}")) {
-            signedDiskwalaPost("$api/file/sign", body)?.let { signed ->
-                pickSignedUrl(signed)?.let { return listOf(sourceOf(it, id)) }
-            }
+            } ?: run {
+            Logs.log("NetStream", "diskwala: no share id in link (host only?) for $host")
+            return emptyList()
         }
-        return emptyList()
-    }
+        val holder = arrayOfNulls<WebView>(1)
+        val main = Handler(Looper.getMainLooper())
+        main.post {
+            try {
+                CookieManager.getInstance().setAcceptCookie(true)
+                val web = WebView(HikariApp.instance.applicationContext)
+                holder[0] = web
+                web.settings.javaScriptEnabled = true
+                web.settings.domStorageEnabled = true
+                web.settings.mediaPlaybackRequiresUserGesture = false
+                web.settings.userAgentString = Http.WEBVIEW_UA
+                web.webViewClient = object : WebViewClient() {
+                    override fun onPageStarted(view: WebView?, pageUrl: String?, favicon: android.graphics.Bitmap?) {
+                        runCatching { view?.evaluateJavascript(DISKWALA_HOOK_JS, null) }
+                    }
 
-    /** One signed Diskwala API call (see above): the canonical SHA-256 is sent
-     *  both as hex and as base64, since only the site's own signer knows which
-     *  encoding its cryptogram wraps. Null unless the server answers 200 with
-     *  a body. */
-    private suspend fun signedDiskwalaPost(apiUrl: String, body: String): String? =
-        withContext(Dispatchers.IO) {
-            val path = runCatching {
-                java.net.URI(apiUrl).path.removePrefix("/api/v1")
-            }.getOrDefault("/file/sign")
-            val ts = System.currentTimeMillis().toString()
-            val canonical = "POST $path | params= | body=$body | ts=$ts"
-            val digest = runCatching {
-                val md = java.security.MessageDigest.getInstance("SHA-256")
-                md.digest(canonical.toByteArray(Charsets.UTF_8))
-            }.getOrNull() ?: return@withContext null
-            val hex = digest.joinToString("") { "%02x".format(it) }
-            val b64 = android.util.Base64.encodeToString(digest, android.util.Base64.NO_WRAP)
-            for (crypt in listOf(hex, b64)) {
-                val out = runCatching {
-                    Http.postString(
-                        apiUrl, body,
-                        mapOf("Appicrypt" to crypt, "Appicrypt-ts" to ts),
-                    )
-                }.getOrNull()
-                if (!out.isNullOrBlank()) return@withContext out
-            }
-            null
-        }
-
-    /** The playable URL inside a Diskwala sign answer: the known keys first,
-     *  then the first http(s) URL in the body. */
-    private fun pickSignedUrl(body: String): String? {
-        runCatching {
-            val o = JSONObject(body)
-            for (k in listOf("url", "file_url", "download_url", "stream_url", "dlink", "signed_url")) {
-                o.optString(k).takeIf { it.startsWith("http") }?.let { return it }
-                val nested = o.optJSONObject(k)
-                if (nested != null) {
-                    for (k2 in listOf("url", "file_url", "download_url", "stream_url")) {
-                        nested.optString(k2).takeIf { it.startsWith("http") }?.let { return it }
+                    override fun onPageFinished(view: WebView?, pageUrl: String?) {
+                        runCatching { view?.evaluateJavascript(DISKWALA_HOOK_JS, null) }
                     }
                 }
+                web.loadUrl(url)
+            } catch (_: Throwable) {
             }
         }
-        return Regex("""https?:\\/\\/[^"'\s\\]+""").find(body)?.value
-            ?.replace("\\/", "/")
-            ?.takeIf { it.startsWith("http") }
+        var found: Pair<String, String>? = null
+        var calls = 0
+        val seen = StringBuilder()
+        try {
+            val deadline = System.currentTimeMillis() + 17_000L
+            while (found == null && System.currentTimeMillis() < deadline) {
+                kotlinx.coroutines.delay(700)
+                val web = holder[0] ?: continue
+                val raw = jsEval(web, "JSON.stringify(window.__dw||[])").orEmpty()
+                val arr = runCatching { org.json.JSONArray(raw) }.getOrNull()
+                if (arr != null) {
+                    calls = arr.length()
+                    for (i in 0 until arr.length()) {
+                        val e = arr.optJSONObject(i) ?: continue
+                        val body = e.optString("b")
+                        val hit = diskwalaFileInfo(body)
+                        if (hit != null) {
+                            found = hit
+                            break
+                        }
+                        if (seen.length < 600) {
+                            seen.append(e.optString("u").substringBefore('?').takeLast(60))
+                                .append(" -> ").append(body.take(90).replace('\n', ' ')).append(" | ")
+                        }
+                    }
+                }
+                if (found == null) {
+                    val src = jsEval(web, DISKWALA_VIDEO_JS).orEmpty().trim()
+                    if (src.startsWith("http")) found = src to ""
+                }
+            }
+        } finally {
+            main.post {
+                runCatching { holder[0]?.stopLoading() }
+                runCatching { holder[0]?.destroy() }
+                holder[0] = null
+            }
+        }
+        val hit = found
+        if (hit == null) {
+            Logs.log("NetStream", "diskwala: no file url captured, page calls=$calls $seen")
+            return emptyList()
+        }
+        Logs.log("NetStream", "diskwala: file url captured from ${hostOf(hit.first)}")
+        return listOf(
+            sourceOf(
+                hit.first,
+                hit.second.ifBlank { id },
+                isM3u8 = hit.first.lowercase().contains(".m3u8"),
+            ),
+        )
     }
 
     /** `jsToken` out of a box home page: the web app parks it in a

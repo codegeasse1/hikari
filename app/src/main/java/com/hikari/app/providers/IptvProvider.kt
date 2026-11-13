@@ -457,7 +457,7 @@ class IptvProvider(override val config: ProviderConfig) : ContentProvider {
                 providerName = displayName,
             )
             if (resolved.isEmpty()) {
-                iptvErrors[config.id] = "That link could not be opened — it may have expired."
+                iptvErrors[config.id] = "That link could not be opened — it may have expired, or (Terabox) you need to log in once: Extensions → Websites → terabox.com."
                 return emptyList()
             }
             return resolved
@@ -472,7 +472,7 @@ class IptvProvider(override val config: ProviderConfig) : ContentProvider {
                 providerName = displayName,
             )
             if (resolved.isEmpty()) {
-                iptvErrors[config.id] = "That share could not be opened — it may have expired or need a password."
+                iptvErrors[config.id] = "That share could not be opened — it may have expired, need a password, or need a Terabox login: Extensions → Websites → terabox.com."
                 return emptyList()
             }
             return resolved
