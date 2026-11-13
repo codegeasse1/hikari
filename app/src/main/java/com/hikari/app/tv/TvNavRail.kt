@@ -47,6 +47,11 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -191,7 +196,20 @@ fun TvNavRail(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .align(Alignment.CenterStart),
+                .align(Alignment.CenterStart)
+                .onPreviewKeyEvent { event ->
+                    // While HIKari music is on screen, Right on the rail hands the remote to the
+                    // music page (its Home / Search / Library bar) instead of leaving it to the
+                    // automatic focus search, which could not reach the page from the rail.
+                    if (musicActive &&
+                        event.type == KeyEventType.KeyDown &&
+                        event.key == Key.DirectionRight
+                    ) {
+                        com.hikari.app.music.TvMusicUi.enterContent?.invoke() ?: false
+                    } else {
+                        false
+                    }
+                },
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             for (tab in TvRailTabs) {

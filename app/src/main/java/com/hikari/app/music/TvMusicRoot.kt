@@ -59,10 +59,20 @@ fun TvMusicRoot(startPad: Dp = TvUi.RAIL_WIDTH + 24.dp) {
     val playerOpen = TvMusicUi.playerOpen
     val pages = rememberSaveableStateHolder()
     val pagesFocus = remember { FocusRequester() }
+    val tabFocus = remember { FocusRequester() }
 
     // AppRoot hides the rail while the player is open; never leave that flag behind.
     DisposableEffect(Unit) {
-        onDispose { TvMusicUi.playerOpen = false }
+        // The rail's Right key lands here: first the lit tab pill (Home / Search / Library), and
+        // on a page that has no pills (an album, a playlist) the page itself.
+        TvMusicUi.enterContent = {
+            runCatching { tabFocus.requestFocus() }.isSuccess ||
+                runCatching { pagesFocus.requestFocus() }.isSuccess
+        }
+        onDispose {
+            TvMusicUi.enterContent = null
+            TvMusicUi.playerOpen = false
+        }
     }
 
     LaunchedEffect(st.error) {
@@ -97,7 +107,7 @@ fun TvMusicRoot(startPad: Dp = TvUi.RAIL_WIDTH + 24.dp) {
     val openRoute: (MRoute) -> Unit = { route -> stack.add(route) }
     val goBack: () -> Unit = { if (stack.isNotEmpty()) stack.removeAt(stack.lastIndex) }
     val tabs: @Composable () -> Unit = {
-        TvMusicTabs(tab) { i ->
+        TvMusicTabs(tab, tabFocus) { i ->
             stack.clear()
             tab = i
         }

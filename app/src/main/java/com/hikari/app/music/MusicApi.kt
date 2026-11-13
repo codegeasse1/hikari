@@ -547,8 +547,81 @@ object MusicApi {
         }
     }
 
+    /** Songs whose quick address failed to play: the next ask for them goes straight to NewPipe. */
+    private val fastSkip = ConcurrentHashMap.newKeySet<String>()
+
     fun invalidate(id: String) {
         streamCache.remove(id)
+        fastSkip.add(id)
+    }
+
+    /**
+     * One plain request to YouTube's player endpoint as the VR client, which hands back direct
+     * audio addresses with nothing to decode. NewPipe has to download and run YouTube's player
+     * script for the same job, and a television's slow processor can spend minutes on that (the
+     * music stays on "Loading"). Returns null whenever anything is off, so the caller falls back
+     * to NewPipe.
+     */
+    private fun quickAudioUrl(id: String): String? {
+        val ua = "com.google.android.apps.youtube.vr.oculus/1.61.48 " +
+            "(Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip"
+        val client = JSONObject()
+            .put("clientName", "ANDROID_VR")
+            .put("clientVersion", "1.61.48")
+            .put("deviceMake", "Oculus")
+            .put("deviceModel", "Quest 3")
+            .put("androidSdkVersion", 32)
+            .put("userAgent", ua)
+            .put("osName", "Android")
+            .put("osVersion", "12L")
+            .put("hl", "en")
+            .put("gl", "US")
+            .put("timeZone", "UTC")
+            .put("utcOffsetMinutes", 0)
+        val body = JSONObject()
+            .put("context", JSONObject().put("client", client))
+            .put("videoId", id)
+            .put("contentCheckOk", true)
+            .put("racyCheckOk", true)
+            .put(
+                "playbackContext",
+                JSONObject().put(
+                    "contentPlaybackContext",
+                    JSONObject().put("html5Preference", "HTML5_PREF_WANTS"),
+                ),
+            )
+        val headers = mapOf(
+            "User-Agent" to ua,
+            "X-YouTube-Client-Name" to "28",
+            "X-YouTube-Client-Version" to "1.61.48",
+            "Origin" to "https://www.youtube.com",
+        )
+        val text = Http.request(
+            "POST",
+            "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
+            body.toString(),
+            headers,
+        ).use { reply ->
+            if (!reply.isSuccessful) return null
+            reply.body?.string().orEmpty()
+        }
+        val root = JSONObject(text)
+        if (root.o("playabilityStatus")?.optString("status") != "OK") return null
+        val formats = root.o("streamingData")?.a("adaptiveFormats") ?: return null
+        // AAC (audio/mp4) only: every television can decode it, which is not true of Opus.
+        var best: String? = null
+        var bestRate = -1
+        for (f in formats.objs()) {
+            if (!f.optString("mimeType").startsWith("audio/mp4")) continue
+            val u = f.optString("url")
+            if (u.isBlank()) continue
+            val rate = f.optInt("bitrate")
+            if (rate > bestRate) {
+                bestRate = rate
+                best = u
+            }
+        }
+        return best
     }
 
     /** The User-Agent a stream address expects (it depends on which YouTube client made it). */
@@ -568,6 +641,15 @@ object MusicApi {
     fun resolveStreamBlocking(id: String): String {
         val now = System.currentTimeMillis()
         streamCache[id]?.let { if (it.expires > now) return it.url }
+        if (com.hikari.app.tv.TvMode.isTv && id !in fastSkip) {
+            val quick = runCatching { quickAudioUrl(id) }.getOrNull()
+            if (quick != null) {
+                streamCache[id] = Resolved(quick, now + 5L * 60 * 60 * 1000)
+                Logs.log(TAG, "quick stream ready for $id")
+                return quick
+            }
+            Logs.log(TAG, "quick stream not available for $id, using NewPipe")
+        }
         if (!ensureNewPipe()) throw IOException("YouTube extractor is not available")
         val info = org.schabi.newpipe.extractor.stream.StreamInfo.getInfo("https://www.youtube.com/watch?v=$id")
         var best: String? = null

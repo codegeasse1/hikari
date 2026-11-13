@@ -18,8 +18,11 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import kotlinx.coroutines.CoroutineScope
+import com.hikari.app.data.Logs
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -53,6 +56,11 @@ object MusicPlayer {
     private var radioBusy = false
     private val retried = HashSet<String>()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var stallJob: Job? = null
+    private const val TAG = "HikariMusic"
+
+    /** How long a song may sit on "Loading" before it is asked for again. */
+    private const val STALL_MS = 45_000L
 
     private val listener = object : Player.Listener {
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
@@ -68,10 +76,13 @@ object MusicPlayer {
 
         override fun onPlaybackStateChanged(playbackState: Int) {
             if (playbackState == Player.STATE_READY) retried.clear()
+            if (playbackState == Player.STATE_BUFFERING) armStall() else stallJob?.cancel()
             publish()
         }
 
         override fun onPlayerError(error: PlaybackException) {
+            stallJob?.cancel()
+            Logs.logError(TAG, "player error " + error.errorCodeName, error)
             handleError()
         }
     }
@@ -155,6 +166,23 @@ object MusicPlayer {
             shuffle = p.shuffleModeEnabled,
             repeat = p.repeatMode,
         )
+    }
+
+    /**
+     * A song that never leaves "Loading" (an address that cannot be reached, a slow lookup) used
+     * to hang there for good. After [STALL_MS] it is treated like a failed song: asked for again
+     * once, then skipped.
+     */
+    private fun armStall() {
+        stallJob?.cancel()
+        stallJob = scope.launch {
+            delay(STALL_MS)
+            val p = exo ?: return@launch
+            if (p.playbackState == Player.STATE_BUFFERING && p.playWhenReady) {
+                Logs.log(TAG, "still loading after " + (STALL_MS / 1000) + "s, asking again")
+                handleError()
+            }
+        }
     }
 
     private fun handleError() {

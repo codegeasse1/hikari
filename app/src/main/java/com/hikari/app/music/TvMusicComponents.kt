@@ -36,6 +36,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
@@ -57,6 +59,14 @@ import com.hikari.app.tv.tvPress
  */
 object TvMusicUi {
     var playerOpen by mutableStateOf(false)
+
+    /**
+     * Set by [TvMusicRoot] while it is on screen. The navigation rail calls it when the remote's
+     * Right key is pressed on the rail, so the remote always lands on the music page's tab bar
+     * (or the page itself) instead of depending on the geometric focus search. Returns true when
+     * it took the key.
+     */
+    var enterContent: (() -> Boolean)? = null
 }
 
 /** Light text on the dark TV music pages. */
@@ -179,7 +189,7 @@ fun TvMusicIconButton(
 
 /** Home / Search / Library, at the top of every music page. */
 @Composable
-fun TvMusicTabs(tab: Int, onTab: (Int) -> Unit) {
+fun TvMusicTabs(tab: Int, tabFocus: FocusRequester? = null, onTab: (Int) -> Unit) {
     val items = listOf(
         "Home" to Icons.Filled.Home,
         "Search" to Icons.Filled.Search,
@@ -187,7 +197,12 @@ fun TvMusicTabs(tab: Int, onTab: (Int) -> Unit) {
     )
     Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
         items.forEachIndexed { i, entry ->
-            TvMusicPill(entry.first, selected = tab == i, icon = entry.second) { onTab(i) }
+            TvMusicPill(
+                entry.first,
+                selected = tab == i,
+                icon = entry.second,
+                modifier = if (tabFocus != null && tab == i) Modifier.focusRequester(tabFocus) else Modifier,
+            ) { onTab(i) }
         }
     }
 }
