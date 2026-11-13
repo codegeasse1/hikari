@@ -48,6 +48,7 @@ object VxQuality {
 
     fun setPreferLossless(ctx: Context, v: Boolean) {
         runCatching { prefs(ctx).edit().putBoolean(K_PREFER, v).apply() }
+        runCatching { com.hikari.app.music.MusicApi.clearStreamCache() }
     }
 
     fun streamQuality(ctx: Context): Int =
@@ -57,6 +58,7 @@ object VxQuality {
     fun setStreamQuality(ctx: Context, q: Int) {
         val v = if (q in STREAM_OPTIONS) q else MAX_HI_RES
         runCatching { prefs(ctx).edit().putInt(K_STREAM, v).apply() }
+        runCatching { com.hikari.app.music.MusicApi.clearStreamCache() }
     }
 
     fun downloadQuality(ctx: Context): Int =
