@@ -57,6 +57,7 @@ object MusicPlayer {
     private val retried = HashSet<String>()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var stallJob: Job? = null
+    private var xfadeJob: Job? = null
     private const val TAG = "HikariMusic"
 
     /** How long a song may sit on "Loading" before it is asked for again. */
@@ -136,10 +137,41 @@ object MusicPlayer {
                 runCatching { VxAudioFx.attach(app, audioSessionId) }
             }
         })
-        // Crossfade: simple fade-out before track end when enabled.
-        // True overlap needs dual players; v1 fades to avoid hard cuts.
+        // Crossfade: fade-out before track end + fade-in after, when enabled.
         runCatching { VxAudioFx.apply(app) }
+        startXfadeLoop(app, p)
         return p
+    }
+
+    /** Fade-out the last seconds of a track and fade back in, when crossfade is on. */
+    private fun startXfadeLoop(app: Context, p: ExoPlayer) {
+        xfadeJob?.cancel()
+        xfadeJob = scope.launch {
+            while (true) {
+                kotlinx.coroutines.delay(500)
+                val pl = exo ?: break
+                if (pl !== p) break
+                runCatching {
+                    val on = VxSettings.crossfade(app)
+                    val secs = VxSettings.xfadeSecs(app).coerceIn(1, 12)
+                    if (!on) {
+                        if (pl.volume < 1f) pl.volume = 1f
+                    } else {
+                        val dur = pl.duration
+                        val pos = pl.currentPosition
+                        if (dur > 0 && pl.playWhenReady && dur != androidx.media3.common.C.TIME_UNSET) {
+                            val remain = dur - pos
+                            if (remain <= secs * 1000L && remain > 0) {
+                                val f = (remain.toFloat() / (secs * 1000f)).coerceIn(0f, 1f)
+                                pl.volume = (f * f).coerceIn(0.05f, 1f)
+                            } else if (pl.volume < 1f) {
+                                pl.volume = (pl.volume + 0.12f).coerceAtMost(1f)
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fun init(ctx: Context) {
