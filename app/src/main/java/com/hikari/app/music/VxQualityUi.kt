@@ -27,6 +27,11 @@ import androidx.compose.ui.unit.dp
 /** Streaming + download quality picker (VxMusic options, no login). */
 @Composable
 fun VxQualityDialog(onClose: () -> Unit) {
+    VxQualityDialogFull(onClose = onClose, onMore = onClose)
+}
+
+@Composable
+fun VxQualityDialogFull(onClose: () -> Unit, onMore: () -> Unit) {
     val ctx = LocalContext.current
     var prefer by remember { mutableStateOf(VxQuality.preferLossless(ctx)) }
     var streamQ by remember { mutableStateOf(VxQuality.streamQuality(ctx)) }
@@ -97,6 +102,9 @@ fun VxQualityDialog(onClose: () -> Unit) {
                 )
             }
         },
-        confirmButton = { TextButton(onClick = onClose) { Text("Done") } },
+        confirmButton = {
+            TextButton(onClick = onMore) { Text("All settings") }
+            TextButton(onClick = onClose) { Text("Done") }
+        },
     )
 }
