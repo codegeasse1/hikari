@@ -74,7 +74,9 @@ fun TorrentStreamAddDialog(
     val scope = rememberCoroutineScope()
     var addLink by remember(startAsTorrent) { mutableStateOf("") }
     var addName by remember(startAsTorrent) { mutableStateOf("") }
-    var addTorrent by remember(startAsTorrent) { mutableStateOf(startAsTorrent) }
+    // Locked to the entry point: "Add torrent" shows only Torrent, "Add network
+    // stream" shows only Network stream (same as the IPTV add-stream dialog).
+    val addTorrent = startAsTorrent
     var adding by remember { mutableStateOf(false) }
 
     fun addNow(playAfter: Boolean = false) {
@@ -119,20 +121,6 @@ fun TorrentStreamAddDialog(
         title = { Text(if (addTorrent) tr("Add torrent") else tr("Add network stream")) },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    AddModePill(
-                        label = tr("Network stream"),
-                        selected = !addTorrent,
-                        onClick = { addTorrent = false },
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    AddModePill(
-                        label = tr("Torrent"),
-                        selected = addTorrent,
-                        onClick = { addTorrent = true },
-                    )
-                }
-                Spacer(Modifier.height(10.dp))
                 Text(
                     if (addTorrent) {
                         tr(
