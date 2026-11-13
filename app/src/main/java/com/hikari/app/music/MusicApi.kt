@@ -565,9 +565,17 @@ object MusicApi {
     /** Songs whose quick address failed to play: the next ask for them goes straight to NewPipe. */
     private val fastSkip = ConcurrentHashMap.newKeySet<String>()
 
+    /**
+     * Songs whose Vx lossless / JioSaavn address already failed to play. The retry skips those two
+     * and goes straight to YouTube, otherwise it would be handed the very same address again and
+     * the song would sit on "Loading" forever.
+     */
+    private val skipPremium = ConcurrentHashMap.newKeySet<String>()
+
     fun invalidate(id: String) {
         streamCache.remove(id)
         fastSkip.add(id)
+        skipPremium.add(id)
     }
 
     /**
@@ -659,6 +667,7 @@ object MusicApi {
     fun clearStreamCache() {
         streamCache.clear()
         fastSkip.clear()
+        skipPremium.clear()
         lastVx = null
         lastSource = "YouTube"
     }
@@ -677,8 +686,28 @@ object MusicApi {
     fun resolveStreamBlocking(id: String, song: MSong?): String {
         val now = System.currentTimeMillis()
         streamCache[id]?.let { if (it.expires > now) return it.url }
-        // Lossless-first (needs metadata; without it we cannot safely match Qobuz).
-        if (song != null && song.title.isNotBlank() && song.artist.isNotBlank()) {
+        val tv = com.hikari.app.tv.TvMode.isTv
+        // After a failed play the retry skips Vx lossless / JioSaavn (it would get the same address back).
+        val premium = id !in skipPremium
+        // Television: ONE quick request for a plain AAC address comes first. The lossless FLAC (24-bit /
+        // 192 kHz by default) is too heavy for a television's processor, Wi-Fi and audio output, and the
+        // chain of lookups before it (several searches, then a slow NewPipe run) outlasts the 45 second
+        // "still loading" timer, which then restarts the whole chain: the song never leaves "Loading".
+        var quickTried = false
+        if (tv && id !in fastSkip) {
+            quickTried = true
+            val quick = runCatching { quickAudioUrl(id) }.getOrNull()
+            if (quick != null) {
+                lastVx = null
+                lastSource = "YouTube"
+                streamCache[id] = Resolved(quick, now + 5L * 60 * 60 * 1000)
+                Logs.log(TAG, "tv quick stream ready for " + id + " in " + (System.currentTimeMillis() - now) + "ms")
+                return quick
+            }
+            Logs.log(TAG, "tv quick stream not available for " + id)
+        }
+        // Lossless-first (needs metadata; without it we cannot safely match Qobuz). Phone only.
+        if (!tv && premium && song != null && song.title.isNotBlank() && song.artist.isNotBlank()) {
             val app = com.hikari.app.HikariApp.instance.applicationContext
             if (VxQuality.preferLossless(app)) {
                 val q = VxQuality.streamQuality(app)
@@ -700,7 +729,7 @@ object MusicApi {
             }
         }
         // JioSaavn 320k fallback (VxMusic-style) before YouTube — helps Indian catalog.
-        if (song != null && song.title.isNotBlank()) {
+        if (premium && song != null && song.title.isNotBlank()) {
             val jio = runCatching {
                 VxJioSaavnApi.resolveBlocking(song.title, song.artist, song.durationSec.takeIf { it > 0 })
             }.getOrNull()
@@ -714,13 +743,13 @@ object MusicApi {
         }
         lastVx = null
         lastSource = "YouTube"
-        return resolveLegacyBlocking(id)
+        return resolveLegacyBlocking(id, tryQuick = !quickTried)
     }
 
-    private fun resolveLegacyBlocking(id: String): String {
+    private fun resolveLegacyBlocking(id: String, tryQuick: Boolean = true): String {
         val now = System.currentTimeMillis()
         streamCache[id]?.let { if (it.expires > now) return it.url }
-        if (com.hikari.app.tv.TvMode.isTv && id !in fastSkip) {
+        if (tryQuick && com.hikari.app.tv.TvMode.isTv && id !in fastSkip) {
             val quick = runCatching { quickAudioUrl(id) }.getOrNull()
             if (quick != null) {
                 streamCache[id] = Resolved(quick, now + 5L * 60 * 60 * 1000)
