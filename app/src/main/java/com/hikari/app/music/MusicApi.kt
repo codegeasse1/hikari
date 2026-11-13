@@ -695,8 +695,6 @@ object MusicApi {
     private fun resolveLegacyBlocking(id: String): String {
         val now = System.currentTimeMillis()
         streamCache[id]?.let { if (it.expires > now) return it.url }
-        val now = System.currentTimeMillis()
-        streamCache[id]?.let { if (it.expires > now) return it.url }
         if (com.hikari.app.tv.TvMode.isTv && id !in fastSkip) {
             val quick = runCatching { quickAudioUrl(id) }.getOrNull()
             if (quick != null) {
