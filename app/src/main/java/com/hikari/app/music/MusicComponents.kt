@@ -22,6 +22,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material3.AlertDialog
@@ -38,7 +39,9 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -311,10 +314,25 @@ fun MusicHeroCard(item: MItem, modifier: Modifier = Modifier, onClick: () -> Uni
 @Composable
 fun MusicSongMenu(song: MSong, playlistId: String? = null) {
     val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
     val liked by MusicStore.liked.collectAsState()
     var open by remember { mutableStateOf(false) }
     var pick by remember { mutableStateOf(false) }
+    // 0 idle, 1 downloading, 2 saved, 3 failed
+    var dlState by remember(song.id) { mutableStateOf(0) }
     val isLiked = liked.any { it.id == song.id }
+    fun startDownload() {
+        if (dlState == 1) return
+        dlState = 1
+        scope.launch {
+            val res = runCatching { VxDownload.downloadSong(ctx, song) }.getOrNull()
+            val ok = res?.isSuccess == true
+            dlState = if (ok) 2 else 3
+            val msg = if (ok) "Saved to Music/HikariMusic (" + VxQuality.shortLabelFor(VxQuality.downloadQuality(ctx)) + ")"
+                else "Download failed: " + (res?.exceptionOrNull()?.message ?: "no stream")
+            android.widget.Toast.makeText(ctx, msg, android.widget.Toast.LENGTH_LONG).show()
+        }
+    }
     Box {
         IconButton(onClick = { open = true }) {
             Icon(Icons.Filled.MoreVert, contentDescription = "More", tint = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -336,6 +354,23 @@ fun MusicSongMenu(song: MSong, playlistId: String? = null) {
                 open = false
                 pick = true
             })
+            DropdownMenuItem(
+                text = {
+                    Text(
+                        when (dlState) {
+                            1 -> "Downloading…"
+                            2 -> "Downloaded ✓"
+                            3 -> "Retry download"
+                            else -> "Download (" + VxQuality.shortLabelFor(VxQuality.downloadQuality(ctx)) + ")"
+                        }
+                    )
+                },
+                leadingIcon = { Icon(Icons.Filled.Download, contentDescription = null) },
+                onClick = {
+                    open = false
+                    startDownload()
+                },
+            )
             if (playlistId != null) {
                 DropdownMenuItem(text = { Text("Remove from this playlist") }, onClick = {
                     open = false
