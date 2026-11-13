@@ -1,11 +1,21 @@
 package com.hikari.app.music
 
 import android.content.Context
+import com.hikari.app.HikariApp
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
-/** Full VxMusic-style settings, login-free. Backed by SharedPrefs so no DataStore/Hilt needed. */
+/** Full VxMusic-style settings, login-free. Backed by SharedPrefs so no DataStore/Hilt needed.
+ *  Appearance rows are bridged into Hikari's real theme store so they visibly apply:
+ *  AMOLED / Liquid Glass -> AppStore theme, Accent -> app+player accent, App Font -> AppStore font.
+ *  Player-local rows (wavy, crossfade, lyrics anim, dynamic color/now-playing) are read live
+ *  by MusicPlayerUi, so they apply without restart. */
 object VxSettings {
     private const val PREFS = "hikari_music_vx"
     private fun p(ctx: Context) = ctx.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+    private val io = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     // 15 ISO bands like VxMusic
     val EQ_FREQS = intArrayOf(25, 40, 63, 100, 160, 250, 400, 630, 1000, 1600, 2500, 4000, 6300, 10000, 16000)
@@ -13,7 +23,10 @@ object VxSettings {
     val STUDIO_MASTER = listOf(2.6f, 2.8f, 2.2f, 0.6f, -1.8f, -2.6f, -1.2f, 0.0f, 1.2f, 2.4f, 3.6f, 4.0f, 4.2f, 4.5f, 4.8f)
 
     fun eqEnabled(ctx: Context) = runCatching { p(ctx).getBoolean("eq_enabled", false) }.getOrDefault(false)
-    fun setEqEnabled(ctx: Context, v: Boolean) { runCatching { p(ctx).edit().putBoolean("eq_enabled", v).apply() } }
+    fun setEqEnabled(ctx: Context, v: Boolean) {
+        runCatching { p(ctx).edit().putBoolean("eq_enabled", v).apply() }
+        VxAudioFx.apply(ctx)
+    }
     fun eqGains(ctx: Context): List<Float> {
         val s = runCatching { p(ctx).getString("eq_gains", null) }.getOrNull() ?: return List(15) { 0f }
         val parts = s.split(",").mapNotNull { it.toFloatOrNull() }
@@ -43,16 +56,74 @@ object VxSettings {
     val LYRIC_ANIMS = listOf("Apple Fluid", "Karaoke Pulse", "Kinetic Slide", "Cinematic Focus", "Lossless Glow", "Glass Elevation", "Dynamic Zoom", "Minimal Clean", "Classic")
 
     fun liquidGlass(ctx: Context) = runCatching { p(ctx).getBoolean("liquid_glass", false) }.getOrDefault(false)
-    fun setLiquidGlass(ctx: Context, v: Boolean) { runCatching { p(ctx).edit().putBoolean("liquid_glass", v).apply() } }
+    fun setLiquidGlass(ctx: Context, v: Boolean) {
+        runCatching { p(ctx).edit().putBoolean("liquid_glass", v).apply() }
+        pushTheme(ctx)
+    }
     fun amoled(ctx: Context) = runCatching { p(ctx).getBoolean("amoled", false) }.getOrDefault(false)
-    fun setAmoled(ctx: Context, v: Boolean) { runCatching { p(ctx).edit().putBoolean("amoled", v).apply() } }
+    fun setAmoled(ctx: Context, v: Boolean) {
+        runCatching { p(ctx).edit().putBoolean("amoled", v).apply() }
+        pushTheme(ctx)
+    }
     fun dynamicColor(ctx: Context) = runCatching { p(ctx).getBoolean("dyn_color", false) }.getOrDefault(false)
     fun setDynamicColor(ctx: Context, v: Boolean) { runCatching { p(ctx).edit().putBoolean("dyn_color", v).apply() } }
     fun dynNowPlaying(ctx: Context) = runCatching { p(ctx).getBoolean("dyn_np", false) }.getOrDefault(false)
     fun setDynNowPlaying(ctx: Context, v: Boolean) { runCatching { p(ctx).edit().putBoolean("dyn_np", v).apply() } }
     fun appFont(ctx: Context) = runCatching { p(ctx).getBoolean("app_font", true) }.getOrDefault(true)
-    fun setAppFont(ctx: Context, v: Boolean) { runCatching { p(ctx).edit().putBoolean("app_font", v).apply() } }
+    fun setAppFont(ctx: Context, v: Boolean) {
+        runCatching { p(ctx).edit().putBoolean("app_font", v).apply() }
+        pushFont(ctx, v)
+    }
     fun accent(ctx: Context) = runCatching { p(ctx).getString("accent", "Crimson") }.getOrDefault("Crimson")!!
-    fun setAccent(ctx: Context, v: String) { runCatching { p(ctx).edit().putString("accent", v).apply() } }
+    fun setAccent(ctx: Context, v: String) {
+        runCatching { p(ctx).edit().putString("accent", v).apply() }
+        pushAccent(v)
+    }
     val ACCENTS = listOf("Crimson", "Violet", "Ocean", "Sage", "Amber", "Rose", "Mono", "Custom")
+
+    /** Music accent names -> real HikariAccent keys (see Accents.kt). */
+    fun accentAppKey(name: String): String = when (name.trim().lowercase()) {
+        "crimson" -> "red"
+        "violet" -> "violet"
+        "ocean" -> "blue"
+        "sage" -> "teal"
+        "amber" -> "amber"
+        "rose" -> "pink"
+        "mono" -> "mono"
+        "custom" -> "purple"
+        else -> "red"
+    }
+
+    /** Liquid Glass wins over AMOLED, else plain dark. Runs off the UI thread. */
+    private fun pushTheme(ctx: Context) {
+        val app = ctx.applicationContext
+        val liquid = runCatching { p(app).getBoolean("liquid_glass", false) }.getOrDefault(false)
+        val amoled = runCatching { p(app).getBoolean("amoled", false) }.getOrDefault(false)
+        val key = when {
+            liquid -> "glass"
+            amoled -> "amoled"
+            else -> "dark"
+        }
+        io.launch { runCatching { HikariApp.instance.store.setTheme(key) } }
+    }
+
+    private fun pushAccent(name: String) {
+        val key = accentAppKey(name)
+        io.launch {
+            runCatching {
+                val s = HikariApp.instance.store
+                s.setAppAccent(key)
+                s.setPlayerAccent(key)
+                s.setThemeLinked(true)
+            }
+        }
+    }
+
+    private fun pushFont(ctx: Context, on: Boolean) {
+        // ON = bundled custom look, OFF = device system font.
+        val key = if (on) "sans-medium" else "system"
+        io.launch { runCatching { HikariApp.instance.store.setAppFont(key) } }
+        // Keep the synchronous mirror warm so a cold start picks it up instantly.
+        runCatching { com.hikari.app.ui.AppFonts.sync(ctx.applicationContext, key, "") }
+    }
 }
