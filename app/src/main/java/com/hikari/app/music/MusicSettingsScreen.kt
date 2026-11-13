@@ -1,12 +1,17 @@
 package com.hikari.app.music
 
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
@@ -81,9 +86,9 @@ fun VxSettingsInline() {
         if (eqOn) {
             gains.forEachIndexed { i, g ->
                 androidx.compose.foundation.layout.Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                    androidx.compose.material3.Text(VxSettings.eqLabel(VxSettings.EQ_FREQS[i]), modifier = androidx.compose.ui.Modifier.width(44.dp), style = androidx.compose.material3.MaterialTheme.typography.bodySmall)
-                    androidx.compose.material3.Slider(value = g, onValueChange = { gains = gains.toMutableList().also { l -> l[i] = it } }, onValueChangeFinished = { VxSettings.setEqGains(ctx, gains) }, valueRange = -8f..8f, modifier = androidx.compose.ui.Modifier.weight(1f))
-                    androidx.compose.material3.Text(String.format("%.1f", g), style = androidx.compose.material3.MaterialTheme.typography.bodySmall, modifier = androidx.compose.ui.Modifier.width(36.dp))
+                    androidx.compose.material3.Text(VxSettings.eqLabel(VxSettings.EQ_FREQS[i]), modifier = Modifier.width(44.dp), style = androidx.compose.material3.MaterialTheme.typography.bodySmall)
+                    androidx.compose.material3.Slider(value = g, onValueChange = { gains = gains.toMutableList().also { l -> l[i] = it } }, onValueChangeFinished = { VxSettings.setEqGains(ctx, gains) }, valueRange = -8f..8f, modifier = Modifier.weight(1f))
+                    androidx.compose.material3.Text(String.format("%.1f", g), style = androidx.compose.material3.MaterialTheme.typography.bodySmall, modifier = Modifier.width(36.dp))
                 }
             }
             androidx.compose.foundation.layout.Row(horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp)) {
@@ -93,21 +98,21 @@ fun VxSettingsInline() {
         }
         VxRow("Wavy Seekbar", "Multi-layer fluid wavy progress slider", wavy) { wavy = it; VxSettings.setWavy(ctx, it) }
         VxRow("Studio Master Clarity", "Crystal-clear open sound", clarity) { clarity = it; VxQuality.setStudioClarity(ctx, it); VxAudioFx.apply(ctx) }
-        androidx.compose.foundation.layout.Spacer(androidx.compose.ui.Modifier.height(8.dp))
+        androidx.compose.foundation.layout.Spacer(Modifier.height(8.dp))
         androidx.compose.material3.Text("Audio & Streaming", style = androidx.compose.material3.MaterialTheme.typography.labelLarge)
         androidx.compose.material3.Text("Streaming", style = androidx.compose.material3.MaterialTheme.typography.bodyMedium)
         VxQuality.STREAM_OPTIONS.forEach { q ->
-            androidx.compose.foundation.layout.Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically, modifier = androidx.compose.ui.Modifier.fillMaxWidth().clickable { streamQ = q; VxQuality.setStreamQuality(ctx, q) }.padding(vertical = 2.dp)) {
+            androidx.compose.foundation.layout.Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().clickable { streamQ = q; VxQuality.setStreamQuality(ctx, q) }.padding(vertical = 2.dp)) {
                 androidx.compose.material3.RadioButton(selected = streamQ == q, onClick = { streamQ = q; VxQuality.setStreamQuality(ctx, q) })
-                androidx.compose.foundation.layout.Spacer(androidx.compose.ui.Modifier.width(8.dp))
+                androidx.compose.foundation.layout.Spacer(Modifier.width(8.dp))
                 androidx.compose.material3.Text(if (q == -1) "YouTube (Opus/AAC) \u2022 JioSaavn 320k fallback" else VxQuality.labelFor(q))
             }
         }
         androidx.compose.material3.Text("Downloads", style = androidx.compose.material3.MaterialTheme.typography.bodyMedium)
         VxQuality.DOWNLOAD_OPTIONS.forEach { q ->
-            androidx.compose.foundation.layout.Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically, modifier = androidx.compose.ui.Modifier.fillMaxWidth().clickable { dlQ = q; VxQuality.setDownloadQuality(ctx, q) }.padding(vertical = 2.dp)) {
+            androidx.compose.foundation.layout.Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().clickable { dlQ = q; VxQuality.setDownloadQuality(ctx, q) }.padding(vertical = 2.dp)) {
                 androidx.compose.material3.RadioButton(selected = dlQ == q, onClick = { dlQ = q; VxQuality.setDownloadQuality(ctx, q) })
-                androidx.compose.foundation.layout.Spacer(androidx.compose.ui.Modifier.width(8.dp))
+                androidx.compose.foundation.layout.Spacer(Modifier.width(8.dp))
                 androidx.compose.material3.Text(if (q == -1) "YouTube (Opus/AAC)" else VxQuality.labelFor(q))
             }
         }
@@ -115,9 +120,9 @@ fun VxSettingsInline() {
         VxRow("Bit-Perfect Mode", "Bypass DSP, direct passthrough", bitPerfect) { bitPerfect = it; VxQuality.setBitPerfect(ctx, it); VxAudioFx.apply(ctx) }
         VxRow("Crossfade", "Blend end of track into next (" + xsecs.toInt() + "s)", xfade) { xfade = it; VxSettings.setCrossfade(ctx, it) }
         if (xfade) {
-            androidx.compose.material3.Slider(value = xsecs, onValueChange = { xsecs = it }, onValueChangeFinished = { VxSettings.setXfadeSecs(ctx, xsecs.toInt()) }, valueRange = 1f..12f, steps = 10, modifier = androidx.compose.ui.Modifier.fillMaxWidth())
+            androidx.compose.material3.Slider(value = xsecs, onValueChange = { xsecs = it }, onValueChangeFinished = { VxSettings.setXfadeSecs(ctx, xsecs.toInt()) }, valueRange = 1f..12f, steps = 10, modifier = Modifier.fillMaxWidth())
         }
-        androidx.compose.foundation.layout.Spacer(androidx.compose.ui.Modifier.height(8.dp))
+        androidx.compose.foundation.layout.Spacer(Modifier.height(8.dp))
         androidx.compose.material3.Text("Appearance", style = androidx.compose.material3.MaterialTheme.typography.labelLarge)
         VxRow("AMOLED Mode", "Pure black background", amoled) { amoled = it; VxSettings.setAmoled(ctx, it) }
         VxRow("Dynamic Color", "Use wallpaper colors", dynC) { dynC = it; VxSettings.setDynamicColor(ctx, it) }
@@ -138,8 +143,8 @@ fun VxSettingsInline() {
 
 @Composable
 private fun VxRow(title: String, subtitle: String, checked: Boolean, onCheck: (Boolean) -> Unit) {
-    androidx.compose.foundation.layout.Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically, modifier = androidx.compose.ui.Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-        androidx.compose.foundation.layout.Column(androidx.compose.ui.Modifier.weight(1f)) {
+    androidx.compose.foundation.layout.Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+        androidx.compose.foundation.layout.Column(Modifier.weight(1f)) {
             androidx.compose.material3.Text(title, style = androidx.compose.material3.MaterialTheme.typography.bodyLarge)
             androidx.compose.material3.Text(subtitle, style = androidx.compose.material3.MaterialTheme.typography.bodySmall)
         }
@@ -149,8 +154,8 @@ private fun VxRow(title: String, subtitle: String, checked: Boolean, onCheck: (B
 
 @Composable
 private fun VxRow(title: String, subtitle: String, checked: Nothing?, arrow: Boolean, onOpen: () -> Unit) {
-    androidx.compose.foundation.layout.Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically, modifier = androidx.compose.ui.Modifier.fillMaxWidth().clickable(onClick = onOpen).padding(vertical = 8.dp)) {
-        androidx.compose.foundation.layout.Column(androidx.compose.ui.Modifier.weight(1f)) {
+    androidx.compose.foundation.layout.Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().clickable(onClick = onOpen).padding(vertical = 8.dp)) {
+        androidx.compose.foundation.layout.Column(Modifier.weight(1f)) {
             androidx.compose.material3.Text(title, style = androidx.compose.material3.MaterialTheme.typography.bodyLarge)
             androidx.compose.material3.Text(subtitle, style = androidx.compose.material3.MaterialTheme.typography.bodySmall)
         }
