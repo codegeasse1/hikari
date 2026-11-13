@@ -120,6 +120,7 @@ import com.hikari.app.tv.TvUi
 import com.hikari.app.ui.theme.rememberGlassTokens
 import com.hikari.app.ui.shape
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -403,18 +404,31 @@ object ScrollReveal {
     }
 }
 
-/** Scroll-linked fade-rise reveal: position-driven, NOT time-driven. The
- *  item's visible fraction inside its scroll viewport (0 = fully outside,
- *  1 = fully inside) is eased (easeOutCubic, fully revealed at 45%) and
- *  drives opacity 0.12 → 1, scale 0.94 → 1 (pivot center) and a 14dp → 0
- *  slide along [axis]. Scrolling back reverses it smoothly; no stagger
- *  delays, no one-shot timers.
+/** Per-card state for [scrollReveal]. [target] is what the card's scroll
+ *  position asks for (0 = outside the viewport, 1 = fully inside); the card
+ *  then glides to it with a spring, so fast flings never pop. */
+private class RevealState {
+    val target = mutableFloatStateOf(0f)
+    var positioned = false
+    var seen = false
+    var revealAtMs = 0L
+    var dir = 1f
+    var col = 0
+}
+
+/** Scroll reveal: cards that are not fully inside the screen sit dim, small,
+ *  blurred and nudged outward; as they scroll in (horizontally or vertically,
+ *  in either direction) they glide to full brightness, full size and sharp
+ *  focus. The visible fraction of the card drives a target value; a spring
+ *  follows it, so the motion stays smooth even when the finger flicks. In a
+ *  grid, columns follow at slightly different speeds (a soft wave), and the
+ *  cards already on screen when a page opens come in one after another.
  *
  *  Draw-phase only: the fraction is measured in [onGloballyPositioned] and
  *  consumed in [graphicsLayer], so scrolling never recomposes the card and
- *  Coil images keep painting. Items already fully visible on first
- *  composition measure 1.0 and render revealed — nothing sticks dim. When
- *  the master switch is off, or the system animator scale is 0 (the
+ *  Coil images keep painting. The blur needs Android 12+ (older phones get
+ *  the fade/scale/slide only) and is skipped in the performance booster.
+ *  When the master switch is off, or the system animator scale is 0 (the
  *  "remove animations" setting), this is a no-op. */
 fun Modifier.scrollReveal(axis: RevealAxis): Modifier = composed {
     val ctx = LocalContext.current
@@ -431,7 +445,8 @@ fun Modifier.scrollReveal(axis: RevealAxis): Modifier = composed {
     if (animatorOff) return@composed this
     val density = LocalDensity.current
     val configuration = LocalConfiguration.current
-    val shiftPx = remember(density) { with(density) { 14.dp.toPx() } }
+    val shiftPx = remember(density) { with(density) { 20.dp.toPx() } }
+    val blurPx = remember(density) { with(density) { 9.dp.toPx() } }
     val viewPx = remember(density, axis, configuration.screenWidthDp, configuration.screenHeightDp) {
         val dp = if (axis == RevealAxis.Horizontal) {
             configuration.screenWidthDp
@@ -440,27 +455,86 @@ fun Modifier.scrollReveal(axis: RevealAxis): Modifier = composed {
         }
         with(density) { dp.dp.toPx() }
     }
-    val eased = remember { mutableFloatStateOf(1f) }
+    val state = remember { RevealState() }
+    val shown = remember { Animatable(0f) }
+    // The spring that follows the scroll position. Each column gets a slightly
+    // different stiffness, which is what makes a grid row arrive as a wave.
+    LaunchedEffect(state) {
+        androidx.compose.runtime.snapshotFlow { state.target.floatValue }.collectLatest { goal ->
+            val wait = state.revealAtMs - android.os.SystemClock.uptimeMillis()
+            if (wait > 0L) delay(wait)
+            val stiffness = 430f - state.col.coerceIn(0, 4) * 45f
+            shown.animateTo(
+                goal,
+                androidx.compose.animation.core.spring<Float>(dampingRatio = 1f, stiffness = stiffness),
+            )
+        }
+    }
+    // Safety net: if the card is never positioned (measure-only hosts), show it
+    // anyway instead of leaving it invisible.
+    LaunchedEffect(state) {
+        delay(900L)
+        if (!state.positioned) state.target.floatValue = 1f
+    }
     this
         .onGloballyPositioned { coords ->
-            val size = (if (axis == RevealAxis.Horizontal) coords.size.width else coords.size.height).toFloat()
-            if (size <= 0.5f || viewPx <= 0.5f) return@onGloballyPositioned
+            state.positioned = true
+            val w = maxOf(coords.size.width.toFloat(), 1f)
+            val h = maxOf(coords.size.height.toFloat(), 1f)
+            val size = if (axis == RevealAxis.Horizontal) w else h
+            if (size <= 1.5f || viewPx <= 0.5f) return@onGloballyPositioned
             val b = coords.boundsInWindow()
             val start = if (axis == RevealAxis.Horizontal) b.left else b.top
             val end = if (axis == RevealAxis.Horizontal) b.right else b.bottom
             val visible = ((minOf(end, viewPx) - maxOf(start, 0f)) / size).coerceIn(0f, 1f)
-            val t = (visible / 0.45f).coerceIn(0f, 1f)
-            val e = 1f - (1f - t) * (1f - t) * (1f - t)
-            if (kotlin.math.abs(e - eased.floatValue) > 0.002f) eased.floatValue = e
+            if (!state.seen && visible > 0.02f) {
+                state.seen = true
+                val col = (b.left / w).toInt().coerceIn(0, 6)
+                val row = (b.top / h).toInt().coerceIn(0, 6)
+                state.col = col
+                // Cards that are already fully on screen the first time they are
+                // seen belong to a page that just opened: stagger them. Cards
+                // that arrive by scrolling start right away.
+                val delayMs = if (visible > 0.9f) {
+                    if (axis == RevealAxis.Horizontal) col * 60 else (col + row) * 50
+                } else 0
+                state.revealAtMs = android.os.SystemClock.uptimeMillis() + delayMs.coerceAtMost(400)
+            }
+            state.dir = if ((start + end) / 2f < viewPx / 2f) -1f else 1f
+            val goal = (visible / 0.9f).coerceIn(0f, 1f)
+            val snapped = when {
+                goal > 0.995f -> 1f
+                goal < 0.005f -> 0f
+                else -> goal
+            }
+            if (kotlin.math.abs(snapped - state.target.floatValue) > 0.003f) {
+                state.target.floatValue = snapped
+            }
         }
         .graphicsLayer {
-            val e = eased.floatValue
-            alpha = 0.12f + 0.88f * e
-            val s = 0.94f + 0.06f * e
+            val p = shown.value.coerceIn(0f, 1f)
+            alpha = 0.04f + 0.96f * p
+            val s = 0.9f + 0.1f * p
             scaleX = s
             scaleY = s
-            val d = (1f - e) * shiftPx
-            if (axis == RevealAxis.Horizontal) translationX = d else translationY = d
+            val d = (1f - p) * shiftPx * state.dir
+            if (axis == RevealAxis.Horizontal) {
+                translationX = d
+                translationY = 0f
+            } else {
+                translationY = d
+                translationX = 0f
+            }
+            renderEffect = if (
+                android.os.Build.VERSION.SDK_INT >= 31 &&
+                p < 0.97f &&
+                !com.hikari.app.data.PerfMode.active
+            ) {
+                val r = (1f - p) * blurPx
+                androidx.compose.ui.graphics.BlurEffect(r, r, androidx.compose.ui.graphics.TileMode.Decal)
+            } else {
+                null
+            }
         }
 }
 
@@ -2191,6 +2265,7 @@ private fun ContinueWatchingCard(
             // Not clipped: the rounding lives on the thumbnail itself, so the
             // title under it cannot be eaten by the corner curve.
             .clickable(onClick = onClick)
+            .scrollReveal(RevealAxis.Horizontal)
     ) {
         Box(
             Modifier

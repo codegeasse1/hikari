@@ -66,6 +66,8 @@ import com.hikari.app.ui.PosterStyle
 import com.hikari.app.ui.components.CategoryManagerSheet
 import com.hikari.app.ui.components.CategoryPickerSheet
 import com.hikari.app.ui.components.EmptyState
+import com.hikari.app.ui.components.RevealAxis
+import com.hikari.app.ui.components.scrollReveal
 import com.hikari.app.ui.navigation.LocalTaskbarInset
 import com.hikari.app.ui.navigation.Routes
 import com.hikari.app.ui.rememberPosterScore
@@ -486,6 +488,7 @@ private fun LibraryCard(
     Column(
         Modifier
             .clickable(onClick = onClick)
+            .scrollReveal(RevealAxis.Vertical)
     ) {
         PosterArt(
             model = if (com.hikari.app.tv.TvMode.current()) Artwork.backdropModel(item) else Artwork.model(item),

@@ -160,7 +160,6 @@ import com.hikari.app.ui.components.GlassSearchField
 import com.hikari.app.ui.components.HeroBanner
 import com.hikari.app.ui.components.HeroConfig
 import com.hikari.app.ui.components.HeroStyles
-import com.hikari.app.ui.components.AutoScrollPosterRow
 import com.hikari.app.ui.components.MediaRow
 import com.hikari.app.ui.components.ShimmerRow
 import com.hikari.app.ui.theme.pageBackground
@@ -814,13 +813,6 @@ fun HomeScreen(nav: NavHostController) {
     val uniqueRows = remember(rows) {
         rows.distinctBy { it.key.ifBlank { "${it.providerName}|${it.title}" } }
     }
-    // Infinite auto-scroll showcase: anime sections get their own marquee
-    // rows (see AutoScrollPosterRow), each moving at its own speed and
-    // alternating direction, instead of another static shelf. Phone only —
-    // a TV box cannot afford several always-on repaint loops.
-    val animeMarqueeRows = remember(uniqueRows) {
-        uniqueRows.filter { row -> row.items.any { it.looksAnime() } }.take(3)
-    }
     // ScrollKeeper mirror of the feed below (see ScrollKeeper): the exact key
     // of every item in Lazy order, so Back lands on the same ROW even when
     // shelves stream in differently ordered, shimmer placeholders come and go,
@@ -832,7 +824,6 @@ fun HomeScreen(nav: NavHostController) {
     val feedKeys = remember(uniqueRows, continueEntries, collectionFolderRows, loading, hideContinue, rows.isEmpty(), tvHome) {
         buildList {
             add("home-header")
-            if (!tvHome && animeMarqueeRows.isNotEmpty()) add("anime-marquee")
             if (!hideContinue && continueEntries.isNotEmpty()) add("continue-watching")
             collectionFolderRows.forEach { c -> add("collection-folders|${c.id}") }
             if (loading && collectionFolderRows.isEmpty()) repeat(4) { i -> add("home-shimmer|$i") }
@@ -932,34 +923,6 @@ fun HomeScreen(nav: NavHostController) {
                     }
                     if (!tvHome) {
                         HomeGenresButton(onClick = { showGenres = true })
-                    }
-                }
-            }
-            // Infinite auto-scrolling showcase, one marquee row per anime
-            // section — each moves at its own speed and direction (see
-            // AutoScrollPosterRow). Phone only; TV keeps its static shelves.
-            if (!tvHome && animeMarqueeRows.isNotEmpty()) {
-                item(key = "anime-marquee") {
-                    Column(Modifier.fillMaxWidth()) {
-                        animeMarqueeRows.forEachIndexed { index, row ->
-                            AutoScrollPosterRow(
-                                title = row.title,
-                                providerName = row.providerName,
-                                items = row.items,
-                                speedDpPerSec = 30f + index * 14f,
-                                reverse = index % 2 == 1,
-                                onClick = { item ->
-                                    Routes.safeNavigate(
-                                        nav,
-                                        if (item.rawType == "manga") {
-                                            Routes.mangaRoute(item.providerId, item.id, item.title, item.posterUrl)
-                                        } else {
-                                            Routes.detail(item.providerId, item.type, item.id, item.title, item.posterUrl, item.rawType)
-                                        }
-                                    )
-                                },
-                            )
-                        }
                     }
                 }
             }

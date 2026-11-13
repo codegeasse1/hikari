@@ -3,6 +3,8 @@ import com.hikari.app.ui.components.QuickAddToLibrarySheet
 import com.hikari.app.ui.components.QuickMenuOverlay
 import com.hikari.app.ui.components.quickMenuGesture
 import com.hikari.app.ui.components.rememberQuickMenuState
+import com.hikari.app.ui.components.RevealAxis
+import com.hikari.app.ui.components.scrollReveal
 import com.hikari.app.tv.TvUi
 import com.hikari.app.i18n.tr
 
@@ -784,6 +786,7 @@ private fun CatalogCard(
     Column(
         Modifier
             .clickable(onClick = onClick)
+            .scrollReveal(RevealAxis.Vertical)
     ) {
         Box(
             Modifier
