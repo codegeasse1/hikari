@@ -93,6 +93,7 @@ fun VxQualityDialogFull(onClose: () -> Unit, onMore: () -> Unit) {
                     Switch(checked = bitPerfect, onCheckedChange = {
                         bitPerfect = it
                         VxQuality.setBitPerfect(ctx, it)
+                        VxAudioFx.apply(ctx)
                     })
                 }
                 Spacer(Modifier.height(4.dp))
