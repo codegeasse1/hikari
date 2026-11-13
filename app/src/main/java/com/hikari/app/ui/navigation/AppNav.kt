@@ -150,6 +150,7 @@ import com.hikari.app.ui.screens.StatsScreen
 import com.hikari.app.ui.screens.TelegramScreen
 import com.hikari.app.ui.screens.TmdbGridScreen
 import com.hikari.app.ui.screens.TrackerShelfScreen
+import com.hikari.app.ui.components.hikariWobble
 import com.hikari.app.ui.theme.HikariThemeMode
 import com.hikari.app.ui.theme.rememberGlassTokens
 import com.hikari.app.tv.TV_MUSIC_ROUTE
@@ -1013,7 +1014,7 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
         }
     }
 
-    Box(Modifier.fillMaxSize().nestedScroll(barScroll).padding(tvEdge).then(mouseDrive).then(tvRepeatGuard)) {
+    Box(Modifier.fillMaxSize().nestedScroll(barScroll).hikariWobble().padding(tvEdge).then(mouseDrive).then(tvRepeatGuard)) {
         // The page backdrop, drawn here rather than by the Scaffold so the
         // translucent cards have something to be glass OVER (the Scaffold below
         // is transparent for exactly that reason).
