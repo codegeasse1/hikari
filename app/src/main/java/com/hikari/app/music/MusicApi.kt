@@ -649,9 +649,19 @@ object MusicApi {
         else -> Http.UA
     }
 
-    /** Last Vx lossless stream used (for the quality badge). Null = YouTube fallback. */
+    /** Last Vx lossless stream used (for the quality badge). Null = YouTube/Jio fallback. */
     @Volatile
     var lastVx: VxLosslessApi.VxStream? = null
+    @Volatile
+    var lastSource: String = "YouTube"
+
+    /** Changing quality must re-resolve; cached YouTube URLs would otherwise stick. */
+    fun clearStreamCache() {
+        streamCache.clear()
+        fastSkip.clear()
+        lastVx = null
+        lastSource = "YouTube"
+    }
 
     /**
      * BLOCKING: returns the audio address for [id]. Called by the player's data source on its
@@ -682,6 +692,7 @@ object MusicApi {
                     if (vx != null) {
                         lastVx = vx
                         streamCache[id] = Resolved(vx.url, now + 5L * 60 * 60 * 1000)
+                        lastSource = "FLAC " + vx.bitDepth + "-bit/" + vx.samplingRate + "kHz"
                         Logs.log(TAG, "vx lossless ready for " + id + " (" + vx.bitDepth + "/" + vx.samplingRate + " FLAC q=" + vx.formatId + ")")
                         return vx.url
                     }
@@ -696,11 +707,13 @@ object MusicApi {
             if (jio != null && jio.url.isNotBlank()) {
                 lastVx = null
                 streamCache[id] = Resolved(jio.url, now + 5L * 60 * 60 * 1000)
+                lastSource = "JioSaavn 320k"
                 Logs.log(TAG, "jio 320k ready for " + id)
                 return jio.url
             }
         }
         lastVx = null
+        lastSource = "YouTube"
         return resolveLegacyBlocking(id)
     }
 
