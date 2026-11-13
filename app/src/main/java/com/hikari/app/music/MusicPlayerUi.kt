@@ -25,7 +25,9 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -45,13 +47,16 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.Canvas
@@ -311,19 +316,48 @@ fun MusicFullPlayer(onClose: () -> Unit) {
                     )
                 }
                 val isLiked = liked.any { it.id == song.id }
-                Box(
-                    Modifier
-                        .size(48.dp)
-                        .clip(CircleShape)
-                        .background(Color.White)
-                        .clickable { MusicStore.toggleLike(song) },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(
-                        if (isLiked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
-                        contentDescription = "Like",
-                        tint = Color.Black,
-                    )
+                var dlState by remember(song.id) { mutableStateOf(0) } // 0 idle 1 busy 2 done 3 failed
+                val dlscope = rememberCoroutineScope()
+                androidx.compose.foundation.layout.Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Box(
+                        Modifier
+                            .size(48.dp)
+                            .clip(CircleShape)
+                            .background(Color.White.copy(alpha = 0.18f))
+                            .clickable {
+                                if (dlState == 1) return@clickable
+                                dlState = 1
+                                dlscope.launch {
+                                    val res = runCatching { VxDownload.downloadSong(pctx, song) }.getOrNull()
+                                    val ok = res?.isSuccess == true
+                                    dlState = if (ok) 2 else 3
+                                    val msg = if (ok) "Saved to Music/HikariMusic"
+                                        else "Download failed: " + (res?.exceptionOrNull()?.message ?: "no stream")
+                                    android.widget.Toast.makeText(pctx, msg, android.widget.Toast.LENGTH_LONG).show()
+                                }
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        when (dlState) {
+                            1 -> CircularProgressIndicator(color = Color.White, strokeWidth = 2.dp, modifier = Modifier.size(22.dp))
+                            2 -> Icon(Icons.Filled.Check, contentDescription = "Downloaded", tint = Color.White)
+                            else -> Icon(Icons.Filled.Download, contentDescription = "Download", tint = Color.White)
+                        }
+                    }
+                    Box(
+                        Modifier
+                            .size(48.dp)
+                            .clip(CircleShape)
+                            .background(Color.White)
+                            .clickable { MusicStore.toggleLike(song) },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            if (isLiked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
+                            contentDescription = "Like",
+                            tint = Color.Black,
+                        )
+                    }
                 }
             }
 
