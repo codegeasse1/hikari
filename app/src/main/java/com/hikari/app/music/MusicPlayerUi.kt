@@ -474,7 +474,11 @@ private fun WavySeekbar(frac: Float, accent: Color, onSeek: (Float) -> Unit, mod
         val mid = h / 2f
         drawLine(Color.White.copy(alpha = 0.25f), Offset(0f, mid), Offset(w, mid), strokeWidth = 4f)
         for (layer in 0..2) {
-            val alpha = when (layer) { 0 -> 0.30f 1 -> 0.55f else 1f }
+            val alpha = when (layer) {
+                0 -> 0.30f
+                1 -> 0.55f
+                else -> 1f
+            }
             val amp = 5f - layer * 1.4f
             val n = 64
             var prev: Offset? = null
