@@ -15,6 +15,24 @@ import java.net.URLEncoder
 object TrackerLibraryRepository {
     data class Shelf(val key: String, val title: String, val items: List<MediaItem>)
 
+    /** Watching first, Reading (manga) directly after. */
+    private fun reorderShelves(shelves: List<Shelf>): List<Shelf> {
+        if (shelves.isEmpty()) return shelves
+        fun isWatching(s: Shelf): Boolean {
+            val t = (s.key + " " + s.title).lowercase()
+            return t.contains("watching")
+        }
+        fun isReading(s: Shelf): Boolean {
+            val t = (s.key + " " + s.title).lowercase()
+            return t.contains("reading") || t.contains("manga") || t.contains("plan_to_read")
+        }
+        val watching = shelves.filter(::isWatching)
+        val reading = shelves.filter { !isWatching(it) && isReading(it) }
+        val rest = shelves.filter { !isWatching(it) && !isReading(it) }
+        if (reading.isEmpty()) return shelves
+        return watching + reading + rest
+    }
+
     /** Why a tracker pick last produced nothing, keyed by pick key
      *  (`tracker:trakt`) — read by Home's empty state so a dead login says
      *  so instead of a blank "Couldn't load". */
@@ -32,7 +50,8 @@ object TrackerLibraryRepository {
             "mdblist" -> Result.failure(IllegalStateException("MDBList library requires a connected MDBList account."))
             else -> Result.success(emptyList())
         }
-        r.onFailure { errors["tracker:$key"] = it.message ?: "couldn't load" }
+        val ordered = r.map(::reorderShelves)
+        ordered.onFailure { errors["tracker:$key"] = it.message ?: "couldn't load" }
             .onSuccess { shelves ->
                 if (shelves.isEmpty()) {
                     errors["tracker:$key"] =
@@ -42,7 +61,7 @@ object TrackerLibraryRepository {
                 }
                 Logs.log("Tracker", "$key: ${shelves.size} shelves")
             }
-        r
+        ordered
     }
 
     private suspend fun loadTrakt(app: HikariApp): Result<List<Shelf>> {
