@@ -265,10 +265,20 @@ fun MusicFullPlayer(onClose: () -> Unit) {
                 }
             }
 
+            val ctxQ = androidx.compose.ui.platform.LocalContext.current
+            var showQuality by remember { mutableStateOf(false) }
+            var vxInfo by remember(song.id) { mutableStateOf(MusicApi.lastVx) }
+            LaunchedEffect(st.buffering, st.index) { vxInfo = MusicApi.lastVx }
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text(song.title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 22.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text(song.artist, color = Color.White.copy(alpha = 0.75f), fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    val qLabel = if (vxInfo != null) "FLAC " + vxInfo!!.bitDepth + "-bit/" + vxInfo!!.samplingRate + "kHz" else VxQuality.shortLabelFor(VxQuality.streamQuality(ctxQ)) + " • tap for quality"
+                    Text(
+                        qLabel,
+                        color = Color.White.copy(alpha = 0.6f), fontSize = 12.sp, maxLines = 1,
+                        modifier = Modifier.clickable { showQuality = true }.padding(vertical = 2.dp),
+                    )
                 }
                 val isLiked = liked.any { it.id == song.id }
                 Box(
@@ -347,6 +357,7 @@ fun MusicFullPlayer(onClose: () -> Unit) {
                 }
             }
 
+            if (showQuality) VxQualityDialog(onClose = { showQuality = false })
             Row(
                 Modifier.fillMaxWidth().padding(bottom = 16.dp),
                 horizontalArrangement = Arrangement.SpaceEvenly,
