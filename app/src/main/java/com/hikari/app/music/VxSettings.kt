@@ -9,7 +9,9 @@ import kotlinx.coroutines.launch
 
 /** Full VxMusic-style settings, login-free. Backed by SharedPrefs so no DataStore/Hilt needed.
  *  Appearance rows are bridged into Hikari's real theme store so they visibly apply:
- *  AMOLED / Liquid Glass -> AppStore theme, Accent -> app+player accent, App Font -> AppStore font.
+ *  AMOLED -> AppStore theme, Accent -> app+player accent, App Font -> AppStore font.
+ *  Liquid Glass stays music-local (Now Playing surfaces only) so the catalogue
+ *  never shows through behind the music tab.
  *  Player-local rows (wavy, crossfade, lyrics anim, dynamic color/now-playing) are read live
  *  by MusicPlayerUi, so they apply without restart. */
 object VxSettings {
@@ -94,16 +96,13 @@ object VxSettings {
         else -> "red"
     }
 
-    /** Liquid Glass wins over AMOLED, else plain dark. Runs off the UI thread. */
+    /** App theme follows AMOLED only. Liquid Glass is music-local (player reads
+     *  [liquidGlass] itself), so toggling it never makes the app see-through.
+     *  Runs off the UI thread. */
     private fun pushTheme(ctx: Context) {
         val app = ctx.applicationContext
-        val liquid = runCatching { p(app).getBoolean("liquid_glass", false) }.getOrDefault(false)
         val amoled = runCatching { p(app).getBoolean("amoled", false) }.getOrDefault(false)
-        val key = when {
-            liquid -> "glass"
-            amoled -> "amoled"
-            else -> "dark"
-        }
+        val key = if (amoled) "amoled" else "dark"
         io.launch { runCatching { HikariApp.instance.store.setTheme(key) } }
     }
 
