@@ -146,6 +146,14 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
         /** Per-provider reason why a title search failed; separate from home-catalog failures. */
         val searchErrors = java.util.concurrent.ConcurrentHashMap<String, String>()
 
+        /** Drops remembered failures/partial servers so a reinstall/update refetches fresh instead of replaying old errors/servers. Called from Cs3PluginManager.reload(). */
+        fun clearTransientState() {
+            streamErrors.clear()
+            catalogErrors.clear()
+            searchErrors.clear()
+            partialServers.clear()
+        }
+
         /**
          * CloudStream plugins set `posterHeaders` (e.g. LeakPorner demands
          * `Referer: https://leakporner.org/` for its 58img.top thumbnails), but
@@ -1195,9 +1203,13 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                 scope.cancel()
             }
 
-            if (result.isNotEmpty()) streamErrors.remove(config.id)
+            // YouTube video-only fix (VP9/AV1 silence): merge audio-capable DASH/muxed.
+            val fixed = runCatching {
+                withTimeoutOrNull(10_000L) { maybeAttachYouTubeAudio(item, result) }
+            }.getOrNull() ?: result
+            if (fixed.isNotEmpty()) streamErrors.remove(config.id)
             lastStreamsTimeMs = System.currentTimeMillis() - started
-            result
+            fixed
         }
 
 
@@ -1428,6 +1440,44 @@ class Cs3MainApiProvider(override val config: ProviderConfig) : ContentProvider 
                 )
             }
             .distinctBy { it.url }
+    }
+
+    /** YouTube silent-play fix: direct VP9/AV1 googlevideo links are video-only
+     *  (no audio track), so playing them alone is silence. When every server is
+     *  such a link, resolve the title DASH/muxed renditions (video+audio) and
+     *  put them first; the video-only links stay below as fallback. */
+    private suspend fun maybeAttachYouTubeAudio(
+        item: MediaItem,
+        servers: List<StreamSource>,
+    ): List<StreamSource> {
+        if (servers.isEmpty()) return servers
+        if (servers.any { it.isM3u8 || it.isMpd }) return servers
+        if (servers.none { it.url.contains("googlevideo.com", true) }) return servers
+        val isYouTube = config.id.contains("102462115") ||
+            item.id.contains("youtube.com", true) || item.id.contains("youtu.be", true) ||
+            runCatching { api?.name }.getOrNull()?.contains("YouTube", true) == true
+        if (!isYouTube) return servers
+        val ytId = extractYouTubeId(item.id) ?: return servers
+        val playable = YouTubePlayables.resolve(ytId)
+        if (playable.isEmpty()) return servers
+        val have = servers.map { it.url }.toHashSet()
+        val add = playable.filter { it.url !in have }
+        if (add.isEmpty()) return servers
+        com.hikari.app.data.Logs.log(
+            "YouTube",
+            "video-only servers for " + ytId + " — prepending " + add.size + " audio-capable source(s): " +
+                add.joinToString(", ") { it.name },
+        )
+        return add + servers
+    }
+
+    private fun extractYouTubeId(url: String): String? {
+        val v = Regex("[?&]v=([A-Za-z0-9_-]{11})").find(url)?.groupValues?.getOrNull(1)
+        if (!v.isNullOrBlank()) return v
+        val short = Regex("youtu\\.be/([A-Za-z0-9_-]{11})").find(url)?.groupValues?.getOrNull(1)
+        if (!short.isNullOrBlank()) return short
+        if (Regex("^[A-Za-z0-9_-]{11}$").matches(url.trim())) return url.trim()
+        return null
     }
 
     private fun drmSpecOf(link: com.lagradost.cloudstream3.utils.ExtractorLink): DrmSpec? {

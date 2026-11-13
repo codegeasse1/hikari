@@ -44,6 +44,12 @@ object StreamCache {
         entries.remove(key)
     }
 
+    /** Drops everything: plugin reinstall/update or app upgrade must never replay old servers. */
+    fun clearAll() {
+        entries.clear()
+        inflight.clear()
+    }
+
     /** The extraction already running for [key], or null when there is none. */
     fun joined(key: String): CompletableDeferred<ContentRepository.StreamLookup>? {
         val pending = inflight[key] ?: return null

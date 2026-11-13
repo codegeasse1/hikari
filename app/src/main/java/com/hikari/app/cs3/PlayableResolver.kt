@@ -127,7 +127,11 @@ object YouTubePlayables {
                         isM3u8 = true,
                     )
                 }
-                if (out.isEmpty() && !info.dashMpdUrl.isNullOrBlank()) {
+                // DASH carries video+audio adaptations (ExoPlayer merges them), so always
+                // offer it when present: 720p+ VP9/AV1 progressive links are video-only
+                // (silence) and muxed videoStreams tops out at low res. Added even when
+                // muxed rows exist so HD has an audio path.
+                if (!info.dashMpdUrl.isNullOrBlank() && out.none { it.url == info.dashMpdUrl }) {
                     out += StreamSource(
                         name = "YouTube DASH",
                         url = info.dashMpdUrl!!,

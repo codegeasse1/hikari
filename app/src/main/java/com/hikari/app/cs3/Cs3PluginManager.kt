@@ -143,6 +143,13 @@ object Cs3PluginManager {
                 cache.remove(path)
                 lastFail[path] = System.currentTimeMillis()
             }
+            // Reinstall/update must never replay old servers or old failure banners:
+            // drop remembered server lists + per-provider errors so Home/Play refetch
+            // fresh (old video-only YouTube lists caused permanent silence; old
+            // empty-catalog errors stuck after the cause was fixed).
+            runCatching { com.hikari.app.data.StreamCache.clearAll() }
+            runCatching { com.hikari.app.cs3.Cs3MainApiProvider.clearTransientState() }
+            runCatching { com.hikari.app.data.MetaCache.bumpEpisodesEpoch() }
             return apis
         } finally {
             loading.remove(path)
