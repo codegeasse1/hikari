@@ -44,6 +44,7 @@ import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import com.hikari.app.ui.theme.pageBackground
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
@@ -193,7 +194,7 @@ fun MusicFullPlayer(onClose: () -> Unit) {
         }
     }
 
-    Box(Modifier.fillMaxSize().background(if (dynNpOn) Color(0xFF121212) else cs.background)) {
+    Box(Modifier.fillMaxSize().background(if (dynNpOn) Color(0xFF121212) else pageBackground())) {
         if (dynNpOn && Build.VERSION.SDK_INT >= 31 && song.thumb.isNotBlank()) {
             AsyncImage(
                 model = MusicApi.hq(song.thumb, 400),
