@@ -688,6 +688,18 @@ object MusicApi {
                 }
             }
         }
+        // JioSaavn 320k fallback (VxMusic-style) before YouTube — helps Indian catalog.
+        if (song != null && song.title.isNotBlank()) {
+            val jio = runCatching {
+                VxJioSaavnApi.resolveBlocking(song.title, song.artist, song.durationSec.takeIf { it > 0 })
+            }.getOrNull()
+            if (jio != null && jio.url.isNotBlank()) {
+                lastVx = null
+                streamCache[id] = Resolved(jio.url, now + 5L * 60 * 60 * 1000)
+                Logs.log(TAG, "jio 320k ready for " + id)
+                return jio.url
+            }
+        }
         lastVx = null
         return resolveLegacyBlocking(id)
     }
