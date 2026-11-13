@@ -85,6 +85,16 @@ class HikariApp : Application() {
                 kind = RepoKind.CS3,
             ),
         )
+
+        /** Community CloudStream extensions (first-run default AND backfilled for
+         *  existing installs via [seedCs3Repo], which is one-way: a user who
+         *  removes it keeps it removed). */
+        private val ERROR_REPO = Cs3Repo(
+            url = "https://raw.githubusercontent.com/error-898-15/errorrepo/main/repo.json",
+            name = "Error Repo",
+            description = "Community CloudStream extensions",
+            kind = RepoKind.CS3,
+        )
     }
 
     lateinit var store: AppStore
@@ -471,9 +481,12 @@ class HikariApp : Application() {
             runCatching {
                 if (!store.seededRepos()) {
                     for (r in DEFAULT_EXTENSION_REPOS) store.addCs3Repo(r)
+                    store.addCs3Repo(ERROR_REPO)
                     store.markReposSeeded()
                 }
             }
+            // Backfill for installs seeded before the Error repo existed.
+            runCatching { store.seedCs3Repo(ERROR_REPO) }
             // First run only: install the one Stremio addon that needs nothing
             // configured — SubDL's subtitle addon — so the player's "Load from
             // internet" has somewhere to look on an install the user has not set
