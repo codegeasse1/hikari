@@ -523,6 +523,17 @@ object MusicApi {
      */
     private val attempts = ConcurrentHashMap<String, Int>()
 
+    /**
+     * The YouTube client (the `c=` of the address: ANDROID_VR, IOS ...) whose address for a song just
+     * failed to play. The next lookup of that song skips that client's quick request, so a retry gets
+     * an address of a DIFFERENT kind instead of the same kind of address that just failed.
+     */
+    private val badClient = ConcurrentHashMap<String, String>()
+
+    private val clientParam = Regex("[?&]c=([A-Za-z_]+)")
+
+    private fun clientOf(url: String): String? = clientParam.find(url)?.groupValues?.get(1)
+
     /** The User-Agent each address was made for (a stream address belongs to the client that asked for it). */
     private val uaByUrl = ConcurrentHashMap<String, String>()
 
@@ -581,6 +592,7 @@ object MusicApi {
 
     /** The player gave up on this address (error or stall): the next ask for the song starts one step further on. */
     fun invalidate(id: String) {
+        streamCache[id]?.url?.let { u -> clientOf(u)?.let { badClient[id] = it } }
         streamCache.remove(id)
         skipPremium.add(id)
         attempts[id] = (attempts[id] ?: 0) + 1
@@ -594,6 +606,7 @@ object MusicApi {
     /** The person picked this song (or pressed Play on it after a failure): start from the first step again. */
     fun resetAttempts(id: String) {
         attempts.remove(id)
+        badClient.remove(id)
     }
 
     private class QuickClient(
@@ -759,6 +772,7 @@ object MusicApi {
         streamCache.clear()
         skipPremium.clear()
         attempts.clear()
+        badClient.clear()
         uaByUrl.clear()
         lastVx = null
         lastSource = "YouTube"
@@ -871,7 +885,10 @@ object MusicApi {
         val results = java.util.concurrent.LinkedBlockingQueue<Hit>()
         val finished = java.util.concurrent.atomic.AtomicBoolean(false)
         val quickDone = java.util.concurrent.atomic.AtomicInteger(0)
-        val clients = quickClients
+        // A retry skips the YouTube client whose address just failed (when another one is left).
+        val bad = badClient[id]
+        val clients = quickClients.filter { bad == null || !it.name.equals(bad, ignoreCase = true) }
+            .ifEmpty { quickClients }
         for (c in clients) {
             kotlin.concurrent.thread(start = true, isDaemon = true, name = "music-quick") {
                 val label = c.name + " " + c.version
