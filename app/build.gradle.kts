@@ -14,8 +14,8 @@ android {
         applicationId = "com.hikari.app"
         minSdk = 24
        targetSdk = 34
-        versionCode = 489
-        versionName = "0.12.100"
+        versionCode = 490
+        versionName = "0.12.101"
         // CI injects the exact commit SHA the APK was built from, so the
         // in-app update checker can compare it against main's HEAD.
         val gitSha = System.getenv("GIT_SHA") ?: "unknown"
@@ -249,6 +249,10 @@ dependencies {
     implementation(libs.androidx.media3.effect)
     implementation("io.github.anilbeesetti:nextlib-media3ext:1.7.1-0.9.0")
     implementation(libs.androidx.splashscreen)
+    // Bundled baseline-profile reader (startup/JIT profile ships in the APK —
+    // sideloaded installs get no Play cloud profiles, so this is what makes
+    // first scroll smooth on a fresh install).
+    implementation("androidx.profileinstaller:profileinstaller:1.4.1")
     implementation(libs.okhttp)
     implementation(libs.okhttp.brotli)
     implementation(libs.okhttp.zstd)
