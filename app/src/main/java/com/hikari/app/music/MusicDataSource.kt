@@ -37,6 +37,11 @@ import java.io.InterruptedIOException
  *    expired or was refused) the song is asked for again, once, and the read carries on from the
  *    same byte, instead of retrying the same dead address until the player gives up.
  *
+ * Every ranged request can be sent four ways: GET or POST (the two-byte `x` + zero body the YouTube
+ * apps and NewPipe send), each with the range as a `range=` parameter or as a `Range` header. The way
+ * the address was proven to work in ([MusicApi.formFor]) is tried first; if a request is refused, the
+ * other ways are tried before the address is given up. Whichever works is kept for the rest of the song.
+ *
  * Addresses that are not YouTube's (JioSaavn) are passed straight through.
  *
  * A song that cannot be resolved at all fails with a "file not found" error, which the player does
@@ -47,7 +52,7 @@ import java.io.InterruptedIOException
 class MusicDataSource(private val upstream: DataSource) : DataSource {
 
     /** The server answered a `range=` request with more bytes than asked: it did not honour the range. */
-    private class RangeIgnored : IOException("range parameter ignored")
+    private class RangeIgnored(message: String = "range parameter ignored") : IOException(message)
 
     private var direct = false
     private var opened = false
@@ -73,6 +78,9 @@ class MusicDataSource(private val upstream: DataSource) : DataSource {
 
     /** True: the byte range goes in the address (`range=`); false: in the `Range` header. */
     private var viaParam = true
+
+    /** True: requests are POSTs with the two-byte body the YouTube apps send; false: plain GETs. */
+    private var viaPost = false
 
     /** How many bytes one request asks for. Drops to 1 MB if the big size is refused. */
     private var chunkSize = CHUNK_BIG
@@ -113,6 +121,9 @@ class MusicDataSource(private val upstream: DataSource) : DataSource {
         direct = false
         baseUri = uri
         headers = hdr
+        val hint = MusicApi.formFor(url)
+        viaPost = hint.post
+        viaParam = hint.param
         position = dataSpec.position
         endExclusive = if (dataSpec.length != UNSET) dataSpec.position + dataSpec.length else UNSET
         if (endExclusive == UNSET) {
@@ -217,12 +228,14 @@ class MusicDataSource(private val upstream: DataSource) : DataSource {
         }
         // Step 3: one plain read from this byte to the end, the way a phone plays it.
         val current = baseUri ?: uri
-        try {
-            openStreaming(current)
-            return
-        } catch (e: HttpDataSource.InvalidResponseCodeException) {
-            Logs.log(TAG, "plain read at byte $position refused (" + e.responseCode + ") for $songId")
-            closeChunk()
+        for (post in booleanArrayOf(viaPost, !viaPost)) {
+            try {
+                openStreaming(current, post)
+                return
+            } catch (e: HttpDataSource.InvalidResponseCodeException) {
+                Logs.log(TAG, "plain " + (if (post) "POST" else "GET") + " read at byte $position refused (" + e.responseCode + ") for $songId")
+                closeChunk()
+            }
         }
         throw failure
     }
@@ -252,7 +265,9 @@ class MusicDataSource(private val upstream: DataSource) : DataSource {
         }
         baseUri = fresh
         headers = mapOf("User-Agent" to MusicApi.userAgentFor(url))
-        viaParam = true
+        val hint = MusicApi.formFor(url)
+        viaPost = hint.post
+        viaParam = hint.param
         chunkSize = CHUNK_BIG
         if (size > 0L) endExclusive = size
         return tryOpen(fresh, nextChunkSize().coerceAtLeast(1L))
@@ -280,22 +295,22 @@ class MusicDataSource(private val upstream: DataSource) : DataSource {
         }
 
     /**
-     * Opens one chunk the preferred way and, if the server refuses that, the other way, first with the
-     * wanted size and then (when that was big) with 1 MB. Whichever combination works becomes the
-     * preferred one for the rest of the song.
+     * Opens one chunk the preferred way and, if the server refuses that, every other way (GET / POST,
+     * range parameter / Range header), first with the wanted size and then (when that was big) with
+     * 1 MB. Whichever combination works becomes the preferred one for the rest of the song.
      */
     private fun openWithEitherForm(uri: Uri, want: Long) {
         val sizes = if (want > CHUNK_SMALL) longArrayOf(want, CHUNK_SMALL) else longArrayOf(want)
         var refused: IOException? = null
         for (size in sizes) {
-            val preferred = viaParam
-            for (form in booleanArrayOf(preferred, !preferred)) {
+            for (form in formsToTry()) {
                 try {
-                    openChunkAt(uri, size, form)
-                    if (form != preferred) {
-                        Logs.log(TAG, "range " + (if (form) "parameter" else "header") + " accepted for $songId at byte $position")
+                    openChunkAt(uri, size, form.param, form.post)
+                    if (form.post != viaPost || form.param != viaParam) {
+                        Logs.log(TAG, "request form " + formLabel(form.post, form.param) + " accepted for $songId at byte $position")
                     }
-                    viaParam = form
+                    viaPost = form.post
+                    viaParam = form.param
                     if (size < want) chunkSize = size
                     return
                 } catch (e: HttpDataSource.InvalidResponseCodeException) {
@@ -305,11 +320,11 @@ class MusicDataSource(private val upstream: DataSource) : DataSource {
                         eof = true
                         return
                     }
-                    Logs.log(TAG, "chunk at byte $position refused (" + e.responseCode + ", " + (if (form) "parameter" else "header") + ", " + size + " bytes)")
+                    Logs.log(TAG, "chunk at byte $position refused (" + e.responseCode + ", " + formLabel(form.post, form.param) + ", " + size + " bytes)")
                     refused = e
                 } catch (e: RangeIgnored) {
                     closeChunk()
-                    Logs.log(TAG, "range parameter ignored at byte $position for $songId")
+                    Logs.log(TAG, "chunk at byte $position not usable for $songId (" + (e.message ?: "range ignored") + ", " + formLabel(form.post, form.param) + ")")
                     refused = e
                 }
             }
@@ -317,12 +332,36 @@ class MusicDataSource(private val upstream: DataSource) : DataSource {
         throw refused ?: IOException("chunk refused")
     }
 
-    private fun openChunkAt(uri: Uri, want: Long, asParam: Boolean) {
+    /** The current request form first, then the other three. */
+    private fun formsToTry(): List<MusicApi.StreamForm> {
+        val all = listOf(
+            MusicApi.StreamForm(false, true),
+            MusicApi.StreamForm(false, false),
+            MusicApi.StreamForm(true, false),
+            MusicApi.StreamForm(true, true),
+        )
+        val out = ArrayList<MusicApi.StreamForm>()
+        out.add(MusicApi.StreamForm(viaPost, viaParam))
+        for (f in all) {
+            if (f.post != viaPost || f.param != viaParam) out.add(f)
+        }
+        return out
+    }
+
+    private fun formLabel(post: Boolean, param: Boolean): String =
+        (if (post) "POST" else "GET") + "/" + (if (param) "range parameter" else "Range header")
+
+    private fun openChunkAt(uri: Uri, want: Long, asParam: Boolean, post: Boolean) {
         val original = spec ?: throw IOException("no request")
         val builder = original.buildUpon()
-            .setHttpRequestHeaders(headers)
+            .setHttpRequestHeaders(if (post) headers + POST_HEADERS else headers)
             // Plain bytes, so the answer's length is exact.
             .setFlags(original.flags and DataSpec.FLAG_ALLOW_GZIP.inv())
+        if (post) {
+            builder.setHttpMethod(DataSpec.HTTP_METHOD_POST).setHttpBody(POST_BODY)
+        } else {
+            builder.setHttpMethod(DataSpec.HTTP_METHOD_GET).setHttpBody(null)
+        }
         if (asParam) {
             requestNo += 1
             val target = uri.buildUpon()
@@ -330,6 +369,13 @@ class MusicDataSource(private val upstream: DataSource) : DataSource {
                 .appendQueryParameter("rn", requestNo.toString())
                 .build()
             builder.setUri(target).setPosition(0L).setLength(UNSET)
+        } else if (post && uri.getQueryParameter("rn") == null) {
+            // A POST with a `Range` header carries the request number as well, like NewPipe's.
+            requestNo += 1
+            val target = uri.buildUpon()
+                .appendQueryParameter("rn", requestNo.toString())
+                .build()
+            builder.setUri(target).setPosition(position).setLength(want)
         } else {
             builder.setUri(uri).setPosition(position).setLength(want)
         }
@@ -339,6 +385,11 @@ class MusicDataSource(private val upstream: DataSource) : DataSource {
         upstream.open(builder.build())
         chunkOpen = true
         val answer = upstream.responseHeaders
+        // A page, an error text or YouTube's own "UMP" wrapper instead of audio bytes: not usable.
+        val type = headerOf(answer, "Content-Type").lowercase()
+        if (type.contains("ump") || type.startsWith("text/") || type.contains("json") || type.contains("html")) {
+            throw RangeIgnored("answer is not audio: " + type)
+        }
         if (asParam && position > 0L) {
             // A server that ignores `range=` sends the whole file from byte 0. Playing that after
             // byte `position` would put the wrong data into the stream, so it counts as a refusal.
@@ -351,22 +402,26 @@ class MusicDataSource(private val upstream: DataSource) : DataSource {
         }
     }
 
-    /** Last resort: one open-ended read from [position], no end of range. */
-    private fun openStreaming(uri: Uri) {
+    /** Last resort: one open-ended read from [position], no end of range (GET, or POST when [post]). */
+    private fun openStreaming(uri: Uri, post: Boolean) {
         val original = spec ?: throw IOException("no request")
-        val request = original.buildUpon()
+        val builder = original.buildUpon()
             .setUri(uri)
-            .setHttpRequestHeaders(headers)
+            .setHttpRequestHeaders(if (post) headers + POST_HEADERS else headers)
             .setFlags(original.flags and DataSpec.FLAG_ALLOW_GZIP.inv())
             .setPosition(position)
             .setLength(UNSET)
-            .build()
+        if (post) {
+            builder.setHttpMethod(DataSpec.HTTP_METHOD_POST).setHttpBody(POST_BODY)
+        } else {
+            builder.setHttpMethod(DataSpec.HTTP_METHOD_GET).setHttpBody(null)
+        }
         chunkWant = UNSET
         chunkRead = 0L
         streaming = true
-        upstream.open(request)
+        upstream.open(builder.build())
         chunkOpen = true
-        Logs.log(TAG, "plain read opened for $songId at byte $position")
+        Logs.log(TAG, "plain " + (if (post) "POST" else "GET") + " read opened for $songId at byte $position")
     }
 
     private fun nextChunkSize(): Long =
@@ -395,6 +450,14 @@ class MusicDataSource(private val upstream: DataSource) : DataSource {
             if (n != null && n > 0L) return n
         }
         return UNSET
+    }
+
+    /** The first value of header [name] (any letter case), or "" when the answer has none. */
+    private fun headerOf(h: Map<String, List<String>>, name: String): String {
+        for ((k, v) in h) {
+            if (k.equals(name, ignoreCase = true)) return v.firstOrNull().orEmpty()
+        }
+        return ""
     }
 
     /** "Content-Length: 1048576" -> 1048576, or [UNSET]. */
@@ -450,6 +513,7 @@ class MusicDataSource(private val upstream: DataSource) : DataSource {
         eof = false
         freshTried = false
         viaParam = true
+        viaPost = false
         chunkSize = CHUNK_BIG
         emptyChunks = 0
         delivered = 0L
@@ -460,6 +524,12 @@ class MusicDataSource(private val upstream: DataSource) : DataSource {
         const val TAG = "HikariMusic"
         const val SCHEME = "hikarimusic"
         const val UNSET = -1L
+
+        /** The body of a POST stream request: the two bytes the YouTube apps (and NewPipe) send. */
+        val POST_BODY = byteArrayOf(0x78, 0)
+
+        /** A POST made by a form-less client is sent as a form, like NewPipe's connection does. */
+        val POST_HEADERS = mapOf("Content-Type" to "application/x-www-form-urlencoded")
 
         /**
          * One range request. 10 MB is what yt-dlp asks YouTube for and it is never throttled at that

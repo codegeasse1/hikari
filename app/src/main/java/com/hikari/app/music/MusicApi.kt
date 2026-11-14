@@ -778,14 +778,48 @@ object MusicApi {
         return best
     }
 
-    /** Reads the first two bytes of [url]: true only when the server really serves it. */
-    private fun probeUrl(url: String, ua: String): Boolean = try {
-        Http.request(
-            "GET", url, null,
-            mapOf("User-Agent" to ua, "Range" to "bytes=0-1"),
-        ).use { it.code in 200..299 }
-    } catch (e: Exception) {
-        false
+    /**
+     * How one ranged request for a YouTube audio address is sent.
+     * [post]: the way the YouTube apps and NewPipe send it (POST with a two-byte body: the letter x and a zero byte);
+     * otherwise a plain GET. [param]: the byte range goes into the address (`range=a-b`); otherwise it
+     * goes into the `Range` header.
+     */
+    class StreamForm(val post: Boolean, val param: Boolean)
+
+    private val defaultForm = StreamForm(false, true)
+
+    /** The request form that was seen to work PAST the first megabyte for an address (see [streamsPastFirstMegabyte]). */
+    private val formByUrl = ConcurrentHashMap<String, StreamForm>()
+
+    /** The request form to start with for [url]: the one that was proven to work, else a plain GET with `range=`. */
+    fun formFor(url: String): StreamForm = formByUrl[url] ?: defaultForm
+
+    /** Every way of asking for a range, in the order they are tried. */
+    private val probeForms = listOf(
+        StreamForm(false, true),
+        StreamForm(false, false),
+        StreamForm(true, false),
+        StreamForm(true, true),
+    )
+
+    private fun formName(f: StreamForm): String =
+        (if (f.post) "POST" else "GET") + " with " + (if (f.param) "range parameter" else "Range header")
+
+    /** The two bytes the YouTube apps (and NewPipe) send as the body of every stream request. */
+    private const val POST_BODY_TEXT = "x\u0000"
+
+    /** Reads the first two bytes of [url]: true only when the server really serves it (GET first, then POST). */
+    private fun probeUrl(url: String, ua: String): Boolean {
+        val viaGet = try {
+            Http.request(
+                "GET", url, null,
+                mapOf("User-Agent" to ua, "Range" to "bytes=0-1"),
+            ).use { it.code in 200..299 }
+        } catch (e: Exception) {
+            false
+        }
+        if (viaGet) return true
+        return codeOfRead(url, ua, StreamForm(true, true), 0L) in 200..299
     }
 
     private val contentLengthInUrl = Regex("[?&]clen=(\\d+)")
@@ -793,33 +827,57 @@ object MusicApi {
     /** YouTube answers the first megabyte of an address that needs a proof-of-origin token and refuses the rest. */
     private const val FIRST_MEGABYTE = 1_048_576L
 
-    /** The answer code of one 2-byte read at [from]; -1 when the request itself failed (no network, timeout). */
-    private fun codeOfRead(url: String, ua: String, rangeHeader: String?): Int = try {
+    /** The answer code of one 2-byte read at [from], asked the way [form] says; -1 when the request itself failed (no network, timeout). */
+    private fun codeOfRead(url: String, ua: String, form: StreamForm, from: Long): Int = try {
         val headers = HashMap<String, String>()
         headers["User-Agent"] = ua
-        if (rangeHeader != null) headers["Range"] = rangeHeader
-        Http.request("GET", url, null, headers).use { it.code }
+        val last = from + 1L
+        val target = if (form.param) {
+            url + "&range=" + from + "-" + last + "&rn=1"
+        } else {
+            headers["Range"] = "bytes=" + from + "-" + last
+            url + "&rn=1"
+        }
+        if (form.post) {
+            Http.request("POST", target, POST_BODY_TEXT, headers, "application/x-www-form-urlencoded").use { it.code }
+        } else {
+            Http.request("GET", target, null, headers).use { it.code }
+        }
     } catch (e: Exception) {
         -1
     }
 
     /**
      * False when [url] serves the first megabyte but REFUSES everything after it. That is the "song
-     * stops at 1:04" address: 1 MB of 128 kbit/s AAC is 1:04, and a YouTube client without a
-     * proof-of-origin token (IOS here) gets exactly that and a 403 for the rest. A probe of the first
-     * two bytes cannot tell, so this reads two bytes just after the first megabyte, in both of the
-     * ways the player asks for a range. A network error says nothing about the address, so it
-     * counts as "fine".
+     * stops at 1:04" address: 1 MB of 128 kbit/s AAC is 1:04. A probe of the first two bytes cannot
+     * tell, so this reads two bytes just after the first megabyte, in every way the player can ask
+     * for a range (GET and POST, `range=` parameter and `Range` header). The way that worked is
+     * remembered for this address ([formFor]) so the player asks the same way. Every YouTube client,
+     * ANDROID_VR included, has to pass this test: none of them is trusted blindly any more.
+     * A network error says nothing about the address, so it counts as "fine".
      */
     private fun streamsPastFirstMegabyte(url: String, ua: String): Boolean {
-        val size = contentLengthInUrl.find(url)?.groupValues?.get(1)?.toLongOrNull() ?: return true
+        val size = contentLengthInUrl.find(url)?.groupValues?.get(1)?.toLongOrNull() ?: -1L
         val from = FIRST_MEGABYTE
-        if (size <= from + 2L) return true
-        val viaParam = codeOfRead(url + "&range=" + from + "-" + (from + 1L) + "&rn=1", ua, null)
-        if (viaParam in 200..299 || viaParam == 416) return true
-        val viaHeader = codeOfRead(url, ua, "bytes=" + from + "-" + (from + 1L))
-        if (viaHeader in 200..299 || viaHeader == 416) return true
-        return viaParam < 0 || viaHeader < 0
+        // The whole file is inside the first megabyte (a short track): nothing to check.
+        if (size in 1L..(from + 2L)) return true
+        var networkError = false
+        val codes = StringBuilder()
+        for (form in probeForms) {
+            val code = codeOfRead(url, ua, form, from)
+            codes.append(code).append(' ')
+            if (code in 200..299 || code == 416) {
+                if (formByUrl.size > 300) formByUrl.clear()
+                formByUrl[url] = form
+                if (form.post || !form.param) {
+                    Logs.log(TAG, "address serves past the first megabyte only as " + formName(form))
+                }
+                return true
+            }
+            if (code < 0) networkError = true
+        }
+        Logs.log(TAG, "address refuses everything after the first megabyte (HTTP " + codes.toString().trim() + ")")
+        return networkError
     }
 
     /** The User-Agent a stream address expects (it depends on which YouTube client made it). */
@@ -844,6 +902,7 @@ object MusicApi {
     /** Changing quality must re-resolve; cached YouTube URLs would otherwise stick. */
     fun clearStreamCache() {
         streamCache.clear()
+        formByUrl.clear()
         VxLosslessApi.resetProbe()
         skipPremium.clear()
         attempts.clear()
@@ -936,7 +995,7 @@ object MusicApi {
     )
 
     /** A limited address is only used when nothing else exists: how long to wait for a better one. */
-    private const val LIMITED_GRACE_MS = 5_000L
+    private const val LIMITED_GRACE_MS = 18_000L
 
     /** An address from the client that failed last time: how long to wait for a different client's address. */
     private const val SOFT_GRACE_MS = 3_000L
@@ -1001,9 +1060,10 @@ object MusicApi {
                         val u = quickAudioUrlWith(id, c)
                         if (u != null && !finished.get()) {
                             if (probeUrl(u, c.ua)) {
-                                // ANDROID_VR addresses play the whole song. Every other client's address
-                                // must prove it serves more than the first megabyte.
-                                val whole = c.name == "ANDROID_VR" || streamsPastFirstMegabyte(u, c.ua)
+                                // EVERY client's address (ANDROID_VR too) must prove it serves more
+                                // than the first megabyte. ANDROID_VR used to be taken on trust, and an
+                                // address that stops at 1:04 was played as if it were fine.
+                                val whole = streamsPastFirstMegabyte(u, c.ua)
                                 if (!whole) Logs.log(TAG, "quick stream from $label stops after the first megabyte for $id")
                                 hit = Hit(u, c.ua, label, c.name, whole)
                             } else {
