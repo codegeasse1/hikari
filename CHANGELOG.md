@@ -1,3 +1,11 @@
+## 0.12.99 (continuous build only)
+
+- TV music "Loading…" forever and the wrong song playing — fixed at the cause. Three real problems on a television: (1) after the FIRST failed play the quick YouTube lookup was switched off for that song for good, so every retry fell to NewPipe, which needs minutes on a TV processor, and the 45 s "still loading" timer then restarted the whole chain again; (2) when a song failed twice the player silently jumped to the NEXT queued song (a search-result neighbour or a radio song), so tapping a Russian song ended up playing a Hindi one; (3) a single long connection to googlevideo.com is throttled or dropped after roughly half a minute, so a song that did start went back to "Loading" at about 0:30
+- TV lookup now asks every YouTube client at the same time (ANDROID_VR ×3, iOS ×2) with NewPipe starting alongside after a 2.5 s head start, the first address that really answers wins, and the whole lookup is capped at 30 s. A retry of the same song goes one step further each time (NewPipe at once, then an exact title/artist/length JioSaavn address as the very last resort — it can never be a different song) instead of being handed the same dead address
+- TV songs are read as a chain of 1 MB range requests (the way NewPipe and yt-dlp read YouTube) so playback no longer stalls mid-song, and an address YouTube refuses (403/404/410) is replaced on the spot and the read carries on from the same byte
+- A song you picked is never replaced by another: after 2 automatic retries it stays selected, playback stops with "Couldn't play <title>", and pressing Play tries it again from the first step. Only a song reached automatically (the previous one ended) moves on to the next one in the queue
+- TV player: bigger audio buffer (20–90 s) and 5 network retries; a song that was already playing and drops back to "Loading" is asked for a fresh address after 25 s. Phone music is unchanged (Vx lossless → JioSaavn → YouTube, same player and timers)
+
 ## 0.12.91 (continuous build only)
 
 - Scroll-linked reveal everywhere: cards dim/shrink while leaving the viewport and brighten/rise back as they enter — same behavior on horizontal rows and vertical lists/grids, in both scroll directions, with no timers (position-driven, draw-phase only)

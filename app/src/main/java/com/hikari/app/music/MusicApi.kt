@@ -510,11 +510,21 @@ object MusicApi {
         parseLrclib(Http.getString(searchUrl))
     }
 
-    // ------------------------------------------------------------------ streams (NewPipeExtractor)
+    // ------------------------------------------------------------------ streams (YouTube / NewPipeExtractor)
 
     private class Resolved(val url: String, val expires: Long)
 
     private val streamCache = ConcurrentHashMap<String, Resolved>()
+
+    /**
+     * How many times a song's address has failed to play since it last played (0 = first try).
+     * Every retry of the same song goes one step further down the chain (see [resolveTelevision]),
+     * instead of being handed the very same address again.
+     */
+    private val attempts = ConcurrentHashMap<String, Int>()
+
+    /** The User-Agent each address was made for (a stream address belongs to the client that asked for it). */
+    private val uaByUrl = ConcurrentHashMap<String, String>()
 
     @Volatile
     private var newPipeState = 0
@@ -562,20 +572,28 @@ object MusicApi {
         }
     }
 
-    /** Songs whose quick address failed to play: the next ask for them goes straight to NewPipe. */
-    private val fastSkip = ConcurrentHashMap.newKeySet<String>()
-
     /**
-     * Songs whose Vx lossless / JioSaavn address already failed to play. The retry skips those two
-     * and goes straight to YouTube, otherwise it would be handed the very same address again and
-     * the song would sit on "Loading" forever.
+     * Songs whose Vx lossless / JioSaavn address already failed to play (PHONE). The retry skips
+     * those two and goes straight to YouTube, otherwise it would be handed the very same address
+     * again and the song would sit on "Loading" forever.
      */
     private val skipPremium = ConcurrentHashMap.newKeySet<String>()
 
+    /** The player gave up on this address (error or stall): the next ask for the song starts one step further on. */
     fun invalidate(id: String) {
         streamCache.remove(id)
-        fastSkip.add(id)
         skipPremium.add(id)
+        attempts[id] = (attempts[id] ?: 0) + 1
+    }
+
+    /** The song reached "playing": its failure count starts over. */
+    fun markPlayed(id: String) {
+        attempts.remove(id)
+    }
+
+    /** The person picked this song (or pressed Play on it after a failure): start from the first step again. */
+    fun resetAttempts(id: String) {
+        attempts.remove(id)
     }
 
     private class QuickClient(
@@ -605,8 +623,23 @@ object MusicApi {
                 put("androidSdkVersion", 32); put("osName", "Android"); put("osVersion", "12L")
             },
             QuickClient(
+                "ANDROID_VR", "28", "1.71.26",
+                "com.google.android.apps.youtube.vr.oculus/1.71.26 " +
+                    "(Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip",
+            ) {
+                put("deviceMake", "Oculus"); put("deviceModel", "Quest 3")
+                put("androidSdkVersion", 32); put("osName", "Android"); put("osVersion", "12L")
+            },
+            QuickClient(
                 "IOS", "5", "20.10.4",
                 "com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)",
+            ) {
+                put("deviceMake", "Apple"); put("deviceModel", "iPhone16,2")
+                put("osName", "iPhone"); put("osVersion", "18.3.2.22D82")
+            },
+            QuickClient(
+                "IOS", "5", "21.02.3",
+                "com.google.ios.youtube/21.02.3 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)",
             ) {
                 put("deviceMake", "Apple"); put("deviceModel", "iPhone16,2")
                 put("osName", "iPhone"); put("osVersion", "18.3.2.22D82")
@@ -615,25 +648,11 @@ object MusicApi {
     }
 
     /**
-     * One plain request to YouTube's player endpoint (VR client first, then a couple of backups),
-     * which hands back direct audio addresses with nothing to decode. NewPipe has to download and
-     * run YouTube's player script for the same job, and a television's slow processor can spend
-     * minutes on that (the music stays on "Loading"). Every address is test-read (2 bytes) before it
-     * is returned, so a link the server would refuse (403) is never handed to the player.
-     * Returns null whenever anything is off, so the caller falls back to NewPipe.
+     * One plain request to YouTube's player endpoint for ONE client, which hands back direct audio
+     * addresses with nothing to decode (NewPipe has to download and run YouTube's player script for
+     * the same job, and a television's slow processor can spend minutes on that).
+     * Returns null whenever anything is off; the reason is written to the log.
      */
-    private fun quickAudioUrl(id: String): String? {
-        val started = System.currentTimeMillis()
-        for (c in quickClients) {
-            // Whole quick step must stay short: the player's "still loading" timer is the limit.
-            if (System.currentTimeMillis() - started > 14_000L) break
-            val url = runCatching { quickAudioUrlWith(id, c) }.getOrNull() ?: continue
-            if (probeUrl(url, c.ua)) return url
-            Logs.log(TAG, "quick stream from " + c.name + " " + c.version + " was refused for " + id)
-        }
-        return null
-    }
-
     private fun quickAudioUrlWith(id: String, c: QuickClient): String? {
         val client = JSONObject()
             .put("clientName", c.name)
@@ -662,18 +681,33 @@ object MusicApi {
             "X-YouTube-Client-Version" to c.version,
             "Origin" to "https://www.youtube.com",
         )
+        val tag = c.name + " " + c.version
         val text = Http.request(
             "POST",
             "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
             body.toString(),
             headers,
         ).use { reply ->
-            if (!reply.isSuccessful) return null
+            if (!reply.isSuccessful) {
+                Logs.log(TAG, "quick $tag: HTTP " + reply.code + " for " + id)
+                return null
+            }
             reply.body?.string().orEmpty()
         }
         val root = JSONObject(text)
-        if (root.o("playabilityStatus")?.optString("status") != "OK") return null
-        val formats = root.o("streamingData")?.a("adaptiveFormats") ?: return null
+        val status = root.o("playabilityStatus")?.optString("status").orEmpty()
+        if (status != "OK") {
+            Logs.log(
+                TAG,
+                "quick $tag: " + status + " " + root.o("playabilityStatus")?.optString("reason").orEmpty() + " for " + id,
+            )
+            return null
+        }
+        val formats = root.o("streamingData")?.a("adaptiveFormats")
+        if (formats == null) {
+            Logs.log(TAG, "quick $tag: no adaptive formats for $id")
+            return null
+        }
         // AAC (audio/mp4) only: every television can decode it, which is not true of Opus.
         var best: String? = null
         var bestRate = -1
@@ -687,6 +721,7 @@ object MusicApi {
                 best = u
             }
         }
+        if (best == null) Logs.log(TAG, "quick $tag: no plain AAC address for $id")
         return best
     }
 
@@ -701,13 +736,16 @@ object MusicApi {
     }
 
     /** The User-Agent a stream address expects (it depends on which YouTube client made it). */
-    fun userAgentFor(url: String): String = when {
-        url.contains("c=IOS") ->
-            "com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)"
-        url.contains("c=ANDROID_VR") ->
-            "com.google.android.apps.youtube.vr.oculus/1.61.48 (Linux; U; Android 12; en_US; Quest 3; Build/SQ3A.220605.009.A1; Cronet/132.0.6808.3)"
-        url.contains("c=ANDROID") -> "com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip"
-        else -> Http.UA
+    fun userAgentFor(url: String): String {
+        uaByUrl[url]?.let { return it }
+        return when {
+            url.contains("c=IOS") ->
+                "com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)"
+            url.contains("c=ANDROID_VR") ->
+                "com.google.android.apps.youtube.vr.oculus/1.61.48 (Linux; U; Android 12; en_US; Quest 3; Build/SQ3A.220605.009.A1; Cronet/132.0.6808.3)"
+            url.contains("c=ANDROID") -> "com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip"
+            else -> Http.UA
+        }
     }
 
     /** Last Vx lossless stream used (for the quality badge). Null = YouTube/Jio fallback. */
@@ -719,8 +757,9 @@ object MusicApi {
     /** Changing quality must re-resolve; cached YouTube URLs would otherwise stick. */
     fun clearStreamCache() {
         streamCache.clear()
-        fastSkip.clear()
         skipPremium.clear()
+        attempts.clear()
+        uaByUrl.clear()
         lastVx = null
         lastSource = "YouTube"
     }
@@ -732,35 +771,20 @@ object MusicApi {
     fun resolveStreamBlocking(id: String): String = resolveStreamBlocking(id, null)
 
     /**
-     * VxMusic port: tries lossless FLAC first when the user enabled it and we know
-     * title/artist (strict match rejects remix/slowed variants -> YouTube fallback keeps them playable).
-     * Video search is untouched, so unofficial uploads still resolve here via NewPipe.
+     * Television: [resolveTelevision] (YouTube only, every way at once, with an exact-match
+     * JioSaavn address as the very last resort).
+     * Phone: unchanged. VxMusic port, tries lossless FLAC first when the user enabled it and we know
+     * title/artist (strict match rejects remix/slowed variants -> YouTube fallback keeps them playable),
+     * then JioSaavn 320k, then YouTube through NewPipe.
      */
     fun resolveStreamBlocking(id: String, song: MSong?): String {
         val now = System.currentTimeMillis()
         streamCache[id]?.let { if (it.expires > now) return it.url }
-        val tv = com.hikari.app.tv.TvMode.isTv
+        if (com.hikari.app.tv.TvMode.isTv) return resolveTelevision(id, song, now)
         // After a failed play the retry skips Vx lossless / JioSaavn (it would get the same address back).
         val premium = id !in skipPremium
-        // Television: ONE quick request for a plain AAC address comes first. The lossless FLAC (24-bit /
-        // 192 kHz by default) is too heavy for a television's processor, Wi-Fi and audio output, and the
-        // chain of lookups before it (several searches, then a slow NewPipe run) outlasts the 45 second
-        // "still loading" timer, which then restarts the whole chain: the song never leaves "Loading".
-        var quickTried = false
-        if (tv && id !in fastSkip) {
-            quickTried = true
-            val quick = runCatching { quickAudioUrl(id) }.getOrNull()
-            if (quick != null) {
-                lastVx = null
-                lastSource = "YouTube"
-                streamCache[id] = Resolved(quick, now + 5L * 60 * 60 * 1000)
-                Logs.log(TAG, "tv quick stream ready for " + id + " in " + (System.currentTimeMillis() - now) + "ms")
-                return quick
-            }
-            Logs.log(TAG, "tv quick stream not available for " + id)
-        }
-        // Lossless-first (needs metadata; without it we cannot safely match Qobuz). Phone only.
-        if (!tv && premium && song != null && song.title.isNotBlank() && song.artist.isNotBlank()) {
+        // Lossless-first (needs metadata; without it we cannot safely match Qobuz).
+        if (premium && song != null && song.title.isNotBlank() && song.artist.isNotBlank()) {
             val app = com.hikari.app.HikariApp.instance.applicationContext
             if (VxQuality.preferLossless(app)) {
                 val q = VxQuality.streamQuality(app)
@@ -781,14 +805,13 @@ object MusicApi {
                 }
             }
         }
-        // JioSaavn 320k (VxMusic-style): PHONE only, and only for an exact title / artist / length
-        // match (see VxJioSaavnApi). Television never uses it: YouTube Music has the song.
-        if (!tv && premium && song != null && song.title.isNotBlank()) {
+        // JioSaavn 320k (VxMusic-style): only for an exact title / artist / length match (see VxJioSaavnApi).
+        if (premium && song != null && song.title.isNotBlank()) {
             jioFor(id, song, now)?.let { return it }
         }
         lastVx = null
         lastSource = "YouTube"
-        return resolveLegacyBlocking(id, tryQuick = !quickTried)
+        return resolveLegacyBlocking(id)
     }
 
     private fun jioFor(id: String, song: MSong, now: Long): String? {
@@ -803,18 +826,150 @@ object MusicApi {
         return jio.url
     }
 
-    private fun resolveLegacyBlocking(id: String, tryQuick: Boolean = true): String {
+    // ------------------------------------------------------------------ television
+
+    /** Hard limit for the whole television lookup, so a bad network fails fast instead of hanging on "Loading". */
+    private const val TV_LOOKUP_MS = 30_000L
+
+    /** How long the quick requests get to themselves before the slow NewPipe run starts alongside them. */
+    private const val NEWPIPE_HEAD_START_MS = 2_500L
+
+    private class Hit(val url: String?, val ua: String, val label: String)
+
+    /**
+     * Television lookup. Every YouTube client asks at the SAME time (one failing or slow client no
+     * longer delays the others) and NewPipe starts alongside them after a short head start, so the
+     * first address that really works wins. A retry of the same song starts NewPipe at once.
+     * The old code switched the quick requests off for good after the first failed play, which left
+     * only the (very slow on a television) NewPipe run for every retry.
+     * Only when YouTube gives nothing at all is an exact title / artist / length JioSaavn address
+     * tried; it can never be a different song, a non-match just returns nothing.
+     */
+    private fun resolveTelevision(id: String, song: MSong?, now: Long): String {
+        val attempt = attempts[id] ?: 0
+        val hit = raceYoutube(id, attempt)
+        if (hit != null && hit.url != null) {
+            if (uaByUrl.size > 300) uaByUrl.clear()
+            uaByUrl[hit.url] = hit.ua
+            lastVx = null
+            lastSource = "YouTube"
+            streamCache[id] = Resolved(hit.url, now + 5L * 60 * 60 * 1000)
+            Logs.log(
+                TAG,
+                "tv stream ready for " + id + " from " + hit.label + " in " + (System.currentTimeMillis() - now) + "ms (try " + (attempt + 1) + ")",
+            )
+            return hit.url
+        }
+        Logs.log(TAG, "tv: YouTube gave no stream for " + id + " (try " + (attempt + 1) + ")")
+        if (song != null && song.title.isNotBlank()) {
+            jioFor(id, song, now)?.let { return it }
+        }
+        throw IOException("No audio stream for this song")
+    }
+
+    private fun raceYoutube(id: String, attempt: Int): Hit? {
+        val results = java.util.concurrent.LinkedBlockingQueue<Hit>()
+        val finished = java.util.concurrent.atomic.AtomicBoolean(false)
+        val quickDone = java.util.concurrent.atomic.AtomicInteger(0)
+        val clients = quickClients
+        for (c in clients) {
+            kotlin.concurrent.thread(start = true, isDaemon = true, name = "music-quick") {
+                val label = c.name + " " + c.version
+                var hit = Hit(null, c.ua, label)
+                try {
+                    if (!finished.get()) {
+                        val u = quickAudioUrlWith(id, c)
+                        if (u != null && !finished.get()) {
+                            if (probeUrl(u, c.ua)) {
+                                hit = Hit(u, c.ua, label)
+                            } else {
+                                Logs.log(TAG, "quick stream from $label was refused for $id")
+                            }
+                        }
+                    }
+                } catch (e: Throwable) {
+                    Logs.log(TAG, "quick $label failed: " + e.message)
+                }
+                quickDone.incrementAndGet()
+                results.add(hit)
+            }
+        }
+        kotlin.concurrent.thread(start = true, isDaemon = true, name = "music-newpipe") {
+            var hit = Hit(null, "", "NewPipe")
+            try {
+                val headStart = if (attempt == 0) NEWPIPE_HEAD_START_MS else 0L
+                val begun = System.currentTimeMillis()
+                while (!finished.get() && quickDone.get() < clients.size &&
+                    System.currentTimeMillis() - begun < headStart
+                ) {
+                    Thread.sleep(80)
+                }
+                if (!finished.get()) {
+                    val u = newPipeUrl(id)
+                    if (u != null) hit = Hit(u, userAgentFor(u), "NewPipe")
+                }
+            } catch (e: Throwable) {
+                Logs.log(TAG, "newpipe failed: " + e.message)
+            }
+            results.add(hit)
+        }
+        val total = clients.size + 1
+        var winner: Hit? = null
+        val deadline = System.currentTimeMillis() + TV_LOOKUP_MS
+        try {
+            var seen = 0
+            while (seen < total) {
+                val left = deadline - System.currentTimeMillis()
+                if (left <= 0) break
+                val r = results.poll(left, java.util.concurrent.TimeUnit.MILLISECONDS) ?: break
+                seen++
+                if (r.url != null) {
+                    winner = r
+                    break
+                }
+            }
+        } catch (e: InterruptedException) {
+            // The player threw this song away (the person picked another one): stop at once.
+            finished.set(true)
+            Thread.currentThread().interrupt()
+            throw java.io.InterruptedIOException("stream lookup cancelled")
+        }
+        finished.set(true)
+        return winner
+    }
+
+    /** NewPipe's own lookup. Prefers AAC (audio/mp4), which every television decodes. */
+    private fun newPipeUrl(id: String): String? {
+        if (!ensureNewPipe()) return null
+        val info = org.schabi.newpipe.extractor.stream.StreamInfo.getInfo("https://www.youtube.com/watch?v=$id")
+        var best: String? = null
+        var bestRate = -1
+        var m4a: String? = null
+        var m4aRate = -1
+        var any: String? = null
+        for (a in info.audioStreams.orEmpty()) {
+            val u = a.url ?: a.content
+            if (u.isNullOrBlank()) continue
+            if (any == null) any = u
+            if (a.deliveryMethod != org.schabi.newpipe.extractor.stream.DeliveryMethod.PROGRESSIVE_HTTP) continue
+            val rate = a.averageBitrate
+            if (rate > bestRate) {
+                bestRate = rate
+                best = u
+            }
+            if (u.contains("mime=audio%2Fmp4") && rate > m4aRate) {
+                m4aRate = rate
+                m4a = u
+            }
+        }
+        return m4a ?: best ?: any
+    }
+
+    // ------------------------------------------------------------------ phone (NewPipe)
+
+    private fun resolveLegacyBlocking(id: String): String {
         val now = System.currentTimeMillis()
         streamCache[id]?.let { if (it.expires > now) return it.url }
-        if (tryQuick && com.hikari.app.tv.TvMode.isTv && id !in fastSkip) {
-            val quick = runCatching { quickAudioUrl(id) }.getOrNull()
-            if (quick != null) {
-                streamCache[id] = Resolved(quick, now + 5L * 60 * 60 * 1000)
-                Logs.log(TAG, "quick stream ready for $id")
-                return quick
-            }
-            Logs.log(TAG, "quick stream not available for $id, using NewPipe")
-        }
         if (!ensureNewPipe()) throw IOException("YouTube extractor is not available")
         val info = org.schabi.newpipe.extractor.stream.StreamInfo.getInfo("https://www.youtube.com/watch?v=$id")
         var best: String? = null
