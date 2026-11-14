@@ -100,7 +100,8 @@
         android:supportsRtl="true"
         android:localeConfig="@xml/locales_config"
         android:usesCleartextTraffic="true"
-        android:theme="@style/Theme.Hikari">
+        android:theme="@style/Theme.Hikari"
+        android:enableOnBackInvokedCallback="true">
 
         <!-- Play Services version metadata. NOT a Play Services dependency — the
              app never talks to GMS — but the System WebView's own bundled
