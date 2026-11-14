@@ -591,6 +591,7 @@ object MusicApi {
                         .setPoTokenProvider(com.hikari.app.music.potoken.HikariPoTokenProvider)
                 }
             }
+            if (!ok) Logs.log(TAG, "newpipe: the extractor could not be started on this device")
             newPipeState = if (ok) 1 else 2
             ok
         }
@@ -609,7 +610,9 @@ object MusicApi {
         prewarmed = true
         kotlin.concurrent.thread(start = true, isDaemon = true, name = "music-prewarm") {
             try {
-                if (ensureNewPipe()) com.hikari.app.music.potoken.HikariPoTokenProvider.prewarm()
+                // The PO token first (the quick requests need it), then the extractor.
+                potPair()
+                ensureNewPipe()
             } catch (t: Throwable) {
                 Logs.log(TAG, "prewarm failed: " + t.message)
             }
@@ -725,6 +728,10 @@ object MusicApi {
         visitor: String? = visitorData,
         retried: Boolean = false,
     ): String? {
+        // Television: the request carries the visitor id the PO token was made for, and the address
+        // gets `&pot=` added, otherwise YouTube serves only the first megabyte (about 1:04).
+        val pot = if (c.name == "TVHTML5_SIMPLY_EMBEDDED_PLAYER") null else potPair()
+        val vis: String? = pot?.visitor ?: visitor
         val client = JSONObject()
             .put("clientName", c.name)
             .put("clientVersion", c.version)
@@ -733,7 +740,7 @@ object MusicApi {
             .put("gl", "US")
             .put("timeZone", "UTC")
             .put("utcOffsetMinutes", 0)
-        if (!visitor.isNullOrBlank()) client.put("visitorData", visitor)
+        if (!vis.isNullOrBlank()) client.put("visitorData", vis)
         c.extra(client)
         val context = JSONObject().put("client", client)
         if (c.embed) {
@@ -756,7 +763,7 @@ object MusicApi {
         headers["X-YouTube-Client-Name"] = c.numeric
         headers["X-YouTube-Client-Version"] = c.version
         headers["Origin"] = "https://www.youtube.com"
-        if (!visitor.isNullOrBlank()) headers["X-Goog-Visitor-Id"] = visitor
+        if (!vis.isNullOrBlank()) headers["X-Goog-Visitor-Id"] = vis
         val tag = c.name + " " + c.version
         val text = Http.request(
             "POST",
@@ -782,8 +789,14 @@ object MusicApi {
             )
             // "Sign in to confirm you're not a bot" often goes away when the same request is sent
             // again with the visitor id YouTube just gave out.
+            // UNPLAYABLE "try again later" for every client means YouTube flagged this visitor id
+            // (the one id was reused for every request). Drop it and ask once more with a fresh one.
+            if (status == "UNPLAYABLE" && !retried && com.hikari.app.tv.TvMode.isTv && rotateVisitor()) {
+                Logs.log(TAG, "quick $tag: asking again with a fresh visitor id for $id")
+                return quickAudioUrlWith(id, c, null, true)
+            }
             val known = visitorData
-            if (status == "LOGIN_REQUIRED" && !retried && !known.isNullOrBlank() && known != visitor) {
+            if (status == "LOGIN_REQUIRED" && !retried && pot == null && !known.isNullOrBlank() && known != visitor) {
                 Logs.log(TAG, "quick $tag: asking again with the visitor id for $id")
                 return quickAudioUrlWith(id, c, known, true)
             }
@@ -808,7 +821,28 @@ object MusicApi {
             }
         }
         if (best == null) Logs.log(TAG, "quick $tag: no plain AAC address for $id")
-        return best
+        val found = best
+        return if (found != null && pot != null && !found.contains("pot=")) found + "&pot=" + pot.pot else found
+    }
+
+    /** The visitor id + streaming PO token for television requests (null on a phone or when none can be made). */
+    private fun potPair(): com.hikari.app.music.potoken.HikariPoTokenProvider.StreamingPot? {
+        if (!com.hikari.app.tv.TvMode.isTv) return null
+        com.hikari.app.music.potoken.HikariPoTokenProvider.attach(com.hikari.app.HikariApp.instance.applicationContext)
+        return com.hikari.app.music.potoken.HikariPoTokenProvider.streamingPot()
+    }
+
+    private var lastRotateMs = 0L
+
+    /** Drops the visitor id (and its PO token) at most once every 30 s; true when a fresh one can be used now. */
+    @Synchronized
+    private fun rotateVisitor(): Boolean {
+        val now = System.currentTimeMillis()
+        if (now - lastRotateMs < 30_000L) return true // another request just did it
+        lastRotateMs = now
+        visitorData = null
+        com.hikari.app.music.potoken.HikariPoTokenProvider.rotate()
+        return true
     }
 
     /**
@@ -1085,6 +1119,12 @@ object MusicApi {
      */
     private fun resolveTelevision(id: String, song: MSong?, now: Long): String {
         val attempt = attempts[id] ?: 0
+        // JioSaavn 320k first, like the phone: a plain file address (no PO token, no throttling), only
+        // for an exact title / artist / length match. A song that failed once skips it (see invalidate).
+        val jioFirst = id !in skipPremium && song != null && song.title.isNotBlank()
+        if (jioFirst && song != null) {
+            jioFor(id, song, now)?.let { return it }
+        }
         val hit = raceYoutube(id, attempt)
         if (hit != null && hit.url != null && hit.whole) return acceptHit(id, hit, hit.url, now, attempt)
         if (hit != null && hit.url != null) {
@@ -1092,7 +1132,7 @@ object MusicApi {
         } else {
             Logs.log(TAG, "tv: YouTube gave no stream for " + id + " (try " + (attempt + 1) + ")")
         }
-        if (song != null && song.title.isNotBlank()) {
+        if (!jioFirst && song != null && song.title.isNotBlank()) {
             jioFor(id, song, now)?.let { return it }
         }
         // Last resort: an address that plays the first minute only. Better than nothing at all.
@@ -1138,7 +1178,7 @@ object MusicApi {
                                 // than the first megabyte. ANDROID_VR used to be taken on trust, and an
                                 // address that stops at 1:04 was played as if it were fine.
                                 val whole = streamsPastFirstMegabyte(u, c.ua)
-                                if (!whole) Logs.log(TAG, "quick stream from $label stops after the first megabyte for $id")
+                                Logs.log(TAG, "quick stream from $label: " + (if (u.contains("pot=")) "with" else "without") + " PO token, " + (if (whole) "plays the whole song" else "only the first megabyte") + " ($id)")
                                 hit = Hit(u, c.ua, label, c.name, whole)
                             } else {
                                 Logs.log(TAG, "quick stream from $label was refused for $id")
@@ -1167,6 +1207,8 @@ object MusicApi {
                     if (u != null) {
                         val ua = userAgentFor(u)
                         hit = Hit(u, ua, "NewPipe", "NewPipe", streamsPastFirstMegabyte(u, ua))
+                    } else {
+                        Logs.log(TAG, "newpipe gave no address for $id" + (if (newPipeState == 2) " (the extractor does not run on this device)" else ""))
                     }
                 }
             } catch (e: Throwable) {
