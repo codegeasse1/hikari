@@ -69,6 +69,9 @@ class MainActivity : AppCompatActivity() {
         }
         runCatching { savedInstanceState?.remove("android:support:fragments") }
         super.onCreate(savedInstanceState)
+        // CloudStream parity (CommonActivity does NewPipe.init here): extractor
+        // plugins must work even if music never ran this session (see Cs3NewPipe).
+        runCatching { com.hikari.app.cs3.Cs3NewPipe.initIfNeeded() }
         // Publish a real result launcher to the CloudStream runtime. Extension
         // settings screens use `MainActivity.companion.activityResultLauncher`
         // for their file/folder pickers (see the shadow's companion in
