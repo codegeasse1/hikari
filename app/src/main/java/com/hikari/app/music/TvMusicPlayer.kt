@@ -85,10 +85,6 @@ private fun tvFmt(ms: Long): String {
 
 // ====================================================================== NOW PLAYING BAR
 
-/**
- * The small bar at the bottom of the music pages while a song is loaded. Selecting it opens the
- * full player; the play and next buttons inside it work without opening anything.
- */
 @UnstableApi
 @Composable
 fun TvMusicNowPlaying(startPad: Dp, onOpen: () -> Unit, modifier: Modifier = Modifier) {
@@ -125,9 +121,14 @@ fun TvMusicNowPlaying(startPad: Dp, onOpen: () -> Unit, modifier: Modifier = Mod
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
+                val subText = when {
+                    st.error != null -> st.error!!
+                    st.buffering -> "Loading… • " + song.artist
+                    else -> song.artist
+                }
                 Text(
-                    song.artist,
-                    color = TvMusicMuted,
+                    subText,
+                    color = if (st.error != null) Color(0xFFFF8A80) else TvMusicMuted,
                     fontSize = 14.sp * s,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -152,7 +153,6 @@ fun TvMusicNowPlaying(startPad: Dp, onOpen: () -> Unit, modifier: Modifier = Mod
 
 // ====================================================================== SEEK BAR
 
-/** Progress line the D-pad can seek on: Left / Right jump 10 seconds while it is focused. */
 @Composable
 private fun TvMusicSeekBar(frac: Float, onSeekBy: (Long) -> Unit, modifier: Modifier = Modifier) {
     var focused by remember { mutableStateOf(false) }
@@ -198,11 +198,6 @@ private fun TvMusicSeekBar(frac: Float, onSeekBy: (Long) -> Unit, modifier: Modi
 
 // ====================================================================== FULL PLAYER
 
-/**
- * Full-screen television player: the cover fills the screen, the song sits bottom-left over a
- * progress line, the transport buttons under it and the Artwork / Lyrics / Queue switches at the
- * right. Lyrics and Queue open as a panel on the right side over the dimmed cover.
- */
 @UnstableApi
 @Composable
 fun TvMusicFullPlayer(onClose: () -> Unit) {
@@ -214,11 +209,11 @@ fun TvMusicFullPlayer(onClose: () -> Unit) {
         return
     }
     val s = TvUi.scale()
-    var mode by remember { mutableStateOf(0) } // 0 artwork, 1 queue, 2 lyrics
+    var mode by remember { mutableStateOf(0) }
     var pos by remember { mutableStateOf(0L) }
     var dur by remember { mutableStateOf(0L) }
     var lyrics by remember(song.id) { mutableStateOf<MLyrics?>(null) }
-    var lyricsState by remember(song.id) { mutableStateOf(0) } // 0 idle, 1 loading, 2 none
+    var lyricsState by remember(song.id) { mutableStateOf(0) }
     val playFocus = remember { FocusRequester() }
 
     LaunchedEffect(st.index, st.playing) {
@@ -236,21 +231,20 @@ fun TvMusicFullPlayer(onClose: () -> Unit) {
             lyricsState = if (r == null) 2 else 0
         }
     }
-    // The remote lands on Play, so the first press is already useful.
     LaunchedEffect(Unit) {
         delay(250)
         runCatching { playFocus.requestFocus() }
     }
 
     val seekBy: (Long) -> Unit = { delta ->
-        val limit = if (dur > 0L) dur else Long.MAX_VALUE
-        val target = (MusicPlayer.position() + delta).coerceIn(0L, limit)
-        MusicPlayer.seekTo(target)
-        pos = target
+        if (dur > 0L) {
+            val target = (MusicPlayer.position() + delta).coerceIn(0L, dur)
+            MusicPlayer.seekTo(target)
+            pos = target
+        }
     }
 
     Box(Modifier.fillMaxSize().background(PlayerBase)) {
-        // The cover, full screen.
         if (song.thumb.isNotBlank()) {
             Crossfade(targetState = song.thumb, animationSpec = tween(500), label = "tvPlayerArt") { url ->
                 AsyncImage(
@@ -263,7 +257,6 @@ fun TvMusicFullPlayer(onClose: () -> Unit) {
         }
         val dim by animateFloatAsState(if (mode == 0) 0.12f else 0.66f, tween(300), label = "tvPlayerDim")
         Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = dim)))
-        // Dark foot so the text and the buttons always read, whatever the cover looks like.
         Box(
             Modifier.fillMaxSize().background(
                 Brush.verticalGradient(
@@ -294,7 +287,6 @@ fun TvMusicFullPlayer(onClose: () -> Unit) {
                 )
             }
 
-            // Middle: empty (the cover shows) or the queue / lyrics panel.
             Box(Modifier.weight(1f).fillMaxWidth().padding(vertical = 12.dp)) {
                 if (mode != 0) {
                     Box(
@@ -315,7 +307,6 @@ fun TvMusicFullPlayer(onClose: () -> Unit) {
                 }
             }
 
-            // Song: small cover, title, artist.
             Row(verticalAlignment = Alignment.CenterVertically) {
                 MusicCover(song.thumb, Modifier.size(72.dp * s), RoundedCornerShape(10.dp), 300)
                 Spacer(Modifier.width(16.dp))
@@ -335,6 +326,15 @@ fun TvMusicFullPlayer(onClose: () -> Unit) {
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
+                    if (st.error != null) {
+                        Text(
+                            st.error + " — press Play to retry",
+                            color = Color(0xFFFF8A80),
+                            fontSize = 14.sp * s,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
             }
             Spacer(Modifier.height(8.dp))
@@ -342,11 +342,19 @@ fun TvMusicFullPlayer(onClose: () -> Unit) {
             TvMusicSeekBar(frac, seekBy)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text(tvFmt(pos), color = Color.White.copy(alpha = 0.8f), fontSize = 13.sp * s)
-                Text(if (st.buffering) "Loading…" else tvFmt(dur), color = Color.White.copy(alpha = 0.8f), fontSize = 13.sp * s)
+                val rightLabel = when {
+                    st.error != null -> "Failed"
+                    st.buffering -> "Loading…"
+                    else -> tvFmt(dur)
+                }
+                Text(
+                    rightLabel,
+                    color = if (st.error != null) Color(0xFFFF8A80) else Color.White.copy(alpha = 0.8f),
+                    fontSize = 13.sp * s,
+                )
             }
             Spacer(Modifier.height(8.dp))
 
-            // Transport on the left, the three view switches on the right.
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 TvMusicIconButton(
                     if (st.playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
@@ -476,8 +484,6 @@ private fun TvMusicLyricsPanel(lyrics: MLyrics?, state: Int, pos: Long, s: Float
             }
         }
         else -> {
-            // Plain lyrics: the panel takes focus and Up / Down scroll it, but only while there is
-            // somewhere to scroll, so the D-pad can always leave it again.
             val scroll = rememberScrollState()
             val scope = rememberCoroutineScope()
             Column(
