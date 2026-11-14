@@ -578,8 +578,41 @@ object MusicApi {
         return synchronized(initLock) {
             if (newPipeState != 0) return@synchronized newPipeState == 1
             val ok = runCatching { org.schabi.newpipe.extractor.NewPipe.init(NpDownloader) }.isSuccess
+            if (ok) {
+                // YouTube only serves the first ~1 MB (about 1:04) of a song to a player that sends no
+                // PO token, then answers 403 for the rest. This gives the extractor the token (a hidden
+                // WebView runs YouTube's BotGuard, like NewPipe does). Television only: the provider
+                // returns null on a phone, which keeps the phone exactly as it was.
+                runCatching {
+                    com.hikari.app.music.potoken.HikariPoTokenProvider.attach(
+                        com.hikari.app.HikariApp.instance.applicationContext,
+                    )
+                    org.schabi.newpipe.extractor.services.youtube.extractors.YoutubeStreamExtractor
+                        .setPoTokenProvider(com.hikari.app.music.potoken.HikariPoTokenProvider)
+                }
+            }
             newPipeState = if (ok) 1 else 2
             ok
+        }
+    }
+
+    @Volatile
+    private var prewarmed = false
+
+    /**
+     * Television: starts the YouTube extractor and the PO token machinery in the background when the
+     * music player is created, so the first song does not have to wait for them (on a television that
+     * wait used to be long enough for a 1-minute-only address to be taken instead).
+     */
+    fun prewarmTelevision() {
+        if (prewarmed || !com.hikari.app.tv.TvMode.isTv) return
+        prewarmed = true
+        kotlin.concurrent.thread(start = true, isDaemon = true, name = "music-prewarm") {
+            try {
+                if (ensureNewPipe()) com.hikari.app.music.potoken.HikariPoTokenProvider.prewarm()
+            } catch (t: Throwable) {
+                Logs.log(TAG, "prewarm failed: " + t.message)
+            }
         }
     }
 
@@ -813,7 +846,7 @@ object MusicApi {
         val viaGet = try {
             Http.request(
                 "GET", url, null,
-                mapOf("User-Agent" to ua, "Range" to "bytes=0-1"),
+                mapOf("User-Agent" to ua, "Range" to "bytes=0-1") + webOnlyHeaders(url),
             ).use { it.code in 200..299 }
         } catch (e: Exception) {
             false
@@ -831,6 +864,7 @@ object MusicApi {
     private fun codeOfRead(url: String, ua: String, form: StreamForm, from: Long): Int = try {
         val headers = HashMap<String, String>()
         headers["User-Agent"] = ua
+        headers.putAll(webOnlyHeaders(url))
         val last = from + 1L
         val target = if (form.param) {
             url + "&range=" + from + "-" + last + "&rn=1"
@@ -880,10 +914,50 @@ object MusicApi {
         return networkError
     }
 
+    /**
+     * Extra headers a WEB-client stream address expects (television only, same as NewPipe's player):
+     * without Origin / Referer YouTube is more likely to refuse the later chunks of a song.
+     */
+    private fun webOnlyHeaders(url: String): Map<String, String> {
+        if (!com.hikari.app.tv.TvMode.isTv) return emptyMap()
+        return runCatching {
+            if (org.schabi.newpipe.extractor.services.youtube.YoutubeParsingHelper.isWebStreamingUrl(url)) {
+                mapOf(
+                    "Origin" to "https://www.youtube.com",
+                    "Referer" to "https://www.youtube.com",
+                    "Sec-Fetch-Dest" to "empty",
+                    "Sec-Fetch-Mode" to "cors",
+                    "Sec-Fetch-Site" to "cross-site",
+                )
+            } else {
+                emptyMap()
+            }
+        }.getOrDefault(emptyMap())
+    }
+
+    /** Every header a stream request for [url] carries (User-Agent, plus Origin / Referer for web addresses). */
+    fun streamHeaders(url: String): Map<String, String> {
+        val h = LinkedHashMap<String, String>()
+        h["User-Agent"] = userAgentFor(url)
+        h.putAll(webOnlyHeaders(url))
+        return h
+    }
+
+    /** True when this address is a visionOS-client address (needs that client's User-Agent). Television only. */
+    private fun isVisionOsUrl(url: String): Boolean {
+        if (!com.hikari.app.tv.TvMode.isTv) return false
+        return runCatching {
+            org.schabi.newpipe.extractor.services.youtube.YoutubeParsingHelper.isVisionOsStreamingUrl(url)
+        }.getOrDefault(false)
+    }
+
     /** The User-Agent a stream address expects (it depends on which YouTube client made it). */
     fun userAgentFor(url: String): String {
         uaByUrl[url]?.let { return it }
         return when {
+            isVisionOsUrl(url) -> runCatching {
+                org.schabi.newpipe.extractor.services.youtube.YoutubeParsingHelper.getVisionOsUserAgent(null)
+            }.getOrDefault(Http.UA)
             url.contains("c=IOS") ->
                 "com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)"
             url.contains("c=ANDROID_VR") ->
@@ -979,7 +1053,7 @@ object MusicApi {
     // ------------------------------------------------------------------ television
 
     /** Hard limit for the whole television lookup, so a bad network fails fast instead of hanging on "Loading". */
-    private const val TV_LOOKUP_MS = 30_000L
+    private const val TV_LOOKUP_MS = 45_000L
 
     /** How long the quick requests get to themselves before the slow NewPipe run starts alongside them. */
     private const val NEWPIPE_HEAD_START_MS = 2_500L
@@ -995,7 +1069,7 @@ object MusicApi {
     )
 
     /** A limited address is only used when nothing else exists: how long to wait for a better one. */
-    private const val LIMITED_GRACE_MS = 18_000L
+    private const val LIMITED_GRACE_MS = 30_000L
 
     /** An address from the client that failed last time: how long to wait for a different client's address. */
     private const val SOFT_GRACE_MS = 3_000L
@@ -1162,7 +1236,11 @@ object MusicApi {
                 m4a = u
             }
         }
-        return m4a ?: best ?: any
+        val chosen = m4a ?: best ?: any
+        if (chosen != null) {
+            Logs.log(TAG, "newpipe address for $id: c=" + (clientOf(chosen) ?: "?") + ", pot=" + chosen.contains("pot="))
+        }
+        return chosen
     }
 
     // ------------------------------------------------------------------ phone (NewPipe)

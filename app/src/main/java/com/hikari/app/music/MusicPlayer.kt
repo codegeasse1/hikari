@@ -202,6 +202,8 @@ object MusicPlayer {
         // Crossfade: fade-out before track end + fade-in after, when enabled.
         runCatching { VxAudioFx.apply(app) }
         startXfadeLoop(app, p)
+        // Television: get the YouTube extractor and its PO token ready now, so the first song does not wait for them.
+        if (tv) MusicApi.prewarmTelevision()
         return p
     }
 

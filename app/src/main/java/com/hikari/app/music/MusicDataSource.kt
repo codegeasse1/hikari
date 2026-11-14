@@ -110,7 +110,7 @@ class MusicDataSource(private val upstream: DataSource) : DataSource {
         songId = dataSpec.uri.lastPathSegment.orEmpty()
         val url = resolve(songId)
         val uri = Uri.parse(url)
-        val hdr = mapOf("User-Agent" to MusicApi.userAgentFor(url))
+        val hdr = MusicApi.streamHeaders(url)
         val host = uri.host.orEmpty().lowercase()
         if (!(host.endsWith("googlevideo.com") || host.endsWith("youtube.com"))) {
             direct = true
@@ -264,7 +264,7 @@ class MusicDataSource(private val upstream: DataSource) : DataSource {
             return FileNotFoundException("No matching stream for $songId")
         }
         baseUri = fresh
-        headers = mapOf("User-Agent" to MusicApi.userAgentFor(url))
+        headers = MusicApi.streamHeaders(url)
         val hint = MusicApi.formFor(url)
         viaPost = hint.post
         viaParam = hint.param
