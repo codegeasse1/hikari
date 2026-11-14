@@ -194,6 +194,9 @@ class HikariApp : Application() {
         if (runCatching { java.io.File("/proc/self/cmdline").readText().trim('\u0000').endsWith(":neuraltts") }.getOrDefault(false)) return
         instance = this
         runCatching { okhttp3.OkHttp.initialize(this) }
+        // CloudStream parity: NewPipe-powered plugins need a downloader
+        // from process start, not only after music plays (see Cs3NewPipe).
+        runCatching { com.hikari.app.cs3.Cs3NewPipe.initIfNeeded() }
         // Diagnostics first: everything after this point is logged, and the
         // crash handler below needs the log directory to already exist.
         Logs.init(this)
