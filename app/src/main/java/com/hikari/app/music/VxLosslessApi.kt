@@ -19,6 +19,17 @@ object VxLosslessApi {
     private const val BACKEND = "https://qobuz-backend.opabcg.workers.dev/"
     private const val MAX_DURATION_DIFF = 8
 
+    /**
+     * Once a full tier walk proves the backend serves no FLAC at all (it
+     * answers success for lossless tiers while handing back its MP3 copy),
+     * later songs go straight to MP3 instead of re-probing dead tiers on
+     * every track. Reset on quality change and on process restart.
+     */
+    @Volatile
+    private var losslessDead = false
+
+    fun resetProbe() { losslessDead = false }
+
     data class VxStream(
         val url: String,
         val mimeType: String = "audio/flac",
@@ -51,9 +62,19 @@ object VxLosslessApi {
         if (preferred == VxQuality.YOUTUBE || title.isBlank() || artist.isBlank()) return null
         return try {
             val cand = findBestVerifiedMatch(title, artist, durationSec, album) ?: return null
-            for (q in VxQuality.attemptOrder(preferred)) {
+            val tiers = if (losslessDead && preferred != VxQuality.MP3_320) listOf(VxQuality.MP3_320)
+                else VxQuality.attemptOrder(preferred)
+            var losslessFailed = false
+            for (q in tiers) {
                 val s = fetchTrackUrl(cand, q, title, artist, durationSec)
-                if (s != null && s.url.isNotBlank()) return s
+                if (s != null && s.url.isNotBlank()) {
+                    if (!s.mimeType.contains("flac", ignoreCase = true) && losslessFailed) {
+                        losslessDead = true
+                        Logs.log(TAG, "backend serves no FLAC (MP3 served for lossless tiers) — probing off for this session")
+                    }
+                    return s
+                }
+                if (q != VxQuality.MP3_320) losslessFailed = true
             }
             null
         } catch (e: Exception) {
@@ -139,6 +160,11 @@ object VxLosslessApi {
         val d = root.optJSONObject("data") ?: return null
         val url = d.optString("url")
         if (url.isBlank()) return null
+        val mime = d.optString("mime_type", "audio/flac").ifBlank { "audio/flac" }
+        // The public backend reports success for lossless tiers while serving
+        // its MP3 copy (fmt=5). Never accept a non-FLAC file for a lossless
+        // request — it would badge as FLAC yet sound byte-identical anyway.
+        if (quality != VxQuality.MP3_320 && !mime.contains("flac", ignoreCase = true)) return null
         val formatId = d.optInt("format_id", 6)
         val bitDepth = d.optInt("bit_depth", 16).takeIf { it > 0 } ?: 16
         val sampleRate = d.optDouble("sampling_rate", 44.1).takeIf { it > 0 } ?: 44.1
@@ -152,7 +178,7 @@ object VxLosslessApi {
         }
         return VxStream(
             url = url,
-            mimeType = d.optString("mime_type", "audio/flac").ifBlank { "audio/flac" },
+            mimeType = mime,
             bitDepth = bitDepth,
             samplingRate = sampleRate,
             formatId = formatId,
