@@ -53,6 +53,20 @@ class MainActivity : AppCompatActivity() {
             navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
         )
         installSplashScreen()
+        // Butter: ask for the display's fastest refresh rate. Some OEMs leave
+        // the window on a 60 Hz mode even on 120 Hz panels unless the app asks.
+        runCatching {
+            @Suppress("DEPRECATION")
+            val modes = if (android.os.Build.VERSION.SDK_INT >= 30) display?.supportedModes
+                else (getSystemService(android.content.Context.WINDOW_SERVICE) as android.view.WindowManager).defaultDisplay.supportedModes
+            val best = modes?.filter { it.physicalWidth >= 720 }
+                ?.maxWithOrNull(compareBy({ it.refreshRate }, { it.physicalWidth * it.physicalHeight }))
+            if (best != null && best.refreshRate > 60f) {
+                val attrs = window.attributes
+                attrs.preferredDisplayModeId = best.modeId
+                window.attributes = attrs
+            }
+        }
         runCatching { savedInstanceState?.remove("android:support:fragments") }
         super.onCreate(savedInstanceState)
         // Publish a real result launcher to the CloudStream runtime. Extension
@@ -114,18 +128,20 @@ class MainActivity : AppCompatActivity() {
         val store = (application as HikariApp).store
         TvMode.detect(this)
         (application as HikariApp).syncTvDeviceFlag()
-        val storedTvMode = runCatching {
-            kotlinx.coroutines.runBlocking {
-                kotlinx.coroutines.withTimeoutOrNull(3_000L) { store.tvMode() }
-            }
-        }.getOrNull() ?: TvMode.AUTO
-        TvMode.setOverride(storedTvMode)
-        com.hikari.app.data.Logs.log(
-            "App",
-            "layout: " + (if (TvMode.isTv) "television" else "phone/tablet") +
-                " (stored=" + storedTvMode + " override=" + TvMode.override +
-                " " + TvMode.describe(this) + ")",
-        )
+        // Butter: never block the first frame on disk. The device default
+        // decides the first frame; the stored override lands a moment later
+        // (TvMode.override is observable, so the UI follows on its own).
+        TvMode.setOverride(TvMode.AUTO)
+        lifecycleScope.launch {
+            val storedTvMode = runCatching { store.tvMode() }.getOrNull() ?: TvMode.AUTO
+            TvMode.setOverride(storedTvMode)
+            com.hikari.app.data.Logs.log(
+                "App",
+                "layout: " + (if (TvMode.isTv) "television" else "phone/tablet") +
+                    " (stored=" + storedTvMode + " override=" + TvMode.override +
+                    " " + TvMode.describe(this@MainActivity) + ")",
+            )
+        }
         handleTrackerRedirect(intent)
         // A repo link forwarded by RepoLinkActivity ("Open with → Hikari" in
         // a browser) lands here the same way on a cold start.
@@ -141,17 +157,18 @@ class MainActivity : AppCompatActivity() {
         // bar. Settings → App Layout can turn that off; the mirror is seeded
         // here because onResume/onWindowFocusChanged re-apply the mode and
         // cannot await DataStore.
-        // Bounded: this is a blocking settings read on the main thread during
-        // onCreate. Every other store read in the app is async; this one cannot
-        // be (onResume re-applies the mode and cannot await DataStore), so it
-        // gets a timeout instead — a wedged store must never be able to hold the
-        // window's first frame (see HikariApp.STARTUP_STORE_READ_MS).
-        fullscreenOff = runCatching {
-            kotlinx.coroutines.runBlocking {
-                kotlinx.coroutines.withTimeoutOrNull(3_000L) { store.fullscreenOff() }
-            }
-        }.getOrNull() ?: false
+        // Butter: immersive immediately (the default), stored value a
+        // moment later — onResume re-applies the mode anyway, so a slow store
+        // can no longer hold the window's first frame.
+        fullscreenOff = false
         applyImmersiveMode()
+        lifecycleScope.launch {
+            val off = runCatching { store.fullscreenOff() }.getOrNull() ?: false
+            if (off != fullscreenOff) {
+                fullscreenOff = off
+                applyImmersiveMode()
+            }
+        }
         setContent {
             val scope = rememberCoroutineScope()
             // Remember the Flow — a fresh store.themeFlow() per recomposition
