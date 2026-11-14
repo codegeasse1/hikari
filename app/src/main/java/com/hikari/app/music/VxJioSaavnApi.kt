@@ -9,35 +9,28 @@ import java.util.Locale
 import javax.crypto.Cipher
 import javax.crypto.spec.SecretKeySpec
 
-/** JioSaavn 320k fallback (VxMusic port, blocking). */
+/** JioSaavn 320k fallback with strict title, artist, script, and duration verification. */
 object VxJioSaavnApi {
     private const val TAG = "HikariVxJio"
     private const val BASE = "https://www.jiosaavn.com/api.php"
     private const val DES_KEY = "38346591"
 
+    private val STOP_WORDS = setOf(
+        "the", "and", "feat", "ft", "featuring", "with", "dj", "official",
+        "music", "records", "topic", "vevo", "studio", "prod", "by", "song",
+    )
+
     data class JioStream(val url: String, val bitrateKbps: Int = 320)
 
-    fun resolveBlocking(title: String, artist: String, durationSec: Int?, slackSec: Int = 10): JioStream? {
+    fun resolveBlocking(title: String, artist: String, durationSec: Int?, slackSec: Int = 6): JioStream? {
         return try {
-            val q = (title + " " + artist).trim().ifBlank { title }
-            if (q.isBlank()) return null
+            if (title.isBlank() || artist.isBlank()) return null
+            val q = (title + " " + artist).trim()
             val url = BASE + "?__call=search.getResults&_format=json&_marker=0&ctx=wap6dot0&p=0&n=10&q=" + URLEncoder.encode(q, "UTF-8")
             val text = Http.getStringQuiet(url, mapOf("User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120"))
-            if (text == null) {
-                Logs.log(TAG, "jio: no answer from JioSaavn for \"" + q + "\"")
-                return null
-            }
-            // Response is JSON with "results": [...]
-            val root = runCatching { JSONObject(text) }.getOrNull()
-            if (root == null) {
-                Logs.log(TAG, "jio: answer was not JSON for \"" + q + "\"")
-                return null
-            }
-            val arr = root.optJSONArray("results")
-            if (arr == null) {
-                Logs.log(TAG, "jio: no results list for \"" + q + "\"")
-                return null
-            }
+                ?: return null
+            val root = runCatching { JSONObject(text) }.getOrNull() ?: return null
+            val arr = root.optJSONArray("results") ?: return null
             var best: String? = null
             var bestScore = -1
             for (i in 0 until arr.length()) {
@@ -49,9 +42,6 @@ object VxJioSaavnApi {
                 val score = score(title, artist, durationSec, song, pa, o.optString("duration").toIntOrNull(), slackSec)
                 if (score != null && score > bestScore) { bestScore = score; best = enc }
             }
-            // NO "first result" fallback: when nothing matches the requested song, return null so the
-            // caller falls back to YouTube (the exact video). Guessing here played a random Hindi song
-            // for songs whose title is not Latin (Russian, Arabic, ...).
             if (best == null) {
                 Logs.log(TAG, "jio: no exact match for \"" + q + "\"")
                 return null
@@ -68,30 +58,49 @@ object VxJioSaavnApi {
         }
     }
 
-    /** Lower-case, accents removed, any script kept (Cyrillic, Devanagari, Arabic, CJK ...). */
+    private fun stripNoise(s: String): String =
+        s.replace(Regex("""\s*[\[(][^\]\)]*[\])]"""), " ")
+            .replace(Regex("""(?i)\s*[-–—|]\s*(official|music|audio|video|lyrics?|mv|topic).*$"""), " ")
+            .trim()
+
     private fun norm(s: String): String =
-        Normalizer.normalize(s.lowercase(Locale.ROOT), Normalizer.Form.NFD)
+        Normalizer.normalize(stripNoise(s).lowercase(Locale.ROOT), Normalizer.Form.NFD)
             .replace(Regex("\\p{M}+"), "")
             .replace(Regex("[^\\p{L}\\p{N}]+"), " ")
+            .replace(Regex("\\s+"), " ")
             .trim()
 
     private fun tokens(s: String): Set<String> =
-        norm(s).split(' ').filter { it.length >= 2 }.toSet()
+        norm(s).split(' ').filter { it.length >= 2 && it !in STOP_WORDS }.toSet()
+
+    private fun hasCyrillic(s: String): Boolean = s.any { it in '\u0400'..'\u04FF' }
 
     private fun score(t: String, a: String, dur: Int?, cs: String, ca: String, cdur: Int?, slackSec: Int): Int? {
-        val tt = norm(t); val ct = norm(cs)
+        // Never match a Cyrillic (Russian) title against a non-Cyrillic track.
+        if (hasCyrillic(t) != hasCyrillic(cs)) return null
+
+        val tt = norm(t)
+        val ct = norm(cs)
         if (tt.isBlank() || ct.isBlank()) return null
-        if (tt != ct && !(tt.contains(ct) || ct.contains(tt))) return null
-        if (dur != null && dur > 0 && cdur != null && cdur > 0 && kotlin.math.abs(dur - cdur) > slackSec) return null
-        var s = 1000
-        if (tt == ct) s += 200
-        if (a.isNotBlank() && ca.isNotBlank()) {
-            val na = tokens(a); val nca = tokens(ca)
-            // Same title but a different artist is a different song.
-            if (na.isNotEmpty() && nca.isNotEmpty() && na.intersect(nca).isEmpty()) return null
-            s += 300
+
+        // Require exact normalized title equality (no loose substring matches).
+        if (tt != ct) return null
+
+        // Require non-blank artists with genuine non-stopword overlap.
+        val na = tokens(a)
+        val nca = tokens(ca)
+        if (na.isEmpty() || nca.isEmpty()) return null
+        val shared = na.intersect(nca)
+        if (shared.isEmpty()) return null
+
+        if (dur != null && dur > 0) {
+            if (cdur == null || cdur <= 0 || kotlin.math.abs(dur - cdur) > slackSec) return null
+        } else {
+            // Without duration metadata, require full artist token match.
+            if (!na.containsAll(nca) && !nca.containsAll(na)) return null
         }
-        return s
+
+        return 1500 + shared.size * 100
     }
 
     private fun decrypt(enc: String): String? {
