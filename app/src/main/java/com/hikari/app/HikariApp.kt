@@ -52,7 +52,7 @@ class HikariApp : Application() {
         lateinit var instance: HikariApp
             private set
 
-        private const val STARTUP_STORE_READ_MS = 3_000L
+        private const val STARTUP_STORE_READ_MS = 250L
 
         /** Stack trace of the last uncaught crash (shown as a one-shot Home
          *  warning — see [crashNoticeShown]). */
@@ -241,6 +241,22 @@ class HikariApp : Application() {
             }
         }
         Logs.log("App", "store restored in ${System.currentTimeMillis() - startupAt}ms")
+        // Butter: if the store was wedged and the fast synchronous read above
+        // fell back to defaults, apply the real language when it arrives
+        // (I18n is observable, so texts follow without a restart).
+        appScope.launch {
+            val lateTag = runCatching { store.language() }.getOrNull()
+            if (!lateTag.isNullOrBlank()) {
+                runCatching {
+                    com.hikari.app.ui.LanguageManager.apply(lateTag)
+                    val effective = com.hikari.app.ui.LanguageManager.effectiveTag(lateTag)
+                    com.hikari.app.i18n.I18n.setCurrent(
+                        com.hikari.app.i18n.I18n.mapFor(this@HikariApp, effective),
+                        effective,
+                    )
+                }
+            }
+        }
         Logs.log("Memory", com.hikari.app.data.MemoryReport.device(this))
         providers = ProviderManager(store, this)
         appScope.launch {
@@ -1015,9 +1031,9 @@ class HikariApp : Application() {
                     val cap = if (com.hikari.app.data.PerfMode.tvDevice) {
                         (heap / 12).coerceIn(16L * 1024 * 1024, 64L * 1024 * 1024)
                     } else if (heap <= 384L * 1024 * 1024) {
-                        32L * 1024 * 1024
+                        48L * 1024 * 1024
                     } else {
-                        (heap / 8).coerceIn(24L * 1024 * 1024, 64L * 1024 * 1024)
+                        (heap / 6).coerceIn(32L * 1024 * 1024, 128L * 1024 * 1024)
                     }
                     coil.memory.MemoryCache.Builder(this@HikariApp)
                         .maxSizeBytes(cap.toInt())
