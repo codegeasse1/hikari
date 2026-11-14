@@ -82,7 +82,7 @@ object MusicPlayer {
     private const val TV_STALL_MS = 75_000L
 
     /** Television, a song that was already playing and went back to "Loading": ask for a fresh address sooner. */
-    private const val TV_MID_STALL_MS = 25_000L
+    private const val TV_MID_STALL_MS = 15_000L
 
     /** Retries of one failing song before the player gives up on it (first try + 2 retries). */
     private const val MAX_RETRIES = 2

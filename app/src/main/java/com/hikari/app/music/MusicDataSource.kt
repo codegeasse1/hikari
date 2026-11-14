@@ -237,6 +237,10 @@ class MusicDataSource(private val upstream: DataSource) : DataSource {
                 closeChunk()
             }
         }
+        // Nothing worked on this address: forget it, so the player's own retry is handed a different one
+        // instead of this same dead address again (which is what made a song hang on "Loading").
+        Logs.log(TAG, "giving up this address for $songId at byte $position (" + describe(failure) + ")")
+        MusicApi.invalidate(songId)
         throw failure
     }
 
@@ -546,7 +550,7 @@ class MusicDataSource(private val upstream: DataSource) : DataSource {
          * is refused. The player has about a minute of music buffered, so the song does not stop
          * while this runs; it has to end before that buffer does.
          */
-        const val RECOVER_MS = 40_000L
+        const val RECOVER_MS = 20_000L
 
         /** Pause between two of those asks. */
         const val RECOVER_PAUSE_MS = 1_500L

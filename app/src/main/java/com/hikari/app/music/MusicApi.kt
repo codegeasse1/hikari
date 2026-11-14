@@ -6,6 +6,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
@@ -916,25 +918,94 @@ object MusicApi {
     }
 
     /**
-     * False when [url] serves the first megabyte but REFUSES everything after it. That is the "song
-     * stops at 1:04" address: 1 MB of 128 kbit/s AAC is 1:04. A probe of the first two bytes cannot
-     * tell, so this reads two bytes just after the first megabyte, in every way the player can ask
-     * for a range (GET and POST, `range=` parameter and `Range` header). The way that worked is
-     * remembered for this address ([formFor]) so the player asks the same way. Every YouTube client,
-     * ANDROID_VR included, has to pass this test: none of them is trusted blindly any more.
-     * A network error says nothing about the address, so it counts as "fine".
+     * The stack the music player itself streams through (own DNS-over-HTTPS fallback, no interceptors).
+     * The "does this address really serve more than the first minute" check goes through the very same
+     * stack, so it can no longer say yes to an address the player is then refused on.
      */
-    private fun streamsPastFirstMegabyte(url: String, ua: String): Boolean {
+    private val checkClient: okhttp3.OkHttpClient by lazy {
+        okhttp3.OkHttpClient.Builder()
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .retryOnConnectionFailure(true)
+            .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(12, java.util.concurrent.TimeUnit.SECONDS)
+            .dns(com.hikari.app.net.DohDns)
+            .build()
+    }
+
+    /** What one real read of a piece of a song answered. [code] is -1 when no answer came at all. */
+    private class PieceAnswer(val code: Int, val bytes: Long, val type: String, val declared: Long)
+
+    /** Really reads (up to 16 KB of) the piece [from]..[from]+[want] of the song, the way [form] says. */
+    private fun readPiece(url: String, ua: String, form: StreamForm, from: Long, want: Long): PieceAnswer {
+        return try {
+            val last = from + want - 1L
+            val target = if (form.param) url + "&range=" + from + "-" + last + "&rn=1" else url + "&rn=1"
+            val b = okhttp3.Request.Builder().url(target)
+            b.header("User-Agent", ua)
+            for ((k, v) in webOnlyHeaders(url)) b.header(k, v)
+            b.header("Accept-Encoding", "identity")
+            if (!form.param) b.header("Range", "bytes=" + from + "-" + last)
+            if (form.post) {
+                b.post(POST_BODY_TEXT.toRequestBody("application/x-www-form-urlencoded".toMediaType()))
+            }
+            checkClient.newCall(b.build()).execute().use { reply ->
+                val type = reply.header("Content-Type").orEmpty().lowercase()
+                val declared = reply.header("Content-Length")?.trim()?.toLongOrNull() ?: -1L
+                var total = 0L
+                val src = reply.body?.byteStream()
+                if (src != null && reply.isSuccessful) {
+                    val buf = ByteArray(8192)
+                    val need = minOf(want, 16_384L)
+                    while (total < need) {
+                        val n = src.read(buf)
+                        if (n < 0) break
+                        total += n.toLong()
+                    }
+                }
+                PieceAnswer(reply.code, total, type, declared)
+            }
+        } catch (e: Exception) {
+            PieceAnswer(-1, 0L, "", -1L)
+        }
+    }
+
+    /** True when the answer is real audio bytes for the piece that was asked for (not an error, a page or the wrong part of the file). */
+    private fun pieceOk(a: PieceAnswer, want: Long): Boolean {
+        if (a.code !in 200..299) return false
+        if (a.type.contains("ump") || a.type.startsWith("text/") || a.type.contains("json") || a.type.contains("html")) return false
+        // A server that ignores the range sends the whole file from byte 0: the wrong bytes for this spot.
+        if (a.declared > want + 1L) return false
+        return a.bytes >= minOf(want, 4096L)
+    }
+
+    /** The two request forms the quick re-checks of an address use (GET with `range=`, POST with a `Range` header). */
+    private val variantForms: List<StreamForm> by lazy { listOf(probeForms[0], probeForms[2]) }
+
+    /**
+     * False when [url] serves the first megabyte but REFUSES everything after it. That is the "song
+     * stops at 1:04" address: 1 MB of 128 kbit/s AAC is 1:04.
+     *
+     * The old check read two bytes through another HTTP client and let an error count as "fine", and it
+     * said "plays the whole song" for addresses the player was then refused on at 1:04. This one really
+     * reads audio bytes just after the first megabyte, through the player's own stack, in every way the
+     * player can ask for a range (GET and POST, `range=` parameter and `Range` header); only a real
+     * audio answer counts. The way that worked is remembered for this address ([formFor]).
+     * Only when NOT ONE of the ways got any answer at all (no network) is the address given the benefit of the doubt.
+     */
+    private fun streamsPastFirstMegabyte(url: String, ua: String, forms: List<StreamForm> = probeForms): Boolean {
         val size = contentLengthInUrl.find(url)?.groupValues?.get(1)?.toLongOrNull() ?: -1L
         val from = FIRST_MEGABYTE
         // The whole file is inside the first megabyte (a short track): nothing to check.
         if (size in 1L..(from + 2L)) return true
-        var networkError = false
+        val want = if (size > from) minOf(24_576L, size - from) else 24_576L
+        var answered = false
         val codes = StringBuilder()
-        for (form in probeForms) {
-            val code = codeOfRead(url, ua, form, from)
-            codes.append(code).append(' ')
-            if (code in 200..299 || code == 416) {
+        for (form in forms) {
+            val a = readPiece(url, ua, form, from, want)
+            codes.append(a.code).append(' ')
+            if (a.code >= 0) answered = true
+            if (pieceOk(a, want)) {
                 if (formByUrl.size > 300) formByUrl.clear()
                 formByUrl[url] = form
                 if (form.post || !form.param) {
@@ -942,10 +1013,29 @@ object MusicApi {
                 }
                 return true
             }
-            if (code < 0) networkError = true
         }
         Logs.log(TAG, "address refuses everything after the first megabyte (HTTP " + codes.toString().trim() + ")")
-        return networkError
+        return !answered
+    }
+
+    /**
+     * The same address with its PO token written another way (URL-encoded) or left out. Which of them
+     * YouTube accepts past the first minute is not the same for every client, so each is tried and the
+     * first one that really streams is used. Returns (address, short description) pairs.
+     */
+    private fun potVariants(url: String): List<Pair<String, String>> {
+        val at = url.indexOf("&pot=")
+        if (at < 0) return emptyList()
+        val rest = url.substring(at + 5)
+        val end = rest.indexOf('&')
+        val token = if (end >= 0) rest.substring(0, end) else rest
+        val tail = if (end >= 0) rest.substring(end) else ""
+        val plain = url.substring(0, at) + tail
+        val out = ArrayList<Pair<String, String>>()
+        val encoded = android.net.Uri.encode(token)
+        if (encoded != token) out.add(Pair(plain + "&pot=" + encoded, "an encoded"))
+        out.add(Pair(plain, "no"))
+        return out
     }
 
     /**
@@ -1072,9 +1162,9 @@ object MusicApi {
         return resolveLegacyBlocking(id)
     }
 
-    private fun jioFor(id: String, song: MSong, now: Long): String? {
+    private fun jioFor(id: String, song: MSong, now: Long, slackSec: Int = 10): String? {
         val jio = runCatching {
-            VxJioSaavnApi.resolveBlocking(song.title, song.artist, song.durationSec.takeIf { it > 0 })
+            VxJioSaavnApi.resolveBlocking(song.title, song.artist, song.durationSec.takeIf { it > 0 }, slackSec)
         }.getOrNull()
         if (jio == null || jio.url.isBlank()) return null
         lastVx = null
@@ -1103,7 +1193,7 @@ object MusicApi {
     )
 
     /** A limited address is only used when nothing else exists: how long to wait for a better one. */
-    private const val LIMITED_GRACE_MS = 30_000L
+    private const val LIMITED_GRACE_MS = 6_000L
 
     /** An address from the client that failed last time: how long to wait for a different client's address. */
     private const val SOFT_GRACE_MS = 3_000L
@@ -1132,8 +1222,11 @@ object MusicApi {
         } else {
             Logs.log(TAG, "tv: YouTube gave no stream for " + id + " (try " + (attempt + 1) + ")")
         }
-        if (!jioFirst && song != null && song.title.isNotBlank()) {
-            jioFor(id, song, now)?.let { return it }
+        if (song != null && song.title.isNotBlank()) {
+            // YouTube has nothing that plays the whole song: JioSaavn once more, this time allowing a
+            // slightly bigger difference in length (same title, same artist), before settling for a
+            // first-minute-only address.
+            jioFor(id, song, now, 20)?.let { return it }
         }
         // Last resort: an address that plays the first minute only. Better than nothing at all.
         if (hit != null && hit.url != null) return acceptHit(id, hit, hit.url, now, attempt)
@@ -1175,11 +1268,25 @@ object MusicApi {
                         if (u != null && !finished.get()) {
                             if (probeUrl(u, c.ua)) {
                                 // EVERY client's address (ANDROID_VR too) must prove it serves more
-                                // than the first megabyte. ANDROID_VR used to be taken on trust, and an
-                                // address that stops at 1:04 was played as if it were fine.
-                                val whole = streamsPastFirstMegabyte(u, c.ua)
-                                Logs.log(TAG, "quick stream from $label: " + (if (u.contains("pot=")) "with" else "without") + " PO token, " + (if (whole) "plays the whole song" else "only the first megabyte") + " ($id)")
-                                hit = Hit(u, c.ua, label, c.name, whole)
+                                // than the first megabyte, by really reading audio past it. If it does
+                                // not, the same address is tried with its PO token written another
+                                // way, or left out: the first version that really streams is used.
+                                var chosen: String = u
+                                var whole = streamsPastFirstMegabyte(u, c.ua)
+                                var how = if (u.contains("pot=")) "with" else "without"
+                                if (!whole && !finished.get()) {
+                                    for (v in potVariants(u)) {
+                                        if (finished.get()) break
+                                        if (streamsPastFirstMegabyte(v.first, c.ua, variantForms)) {
+                                            chosen = v.first
+                                            whole = true
+                                            how = v.second
+                                            break
+                                        }
+                                    }
+                                }
+                                Logs.log(TAG, "quick stream from $label: " + how + " PO token, " + (if (whole) "plays the whole song" else "only the first megabyte") + " ($id)")
+                                hit = Hit(chosen, c.ua, label, c.name, whole)
                             } else {
                                 Logs.log(TAG, "quick stream from $label was refused for $id")
                             }
