@@ -1,5 +1,6 @@
 package com.hikari.app.music
 
+import android.net.Uri
 import com.hikari.app.data.Logs
 import com.hikari.app.net.Http
 import kotlinx.coroutines.Dispatchers
