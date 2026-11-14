@@ -6722,13 +6722,15 @@ private fun Hero(
                 .fillMaxWidth()
                 .aspectRatio(3f / 4f)
         ) {
-            PosterArt(
-                model = image.first,
-                contentDescription = meta?.title,
-                style = rememberPosterStyle(),
-                contentScale = if (image.second) ContentScale.Crop else ContentScale.Fit,
-                modifier = Modifier.fillMaxSize(),
-            )
+            androidx.compose.animation.Crossfade(targetState = image, label = "heroTall") { img ->
+                PosterArt(
+                    model = img.first,
+                    contentDescription = meta?.title,
+                    style = rememberPosterStyle(),
+                    contentScale = if (img.second) ContentScale.Crop else ContentScale.Fit,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
             Box(
                 Modifier
                     .fillMaxSize()
@@ -6774,14 +6776,16 @@ private fun Hero(
                     .fillMaxHeight(0.86f)
                     .aspectRatio(2f / 3f)
             ) {
-            PosterArt(
-                model = posterModel ?: image.first,
-                contentDescription = meta?.title,
-                style = rememberPosterStyle(),
-                modifier = Modifier
-                    .fillMaxSize()
-                    .heroPoster(heroKey),
-            )
+            androidx.compose.animation.Crossfade(targetState = posterModel ?: image.first, label = "heroPoster") { pm ->
+                PosterArt(
+                    model = pm,
+                    contentDescription = meta?.title,
+                    style = rememberPosterStyle(),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .heroPoster(heroKey),
+                )
+            }
             }
             IconButton(onClick = onBack, modifier = Modifier.align(Alignment.TopStart).padding(4.dp)) {
                 Icon(
@@ -6797,15 +6801,17 @@ private fun Hero(
                 .fillMaxWidth()
                 .height(214.dp),
         ) {
-            PosterArt(
-                model = image.first,
-                contentDescription = meta?.title,
-                style = rememberPosterStyle(),
-                contentScale = ContentScale.Crop,
-                imageAlignment = if (image.second) Artwork.CINEMA_ALIGNMENT else Alignment.TopCenter,
-                modifier = Modifier.fillMaxSize(),
-                onImageError = { heroBackdropDead = true; tmdbHeaderDead = true },
-            )
+            androidx.compose.animation.Crossfade(targetState = image, label = "heroSide") { img ->
+                PosterArt(
+                    model = img.first,
+                    contentDescription = meta?.title,
+                    style = rememberPosterStyle(),
+                    contentScale = ContentScale.Crop,
+                    imageAlignment = if (img.second) Artwork.CINEMA_ALIGNMENT else Alignment.TopCenter,
+                    modifier = Modifier.fillMaxSize(),
+                    onImageError = { heroBackdropDead = true; tmdbHeaderDead = true },
+                )
+            }
             Box(
                 Modifier
                     .fillMaxSize()
@@ -6828,14 +6834,16 @@ private fun Hero(
                     .fillMaxHeight(0.78f)
                     .aspectRatio(2f / 3f)
             ) {
-            PosterArt(
-                model = posterModel ?: image.first,
-                contentDescription = null,
-                style = rememberPosterStyle(),
-                modifier = Modifier
-                    .fillMaxSize()
-                    .heroPoster(heroKey),
-            )
+            androidx.compose.animation.Crossfade(targetState = posterModel ?: image.first, label = "heroSidePoster") { pm ->
+                PosterArt(
+                    model = pm,
+                    contentDescription = null,
+                    style = rememberPosterStyle(),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .heroPoster(heroKey),
+                )
+            }
             }
             IconButton(onClick = onBack, modifier = Modifier.align(Alignment.TopEnd).padding(4.dp)) {
                 Icon(
@@ -6851,12 +6859,14 @@ private fun Hero(
                 .fillMaxWidth()
                 .aspectRatio(16f / 9f)
         ) {
-            HeroArtwork(
-                model = image.first,
-                wide = image.second,
-                modifier = Modifier.fillMaxSize(),
-                onFinalError = { heroBackdropDead = true; tmdbHeaderDead = true },
-            )
+            androidx.compose.animation.Crossfade(targetState = image, label = "heroWide") { img ->
+                HeroArtwork(
+                    model = img.first,
+                    wide = img.second,
+                    modifier = Modifier.fillMaxSize(),
+                    onFinalError = { heroBackdropDead = true; tmdbHeaderDead = true },
+                )
+            }
             Box(
                 Modifier
                     .fillMaxSize()
