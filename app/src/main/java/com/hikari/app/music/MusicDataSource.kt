@@ -80,6 +80,9 @@ class MusicDataSource(private val upstream: DataSource) : DataSource {
     /** Requests in a row that ended without a single byte. */
     private var emptyChunks = 0
 
+    /** Bytes handed to the player since this open: above 0 the player already has music buffered. */
+    private var delivered = 0L
+
     /** Counts the requests of this song, sent as `rn` like NewPipe does. */
     private var requestNo = 0
 
@@ -158,6 +161,7 @@ class MusicDataSource(private val upstream: DataSource) : DataSource {
             }
             position += n
             chunkRead += n
+            delivered += n
             return n
         }
     }
@@ -189,22 +193,27 @@ class MusicDataSource(private val upstream: DataSource) : DataSource {
         }
         // Step 1: this address, both range forms, big size then 1 MB.
         var failure: IOException = tryOpen(uri, want) ?: return
-        // Step 2: a brand-new address, made by another YouTube client than the one that just failed.
-        if (mayNeedNewAddress(failure) && !freshTried) {
+        // Step 2: a brand-new address. In the middle of a song the player still has a minute or so of
+        // music buffered, so this keeps asking (every few seconds, for up to RECOVER_MS) instead of
+        // giving up after one try: YouTube's answers come and go (a "not a bot" check that passes the
+        // next time, a connection that fails once), and the music keeps playing meanwhile.
+        val patient = delivered > 0L
+        if (mayNeedNewAddress(failure) && (patient || !freshTried)) {
             freshTried = true
-            Logs.log(TAG, "address refused (" + describe(failure) + ") for $songId at byte $position, asking for a new one")
-            closeChunk()
-            MusicApi.invalidate(songId)
-            val url = resolve(songId)
-            val fresh = Uri.parse(url)
-            baseUri = fresh
-            headers = mapOf("User-Agent" to MusicApi.userAgentFor(url))
-            viaParam = true
-            chunkSize = CHUNK_BIG
-            val size = lengthInUrl(fresh)
-            if (size > 0L) endExclusive = size
-            val again = tryOpen(fresh, nextChunkSize().coerceAtLeast(1L)) ?: return
-            failure = again
+            val giveUpAt = System.currentTimeMillis() + RECOVER_MS
+            var round = 0
+            while (true) {
+                round += 1
+                Logs.log(TAG, "address refused (" + describe(failure) + ") for $songId at byte $position, asking for a new one (round $round)")
+                val again = tryFreshAddress() ?: return
+                failure = again
+                val keepTrying = patient && System.currentTimeMillis() < giveUpAt &&
+                    (mayNeedNewAddress(failure) || failure is FileNotFoundException)
+                if (!keepTrying) break
+                pause(RECOVER_PAUSE_MS)
+            }
+            // No address at all (or none for this very file): nothing is left to read from.
+            if (failure is FileNotFoundException) throw failure
         }
         // Step 3: one plain read from this byte to the end, the way a phone plays it.
         val current = baseUri ?: uri
@@ -216,6 +225,47 @@ class MusicDataSource(private val upstream: DataSource) : DataSource {
             closeChunk()
         }
         throw failure
+    }
+
+    /**
+     * Asks for a brand-new address (made by another YouTube client than the one that just failed when
+     * there is one) and opens the chunk on it: null when that worked, otherwise why it did not.
+     * A new address is only used when it is the SAME file: bytes of another file (another source,
+     * another encoding) in the middle of the stream would play as noise.
+     */
+    private fun tryFreshAddress(): IOException? {
+        closeChunk()
+        MusicApi.invalidate(songId)
+        val url = try {
+            resolve(songId)
+        } catch (e: FileNotFoundException) {
+            return e
+        }
+        val fresh = Uri.parse(url)
+        val host = fresh.host.orEmpty().lowercase()
+        val size = lengthInUrl(fresh)
+        val sameFile = (host.endsWith("googlevideo.com") || host.endsWith("youtube.com")) &&
+            (size <= 0L || endExclusive == UNSET || size == endExclusive)
+        if (!sameFile) {
+            Logs.log(TAG, "new address for $songId is not the same file, not used")
+            return FileNotFoundException("No matching stream for $songId")
+        }
+        baseUri = fresh
+        headers = mapOf("User-Agent" to MusicApi.userAgentFor(url))
+        viaParam = true
+        chunkSize = CHUNK_BIG
+        if (size > 0L) endExclusive = size
+        return tryOpen(fresh, nextChunkSize().coerceAtLeast(1L))
+    }
+
+    /** Waits [ms] on the loading thread; a song thrown away by the player stops the wait at once. */
+    private fun pause(ms: Long) {
+        try {
+            Thread.sleep(ms)
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw InterruptedIOException("cancelled while waiting for a new address")
+        }
     }
 
     /** Opens one request through the ladder; null when it worked, otherwise why it did not. */
@@ -368,8 +418,11 @@ class MusicDataSource(private val upstream: DataSource) : DataSource {
         e is RangeIgnored ||
             (e is HttpDataSource.InvalidResponseCodeException && deadAddress(e.responseCode))
 
-    private fun describe(e: IOException): String =
-        if (e is HttpDataSource.InvalidResponseCodeException) e.responseCode.toString() else "range ignored"
+    private fun describe(e: IOException): String = when (e) {
+        is HttpDataSource.InvalidResponseCodeException -> e.responseCode.toString()
+        is RangeIgnored -> "range ignored"
+        else -> e.message ?: "no address"
+    }
 
     private fun resolve(id: String): String =
         try {
@@ -399,6 +452,7 @@ class MusicDataSource(private val upstream: DataSource) : DataSource {
         viaParam = true
         chunkSize = CHUNK_BIG
         emptyChunks = 0
+        delivered = 0L
         requestNo = 0
     }
 
@@ -416,5 +470,15 @@ class MusicDataSource(private val upstream: DataSource) : DataSource {
 
         /** The smaller size tried when the big one is refused. */
         const val CHUNK_SMALL = 1024L * 1024L
+
+        /**
+         * How long a song that is already playing keeps asking for a new address when its next piece
+         * is refused. The player has about a minute of music buffered, so the song does not stop
+         * while this runs; it has to end before that buffer does.
+         */
+        const val RECOVER_MS = 40_000L
+
+        /** Pause between two of those asks. */
+        const val RECOVER_PAUSE_MS = 1_500L
     }
 }

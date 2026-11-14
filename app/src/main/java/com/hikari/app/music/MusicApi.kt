@@ -614,8 +614,19 @@ object MusicApi {
         val numeric: String,
         val version: String,
         val ua: String,
+        /** True: the request says it comes from a page that embeds the video (needs `thirdParty`). */
+        val embed: Boolean = false,
         val extra: JSONObject.() -> Unit,
     )
+
+    /**
+     * YouTube's "visitor" id. Every answer carries one, even a "Sign in to confirm you're not a bot"
+     * answer. Asking again with it is what makes YouTube treat the second request as coming from the
+     * same ordinary visitor instead of a nameless one, which is what clears that bot check on many
+     * networks. Shared by every quick request.
+     */
+    @Volatile
+    private var visitorData: String? = null
 
     private val quickClients: List<QuickClient> by lazy {
         listOf(
@@ -657,6 +668,15 @@ object MusicApi {
                 put("deviceMake", "Apple"); put("deviceModel", "iPhone16,2")
                 put("osName", "iPhone"); put("osVersion", "18.3.2.22D82")
             },
+            // One more client that does not need a proof-of-origin token. When it gives no plain
+            // address the log says so and nothing else changes.
+            QuickClient(
+                "TVHTML5_SIMPLY_EMBEDDED_PLAYER", "85", "2.0",
+                "Mozilla/5.0 (PlayStation; PlayStation 4/12.00) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.4 Safari/605.1.15",
+                true,
+            ) {
+                put("clientScreen", "EMBED")
+            },
         )
     }
 
@@ -666,7 +686,12 @@ object MusicApi {
      * the same job, and a television's slow processor can spend minutes on that).
      * Returns null whenever anything is off; the reason is written to the log.
      */
-    private fun quickAudioUrlWith(id: String, c: QuickClient): String? {
+    private fun quickAudioUrlWith(
+        id: String,
+        c: QuickClient,
+        visitor: String? = visitorData,
+        retried: Boolean = false,
+    ): String? {
         val client = JSONObject()
             .put("clientName", c.name)
             .put("clientVersion", c.version)
@@ -675,9 +700,14 @@ object MusicApi {
             .put("gl", "US")
             .put("timeZone", "UTC")
             .put("utcOffsetMinutes", 0)
+        if (!visitor.isNullOrBlank()) client.put("visitorData", visitor)
         c.extra(client)
+        val context = JSONObject().put("client", client)
+        if (c.embed) {
+            context.put("thirdParty", JSONObject().put("embedUrl", "https://www.youtube.com/watch?v=" + id))
+        }
         val body = JSONObject()
-            .put("context", JSONObject().put("client", client))
+            .put("context", context)
             .put("videoId", id)
             .put("contentCheckOk", true)
             .put("racyCheckOk", true)
@@ -688,12 +718,12 @@ object MusicApi {
                     JSONObject().put("html5Preference", "HTML5_PREF_WANTS"),
                 ),
             )
-        val headers = mapOf(
-            "User-Agent" to c.ua,
-            "X-YouTube-Client-Name" to c.numeric,
-            "X-YouTube-Client-Version" to c.version,
-            "Origin" to "https://www.youtube.com",
-        )
+        val headers = HashMap<String, String>()
+        headers["User-Agent"] = c.ua
+        headers["X-YouTube-Client-Name"] = c.numeric
+        headers["X-YouTube-Client-Version"] = c.version
+        headers["Origin"] = "https://www.youtube.com"
+        if (!visitor.isNullOrBlank()) headers["X-Goog-Visitor-Id"] = visitor
         val tag = c.name + " " + c.version
         val text = Http.request(
             "POST",
@@ -708,12 +738,22 @@ object MusicApi {
             reply.body?.string().orEmpty()
         }
         val root = JSONObject(text)
+        // Remember the visitor id YouTube hands out (the first one is kept).
+        val issued = root.o("responseContext")?.optString("visitorData").orEmpty()
+        if (issued.isNotBlank() && visitorData == null) visitorData = issued
         val status = root.o("playabilityStatus")?.optString("status").orEmpty()
         if (status != "OK") {
             Logs.log(
                 TAG,
                 "quick $tag: " + status + " " + root.o("playabilityStatus")?.optString("reason").orEmpty() + " for " + id,
             )
+            // "Sign in to confirm you're not a bot" often goes away when the same request is sent
+            // again with the visitor id YouTube just gave out.
+            val known = visitorData
+            if (status == "LOGIN_REQUIRED" && !retried && !known.isNullOrBlank() && known != visitor) {
+                Logs.log(TAG, "quick $tag: asking again with the visitor id for $id")
+                return quickAudioUrlWith(id, c, known, true)
+            }
             return null
         }
         val formats = root.o("streamingData")?.a("adaptiveFormats")
@@ -746,6 +786,40 @@ object MusicApi {
         ).use { it.code in 200..299 }
     } catch (e: Exception) {
         false
+    }
+
+    private val contentLengthInUrl = Regex("[?&]clen=(\\d+)")
+
+    /** YouTube answers the first megabyte of an address that needs a proof-of-origin token and refuses the rest. */
+    private const val FIRST_MEGABYTE = 1_048_576L
+
+    /** The answer code of one 2-byte read at [from]; -1 when the request itself failed (no network, timeout). */
+    private fun codeOfRead(url: String, ua: String, rangeHeader: String?): Int = try {
+        val headers = HashMap<String, String>()
+        headers["User-Agent"] = ua
+        if (rangeHeader != null) headers["Range"] = rangeHeader
+        Http.request("GET", url, null, headers).use { it.code }
+    } catch (e: Exception) {
+        -1
+    }
+
+    /**
+     * False when [url] serves the first megabyte but REFUSES everything after it. That is the "song
+     * stops at 1:04" address: 1 MB of 128 kbit/s AAC is 1:04, and a YouTube client without a
+     * proof-of-origin token (IOS here) gets exactly that and a 403 for the rest. A probe of the first
+     * two bytes cannot tell, so this reads two bytes just after the first megabyte, in both of the
+     * ways the player asks for a range. A network error says nothing about the address, so it
+     * counts as "fine".
+     */
+    private fun streamsPastFirstMegabyte(url: String, ua: String): Boolean {
+        val size = contentLengthInUrl.find(url)?.groupValues?.get(1)?.toLongOrNull() ?: return true
+        val from = FIRST_MEGABYTE
+        if (size <= from + 2L) return true
+        val viaParam = codeOfRead(url + "&range=" + from + "-" + (from + 1L) + "&rn=1", ua, null)
+        if (viaParam in 200..299 || viaParam == 416) return true
+        val viaHeader = codeOfRead(url, ua, "bytes=" + from + "-" + (from + 1L))
+        if (viaHeader in 200..299 || viaHeader == 416) return true
+        return viaParam < 0 || viaHeader < 0
     }
 
     /** The User-Agent a stream address expects (it depends on which YouTube client made it). */
@@ -851,7 +925,21 @@ object MusicApi {
     /** How long the quick requests get to themselves before the slow NewPipe run starts alongside them. */
     private const val NEWPIPE_HEAD_START_MS = 2_500L
 
-    private class Hit(val url: String?, val ua: String, val label: String)
+    private class Hit(
+        val url: String?,
+        val ua: String,
+        val label: String,
+        /** The YouTube client that made the address (the `name` of its [QuickClient]). */
+        val client: String = "",
+        /** False: the address only serves the first megabyte (about 1:04 of the song). */
+        val whole: Boolean = true,
+    )
+
+    /** A limited address is only used when nothing else exists: how long to wait for a better one. */
+    private const val LIMITED_GRACE_MS = 5_000L
+
+    /** An address from the client that failed last time: how long to wait for a different client's address. */
+    private const val SOFT_GRACE_MS = 3_000L
 
     /**
      * Television lookup. Every YouTube client asks at the SAME time (one failing or slow client no
@@ -865,43 +953,59 @@ object MusicApi {
     private fun resolveTelevision(id: String, song: MSong?, now: Long): String {
         val attempt = attempts[id] ?: 0
         val hit = raceYoutube(id, attempt)
+        if (hit != null && hit.url != null && hit.whole) return acceptHit(id, hit, hit.url, now, attempt)
         if (hit != null && hit.url != null) {
-            if (uaByUrl.size > 300) uaByUrl.clear()
-            uaByUrl[hit.url] = hit.ua
-            lastVx = null
-            lastSource = "YouTube"
-            streamCache[id] = Resolved(hit.url, now + 5L * 60 * 60 * 1000)
-            Logs.log(
-                TAG,
-                "tv stream ready for " + id + " from " + hit.label + " in " + (System.currentTimeMillis() - now) + "ms (try " + (attempt + 1) + ")",
-            )
-            return hit.url
+            Logs.log(TAG, "tv: YouTube only gave an address that stops after the first minute for " + id + " (try " + (attempt + 1) + ")")
+        } else {
+            Logs.log(TAG, "tv: YouTube gave no stream for " + id + " (try " + (attempt + 1) + ")")
         }
-        Logs.log(TAG, "tv: YouTube gave no stream for " + id + " (try " + (attempt + 1) + ")")
         if (song != null && song.title.isNotBlank()) {
             jioFor(id, song, now)?.let { return it }
         }
+        // Last resort: an address that plays the first minute only. Better than nothing at all.
+        if (hit != null && hit.url != null) return acceptHit(id, hit, hit.url, now, attempt)
         throw IOException("No audio stream for this song")
+    }
+
+    private fun acceptHit(id: String, hit: Hit, url: String, now: Long, attempt: Int): String {
+        if (uaByUrl.size > 300) uaByUrl.clear()
+        uaByUrl[url] = hit.ua
+        lastVx = null
+        lastSource = "YouTube"
+        // An address that stops after the first megabyte is not kept for long, so the next lookup
+        // of the song goes looking for a better one again.
+        val keepMs = if (hit.whole) 5L * 60 * 60 * 1000 else 20_000L
+        streamCache[id] = Resolved(url, now + keepMs)
+        Logs.log(
+            TAG,
+            "tv stream ready for " + id + " from " + hit.label + " in " + (System.currentTimeMillis() - now) + "ms (try " + (attempt + 1) + ")" +
+                (if (hit.whole) "" else ", first minute only"),
+        )
+        return url
     }
 
     private fun raceYoutube(id: String, attempt: Int): Hit? {
         val results = java.util.concurrent.LinkedBlockingQueue<Hit>()
         val finished = java.util.concurrent.atomic.AtomicBoolean(false)
         val quickDone = java.util.concurrent.atomic.AtomicInteger(0)
-        // A retry skips the YouTube client whose address just failed (when another one is left).
+        // The client whose address failed last time. It still asks (a new address from it is better
+        // than no address at all), but an address from another client is preferred over it.
         val bad = badClient[id]
-        val clients = quickClients.filter { bad == null || !it.name.equals(bad, ignoreCase = true) }
-            .ifEmpty { quickClients }
+        val clients = quickClients
         for (c in clients) {
             kotlin.concurrent.thread(start = true, isDaemon = true, name = "music-quick") {
                 val label = c.name + " " + c.version
-                var hit = Hit(null, c.ua, label)
+                var hit = Hit(null, c.ua, label, c.name)
                 try {
                     if (!finished.get()) {
                         val u = quickAudioUrlWith(id, c)
                         if (u != null && !finished.get()) {
                             if (probeUrl(u, c.ua)) {
-                                hit = Hit(u, c.ua, label)
+                                // ANDROID_VR addresses play the whole song. Every other client's address
+                                // must prove it serves more than the first megabyte.
+                                val whole = c.name == "ANDROID_VR" || streamsPastFirstMegabyte(u, c.ua)
+                                if (!whole) Logs.log(TAG, "quick stream from $label stops after the first megabyte for $id")
+                                hit = Hit(u, c.ua, label, c.name, whole)
                             } else {
                                 Logs.log(TAG, "quick stream from $label was refused for $id")
                             }
@@ -915,7 +1019,7 @@ object MusicApi {
             }
         }
         kotlin.concurrent.thread(start = true, isDaemon = true, name = "music-newpipe") {
-            var hit = Hit(null, "", "NewPipe")
+            var hit = Hit(null, "", "NewPipe", "NewPipe")
             try {
                 val headStart = if (attempt == 0) NEWPIPE_HEAD_START_MS else 0L
                 val begun = System.currentTimeMillis()
@@ -926,27 +1030,43 @@ object MusicApi {
                 }
                 if (!finished.get()) {
                     val u = newPipeUrl(id)
-                    if (u != null) hit = Hit(u, userAgentFor(u), "NewPipe")
+                    if (u != null) {
+                        val ua = userAgentFor(u)
+                        hit = Hit(u, ua, "NewPipe", "NewPipe", streamsPastFirstMegabyte(u, ua))
+                    }
                 }
             } catch (e: Throwable) {
+                // This Android version lacks a method the extractor needs (for example
+                // URLDecoder.decode with a Charset before Android 13): it fails the same way every
+                // time, so it is switched off instead of being asked again.
+                if (e is NoSuchMethodError || e is NoClassDefFoundError) newPipeState = 2
                 Logs.log(TAG, "newpipe failed: " + e.message)
             }
             results.add(hit)
         }
         val total = clients.size + 1
-        var winner: Hit? = null
+        // The best address so far: one that plays the whole song beats one that stops after a minute.
+        var best: Hit? = null
         val deadline = System.currentTimeMillis() + TV_LOOKUP_MS
+        var waitUntil = deadline
         try {
             var seen = 0
             while (seen < total) {
-                val left = deadline - System.currentTimeMillis()
+                val left = waitUntil - System.currentTimeMillis()
                 if (left <= 0) break
                 val r = results.poll(left, java.util.concurrent.TimeUnit.MILLISECONDS) ?: break
                 seen++
-                if (r.url != null) {
-                    winner = r
+                if (r.url == null) continue
+                val sameAsBad = bad != null && r.client.equals(bad, ignoreCase = true)
+                if (r.whole && !sameAsBad) {
+                    best = r
                     break
                 }
+                val current = best
+                if (current == null || (r.whole && !current.whole)) best = r
+                // Give the others a moment, then take what there is.
+                val grace = if (r.whole) SOFT_GRACE_MS else LIMITED_GRACE_MS
+                waitUntil = minOf(waitUntil, System.currentTimeMillis() + grace)
             }
         } catch (e: InterruptedException) {
             // The player threw this song away (the person picked another one): stop at once.
@@ -955,7 +1075,7 @@ object MusicApi {
             throw java.io.InterruptedIOException("stream lookup cancelled")
         }
         finished.set(true)
-        return winner
+        return best
     }
 
     /** NewPipe's own lookup. Prefers AAC (audio/mp4), which every television decodes. */
