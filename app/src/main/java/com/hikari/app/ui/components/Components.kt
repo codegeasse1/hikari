@@ -1,4 +1,8 @@
 package com.hikari.app.ui.components
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.hikari.app.i18n.tr
 import com.hikari.app.i18n.I18n
 
@@ -688,6 +692,19 @@ fun AutoScrollPosterRow(
         val offset = remember(cards, reverse) { Animatable(if (reverse) 1f else 0f) }
         var paused by remember(cards) { mutableStateOf(false) }
         val pausedNow by rememberUpdatedState(paused)
+        // Butter: freeze the marquee when the app isn't visible. The glide
+        // loop below would otherwise keep animating (and redrawing) behind
+        // other apps or with the screen off, stealing GPU + battery.
+        val lifecycle = LocalLifecycleOwner.current.lifecycle
+        var resumed by remember(cards) { mutableStateOf(true) }
+        DisposableEffect(lifecycle, cards) {
+            val observer = LifecycleEventObserver { _, event ->
+                resumed = event.targetState.isAtLeast(Lifecycle.State.STARTED)
+            }
+            lifecycle.addObserver(observer)
+            onDispose { lifecycle.removeObserver(observer) }
+        }
+        val resumedNow by rememberUpdatedState(resumed)
         LaunchedEffect(stripPx, speedPx, reverse) {
             val span = stripPx / copies.toFloat()
             if (span <= 0f) return@LaunchedEffect
@@ -697,6 +714,10 @@ fun AutoScrollPosterRow(
             // because the gesture scope below forbids delay()).
             var coolDown = false
             while (isActive) {
+                if (!resumedNow) {
+                    delay(500)
+                    continue
+                }
                 if (pausedNow) {
                     coolDown = true
                     delay(120)
