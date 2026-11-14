@@ -770,6 +770,7 @@ object MusicApi {
     /** Changing quality must re-resolve; cached YouTube URLs would otherwise stick. */
     fun clearStreamCache() {
         streamCache.clear()
+        VxLosslessApi.resetProbe()
         skipPremium.clear()
         attempts.clear()
         badClient.clear()
@@ -810,9 +811,11 @@ object MusicApi {
                         )
                     }.getOrNull()
                     if (vx != null) {
-                        lastVx = vx
+                        val flac = vx.mimeType.contains("flac", ignoreCase = true)
+                        lastVx = if (flac) vx else null
                         streamCache[id] = Resolved(vx.url, now + 5L * 60 * 60 * 1000)
-                        lastSource = "FLAC " + vx.bitDepth + "-bit/" + vx.samplingRate + "kHz"
+                        lastSource = if (flac) "FLAC " + vx.bitDepth + "-bit/" + vx.samplingRate + "kHz"
+                            else "Qobuz MP3 320k"
                         Logs.log(TAG, "vx lossless ready for " + id + " (" + vx.bitDepth + "/" + vx.samplingRate + " FLAC q=" + vx.formatId + ")")
                         return vx.url
                     }
