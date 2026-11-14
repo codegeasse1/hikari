@@ -20,8 +20,13 @@ import java.io.InterruptedIOException
  * 1. **Chunked reading of YouTube audio.** googlevideo.com serves a song fine for the first few
  *    hundred kilobytes and then throttles or drops a single long connection, so a song played for
  *    about half a minute and went back to "Loading" for good. Here the song is read as a chain of
- *    1 MB range requests (the way NewPipe and yt-dlp read YouTube), each on a fresh request, and
- *    the player still sees one continuous stream.
+ *    1 MB range requests, each on a fresh request, and the player still sees one continuous stream.
+ *
+ *    The range is sent the way NewPipe does it for YouTube's app addresses: as a `range=start-end`
+ *    query parameter, not as an HTTP `Range` header. The header worked for the first megabyte only;
+ *    the second one was refused, which is why every song stopped after about 1:04 with
+ *    "Couldn't play". If the parameter is ever refused, the header form is tried (and the other
+ *    way round), and whichever works is kept for the rest of the song.
  * 2. **A dead address is replaced on the spot.** If YouTube answers 403 / 404 / 410 (the address
  *    expired or was refused) the song is asked for again, once, and the read carries on from the
  *    same byte, instead of retrying the same dead address until the player gives up.
@@ -54,6 +59,12 @@ class MusicDataSource(private val upstream: DataSource) : DataSource {
     private var eof = false
     private var freshTried = false
 
+    /** True: the byte range goes in the address (`range=`); false: in the `Range` header. */
+    private var viaParam = true
+
+    /** Counts the requests of this song, sent as `rn` like NewPipe does. */
+    private var requestNo = 0
+
     override fun addTransferListener(transferListener: TransferListener) {
         upstream.addTransferListener(transferListener)
     }
@@ -83,6 +94,12 @@ class MusicDataSource(private val upstream: DataSource) : DataSource {
         headers = hdr
         position = dataSpec.position
         endExclusive = if (dataSpec.length != UNSET) dataSpec.position + dataSpec.length else UNSET
+        if (endExclusive == UNSET) {
+            // YouTube puts the file size in the address (clen=...). A ranged answer made with the
+            // `range=` parameter has no Content-Range header, so this is where the size comes from.
+            val size = lengthInUrl(uri)
+            if (size > 0L) endExclusive = size
+        }
         openChunk()
         opened = true
         return if (endExclusive != UNSET) endExclusive - dataSpec.position else UNSET
@@ -118,7 +135,11 @@ class MusicDataSource(private val upstream: DataSource) : DataSource {
 
     override fun close() {
         try {
-            if (opened || chunkOpen) upstream.close()
+            // Always closed: after a failed open the wrapped source may still hold a half-open
+            // connection, and the player's retry opens this same object again.
+            upstream.close()
+        } catch (e: IOException) {
+            // nothing left to release
         } finally {
             reset()
         }
@@ -134,15 +155,9 @@ class MusicDataSource(private val upstream: DataSource) : DataSource {
             return
         }
         try {
-            openChunkAt(uri, want)
+            openWithEitherForm(uri, want)
         } catch (e: HttpDataSource.InvalidResponseCodeException) {
             val code = e.responseCode
-            if (code == 416) {
-                // Asked for bytes past the end of the file: that is the end of the song.
-                eof = true
-                chunkOpen = false
-                return
-            }
             if (!deadAddress(code) || freshTried) throw e
             // The address expired or was refused: ask for a new one once and go on from the same byte.
             freshTried = true
@@ -153,21 +168,59 @@ class MusicDataSource(private val upstream: DataSource) : DataSource {
             val fresh = Uri.parse(url)
             baseUri = fresh
             headers = mapOf("User-Agent" to MusicApi.userAgentFor(url))
-            openChunkAt(fresh, nextChunkSize().coerceAtLeast(1L))
+            viaParam = true
+            openWithEitherForm(fresh, nextChunkSize().coerceAtLeast(1L))
         }
     }
 
-    private fun openChunkAt(uri: Uri, want: Long) {
+    /**
+     * Opens one chunk the preferred way and, if the server refuses that, the other way.
+     * Whichever form works becomes the preferred one for the rest of the song.
+     */
+    private fun openWithEitherForm(uri: Uri, want: Long) {
+        val preferred = viaParam
+        var refused: HttpDataSource.InvalidResponseCodeException? = null
+        for (form in booleanArrayOf(preferred, !preferred)) {
+            try {
+                openChunkAt(uri, want, form)
+                if (form != preferred) {
+                    Logs.log(TAG, "range " + (if (form) "parameter" else "header") + " accepted for $songId at byte $position")
+                }
+                viaParam = form
+                return
+            } catch (e: HttpDataSource.InvalidResponseCodeException) {
+                closeChunk()
+                if (e.responseCode == 416) {
+                    // Asked for bytes past the end of the file: that is the end of the song.
+                    eof = true
+                    return
+                }
+                Logs.log(TAG, "chunk at byte $position refused (" + e.responseCode + ", " + (if (form) "parameter" else "header") + ")")
+                refused = e
+            }
+        }
+        throw refused ?: IOException("chunk refused")
+    }
+
+    private fun openChunkAt(uri: Uri, want: Long, asParam: Boolean) {
         val original = spec ?: throw IOException("no request")
-        val chunk = original.buildUpon()
-            .setUri(uri)
-            .setPosition(position)
-            .setLength(want)
+        val builder = original.buildUpon()
             .setHttpRequestHeaders(headers)
-            .build()
+            // Plain bytes, so the answer's length is exact.
+            .setFlags(original.flags and DataSpec.FLAG_ALLOW_GZIP.inv())
+        if (asParam) {
+            requestNo += 1
+            val target = uri.buildUpon()
+                .appendQueryParameter("range", position.toString() + "-" + (position + want - 1L))
+                .appendQueryParameter("rn", requestNo.toString())
+                .build()
+            builder.setUri(target).setPosition(0L).setLength(UNSET)
+        } else {
+            builder.setUri(uri).setPosition(position).setLength(want)
+        }
         chunkWant = want
         chunkRead = 0L
-        upstream.open(chunk)
+        upstream.open(builder.build())
         chunkOpen = true
         if (endExclusive == UNSET) {
             val total = totalSize(upstream.responseHeaders)
@@ -202,6 +255,10 @@ class MusicDataSource(private val upstream: DataSource) : DataSource {
         return UNSET
     }
 
+    /** The file size YouTube writes into its stream addresses ("clen=3451023"), or [UNSET]. */
+    private fun lengthInUrl(uri: Uri): Long =
+        uri.getQueryParameter("clen")?.toLongOrNull()?.takeIf { it > 0L } ?: UNSET
+
     private fun deadAddress(code: Int): Boolean = code == 403 || code == 404 || code == 410 || code == 401
 
     private fun resolve(id: String): String =
@@ -228,6 +285,8 @@ class MusicDataSource(private val upstream: DataSource) : DataSource {
         chunkRead = 0L
         eof = false
         freshTried = false
+        viaParam = true
+        requestNo = 0
     }
 
     private companion object {
