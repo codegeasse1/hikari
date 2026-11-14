@@ -45,6 +45,10 @@ object Artwork {
 
     /** Grid/row cell model: the item's own art, else the art we looked up. */
     fun model(item: MediaItem): Any? {
+        // Butter: warm the TMDB entry the moment a row paints its own art,
+        // so the detail header's TMDB art is usually resolved before the tap.
+        // Single-flight + memory-checked, so repeats are nearly free.
+        prefetch(item)
         val mangaPid = item.providerId
             .takeIf { com.hikari.app.manga.MangaExtensionManager.isMangaProviderId(it) }
         if (mangaPid != null) {
