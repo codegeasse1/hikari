@@ -37,13 +37,9 @@ object VxJioSaavnApi {
                 val score = score(title, artist, durationSec, song, pa, o.optString("duration").toIntOrNull())
                 if (score != null && score > bestScore) { bestScore = score; best = enc }
             }
-            // Fallback: first encrypted url even without score (keeps Indian catalog working).
-            if (best == null) {
-                for (i in 0 until arr.length()) {
-                    val e = arr.optJSONObject(i)?.optString("encrypted_media_url").orEmpty()
-                    if (e.isNotBlank()) { best = e; break }
-                }
-            }
+            // NO "first result" fallback: when nothing matches the requested song, return null so the
+            // caller falls back to YouTube (the exact video). Guessing here played a random Hindi song
+            // for songs whose title is not Latin (Russian, Arabic, ...).
             if (best == null) return null
             val dec = decrypt(best) ?: return null
             val finalUrl = dec.replace(Regex("""_96(?:_p)?\.mp4"""), "_320.mp4")
@@ -57,19 +53,28 @@ object VxJioSaavnApi {
         }
     }
 
+    /** Lower-case, accents removed, any script kept (Cyrillic, Devanagari, Arabic, CJK ...). */
     private fun norm(s: String): String =
         Normalizer.normalize(s.lowercase(Locale.ROOT), Normalizer.Form.NFD)
-            .replace(Regex("\\p{M}+"), "").replace(Regex("[^a-z0-9]+"), " ").trim()
+            .replace(Regex("\\p{M}+"), "")
+            .replace(Regex("[^\\p{L}\\p{N}]+"), " ")
+            .trim()
+
+    private fun tokens(s: String): Set<String> =
+        norm(s).split(' ').filter { it.length >= 2 }.toSet()
 
     private fun score(t: String, a: String, dur: Int?, cs: String, ca: String, cdur: Int?): Int? {
         val tt = norm(t); val ct = norm(cs)
         if (tt.isBlank() || ct.isBlank()) return null
         if (tt != ct && !(tt.contains(ct) || ct.contains(tt))) return null
-        if (dur != null && dur > 0 && cdur != null && cdur > 0 && kotlin.math.abs(dur - cdur) > 15) return null
+        if (dur != null && dur > 0 && cdur != null && cdur > 0 && kotlin.math.abs(dur - cdur) > 10) return null
         var s = 1000
+        if (tt == ct) s += 200
         if (a.isNotBlank() && ca.isNotBlank()) {
-            val na = norm(a); val nca = norm(ca)
-            if (nca.contains(na) || na.contains(nca)) s += 300
+            val na = tokens(a); val nca = tokens(ca)
+            // Same title but a different artist is a different song.
+            if (na.isNotEmpty() && nca.isNotEmpty() && na.intersect(nca).isEmpty()) return null
+            s += 300
         }
         return s
     }

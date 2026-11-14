@@ -252,13 +252,28 @@ object MusicPlayer {
         }
     }
 
+    /**
+     * Throws the current song's loader away and starts it again from the same spot.
+     * Plain prepare() only works from the IDLE (error) state; while the song sits on "Loading"
+     * (BUFFERING) it does nothing, so the old stall retry never actually asked for a new address.
+     */
+    private fun restartCurrent() {
+        val p = exo ?: return
+        val idx = p.currentMediaItemIndex
+        val pos = p.currentPosition.coerceAtLeast(0L)
+        p.stop()
+        p.seekTo(idx, pos)
+        p.prepare()
+        p.play()
+    }
+
     private fun handleError() {
         val p = exo ?: return
         val id = p.currentMediaItem?.mediaId ?: return
         MusicApi.invalidate(id)
         if (retried.add(id)) {
             // First failure: the saved stream address may simply have expired. Ask again.
-            p.prepare()
+            restartCurrent()
             return
         }
         _state.value = _state.value.copy(error = "Couldn't play this song")
@@ -266,6 +281,9 @@ object MusicPlayer {
             p.seekToNextMediaItem()
             p.prepare()
             p.play()
+        } else {
+            p.stop()
+            publish()
         }
     }
 

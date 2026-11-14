@@ -578,29 +578,72 @@ object MusicApi {
         skipPremium.add(id)
     }
 
+    private class QuickClient(
+        val name: String,
+        val numeric: String,
+        val version: String,
+        val ua: String,
+        val extra: JSONObject.() -> Unit,
+    )
+
+    private val quickClients: List<QuickClient> by lazy {
+        listOf(
+            QuickClient(
+                "ANDROID_VR", "28", "1.61.48",
+                "com.google.android.apps.youtube.vr.oculus/1.61.48 " +
+                    "(Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip",
+            ) {
+                put("deviceMake", "Oculus"); put("deviceModel", "Quest 3")
+                put("androidSdkVersion", 32); put("osName", "Android"); put("osVersion", "12L")
+            },
+            QuickClient(
+                "ANDROID_VR", "28", "1.65.10",
+                "com.google.android.apps.youtube.vr.oculus/1.65.10 " +
+                    "(Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip",
+            ) {
+                put("deviceMake", "Oculus"); put("deviceModel", "Quest 3")
+                put("androidSdkVersion", 32); put("osName", "Android"); put("osVersion", "12L")
+            },
+            QuickClient(
+                "IOS", "5", "20.10.4",
+                "com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)",
+            ) {
+                put("deviceMake", "Apple"); put("deviceModel", "iPhone16,2")
+                put("osName", "iPhone"); put("osVersion", "18.3.2.22D82")
+            },
+        )
+    }
+
     /**
-     * One plain request to YouTube's player endpoint as the VR client, which hands back direct
-     * audio addresses with nothing to decode. NewPipe has to download and run YouTube's player
-     * script for the same job, and a television's slow processor can spend minutes on that (the
-     * music stays on "Loading"). Returns null whenever anything is off, so the caller falls back
-     * to NewPipe.
+     * One plain request to YouTube's player endpoint (VR client first, then a couple of backups),
+     * which hands back direct audio addresses with nothing to decode. NewPipe has to download and
+     * run YouTube's player script for the same job, and a television's slow processor can spend
+     * minutes on that (the music stays on "Loading"). Every address is test-read (2 bytes) before it
+     * is returned, so a link the server would refuse (403) is never handed to the player.
+     * Returns null whenever anything is off, so the caller falls back to NewPipe.
      */
     private fun quickAudioUrl(id: String): String? {
-        val ua = "com.google.android.apps.youtube.vr.oculus/1.61.48 " +
-            "(Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip"
+        val started = System.currentTimeMillis()
+        for (c in quickClients) {
+            // Whole quick step must stay short: the player's "still loading" timer is the limit.
+            if (System.currentTimeMillis() - started > 14_000L) break
+            val url = runCatching { quickAudioUrlWith(id, c) }.getOrNull() ?: continue
+            if (probeUrl(url, c.ua)) return url
+            Logs.log(TAG, "quick stream from " + c.name + " " + c.version + " was refused for " + id)
+        }
+        return null
+    }
+
+    private fun quickAudioUrlWith(id: String, c: QuickClient): String? {
         val client = JSONObject()
-            .put("clientName", "ANDROID_VR")
-            .put("clientVersion", "1.61.48")
-            .put("deviceMake", "Oculus")
-            .put("deviceModel", "Quest 3")
-            .put("androidSdkVersion", 32)
-            .put("userAgent", ua)
-            .put("osName", "Android")
-            .put("osVersion", "12L")
+            .put("clientName", c.name)
+            .put("clientVersion", c.version)
+            .put("userAgent", c.ua)
             .put("hl", "en")
             .put("gl", "US")
             .put("timeZone", "UTC")
             .put("utcOffsetMinutes", 0)
+        c.extra(client)
         val body = JSONObject()
             .put("context", JSONObject().put("client", client))
             .put("videoId", id)
@@ -614,9 +657,9 @@ object MusicApi {
                 ),
             )
         val headers = mapOf(
-            "User-Agent" to ua,
-            "X-YouTube-Client-Name" to "28",
-            "X-YouTube-Client-Version" to "1.61.48",
+            "User-Agent" to c.ua,
+            "X-YouTube-Client-Name" to c.numeric,
+            "X-YouTube-Client-Version" to c.version,
             "Origin" to "https://www.youtube.com",
         )
         val text = Http.request(
@@ -645,6 +688,16 @@ object MusicApi {
             }
         }
         return best
+    }
+
+    /** Reads the first two bytes of [url]: true only when the server really serves it. */
+    private fun probeUrl(url: String, ua: String): Boolean = try {
+        Http.request(
+            "GET", url, null,
+            mapOf("User-Agent" to ua, "Range" to "bytes=0-1"),
+        ).use { it.code in 200..299 }
+    } catch (e: Exception) {
+        false
     }
 
     /** The User-Agent a stream address expects (it depends on which YouTube client made it). */
@@ -728,22 +781,26 @@ object MusicApi {
                 }
             }
         }
-        // JioSaavn 320k fallback (VxMusic-style) before YouTube — helps Indian catalog.
-        if (premium && song != null && song.title.isNotBlank()) {
-            val jio = runCatching {
-                VxJioSaavnApi.resolveBlocking(song.title, song.artist, song.durationSec.takeIf { it > 0 })
-            }.getOrNull()
-            if (jio != null && jio.url.isNotBlank()) {
-                lastVx = null
-                streamCache[id] = Resolved(jio.url, now + 5L * 60 * 60 * 1000)
-                lastSource = "JioSaavn 320k"
-                Logs.log(TAG, "jio 320k ready for " + id)
-                return jio.url
-            }
+        // JioSaavn 320k (VxMusic-style): PHONE only, and only for an exact title / artist / length
+        // match (see VxJioSaavnApi). Television never uses it: YouTube Music has the song.
+        if (!tv && premium && song != null && song.title.isNotBlank()) {
+            jioFor(id, song, now)?.let { return it }
         }
         lastVx = null
         lastSource = "YouTube"
         return resolveLegacyBlocking(id, tryQuick = !quickTried)
+    }
+
+    private fun jioFor(id: String, song: MSong, now: Long): String? {
+        val jio = runCatching {
+            VxJioSaavnApi.resolveBlocking(song.title, song.artist, song.durationSec.takeIf { it > 0 })
+        }.getOrNull()
+        if (jio == null || jio.url.isBlank()) return null
+        lastVx = null
+        streamCache[id] = Resolved(jio.url, now + 5L * 60 * 60 * 1000)
+        lastSource = "JioSaavn 320k"
+        Logs.log(TAG, "jio 320k ready for " + id)
+        return jio.url
     }
 
     private fun resolveLegacyBlocking(id: String, tryQuick: Boolean = true): String {
