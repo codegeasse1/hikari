@@ -2774,6 +2774,8 @@ private fun HomeHeader(
             Text(
                 tr("Every stream, one place."),
                 style = MaterialTheme.typography.bodyMedium,
+                fontSize = 11.sp,
+                maxLines = 1,
                 color = subtitleColor,
                 modifier = Modifier.padding(horizontal = 8.dp)
             )
