@@ -14,8 +14,8 @@ android {
         applicationId = "com.hikari.app"
         minSdk = 24
        targetSdk = 34
-        versionCode = 492
-        versionName = "0.12.103"
+        versionCode = 493
+        versionName = "0.12.104"
         // CI injects the exact commit SHA the APK was built from, so the
         // in-app update checker can compare it against main's HEAD.
         val gitSha = System.getenv("GIT_SHA") ?: "unknown"
@@ -203,6 +203,11 @@ val cloudstreamCleanJar = tasks.register<org.gradle.api.tasks.bundling.Jar>("clo
         exclude("com/lagradost/cloudstream3/MainActivity.class")
         exclude("com/lagradost/cloudstream3/MainActivity\$*.class")
         exclude("com/lagradost/cloudstream3/databinding/ToastBinding.class")
+        // Host Plugin shadow (see com.lagradost.cloudstream3.plugins.Plugin):
+        // newer plugins read the Compose `$stable` field off the host Plugin
+        // base class and die in <clinit> when the prebuilt jar lacks it.
+        // The jar copy is dropped so it cannot collide with the shadow.
+        exclude("com/lagradost/cloudstream3/plugins/Plugin.class")
     }
     duplicatesStrategy = org.gradle.api.file.DuplicatesStrategy.EXCLUDE
 }
