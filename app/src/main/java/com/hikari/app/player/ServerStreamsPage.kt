@@ -399,6 +399,17 @@ internal class ServerStreamsPage(
 
     fun requestInitialFocus() {
         if (!isTv) return
+        // Reopened mid-playback: land on the server that is playing.
+        val playing = state?.items?.firstOrNull { it.selected }?.index
+        if (playing != null) {
+            for (k in 0 until list.childCount) {
+                val c = list.getChildAt(k)
+                if (c.tag == playing) {
+                    c.requestFocus()
+                    return
+                }
+            }
+        }
         (chipRow.getChildAt(1) ?: refreshBtn).requestFocus()
     }
 

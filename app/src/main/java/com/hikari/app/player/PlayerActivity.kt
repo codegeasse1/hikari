@@ -9473,11 +9473,11 @@ class PlayerActivity : ComponentActivity() {
         // Settings -> Customize -> Server screen style: the "Streams list"
         // look has its own page. Classic (the default) falls through to the
         // page below, untouched.
-        // On TV the start/download chooser always uses the TV page (backdrop,
-        // title block, provider chips and a glass list on the right); the
-        // in-player reopen keeps the translucent sheet over the playing video.
+        // On TV every server chooser (start, download, and the in-player
+        // reopen from the Source button) uses the TV page: backdrop, title
+        // block, provider chips and a glass list on the right.
         if (com.hikari.app.player.ServerScreenStyles.isStreams() ||
-            (com.hikari.app.tv.TvMode.isTv && (startMode || forDownload))
+            com.hikari.app.tv.TvMode.isTv
         ) {
             showServerChooserStreams(startMode, forDownload)
             return
