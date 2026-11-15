@@ -26,7 +26,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
@@ -88,10 +87,43 @@ fun rememberTvSettled(item: MediaItem?, resetKey: Any? = null): MediaItem? {
 }
 
 object TvHomeMetrics {
+    /** Height of the compact header bar (search / provider / profile pills). */
+    private const val HEADER_BAR_DP = 60f
+
+    /** Fixed chrome of two stacked shelves, in dp: the focused shelf's title
+     *  and paddings plus the NEXT shelf's title line. Poster height is solved
+     *  from what is left, so the next shelf's title and the top of its posters
+     *  always show under the focused shelf (the Nuvio "peek"). */
+    private const val SHELF_CHROME_DP = 92f
+
+    /** How much of the next shelf's poster height peeks in under the focused
+     *  shelf (0.40 = the top 40% of its cards). */
+    private const val PEEK_FRACTION = 0.40f
+
+    /** Poster width as a fraction of its height (collapsed card). */
+    const val CARD_ASPECT = 0.68f
+
+    /** Focused card width as a multiple of its height (landscape backdrop). */
+    const val EXPANDED_ASPECT = 1.62f
+
     @Composable
     fun infoHeight(): Dp {
         val h = LocalConfiguration.current.screenHeightDp
-        return (h * 0.44f).coerceIn(196f, 320f).dp
+        return (h * 0.35f).coerceIn(150f, 260f).dp
+    }
+
+    /** True where the info block is short, so the header trims itself. */
+    @Composable
+    fun compactInfo(): Boolean = infoHeight().value < 190f
+
+    /** Poster height for the shelves, sized so ONE full shelf plus the peek of
+     *  the next one fit in the space under the header and the info block. */
+    @Composable
+    fun cardHeight(): Dp {
+        val h = LocalConfiguration.current.screenHeightDp
+        val rowsArea = h - HEADER_BAR_DP - infoHeight().value
+        val solved = (rowsArea - SHELF_CHROME_DP) / (1f + PEEK_FRACTION)
+        return solved.coerceIn(96f, 210f).dp
     }
 }
 
@@ -273,6 +305,7 @@ private fun tvHeroRuntime(minutes: Int?): String? {
 @Composable
 fun TvHomeHeroInfo(item: MediaItem?, modifier: Modifier = Modifier) {
     val ts = TvUi.scale()
+    val compact = TvHomeMetrics.compactInfo()
     var logo by remember(item?.uniqueId) { mutableStateOf<String?>(null) }
     LaunchedEffect(item?.uniqueId) {
         val current = item ?: return@LaunchedEffect
@@ -353,17 +386,17 @@ fun TvHomeHeroInfo(item: MediaItem?, modifier: Modifier = Modifier) {
                     alignment = Alignment.BottomStart,
                     modifier = Modifier
                         .fillMaxWidth(0.68f)
-                        .heightIn(max = 56.dp),
+                        .heightIn(max = if (compact) 42.dp else 54.dp),
                 )
             } else {
                 Text(
                     text = item.title.uppercase(),
                     color = Color.White,
-                    fontSize = 26.sp * ts,
-                    lineHeight = 31.sp * ts,
+                    fontSize = (if (compact) 22.sp else 26.sp) * ts,
+                    lineHeight = (if (compact) 26.sp else 31.sp) * ts,
                     letterSpacing = 1.5.sp,
                     fontWeight = FontWeight.ExtraBold,
-                    maxLines = 2,
+                    maxLines = if (compact) 1 else 2,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
@@ -450,7 +483,7 @@ fun TvHomeHeroInfo(item: MediaItem?, modifier: Modifier = Modifier) {
                     color = Color.White.copy(alpha = 0.88f),
                     fontSize = 12.5.sp * ts,
                     lineHeight = 17.sp * ts,
-                    maxLines = 3,
+                    maxLines = if (compact) 2 else 3,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
@@ -547,16 +580,21 @@ fun TvExpandingMediaRow(
     val uniqueItems = remember(items) { items.distinctBy { it.uniqueId } }
     val itemKeys = remember(uniqueItems) { uniqueItems.map { it.uniqueId } }
     val rowState = keptListState(keeperKey, itemKeys = itemKeys)
+    val cardHeight = TvHomeMetrics.cardHeight()
 
+    // Tight shelf chrome (see TvHomeMetrics.SHELF_CHROME_DP): the title line is
+    // a fixed 28dp strip, so the next shelf's title and poster tops fit on
+    // screen under this one.
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(top = 10.dp, bottom = 6.dp),
+            .padding(top = 8.dp, bottom = 4.dp),
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = 18.dp, end = 14.dp, bottom = 6.dp),
+                .height(28.dp)
+                .padding(start = 18.dp, end = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
@@ -573,26 +611,34 @@ fun TvExpandingMediaRow(
                 modifier = Modifier.weight(1f),
             )
             if (showViewAll && onShowAll != null) {
-                TextButton(onClick = onShowAll) {
-                    Text(
-                        text = tr("Show all"),
-                        color = Color.White.copy(alpha = 0.72f),
-                        fontSize = 12.sp * ts,
-                    )
-                }
+                // A plain focusable label instead of a TextButton: the Material
+                // button forces a 40-48dp touch target, which made every shelf
+                // header tall and pushed the next shelf off screen.
+                Text(
+                    text = tr("Show all"),
+                    color = Color.White.copy(alpha = 0.72f),
+                    fontSize = 12.sp * ts,
+                    maxLines = 1,
+                    modifier = Modifier
+                        .tvFocusRing(8.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable(onClick = onShowAll)
+                        .padding(horizontal = 10.dp, vertical = 3.dp),
+                )
             }
         }
 
         LazyRow(
             state = rowState,
             modifier = Modifier.fillMaxWidth(),
-            contentPadding = PaddingValues(horizontal = 18.dp, vertical = 4.dp),
+            contentPadding = PaddingValues(horizontal = 18.dp, vertical = 3.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             items(uniqueItems, key = { it.uniqueId }) { item ->
                 TvExpandingPosterCard(
                     item = item,
                     scale = ts,
+                    cardHeight = cardHeight,
                     onFocus = { onItemFocus?.invoke(item) },
                     onClick = { onClick(item) },
                     onQuickPlay = onQuickPlay?.let { qp -> { qp(item) } },
@@ -606,18 +652,24 @@ fun TvExpandingMediaRow(
 private fun TvExpandingPosterCard(
     item: MediaItem,
     scale: Float,
+    cardHeight: Dp,
     onFocus: () -> Unit,
     onClick: () -> Unit,
     onQuickPlay: (() -> Unit)?,
 ) {
     var focused by remember { mutableStateOf(false) }
 
+    // Poster-shaped at rest, landscape backdrop while focused; both derive
+    // from the solved card height so they follow the screen size.
     val cardWidth by animateDpAsState(
-        targetValue = if (focused) (268.dp * scale) else (118.dp * scale),
+        targetValue = if (focused) {
+            cardHeight * TvHomeMetrics.EXPANDED_ASPECT
+        } else {
+            cardHeight * TvHomeMetrics.CARD_ASPECT
+        },
         animationSpec = tween(durationMillis = 240),
         label = "tv-card-width",
     )
-    val cardHeight = 176.dp * scale
     val shape = RoundedCornerShape(12.dp)
 
     var tmdbBackdrop by remember(item.uniqueId) { mutableStateOf<String?>(null) }
@@ -680,7 +732,7 @@ private fun TvExpandingPosterCard(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(84.dp)
+                    .height(cardHeight * 0.48f)
                     .align(Alignment.BottomCenter)
                     .background(
                         Brush.verticalGradient(
@@ -699,8 +751,8 @@ private fun TvExpandingPosterCard(
                         contentScale = ContentScale.Fit,
                         alignment = Alignment.BottomStart,
                         modifier = Modifier
-                            .widthIn(max = 170.dp)
-                            .heightIn(max = 38.dp),
+                            .widthIn(max = cardHeight * 0.95f)
+                            .heightIn(max = cardHeight * 0.22f),
                     )
                 } else {
                     Text(
@@ -723,11 +775,11 @@ fun TvHomeBottomFade(modifier: Modifier = Modifier) {
     Box(
         modifier
             .fillMaxWidth()
-            .height(54.dp)
+            .height(30.dp)
             .background(
                 Brush.verticalGradient(
                     0f to Color.Transparent,
-                    1f to bg.copy(alpha = 0.94f),
+                    1f to bg.copy(alpha = 0.80f),
                 )
             )
     )

@@ -496,7 +496,21 @@ fun CatalogScreen(
     val iptvCinema = vm.isIptv
     // Phone cinema cards are 16:9 and need room: two columns, not three.
     val phoneCinema = !isTvCatalog && (iptvCinema || rememberPosterStyle().isCinema(false))
-    val columns = if (isTvCatalog) { val w = LocalConfiguration.current.screenWidthDp; if (w >= 1400) 4 else 3 } else if (phoneCinema) 2 else TvUi.gridColumns(catalogColumnsFor(LocalConfiguration.current.screenWidthDp))
+    // Television: "Show all" cards are the SAME size as the Home shelves' cards
+    // (TvHomeMetrics.cardHeight), not a fixed 3-4 columns that stretch each
+    // poster across a third of the screen. The grid is adaptive on that width
+    // and the card fills its cell, so the cells only grow by the sliver left
+    // over after the last whole column.
+    val tvCinemaCards = rememberPosterStyle().isCinema(true)
+    val tvHomeCardHeight = com.hikari.app.tv.TvHomeMetrics.cardHeight()
+    val tvCardMin: androidx.compose.ui.unit.Dp? = if (isTvCatalog) {
+        if (iptvCinema || tvCinemaCards) tvHomeCardHeight * com.hikari.app.tv.TvHomeMetrics.EXPANDED_ASPECT
+        else tvHomeCardHeight * com.hikari.app.tv.TvHomeMetrics.CARD_ASPECT
+    } else null
+    val columns = if (isTvCatalog) {
+        val usable = LocalConfiguration.current.screenWidthDp - com.hikari.app.tv.TvUi.RAIL_WIDTH.value - 40f
+        ((usable + 14f) / ((tvCardMin?.value ?: 120f) + 14f)).toInt().coerceIn(3, 12)
+    } else if (phoneCinema) 2 else TvUi.gridColumns(catalogColumnsFor(LocalConfiguration.current.screenWidthDp))
     LaunchedEffect(gridState) {
         snapshotFlow {
             val last = gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
@@ -612,7 +626,11 @@ fun CatalogScreen(
         }
         if (items.isEmpty() && loading) {
             Box(Modifier.fillMaxSize()) {
-                CatalogSkeletonGrid(columns = columns, cinema = iptvCinema || rememberPosterStyle().isCinema(com.hikari.app.tv.TvMode.current()))
+                CatalogSkeletonGrid(
+                    columns = columns,
+                    cinema = iptvCinema || rememberPosterStyle().isCinema(com.hikari.app.tv.TvMode.current()),
+                    tvCardMin = tvCardMin,
+                )
                 VerificationNudge(
                     waiting = true,
                     onOpenWebView = openVerify,
@@ -643,7 +661,7 @@ fun CatalogScreen(
                 if (iptvCinema) it.copy(posterType = PosterTypes.CINEMA) else it
             }
             LazyVerticalGrid(
-                columns = GridCells.Fixed(columns),
+                columns = if (tvCardMin != null) GridCells.Adaptive(tvCardMin) else GridCells.Fixed(columns),
                 state = gridState,
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(
@@ -897,7 +915,13 @@ private fun CatalogCard(
 }
 
 @Composable
-private fun CatalogSkeletonGrid(columns: Int, modifier: Modifier = Modifier, cinema: Boolean = com.hikari.app.tv.TvMode.current()) {
+private fun CatalogSkeletonGrid(
+    columns: Int,
+    modifier: Modifier = Modifier,
+    cinema: Boolean = com.hikari.app.tv.TvMode.current(),
+    /** Television: the Home-sized card width, so the skeleton matches the grid. */
+    tvCardMin: androidx.compose.ui.unit.Dp? = null,
+) {
     val transition = rememberInfiniteTransition(label = "catalog-skeleton")
     val pulse by transition.animateFloat(
         initialValue = 0.30f,
@@ -911,7 +935,7 @@ private fun CatalogSkeletonGrid(columns: Int, modifier: Modifier = Modifier, cin
     // Television skeleton boxes read elevated-black (desktop language).
     val tvSkel = com.hikari.app.tv.TvMode.current()
     LazyVerticalGrid(
-        columns = GridCells.Fixed(columns),
+        columns = if (tvCardMin != null) GridCells.Adaptive(tvCardMin) else GridCells.Fixed(columns),
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),

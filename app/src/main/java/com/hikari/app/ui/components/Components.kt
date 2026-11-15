@@ -2198,7 +2198,7 @@ fun ContinueWatchingRow(
         Column(
             Modifier
                 .fillMaxWidth()
-                .padding(top = 22.dp)
+                .padding(top = 8.dp)
         ) {
             Cs3ShelfHeader(
                 title = tr("Continue Watching"),
@@ -2218,7 +2218,7 @@ fun ContinueWatchingRow(
                 } else null,
                 modifier = Modifier.padding(horizontal = 20.dp),
             )
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(4.dp))
             LazyRow(
                 state = tvRowState,
                 contentPadding = PaddingValues(horizontal = 20.dp),
@@ -2279,9 +2279,14 @@ private fun ContinueWatchingCard(
         (h.positionMs.toFloat() / h.durationMs.toFloat()).coerceIn(0f, 1f)
     } else 0f
     val remaining = (h.durationMs - h.positionMs).coerceAtLeast(0L)
+    // TV: sized from the same solved shelf height as the poster rows, so the
+    // next shelf's title and poster tops still peek in under this one.
+    val cardWidth = if (TvMode.current()) {
+        com.hikari.app.tv.TvHomeMetrics.cardHeight() * 1.45f
+    } else 230.dp
     Column(
         Modifier
-            .width(230.dp)
+            .width(cardWidth)
             .onFocusChanged { if (it.hasFocus) onFocus() }
             // Not clipped: the rounding lives on the thumbnail itself, so the
             // title under it cannot be eaten by the corner curve.
