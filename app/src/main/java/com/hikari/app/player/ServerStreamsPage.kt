@@ -206,7 +206,7 @@ internal class ServerStreamsPage(
         if (art != null) runCatching { loadImage(heroImage, art) }
 
         // Refresh button (first thing in the chip row, never rebuilt).
-        refreshBtn.background = pill(if (isTv) TV_CHIP else CHIP)
+        refreshBtn.background = if (isTv) tvChipBg(false, false) else pill(CHIP)
         refreshIcon.setImageResource(R.drawable.ic_refresh)
         refreshIcon.scaleType = ImageView.ScaleType.CENTER
         refreshBtn.addView(
@@ -216,7 +216,11 @@ internal class ServerStreamsPage(
         refreshBtn.isClickable = true
         refreshBtn.contentDescription = "Refresh"
         refreshBtn.setOnClickListener { onRefresh() }
-        if (isTv) tvFocusable(refreshBtn)
+        if (isTv) {
+            tvFocusable(refreshBtn)
+            // Remote on the refresh button: it turns black so the position is obvious.
+            refreshBtn.setOnFocusChangeListener { v, has -> v.background = tvChipBg(has, false) }
+        }
         chipRow.addView(
             refreshBtn,
             LinearLayout.LayoutParams(dp(49f), dp(37f)).apply { marginEnd = dp(8f) }
@@ -427,6 +431,10 @@ internal class ServerStreamsPage(
         val sig = names.joinToString("|") + "#" + chip
         if (sig == chipSig) return
         chipSig = sig
+        // TV: the chips are rebuilt on every pick / new provider; hand the remote
+        // focus to the same chip afterwards instead of losing it.
+        var keepLabel: String? = null
+        if (isTv) keepLabel = chipRow.findFocus()?.tag as? String
         while (chipRow.childCount > 1) chipRow.removeViewAt(1)
         val labels = ArrayList<String>(names.size + 1)
         labels.add(ALL)
@@ -437,7 +445,24 @@ internal class ServerStreamsPage(
                 LinearLayout.LayoutParams(-2, dp(37f)).apply { marginEnd = dp(8f) }
             )
         }
+        if (keepLabel != null) {
+            for (k in 1 until chipRow.childCount) {
+                val c = chipRow.getChildAt(k)
+                if (c.tag == keepLabel) {
+                    c.requestFocus()
+                    break
+                }
+            }
+        }
     }
+
+    private fun tvChipBg(focused: Boolean, selected: Boolean): GradientDrawable =
+        GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = 999f
+            setColor(if (focused) 0xFF000000.toInt() else if (selected) CHIP_ON else TV_CHIP)
+            if (focused) setStroke(dp(2f).coerceAtLeast(1), 0xFFFFFFFF.toInt())
+        }
 
     private fun makeChip(label: String, selected: Boolean): TextView =
         TextView(activity).apply {
@@ -449,9 +474,18 @@ internal class ServerStreamsPage(
             setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL))
             setTextColor(if (selected) BG else TEXT)
             setPadding(dp(16f), 0, dp(16f), 0)
-            background = pill(if (selected) CHIP_ON else if (isTv) TV_CHIP else CHIP)
+            background = if (isTv) tvChipBg(false, selected) else pill(if (selected) CHIP_ON else CHIP)
             isClickable = true
-            if (isTv) tvFocusable(this)
+            if (isTv) {
+                tag = label
+                tvFocusable(this)
+                // Focused chip turns black (white text) so the remote's position is
+                // clear; the picked provider stays white when focus moves away.
+                setOnFocusChangeListener { v, has ->
+                    v.background = tvChipBg(has, selected)
+                    (v as TextView).setTextColor(if (has || !selected) TEXT else BG)
+                }
+            }
             setOnClickListener {
                 if (chip != label) {
                     chip = label
