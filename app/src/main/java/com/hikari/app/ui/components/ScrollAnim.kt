@@ -18,6 +18,7 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.unit.Velocity
+import com.hikari.app.tv.TvMode
 
 /**
  * Same rubber-band scroll animation for vertical + horizontal, applied everywhere.
@@ -26,6 +27,15 @@ import androidx.compose.ui.unit.Velocity
  */
 @Composable
 fun Modifier.hikariWobble(): Modifier {
+    // TV FIX: never apply the rubber-band wobble on a television.
+    // The wobble translates (and clips) the layout it is attached to - on the app's root
+    // that is the WHOLE app including the side rail. With a D-pad, scrolling is driven by
+    // focus (bring-into-view), which reports leftover scroll to onPostScroll but never ends
+    // with a fling, so the spring-back never ran and the app stayed shifted/cropped
+    // (rail cut off, black band, content cut at the edges). A remote has no rubber-band
+    // gesture anyway, so on TV this is a plain no-op.
+    if (TvMode.current()) return this
+
     var rawY by remember { mutableFloatStateOf(0f) }
     var rawX by remember { mutableFloatStateOf(0f) }
     val settleY = remember { Animatable(0f) }

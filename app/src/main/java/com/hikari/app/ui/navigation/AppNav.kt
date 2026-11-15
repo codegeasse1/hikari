@@ -1409,7 +1409,11 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
                     }
                 },
                 modifier = Modifier.align(Alignment.CenterStart),
-                isScrolling = !barExpanded,
+                // TV FIX: the rail must never dim/shrink because the page scrolled. On a
+                // television `barExpanded` is driven by every list's scroll events (including
+                // the music layer, which does not reset it on tab change), so the rail used
+                // to stay faded/shrunk after scrolling down. Keep it constant on TV.
+                isScrolling = false,
                 musicActive = tvMusicOn,
             )
         }
