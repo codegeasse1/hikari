@@ -11,6 +11,7 @@ import kotlinx.coroutines.runBlocking
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicBoolean
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -29,6 +30,34 @@ object Artwork {
     private val inFlight = ConcurrentHashMap.newKeySet<String>()
     private val revisionCounter = AtomicLong(0L)
     private val revision = mutableStateOf(0L)
+
+    private val lastBump = AtomicLong(0L)
+    private val trailingBump = AtomicBoolean(false)
+    private const val BUMP_COALESCE_MS = 600L
+
+    /** Coalesced repaint signal: without this, lookups completing mid-scroll
+     *  bumped [revision] one by one, and every visible art cell reads
+     *  [revision] — so each completion recomposed the whole grid. Cells still
+     *  converge: the last completion always lands a trailing bump. */
+    private fun bumpRevision() {
+        val now = System.currentTimeMillis()
+        if (now - lastBump.get() >= BUMP_COALESCE_MS) {
+            lastBump.set(now)
+            revision.value = revisionCounter.incrementAndGet()
+            return
+        }
+        if (trailingBump.compareAndSet(false, true)) {
+            executor.execute {
+                try {
+                    Thread.sleep(BUMP_COALESCE_MS)
+                } catch (_: InterruptedException) {
+                }
+                lastBump.set(System.currentTimeMillis())
+                bumpRevision()
+                trailingBump.set(false)
+            }
+        }
+    }
 
     @Volatile
     private var loaded = false
@@ -146,7 +175,7 @@ object Artwork {
                 if (k != key) memory[k] = e
             }
             saveCache()
-            revision.value = revisionCounter.incrementAndGet()
+            bumpRevision()
         }
     }
 
@@ -280,7 +309,7 @@ object Artwork {
                     if (merged.poster != null || merged.backdrop != null) memory[k] = merged
                 }
                 saveCache()
-                revision.value = revisionCounter.incrementAndGet()
+                bumpRevision()
             } finally {
                 inFlight.remove(key)
             }
