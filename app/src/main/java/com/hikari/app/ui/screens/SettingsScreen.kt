@@ -6516,6 +6516,14 @@ private fun AnimeMetadataIntegrationCard(app: HikariApp) {
     val anilist by remember { app.store.animeAnilistFlow() }.collectAsState(initial = true)
     val animeTmdb by remember { app.store.animeTmdbFlow() }.collectAsState(initial = true)
     val videoTmdb by remember { app.store.videoTmdbFlow() }.collectAsState(initial = true)
+    val animeAio by remember { app.store.animeAioFlow() }.collectAsState(initial = true)
+    val videoAio by remember { app.store.videoAioFlow() }.collectAsState(initial = true)
+    val savedAioUrl by remember { app.store.aioBaseUrlFlow() }.collectAsState(initial = "")
+    val savedAioKey by remember { app.store.aioApiKeyFlow() }.collectAsState(initial = "")
+    var draftAioUrl by remember { mutableStateOf("") }
+    var draftAioKey by remember { mutableStateOf("") }
+    LaunchedEffect(savedAioUrl) { draftAioUrl = savedAioUrl }
+    LaunchedEffect(savedAioKey) { draftAioKey = savedAioKey }
     val savedSimklId by remember { app.store.animeSimklAppIdFlow() }.collectAsState(initial = "")
     var draftSimklId by remember { mutableStateOf("") }
     LaunchedEffect(savedSimklId) { draftSimklId = savedSimklId }
@@ -6547,7 +6555,7 @@ private fun AnimeMetadataIntegrationCard(app: HikariApp) {
     Column(Modifier.padding(16.dp)) {
         SettingsCardHeading(Icons.Filled.AutoAwesome, tr("Metadata sources"))
         if (!LocalHideHelp.current) Text(
-            tr("Anime metadata merges Simkl, then AniList, then TMDB — the first hit wins per field. No logins needed; everything enabled here fetches automatically."),
+            tr("Anime metadata merges AioMetadata, then Simkl, then AniList, then TMDB — the first hit wins per field. No logins needed; everything enabled here fetches automatically."),
             style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Spacer(Modifier.height(10.dp))
@@ -6569,6 +6577,12 @@ private fun AnimeMetadataIntegrationCard(app: HikariApp) {
             supporting = tr("Anime titles, posters and episode details from TMDB"),
             checked = animeTmdb,
             onCheckedChange = { on -> scope.launch { runCatching { app.store.setAnimeTmdb(on) } } },
+        )
+        SettingsToggle(
+            label = tr("AioMetadata"),
+            supporting = tr("Anime titles, posters and episode details from AioMetadata first"),
+            checked = animeAio,
+            onCheckedChange = { on -> scope.launch { runCatching { app.store.setAnimeAio(on) } } },
         )
         if (simkl) {
             Spacer(Modifier.height(10.dp))
@@ -6601,6 +6615,45 @@ private fun AnimeMetadataIntegrationCard(app: HikariApp) {
             checked = videoTmdb,
             onCheckedChange = { on -> scope.launch { runCatching { app.store.setVideoTmdb(on) } } },
         )
+        SettingsToggle(
+            label = tr("AioMetadata"),
+            supporting = tr("Posters, details and episode names from AioMetadata first"),
+            checked = videoAio,
+            onCheckedChange = { on -> scope.launch { runCatching { app.store.setVideoAio(on) } } },
+        )
+        if (videoAio) {
+            Spacer(Modifier.height(10.dp))
+            Text(
+                tr("AioMetadata endpoint"),
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Text(
+                tr("Paste your AioMetadata base URL and optional API key. A blank endpoint means Aio is skipped and TMDB answers as before."),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp, bottom = 10.dp),
+            )
+            ApiKeyEditor(
+                label = "AioMetadata base URL",
+                value = draftAioUrl,
+                savedValue = savedAioUrl,
+                onValueChange = { draftAioUrl = it },
+                onSave = {
+                    scope.launch { runCatching { app.store.setAioBaseUrl(draftAioUrl.trim().trimEnd('/')) } }
+                },
+            )
+            Spacer(Modifier.height(10.dp))
+            ApiKeyEditor(
+                label = "AioMetadata API key",
+                value = draftAioKey,
+                savedValue = savedAioKey,
+                onValueChange = { draftAioKey = it },
+                onSave = {
+                    scope.launch { runCatching { app.store.setAioApiKey(draftAioKey.trim()) } }
+                },
+            )
+        }
         Spacer(Modifier.height(10.dp))
         OutlinedButton(onClick = { modulesOpen = true }, shape = GlassShape) {
             Text(tr("TMDB modules"))
