@@ -6629,13 +6629,13 @@ private fun AnimeMetadataIntegrationCard(app: HikariApp) {
                 color = MaterialTheme.colorScheme.onSurface,
             )
             Text(
-                tr("Paste your AioMetadata base URL and optional API key. A blank endpoint means Aio is skipped and TMDB answers as before."),
+                tr("Paste your Install URL from aiometadata.elfhosted.com (the …/stremio/…/manifest.json link) — or just the ID part. Blank means Aio is skipped and TMDB answers as before. No extra key needed."),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 4.dp, bottom = 10.dp),
             )
             ApiKeyEditor(
-                label = "AioMetadata base URL",
+                label = "AioMetadata install URL or ID",
                 value = draftAioUrl,
                 savedValue = savedAioUrl,
                 onValueChange = { draftAioUrl = it },
