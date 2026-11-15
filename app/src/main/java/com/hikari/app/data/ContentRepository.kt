@@ -4643,6 +4643,23 @@ class ContentRepository(private val manager: ProviderManager) {
         if (cachedPoisoned) runCatching { MetaCache.evictEpisodes(selKey) }
         val cachedSeasoned = if (cachedPoisoned) null else cachedEps?.let { restoreAnimeSeasons(item, it) }
         cachedSeasoned?.let { publish(it) }
+        // AioMetadata FIRST for non-scraper engines (same gate as the TMDB
+        // shortcut below): when Aio already holds this title's episode list it
+        // wins over TMDB's — the reported wrong-episodes case. Miss or timeout
+        // (1.5s) -> TMDB shortcut -> extension borrow sweep below. Scraper
+        // origins keep origin-wins (their ids are the only playable ones).
+        if (!scraperOrigin && (item.type == MediaType.SERIES || item.type == MediaType.UNKNOWN)) {
+            val aioEps = runCatching {
+                withTimeoutOrNull(1_500) { AioMetadata.episodes(item) }
+            }.getOrNull()
+            if (!aioEps.isNullOrEmpty()) {
+                val aioSorted = aioEps.sortedWith(compareBy({ it.season }, { it.number }))
+                val aioTranslated = publish(translateEpisodes(item.providerId, aioSorted))
+                val aioNamed = withTimeoutOrNull(3_000) { withRealEpisodeNames(item, aioTranslated) }
+                    ?: aioTranslated
+                return@withContext finishEpisodes(item, selKey, epsKey, aioNamed, publish)
+            }
+        }
         if (!scraperOrigin && !TrackerAnimeResolver.isTrackerAnime(item) && cachedSeasoned == null && (item.type == MediaType.SERIES || item.type == MediaType.UNKNOWN)) {
             val tmdbEnd = System.currentTimeMillis() + TMDB_SHORTCUT_MS
             fun tmdbLeft() = (tmdbEnd - System.currentTimeMillis()).coerceAtLeast(0L)
