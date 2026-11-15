@@ -14,16 +14,11 @@ import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.ResolvingDataSource
-import androidx.media3.datasource.okhttp.OkHttpDataSource
-import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
-import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.hikari.app.data.Logs
-import com.hikari.app.net.DohDns
-import com.hikari.app.tv.TvMode
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -32,8 +27,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
-import okhttp3.OkHttpClient
-import java.util.concurrent.TimeUnit
 
 @UnstableApi
 object MusicPlayer {
@@ -65,13 +58,14 @@ object MusicPlayer {
     private var autoSkipTarget: String? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var stallJob: Job? = null
+    private var retryJob: Job? = null
     private var xfadeJob: Job? = null
     private const val TAG = "HikariMusic"
 
     private const val STALL_MS = 35_000L
-    private const val TV_STALL_MS = 32_000L
-    private const val TV_MID_STALL_MS = 12_000L
-    private const val MAX_RETRIES = 2
+
+    /** A song the user did not pick (it came up by itself) is skipped after this many failed tries. */
+    private const val SKIP_AFTER = 4
 
     private val listener = object : Player.Listener {
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
@@ -118,23 +112,11 @@ object MusicPlayer {
         val app = ctx.applicationContext
         appContext = app
         MusicStore.ensure(app)
-        val tv = TvMode.isTv
-        val sources: DataSource.Factory = if (tv) {
-            val tvClient = OkHttpClient.Builder()
-                .followRedirects(true)
-                .followSslRedirects(true)
-                .retryOnConnectionFailure(true)
-                .connectTimeout(12, TimeUnit.SECONDS)
-                .readTimeout(20, TimeUnit.SECONDS)
-                .dns(DohDns)
-                .build()
-            val base = DefaultDataSource.Factory(app, OkHttpDataSource.Factory(tvClient))
-            DataSource.Factory { MusicDataSource(base.createDataSource()) }
-        } else {
-            val http = DefaultHttpDataSource.Factory()
-                .setAllowCrossProtocolRedirects(true)
-                .setConnectTimeoutMs(15_000)
-                .setReadTimeoutMs(20_000)
+        val http = DefaultHttpDataSource.Factory()
+            .setAllowCrossProtocolRedirects(true)
+            .setConnectTimeoutMs(15_000)
+            .setReadTimeoutMs(20_000)
+        val sources: DataSource.Factory =
             ResolvingDataSource.Factory(DefaultDataSource.Factory(app, http), ResolvingDataSource.Resolver { spec ->
                 if (spec.uri.scheme != "hikarimusic") {
                     spec
@@ -148,11 +130,7 @@ object MusicPlayer {
                         .build()
                 }
             })
-        }
-        val mediaFactory = DefaultMediaSourceFactory(sources).let {
-            // Single internal ExoPlayer retry so MusicPlayer controls recovery without 2-minute hangs.
-            if (tv) it.setLoadErrorHandlingPolicy(DefaultLoadErrorHandlingPolicy(1)) else it
-        }
+        val mediaFactory = DefaultMediaSourceFactory(sources)
         val builder = ExoPlayer.Builder(app)
             .setMediaSourceFactory(mediaFactory)
             .setAudioAttributes(
@@ -164,13 +142,6 @@ object MusicPlayer {
             )
             .setHandleAudioBecomingNoisy(true)
             .setWakeMode(C.WAKE_MODE_NETWORK)
-        if (tv) {
-            builder.setLoadControl(
-                DefaultLoadControl.Builder()
-                    .setBufferDurationsMs(15_000, 60_000, 1_500, 2_500)
-                    .build(),
-            )
-        }
         val p = builder.build()
         p.addListener(listener)
         exo = p
@@ -185,7 +156,6 @@ object MusicPlayer {
         })
         runCatching { VxAudioFx.apply(app) }
         startXfadeLoop(app, p)
-        if (tv) MusicApi.prewarmTelevision()
         return p
     }
 
@@ -261,13 +231,7 @@ object MusicPlayer {
 
     private fun armStall() {
         stallJob?.cancel()
-        val tv = TvMode.isTv
-        val midSong = (exo?.currentPosition ?: 0L) > 1_500L
-        val wait = when {
-            !tv -> STALL_MS
-            midSong -> TV_MID_STALL_MS
-            else -> TV_STALL_MS
-        }
+        val wait = STALL_MS
         stallJob = scope.launch {
             delay(wait)
             val p = exo ?: return@launch
@@ -288,32 +252,40 @@ object MusicPlayer {
         p.play()
     }
 
+    private fun retryDelay(n: Int): Long = when {
+        n <= 1 -> 0L
+        n == 2 -> 1_000L
+        n == 3 -> 2_000L
+        else -> 4_000L
+    }
+
     private fun handleError() {
         val p = exo ?: return
         val id = p.currentMediaItem?.mediaId ?: return
         MusicApi.invalidate(id)
         val n = (retryCount[id] ?: 0) + 1
-        val limit = if (TvMode.isTv) MAX_RETRIES else 1
-        if (n <= limit) {
-            retryCount[id] = n
-            Logs.log(TAG, "retry " + n + "/" + limit + " for " + id)
-            restartCurrent()
-            return
-        }
-        retryCount.remove(id)
-        val title = _state.value.song?.title.orEmpty()
-        _state.value = _state.value.copy(
-            error = if (title.isBlank()) "Couldn't play this song" else "Couldn't play " + title,
-        )
+        retryCount[id] = n
         val next = p.nextMediaItemIndex
-        if (id != userPickedId && next != C.INDEX_UNSET) {
+        // The song the user picked is retried until it plays. A song that only came up by itself
+        // (queue / radio) is skipped after a few tries so the music carries on.
+        if (id != userPickedId && next != C.INDEX_UNSET && n > SKIP_AFTER) {
+            retryCount.remove(id)
+            val title = _state.value.song?.title.orEmpty()
+            _state.value = _state.value.copy(
+                error = if (title.isBlank()) "Couldn't play this song" else "Couldn't play " + title,
+            )
             autoSkipTarget = p.getMediaItemAt(next).mediaId
             p.seekToNextMediaItem()
             p.prepare()
             p.play()
-        } else {
-            p.stop()
-            publish()
+            return
+        }
+        Logs.log(TAG, "retry " + n + " for " + id)
+        retryJob?.cancel()
+        retryJob = scope.launch {
+            delay(retryDelay(n))
+            val cur = exo ?: return@launch
+            if (cur.currentMediaItem?.mediaId == id && cur.playWhenReady) restartCurrent()
         }
     }
 
@@ -355,6 +327,7 @@ object MusicPlayer {
         radioSeedId = if (asRadio) songs[start.coerceIn(0, songs.lastIndex)].id else null
         recordedPlayId = null
         retryCount.clear()
+        retryJob?.cancel()
         val first = start.coerceIn(0, songs.lastIndex)
         userPickedId = songs[first].id
         autoSkipTarget = null
@@ -406,6 +379,7 @@ object MusicPlayer {
         val p = exo ?: return
         if (index !in _state.value.queue.indices) return
         retryCount.clear()
+        retryJob?.cancel()
         recordedPlayId = null
         userPickedId = _state.value.queue[index].id
         autoSkipTarget = null

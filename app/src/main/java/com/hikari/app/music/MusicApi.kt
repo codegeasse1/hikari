@@ -534,15 +534,6 @@ object MusicApi {
         return synchronized(initLock) {
             if (newPipeState != 0) return@synchronized newPipeState == 1
             val ok = runCatching { org.schabi.newpipe.extractor.NewPipe.init(NpDownloader) }.isSuccess
-            if (ok) {
-                runCatching {
-                    com.hikari.app.music.potoken.HikariPoTokenProvider.attach(
-                        com.hikari.app.HikariApp.instance.applicationContext,
-                    )
-                    org.schabi.newpipe.extractor.services.youtube.extractors.YoutubeStreamExtractor
-                        .setPoTokenProvider(com.hikari.app.music.potoken.HikariPoTokenProvider)
-                }
-            }
             if (!ok) Logs.log(TAG, "newpipe: the extractor could not be started on this device")
             newPipeState = if (ok) 1 else 2
             ok
@@ -601,21 +592,23 @@ object MusicApi {
         else -> Http.UA
     }
 
+    // Phone and television use the same chain: Qobuz / JioSaavn -> YouTube -> open-source mirrors.
+    // After a failure the next lookup starts at the source that comes after the one that just failed,
+    // and after the last one it goes back to the first, so a song is never stuck on one bad source.
+    private const val STAGE_PREMIUM = 0
+    private const val STAGE_YOUTUBE = 1
+    private const val STAGE_MIRROR = 2
+    private const val STAGE_COUNT = 3
+
+    private val startStage = ConcurrentHashMap<String, Int>()
+    private val servedStage = ConcurrentHashMap<String, Int>()
+
     /** Marks the current cached URL invalid; increments [attempts] only when [countAttempt] is true. */
     fun invalidate(id: String, countAttempt: Boolean = true) {
         streamCache[id]?.url?.let { u -> clientOf(u)?.let { badClient[id] = it } }
         streamCache.remove(id)
-        if (com.hikari.app.tv.TvMode.isTv) {
-            when (sourceOf.remove(id)) {
-                SRC_VX -> skipVx.add(id)
-                SRC_JIO -> skipJio.add(id)
-                SRC_YT -> ytBad.add(id)
-                SRC_YTP -> plainBad.add(id)
-                else -> Unit // nothing was served yet (slow lookup): just ask the same sources again
-            }
-        } else {
-            skipPremium.add(id)
-        }
+        val served = servedStage.remove(id) ?: startStage[id] ?: STAGE_PREMIUM
+        startStage[id] = (served + 1) % STAGE_COUNT
         if (countAttempt) {
             attempts[id] = (attempts[id] ?: 0) + 1
         }
@@ -627,6 +620,7 @@ object MusicApi {
 
     fun resetAttempts(id: String) {
         attempts.remove(id)
+        startStage.remove(id)
         badClient.remove(id)
         skipPremium.remove(id)
         skipVx.remove(id)
@@ -1024,9 +1018,6 @@ object MusicApi {
     fun userAgentFor(url: String): String {
         uaByUrl[url]?.let { return it }
         return when {
-            isVisionOsUrl(url) -> runCatching {
-                org.schabi.newpipe.extractor.services.youtube.YoutubeParsingHelper.getVisionOsUserAgent(null)
-            }.getOrDefault(Http.UA)
             url.contains("c=IOS") ->
                 "com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)"
             url.contains("c=ANDROID_VR") ->
@@ -1050,6 +1041,8 @@ object MusicApi {
         formByUrl.clear()
         VxLosslessApi.resetProbe()
         skipPremium.clear()
+        startStage.clear()
+        servedStage.clear()
         skipVx.clear()
         skipJio.clear()
         ytBad.clear()
@@ -1069,30 +1062,56 @@ object MusicApi {
         val now = System.currentTimeMillis()
         streamCache[id]?.let { if (it.expires > now) return it.url }
         val hasMeta = song != null && song.title.isNotBlank() && song.artist.isNotBlank()
-        if (com.hikari.app.tv.TvMode.isTv) {
-            // Television now uses the SAME sources as the phone, in the same order:
-            // Qobuz (lossless / 320k) -> JioSaavn 320k -> YouTube (last resort only).
-            // YouTube hands out only ~900 KB (about 56 s) on a television without a valid PO token
-            // and then answers 403, so it must never be the first choice there.
-            if (hasMeta && song != null) {
-                if (id in skipVx && id in skipJio && id in ytBad) {
-                    // Every source already failed once: give the fresh Qobuz / JioSaavn links one more go.
-                    skipVx.remove(id)
-                    skipJio.remove(id)
-                }
-                resolvePremium(id, song, now, id !in skipVx, id !in skipJio)?.let { return it }
+        var stage = startStage[id] ?: STAGE_PREMIUM
+        var tried = 0
+        while (tried < STAGE_COUNT) {
+            val url: String? = when (stage) {
+                STAGE_PREMIUM ->
+                    if (hasMeta && song != null) resolvePremium(id, song, now, true, true) else null
+                STAGE_YOUTUBE -> youtubeOrNull(id)
+                STAGE_MIRROR -> mirrorOrNull(id, now)
+                else -> null
             }
+            if (url != null) {
+                servedStage[id] = stage
+                return url
+            }
+            stage = (stage + 1) % STAGE_COUNT
+            tried++
+        }
+        throw IOException("No audio stream for this song")
+    }
+
+    private fun youtubeOrNull(id: String): String? {
+        var url: String? = null
+        try {
+            url = resolveLegacyBlocking(id)
+        } catch (e: java.io.InterruptedIOException) {
+            throw e
+        } catch (e: Throwable) {
+            Logs.log(TAG, "youtube lookup failed for " + id + ": " + e.message)
+        }
+        if (url != null) {
             lastVx = null
             lastSource = "YouTube"
-            return resolveTelevision(id, now)
         }
-        val premium = id !in skipPremium
-        if (premium && hasMeta && song != null) {
-            resolvePremium(id, song, now, true, true)?.let { return it }
+        return url
+    }
+
+    private fun mirrorOrNull(id: String, now: Long): String? {
+        var url: String? = null
+        try {
+            url = OpenStreamApi.resolveBlocking(id)
+        } catch (e: java.io.InterruptedIOException) {
+            throw e
+        } catch (e: Throwable) {
+            Logs.log(TAG, "open mirrors failed for " + id + ": " + e.message)
         }
+        if (url == null) return null
         lastVx = null
-        lastSource = "YouTube"
-        return resolveLegacyBlocking(id)
+        lastSource = "YouTube (open mirror)"
+        streamCache[id] = Resolved(url, now + 60L * 60 * 1000)
+        return url
     }
 
     /** Qobuz first (when lossless is enabled), then JioSaavn 320k. Same logic for phone and television. */
