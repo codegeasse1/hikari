@@ -382,6 +382,8 @@ class AppStore(private val ctx: Context) {
         /** Optional Simkl app ID (free at simkl.com/developer, no login) so
          *  Simkl metadata works without connecting the Simkl tracker. */
         val ANIME_SIMKL_APP_ID = stringPreferencesKey("animeMetaSimklAppId")
+        /** AioMetadata first-leg for anime (see [AioMetadata]). On by default. */
+        val ANIME_AIO = booleanPreferencesKey("animeMetaAio")
         /** Manga metadata: keyless AniList manga records for every title
          *  (blurbs, genres, covers). On unless the user switches it off. */
         val MANGA_ANILIST = booleanPreferencesKey("mangaMetaAnilist")
@@ -393,6 +395,11 @@ class AppStore(private val ctx: Context) {
         val PORNHWA_API_KEY = stringPreferencesKey("pornhwaApiKey")
         /** Movies & series metadata from TMDB (no login, bundled keys). */
         val VIDEO_TMDB = booleanPreferencesKey("videoMetaTmdb")
+        /** AioMetadata first-leg for movies & series. On by default. */
+        val VIDEO_AIO = booleanPreferencesKey("videoMetaAio")
+        /** AioMetadata backend endpoint + key (Settings -> Integrations -> Metadata sources). Blank endpoint = Aio legs skip. */
+        val AIO_BASE_URL = stringPreferencesKey("aioBaseUrl")
+        val AIO_API_KEY = stringPreferencesKey("aioApiKey")
         /** Provider ids shown with extension-own metadata only: no TMDB /
          *  anime blank-filling, no episode renaming, no TMDB shelves. */
         val NATIVE_PROVIDERS = stringSetPreferencesKey("nativeMetadataProviders")
@@ -809,6 +816,9 @@ class AppStore(private val ctx: Context) {
     fun animeSimklAppIdFlow(): Flow<String> = store.data.map { it[K.ANIME_SIMKL_APP_ID] ?: "" }.distinctUntilChanged().flowOn(Dispatchers.Default)
     suspend fun animeSimklAppId(): String = animeSimklAppIdFlow().first()
     suspend fun setAnimeSimklAppId(value: String) { write("ANIME_SIMKL_APP_ID") { it[K.ANIME_SIMKL_APP_ID] = value } }
+    fun animeAioFlow(): Flow<Boolean> = store.data.map { it[K.ANIME_AIO] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
+    suspend fun animeAio(): Boolean = animeAioFlow().first()
+    suspend fun setAnimeAio(value: Boolean) { write("ANIME_AIO") { it[K.ANIME_AIO] = value } }
     fun mangaAnilistFlow(): Flow<Boolean> = store.data.map { it[K.MANGA_ANILIST] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
     suspend fun mangaAnilist(): Boolean = mangaAnilistFlow().first()
     suspend fun setMangaAnilist(value: Boolean) { write("MANGA_ANILIST") { it[K.MANGA_ANILIST] = value } }
@@ -821,6 +831,15 @@ class AppStore(private val ctx: Context) {
     fun videoTmdbFlow(): Flow<Boolean> = store.data.map { it[K.VIDEO_TMDB] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
     suspend fun videoTmdb(): Boolean = videoTmdbFlow().first()
     suspend fun setVideoTmdb(value: Boolean) { write("VIDEO_TMDB") { it[K.VIDEO_TMDB] = value } }
+    fun videoAioFlow(): Flow<Boolean> = store.data.map { it[K.VIDEO_AIO] ?: true }.distinctUntilChanged().flowOn(Dispatchers.Default)
+    suspend fun videoAio(): Boolean = videoAioFlow().first()
+    suspend fun setVideoAio(value: Boolean) { write("VIDEO_AIO") { it[K.VIDEO_AIO] = value } }
+    fun aioBaseUrlFlow(): Flow<String> = store.data.map { it[K.AIO_BASE_URL].orEmpty() }.distinctUntilChanged().flowOn(Dispatchers.Default)
+    suspend fun aioBaseUrl(): String = aioBaseUrlFlow().first()
+    suspend fun setAioBaseUrl(value: String) { write("AIO_BASE_URL") { it[K.AIO_BASE_URL] = value } }
+    fun aioApiKeyFlow(): Flow<String> = store.data.map { it[K.AIO_API_KEY].orEmpty() }.distinctUntilChanged().flowOn(Dispatchers.Default)
+    suspend fun aioApiKey(): String = aioApiKeyFlow().first()
+    suspend fun setAioApiKey(value: String) { write("AIO_API_KEY") { it[K.AIO_API_KEY] = value } }
     fun nativeProvidersFlow(): Flow<Set<String>> =
         store.data.map { it[K.NATIVE_PROVIDERS] ?: emptySet() }.distinctUntilChanged().flowOn(Dispatchers.Default)
     suspend fun nativeProviders(): Set<String> = nativeProvidersFlow().first()
