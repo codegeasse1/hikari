@@ -4,6 +4,7 @@ import android.animation.ObjectAnimator
 import android.animation.ValueAnimator
 import android.app.Activity
 import android.content.res.ColorStateList
+import android.graphics.Outline
 import android.graphics.Typeface
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
@@ -13,6 +14,7 @@ import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewOutlineProvider
 import android.view.animation.LinearInterpolator
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
@@ -46,6 +48,8 @@ internal class ServerStreamsPage(
     private val onRefresh: () -> Unit,
     private val onPick: (Int) -> Unit,
     private val onLongPick: (Int) -> Unit,
+    private val logoModel: Any? = null,
+    private val metaLine: String = "",
 ) {
 
     /** One server card. [index] is the position in the player's own source list. */
@@ -78,6 +82,16 @@ internal class ServerStreamsPage(
         const val BAR = 0xFF2A2A2A.toInt()
         const val TEXT = 0xFFFFFFFF.toInt()
         const val TEXT_DIM = 0xFF9C9C9C.toInt()
+
+        // TV look: translucent glass over the title's own backdrop.
+        const val TV_SCRIM = 0x8C000000.toInt()
+        const val TV_PANEL = 0x8C3C4349.toInt()
+        const val TV_PANEL_EDGE = 0x33FFFFFF
+        const val TV_CARD = 0xB3262B30.toInt()
+        const val TV_CARD_ON = 0xCC3B4249.toInt()
+        const val TV_CHIP = 0x59FFFFFF
+        const val TV_TEXT_DIM = 0xFFB9C1C9.toInt()
+        const val TV_OK = 0xFF2ED573.toInt()
     }
 
     private val density = activity.resources.displayMetrics.density
@@ -91,6 +105,7 @@ internal class ServerStreamsPage(
     private var insetBottom = 0
 
     private val skeletons = ArrayList<View>()
+    private var tvColumn: LinearLayout? = null
     private var shimmer: ValueAnimator? = null
     private var spinner: ObjectAnimator? = null
 
@@ -191,7 +206,7 @@ internal class ServerStreamsPage(
         if (art != null) runCatching { loadImage(heroImage, art) }
 
         // Refresh button (first thing in the chip row, never rebuilt).
-        refreshBtn.background = pill(CHIP)
+        refreshBtn.background = pill(if (isTv) TV_CHIP else CHIP)
         refreshIcon.setImageResource(R.drawable.ic_refresh)
         refreshIcon.scaleType = ImageView.ScaleType.CENTER
         refreshBtn.addView(
@@ -209,18 +224,134 @@ internal class ServerStreamsPage(
         chipScroll.addView(chipRow, LinearLayout.LayoutParams(-2, -2))
         chipScroll.setPadding(dp(12f), dp(12f), dp(12f), dp(10f))
 
-        list.setPadding(dp(12f), dp(14f), dp(12f), dp(28f))
+        if (isTv) list.setPadding(dp(14f), dp(14f), dp(14f), dp(18f))
+        else list.setPadding(dp(12f), dp(14f), dp(12f), dp(28f))
         scroll.addView(list, ViewGroup.LayoutParams(-1, -2))
 
-        val column = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
-        column.addView(heroFrame, LinearLayout.LayoutParams(-1, dp(heroBaseDp)))
-        column.addView(chipScroll, LinearLayout.LayoutParams(-1, -2))
-        column.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
-        root.addView(column, FrameLayout.LayoutParams(-1, -1))
+        if (isTv) {
+            buildTvLayout()
+        } else {
+            val column = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
+            column.addView(heroFrame, LinearLayout.LayoutParams(-1, dp(heroBaseDp)))
+            column.addView(chipScroll, LinearLayout.LayoutParams(-1, -2))
+            column.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
+            root.addView(column, FrameLayout.LayoutParams(-1, -1))
+        }
 
         applyInsets()
         rebuildChips(emptyList())
         update(State(emptyList(), emptyList(), true, null))
+    }
+
+    /**
+     * Television layout: the title's own backdrop full-bleed under a dark scrim,
+     * the title (logo or name) + genres/year on the left, and on the right the
+     * refresh button + provider chips above one frosted glass panel holding the
+     * stream cards. Only the arrangement differs from the phone page — the
+     * chips, cards and callbacks are the same views.
+     */
+    private fun buildTvLayout() {
+        val dm = activity.resources.displayMetrics
+
+        val backdrop = ImageView(activity).apply {
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            setBackgroundColor(0xFF10161A.toInt())
+        }
+        val art = artModel
+        if (art != null) runCatching { loadImage(backdrop, art) }
+        root.addView(backdrop, FrameLayout.LayoutParams(-1, -1))
+        root.addView(
+            View(activity).apply { setBackgroundColor(TV_SCRIM) },
+            FrameLayout.LayoutParams(-1, -1)
+        )
+
+        // ── left: title block ──
+        val left = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.START
+        }
+        val logo = logoModel
+        val titleText = subTitle.ifBlank { mainTitle }
+        if (logo != null) {
+            val logoView = ImageView(activity).apply {
+                scaleType = ImageView.ScaleType.FIT_START
+                adjustViewBounds = true
+                maxHeight = dp(120f)
+            }
+            runCatching { loadImage(logoView, logo) }
+            left.addView(logoView, LinearLayout.LayoutParams(dp(260f), -2))
+        } else {
+            left.addView(
+                TextView(activity).apply {
+                    text = titleText
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 30f)
+                    setTextColor(TEXT)
+                    includeFontPadding = false
+                    maxLines = 3
+                    ellipsize = TextUtils.TruncateAt.END
+                    setTypeface(typeface, Typeface.BOLD)
+                    setShadowLayer(10f, 0f, 2f, 0x99000000.toInt())
+                },
+                LinearLayout.LayoutParams(-1, -2)
+            )
+        }
+        val episodeLine = if (subTitle.isNotBlank()) {
+            listOf(episodeLabel, mainTitle).filter { it.isNotBlank() }.joinToString("  \u2022  ")
+        } else episodeLabel
+        for (t in listOf(episodeLine, metaLine)) {
+            if (t.isBlank()) continue
+            left.addView(
+                TextView(activity).apply {
+                    text = t
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+                    setTextColor(0xFFE8ECEF.toInt())
+                    includeFontPadding = false
+                    maxLines = 2
+                    ellipsize = TextUtils.TruncateAt.END
+                    setShadowLayer(8f, 0f, 2f, 0x99000000.toInt())
+                },
+                LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8f) }
+            )
+        }
+        root.addView(
+            left,
+            FrameLayout.LayoutParams((dm.widthPixels * 0.30f).toInt(), -2).apply {
+                gravity = Gravity.CENTER_VERTICAL or Gravity.START
+                marginStart = dp(48f)
+            }
+        )
+
+        // ── right: chips over the glass panel ──
+        chipScroll.setPadding(dp(4f), dp(4f), dp(4f), dp(12f))
+        val panel = FrameLayout(activity).apply {
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = dp(22f).toFloat()
+                setColor(TV_PANEL)
+                setStroke(dp(1f).coerceAtLeast(1), TV_PANEL_EDGE)
+            }
+            outlineProvider = object : ViewOutlineProvider() {
+                override fun getOutline(view: View, outline: Outline) {
+                    outline.setRoundRect(0, 0, view.width, view.height, dp(22f).toFloat())
+                }
+            }
+            clipToOutline = true
+        }
+        panel.addView(scroll, FrameLayout.LayoutParams(-1, -1))
+
+        val column = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
+        column.addView(chipScroll, LinearLayout.LayoutParams(-1, -2))
+        column.addView(panel, LinearLayout.LayoutParams(-1, 0, 1f))
+        tvColumn = column
+        root.addView(
+            column,
+            FrameLayout.LayoutParams((dm.widthPixels * 0.56f).toInt(), -1).apply {
+                gravity = Gravity.END
+                marginEnd = dp(32f)
+                topMargin = dp(22f)
+                bottomMargin = dp(26f)
+            }
+        )
     }
 
     /** Safe-area insets (display cutout / bars), pushed in by the host window. */
@@ -242,7 +373,15 @@ internal class ServerStreamsPage(
             it.marginStart = dp(13f)
             backBtn.layoutParams = it
         }
-        list.setPadding(dp(12f), dp(14f), dp(12f), dp(28f) + insetBottom)
+        if (isTv) list.setPadding(dp(14f), dp(14f), dp(14f), dp(18f))
+        else list.setPadding(dp(12f), dp(14f), dp(12f), dp(28f) + insetBottom)
+        if (isTv) tvColumn?.let { c ->
+            (c.layoutParams as? FrameLayout.LayoutParams)?.let {
+                it.topMargin = insetTop + dp(22f)
+                it.bottomMargin = insetBottom + dp(26f)
+                c.layoutParams = it
+            }
+        }
     }
 
     // ── public drawing entry points ──
@@ -299,7 +438,7 @@ internal class ServerStreamsPage(
             setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL))
             setTextColor(if (selected) BG else TEXT)
             setPadding(dp(16f), 0, dp(16f), 0)
-            background = pill(if (selected) CHIP_ON else CHIP)
+            background = pill(if (selected) CHIP_ON else if (isTv) TV_CHIP else CHIP)
             isClickable = true
             if (isTv) tvFocusable(this)
             setOnClickListener {
@@ -330,6 +469,14 @@ internal class ServerStreamsPage(
         listSig = sig
 
         val keep = scroll.scrollY
+        // TV: remember which card the remote was on so the rebuild (a server
+        // landing) does not throw the focus back to the top of the list.
+        var focusedTag: Int? = null
+        if (isTv) {
+            var fv: View? = list.findFocus()
+            while (fv != null && fv.parent !== list) fv = fv.parent as? View
+            focusedTag = fv?.tag as? Int
+        }
         list.removeAllViews()
         skeletons.clear()
 
@@ -338,7 +485,25 @@ internal class ServerStreamsPage(
         val chipFetching = if (all) st.searching
         else st.addons.any { it.fetching && sameName(it.name, chip) }
 
-        if (shown.isEmpty()) {
+        if (isTv) {
+            // TV: one flat list of cards (the provider name sits on each card),
+            // skeleton cards while nothing has landed — no group headings.
+            if (shown.isEmpty()) {
+                if (chipFetching || (all && st.searching)) {
+                    repeat(3) { addSkeleton() }
+                    startShimmer()
+                } else {
+                    stopShimmer()
+                    addInfo(st.emptyNote ?: "No streams found.", Gravity.START)
+                }
+            } else {
+                for (item in shown) addCard(item)
+                if (chipFetching || st.searching) {
+                    addSkeleton()
+                    startShimmer()
+                } else stopShimmer()
+            }
+        } else if (shown.isEmpty()) {
             if (chipFetching || (all && st.searching)) {
                 addInfo("Finding streams\u2026", Gravity.START)
                 repeat(4) { addSkeleton() }
@@ -369,6 +534,15 @@ internal class ServerStreamsPage(
 
         if (resetScroll) scroll.scrollTo(0, 0)
         else if (keep > 0) scroll.post { scroll.scrollTo(0, keep) }
+        if (isTv && focusedTag != null && !resetScroll) {
+            for (k in 0 until list.childCount) {
+                val c = list.getChildAt(k)
+                if (c.tag == focusedTag) {
+                    c.requestFocus()
+                    break
+                }
+            }
+        }
     }
 
     private fun addInfo(text: String, gravity: Int, topDp: Float = 0f) {
@@ -376,7 +550,7 @@ internal class ServerStreamsPage(
             TextView(activity).apply {
                 this.text = text
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
-                setTextColor(TEXT_DIM)
+                setTextColor(if (isTv) TV_TEXT_DIM else TEXT_DIM)
                 includeFontPadding = false
                 this.gravity = gravity
                 setPadding(dp(14f), 0, dp(14f), 0)
@@ -437,7 +611,98 @@ internal class ServerStreamsPage(
             )
         }
 
+    private fun addTvCard(item: Item) {
+        val card = LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            minimumHeight = dp(72f)
+            setPadding(dp(16f), dp(12f), dp(16f), dp(12f))
+            val bg = tvCardBg(item.selected)
+            background = RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), bg, bg)
+            isClickable = true
+            tag = item.index
+            tvFocusable(this)
+            setOnClickListener { onPick(item.index) }
+            setOnLongClickListener { onLongPick(item.index); true }
+        }
+        val texts = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
+        texts.addView(
+            TextView(activity).apply {
+                text = item.title
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+                setTextColor(TEXT)
+                includeFontPadding = false
+                maxLines = 2
+                ellipsize = TextUtils.TruncateAt.END
+                setTypeface(typeface, Typeface.BOLD)
+            },
+            LinearLayout.LayoutParams(-1, -2)
+        )
+        if (item.sub.isNotBlank()) {
+            texts.addView(
+                TextView(activity).apply {
+                    text = item.sub
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                    setTextColor(TV_TEXT_DIM)
+                    includeFontPadding = false
+                    maxLines = 3
+                    ellipsize = TextUtils.TruncateAt.END
+                },
+                LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(5f) }
+            )
+        }
+        card.addView(texts, LinearLayout.LayoutParams(0, -2, 1f))
+
+        // Right edge: a status dot (green on the playing server) over the provider name.
+        val side = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+        }
+        side.addView(
+            View(activity).apply {
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.OVAL
+                    if (item.selected) setColor(TV_OK) else {
+                        setColor(0x00000000)
+                        setStroke(dp(2f).coerceAtLeast(1), 0x88FFFFFF.toInt())
+                    }
+                }
+            },
+            LinearLayout.LayoutParams(dp(16f), dp(16f))
+        )
+        side.addView(
+            TextView(activity).apply {
+                text = item.addon
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
+                setTextColor(TV_TEXT_DIM)
+                includeFontPadding = false
+                isSingleLine = true
+                ellipsize = TextUtils.TruncateAt.END
+                maxWidth = dp(88f)
+                gravity = Gravity.CENTER
+            },
+            LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(5f) }
+        )
+        card.addView(side, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(14f) })
+        list.addView(card, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(10f) })
+    }
+
+    private fun tvCardBg(selected: Boolean): GradientDrawable =
+        GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = dp(14f).toFloat()
+            setColor(if (selected) TV_CARD_ON else TV_CARD)
+            setStroke(
+                if (selected) dp(1.5f).coerceAtLeast(1) else dp(1f).coerceAtLeast(1),
+                if (selected) 0x99FFFFFF.toInt() else 0x1AFFFFFF
+            )
+        }
+
     private fun addCard(item: Item) {
+        if (isTv) {
+            addTvCard(item)
+            return
+        }
         val card = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_VERTICAL
@@ -478,7 +743,46 @@ internal class ServerStreamsPage(
         list.addView(card, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(12f) })
     }
 
+    private fun addTvSkeleton() {
+        val dm = activity.resources.displayMetrics
+        val panelW = (dm.widthPixels * 0.56f).toInt()
+        val card = LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            minimumHeight = dp(72f)
+            setPadding(dp(16f), dp(12f), dp(16f), dp(12f))
+            background = tvCardBg(false)
+        }
+        val bars = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
+        bars.addView(
+            View(activity).apply { background = tvBar() },
+            LinearLayout.LayoutParams((panelW * 0.62f).toInt(), dp(9f))
+        )
+        bars.addView(
+            View(activity).apply { background = tvBar() },
+            LinearLayout.LayoutParams((panelW * 0.46f).toInt(), dp(8f)).apply { topMargin = dp(10f) }
+        )
+        card.addView(bars, LinearLayout.LayoutParams(0, -2, 1f))
+        card.addView(
+            View(activity).apply { background = tvBar() },
+            LinearLayout.LayoutParams(dp(18f), dp(18f))
+        )
+        list.addView(card, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(10f) })
+        skeletons.add(card)
+    }
+
+    private fun tvBar(): GradientDrawable =
+        GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = dp(5f).toFloat()
+            setColor(0x4DFFFFFF)
+        }
+
     private fun addSkeleton() {
+        if (isTv) {
+            addTvSkeleton()
+            return
+        }
         val dm = activity.resources.displayMetrics
         val card = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL

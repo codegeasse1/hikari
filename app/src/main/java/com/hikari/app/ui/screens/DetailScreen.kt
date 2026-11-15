@@ -1832,6 +1832,13 @@ fun DetailScreen(
                 putExtra("loadingEffect", com.hikari.app.ui.LoadingEffects.encode(loadingEffectsSetting))
                 putExtra("titleLogo", if (loadingLogoOn) PosterLoader.tokenize(heroLogo.orEmpty()).orEmpty() else "")
                 putExtra("titleLogoSize", loadingLogoPercent)
+                // Genres + year line the TV server page prints under the title.
+                putExtra(
+                    "serverMeta",
+                    (m?.genres.orEmpty().take(3).map { it.toString() } + listOfNotNull(m?.year?.toString()))
+                        .filter { it.isNotBlank() }
+                        .joinToString("  \u2022  ")
+                )
                 putExtra("loadingAuraColor", loadingAuraArgb)
                 putExtra("startAfterServers", startAfterServers)
                 putExtra("askServer", askServerOnPlay || isTvLayout)

@@ -9473,7 +9473,12 @@ class PlayerActivity : ComponentActivity() {
         // Settings -> Customize -> Server screen style: the "Streams list"
         // look has its own page. Classic (the default) falls through to the
         // page below, untouched.
-        if (com.hikari.app.player.ServerScreenStyles.isStreams()) {
+        // On TV the start/download chooser always uses the TV page (backdrop,
+        // title block, provider chips and a glass list on the right); the
+        // in-player reopen keeps the translucent sheet over the playing video.
+        if (com.hikari.app.player.ServerScreenStyles.isStreams() ||
+            (com.hikari.app.tv.TvMode.isTv && (startMode || forDownload))
+        ) {
             showServerChooserStreams(startMode, forDownload)
             return
         }
@@ -11085,6 +11090,10 @@ class PlayerActivity : ComponentActivity() {
                 ?: PosterLoader.model(intent?.getStringExtra("bannerBackdrop")?.takeIf { it.isNotBlank() })
                 ?: PosterLoader.model(intent?.getStringExtra("histPoster")?.takeIf { it.isNotBlank() })
 
+        val tvTitleLogo: Any? = if (playerTvRemote()) {
+            PosterLoader.model(intent?.getStringExtra("titleLogo")?.takeIf { it.isNotBlank() })
+        } else null
+        val tvMetaLine = intent?.getStringExtra("serverMeta").orEmpty()
         val page = ServerStreamsPage(
             activity = this,
             episodeLabel = epLabel,
@@ -11102,6 +11111,8 @@ class PlayerActivity : ComponentActivity() {
             },
             onPick = onPlay,
             onLongPick = onLongPick,
+            logoModel = tvTitleLogo,
+            metaLine = tvMetaLine,
         )
         pageRef = page
 
@@ -18052,7 +18063,7 @@ class PlayerActivity : ComponentActivity() {
         )
         loadingLogo?.apply {
             if (logoModel != null) {
-                val widthFrac = ((if (tvLayout) 0.82f else 0.78f) * (loadingLogoPercent / 100f)).coerceIn(0.2f, 1f)
+                val widthFrac = ((if (tvLayout) 0.36f else 0.78f) * (loadingLogoPercent / 100f)).coerceIn(0.2f, 1f)
                 val screenW = resources.displayMetrics.widthPixels
                 visibility = View.VISIBLE
                 // The loading wordmark sits BEHIND the server sheet on TV
@@ -18061,7 +18072,7 @@ class PlayerActivity : ComponentActivity() {
                 // header — the cinematic look stays, the box keeps its room.
                 if (tvLayout) {
                     adjustViewBounds = true
-                    maxHeight = (140 * resources.displayMetrics.density).toInt()
+                    maxHeight = (200 * resources.displayMetrics.density).toInt()
                 }
                 val lp = layoutParams
                 if (lp != null) {
