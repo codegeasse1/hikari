@@ -203,6 +203,12 @@ object Cs3PluginManager {
             pluginClass.getDeclaredConstructor().newInstance()
         } catch (e: Throwable) {
             record("loadClass/instantiate ${manifest.pluginClassName} failed", e)
+            if (isStabilityLinkage(e)) {
+                record(
+                    "compat",
+                    RuntimeException("plugin was compiled against a newer cloudstream3 core (missing Plugin." + "$" + "stable); host compat shadow active — update Hikari if this persists")
+                )
+            }
             return fail()
         }
 
@@ -453,6 +459,21 @@ object Cs3PluginManager {
             RuntimeException("waited ${ACTIVITY_WAIT_MS}ms; falling back to app context")
         )
         return context
+    }
+
+    /** Newer CloudStream plugins read the Compose `$stable` field off the host
+     *  `Plugin` base class; a host built without it dies in the plugin's
+     *  `<clinit>` (StreamPlay v709 report). The shadow
+     *  `com.lagradost.cloudstream3.plugins.Plugin` carries the field, so a hit
+     *  here now means something else is stale — kept as a diagnosis. */
+    private fun isStabilityLinkage(e: Throwable): Boolean {
+        var t: Throwable? = e
+        var guard = 0
+        while (t != null && guard++ < 8) {
+            if (t is NoSuchFieldError && (t.message ?: "").contains("$" + "stable")) return true
+            t = t.cause
+        }
+        return false
     }
 
     private fun fail(): List<MainAPI> {
