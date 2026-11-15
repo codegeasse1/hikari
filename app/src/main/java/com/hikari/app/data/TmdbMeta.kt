@@ -29,6 +29,10 @@ object TmdbMeta {
     suspend fun artwork(item: MediaItem): Pair<String?, String?>? {
         if (!runCatching { HikariApp.instance.store.tmdbEnabled() }.getOrDefault(true) ||
             !runCatching { HikariApp.instance.store.tmdbModule("artwork") }.getOrDefault(true)) return null
+        // AioMetadata first (movies AND series, all engines): art it already
+        // holds wins so every source paints the same poster/backdrop. Miss ->
+        // TMDB -> TVDB -> anime fallbacks below.
+        runCatching { AioMetadata.artwork(item) }.getOrNull()?.let { return it }
         // User order: TMDB first, then the anime sources (AniList -> Bangumi),
         // then provider art (the callers' fallback). The anime pick no longer
         // wins outright: a cover-only / score-zero / blank-overview hit is NOT
