@@ -74,25 +74,34 @@ object AioMetadata {
     private val mem = ConcurrentHashMap<String, Entry>()
     private val inflight = ConcurrentHashMap<String, CompletableDeferred<JSONObject?>>()
 
-    private fun prefs() = runCatching {
-        HikariApp.instance.getSharedPreferences("aio_meta", android.content.Context.MODE_PRIVATE)
-    }.getOrNull()
-
     /** Persist the backend endpoint, e.g. `https://aio.example.com`. Blank disables. */
-    fun configure(baseUrl: String, apiKey: String = "") {
+    suspend fun configure(baseUrl: String, apiKey: String = "") {
         runCatching {
-            prefs()?.edit()
-                ?.putString("base_url", baseUrl.trim().trimEnd('/'))
-                ?.putString("api_key", apiKey.trim())
-                ?.apply()
+            HikariApp.instance.store.setAioBaseUrl(baseUrl.trim().trimEnd('/'))
+            HikariApp.instance.store.setAioApiKey(apiKey.trim())
         }
     }
 
-    fun baseUrl(): String = runCatching { prefs()?.getString("base_url", "").orEmpty() }.getOrDefault("")
+    suspend fun baseUrl(): String =
+        runCatching { HikariApp.instance.store.aioBaseUrl() }.getOrDefault("")
 
-    private fun apiKey(): String = runCatching { prefs()?.getString("api_key", "").orEmpty() }.getOrDefault("")
+    private suspend fun apiKey(): String =
+        runCatching { HikariApp.instance.store.aioApiKey() }.getOrDefault("")
 
-    fun isConfigured(): Boolean = baseUrl().isNotBlank()
+    suspend fun isConfigured(): Boolean = baseUrl().isNotBlank()
+
+    suspend fun animeEnabled(): Boolean =
+        runCatching { HikariApp.instance.store.animeAio() }.getOrDefault(true)
+
+    suspend fun moviesEnabled(): Boolean =
+        runCatching { HikariApp.instance.store.videoAio() }.getOrDefault(true)
+
+    /** The toggle that owns [item]: the Anime toggle for anime, the Movies &
+     *  series toggle for everything else. Both default ON (see AppStore). */
+    suspend fun enabledFor(item: MediaItem): Boolean =
+        if (item.type == MediaType.MOVIE) moviesEnabled()
+        else if (item.rawType.contains("anime", true)) animeEnabled()
+        else moviesEnabled()
 
     // ------------------------------------------------------------------ cache
 
@@ -280,6 +289,7 @@ object AioMetadata {
      * Called FIRST from `TmdbResolver.resolve` — every engine benefits.
      */
     suspend fun resolveId(item: MediaItem): IdRef? {
+        if (!enabledFor(item)) return null
         val o = fetchRaw(item, "meta") ?: return null
         val tmdb = str(o, "tmdbId", "tmdb_id")?.trim()
             ?.takeIf { it.all { c -> c.isDigit() } && it.isNotEmpty() } ?: return null
@@ -298,6 +308,7 @@ object AioMetadata {
      * `TmdbMeta.artwork` (movies AND series, all engines).
      */
     suspend fun artwork(item: MediaItem): Pair<String?, String?>? {
+        if (!enabledFor(item)) return null
         val o = fetchRaw(item, "meta") ?: return null
         val poster = imgUrl(o, "poster", "posterUrl", "poster_url", "poster_path")
             ?: o.optJSONObject("images")?.let { imgUrl(it, "poster") }
@@ -315,6 +326,7 @@ object AioMetadata {
      * same standing as TMDB's synthetic ids on these engines.
      */
     suspend fun episodes(item: MediaItem): List<Episode>? {
+        if (!enabledFor(item)) return null
         val o = fetchRaw(item, "eps") ?: fetchRaw(item, "meta") ?: return null
         val rows = episodeRows(o) ?: return null
         if (rows.length() == 0) return null
