@@ -2,6 +2,7 @@ package com.hikari.app.data
 
 import com.hikari.app.HikariApp
 import com.hikari.app.net.Http
+import com.hikari.app.nuvio.TmdbResolver
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -17,6 +18,12 @@ import java.util.concurrent.ConcurrentHashMap
 /**
  * AioMetadata-first metadata resolution.
  *
+ * Backend: any AIOMetadata Stremio addon instance (e.g.
+ * `https://aiometadata.elfhosted.com`). The user creates their config on the
+ * site once (choosing TMDB/TVDB/TVMaze/MAL/IMDb/Fanart.tv sources) and pastes
+ * the Install URL — or just its ID part — into Settings → Integrations →
+ * Metadata sources. Everything after that is automatic.
+ *
  * Order for EVERY engine (Hikari extensions, CloudStream plugins, Stremio
  * addons, Nuvio scrapers — they all funnel through [TmdbResolver],
  * [TmdbMeta] and `ContentRepository.episodesForInner`, which consult this
@@ -28,8 +35,7 @@ import java.util.concurrent.ConcurrentHashMap
  *
  * A miss or a timeout at any earlier leg falls through to the next one, so a
  * dead/misconfigured Aio backend can never blank a page — it just costs one
- * short timeout. Nothing here changes a function signature; the three call
- * sites are additive one-liners.
+ * short timeout.
  *
  * Speed (the "instant" requirement): every leg runs under a 1.2–1.5s budget
  * ([withTimeoutOrNull]), identical concurrent lookups share one network call
@@ -37,31 +43,27 @@ import java.util.concurrent.ConcurrentHashMap
  * memory + `filesDir/aio/`, 7-day meta TTL / 12h episode TTL) so the second
  * open of any title paints synchronously with zero network.
  *
- * Backend contract (lenient — unknown shapes are a miss, never a crash):
+ * Protocol (Stremio addon, lenient — unknown shapes are a miss, never a crash):
  *
- *   GET {base}/api/meta?type=movie|tv&title=..&year=..[&imdb=tt..][&tmdb=..]
- *   GET {base}/meta/{movie|tv}/{tt....}              (id shortcut)
+ *   GET {root}/meta/movie|series/{tt…|tmdb:N|tvdb:N|mal:N}.json
  *
- *   {
- *     "title": "…", "year": 1999, "overview": "…", "rating": 7.1,
- *     "poster": "https://…", "backdrop": "https://…",
- *     "tmdbId": "123", "imdbId": "tt1234567",
- *     "episodes": [
- *       {"season": 1, "number": 1, "name": "…", "overview": "…",
- *        "image": "https://…", "released": "1999-10-20", "runtime": 25}
- *     ]
- *   }
+ *   { "meta": { "name": "…", "poster": "…", "background": "…",
+ *               "logo": "…", "description": "…", "genres": […],
+ *               "imdb_id": "tt…", "_tmdbId": "123", "year": "1999",
+ *               "videos": [{ "season": 1, "episode": 2, "title": "…",
+ *                            "overview": "…", "thumbnail": "…",
+ *                            "released": "1999-10-20T…" }] } }
  *
- * TMDB-shaped aliases are accepted too (`poster_path`, `backdrop_path`,
- * `vote_average`, `release_date`/`first_air_date`, `name`/`title`,
- * `still_path`, `air_date`, `episode_number`). A response is only TRUSTED
- * when it names our title back (see [isTitleMatch]) or echoes an id we sent;
- * anything else is treated as "not found" so a wrong Aio row can never
- * overwrite good TMDB/extension data.
+ * A response is only TRUSTED when it echoes an id we sent or names our title
+ * back (see [isTitleMatch]); anything else is treated as "not found" so a
+ * wrong Aio row can never overwrite good TMDB/extension data.
  */
 object AioMetadata {
 
     data class IdRef(val id: String, val mediaType: String) // tmdbId + "movie"|"tv"
+
+    /** Host used when the user pasted only the bare install ID. */
+    const val DEFAULT_HOST = "https://aiometadata.elfhosted.com"
 
     private const val MEM_MAX = 200
     private const val META_TTL_MS = 7L * 24 * 60 * 60 * 1000
@@ -74,21 +76,21 @@ object AioMetadata {
     private val mem = ConcurrentHashMap<String, Entry>()
     private val inflight = ConcurrentHashMap<String, CompletableDeferred<JSONObject?>>()
 
-    /** Persist the backend endpoint, e.g. `https://aio.example.com`. Blank disables. */
+    /** Persist the Install URL (or its bare ID part). Blank disables. */
     suspend fun configure(baseUrl: String, apiKey: String = "") {
         runCatching {
-            HikariApp.instance.store.setAioBaseUrl(baseUrl.trim().trimEnd('/'))
+            HikariApp.instance.store.setAioBaseUrl(baseUrl.trim())
             HikariApp.instance.store.setAioApiKey(apiKey.trim())
         }
     }
 
-    suspend fun baseUrl(): String =
+    suspend fun storedRef(): String =
         runCatching { HikariApp.instance.store.aioBaseUrl() }.getOrDefault("")
 
     private suspend fun apiKey(): String =
         runCatching { HikariApp.instance.store.aioApiKey() }.getOrDefault("")
 
-    suspend fun isConfigured(): Boolean = baseUrl().isNotBlank()
+    suspend fun isConfigured(): Boolean = addonRoot() != null
 
     suspend fun animeEnabled(): Boolean =
         runCatching { HikariApp.instance.store.animeAio() }.getOrDefault(true)
@@ -102,6 +104,40 @@ object AioMetadata {
         if (item.type == MediaType.MOVIE) moviesEnabled()
         else if (item.rawType.contains("anime", true)) animeEnabled()
         else moviesEnabled()
+
+    /**
+     * The per-user addon root, e.g.
+     * `https://aiometadata.elfhosted.com/stremio/<userId>`, or null when the
+     * user has not pasted their Install URL / ID yet. Accepts the full
+     * install URL (`…/manifest.json`, `…/configure…`), the addon root, or the
+     * bare ID.
+     */
+    suspend fun addonRoot(): String? {
+        val raw = storedRef().trim().trimEnd('/')
+        if (raw.isBlank()) return null
+        val stremioAt = raw.indexOf("/stremio/")
+        if (stremioAt >= 0) {
+            val tail = raw.substring(stremioAt + "/stremio/".length)
+                .substringBefore('/')
+                .substringBefore('?')
+                .substringBefore('#')
+                .trim()
+            if (tail.length >= 3) {
+                val host = raw.substring(0, stremioAt).trimEnd('/').ifBlank { DEFAULT_HOST }
+                return "$host/stremio/$tail"
+            }
+            return null
+        }
+        // Bare ID (no host, no slashes): attach the default host.
+        if (!raw.contains('/') && !raw.contains('.') && raw.length >= 3 &&
+            raw.all { it.isLetterOrDigit() || it == '_' || it == '-' }
+        ) {
+            return "$DEFAULT_HOST/stremio/$raw"
+        }
+        // A bare host or URL without /stremio/: not directly usable (the meta
+        // route is per-user), so treat as unconfigured rather than 404-looping.
+        return null
+    }
 
     // ------------------------------------------------------------------ cache
 
@@ -154,7 +190,7 @@ object AioMetadata {
     // ------------------------------------------------------------------ fetch
 
     private fun typeSeg(item: MediaItem): String =
-        if (item.type == MediaType.MOVIE) "movie" else "tv"
+        if (item.type == MediaType.MOVIE) "movie" else "series"
 
     private fun imdbOf(item: MediaItem): String? {
         val id = item.id.trim()
@@ -162,10 +198,47 @@ object AioMetadata {
         return null
     }
 
+    private fun tmdbDigitsOf(item: MediaItem): String? {
+        val id = item.id.trim()
+        val bare = when {
+            id.startsWith("tmdb:", ignoreCase = true) -> id.substringAfter(':').trim()
+            id.startsWith("tmdb-", ignoreCase = true) -> id.substringAfter('-').trim()
+            id.isNotEmpty() && id.all { it.isDigit() } -> id
+            else -> return null
+        }
+        return bare.takeIf { it.isNotEmpty() && it.all { it.isDigit() } }
+    }
+
+    /** Stremio ids to ask the addon for, best first. */
+    private suspend fun candidateIds(item: MediaItem): List<String> {
+        imdbOf(item)?.let { return listOf(it) }
+        tmdbDigitsOf(item)?.let {
+            // A site scraper's own numeric row id is NOT a TMDB id — only
+            // trust it when the provider is TMDB-backed (same rule as
+            // TmdbResolver) or explicitly tmdb:-prefixed.
+            val id = item.id.trim()
+            val explicit = id.startsWith("tmdb:", ignoreCase = true) || id.startsWith("tmdb-", ignoreCase = true)
+            val backed = item.providerId.equals("tmdb", true) ||
+                item.providerId.startsWith("tmdb|", true) ||
+                item.rawType.equals("tmdb", true)
+            if (explicit || backed) return listOf("tmdb:$it")
+        }
+        // Last resort: TMDB-only resolution (allowAio=false is the recursion
+        // guard — TmdbResolver.resolve would otherwise call straight back here).
+        val resolved = runCatching {
+            withTimeoutOrNull(NET_BUDGET_MS) { TmdbResolver.resolve(item, allowAio = false) }
+        }.getOrNull()
+        if (resolved != null && resolved.tmdbId.all { it.isDigit() }) {
+            return listOf("tmdb:${resolved.tmdbId}")
+        }
+        return emptyList()
+    }
+
     private suspend fun fetchRaw(item: MediaItem, kind: String): JSONObject? {
-        val base = baseUrl()
-        if (base.isBlank()) return null
-        val key = "$kind|${item.searchTitle.lowercase()}|${item.year ?: 0}|${typeSeg(item)}|${imdbOf(item).orEmpty()}"
+        val root = addonRoot() ?: return null
+        val ids = candidateIds(item)
+        if (ids.isEmpty()) return null
+        val key = "$kind|${typeSeg(item)}|${ids.first().lowercase()}|${item.searchTitle.lowercase()}|${item.year ?: 0}"
         val ttl = if (kind == "eps") EPS_TTL_MS else META_TTL_MS
         memGet(key, ttl)?.let { return it }
         diskRead(kind, key, ttl)?.let {
@@ -176,7 +249,7 @@ object AioMetadata {
         val prev = inflight.putIfAbsent(key, deferred)
         if (prev != null) return prev.await()
         try {
-            val got = withTimeoutOrNull(NET_BUDGET_MS) { fetchNetwork(item, kind) }
+            val got = withTimeoutOrNull(NET_BUDGET_MS) { fetchNetwork(root, item, kind, ids) }
             if (got != null) {
                 memPut(key, got)
                 diskWrite(kind, key, got)
@@ -191,64 +264,50 @@ object AioMetadata {
         }
     }
 
-    private suspend fun fetchNetwork(item: MediaItem, kind: String): JSONObject? =
-        withContext(Dispatchers.IO) {
-            val base = baseUrl()
-            if (base.isBlank()) return@withContext null
-            val headers = LinkedHashMap<String, String>()
-            headers["Accept"] = "application/json"
-            if (apiKey().isNotBlank()) headers["Authorization"] = "Bearer ${apiKey()}"
-            val title = item.searchTitle.trim()
-            val imdb = imdbOf(item)
-            val candidates = ArrayList<String>()
-            if (imdb != null) candidates += "$base/meta/${typeSeg(item)}/$imdb"
-            if (title.isNotBlank()) {
-                val q = buildString {
-                    append("$base/api/meta?type=${typeSeg(item)}")
-                    append("&title=${java.net.URLEncoder.encode(title, "UTF-8")}")
-                    if (item.year != null && item.year > 0) append("&year=${item.year}")
-                    if (imdb != null) append("&imdb=$imdb")
-                    val digits = item.id.trim().takeIf { it.all { c -> c.isDigit() } && it.isNotEmpty() }
-                    if (digits != null) append("&tmdb=$digits")
-                }
-                candidates += q
-            }
-            for (url in candidates.distinct().take(2)) {
-                val text = runCatching {
-                    Http.getStringQuiet(url, headers)
-                }.getOrNull() ?: continue
-                if (text.isBlank()) continue
-                val obj = runCatching { JSONObject(text) }.getOrNull() ?: continue
-                // The backend may wrap: {data:{…}} / {result:{…}} / {meta:{…}}.
-                val inner = obj.optJSONObject("data")
-                    ?: obj.optJSONObject("result")
-                    ?: obj.optJSONObject("meta")
-                    ?: obj
-                if (isTitleMatch(item, inner)) return@withContext inner
-                // A wrapped list shape: {results:[{…best first…}]}.
-                val arr = obj.optJSONArray("results") ?: obj.optJSONArray("items")
-                if (arr != null) {
-                    for (i in 0 until arr.length()) {
-                        val cand = arr.optJSONObject(i) ?: continue
-                        if (isTitleMatch(item, cand)) return@withContext cand
-                    }
-                }
-            }
-            null
+    private suspend fun fetchNetwork(
+        root: String,
+        item: MediaItem,
+        kind: String,
+        ids: List<String>,
+    ): JSONObject? = withContext(Dispatchers.IO) {
+        val headers = LinkedHashMap<String, String>()
+        headers["Accept"] = "application/json"
+        if (apiKey().isNotBlank()) headers["Authorization"] = "Bearer ${apiKey()}"
+        val seg = typeSeg(item)
+        for (sid in ids.distinct().take(2)) {
+            val enc = runCatching {
+                java.net.URLEncoder.encode(sid, "UTF-8")
+            }.getOrNull() ?: continue
+            val url = "$root/meta/$seg/$enc.json"
+            val text = runCatching { Http.getStringQuiet(url, headers) }.getOrNull()
+                ?: continue
+            if (text.isBlank()) continue
+            val meta = runCatching { JSONObject(text).optJSONObject("meta") }.getOrNull()
+                ?: continue
+            if (isTrusted(item, sid, meta)) return@withContext meta
         }
+        null
+    }
 
-    /** Trust gate: the row must name our title back or echo an id we sent. */
-    private fun isTitleMatch(item: MediaItem, o: JSONObject): Boolean {
-        val sentImdb = imdbOf(item)?.lowercase()
-        val sentTmdb = item.id.trim().takeIf { it.all { c -> c.isDigit() } && it.isNotEmpty() }
-        val oImdb = o.optString("imdbId").ifBlank { o.optString("imdb_id") }.trim()
-        val oTmdb = o.optString("tmdbId").ifBlank { o.optString("tmdb_id") }.trim()
-        if (sentImdb != null && oImdb.equals(sentImdb, true)) return true
-        if (sentTmdb != null && (oTmdb == sentTmdb)) return true
-        val names = listOf(
-            o.optString("title"), o.optString("name"),
-            o.optString("original_title"), o.optString("original_name"),
-        ).filter { it.isNotBlank() && it != "null" }
+    /** Trust gate: the row must echo an id we sent or name our title back. */
+    private fun isTrusted(item: MediaItem, sentId: String, meta: JSONObject): Boolean {
+        val sent = sentId.lowercase()
+        val echoed = listOf(
+            meta.optString("id"),
+            meta.optString("imdb_id"),
+            meta.optString("_imdbId"),
+            meta.optString("_tmdbId"),
+            meta.optString("_tvdbId"),
+        ).map { it.trim().lowercase() }.filter { it.isNotBlank() && it != "null" }
+        if (sent.startsWith("tt")) {
+            if (echoed.any { it == sent }) return true
+        } else if (sent.startsWith("tmdb:")) {
+            val digits = sent.substringAfter(':')
+            if (echoed.any { it == digits || it == sent }) return true
+        }
+        // Fall back to the name check (same bar as the old generic client).
+        val names = listOf(meta.optString("name"))
+            .filter { it.isNotBlank() && it != "null" }
         if (names.isEmpty()) return false
         val variants = runCatching {
             item.allTitles.flatMap { TmdbMeta.queryVariants(it) }
@@ -259,11 +318,9 @@ object AioMetadata {
             best = maxOf(best, runCatching { TmdbMeta.titleScore(v, n) }.getOrDefault(0))
         }
         if (best < 25) return false
-        // Year veto: a same-name row from a different year is a different title.
-        val y = o.optInt("year", -1).takeIf { it > 0 }
-            ?: o.optString("release_date").ifBlank { o.optString("first_air_date") }
-                .take(4).toIntOrNull()
-            ?: o.optString("released").take(4).toIntOrNull()
+        val y = meta.optString("year").take(4).toIntOrNull()
+            ?: meta.optString("releaseInfo").take(4).toIntOrNull()
+            ?: meta.optString("released").take(4).toIntOrNull()
         if (y != null && item.year != null && item.year > 0 && kotlin.math.abs(y - item.year) > 2) return false
         return true
     }
@@ -276,12 +333,6 @@ object AioMetadata {
         return null
     }
 
-    private fun imgUrl(o: JSONObject, vararg keys: String): String? {
-        val v = str(o, *keys) ?: return null
-        if (v.startsWith("/")) return "https://image.tmdb.org/t/p/w500$v"
-        return v
-    }
-
     // ------------------------------------------------------------- public API
 
     /**
@@ -291,13 +342,11 @@ object AioMetadata {
     suspend fun resolveId(item: MediaItem): IdRef? {
         if (!enabledFor(item)) return null
         val o = fetchRaw(item, "meta") ?: return null
-        val tmdb = str(o, "tmdbId", "tmdb_id")?.trim()
-            ?.takeIf { it.all { c -> c.isDigit() } && it.isNotEmpty() } ?: return null
-        val seg = str(o, "mediaType", "media_type", "type")?.lowercase()
+        val tmdb = o.optString("_tmdbId").trim()
+            .takeIf { it.isNotEmpty() && it.all { c -> c.isDigit() } } ?: return null
         val mediaType = when {
             item.type == MediaType.MOVIE -> "movie"
-            seg == "movie" -> "movie"
-            seg == "anime" -> "anime"
+            item.rawType.contains("anime", true) -> "anime"
             else -> "tv"
         }
         return IdRef(tmdb, mediaType)
@@ -310,10 +359,8 @@ object AioMetadata {
     suspend fun artwork(item: MediaItem): Pair<String?, String?>? {
         if (!enabledFor(item)) return null
         val o = fetchRaw(item, "meta") ?: return null
-        val poster = imgUrl(o, "poster", "posterUrl", "poster_url", "poster_path")
-            ?: o.optJSONObject("images")?.let { imgUrl(it, "poster") }
-        val backdrop = imgUrl(o, "backdrop", "backdropUrl", "backdrop_url", "backdrop_path", "banner")
-            ?: o.optJSONObject("images")?.let { imgUrl(it, "backdrop") }
+        val poster = str(o, "poster")
+        val backdrop = str(o, "background")
         if (poster == null && backdrop == null) return null
         return poster to backdrop
     }
@@ -328,49 +375,30 @@ object AioMetadata {
     suspend fun episodes(item: MediaItem): List<Episode>? {
         if (!enabledFor(item)) return null
         val o = fetchRaw(item, "eps") ?: fetchRaw(item, "meta") ?: return null
-        val rows = episodeRows(o) ?: return null
-        if (rows.length() == 0) return null
-        val out = ArrayList<Episode>(rows.length())
-        for (i in 0 until rows.length()) {
-            val e = rows.optJSONObject(i) ?: continue
-            val number = e.optInt("number", e.optInt("episode", e.optInt("episode_number", -1)))
+        val arr = o.optJSONArray("videos") ?: return null
+        if (arr.length() == 0) return null
+        val out = ArrayList<Episode>(arr.length())
+        for (i in 0 until arr.length()) {
+            val e = arr.optJSONObject(i) ?: continue
+            val number = e.optInt("episode", -1)
             if (number <= 0) continue
-            val season = e.optInt("season", e.optInt("season_number", 1)).takeIf { it > 0 } ?: 1
+            val season = e.optInt("season", 1).takeIf { it >= 0 } ?: 1
+            val thumb = str(e, "thumbnail")
+                ?.takeIf { !it.contains("missing_thumbnail") && !it.contains("missing-thumbnail") }
             out += Episode(
                 number = number,
                 id = item.id + "#aio-s" + season + "e" + number,
-                name = str(e, "name", "title"),
-                image = imgUrl(e, "image", "still", "still_path", "thumbnail"),
+                name = str(e, "title", "name"),
+                image = thumb,
                 season = season,
-                overview = str(e, "overview", "description"),
-                released = str(e, "released", "air_date", "airDate")?.take(10),
-                rating = e.optDouble("rating", e.optDouble("vote_average", 0.0)).takeIf { it > 0.0 },
-                runtime = e.optInt("runtime", -1).takeIf { it > 0 },
+                overview = str(e, "overview"),
+                released = str(e, "released")?.take(10)?.takeIf { it.length == 10 },
+                rating = null,
+                runtime = null,
             )
         }
         out.sortWith(compareBy({ it.season }, { it.number }))
         return out.takeIf { it.isNotEmpty() }
-    }
-
-    private fun episodeRows(o: JSONObject): JSONArray? {
-        o.optJSONArray("episodes")?.let { return it }
-        // Season-grouped shape: {seasons:[{season:1, episodes:[…]}, …]}.
-        val seasons = o.optJSONArray("seasons")
-        if (seasons != null && seasons.length() > 0) {
-            val flat = JSONArray()
-            for (i in 0 until seasons.length()) {
-                val s = seasons.optJSONObject(i) ?: continue
-                val sn = s.optInt("season", s.optInt("season_number", -1))
-                val eps = s.optJSONArray("episodes") ?: continue
-                for (j in 0 until eps.length()) {
-                    val e = eps.optJSONObject(j) ?: continue
-                    if (sn > 0 && e.optInt("season", -1) <= 0) e.put("season", sn)
-                    flat.put(e)
-                }
-            }
-            if (flat.length() > 0) return flat
-        }
-        return null
     }
 
     /**
