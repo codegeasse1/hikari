@@ -317,12 +317,14 @@ object AioMetadata {
     suspend fun episodes(item: MediaItem): List<Episode>? {
         val o = fetchRaw(item, "eps") ?: fetchRaw(item, "meta") ?: return null
         val rows = episodeRows(o) ?: return null
-        if (rows.isEmpty()) return null
-        val out = rows.mapNotNull { e ->
+        if (rows.length() == 0) return null
+        val out = ArrayList<Episode>(rows.length())
+        for (i in 0 until rows.length()) {
+            val e = rows.optJSONObject(i) ?: continue
             val number = e.optInt("number", e.optInt("episode", e.optInt("episode_number", -1)))
-            if (number <= 0) return@mapNotNull null
+            if (number <= 0) continue
             val season = e.optInt("season", e.optInt("season_number", 1)).takeIf { it > 0 } ?: 1
-            Episode(
+            out += Episode(
                 number = number,
                 id = item.id + "#aio-s" + season + "e" + number,
                 name = str(e, "name", "title"),
@@ -333,7 +335,8 @@ object AioMetadata {
                 rating = e.optDouble("rating", e.optDouble("vote_average", 0.0)).takeIf { it > 0.0 },
                 runtime = e.optInt("runtime", -1).takeIf { it > 0 },
             )
-        }.sortedWith(compareBy({ it.season }, { it.number }))
+        }
+        out.sortWith(compareBy({ it.season }, { it.number }))
         return out.takeIf { it.isNotEmpty() }
     }
 
