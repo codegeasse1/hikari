@@ -6519,11 +6519,8 @@ private fun AnimeMetadataIntegrationCard(app: HikariApp) {
     val animeAio by remember { app.store.animeAioFlow() }.collectAsState(initial = true)
     val videoAio by remember { app.store.videoAioFlow() }.collectAsState(initial = true)
     val savedAioUrl by remember { app.store.aioBaseUrlFlow() }.collectAsState(initial = "")
-    val savedAioKey by remember { app.store.aioApiKeyFlow() }.collectAsState(initial = "")
     var draftAioUrl by remember { mutableStateOf("") }
-    var draftAioKey by remember { mutableStateOf("") }
     LaunchedEffect(savedAioUrl) { draftAioUrl = savedAioUrl }
-    LaunchedEffect(savedAioKey) { draftAioKey = savedAioKey }
     val savedSimklId by remember { app.store.animeSimklAppIdFlow() }.collectAsState(initial = "")
     var draftSimklId by remember { mutableStateOf("") }
     LaunchedEffect(savedSimklId) { draftSimklId = savedSimklId }
@@ -6643,16 +6640,7 @@ private fun AnimeMetadataIntegrationCard(app: HikariApp) {
                     scope.launch { runCatching { app.store.setAioBaseUrl(draftAioUrl.trim().trimEnd('/')) } }
                 },
             )
-            Spacer(Modifier.height(10.dp))
-            ApiKeyEditor(
-                label = "AioMetadata API key",
-                value = draftAioKey,
-                savedValue = savedAioKey,
-                onValueChange = { draftAioKey = it },
-                onSave = {
-                    scope.launch { runCatching { app.store.setAioApiKey(draftAioKey.trim()) } }
-                },
-            )
+
         }
         Spacer(Modifier.height(10.dp))
         OutlinedButton(onClick = { modulesOpen = true }, shape = GlassShape) {
