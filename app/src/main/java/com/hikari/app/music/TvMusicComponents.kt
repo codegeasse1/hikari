@@ -24,6 +24,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -187,13 +188,14 @@ fun TvMusicIconButton(
     }
 }
 
-/** Home / Search / Library, at the top of every music page. */
+/** Home / Search / Library / Settings, at the top of every music page. */
 @Composable
 fun TvMusicTabs(tab: Int, tabFocus: FocusRequester? = null, onTab: (Int) -> Unit) {
     val items = listOf(
         "Home" to Icons.Filled.Home,
         "Search" to Icons.Filled.Search,
         "Library" to Icons.Filled.LibraryMusic,
+        "Settings" to Icons.Filled.Settings,
     )
     Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
         items.forEachIndexed { i, entry ->

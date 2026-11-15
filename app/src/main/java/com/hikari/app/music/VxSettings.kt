@@ -36,7 +36,7 @@ object VxSettings {
         return parts.map { it.coerceIn(-8f, 8f) }
     }
     fun setEqGains(ctx: Context, gains: List<Float>) {
-        runCatching { p(ctx).edit().putString("eq_gains", gains.joinToString(",")) }.let {}
+        runCatching { p(ctx).edit().putString("eq_gains", gains.joinToString(",")).apply() }
         VxAudioFx.apply(ctx)
     }
     fun setEqPreset(ctx: Context, gains: List<Float>) {

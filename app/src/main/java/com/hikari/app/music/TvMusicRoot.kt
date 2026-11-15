@@ -34,7 +34,7 @@ import com.hikari.app.tv.TvUi
 import kotlinx.coroutines.delay
 
 /**
- * The whole "HIKari music" experience on a television: Home / Search / Library pages, the song and
+ * The whole "HIKari music" experience on a television: Home / Search / Library / Settings pages, the song and
  * album pages, the now-playing bar and the full-screen player.
  *
  * AppRoot draws this over Hikari's own pages when the rail's Music tab is chosen (the rail stays on
@@ -131,7 +131,8 @@ fun TvMusicRoot(startPad: Dp = TvUi.RAIL_WIDTH + 24.dp) {
                         top is MRoute.Local -> TvMusicLocal(top, startPad, goBack, openPlayer)
                         tab == 0 -> TvMusicHome(startPad, tabs, openItem, openPlayer)
                         tab == 1 -> TvMusicSearch(startPad, tabs, openItem, openPlayer)
-                        else -> TvMusicLibrary(startPad, tabs, openRoute, openPlayer)
+                        tab == 2 -> TvMusicLibrary(startPad, tabs, openRoute, openPlayer)
+                        else -> TvMusicSettings(startPad, tabs)
                     }
                     TvMusicNowPlaying(
                         startPad = startPad,

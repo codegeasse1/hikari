@@ -64,9 +64,11 @@ class MusicDataSource(private val upstream: DataSource) : DataSource {
         songId = dataSpec.uri.lastPathSegment.orEmpty()
         val url = resolve(songId)
         val uri = Uri.parse(url)
-        val hdr = MusicApi.streamHeaders(url)
+        val plain = MusicApi.isPlainStream(url)
+        val hdr = if (plain) MusicApi.plainHeaders(url) else MusicApi.streamHeaders(url)
         val host = uri.host.orEmpty().lowercase()
-        if (!(host.endsWith("googlevideo.com") || host.endsWith("youtube.com"))) {
+        // Qobuz / JioSaavn files, and YouTube addresses from the phone method, are read in one plain request.
+        if (plain || !(host.endsWith("googlevideo.com") || host.endsWith("youtube.com"))) {
             direct = true
             val n = upstream.open(dataSpec.buildUpon().setUri(uri).setHttpRequestHeaders(hdr).build())
             opened = true

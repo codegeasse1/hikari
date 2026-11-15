@@ -567,11 +567,55 @@ object MusicApi {
 
     private val skipPremium = ConcurrentHashMap.newKeySet<String>()
 
+    // Television only: which source last served a song, and which sources already failed for it,
+    // so every retry moves down the chain Qobuz -> JioSaavn -> YouTube (like the phone does).
+    private val sourceOf = ConcurrentHashMap<String, String>()
+    private val skipVx = ConcurrentHashMap.newKeySet<String>()
+    private val skipJio = ConcurrentHashMap.newKeySet<String>()
+    private val ytBad = ConcurrentHashMap.newKeySet<String>()
+    private val plainBad = ConcurrentHashMap.newKeySet<String>()
+
+    /** YouTube addresses that must be played exactly like on the phone: one plain open-ended request, no chunking. */
+    private val plainUrls = ConcurrentHashMap.newKeySet<String>()
+
+    private const val SRC_VX = "vx"
+    private const val SRC_JIO = "jio"
+    private const val SRC_YT = "yt"
+    private const val SRC_YTP = "ytp"
+
+    fun isPlainStream(url: String): Boolean = url in plainUrls
+
+    /** Same request headers the phone sends (User-Agent only). */
+    fun plainHeaders(url: String): Map<String, String> = mapOf("User-Agent" to phoneUserAgentFor(url))
+
+    private fun phoneUserAgentFor(url: String): String = when {
+        url.contains("c=IOS") ->
+            "com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)"
+        url.contains("c=ANDROID_VR") ->
+            "com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip"
+        url.contains("c=ANDROID_MUSIC") ->
+            "com.google.android.apps.youtube.music/8.12.53 (Linux; U; Android 14; Pixel 8 Build/UQ1A.240205.004) gzip"
+        url.contains("c=ANDROID") -> "com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip"
+        url.contains("c=MWEB") ->
+            "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
+        else -> Http.UA
+    }
+
     /** Marks the current cached URL invalid; increments [attempts] only when [countAttempt] is true. */
     fun invalidate(id: String, countAttempt: Boolean = true) {
         streamCache[id]?.url?.let { u -> clientOf(u)?.let { badClient[id] = it } }
         streamCache.remove(id)
-        skipPremium.add(id)
+        if (com.hikari.app.tv.TvMode.isTv) {
+            when (sourceOf.remove(id)) {
+                SRC_VX -> skipVx.add(id)
+                SRC_JIO -> skipJio.add(id)
+                SRC_YT -> ytBad.add(id)
+                SRC_YTP -> plainBad.add(id)
+                else -> Unit // nothing was served yet (slow lookup): just ask the same sources again
+            }
+        } else {
+            skipPremium.add(id)
+        }
         if (countAttempt) {
             attempts[id] = (attempts[id] ?: 0) + 1
         }
@@ -585,6 +629,11 @@ object MusicApi {
         attempts.remove(id)
         badClient.remove(id)
         skipPremium.remove(id)
+        skipVx.remove(id)
+        skipJio.remove(id)
+        ytBad.remove(id)
+        plainBad.remove(id)
+        sourceOf.remove(id)
     }
 
     private class QuickClient(
@@ -1001,6 +1050,12 @@ object MusicApi {
         formByUrl.clear()
         VxLosslessApi.resetProbe()
         skipPremium.clear()
+        skipVx.clear()
+        skipJio.clear()
+        ytBad.clear()
+        plainBad.clear()
+        plainUrls.clear()
+        sourceOf.clear()
         attempts.clear()
         badClient.clear()
         uaByUrl.clear()
@@ -1013,9 +1068,36 @@ object MusicApi {
     fun resolveStreamBlocking(id: String, song: MSong?): String {
         val now = System.currentTimeMillis()
         streamCache[id]?.let { if (it.expires > now) return it.url }
-        if (com.hikari.app.tv.TvMode.isTv) return resolveTelevision(id, song, now)
+        val hasMeta = song != null && song.title.isNotBlank() && song.artist.isNotBlank()
+        if (com.hikari.app.tv.TvMode.isTv) {
+            // Television now uses the SAME sources as the phone, in the same order:
+            // Qobuz (lossless / 320k) -> JioSaavn 320k -> YouTube (last resort only).
+            // YouTube hands out only ~900 KB (about 56 s) on a television without a valid PO token
+            // and then answers 403, so it must never be the first choice there.
+            if (hasMeta && song != null) {
+                if (id in skipVx && id in skipJio && id in ytBad) {
+                    // Every source already failed once: give the fresh Qobuz / JioSaavn links one more go.
+                    skipVx.remove(id)
+                    skipJio.remove(id)
+                }
+                resolvePremium(id, song, now, id !in skipVx, id !in skipJio)?.let { return it }
+            }
+            lastVx = null
+            lastSource = "YouTube"
+            return resolveTelevision(id, now)
+        }
         val premium = id !in skipPremium
-        if (premium && song != null && song.title.isNotBlank() && song.artist.isNotBlank()) {
+        if (premium && hasMeta && song != null) {
+            resolvePremium(id, song, now, true, true)?.let { return it }
+        }
+        lastVx = null
+        lastSource = "YouTube"
+        return resolveLegacyBlocking(id)
+    }
+
+    /** Qobuz first (when lossless is enabled), then JioSaavn 320k. Same logic for phone and television. */
+    private fun resolvePremium(id: String, song: MSong, now: Long, tryVx: Boolean, tryJio: Boolean): String? {
+        if (tryVx) {
             val app = com.hikari.app.HikariApp.instance.applicationContext
             if (VxQuality.preferLossless(app)) {
                 val q = VxQuality.streamQuality(app)
@@ -1030,6 +1112,7 @@ object MusicApi {
                         val flac = vx.mimeType.contains("flac", ignoreCase = true)
                         lastVx = if (flac) vx else null
                         streamCache[id] = Resolved(vx.url, now + 5L * 60 * 60 * 1000)
+                        sourceOf[id] = SRC_VX
                         lastSource = if (flac) "FLAC " + vx.bitDepth + "-bit/" + vx.samplingRate + "kHz"
                             else "Qobuz MP3 320k"
                         Logs.log(TAG, "vx lossless ready for " + id + " (" + vx.bitDepth + "/" + vx.samplingRate + " FLAC q=" + vx.formatId + ")")
@@ -1038,12 +1121,10 @@ object MusicApi {
                 }
             }
         }
-        if (premium && song != null && song.title.isNotBlank() && song.artist.isNotBlank()) {
+        if (tryJio) {
             jioFor(id, song, now)?.let { return it }
         }
-        lastVx = null
-        lastSource = "YouTube"
-        return resolveLegacyBlocking(id)
+        return null
     }
 
     private fun jioFor(id: String, song: MSong, now: Long, slackSec: Int = 6): String? {
@@ -1053,6 +1134,7 @@ object MusicApi {
         if (jio == null || jio.url.isBlank()) return null
         lastVx = null
         streamCache[id] = Resolved(jio.url, now + 5L * 60 * 60 * 1000)
+        sourceOf[id] = SRC_JIO
         lastSource = "JioSaavn 320k"
         Logs.log(TAG, "jio 320k ready for " + id)
         return jio.url
@@ -1075,23 +1157,36 @@ object MusicApi {
     private const val SOFT_GRACE_MS = 2_000L
 
     /**
-     * Television lookup: ALWAYS resolves the exact YouTube track first so a JioSaavn
-     * search can never hijack a Russian/English/non-Hindi track with a Hindi song.
+     * Television YouTube lookup. Only reached after Qobuz and JioSaavn found nothing (or failed),
+     * exactly like the phone, where YouTube is the last fallback.
      */
-    private fun resolveTelevision(id: String, song: MSong?, now: Long): String {
+    private fun resolveTelevision(id: String, now: Long): String {
+        // 1) Exactly what the phone does for YouTube: NewPipe address, one plain request, no chunking.
+        if (id !in plainBad && newPipeState != 2) {
+            val url = runCatching { resolveLegacyBlocking(id) }
+                .onFailure {
+                    if (it is NoSuchMethodError || it is NoClassDefFoundError) newPipeState = 2
+                    Logs.log(TAG, "tv: phone-style YouTube failed for " + id + ": " + it.message)
+                }
+                .getOrNull()
+            if (url != null) {
+                if (plainUrls.size > 300) plainUrls.clear()
+                plainUrls.add(url)
+                sourceOf[id] = SRC_YTP
+                lastVx = null
+                lastSource = "YouTube"
+                Logs.log(TAG, "tv: phone-style YouTube ready for $id")
+                return url
+            }
+        }
+        // 2) Television clients (can need a PO token), only if the phone method gave nothing.
         val attempt = attempts[id] ?: 0
         val hit = raceYoutube(id, attempt)
-        if (hit != null && hit.url != null && hit.whole) {
-            return acceptHit(id, hit, hit.url, now, attempt)
-        }
         if (hit != null && hit.url != null) {
-            // Even a first-megabyte URL can now play past 1 MB because MusicDataSource streams in 900 KB chunks and refreshes cleanly.
+            // A first-megabyte URL can still play past 1 MB because MusicDataSource streams in 900 KB chunks and refreshes cleanly.
             return acceptHit(id, hit, hit.url, now, attempt)
         }
         Logs.log(TAG, "tv: YouTube gave no stream for " + id + " (try " + (attempt + 1) + ")")
-        if (song != null && song.title.isNotBlank() && song.artist.isNotBlank()) {
-            jioFor(id, song, now, 6)?.let { return it }
-        }
         throw IOException("No audio stream for this song")
     }
 
@@ -1100,6 +1195,7 @@ object MusicApi {
         uaByUrl[url] = hit.ua
         lastVx = null
         lastSource = "YouTube"
+        sourceOf[id] = SRC_YT
         val keepMs = if (hit.whole) 5L * 60 * 60 * 1000 else 15_000L
         streamCache[id] = Resolved(url, now + keepMs)
         Logs.log(
