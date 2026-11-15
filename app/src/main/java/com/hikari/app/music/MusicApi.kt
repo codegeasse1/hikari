@@ -1163,7 +1163,10 @@ object MusicApi {
     private fun resolveTelevision(id: String, now: Long): String {
         // 1) Exactly what the phone does for YouTube: NewPipe address, one plain request, no chunking.
         if (id !in plainBad && newPipeState != 2) {
-            val url = runCatching { resolveLegacyBlocking(id) }
+            // No PO token for NewPipe here: that is the only difference from the phone's lookup.
+            val url = runCatching {
+                com.hikari.app.music.potoken.HikariPoTokenProvider.withoutNewPipeToken { resolveLegacyBlocking(id) }
+            }
                 .onFailure {
                     if (it is NoSuchMethodError || it is NoClassDefFoundError) newPipeState = 2
                     Logs.log(TAG, "tv: phone-style YouTube failed for " + id + ": " + it.message)

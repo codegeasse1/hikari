@@ -174,7 +174,24 @@ object HikariPoTokenProvider : PoTokenProvider {
 
     // ------------------------------------------------------------------ NewPipeExtractor
 
+    /**
+     * While > 0, NewPipeExtractor gets NO PO token, exactly like on a phone. The television's
+     * "phone-style" YouTube lookup runs inside [withoutNewPipeToken]: a token from a slow or odd TV
+     * WebView can be refused by YouTube after the first ~900 KB, which is the 56 second stop.
+     */
+    private val suppressDepth = java.util.concurrent.atomic.AtomicInteger(0)
+
+    fun <T> withoutNewPipeToken(block: () -> T): T {
+        suppressDepth.incrementAndGet()
+        try {
+            return block()
+        } finally {
+            suppressDepth.decrementAndGet()
+        }
+    }
+
     override fun getWebClientPoToken(videoId: String): PoTokenResult? {
+        if (suppressDepth.get() > 0) return null
         if (!usable()) return null
         return try {
             var s = ensure(forceRecreate = false) ?: return null
