@@ -385,6 +385,54 @@ object SoraPluginManager {
         return mine.size
     }
 
+    /** The module's real site root (AnymeX parity): manifest baseUrl /
+     *  searchBaseUrl first, then the module script's baseUrl, else null.
+     *  Callers fall back to the manifest host (the old github.com behaviour). */
+    fun siteUrlOf(config: ProviderConfig): String? {
+        runCatching {
+            val mf = File(dirOf(config), "manifest.json")
+            if (mf.isFile) {
+                val o = JSONObject(mf.readText())
+                o.optString("baseUrl").trim().takeIf { it.startsWith("http") }
+                    ?.let { return it.trimEnd('/') + "/" }
+                o.optString("searchBaseUrl").trim().takeIf { it.startsWith("http") }
+                    ?.let { return originOf(it) }
+            }
+        }
+        runCatching {
+            val mod = File(config.url).takeIf { it.isFile } ?: return@runCatching
+            val text = mod.inputStream().use { stream ->
+                val cap = 131072
+                val buf = ByteArray(cap)
+                var total = 0
+                while (total < cap) {
+                    val n = stream.read(buf, total, cap - total)
+                    if (n <= 0) break
+                    total += n
+                }
+                if (total <= 0) "" else String(buf, 0, total, Charsets.UTF_8)
+            }
+            if (text.isBlank()) return@runCatching
+            findSiteUrl(text, "baseUrl")?.let { return it }
+            findSiteUrl(text, "searchBaseUrl")?.let { return originOf(it) }
+        }
+        return null
+    }
+
+    private fun findSiteUrl(text: String, key: String): String? {
+        for (q in listOf('"', 39.toChar())) {
+            val pat = Regex(key + "\\s*[:=]\\s*" + q + "(https?://[^" + q + "]+)" + q)
+            pat.find(text)?.groupValues?.getOrNull(1)?.trim()
+                ?.takeIf { it.startsWith("http") }?.let { return it.trimEnd('/') + "/" }
+        }
+        return null
+    }
+
+    private fun originOf(url: String): String? = runCatching {
+        val u = java.net.URI(url)
+        u.scheme + "://" + u.host + "/"
+    }.getOrNull()
+
     /** Whether the module's script file still exists on disk. */
     fun fileMissing(config: ProviderConfig): Boolean =
         config.type == ProviderType.SORA &&
