@@ -5,6 +5,7 @@ import com.dokar.quickjs.QuickJs
 import com.dokar.quickjs.binding.asyncFunction
 import com.dokar.quickjs.binding.function
 import com.hikari.app.HikariApp
+import com.hikari.app.net.CloudflareVerifier
 import com.hikari.app.net.DohDns
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -214,6 +215,21 @@ object VegaRuntime {
 
     private fun quote(s: String): String = JSONObject.quote(s)
 
+    private val jar: okhttp3.CookieJar = object : okhttp3.CookieJar {
+        private val store = java.util.concurrent.ConcurrentHashMap<String, MutableList<okhttp3.Cookie>>()
+        override fun loadForRequest(url: okhttp3.HttpUrl): List<okhttp3.Cookie> {
+            val now = System.currentTimeMillis()
+            return store[url.host].orEmpty().filter { it.expiresAt > now }
+        }
+        override fun saveFromResponse(url: okhttp3.HttpUrl, cookies: List<okhttp3.Cookie>) {
+            if (cookies.isEmpty()) return
+            val kept = (store[url.host].orEmpty() + cookies)
+                .groupBy { it.name }
+                .map { (_, v) -> v.maxByOrNull { it.expiresAt }!! }
+            store[url.host] = kept.toMutableList()
+        }
+    }
+
     private val client: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .followRedirects(true)
@@ -226,6 +242,9 @@ object VegaRuntime {
                     maxRequestsPerHost = 12
                 }
             )
+            .cookieJar(jar)
+            .addInterceptor { chain -> CloudflareVerifier.intercept(chain) }
+            .dns(DohDns)
             .build()
     }
 

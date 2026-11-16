@@ -8779,42 +8779,201 @@ class PlayerActivity : ComponentActivity() {
             }
             // Remembered for Previous/Next/autoplay, so those never refetch.
             playerEpisodes = eps
-            val liveId = liveEpisode?.id ?: historyEntry?.episodeId
-            val liveNumber = liveEpisode?.number ?: historyEntry?.episodeNumber
-            val options = eps.map { ep ->
-                val number = when {
-                    ep.season > 1 && ep.number > 0 -> "S${ep.season} E${ep.number}"
-                    ep.number > 0 -> "Episode ${ep.number}"
-                    else -> ""
-                }
-                val named = episodeNameSuffix(ep.name).removePrefix(" · ")
-                GlassOption(
-                    label = when {
-                        named.isNotEmpty() && number.isNotBlank() -> "$number \u00B7 $named"
-                        named.isNotEmpty() -> named
-                        number.isNotBlank() -> number
-                        else -> "Episode"
-                    },
-                    selected = if (liveId != null) {
-                        (liveId.isNotBlank() && ep.id == liveId && ep.number == liveNumber) ||
-                            (liveId.isBlank() && ep.number == liveNumber)
-                    } else {
-                        ep.id == historyEntry?.episodeId
-                    },
-                )
-            }
-            showGlassMenu(
-                I18n.t("Episodes"),
-                options,
-                hint = I18n.t("Switching keeps you inside the player."),
-                iconRes = R.drawable.ic_episodes,
-            ) { which ->
-                eps.getOrNull(which)?.let { switchToEpisode(it) }
-            }
+            showEpisodeThumbPanel(item, eps)
         }
     }
 
-    /** Nuvio's in-player Channels drawer: the current live channel's group,
+        /** Big-thumbnail episode picker (the reference Season sheet): a fixed box
+     *  panel whose rows are 16:9 stills with a play badge on the left and the
+     *  episode number + name on the right. Stills come from the episode's own
+     *  image, falling back to the title art. Switching still goes through
+     *  [switchToEpisode], so Previous/Next and autoplay are untouched. */
+    private fun showEpisodeThumbPanel(item: AppMediaItem, eps: List<Episode>) {
+        val density = resources.displayMetrics.density
+        val dialog = Dialog(this, android.R.style.Theme_Translucent_NoTitleBar)
+        val liveId = liveEpisode?.id ?: historyEntry?.episodeId
+        val liveNumber = liveEpisode?.number ?: historyEntry?.episodeNumber
+        fun isCurrent(ep: Episode): Boolean = if (liveId != null) {
+            (liveId.isNotBlank() && ep.id == liveId && ep.number == liveNumber) ||
+                (liveId.isBlank() && ep.number == liveNumber)
+        } else {
+            ep.id == historyEntry?.episodeId
+        }
+        val fallbackPoster = item.backdropUrl?.takeIf { it.isNotBlank() }
+            ?: item.posterUrl?.takeIf { it.isNotBlank() }
+            ?: historyEntry?.posterUrl?.takeIf { it.isNotBlank() }
+        val seasons = eps.map { it.season }.distinct()
+        val title = if (seasons.size == 1 && seasons[0] > 0) {
+            I18n.t("Season") + " " + seasons[0]
+        } else {
+            I18n.t("Episodes")
+        }
+        val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val thumbW = (132 * density).toInt()
+        val thumbH = (thumbW * 9f / 16f).toInt()
+        fun thumbRow(ep: Episode): View {
+            val selected = isCurrent(ep)
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                isClickable = true
+                isFocusable = true
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.RECTANGLE
+                    cornerRadius = 12f * density
+                    if (selected) {
+                        setColor(withAlpha(accentMidColor, 0.22f))
+                        setStroke(
+                            (1.5f * density).roundToInt().coerceAtLeast(1),
+                            withAlpha(accentMidColor, 0.9f)
+                        )
+                    } else {
+                        setColor(0x14FFFFFF.toInt())
+                    }
+                }
+                val pad = (8 * density).toInt()
+                setPadding(pad, pad, pad, pad)
+            }
+            val frame = FrameLayout(this).apply {
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.RECTANGLE
+                    cornerRadius = 8f * density
+                    setColor(0xFF10141B.toInt())
+                }
+            }
+            row.addView(frame, LinearLayout.LayoutParams(thumbW, thumbH))
+            val iv = ImageView(this).apply {
+                scaleType = ImageView.ScaleType.CENTER_CROP
+            }
+            frame.addView(
+                iv, FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT
+                )
+            )
+            val still = ep.image?.takeIf { it.isNotBlank() } ?: fallbackPoster
+            runCatching { iv.load(PosterLoader.model(still)) }
+            frame.addView(
+                TextView(this).apply {
+                    text = "▶"
+                    dpText(11f)
+                    includeFontPadding = false
+                    gravity = Gravity.CENTER
+                    setTextColor(0xFFFFFFFF.toInt())
+                    background = GradientDrawable().apply {
+                        shape = GradientDrawable.OVAL
+                        setColor(0x99000000.toInt())
+                    }
+                }, FrameLayout.LayoutParams(
+                    (30 * density).toInt(), (30 * density).toInt(), Gravity.CENTER
+                )
+            )
+            val col = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            row.addView(
+                col, LinearLayout.LayoutParams(
+                    0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
+                ).apply { marginStart = (10 * density).toInt() }
+            )
+            val number = when {
+                ep.season > 1 && ep.number > 0 -> "S" + ep.season + " E" + ep.number
+                ep.number > 0 -> "Episode " + ep.number
+                else -> "Episode"
+            }
+            col.addView(TextView(this).apply {
+                text = number
+                dpText(13f)
+                includeFontPadding = false
+                maxLines = 1
+                ellipsize = TextUtils.TruncateAt.END
+                typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                setTextColor(0xFFFFFFFF.toInt())
+            })
+            val named = episodeNameSuffix(ep.name).removePrefix(" · ")
+            if (named.isNotEmpty()) {
+                col.addView(TextView(this).apply {
+                    text = named
+                    dpText(11.5f)
+                    includeFontPadding = false
+                    maxLines = 2
+                    ellipsize = TextUtils.TruncateAt.END
+                    setTextColor(0xFFE8EDF4.toInt())
+                })
+            }
+            val metaBits = buildList {
+                ep.rating?.takeIf { it > 0 }?.let {
+                    add("★ " + String.format(java.util.Locale.US, "%.1f", it))
+                }
+                ep.runtime?.takeIf { it > 0 }?.let { add("" + it + "m") }
+                ep.released?.takeIf { it.isNotBlank() }?.let { add(it) }
+            }.joinToString(" · ")
+            val sub = ep.overview?.trim()?.takeIf { it.isNotEmpty() }
+                ?: metaBits.takeIf { it.isNotEmpty() }
+            if (sub != null) {
+                col.addView(TextView(this).apply {
+                    text = sub
+                    dpText(10.5f)
+                    includeFontPadding = false
+                    maxLines = 1
+                    ellipsize = TextUtils.TruncateAt.END
+                    setTextColor(0xFF9AA5B5.toInt())
+                })
+            }
+            if (selected) {
+                row.addView(
+                    checkMark(), LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    )
+                )
+            }
+            row.setOnClickListener {
+                dialog.dismiss()
+                switchToEpisode(ep)
+            }
+            return row
+        }
+        for ((season, list) in eps.groupBy { it.season }) {
+            if (seasons.size > 1 && season > 0) {
+                content.addView(TextView(this).apply {
+                    text = I18n.t("Season") + " " + season
+                    dpText(12f)
+                    includeFontPadding = false
+                    typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                    setTextColor(0xFF9AA5B5.toInt())
+                }, LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    topMargin = (if (content.childCount == 0) 2 else 10 * density).toInt()
+                    bottomMargin = (4 * density).toInt()
+                })
+            }
+            for (ep in list) {
+                content.addView(
+                    thumbRow(ep), LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply { bottomMargin = (6 * density).toInt() }
+                )
+            }
+        }
+        presentGlass(
+            dialog,
+            title,
+            content,
+            480f,
+            hint = I18n.t("Switching keeps you inside the player."),
+            iconRes = R.drawable.ic_episodes,
+            rowHosts = listOf(content),
+            fillFractionX = 0.9f,
+            fillFractionY = 0.82f,
+        )
+    }
+
+/** Nuvio's in-player Channels drawer: the current live channel's group,
      *  one tap to switch. Group first (a group can hold thousands), then its
      *  channels; the pick restarts playback on the new channel and this
      *  player finishes, so Back never stacks players. Dead when this is not

@@ -80,10 +80,23 @@ class VegaProvider(override val config: ProviderConfig) : ContentProvider {
             runCatching {
                 val dist = config.extra?.trim()?.trimEnd('/')?.takeIf { it.isNotBlank() }
                     ?: return@launch
-                val local = File(dir, "meta.js")
-                if (!local.isFile) return@launch
-                val remote = Http.fetchBytesCancellable("$dist/meta.js") ?: return@launch
-                if (VegaPluginManager.compatPatch("meta", remote).contentEquals(local.readBytes())) return@launch
+                // Compare EVERY published module, not just meta.js: a stale or
+                // partial install can be missing a module the repo has (e.g.
+                // GokuHD without catalog.js reads as "search-only"), or hold
+                // one the repo dropped. Byte-compare is the update signal, so
+                // a repo that fixes a module without bumping a version still
+                // heals on next use.
+                var stale = false
+                for (name in VegaPluginManager.FILE_NAMES) {
+                    val remote = Http.fetchBytesCancellable("$dist/$name.js") ?: continue
+                    val patched = VegaPluginManager.compatPatch(name, remote)
+                    val local = File(dir, "$name.js")
+                    if (!local.isFile || !patched.contentEquals(local.readBytes())) {
+                        stale = true
+                        break
+                    }
+                }
+                if (!stale) return@launch
                 val res = VegaPluginManager.install(
                     HikariApp.instance,
                     Cs3RepoPlugin(

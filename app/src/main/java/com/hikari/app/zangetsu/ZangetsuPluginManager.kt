@@ -51,6 +51,104 @@ object ZangetsuPluginManager {
         for ((url, name, desc) in DEFAULT_REPOS) {
             runCatching { store.seedCs3Repo(Cs3Repo(url, name, desc, RepoKind.ZANGETSU)) }
         }
+        // Heal rotted installs (providers rotate domains via urls.json) and
+        // backfill the baseUrl older installs never captured. Never throws.
+        runCatching { refreshStale(context) }
+    }
+
+    /** One entry of an index.json manifest matched to an installed provider. */
+    private data class IndexEntry(val version: Int, val fileUrl: String)
+
+    /**
+     * Re-installs Zangetsu providers whose repo moved on (version bump or
+     * changed bytes) and backfills the baseUrl for installs that predate its
+     * capture — provider domains rotate via the upstream urls.json, so an
+     * untouched install silently empties. Old installs without a stored
+     * version are byte-compared once, then stamped, so steady state costs one
+     * small index.json fetch and zero provider downloads. Returns how many
+     * providers were repaired. Never throws.
+     */
+    suspend fun refreshStale(context: Context): Int = withContext(Dispatchers.IO) {
+        var fixed = 0
+        val index = linkedMapOf<String, IndexEntry>()
+        for ((manifestUrl, _, _) in DEFAULT_REPOS) {
+            val text = runCatching { Http.fetchBytesCancellable(manifestUrl)?.toString(Charsets.UTF_8) }.getOrNull()
+                ?: continue
+            val root = runCatching { JSONObject(text) }.getOrNull() ?: continue
+            val arr = root.optJSONArray("sources") ?: continue
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                val id = o.optString("id").trim().ifBlank { continue }
+                val file = resolveUrl(manifestUrl, o.optString("file")).ifBlank { continue }
+                val v = o.optString("version").trim().takeWhile { it.isDigit() }.toIntOrNull() ?: 1
+                index[id] = IndexEntry(v, file)
+            }
+        }
+        if (index.isEmpty()) return@withContext 0
+        val dir = providersDir(context)
+        val kids = runCatching { dir.listFiles()?.toList().orEmpty() }.getOrDefault(emptyList())
+        for (kid in kids) {
+            if (!kid.isDirectory) continue
+            runCatching {
+                val mf = File(kid, "meta.json")
+                if (!mf.isFile) return@runCatching
+                val meta = JSONObject(mf.readText())
+                val id = meta.optString("id").ifBlank { kid.name }
+                val entry = index[id] ?: return@runCatching
+                val storedV = if (meta.has("version")) meta.optInt("version", 0) else 0
+                val hasBase = meta.optString("baseUrl").startsWith("http")
+                var needBytes = !meta.has("version") || entry.version != storedV || !hasBase
+                var remote: ByteArray? = null
+                if (needBytes) {
+                    remote = Http.fetchBytesCancellable(entry.fileUrl)
+                    if (remote == null) return@runCatching
+                    val local = File(kid, "provider.js")
+                    val same = local.isFile && remote.contentEquals(local.readBytes())
+                    if (same && entry.version == storedV && hasBase) return@runCatching
+                    if (same && hasBase) {
+                        mf.writeText(
+                            meta.put("version", entry.version).put("file", entry.fileUrl).toString()
+                        )
+                        return@runCatching
+                    }
+                } else return@runCatching
+                // Rewrite + re-validate like a fresh install.
+                val bytes = remote ?: return@runCatching
+                if (bytes.size > MAX_BYTES) return@runCatching
+                val f = File(kid, "provider.js")
+                val prev = runCatching { f.readBytes() }.getOrNull()
+                f.setWritable(true)
+                f.writeBytes(bytes)
+                if (ZangetsuRuntime.validate(context, kid, id) != "OK") {
+                    runCatching {
+                        if (prev != null) f.writeBytes(prev)
+                    }
+                    return@runCatching
+                }
+                var base = meta.optString("baseUrl")
+                runCatching {
+                    val payload = ZangetsuRuntime.call(kid, id, "getInfo", "[]")
+                    val b = JSONObject(payload).optJSONObject("data")?.optString("baseUrl").orEmpty()
+                    if (b.startsWith("http")) base = b
+                }
+                mf.writeText(
+                    JSONObject()
+                        .put("id", id)
+                        .put("name", meta.optString("name").ifBlank { id })
+                        .put("icon", meta.optString("icon"))
+                        .put("version", entry.version)
+                        .put("file", entry.fileUrl)
+                        .put("baseUrl", base)
+                        .toString()
+                )
+                fixed++
+            }
+        }
+        if (fixed > 0) {
+            runCatching { HikariApp.instance.providers.refresh() }
+            runCatching { com.hikari.app.data.MetaCache.bumpEpisodesEpoch() }
+        }
+        fixed
     }
 
     private fun resolveUrl(manifestUrl: String, ref: String): String {
@@ -128,6 +226,8 @@ object ZangetsuPluginManager {
                     .put("id", id)
                     .put("name", plugin.name.ifBlank { id })
                     .put("icon", plugin.iconUrl ?: "")
+                    .put("version", plugin.version)
+                    .put("file", fileUrl)
                     .toString(),
             )
             true

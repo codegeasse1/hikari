@@ -104,23 +104,51 @@ object SkyStreamPluginManager {
     }
 
     /** The built-in SkyStream extension repositories (repo.json). */
-    val DEFAULT_REPOS = listOf(
+        val DEFAULT_REPOS = listOf(
         Triple(
             "https://raw.githubusercontent.com/akashdh11/skystream-plugins/main/repo.json",
             "SkyStream official",
             "The official SkyStream plugin repo (Akash's providers)",
         ),
-        Triple(
-            "https://raw.githubusercontent.com/rougegz/SkystreamPlugins/main/repo.json",
-            "Rougegz SkyStream",
-            "Community SkyStream plugins",
-        ),
+    ),
     )
 
     suspend fun seedDefaults(context: Context, store: AppStore) {
         for ((url, name, desc) in DEFAULT_REPOS) {
             runCatching { store.seedCs3Repo(Cs3Repo(url, name, desc, RepoKind.SKYSTREAM)) }
         }
+        // Drop orphaned rows whose extension files are gone (e.g. an Anichi
+        // row left behind after its repo stopped shipping it). A missing
+        // plugin.js can never produce rows, so the entry is dead weight.
+        runCatching { pruneMissing(context) }
+    }
+
+    /**
+     * Removes installed SkyStream rows whose extension directory is gone or
+     * empty (fully orphaned installs). Partial installs that still have files
+     * are left alone — their screens already say "reinstall this extension".
+     * Returns how many rows were removed. Never throws.
+     */
+    suspend fun pruneMissing(context: Context): Int = withContext(Dispatchers.IO) {
+        val store = HikariApp.instance.store
+        val mine = store.providers().filter { it.type == ProviderType.SKYSTREAM }
+        if (mine.isEmpty()) return@withContext 0
+        val dead = mine.filter { cfg ->
+            if (!fileMissing(cfg)) return@filter false
+            val dir = pluginDir(context, packageOf(cfg.id))
+            !dir.isDirectory || dir.listFiles().isNullOrEmpty()
+        }
+        if (dead.isEmpty()) return@withContext 0
+        val ids = dead.map { it.id }.toSet()
+        val count = ids.size
+        runCatching {
+            store.updateProviders { list -> list.filterNot { it.id in ids } }
+        }
+        runCatching { HikariApp.instance.providers.refresh() }
+        runCatching {
+            com.hikari.app.data.Logs.log("SkyStream", "pruned " + count + " orphaned extension row(s) with missing files")
+        }
+        count
     }
 
     suspend fun install(
