@@ -9199,6 +9199,7 @@ class PlayerActivity : ComponentActivity() {
                         withContext(Dispatchers.Main) { appendSources(full) }
                         autoplayRunning = false
                     }
+                    }
                 }
                 return@launch
             }
