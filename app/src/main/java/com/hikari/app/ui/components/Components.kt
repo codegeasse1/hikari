@@ -40,6 +40,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -88,6 +89,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.input.pointer.pointerInput
@@ -438,10 +440,12 @@ private class RevealState {
  *
  *  Draw-phase only: the fraction is measured in [onGloballyPositioned] and
  *  consumed in [graphicsLayer], so scrolling never recomposes the card and
- *  Coil images keep painting. The blur needs Android 12+ (older phones get
- *  the fade/scale/slide only) and is skipped in the performance booster.
- *  When the master switch is off, or the system animator scale is 0 (the
- *  "remove animations" setting), this is a no-op. */
+ *  Coil images keep painting. The old per-card blur (a live gaussian on every
+ *  partially-visible card, repainted on every scroll frame) is retired: it is
+ *  what dragged catalogue/search scrolling down to ~20fps on fast phones.
+ *  Cards now glide in with fade/scale/slide only — the same motion, none of
+ *  the GPU cost. When the master switch is off, or the system animator scale
+ *  is 0 (the "remove animations" setting), this is a no-op. */
 fun Modifier.scrollReveal(axis: RevealAxis): Modifier = composed {
     val ctx = LocalContext.current
     ScrollReveal.ensureLoaded(ctx)
@@ -458,7 +462,6 @@ fun Modifier.scrollReveal(axis: RevealAxis): Modifier = composed {
     val density = LocalDensity.current
     val configuration = LocalConfiguration.current
     val shiftPx = remember(density) { with(density) { 20.dp.toPx() } }
-    val blurPx = remember(density) { with(density) { 9.dp.toPx() } }
     val viewPx = remember(density, axis, configuration.screenWidthDp, configuration.screenHeightDp) {
         val dp = if (axis == RevealAxis.Horizontal) {
             configuration.screenWidthDp
@@ -537,16 +540,10 @@ fun Modifier.scrollReveal(axis: RevealAxis): Modifier = composed {
                 translationY = d
                 translationX = 0f
             }
-            renderEffect = if (
-                android.os.Build.VERSION.SDK_INT >= 31 &&
-                p < 0.97f &&
-                !com.hikari.app.data.PerfMode.active
-            ) {
-                val r = (1f - p) * blurPx
-                androidx.compose.ui.graphics.BlurEffect(r, r, androidx.compose.ui.graphics.TileMode.Decal)
-            } else {
-                null
-            }
+            // No renderEffect: the retired per-card blur repainted a live
+            // gaussian on every scroll frame (see the doc above). The layer
+            // stays cheap — one alpha/scale/translate, no offscreen pass.
+            renderEffect = null
         }
 }
 
@@ -623,6 +620,123 @@ fun Modifier.heroPoster(key: String): Modifier = composed {
                 )
             } else Modifier
         )
+}
+
+/** Snapshot poster flight: the lag-free replacement for the shared-element
+ *  poster travel (see [heroPoster]).
+ *
+ *  Why a snapshot: the old travel flew the REAL card — live image, halo
+ *  blurs, badges — while lookahead re-measured both screens, which is what
+ *  made opening detail (and going back) feel heavy. The flight instead moves
+ *  one flat picture: the tapped card's already-decoded bitmap, drawn with a
+ *  plain offset + size. Same visual (the poster flies from the grid into its
+ *  detail position), none of the GPU cost.
+ *
+ *  Flow: the source card records its window rect continuously (see
+ *  [flightSource]) and arms [arm] on tap with its image model; the detail
+ *  hero reports its rect (see [flightTarget]); [HeroFlightLayer] (mounted
+ *  once in AppNav, above the NavHost) animates the snapshot between the two
+ *  and clears itself. A missing rect on either side degrades to the plain
+ *  fade/slide — never a crash, never a stuck overlay. Back navigation keeps
+ *  the plain slide; only the forward flight is staged.
+ */
+object HeroFlight {
+    data class Leg(val key: String, val model: Any?, val src: Rect)
+
+    var leg by androidx.compose.runtime.mutableStateOf<Leg?>(null)
+        private set
+    var target by androidx.compose.runtime.mutableStateOf<Pair<String, Rect>?>(null)
+        private set
+
+    private val seen = mutableMapOf<String, Rect>()
+
+    fun note(key: String, rect: Rect) {
+        if (key.isNotBlank()) seen[key] = rect
+    }
+
+    fun arm(key: String, model: Any?) {
+        val r = if (key.isNotBlank()) seen[key] else null
+        leg = if (r != null) Leg(key, model, r) else null
+        target = null
+    }
+
+    fun arrive(key: String, rect: Rect) {
+        val l = leg ?: return
+        if (l.key != key || target != null || key.isBlank()) return
+        target = key to rect
+    }
+
+    fun clear() {
+        leg = null
+        target = null
+    }
+}
+
+/** Records this card's window rect for [HeroFlight] (see [flightSource]). */
+fun Modifier.flightSource(key: String): Modifier = composed {
+    if (key.isBlank()) return@composed this
+    onGloballyPositioned { HeroFlight.note(key, it.boundsInWindow()) }
+}
+
+/** Reports this detail hero's window rect to [HeroFlight] (see [flightTarget]). */
+fun Modifier.flightTarget(key: String): Modifier = composed {
+    if (key.isBlank()) return@composed this
+    onGloballyPositioned { HeroFlight.arrive(key, it.boundsInWindow()) }
+}
+
+private fun lerpRect(a: Rect, b: Rect, t: Float): Rect = Rect(
+    left = a.left + (b.left - a.left) * t,
+    top = a.top + (b.top - a.top) * t,
+    right = a.right + (b.right - a.right) * t,
+    bottom = a.bottom + (b.bottom - a.bottom) * t,
+)
+
+/** The flying snapshot itself: one flat picture gliding from [rect]. */
+@Composable
+private fun FlightImage(model: Any?, rect: Rect) {
+    if (model == null || rect.isEmpty) return
+    val density = LocalDensity.current
+    val x = with(density) { rect.left.toDp() }
+    val y = with(density) { rect.top.toDp() }
+    val w = with(density) { rect.width.toDp() }
+    val h = with(density) { rect.height.toDp() }
+    Box(Modifier.fillMaxSize()) {
+        AsyncImage(
+            model = model,
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier
+                .offset(x = x, y = y)
+                .size(width = w, height = h)
+                .clip(RoundedCornerShape(12.dp)),
+        )
+    }
+}
+
+/** Mount once, above the NavHost: draws the in-flight snapshot, if any. */
+@Composable
+fun HeroFlightLayer() {
+    val leg = HeroFlight.leg ?: return
+    val target = HeroFlight.target
+    Box(Modifier.fillMaxSize()) {
+        if (target == null) {
+            // The detail hero has not laid out yet: hold the snapshot where
+            // the card was. A safety clears a flight whose target never
+            // arrives (a navigation that went elsewhere instead).
+            FlightImage(leg.model, leg.src)
+            LaunchedEffect(leg) {
+                delay(600L)
+                HeroFlight.clear()
+            }
+        } else {
+            val p = remember(leg) { Animatable(0f) }
+            LaunchedEffect(leg) {
+                p.animateTo(1f, tween(durationMillis = 280))
+                HeroFlight.clear()
+            }
+            FlightImage(leg.model, lerpRect(leg.src, target.second, p.value))
+        }
+    }
 }
 
 /** Infinite auto-scrolling poster carousel ("marquee") with a parallax glow.
@@ -917,10 +1031,14 @@ fun PosterCard(
     val latestPlay by rememberUpdatedState(onQuickPlay)
     val latestItem by rememberUpdatedState(item)
     var quickLibraryItem by remember { mutableStateOf<MediaItem?>(null) }
+    // Snapshot-flight key + image (see HeroFlight): armed on tap, flown by
+    // HeroFlightLayer. Same key shape the old shared element used.
+    val flightKey = if (heroNamespace.isBlank()) item.uniqueId else heroNamespace + ":" + item.uniqueId
+    val flightModel = Artwork.model(item)
     Column(
         Modifier
             .width(cardWidth)
-            .clickable(onClick = onClick)
+            .clickable(onClick = { HeroFlight.arm(flightKey, flightModel); onClick() })
             .scrollReveal(RevealAxis.Horizontal)
     ) {
         // Lookahead-crash guard: aspectRatio (sizing) and the shared-element
@@ -936,10 +1054,10 @@ fun PosterCard(
         Box(
             Modifier
                 .fillMaxSize()
-                .heroPoster(if (heroNamespace.isBlank()) item.uniqueId else heroNamespace + ":" + item.uniqueId)
+                .flightSource(flightKey)
                 .quickMenuGesture(quickMenu) { slot ->
                     when (slot) {
-                        0 -> latestClick()
+                        0 -> { HeroFlight.arm(flightKey, flightModel); latestClick() }
                         1 -> {
                             val play = latestPlay
                             if (play != null) play(item) else latestClick()
@@ -961,6 +1079,10 @@ fun PosterCard(
                 imdb = badge,
                 item = item,
                 modifier = Modifier.fillMaxSize(),
+                // 120dp card: decode at cell size, not full resolution (see
+                // PosterLoader.cellModel) — full-size decodes per scrolling
+                // cell are what make row scrolling feel heavy.
+                coilSize = 360 to 540,
             )
             if (quickMenu.visible) QuickMenuOverlay(quickMenu.selected)
             }

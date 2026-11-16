@@ -1122,6 +1122,9 @@ fun AppRoot(themeKey: String = HikariThemeMode.DEFAULT.key) {
             ) {
                 SharedTransitionLayout {
                     CompositionLocalProvider(LocalHeroSharedScope provides this@SharedTransitionLayout) {
+                // Snapshot poster flight (see HeroFlight): one flat picture
+                // gliding over the transition, cleared when it lands.
+                com.hikari.app.ui.components.HeroFlightLayer()
                 NavHost(
                     navController = nav,
                     startDestination = Routes.HOME,

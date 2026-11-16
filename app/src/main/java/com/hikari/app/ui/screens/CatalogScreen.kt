@@ -839,7 +839,7 @@ private fun CatalogCard(
             )
             if (cinema && hero != null && !hero.second) {
                 AsyncImage(
-                    model = hero.first,
+                    model = com.hikari.app.ui.PosterLoader.cellModel(hero.first as? String, 640, 360) ?: hero.first,
                     contentDescription = item.title,
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop,
@@ -847,7 +847,15 @@ private fun CatalogCard(
                 )
             } else {
                 AsyncImage(
-                    model = if (cinema) hero?.first else Artwork.model(item),
+                    model = if (cinema) {
+                        val u = hero?.first as? String
+                        com.hikari.app.ui.PosterLoader.cellModel(u, 640, 360) ?: hero?.first
+                    } else {
+                        val u = Artwork.model(item) as? String
+                        // 2:3 grid cell: decode at cell size, not full
+                        // resolution (see PosterLoader.cellModel).
+                        com.hikari.app.ui.PosterLoader.cellModel(u, 360, 540) ?: Artwork.model(item)
+                    },
                     contentDescription = item.title,
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop,

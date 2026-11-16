@@ -10,6 +10,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -28,6 +30,18 @@ class ProviderManager(private val store: AppStore, private val context: Context)
     /** The configs the current list was built from, so an identical rebuild is
      *  not a rebuild at all (see [refresh]). */
     private var lastConfigs: List<ProviderConfig> = emptyList()
+
+    /** Guards [_providers] appends from the demand path (see [byId]). */
+    private val demandLock = Any()
+
+    /** The background warmer (see [refresh]): cancelled + replaced whenever a
+     *  new refresh arrives, so a post-install list never warms twice. */
+    @Volatile
+    private var warmer: kotlinx.coroutines.Job? = null
+
+    /** How many provider configs the last [refresh] resolved (dedupe + NSFW
+     *  filter applied). The instantiated [providers] list fills in behind it. */
+    fun configCount(): Int = lastConfigs.size
 
     suspend fun refresh() = withContext(Dispatchers.IO) {
         if (!refreshLock.tryLock()) {
@@ -89,15 +103,49 @@ class ProviderManager(private val store: AppStore, private val context: Context)
                 }.getOrElse { unique }
                 if (configs == lastConfigs && _providers.value.isNotEmpty()) continue
                 lastConfigs = configs
-                // An extension is third-party code. A bad constructor or a
-                // freshly-installed module must never take down MainActivity:
-                // before this guard one broken provider during the post-install
-                // refresh could crash the process, and Android would relaunch
-                // Hikari on the Home tab — exactly the "install -> suddenly Home"
-                // behaviour seen on TV. Keep the rest of the installed providers
-                // alive and record the offending provider for diagnostics.
-                _providers.value = configs.mapNotNull { config ->
-                    runCatching { instantiate(config) }
+                // LAZY: the config phase above is the whole cheap part (read +
+                // dedupe + NSFW filter). Instantiating all 785 providers here
+                // is what held startup for ~17s, so it no longer happens in
+                // this call: providers that vanished are dropped, survivors
+                // stay live, and the rest instantiate in the background (see
+                // [launchWarmer]) or on first touch (see [byId]). Startup
+                // returns as soon as the configs resolve; Home/search rows
+                // pop in as the warmer lands them.
+                val live = _providers.value
+                if (live.isNotEmpty()) {
+                    val keep = configs.map { it.id }.toSet()
+                    val pruned = live.filter { it.config.id in keep }
+                    if (pruned.size != live.size) _providers.value = pruned
+                }
+                launchWarmer(configs)
+            } while (refreshQueued)
+        } finally {
+            refreshLock.unlock()
+        }
+    }
+
+    /**
+     * Background instantiation of every config [refresh] resolved but nothing
+     * has touched yet, in stored order. A bad constructor still never takes
+     * down the process (same guard the old eager build had) — it is logged
+     * and skipped, and a later [byId] demand retries it. Cancelled + replaced
+     * on every refresh so only one warmer ever runs.
+     */
+    private fun launchWarmer(configs: List<ProviderConfig>) {
+        warmer?.cancel()
+        warmer = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO).launch {
+            var done = 0
+            for (config in configs) {
+                if (!isActive) return@launch
+                val known = synchronized(demandLock) {
+                    _providers.value.any { it.config.id == config.id }
+                }
+                if (!known) {
+                    // An extension is third-party code. A bad constructor or a
+                    // freshly-installed module must never take down the app:
+                    // keep the rest of the installed providers alive and
+                    // record the offending provider for diagnostics.
+                    val loaded = runCatching { instantiate(config) }
                         .onFailure { error ->
                             com.hikari.app.data.Logs.log(
                                 "Providers",
@@ -105,10 +153,20 @@ class ProviderManager(private val store: AppStore, private val context: Context)
                             )
                         }
                         .getOrNull()
+                    if (loaded != null) {
+                        synchronized(demandLock) {
+                            if (_providers.value.none { it.config.id == config.id }) {
+                                _providers.value = _providers.value + loaded
+                            }
+                        }
+                    }
                 }
-            } while (refreshQueued)
-        } finally {
-            refreshLock.unlock()
+                if (++done % 32 == 0) kotlinx.coroutines.yield()
+            }
+            com.hikari.app.data.Logs.log(
+                "Providers",
+                "warmer finished: ${_providers.value.size} of ${configs.size} installed",
+            )
         }
     }
 
@@ -153,8 +211,31 @@ class ProviderManager(private val store: AppStore, private val context: Context)
         ProviderType.FORK_VIDEO -> com.hikari.app.kotatsu.fork.ForkVideoProvider(c)
     }
 
-    fun byId(id: String): ContentProvider? =
-        _providers.value.firstOrNull { it.config.id == id }
+    /**
+     * Demand path: the provider for [id], instantiating it on the spot when
+     * the background warmer has not reached it yet (see [launchWarmer]). The
+     * constructor cost (~ms for one provider) is paid once, here, instead of
+     * ×785 at startup — a first tap on an unwarmed extension waits a beat,
+     * every tap after that is instant. Failures are logged and return null,
+     * exactly like the old build's per-row guard.
+     */
+    fun byId(id: String): ContentProvider? {
+        _providers.value.firstOrNull { it.config.id == id }?.let { return it }
+        val config = lastConfigs.firstOrNull { it.id == id } ?: return null
+        val loaded = runCatching { instantiate(config) }
+            .onFailure { error ->
+                com.hikari.app.data.Logs.log(
+                    "Providers",
+                    "failed to load ${config.id} on demand: ${error.message ?: error.javaClass.simpleName}",
+                )
+            }
+            .getOrNull() ?: return null
+        synchronized(demandLock) {
+            _providers.value.firstOrNull { it.config.id == id }?.let { return it }
+            _providers.value = _providers.value + loaded
+        }
+        return loaded
+    }
 }
 
 object ProviderGate {

@@ -8858,7 +8858,8 @@ class PlayerActivity : ComponentActivity() {
                 )
             )
             val still = ep.image?.takeIf { it.isNotBlank() } ?: fallbackPoster
-            runCatching { iv.load(PosterLoader.model(still)) }
+            // Decode at row-thumb size, not full resolution (see cellModel).
+            runCatching { iv.load(PosterLoader.cellModel(still, thumbW, thumbH) ?: PosterLoader.model(still)) }
             frame.addView(
                 TextView(this).apply {
                     text = "▶"
@@ -8941,10 +8942,15 @@ class PlayerActivity : ComponentActivity() {
             }
             return row
         }
-        for ((season, list) in eps.groupBy { it.season }) {
-            if (seasons.size > 1 && season > 0) {
+        // Specials (season 0) sort last and their header reads "Specials",
+        // matching the detail screen — the old insertion-order grouping put
+        // S0's featurettes (1/10/11…) on top of the panel.
+        val orderedSeasons = (seasons.filter { it > 0 }.sorted() + seasons.filter { it <= 0 }.sorted())
+        for (season in orderedSeasons) {
+            val list = eps.filter { it.season == season }.sortedBy { it.number }
+            if (seasons.size > 1) {
                 content.addView(TextView(this).apply {
-                    text = I18n.t("Season") + " " + season
+                    text = if (season > 0) I18n.t("Season") + " " + season else I18n.t("Specials")
                     dpText(12f)
                     includeFontPadding = false
                     typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
@@ -9148,47 +9154,17 @@ class PlayerActivity : ComponentActivity() {
             dialog?.let { runCatching { it.dismiss() } }
             dialog = null
         }
-        // In-player manual pick: the server page for the tapped episode opens
-        // INSTANTLY and fills live as servers land (see appendSources) — no
-        // blocking "Loading episode" box. The previous episode keeps playing
-        // underneath until a server is picked; backing out of the page hands
-        // the player back to it (see episodeSwitchRestore).
+        // In-player manual pick: the SCOPE question comes first (the same
+        // "this extension or all" choice the detail screen asks before
+        // playback), then the horizontal server page for the NEW episode
+        // opens instantly and fills live as servers land (see appendSources)
+        // — no blocking box, no rotation kick, and never the old episode's
+        // servers. The previous episode keeps playing underneath until a
+        // server is picked; backing out of the page hands the player back
+        // to it (see episodeSwitchRestore).
         val switchArmed = !fromAutoplay
-        if (switchArmed) {
-            val oldSources = sources
-            val oldIndex = currentIndex
-            val oldSe = intent.getIntExtra("histEpisodeSeason", 0)
-            val oldNe = intent.getIntExtra("histEpisodeNumber", 0)
-            val oldNm = intent.getStringExtra("histEpisodeName")
-            // A programmatic dismiss must neither restore nor finish (see the
-            // chooser's dismiss handler): disarm first, then clear the old page.
-            startChoicePending = false
-            serverPickActed = false
-            episodeSwitchRestore = null
-            runCatching { serverChooserDialog?.dismiss() }
-            sources = emptyList()
-            currentIndex = 0
-            chooserEmptyNote = null
-            notifySourcesChanged()
-            intent.putExtra("histEpisodeSeason", ep.season)
-            intent.putExtra("histEpisodeNumber", ep.number)
-            intent.putExtra("histEpisodeName", ep.name.orEmpty())
-            startChooserShown = false
-            showServerChooser(startMode = true)
-            episodeSwitchRestore = {
-                sources = oldSources
-                currentIndex = oldIndex
-                if (switchOldEp != null) applyLiveEpisode(switchOldEp)
-                intent.putExtra("histEpisodeSeason", oldSe)
-                intent.putExtra("histEpisodeNumber", oldNe)
-                intent.putExtra("histEpisodeName", oldNm)
-                chooserEmptyNote = null
-                notifySourcesChanged()
-            }
-        } else {
-            Toast.makeText(this, I18n.t("Loading next episode…"), Toast.LENGTH_SHORT).show()
-        }
-        lifecycleScope.launch {
+        fun runSearch(originOnly: Boolean) {
+            lifecycleScope.launch {
             // FAST: the title's own extension resolves its own episode ids in
             // seconds; the full cross-extension pass is what takes a minute.
             // Bounded: an origin that never answers used to hold this launch
@@ -9205,10 +9181,13 @@ class PlayerActivity : ComponentActivity() {
             if (fast.isNotEmpty()) {
                 dismissDialog()
                 adoptEpisodeStreams(item, ep, fast.map { it.toPlayerSource() }, fromAutoplay)
-                // ENRICH in the background: the full pass appends servers the
-                // origin never had (append-only, so playback and the open
-                // chooser are never disturbed — see [appendSources]).
-                lifecycleScope.launch {
+                // ENRICH in the background (all-extensions scope only): the
+                // full pass appends servers the origin never had (append-only,
+                // so playback and the open chooser are never disturbed — see
+                // [appendSources]). "This extension" already has everything
+                // the origin can give.
+                if (!originOnly) {
+                    lifecycleScope.launch {
                     val full = runCatching {
                         repo.streamsFor(item, ep) { prog ->
                             if (gen == episodeSwitchGen) {
@@ -9224,6 +9203,8 @@ class PlayerActivity : ComponentActivity() {
                 return@launch
             }
             // The origin had nothing fast: the full pass runs with the open chooser filling live.
+            // "This extension" scope skips it outright — the origin said all it
+            // has, and the empty branch below reports it on the open page.
             // Bounded: the full cross-extension pass used to run unbounded here,
             // so a stuck lookup held "Loading episode" forever. Past 90s the
             // wait is declared honestly instead of hanging.
@@ -9234,7 +9215,7 @@ class PlayerActivity : ComponentActivity() {
                     cancelable = true,
                 ) { cancelled = true }
             }
-            val streams = withTimeoutOrNull(90_000L) {
+            val streams = if (originOnly) emptyList() else withTimeoutOrNull(90_000L) {
                 runCatching {
                     // Progressive, like the origin-fast path above: every
                     // server that lands is appended to the open chooser
@@ -9278,6 +9259,119 @@ class PlayerActivity : ComponentActivity() {
             }
             adoptEpisodeStreams(item, ep, streams.map { it.toPlayerSource() }, fromAutoplay)
             autoplayRunning = false
+            }
+        }
+
+        fun beginSwitch(originOnly: Boolean) {
+            // Re-assert the target: a tap-away-then-pick race may have run
+            // the scope dialog's cancel first (see askEpisodeScope).
+            liveEpisode = ep
+            val oldSources = sources
+            val oldIndex = currentIndex
+            val oldSe = intent.getIntExtra("histEpisodeSeason", 0)
+            val oldNe = intent.getIntExtra("histEpisodeNumber", 0)
+            val oldNm = intent.getStringExtra("histEpisodeName")
+            // A programmatic dismiss must neither restore nor finish (see the
+            // chooser's dismiss handler): disarm first, then clear the old page.
+            startChoicePending = false
+            serverPickActed = false
+            episodeSwitchRestore = null
+            runCatching { serverChooserDialog?.dismiss() }
+            sources = emptyList()
+            currentIndex = 0
+            chooserEmptyNote = null
+            notifySourcesChanged()
+            intent.putExtra("histEpisodeSeason", ep.season)
+            intent.putExtra("histEpisodeNumber", ep.number)
+            intent.putExtra("histEpisodeName", ep.name.orEmpty())
+            startChooserShown = false
+            // Horizontal in-player page for the NEW episode's servers (like
+            // the Source pill reopen mid-playback): no portrait kick, no trip
+            // outside the player — the old vertical default is what read as
+            // "the server page opened outside the player".
+            showServerChooser(startMode = true, forceHorizontal = true)
+            episodeSwitchRestore = {
+                sources = oldSources
+                currentIndex = oldIndex
+                if (switchOldEp != null) applyLiveEpisode(switchOldEp)
+                intent.putExtra("histEpisodeSeason", oldSe)
+                intent.putExtra("histEpisodeNumber", oldNe)
+                intent.putExtra("histEpisodeName", oldNm)
+                chooserEmptyNote = null
+                notifySourcesChanged()
+            }
+            runSearch(originOnly)
+        }
+
+        if (switchArmed) {
+            // The scope question (same choice the detail screen asks before
+            // playback): this extension only, or every installed source.
+            // Backing out answers nothing — the player simply stays on the
+            // current episode (see askEpisodeScope).
+            askEpisodeScope(
+                originProviderName.ifBlank { item.providerId },
+                onCancel = {
+                    if (gen == episodeSwitchGen) {
+                        liveEpisode = switchOldEp
+                        autoplayRunning = false
+                    }
+                },
+            ) { originOnly ->
+                if (gen != episodeSwitchGen || isFinishing || isDestroyed) return@askEpisodeScope
+                beginSwitch(originOnly)
+            }
+        } else {
+            Toast.makeText(this, I18n.t("Loading next episode…"), Toast.LENGTH_SHORT).show()
+            runSearch(false)
+        }
+    }
+
+    /**
+     * The "this extension or all" scope question for an in-player episode
+     * switch (see [switchToEpisode]): the same choice the detail screen asks
+     * before playback. [onPick] fires with true for "this extension only".
+     * A dismiss without a pick fires nothing — the caller stays on the
+     * current episode (and restores [liveEpisode], which the switch already
+     * moved onto the new one).
+     */
+    private fun askEpisodeScope(
+        originId: String,
+        onCancel: () -> Unit,
+        onPick: (Boolean) -> Unit,
+    ) {
+        val originName = runCatching {
+            (applicationContext as HikariApp).providers.byId(originId)?.config?.name
+        }.getOrNull().orEmpty()
+        var answered = false
+        showGlassMenu(
+            I18n.t("Search servers in"),
+            listOf(
+                GlassOption(
+                    I18n.t("This extension"),
+                    originName.ifBlank { originId }.ifBlank { null },
+                    iconRes = R.drawable.ic_server,
+                    chevron = true,
+                    marker = RowMarker.ICON,
+                ),
+                GlassOption(
+                    I18n.t("All extensions"),
+                    I18n.t("Every installed source, like playback"),
+                    iconRes = R.drawable.ic_speed,
+                    chevron = true,
+                    marker = RowMarker.ICON,
+                ),
+            ),
+            hint = I18n.t("Which sources should find this episode's servers?"),
+            iconRes = R.drawable.ic_server,
+            cancelable = true,
+            onDialog = { dlg ->
+                dlg.setOnDismissListener {
+                    if (!answered) onCancel()
+                }
+            },
+        ) { which ->
+            answered = true
+            onPick(which == 0)
         }
     }
 
@@ -9678,7 +9772,7 @@ class PlayerActivity : ComponentActivity() {
         if (com.hikari.app.player.ServerScreenStyles.isStreams() ||
             com.hikari.app.tv.TvMode.isTv
         ) {
-            showServerChooserStreams(startMode, forDownload)
+            showServerChooserStreams(startMode, forDownload, forceHorizontal)
             return
         }
         // The START chooser (and the download chooser, which is the same
@@ -11117,13 +11211,15 @@ class PlayerActivity : ComponentActivity() {
      * pick / download / back-out behaviour as [showServerChooser]; only the
      * drawing differs (see [ServerStreamsPage]).
      */
-    private fun showServerChooserStreams(startMode: Boolean, forDownload: Boolean) {
+    private fun showServerChooserStreams(startMode: Boolean, forDownload: Boolean, forceHorizontal: Boolean = false) {
         if (startMode) {
             // Once per Activity, like the classic page: the live search keeps
             // growing the list and must not re-open the page after a pick.
             if (startChooserShown) return
             startChooserShown = true
-            if (!playerTvRemote()) {
+            // An in-player episode switch keeps the horizontal page (see
+            // switchToEpisode): no portrait kick mid-playback.
+            if (!playerTvRemote() && !forceHorizontal) {
                 runCatching { requestedOrientation = SCREEN_ORIENTATION_PORTRAIT }
             }
             startChoicePending = !forDownload
@@ -16786,8 +16882,10 @@ class PlayerActivity : ComponentActivity() {
      * launch came from a Download tap, the download chooser is re-armed too, so
      * whichever server the user lands on offers to download it.
      *
-     * Unanswered after 8s it advances on its own — a failure must never strand
-     * playback on the title card.
+     * Unanswered, the prompt now STOPS on the error instead of advancing on
+     * its own: a tapped server that fails must never slide onto another
+     * mirror (often Reanime) by itself — the error panel explains, and the
+     * user picks the next step.
      */
     private fun promptServerFailed(nextIndex: Int, details: String) {
         if (failDialog != null) return
@@ -16820,7 +16918,7 @@ class PlayerActivity : ComponentActivity() {
                     marker = RowMarker.ICON,
                 ),
             ),
-            hint = I18n.t("Switching to the next server automatically…") + " (8s)",
+            hint = I18n.t("Nothing switches on its own — pick the next step."),
             iconRes = R.drawable.ic_server,
             message = details,
             cancelable = true,
@@ -16861,30 +16959,28 @@ class PlayerActivity : ComponentActivity() {
             }
         }
         failDialog = dialog
-        val start = System.currentTimeMillis()
-        val ticker = object : Runnable {
-            override fun run() {
-                if (failDialog != dialog) return
-                val remaining = 8_000 - (System.currentTimeMillis() - start)
-                if (remaining <= 0) {
-                    dismissFailDialog()
-                    pickedByUser = false
-                    advanceToServer(nextIndex)
-                    return
-                }
-                countdown?.text = I18n.t("Switching to the next server automatically…") +
-                    " (${(remaining / 1000) + 1}s)"
+        // No auto-advance ticker: an unanswered prompt stops on the error
+        // instead of sliding onto the next server by itself. Dismissing the
+        // prompt (tap-away/back) lands on the same error panel.
+        dialog.setOnDismissListener {
+            if (failDialog == dialog) {
+                failDialog = null
+                failDialogTicker = null
+                pickedByUser = false
+                showError(details, sources.indices.any { it != currentIndex })
             }
         }
-        failDialogTicker = ticker
-        bufferingWatchdog.post(ticker)
     }
 
     private fun dismissFailDialog() {
         failDialogTicker?.let { bufferingWatchdog.removeCallbacks(it) }
         failDialogTicker = null
-        failDialog?.let { runCatching { it.dismiss() } }
+        // Clear first: the dismiss fires the dialog's dismiss listener, which
+        // must see that this was a programmatic (answered) dismiss and stay
+        // quiet — only an unanswered tap-away lands on the error panel.
+        val dlg = failDialog
         failDialog = null
+        dlg?.let { runCatching { it.dismiss() } }
     }
 
     /**
@@ -18787,10 +18883,18 @@ class PlayerActivity : ComponentActivity() {
             while (System.currentTimeMillis() < deadline) {
                 delay(300)
                 val idx = freshIndex(failedName)
-                if (idx >= 0) {
+                if (idx < 0) continue
+                // A tapped server that failed comes back ONLY as itself (a
+                // re-extracted signed link): sliding onto a different mirror
+                // here is the reported "it auto-played Reanime". Anything
+                // else stops on the error instead (see below).
+                if (!pickedByUser ||
+                    sources.getOrNull(idx)?.name.equals(failedName, ignoreCase = true)
+                ) {
                     playSource(idx)
                     return@launch
                 }
+                break
             }
             // Nothing new arrived — but the detail screen's own search may still
             // be running: the cross pass and its background sweep keep finding
@@ -18802,8 +18906,15 @@ class PlayerActivity : ComponentActivity() {
             // searched"). So when the search is not finished, wait for it with
             // [awaitReplacementForStalledServer] — which starts the first
             // replacement automatically and only reports failure once the
-            // search has genuinely ended.
-            if (liveSessionId != null && !liveSearchDone) {
+            // search has genuinely ended. A TAPPED server never takes that
+            // automatic road: it stops on the error instead (see above).
+            if (pickedByUser) {
+                showError(
+                    originalError
+                        ?: I18n.t("That server failed. Pick another server."),
+                    sources.indices.any { it != currentIndex },
+                )
+            } else if (liveSessionId != null && !liveSearchDone) {
                 awaitReplacementForStalledServer(sources.getOrNull(currentIndex))
             } else {
                 showError(

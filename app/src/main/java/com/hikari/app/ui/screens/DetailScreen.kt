@@ -177,7 +177,7 @@ import com.hikari.app.player.StreamsLive
 import com.hikari.app.providers.ContentProvider
 import com.hikari.app.providers.IptvProvider
 import com.hikari.app.ui.Artwork
-import com.hikari.app.ui.components.heroPoster
+import com.hikari.app.ui.components.flightTarget
 import com.hikari.app.ui.LoadingStyles
 import com.hikari.app.ui.PosterArt
 import com.hikari.app.ui.PosterLoader
@@ -5323,20 +5323,31 @@ fun DetailScreen(
                         }
                     } else {
                         if (episodeBigStyle) {
-                            pageEps.forEachIndexed { index, ep ->
-                                item(key = "ep-big-$index") {
-                                    EpisodeBigCard(
-                                        ep = ep,
-                                        fallbackImage = m?.backdropUrl ?: m?.posterUrl ?: posterUrl,
-                                        onClick = { tryPlay(ep) },
-                                        onDownload = { tryDownload(ep) },
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(horizontal = 16.dp, vertical = 6.dp),
-                                        sizeScale = tvEpisodeScale,
-                                        glass = episodeGlass,
-                                        hideSpoilers = antiSpoiler && !isEpSeen(ep),
-                                    )
+                            // Phone big cards ride a horizontal rail (TV
+                            // already does): one LazyColumn item holding one
+                            // LazyRow of fixed-width cards. The list rows and
+                            // poster grid below are untouched.
+                            item(key = "ep-big-rail") {
+                                LazyRow(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                ) {
+                                    itemsIndexed(
+                                        pageEps,
+                                        key = { _, ep -> "ep-big-" + ep.season + "-" + ep.number + "-" + ep.id }
+                                    ) { _, ep ->
+                                        EpisodeBigCard(
+                                            ep = ep,
+                                            fallbackImage = m?.backdropUrl ?: m?.posterUrl ?: posterUrl,
+                                            onClick = { tryPlay(ep) },
+                                            onDownload = { tryDownload(ep) },
+                                            modifier = Modifier.width(300.dp),
+                                            sizeScale = tvEpisodeScale,
+                                            glass = episodeGlass,
+                                            hideSpoilers = antiSpoiler && !isEpSeen(ep),
+                                        )
+                                    }
                                 }
                             }
                         } else if (episodePosterStyle) {
@@ -6690,15 +6701,16 @@ private fun Hero(
     // The plural TMDB backdrops first (what TV's banner shows): a dead
     // override falls back to the normal model below, never black.
     var tmdbHeaderDead by remember(meta?.uniqueId) { mutableStateOf(false) }
-    // Phone rotates through the same plural list TV's banner rotates: one
-    // TMDB image used to sit still here while TV kept changing every few
-    // seconds. Every 2s, exactly as asked; a dead image falls back below.
+    // Phone rotates through the same plural list TV's banner rotates. The
+    // rotation used to turn every 2s — every turn crossfades a full-screen
+    // image, which kept the GPU busy (and dropped scroll frames) while just
+    // sitting on the page. 8s keeps the living-backdrop feel for free.
     val tmdbHeaders = rememberHeaderTmdbArts(meta)
     var tmdbHeaderIndex by remember(meta?.uniqueId) { mutableStateOf(0) }
     LaunchedEffect(meta?.uniqueId, tmdbHeaders.size) {
         if (tmdbHeaders.size > 1) {
             while (true) {
-                delay(2_000L)
+                delay(8_000L)
                 tmdbHeaderIndex = (tmdbHeaderIndex + 1) % tmdbHeaders.size
             }
         }
@@ -6797,7 +6809,7 @@ private fun Hero(
                     style = rememberPosterStyle(),
                     modifier = Modifier
                         .fillMaxSize()
-                        .heroPoster(heroKey),
+                        .flightTarget(heroKey),
                 )
             }
             }
@@ -6855,7 +6867,7 @@ private fun Hero(
                     style = rememberPosterStyle(),
                     modifier = Modifier
                         .fillMaxSize()
-                        .heroPoster(heroKey),
+                        .flightTarget(heroKey),
                 )
             }
             }
@@ -8257,7 +8269,12 @@ private fun EpisodeBigCard(
                 .clip(RoundedCornerShape(12.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant)
         ) {
-            val thumb = PosterLoader.model(tmdbStill?.takeIf { it.isNotBlank() } ?: ep.image?.takeIf { it.isNotBlank() } ?: fallbackImage)
+            val thumbUrl = tmdbStill?.takeIf { it.isNotBlank() }
+                ?: ep.image?.takeIf { it.isNotBlank() } ?: fallbackImage
+            // 16:9 card still: decode at card size, not full resolution (see
+            // PosterLoader.cellModel) — full-size stills per card are part of
+            // what makes the episode list scroll heavy.
+            val thumb = PosterLoader.cellModel(thumbUrl, 640, 360) ?: PosterLoader.model(thumbUrl)
             if (thumb != null) {
                 AsyncImage(
                     model = thumb,
@@ -8332,6 +8349,25 @@ private fun EpisodeBigCard(
                     )
                 }
             }
+            // Nuvio-style rating badge on the still, bottom-start (the
+            // download button owns bottom-end): IMDb yellow, dark text.
+            if (!unaired && (ep.rating ?: 0.0) > 0.0) {
+                Box(
+                    Modifier
+                        .align(Alignment.BottomStart)
+                        .padding((8f * s).dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(Color(0xFFF5C518))
+                        .padding(horizontal = (8f * s).dp, vertical = (4f * s).dp)
+                ) {
+                    Text(
+                        "IMDb ★ " + String.format(java.util.Locale.US, "%.1f", ep.rating),
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.Black
+                    )
+                }
+            }
         }
         Text(
             if (hideSpoilers) tr("Episode %s").replace("%s", ep.number.toString())
@@ -8346,6 +8382,30 @@ private fun EpisodeBigCard(
             modifier = Modifier.padding(start = (4f * s).dp, top = (8f * s).dp, end = (4f * s).dp)
         )
         if (!ep.overview.isNullOrBlank() || hideSpoilers) {
+            // Nuvio order: title, then the meta line (date • runtime •
+            // rating), then the overview — the facts stay visible even when
+            // the overview runs long.
+            val metaLine = buildString {
+                formatEpisodeDate(ep.released)?.let { append(it) }
+                ep.runtime?.takeIf { it > 0 }?.let {
+                    if (isNotEmpty()) append("  •  ")
+                    append("${it}m")
+                }
+                ep.rating?.takeIf { it > 0.0 }?.let {
+                    if (isNotEmpty()) append("  •  ")
+                    append(tr("Rated: %s").replace("%s", String.format(java.util.Locale.US, "%.1f", it)))
+                }
+            }.takeIf { it.isNotBlank() }
+            if (!metaLine.isNullOrBlank()) {
+                Text(
+                    metaLine,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(start = (4f * s).dp, top = (6f * s).dp, end = (4f * s).dp)
+                )
+            }
             Text(
                 if (hideSpoilers) tr("Hidden to avoid spoilers") else ep.overview!!.trim(),
                 style = MaterialTheme.typography.bodySmall.copy(
@@ -8356,27 +8416,28 @@ private fun EpisodeBigCard(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.padding(start = (4f * s).dp, top = (3f * s).dp, end = (4f * s).dp)
             )
-        }
-        val metaLine = buildString {
-            formatEpisodeDate(ep.released)?.let { append(it) }
-            ep.runtime?.takeIf { it > 0 }?.let {
-                if (isNotEmpty()) append("  •  ")
-                append("${it}m")
+        } else {
+            val metaLine = buildString {
+                formatEpisodeDate(ep.released)?.let { append(it) }
+                ep.runtime?.takeIf { it > 0 }?.let {
+                    if (isNotEmpty()) append("  •  ")
+                    append("${it}m")
+                }
+                ep.rating?.takeIf { it > 0.0 }?.let {
+                    if (isNotEmpty()) append("  •  ")
+                    append(tr("Rated: %s").replace("%s", String.format(java.util.Locale.US, "%.1f", it)))
+                }
+            }.takeIf { it.isNotBlank() }
+            if (!metaLine.isNullOrBlank()) {
+                Text(
+                    metaLine,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(start = (4f * s).dp, top = (6f * s).dp, end = (4f * s).dp)
+                )
             }
-            ep.rating?.takeIf { it > 0.0 }?.let {
-                if (isNotEmpty()) append("  •  ")
-                append(tr("Rated: %s").replace("%s", String.format(java.util.Locale.US, "%.1f", it)))
-            }
-        }.takeIf { it.isNotBlank() }
-        if (!metaLine.isNullOrBlank()) {
-            Text(
-                metaLine,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(start = (4f * s).dp, top = (3f * s).dp, end = (4f * s).dp)
-            )
         }
     }
 }

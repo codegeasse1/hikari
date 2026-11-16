@@ -95,7 +95,8 @@ import com.hikari.app.ui.RatingBadge
 import com.hikari.app.ui.components.EmptyState
 import com.hikari.app.ui.components.GlassSearchField
 import com.hikari.app.ui.components.StaggerIn
-import com.hikari.app.ui.components.heroPoster
+import com.hikari.app.ui.components.HeroFlight
+import com.hikari.app.ui.components.flightSource
 import com.hikari.app.ui.navigation.LocalTaskbarInset
 import com.hikari.app.ui.navigation.Routes
 import com.hikari.app.ui.rememberPosterScore
@@ -1435,7 +1436,9 @@ private fun PhoneSearchCell(
 ) {
     val style = rememberPosterStyle()
     val badge = rememberPosterScore(item, style)
-    Column(modifier.clickable { onOpen() }) {
+    // Snapshot flight (see HeroFlight): same key shape as PosterCard.
+    val flightKey = if (heroNamespace.isBlank()) item.uniqueId else heroNamespace + ":" + item.uniqueId
+    Column(modifier.clickable { HeroFlight.arm(flightKey, Artwork.model(item)); onOpen() }) {
         val phoneCinema = style.isCinema(false)
         val hero = if (phoneCinema) Artwork.heroModel(item) else null
         // Lookahead-crash guard: the aspect sizer stays outer; the shared hero
@@ -1449,11 +1452,11 @@ private fun PhoneSearchCell(
             Box(
                 Modifier
                     .fillMaxSize()
-                    .heroPoster(if (heroNamespace.isBlank()) item.uniqueId else heroNamespace + ":" + item.uniqueId)
+                    .flightSource(flightKey)
             ) {
             if (phoneCinema && hero != null && !hero.second) {
                 AsyncImage(
-                    model = hero.first,
+                    model = com.hikari.app.ui.PosterLoader.cellModel(hero.first as? String, 640, 360) ?: hero.first,
                     contentDescription = item.title,
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop,
@@ -1461,7 +1464,13 @@ private fun PhoneSearchCell(
                 )
             } else {
                 AsyncImage(
-                    model = if (phoneCinema) hero?.first else Artwork.model(item),
+                    model = if (phoneCinema) {
+                        val u = hero?.first as? String
+                        com.hikari.app.ui.PosterLoader.cellModel(u, 640, 360) ?: hero?.first
+                    } else {
+                        val u = Artwork.model(item) as? String
+                        com.hikari.app.ui.PosterLoader.cellModel(u, 360, 540) ?: Artwork.model(item)
+                    },
                     contentDescription = item.title,
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop,

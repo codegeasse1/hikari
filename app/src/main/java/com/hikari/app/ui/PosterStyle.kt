@@ -432,6 +432,11 @@ fun PosterArt(
      *  poster keeps its top rather than being cut in the middle. */
     imageAlignment: Alignment = Alignment.Center,
     item: MediaItem? = null,
+    /** Cell decode size (width × height px): when set and the artwork is a
+     *  plain URL, Coil decodes at cell size instead of full resolution (see
+     *  [PosterLoader.cellModel]). Grid/row cards pass it; heroes leave it
+     *  null so backdrops and detail art keep full quality. */
+    coilSize: Pair<Int, Int>? = null,
     /** Fires when the main artwork is definitively dead (see [PosterImage]):
      *  the detail hero uses it to fall back to looked-up art. Placed before
      *  [overlay] so the trailing content lambda keeps binding to [overlay]. */
@@ -613,7 +618,9 @@ fun PosterArt(
                 modifier = Modifier.size(28.dp),
             )
             PosterImage(
-                model = model,
+                model = if (coilSize != null && model is String) {
+                    com.hikari.app.ui.PosterLoader.cellModel(model, coilSize.first, coilSize.second) ?: model
+                } else model,
                 contentDescription = contentDescription,
                 modifier = Modifier.fillMaxSize(),
                 contentScale = contentScale,

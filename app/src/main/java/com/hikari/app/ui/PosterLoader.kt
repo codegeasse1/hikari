@@ -228,6 +228,24 @@ object PosterLoader {
         return builder.build()
     }
 
+    /**
+     * Coil model for a small grid/row cell: a plain http(s) URL wrapped in a
+     * sized request, so Coil decodes the bitmap at cell size instead of full
+     * resolution (a full-size TMDB/provider poster decoded per scrolling cell
+     * is what makes catalogue/search scrolls feel heavy). Anything else
+     * (data-URIs, cache tokens, Files, existing requests) keeps the normal
+     * [model] path — sizing those buys nothing.
+     */
+    fun cellModel(url: String?, widthPx: Int, heightPx: Int): Any? {
+        val u = normalize(url) ?: return null
+        if (!u.startsWith("http://") && !u.startsWith("https://")) return model(u)
+        return ImageRequest.Builder(HikariApp.instance)
+            .data(u)
+            .size(widthPx.coerceAtLeast(1), heightPx.coerceAtLeast(1))
+            .memoryCacheKey("hikari-cell:${widthPx}x${heightPx}:" + fnv1a(u))
+            .build()
+    }
+
     fun haloModel(model: Any?, blurDp: Int): Any? {
         if (model == null || blurDp <= 0) return null
         val px = (34 - blurDp).coerceIn(6, 34)

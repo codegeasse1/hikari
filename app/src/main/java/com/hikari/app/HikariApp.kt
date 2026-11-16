@@ -541,7 +541,7 @@ class HikariApp : Application() {
                 com.hikari.app.nuvio.NuvioPluginManager.applyPatchesToInstalled(this@HikariApp)
             }
             providers.refresh()
-            Logs.log("Providers", "refreshed: ${providers.providers.value.size} installed")
+            Logs.log("Providers", "refreshed: ${providers.configCount()} installed")
             appScope.launch {
                 providers.providers.collect { list ->
                     val enabled = list.count { it.config.enabled }
@@ -673,7 +673,7 @@ class HikariApp : Application() {
             )
             Logs.log(
                 "App",
-                "startup complete (${providers.providers.value.size} providers) in " +
+                "startup complete (${providers.configCount()} providers) in " +
                     "${System.currentTimeMillis() - startupAt}ms",
             )
         }
