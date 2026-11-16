@@ -222,6 +222,12 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
     }
 
     private var loadJob: kotlinx.coroutines.Job? = null
+    /** Boot clock + last-missed picks: the installed list streams in piece by
+     *  piece at launch, so a pick missing from one early emission is NOT proof
+     *  it is gone (wiping the store there is what reset Home to All on every
+     *  reopen). A drop commits only when the miss repeats or boot settled. */
+    private val bootAtMs = android.os.SystemClock.elapsedRealtime()
+    private var lastMissingPick: Set<String> = emptySet()
 
     /** The collection the current feed was built from — lets the collections
      *  store (edited in Settings) invalidate exactly the affected feed. */
@@ -273,13 +279,22 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {    private val m
                         isCollectionKey(key) || isTrackerKey(key) || ps.any { it.config.id == key }
                     }
                     if (validKept != sel) {
-                        com.hikari.app.data.Logs.log(
-                            "Home",
-                            "dropping pick(s) no longer installed: " +
-                                (sel - validKept.toSet()).joinToString(","),
-                        )
-                        applySelection(validKept)
-                        viewModelScope.launch { store.setHomeProviders(validKept.toSet()) }
+                        val nowMs = android.os.SystemClock.elapsedRealtime()
+                        val missing = sel - validKept.toSet()
+                        val repeated = missing.all { it in lastMissingPick }
+                        lastMissingPick = missing.toSet()
+                        if (repeated || nowMs - bootAtMs > 20_000L) {
+                            com.hikari.app.data.Logs.log(
+                                "Home",
+                                "dropping pick(s) no longer installed: " +
+                                    missing.joinToString(","),
+                            )
+                            applySelection(validKept)
+                            viewModelScope.launch { store.setHomeProviders(validKept.toSet()) }
+                            lastMissingPick = emptySet()
+                        }
+                    } else {
+                        lastMissingPick = emptySet()
                     }
                 }
                 loadInternal()
