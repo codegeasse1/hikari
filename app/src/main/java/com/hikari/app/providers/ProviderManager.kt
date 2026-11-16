@@ -54,7 +54,23 @@ class ProviderManager(private val store: AppStore, private val context: Context)
                 // Pruning here (rather than only in the two screens that draw
                 // them) means every reader of [providers] is safe, and writing it
                 // back means the repair survives the next launch.
-                val unique = stored.distinctBy { it.id }
+                var unique = stored.distinctBy { it.id }
+                // Corrupt Anymex installs (blank/symbol-only keys like "____")
+                // can never load and pollute Home with empty rows — drop them
+                // here (the user can reinstall the real extension).
+                val junkAnymex = unique.filter {
+                    (it.type == ProviderType.ANYMEX || it.type == ProviderType.ANYMEX_MANGA) &&
+                        it.id.substringAfter("|").trim { c -> c == '_' || c == '.' || c == '-' }.length < 8
+                }
+                if (junkAnymex.isNotEmpty()) {
+                    com.hikari.app.data.Logs.log(
+                        "Providers",
+                        "pruned corrupt Anymex row(s): " +
+                            junkAnymex.joinToString(",") { it.id },
+                    )
+                    runCatching { store.saveProviders(unique - junkAnymex.toSet()) }
+                    unique = unique - junkAnymex.toSet()
+                }
                 if (unique.size != stored.size) {
                     com.hikari.app.data.Logs.log(
                         "Providers",
