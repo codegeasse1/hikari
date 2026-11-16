@@ -883,6 +883,22 @@ class PlayerActivity : ComponentActivity() {
      *  then treated a tap on that row as a no-op, closing the chooser without
      *  playing anything. */
     private var playbackCommitted = false
+    private var committedServerKey = ""
+    private var committedEpisodeKey = ""
+    private fun committedKeyFor(ep: com.hikari.app.data.Episode?): String =
+        (ep?.id?.takeIf { it.isNotBlank() } ?: "") + "|" + (ep?.season ?: 0) + "|" + (ep?.number ?: 0)
+    private fun shouldPlayTap(i: Int): Boolean {
+        if (!playbackCommitted) return true
+        val src = sources.getOrNull(i) ?: return false
+        if (committedServerKey.isNotBlank() && src.identityKey() != committedServerKey) return true
+        return committedKeyFor(liveEpisode) != committedEpisodeKey
+    }
+    private fun isSelectedRow(i: Int): Boolean {
+        if (!playbackCommitted || i != currentIndex) return false
+        val src = sources.getOrNull(i) ?: return false
+        if (committedServerKey.isNotBlank() && src.identityKey() != committedServerKey) return false
+        return true
+    }
 
     /**
      * What the loading cover says while playback is COMMITTED — a server has
@@ -8806,9 +8822,13 @@ class PlayerActivity : ComponentActivity() {
         } else {
             ep.id == historyEntry?.episodeId
         }
-        val fallbackPoster = item.backdropUrl?.takeIf { it.isNotBlank() }
-            ?: item.posterUrl?.takeIf { it.isNotBlank() }
-            ?: historyEntry?.posterUrl?.takeIf { it.isNotBlank() }
+        fun isThumbTmdb(u: String?) = u?.contains("image.tmdb.org") == true
+        val titleArts = listOfNotNull(
+            item.backdropUrl?.takeIf { it.isNotBlank() },
+            item.posterUrl?.takeIf { it.isNotBlank() },
+            historyEntry?.posterUrl?.takeIf { it.isNotBlank() },
+        ).sortedBy { if (isThumbTmdb(it)) 1 else 0 }
+        val fallbackPoster = titleArts.firstOrNull()
         val seasons = eps.map { it.season }.distinct()
         val title = if (seasons.size == 1 && seasons[0] > 0) {
             I18n.t("Season") + " " + seasons[0]
@@ -8858,12 +8878,15 @@ class PlayerActivity : ComponentActivity() {
                     FrameLayout.LayoutParams.MATCH_PARENT
                 )
             )
-            val still = ep.image?.takeIf { it.isNotBlank() } ?: fallbackPoster
+            val epStill = ep.image?.takeIf { it.isNotBlank() }
+            val still = if (epStill != null && !isThumbTmdb(epStill)) epStill
+                else titleArts.firstOrNull { !isThumbTmdb(it) } ?: epStill ?: fallbackPoster
             // Decode at row-thumb size, not full resolution (see cellModel).
             // If the still itself fails (dead image host), fall back to the
             // title art instead of leaving a black box.
             runCatching {
-                val errModel = fallbackPoster?.takeIf { it != still }?.let { PosterLoader.model(it) }
+                val errUrl = (titleArts + listOfNotNull(epStill)).firstOrNull { it != still && it.isNotBlank() }
+            val errModel = errUrl?.let { PosterLoader.model(it) }
                 val stillModel = PosterLoader.cellModel(still, thumbW, thumbH) ?: PosterLoader.model(still)
                 if (stillModel is ImageRequest && errModel != null) {
                     iv.load(stillModel.newBuilder().apply { error(errModel) }.build())
@@ -9293,6 +9316,10 @@ class PlayerActivity : ComponentActivity() {
             runCatching { serverChooserDialog?.dismiss() }
             sources = emptyList()
             currentIndex = 0
+            playbackCommitted = false
+            committedServerKey = ""
+            committedEpisodeKey = ""
+            pickedByUser = false
             chooserEmptyNote = null
             notifySourcesChanged()
             intent.putExtra("histEpisodeSeason", ep.season)
@@ -9745,7 +9772,7 @@ class PlayerActivity : ComponentActivity() {
             },
         // Only mark a row as current once playback has actually been committed
         // to a server — see [playbackCommitted].
-        selected = playbackCommitted && index == currentIndex,
+        selected = isSelectedRow(index),
         // Server names run long ("Provider (Repo) · Plugin · 1080p") and they are
         // what the user is choosing between, so the row's capsule fits TWO lines
         // of it instead of cutting the name off — the box grows with the name.
@@ -10175,23 +10202,32 @@ class PlayerActivity : ComponentActivity() {
                         // reference rows; the vertical start chooser reads
                         // the compact rows the setting asks for.
                         horizontal = !startVerticalSheet,
-                        selected = playbackCommitted && i == currentIndex,
+                        selected = isSelectedRow(i),
                         onPlay = {
-                            startChoicePending = false
-                            serverPickActed = true
-                            dialog.dismiss()
                             if (forDownload) {
+                                startChoicePending = false
+                                serverPickActed = true
                                 currentIndex = i
                                 pickedByUser = true
+                                dialog.dismiss()
                                 showDownloadDialog()
-                            } else if (i != currentIndex || !playbackCommitted) {
+                            } else if (shouldPlayTap(i)) {
+                                startChoicePending = false
+                                serverPickActed = true
                                 noSubsRetry = false
                                 com.hikari.app.data.Logs.log(
                                     "Player",
                                     "chooser tap server ${i + 1}/${sources.size} \"${sources.getOrNull(i)?.name ?: "?"}\"",
                                 )
+                                dialog.dismiss()
                                 playSource(i)
                                 pickedByUser = true
+                            } else {
+                                android.widget.Toast.makeText(
+                                    this@PlayerActivity,
+                                    I18n.t("Already playing this server."),
+                                    android.widget.Toast.LENGTH_SHORT
+                                ).show()
                             }
                         },
                         onDownload = {
@@ -10675,7 +10711,7 @@ class PlayerActivity : ComponentActivity() {
             if (serverChooserDialog === dialog) serverChooserDialog = null
             // A start chooser that took an orientation lock frees it here —
             // playback keeps following the video afterwards.
-            if (startMode && !playerTvRemote()) {
+            if (startMode && !playerTvRemote() && !serverPickActed) {
                 runCatching { requestedOrientation = SCREEN_ORIENTATION_UNSPECIFIED }
             }
             // Closed without a pick (the back button, the ✕, a tap outside):
@@ -11302,7 +11338,7 @@ class PlayerActivity : ComponentActivity() {
                     title = serverLabel(src),
                     sub = subOf(src),
                     addon = addonOf(src),
-                    selected = playbackCommitted && i == currentIndex,
+                    selected = isSelectedRow(i),
                 )
             }
             val tally = ContentRepository.crossTally
@@ -11325,21 +11361,29 @@ class PlayerActivity : ComponentActivity() {
         }
 
         val onPlay: (Int) -> Unit = { i ->
-            startChoicePending = false
-            serverPickActed = true
-            dialog.dismiss()
             if (forDownload) {
+                startChoicePending = false
+                serverPickActed = true
                 currentIndex = i
                 pickedByUser = true
+                dialog.dismiss()
                 showDownloadDialog()
-            } else if (i != currentIndex || !playbackCommitted) {
+            } else if (shouldPlayTap(i)) {
+                startChoicePending = false
+                serverPickActed = true
                 noSubsRetry = false
                 com.hikari.app.data.Logs.log(
                     "Player",
                     "chooser tap server ${i + 1}/${sources.size} \"${sources.getOrNull(i)?.name ?: "?"}\"",
                 )
+                dialog.dismiss()
                 playSource(i)
                 pickedByUser = true
+            } else {
+                android.widget.Toast.makeText(
+                    this@PlayerActivity, I18n.t("Already playing this server."),
+                    android.widget.Toast.LENGTH_SHORT
+                ).show()
             }
         }
         val onDownload: (Int) -> Unit = { i ->
@@ -11463,7 +11507,7 @@ class PlayerActivity : ComponentActivity() {
             sourcesWatchers.remove(watcher)
             page.stop()
             if (serverChooserDialog === dialog) serverChooserDialog = null
-            if (startMode && !playerTvRemote()) {
+            if (startMode && !playerTvRemote() && !serverPickActed) {
                 runCatching { requestedOrientation = SCREEN_ORIENTATION_UNSPECIFIED }
             }
             // Closed without a pick (back button / arrow): abandon the play, exactly
@@ -14443,6 +14487,8 @@ class PlayerActivity : ComponentActivity() {
         // From here on the chooser may show this row as the current one.
         playbackCommitted = true
         val src = sources[index]
+        committedServerKey = src.identityKey()
+        committedEpisodeKey = committedKeyFor(liveEpisode)
         com.hikari.app.data.Logs.log(
             "Player",
             "play tap server ${index + 1}/${sources.size} \"${src.name}\" prov=${src.providerId} " +

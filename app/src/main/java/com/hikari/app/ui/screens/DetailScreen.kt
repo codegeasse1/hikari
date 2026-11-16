@@ -6731,11 +6731,13 @@ private fun Hero(
     // sitting on the page. 8s keeps the living-backdrop feel for free.
     val tmdbHeaders = rememberHeaderTmdbArts(meta)
     var tmdbHeaderIndex by remember(meta?.uniqueId) { mutableStateOf(0) }
-    LaunchedEffect(meta?.uniqueId, tmdbHeaders.size) {
+    LaunchedEffect(meta?.uniqueId, tmdbHeaders.size, tmdbHeaderDead) {
         if (tmdbHeaders.size > 1) {
             while (true) {
                 delay(8_000L)
-                tmdbHeaderIndex = (tmdbHeaderIndex + 1) % tmdbHeaders.size
+                if (!tmdbHeaderDead && tmdbHeaders.size > 1) {
+                    tmdbHeaderIndex = (tmdbHeaderIndex + 1) % tmdbHeaders.size
+                }
             }
         }
     }
@@ -6772,7 +6774,7 @@ private fun Hero(
                 .fillMaxWidth()
                 .aspectRatio(3f / 4f)
         ) {
-            androidx.compose.animation.Crossfade(targetState = image, label = "heroTall") { img ->
+            androidx.compose.animation.Crossfade(targetState = image.first, label = "heroTall") { img ->
                 PosterArt(
                     model = img.first,
                     contentDescription = meta?.title,
@@ -6851,7 +6853,7 @@ private fun Hero(
                 .fillMaxWidth()
                 .height(214.dp),
         ) {
-            androidx.compose.animation.Crossfade(targetState = image, label = "heroSide") { img ->
+            androidx.compose.animation.Crossfade(targetState = image.first, label = "heroSide") { img ->
                 PosterArt(
                     model = img.first,
                     contentDescription = meta?.title,
@@ -6909,7 +6911,7 @@ private fun Hero(
                 .fillMaxWidth()
                 .aspectRatio(16f / 9f)
         ) {
-            androidx.compose.animation.Crossfade(targetState = image, label = "heroWide") { img ->
+            androidx.compose.animation.Crossfade(targetState = image.first, label = "heroWide") { img ->
                 HeroArtwork(
                     model = img.first,
                     wide = img.second,
