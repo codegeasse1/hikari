@@ -2650,7 +2650,11 @@ internal fun webUrlFor(p: ContentProvider): String? = when (p.config.type) {
     ProviderType.HIKARI -> com.hikari.app.hiki.HikariRuntime.providerFor(p.config)?.mainUrl
     ProviderType.SKYSTREAM -> com.hikari.app.skystream.SkyStreamPluginManager.siteUrlOf(p.config)
     ProviderType.ANIYOMI -> com.hikari.app.aniyomi.AniyomiExtensionManager.siteUrlOf(p.config)
-    ProviderType.MANGA -> if (com.hikari.app.lnreader.LnReaderProvider.isLnReaderId(p.config.id)) {
+    ProviderType.MANGA -> if (com.hikari.app.sora.SoraMangaProvider.isSoraMangaProviderId(p.config.id)) {
+        // Sora manga modules carry their real site in the manifest/module
+        // (same as video Sora modules) — never the manifest host.
+        runCatching { com.hikari.app.sora.SoraPluginManager.siteUrlOf(p.config) }.getOrNull()
+    } else if (com.hikari.app.lnreader.LnReaderProvider.isLnReaderId(p.config.id)) {
         // Novel sources carry no extension to load a site from — the install
         // captured the plugin's own site (see LnReaderPluginManager).
         com.hikari.app.lnreader.LnReaderPluginManager.siteUrlOf(p.config)
@@ -2658,7 +2662,7 @@ internal fun webUrlFor(p: ContentProvider): String? = when (p.config.type) {
         com.hikari.app.manga.MangaExtensionManager.siteUrlOf(p.config)
     }
     ProviderType.ANYMEX, ProviderType.ANYMEX_MANGA -> com.hikari.app.anymex.AnymexPluginManager.siteUrlOf(p.config)
-    ProviderType.SORA -> p.config.extra?.takeIf { it.startsWith("http") }?.let { src -> runCatching { val u = java.net.URI(src); u.scheme + "://" + u.host + "/" }.getOrNull() }
+    ProviderType.SORA -> runCatching { com.hikari.app.sora.SoraPluginManager.siteUrlOf(p.config) }.getOrNull()?.takeIf { it.isNotBlank() } ?: p.config.extra?.takeIf { it.startsWith("http") }?.let { src -> runCatching { val u = java.net.URI(src); u.scheme + "://" + u.host + "/" }.getOrNull() }
     ProviderType.NUVIO -> sourceSiteUrl(java.io.File(p.config.url), p.config.name)
     ProviderType.VEGA -> runCatching {
         val dir = com.hikari.app.providers.vega.VegaPluginManager.dirOf(p.config)
