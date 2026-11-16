@@ -420,6 +420,10 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
 
     private var prefetchJob: Job? = null
 
+    /** What the last prefetch warmed, so leaving the screen can stop its
+     *  sweep when no player took it (see [onCleared]). */
+    private var prefetchTarget: Pair<MediaItem, Episode?>? = null
+
     /** Starts the page's stream prefetch, superseding any earlier one. Held
      *  off while the episode list a series' prefetch would be for is still
      *  coming: the prefetch's stream walk holds the same extension's gate, so
@@ -436,6 +440,19 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
     fun cancelPrefetch() {
         prefetchJob?.cancel()
         prefetchJob = null
+    }
+
+    override fun onCleared() {
+        cancelPrefetch()
+        // Back-out without Play: stop the title's background sweep too, or it
+        // keeps asking ~100 providers behind the home screen (the ANR freeze).
+        // Skipped while a launched player holds the key (see holdSweepKeys).
+        runCatching {
+            prefetchTarget?.let { (item, ep) ->
+                ContentRepository.cancelSweepFor(item, ep)
+            }
+        }
+        super.onCleared()
     }
 
     @Volatile
@@ -1098,8 +1115,11 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
          *  player when every server it was given turned out to be dead. */
         force: Boolean = false,
         onOriginSettled: (() -> Unit)? = null,
+        /** True for the detail screen's prefetch: the title's own provider
+         *  only. Opening a poster must not start a 100-provider search. */
+        originOnly: Boolean = false,
     ): StreamLookup {
-        val key = cacheKey(item, ep)
+        val key = cacheKey(item, ep, originOnly)
         val cached = StreamCache.get(key)
         if (cached != null) {
             val fresh = System.currentTimeMillis() - cached.at < STREAM_CACHE_TTL_MS
@@ -1217,7 +1237,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
         }
         try {
             val lookup = withContext(Dispatchers.IO) {
-                repo.streamsForOutcome(item, ep, feed, onOriginSettled)
+                repo.streamsForOutcome(item, ep, feed, onOriginSettled, originOnly)
             }
             val result = lookup.servers
             if (result.isEmpty() && !lookup.complete) {
@@ -1264,7 +1284,8 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             base to first
         }
         val (item, ep) = target
-        val key = cacheKey(item, ep)
+        prefetchTarget = target
+        val key = cacheKey(item, ep, true)
         val cached = StreamCache.get(key)
         // Reuse a NON-EMPTY, still-fresh cache; anything else (empty result from
         // a minute ago, or a stale list whose signed links have since expired)
@@ -1277,7 +1298,9 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             _streamsReady.value = true
             return
         }
-        resolveStreams(item, ep, onProgress = { partial ->
+        // The prefetch warms the title's OWN provider only (see originOnly):
+        // opening a poster must not start a 100-provider cross search.
+        resolveStreams(item, ep, originOnly = true, onProgress = { partial ->
             if (partial.isNotEmpty()) _streamsReady.value = true
         })
         _streamsReady.value = true
@@ -1288,7 +1311,8 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
      *  Same sharing as every other lookup (see [resolveStreams]). */
     fun prefetchEpisode(base: MediaItem, ep: Episode) {
         viewModelScope.launch {
-            val key = cacheKey(base, ep)
+            prefetchTarget = base to ep
+            val key = cacheKey(base, ep, true)
             val cached = StreamCache.get(key)
             if (cached != null && cached.list.isNotEmpty() &&
                 System.currentTimeMillis() - cached.at < STREAM_CACHE_TTL_MS &&
@@ -1296,14 +1320,14 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
             ) {
                 return@launch
             }
-            resolveStreams(base, ep, onProgress = { partial ->
+            resolveStreams(base, ep, originOnly = true, onProgress = { partial ->
                 if (partial.isNotEmpty()) _streamsReady.value = true
             })
         }
     }
 
-    private fun cacheKey(item: MediaItem, ep: Episode?): String =
-        item.providerId + "|" + item.id + "|" + (ep?.id ?: "")
+    private fun cacheKey(item: MediaItem, ep: Episode?, originOnly: Boolean = false): String =
+        item.providerId + "|" + item.id + "|" + (ep?.id ?: "") + if (originOnly) "|o" else "|a"
 
     fun backgroundSweepBusy(episode: Episode?): Boolean {
         val m = _meta.value ?: return false

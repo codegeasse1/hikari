@@ -607,6 +607,22 @@ class ContentRepository(private val manager: ProviderManager) {
             return key
         }
 
+        /** Drop this title/episode's background sweep because its screen closed
+         *  without handing playback to the player (back out of a detail that
+         *  never pressed Play). Skipped while a player session holds the key,
+         *  so a detail closed UNDER a launched player never kills playback. */
+        fun cancelSweepFor(item: MediaItem, episode: Episode?) {
+            val key = streamsRememberedKey(item, episode)
+            if (key in heldSweepKeys) return
+            sweeps[key]?.job?.cancel()
+            sweeps.remove(key)
+            pendingWork.remove(key)
+            Logs.log(
+                "Search",
+                "sweep for \"${item.title.take(60)}\" stopped — its screen closed, no player took it",
+            )
+        }
+
         /** Start whatever [holdSweepFor] held back for this key. Safe to call
          *  twice, and safe to call for a key that was never actually held. */
         fun releaseHeldSweepKey(key: String?) {
@@ -2022,6 +2038,11 @@ class ContentRepository(private val manager: ProviderManager) {
          *  OWN provider has answered, or without ever firing when the caller
          *  does not care (the sweep, the prefetch, a background re-ask). */
         onOriginSettled: (() -> Unit)? = null,
+        /** True for the detail screen's prefetch: ask the title's own provider
+         *  only, never the whole family/cross sweep. Opening a poster must not
+         *  start a 100-provider search (the ANR freeze); the full sweep runs
+         *  only at Play time when the scope allows it. */
+        originOnly: Boolean = false,
     ): StreamLookup {
         // A source scan across many providers can take a minute; keep it alive
         // if the user leaves the app (see [com.hikari.app.work.BackgroundWork]).
@@ -2034,7 +2055,7 @@ class ContentRepository(private val manager: ProviderManager) {
         val passSeq = outcomeSeq.incrementAndGet()
         val outcomeBefore = HashMap(providerOutcome)
         try {
-            val servers = streamsForInner(item, episode, onProgress, onOriginSettled, passSeq)
+            val servers = streamsForInner(item, episode, onProgress, onOriginSettled, passSeq, originOnly)
             if (servers.isNotEmpty()) return StreamLookup(servers, complete = true)
             // Remember disabled: no kept-list fallback — empty here is either
             // loading (server page open) or a real empty (caller decides via complete).
@@ -2176,6 +2197,9 @@ class ContentRepository(private val manager: ProviderManager) {
          *  a pass stamps verdicts, so the freshness check knows which
          *  unfinished entries are its own. */
         passSeq: Long = -1L,
+        /** [streamsForOutcome]'s prefetch flag: when true the lookup is
+         *  narrowed to the title's own provider (see [scopeAll] below). */
+        originOnly: Boolean = false,
     ): List<StreamSource> =
         withContext(Dispatchers.IO) {
             val all = manager.providers.value.filter { it.config.enabled }
@@ -2200,6 +2224,7 @@ class ContentRepository(private val manager: ProviderManager) {
                 }
             } else emptySet()
             val scopeAll = if (trackerBacked) false else when {
+                originOnly -> false
                 oneShotNarrow != null -> false
                 originIsException -> false
                 else -> SearchScope.allExtensions
@@ -2212,9 +2237,9 @@ class ContentRepository(private val manager: ProviderManager) {
             }
             // Read once, like the two above: one lookup must never be
             // half-scoped (see docs/SEARCH.md). "Search every Nuvio provider".
-            val nuvioFamily = oneShotNarrow == null && SearchScope.nuvioFamily
+            val nuvioFamily = !originOnly && oneShotNarrow == null && SearchScope.nuvioFamily
             // Read once too: "Search every Stremio addon".
-            val stremioFamily = oneShotNarrow == null && SearchScope.stremioFamily
+            val stremioFamily = !originOnly && oneShotNarrow == null && SearchScope.stremioFamily
             // THE APP'S OWN CATALOGUE IS NOT AN EXTENSION.
             //
             // A title browsed from Home / Search / Collections / a nuvio
@@ -2344,7 +2369,7 @@ class ContentRepository(private val manager: ProviderManager) {
             } else {
                 crossExtensionTargets(item, origin, all, tally, onlyIds = exceptions)
             }
-            val sameEngine = if (origin == null || oneShotNarrow != null) {
+            val sameEngine = if (origin == null || oneShotNarrow != null || originOnly) {
                 emptyList()
             } else if (SearchScope.family(origin.config.type)) {
                 crossTargets.filter { it.config.type == origin.config.type }
@@ -2376,7 +2401,7 @@ class ContentRepository(private val manager: ProviderManager) {
             "start \"${item.title}\" (${item.type}) v=${com.hikari.app.BuildConfig.VERSION_NAME} " +
                 "origin=" +
                 (origin?.config?.name ?: if (originless) "app-catalogue(no extension)" else "?") + " " +
-                "narrow=" + (oneShotNarrow ?: "-") + " " +
+                "narrow=" + (oneShotNarrow ?: if (originOnly) "prefetch-origin" else "-") + " " +
                 "primary=${targets.size} nuvio=${nuvioTargets.size} " +
                 "cross=${crossTargets.size} same=${sameEngine.size} late=${lateTargets.size} " +
                 "families=" + providerCounts(crossTargets) +

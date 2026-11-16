@@ -98,6 +98,7 @@ import androidx.media3.ui.PlayerControlView
 import androidx.media3.ui.PlayerView
 import androidx.media3.ui.SubtitleView
 import coil.load
+import coil.request.ImageRequest
 import com.google.common.collect.ImmutableList
 import com.hikari.app.HikariApp
 import com.hikari.app.R
@@ -8859,7 +8860,19 @@ class PlayerActivity : ComponentActivity() {
             )
             val still = ep.image?.takeIf { it.isNotBlank() } ?: fallbackPoster
             // Decode at row-thumb size, not full resolution (see cellModel).
-            runCatching { iv.load(PosterLoader.cellModel(still, thumbW, thumbH) ?: PosterLoader.model(still)) }
+            // If the still itself fails (dead image host), fall back to the
+            // title art instead of leaving a black box.
+            runCatching {
+                val errModel = fallbackPoster?.takeIf { it != still }?.let { PosterLoader.model(it) }
+                val stillModel = PosterLoader.cellModel(still, thumbW, thumbH) ?: PosterLoader.model(still)
+                if (stillModel is ImageRequest && errModel != null) {
+                    iv.load(stillModel.newBuilder().apply { error(errModel) }.build())
+                } else if (errModel != null) {
+                    iv.load(stillModel) { error(errModel) }
+                } else {
+                    iv.load(stillModel)
+                }
+            }
             frame.addView(
                 TextView(this).apply {
                     text = "▶"
@@ -9286,6 +9299,15 @@ class PlayerActivity : ComponentActivity() {
             intent.putExtra("histEpisodeNumber", ep.number)
             intent.putExtra("histEpisodeName", ep.name.orEmpty())
             startChooserShown = false
+            // Detach the OLD episode's live session BEFORE the new chooser
+            // opens: its collectors would otherwise keep appending the old
+            // episode's servers — and syncFromSession would pull them — into
+            // the new episode's page.
+            liveStreamsJob?.cancel()
+            liveStreamsJob = null
+            liveStatusJob?.cancel()
+            liveStatusJob = null
+            liveSessionId = null
             // Horizontal in-player page for the NEW episode's servers (like
             // the Source pill reopen mid-playback): no portrait kick, no trip
             // outside the player — the old vertical default is what read as
