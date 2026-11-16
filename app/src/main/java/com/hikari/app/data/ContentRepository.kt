@@ -4388,7 +4388,7 @@ class ContentRepository(private val manager: ProviderManager) {
         val nums = (0 until seasons.length()).mapNotNull { i ->
             val s = seasons.optJSONObject(i) ?: return@mapNotNull null
             val n = s.optInt("season_number")
-            if (n > 0 && s.optInt("episode_count") > 0) n else null
+            if (n >= 0 && s.optInt("episode_count") > 0) n else null
         }.take(24)
         if (nums.isEmpty()) return null
         val rows = coroutineScope {

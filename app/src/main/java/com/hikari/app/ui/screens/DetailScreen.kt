@@ -1678,8 +1678,15 @@ fun DetailScreen(
     val sortedEps = remember(episodes) {
         episodes.orEmpty().sortedWith(compareBy({ it.season }, { it.number }))
     }
-    val seasons = remember(sortedEps) { sortedEps.map { it.season }.distinct().sorted() }
-    val activeSeason = selectedSeason?.takeIf { it in seasons } ?: seasons.firstOrNull() ?: 1
+    // Nuvio parity: Specials (season 0) sort last and never open by default —
+    // the page lands on Season 1 with real episodes, not on featurettes.
+    val seasons = remember(sortedEps) {
+        sortedEps.map { it.season }.distinct()
+            .sortedWith(compareBy({ if (it <= 0) Int.MAX_VALUE else it }))
+    }
+    val activeSeason = selectedSeason?.takeIf { it in seasons }
+        ?: seasons.firstOrNull { it > 0 }
+        ?: seasons.firstOrNull() ?: 1
     // Only one season → show everything; more than one → show just the picked
     // season, so a 5-season show no longer floods the list with 100+ rows.
     val shownEps = remember(sortedEps, seasons, activeSeason) {
@@ -4019,7 +4026,7 @@ fun DetailScreen(
                             ) {
                                 // The reference season header inside the panel.
                                 Text(
-                                    if (seasons.size > 1) tr("Season %s").replace("%s", activeSeason.toString()) + " \u00b7 " + tr("Episodes (%s)").replace("%s", shownEps.size.toString())
+                                    if (seasons.size > 1) seasonTitle(activeSeason) + " \u00b7 " + tr("Episodes (%s)").replace("%s", shownEps.size.toString())
                                     else tr("Episodes (%s)").replace("%s", shownEps.size.toString()),
                                     style = MaterialTheme.typography.titleMedium,
                                     fontWeight = FontWeight.Bold,
@@ -4107,7 +4114,7 @@ fun DetailScreen(
                                             contentPadding = PaddingValues(horizontal = 9.dp, vertical = 3.dp),
                                             modifier = Modifier.tvPress(previewPass = true, onClick = { seasonExpanded = true })
                                         ) {
-                                            Text(tr("Season %s").replace("%s", activeSeason.toString()), maxLines = 1)
+                                            Text(seasonTitle(activeSeason), maxLines = 1)
                                         }
                                         DropdownMenu(
                                             expanded = seasonExpanded,
@@ -4116,7 +4123,7 @@ fun DetailScreen(
                                             seasons.forEach { s ->
                                                 DropdownMenuItem(
                                                     modifier = Modifier.tvPress(previewPass = true, onClick = { selectedSeason = s; rangeStart = 0; seasonExpanded = false }),
-                                                    text = { Text(tr("Season %s").replace("%s", s.toString())) },
+                                                    text = { Text(seasonTitle(s)) },
                                                     onClick = {
                                                         selectedSeason = s
                                                         rangeStart = 0
@@ -4470,7 +4477,7 @@ fun DetailScreen(
                                     ) {
                                         if (seasons.size > 1) {
                                             Text(
-                                                text = tr("Season %s").replace("%s", activeSeason.toString()),
+                                                text = seasonTitle(activeSeason),
                                                 fontSize = 16.sp * tvText,
                                                 fontWeight = FontWeight.Bold,
                                                 color = Color.White,
@@ -4576,7 +4583,7 @@ fun DetailScreen(
                                                     ),
                                                 ) {
                                                     Text(
-                                                        tr("Season %s").replace("%s", s.toString()),
+                                                        seasonTitle(s),
                                                         maxLines = 1,
                                                     )
                                                 }
@@ -5216,7 +5223,7 @@ fun DetailScreen(
                                             onClick = { seasonExpanded = true },
                                             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
                                         ) {
-                                            Text(tr("Season %s").replace("%s", activeSeason.toString()), maxLines = 1)
+                                            Text(seasonTitle(activeSeason), maxLines = 1)
                                         }
                                         DropdownMenu(
                                             expanded = seasonExpanded,
@@ -5226,7 +5233,7 @@ fun DetailScreen(
                                                 DropdownMenuItem(
                                                     modifier = Modifier.tvPress(previewPass = true, onClick = { selectedSeason = s; seasonExpanded = false }),
                                                     text = {
-                                                        Text(tr("Season %s").replace("%s", s.toString()))
+                                                        Text(seasonTitle(s))
                                                     },
                                                     onClick = {
                                                         selectedSeason = s
@@ -5906,7 +5913,7 @@ private fun vegaPackLabel(
     }
     val seasonPart = when (summary.seasons.size) {
         0 -> null
-        1 -> tr("Season %s").replace("%s", summary.seasons[0].toString())
+        1 -> seasonTitle(summary.seasons[0])
         else -> tr("Seasons %s–%s")
             .replaceFirst("%s", summary.seasons.first().toString())
             .replaceFirst("%s", summary.seasons.last().toString())
@@ -8565,6 +8572,10 @@ private fun EpisodeRow(
         }
     }
 }
+
+/** Nuvio parity: season 0 is shown as "Specials" (never "Season 0"). */
+private fun seasonTitle(season: Int): String =
+    if (season <= 0) tr("Specials") else tr("Season %s").replace("%s", season.toString())
 
 @Composable
 private fun EpisodeWatchBadge(

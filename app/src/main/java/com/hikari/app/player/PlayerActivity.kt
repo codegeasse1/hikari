@@ -6144,6 +6144,12 @@ class PlayerActivity : ComponentActivity() {
     /** In-player episode switches, newest wins: a slow search for an earlier
      *  pick must never overwrite a later one (see [switchToEpisode]). */
     private var episodeSwitchGen = 0
+    /** Back-out restore for an in-player episode switch (see switchToEpisode):
+     *  tapping another episode opens its server page instantly; backing out
+     *  of that page before picking hands the player back to the episode (and
+     *  server list) it was on instead of closing the player. Consumed (and
+     *  nulled) by the server chooser's dismiss handler. */
+    private var episodeSwitchRestore: (() -> Unit)? = null
     /** The title's episode list as the player last saw it (the Episodes dialog
      *  refreshes it). Next/Previous/autoplay step through it in ROW order, so
      *  duplicate-numbered rows advance one row at a time like the detail page. */
@@ -9131,6 +9137,7 @@ class PlayerActivity : ComponentActivity() {
         val item = favouriteItem ?: return
         val repo = contentRepo
         val gen = ++episodeSwitchGen
+        val switchOldEp = liveEpisode
         liveEpisode = ep
         autoplayRunning = fromAutoplay
         var cancelled = false
@@ -9141,20 +9148,42 @@ class PlayerActivity : ComponentActivity() {
             dialog?.let { runCatching { it.dismiss() } }
             dialog = null
         }
-        if (!fromAutoplay) {
-            Toast.makeText(this, I18n.t("Loading episode…"), Toast.LENGTH_SHORT).show()
-            // The fast path below usually answers in seconds; the progress box
-            // only comes up when it takes longer than a beat, so a quick Next
-            // never flashes a dialog at all.
-            lifecycleScope.launch {
-                delay(1500)
-                if (gen == episodeSwitchGen && !cancelled && !settled && dialog == null && !isFinishing && !isDestroyed) {
-                    dialog = showGlassProgress(
-                        "Loading episode",
-                        "Finding servers for this episode…",
-                        cancelable = true,
-                    ) { cancelled = true }
-                }
+        // In-player manual pick: the server page for the tapped episode opens
+        // INSTANTLY and fills live as servers land (see appendSources) — no
+        // blocking "Loading episode" box. The previous episode keeps playing
+        // underneath until a server is picked; backing out of the page hands
+        // the player back to it (see episodeSwitchRestore).
+        val switchArmed = !fromAutoplay
+        if (switchArmed) {
+            val oldSources = sources
+            val oldIndex = currentIndex
+            val oldSe = intent.getIntExtra("histEpisodeSeason", 0)
+            val oldNe = intent.getIntExtra("histEpisodeNumber", 0)
+            val oldNm = intent.getStringExtra("histEpisodeName")
+            // A programmatic dismiss must neither restore nor finish (see the
+            // chooser's dismiss handler): disarm first, then clear the old page.
+            startChoicePending = false
+            serverPickActed = false
+            episodeSwitchRestore = null
+            runCatching { serverChooserDialog?.dismiss() }
+            sources = emptyList()
+            currentIndex = 0
+            chooserEmptyNote = null
+            notifySourcesChanged()
+            intent.putExtra("histEpisodeSeason", ep.season)
+            intent.putExtra("histEpisodeNumber", ep.number)
+            intent.putExtra("histEpisodeName", ep.name.orEmpty())
+            startChooserShown = false
+            showServerChooser(startMode = true)
+            episodeSwitchRestore = {
+                sources = oldSources
+                currentIndex = oldIndex
+                if (switchOldEp != null) applyLiveEpisode(switchOldEp)
+                intent.putExtra("histEpisodeSeason", oldSe)
+                intent.putExtra("histEpisodeNumber", oldNe)
+                intent.putExtra("histEpisodeName", oldNm)
+                chooserEmptyNote = null
+                notifySourcesChanged()
             }
         } else {
             Toast.makeText(this, I18n.t("Loading next episode…"), Toast.LENGTH_SHORT).show()
@@ -9194,11 +9223,11 @@ class PlayerActivity : ComponentActivity() {
                 }
                 return@launch
             }
-            // The origin had nothing fast: the full pass, with the box up.
+            // The origin had nothing fast: the full pass runs with the open chooser filling live.
             // Bounded: the full cross-extension pass used to run unbounded here,
             // so a stuck lookup held "Loading episode" forever. Past 90s the
             // wait is declared honestly instead of hanging.
-            if (!fromAutoplay && dialog == null && !cancelled) {
+            if (!fromAutoplay && !switchArmed && dialog == null && !cancelled) {
                 dialog = showGlassProgress(
                     "Loading episode",
                     "Finding servers for this episode…",
@@ -9226,6 +9255,10 @@ class PlayerActivity : ComponentActivity() {
             // Superseded: the user picked another episode while this search ran.
             if (gen != episodeSwitchGen) return@launch
             if (streams == null) {
+                if (switchArmed && gen == episodeSwitchGen && sources.isEmpty()) {
+                    chooserEmptyNote = I18n.t("Still searching took too long — try this episode again")
+                    notifySourcesChanged()
+                }
                 autoplayRunning = false
                 Toast.makeText(
                     this@PlayerActivity, I18n.t("Still searching took too long — try this episode again"), Toast.LENGTH_LONG
@@ -9233,6 +9266,10 @@ class PlayerActivity : ComponentActivity() {
                 return@launch
             }
             if (streams.isEmpty()) {
+                if (switchArmed && gen == episodeSwitchGen && sources.isEmpty()) {
+                    chooserEmptyNote = I18n.t("No servers found for this episode")
+                    notifySourcesChanged()
+                }
                 autoplayRunning = false
                 Toast.makeText(
                     this@PlayerActivity, I18n.t("No servers found for this episode"), Toast.LENGTH_SHORT
@@ -9302,7 +9339,10 @@ class PlayerActivity : ComponentActivity() {
         // "Don't play directly" applies to an in-player episode switch too:
         // this is a brand-new server list, so it gets its own chooser
         // instead of auto-starting on the first server.
-        if (fromAutoplay || !shouldAskServer()) {
+        if (serverChooserDialog?.isShowing == true) {
+            // The episode-switch page is already open and filling live —
+            // never stack a second chooser over it (see switchToEpisode).
+        } else if (fromAutoplay || !shouldAskServer()) {
             playSource(currentIndex)
         } else {
             startChooserShown = false
@@ -10529,7 +10569,15 @@ class PlayerActivity : ComponentActivity() {
             // player here also keeps the abandoned search from re-opening
             // anything: the detail screen's once-only launch guard stays
             // armed, so no relaunch follows.
-            if (startChoicePending) {
+            val switchRestore = episodeSwitchRestore
+            episodeSwitchRestore = null
+            if (switchRestore != null && !serverPickActed) {
+                // Backed out of an episode-switch page before picking: hand
+                // the player back to the previous episode instead of
+                // closing it (see switchToEpisode).
+                startChoicePending = false
+                runCatching { switchRestore() }
+            } else if (startChoicePending) {
                 startChoicePending = false
                 if (!isFinishing && !isDestroyed && !isChangingConfigurations) finish()
             }
@@ -11301,7 +11349,15 @@ class PlayerActivity : ComponentActivity() {
             }
             // Closed without a pick (back button / arrow): abandon the play, exactly
             // like the classic page — never fall back to auto-playing.
-            if (startChoicePending) {
+            val switchRestore = episodeSwitchRestore
+            episodeSwitchRestore = null
+            if (switchRestore != null && !serverPickActed) {
+                // Backed out of an episode-switch page before picking: hand
+                // the player back to the previous episode instead of
+                // closing it (see switchToEpisode).
+                startChoicePending = false
+                runCatching { switchRestore() }
+            } else if (startChoicePending) {
                 startChoicePending = false
                 if (!isFinishing && !isDestroyed && !isChangingConfigurations) finish()
             }
